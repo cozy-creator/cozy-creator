@@ -86,6 +86,7 @@ function ProjectSync({ id }: { id: string }) {
       stream.subscribe((event) => {
         if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
         if (event.type === "resync" || event.type === "hello") store.fellBehind()
+        if (event.type === "hello") store.outbox.back()
       }),
     [stream, store, id],
   )
@@ -121,7 +122,7 @@ function RenderAll({ id }: { id: string }) {
   if (!fresh && !late) return null
   return (
     <span className="render-all">
-      <button type="button" className="tb primary" onClick={() => void store.runAll(also)}>
+      <button type="button" className="tb primary" onClick={() => store.runAll(also)}>
         Render all {fresh + (also ? late : 0)}
       </button>
       {late > 0 && (
@@ -175,6 +176,15 @@ function Canvas({
   const machines = useMachines(store)
   const machine = machines?.at(-1) ?? null
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, projectId), enabled: machines !== null })
+
+  // Something not saved yet, with Calcifer unreachable: the browser's own question is the only one the page ever asks.
+  useEffect(() => {
+    const leaving = (event: BeforeUnloadEvent) => {
+      if (store.outbox.owed) event.preventDefault()
+    }
+    window.addEventListener("beforeunload", leaving)
+    return () => window.removeEventListener("beforeunload", leaving)
+  }, [store])
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
@@ -234,7 +244,7 @@ function Canvas({
     (tool: Tool) => {
       const width = tool.controls.some((control) => control.type === "timeline") ? 720 : tool.kind === "video" ? 360 : 300
       const { x, y } = clearSpot(width, width * 0.75)
-      void placer.addTool(tool, { x: x + CARD_WIDTH / 2, y: y + 16 })
+      placer.addTool(tool, { x: x + CARD_WIDTH / 2, y: y + 16 })
     },
     [placer, clearSpot],
   )
@@ -259,8 +269,8 @@ function Canvas({
       if (tool || taken) {
         event.preventDefault()
         const named = store.tools.get().get(tool)
-        if (named) void placer.addTool(named, point)
-        if (taken) void placer.addFile(JSON.parse(taken), point)
+        if (named) placer.addTool(named, point)
+        if (taken) placer.addFile(JSON.parse(taken), point)
         return
       }
       if (!hasFiles(event)) return
@@ -341,7 +351,7 @@ function Canvas({
         const names = flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
         if (names.length) {
           event.preventDefault()
-          void store.remove(names)
+          store.remove(names)
         }
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()

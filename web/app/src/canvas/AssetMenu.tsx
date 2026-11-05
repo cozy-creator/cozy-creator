@@ -165,7 +165,7 @@ function Menu({ name, x, y }: { name: string; x: number; y: number }) {
               type="button"
               role="menuitem"
               onClick={() => {
-                void store.remove([name])
+                store.remove([name])
                 close()
               }}
             >
@@ -182,7 +182,7 @@ function Menu({ name, x, y }: { name: string; x: number; y: number }) {
                 type="button"
                 title={other.description || other.id}
                 onClick={() => {
-                  void store.setTool(name, other.id)
+                  store.setTool(name, other.id)
                   close()
                 }}
               >

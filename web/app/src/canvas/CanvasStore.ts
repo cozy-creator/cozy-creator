@@ -1,7 +1,8 @@
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react"
 import { ApiError, type Client } from "../api/client"
-import type { Entity, Imported, AssetDeleted, AssetPatched, Asset, ProjectState, Row, Run, Standing, Tool } from "../types"
-import { say } from "../ui/notes"
+import { type Action, Outbox } from "../api/outbox"
+import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, ProjectState, Row, Run, Standing, Tool } from "../types"
+import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { asName, freeName, nameKey } from "./names"
@@ -49,6 +50,14 @@ export interface ElementView {
   seek?: { at: number; ask: number }
   /** Known from the import's answer until the project is read again. */
   landed?: { sha256: string; field: string }
+  /** The project doesn't hold it, as far as reads say. Until when: a read begun after that says. Forever until Calcifer answers. */
+  pending?: number
+  /** A render is on its way, until when, as `pending`: it says Queued from the click on. */
+  asked?: number
+  /** What was asked of its row and not read back yet, until when, as `pending`. */
+  over?: { row: Partial<Asset>; until: number }
+  /** How many writes of its fields are on their way. */
+  writing?: number
   placing?: Placing
   /** A blob URL, until the thumbnail is up. */
   preview?: string
@@ -92,9 +101,22 @@ export interface Keep {
   in_s?: number
 }
 
+/** A deleted box, for Undo: what it was, and what Calcifer needs to bring it back. */
+interface Gone {
+  name: string
+  served: () => string
+  view: ElementView
+  row: Row
+  /** What `DELETE` answered. */
+  text?: string
+  going?: Action<AssetDeleted>
+}
+
 export const CARD_WIDTH = 240
 
 type Flow = ReactFlowInstance<ElementNode, Edge>
+const NOT_THERE = Symbol("the box went before its turn came")
+const NOT_YET = Number.POSITIVE_INFINITY
 const UNDO_MS = 5 * 60_000
 const SHOWS_FROM = { x: 240, y: 72 }
 
@@ -132,6 +154,8 @@ export class CanvasStore {
   private shapes = new Map<string, string>()
   private asked = new Set<number>()
   private runs = new Map<number, Run>()
+  /** What a person did, in order, on its way to Calcifer. */
+  readonly outbox = new Outbox()
   /** A push or pull is going. */
   readonly transferring = signal(false)
   /** The tools known so far, by id. */
@@ -153,8 +177,13 @@ export class CanvasStore {
   /** The machines a render may go to, a rental before this computer: the walk places it on whichever is free. */
   machines: () => string[] = () => []
   private ids = new Map<string, string>()
+  /** Each box by its node's id, the same whatever it's called: an action waits for its turn by this. */
+  private namesById = new Map<string, string>()
+  /** What Calcifer calls each, by id: a rename on its way shows here first. */
+  private served = new Map<string, string>()
   private nextId = 0
   private state: ProjectState | null = null
+  private began = 0
   private rows: Map<string, Row> | null = null
   private owners = new Map<number, string>()
   private dragging = new Set<string>()
@@ -162,16 +191,15 @@ export class CanvasStore {
   private dragFrom = new Map<string, { x: number; y: number }>()
   /** On its way out: a read from before that doesn't bring it back. */
   private deleting = new Set<string>()
-  /** Each save of an asset goes after the last. */
-  private saving = new Map<string, Promise<boolean>>()
   /** The etags an asset's own writes left, since a read last caught up. */
   private own = new Map<string, Set<string>>()
   /** Names about to land: what was dropped here, and nothing a read found. */
   private landings = new Set<string>()
   /** A position of ours that the stream hasn't echoed: it wins until then. */
   private masks = new Map<string, Row>()
+  /** Rows to write, by node id. */
   private moving = new Map<string, Row>()
-  private sending = false
+  private movesOwed = false
   private renames = new Map<string, string>()
   private adding = 0
   private seen = false
@@ -252,6 +280,7 @@ export class CanvasStore {
 
   applyState(state: ProjectState) {
     this.state = state
+    this.began = state.began ?? 0
     this.transferring.set(Boolean(state.moving))
     if (this.rows && this.flow) this.reconcile()
   }
@@ -294,7 +323,8 @@ export class CanvasStore {
 
   /** Fell behind: what the stream would have told us is about to be read again, and what a run says now is asked again. */
   fellBehind() {
-    this.masks.clear()
+    const owed = new Set([...this.moving.keys()].map((id) => this.namesById.get(id)))
+    for (const name of this.masks.keys()) if (!owed.has(name)) this.masks.delete(name)
     this.asked.clear()
   }
 
@@ -348,15 +378,20 @@ export class CanvasStore {
       if (view) {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
+        if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
+        if (view.asked !== undefined && view.asked < this.began) change.asked = undefined
+        const over = view.over && view.over.until >= this.began ? view.over : undefined
+        if (view.over && !over) change.over = undefined
         if (view.asset !== asset || view.landed) {
-          Object.assign(change, { asset, landed: undefined })
+          Object.assign(change, { asset: over ? { ...asset, ...over.row } : asset, landed: undefined })
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
-            Object.assign(change, { sent: undefined, known: undefined, ...this.typedUnder(view, asset) })
+            // A box this page made has no one else's words under it yet: what's typed begins from this.
+            Object.assign(change, { sent: view.writing ? view.sent : undefined, known: undefined, ...(view.pending !== undefined ? { base: view.drafts ? asset.etag : undefined } : this.typedUnder(view, asset)) })
             this.own.delete(asset.name)
           }
           // Pinned where it was being looked: there's nothing left to look at.
@@ -385,7 +420,7 @@ export class CanvasStore {
       }
     }
     for (const [name, view] of this.views) {
-      if (!present.has(name) && !view.placing && !view.landed && !becoming.has(name)) this.removeNode(name)
+      if (!present.has(name) && !view.placing && !view.landed && !(this.began <= (view.pending ?? -1)) && !becoming.has(name)) this.removeNode(name)
     }
     // What comes after the first read arrived while this was open, from a dropped tool, a command or a hand.
     for (const element of this.seen ? fresh : []) this.landings.add(element.name)
@@ -401,10 +436,13 @@ export class CanvasStore {
 
   /** Someone wrote this asset, and what that means for what's typed in it: a field typed in is now a conflict, any other only moves what it began from. */
   private typedUnder(view: ElementView, asset: Asset): Partial<ElementView> {
-    if (!view.drafts) return { base: undefined }
+    if (!view.drafts && !view.writing) return { base: undefined }
     if (asset.etag === view.base) return {}
     const same = (field: string) => JSON.stringify(asset.fields?.[field]) === JSON.stringify(view.asset?.fields?.[field])
-    return Object.keys(view.drafts).every(same) ? { base: asset.etag } : { conflict: true }
+    // What's on its way is met by `If-Match`: Calcifer refuses it, and that's this conflict too. It only needs its base to stay, unless no field of it moved.
+    const typed = Object.keys({ ...(view.writing ? view.sent : {}), ...view.drafts })
+    if (typed.every(same)) return { base: asset.etag }
+    return view.drafts ? { conflict: true } : {}
   }
 
   /** A run this page hasn't heard of: its progress comes on the stream, but what it says now has to be read. */
@@ -486,6 +524,8 @@ export class CanvasStore {
   private node(name: string, row: Row, selected = false): ElementNode {
     const id = `e${++this.nextId}`
     this.ids.set(name, id)
+    this.namesById.set(id, name)
+    this.served.set(id, name)
     const view = this.views.get(name)!
     const width = row.w ?? widthFor(view)
     const height = heightFor(view, width)
@@ -535,73 +575,106 @@ export class CanvasStore {
     if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
   }
 
-  /** A new take or version: anything typed saved first, on the machine that's up; what Calcifer runs itself needs none. With none up, it asks for one and goes when one is. */
-  async run(name: string, keep?: Keep) {
-    if (!this.projectId || !(await this.save(name))) return
-    const asset = this.get(name)?.asset
-    if (!asset) return
+  /**
+   * A new take or version: the box says Queued now, and anything typed goes first. What Calcifer runs itself needs no machine; with none up for the rest, it asks
+   * for one and goes when one is. Its key is made here, once, so however often this is tried it asks one render.
+   */
+  run(name: string, keep?: Keep) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    const asset = view?.asset
+    if (!asset || view.conflict) return
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
+    const saved = this.save(key)
     if (!on.length) {
-      this.patch(name, { waiting: keep ?? {} })
+      this.patch(key, { waiting: keep ?? {} })
       this.askMachine()
       return
     }
-    this.patch(name, { waiting: undefined, scrub: undefined })
-    try {
-      await this.client.render(this.projectId, [asset.name], on, `take-${crypto.randomUUID()}`, keep)
-    } catch (error) {
-      say(`Couldn't render ${name}`, error)
-    }
+    this.patch(key, { waiting: undefined, scrub: undefined, asked: NOT_YET })
+    const id = this.ids.get(key)
+    const settle = (asked?: number) => this.patchId(id, { asked })
+    const once = `take-${crypto.randomUUID()}`
+    this.act(key, {
+      send: async (served, signal) => ((await saved) ? this.client.render(this.projectId!, [served], on, once, keep, signal) : null),
+      done: (answer) => settle(answer ? performance.now() : undefined),
+      refused: (error) => {
+        settle()
+        say(`Couldn't render ${name}`, error)
+      },
+    })
   }
 
   /** A machine came up: each render that waited for one goes. */
   machineUp() {
-    for (const [name, view] of this.views) if (view.waiting) void this.run(name, view.waiting)
+    for (const [name, view] of this.views) if (view.waiting) this.run(name, view.waiting)
   }
 
   /** Render all. What's approved stays, and with `outdated`, what's out of date when its turn comes goes too. */
-  async runAll(outdated: boolean) {
+  runAll(outdated: boolean) {
     const on = this.machines()
-    if (!this.projectId) return
+    const id = this.projectId
+    if (!id) return
     if (!on.length) return this.askMachine()
-    for (const name of this.views.keys()) if (!(await this.save(name))) return
-    try {
-      await this.client.render(this.projectId, ["all"], on, `all-${crypto.randomUUID()}`, outdated ? { outdated } : {})
-    } catch (error) {
-      say("Couldn't render them", error)
-    }
+    const saved = [...this.views.keys()].map((name) => this.save(name))
+    const going = [...this.views].filter(([, view]) => view.asset?.tool && !madeHere(view.asset.tool) && !view.asset.pinned).map(([name]) => this.ids.get(name))
+    for (const box of going) this.patchId(box, { asked: NOT_YET })
+    const settle = (asked?: number) => going.forEach((box) => this.patchId(box, { asked }))
+    const once = `all-${crypto.randomUUID()}`
+    this.outbox.add({
+      send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, outdated ? { outdated } : {}, signal) : null),
+      done: (answer) => settle(answer ? performance.now() : undefined),
+      refused: (error) => {
+        settle()
+        say("Couldn't render them", error)
+      },
+    })
   }
 
-  /** Approves it: this version is what `name` is, until it's unapproved. */
-  async pin(name: string, number: number) {
-    if (!this.projectId) return
-    try {
-      const pinned = await this.client.approve(this.projectId, this.get(name)?.asset?.name ?? name, String(number))
-      if (pinned.stale.length) say(`That puts ${pinned.stale.join(", ")} out of date`)
-      // It turns into that file, and can flip back.
-      this.patch(name, { face: undefined })
-    } catch (error) {
-      say(`Couldn't approve ${name}`, error)
-    }
+  private patchId(id: string | undefined, change: Partial<ElementView>) {
+    const name = id && this.namesById.get(id)
+    if (name) this.patch(name, change)
   }
 
-  async unpin(name: string) {
-    if (!this.projectId) return
-    try {
-      const unpinned = await this.client.unpin(this.projectId, this.get(name)?.asset?.name ?? name)
-      if (unpinned.stale.length) say(`That puts ${unpinned.stale.join(", ")} out of date`)
-    } catch (error) {
-      say(`Couldn't unapprove ${name}`, error)
-    }
+  /** `row` over what its row says, now, until a read begun after the answer says for itself. Refused, it goes back. */
+  private over<T extends { stale: string[] }>(name: string, row: Partial<Asset>, send: (served: string, once: AbortSignal) => Promise<T>, what: string) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.asset) return
+    const was = view.asset
+    const over = { row, until: NOT_YET }
+    const id = this.ids.get(key)
+    const mine = () => this.get(this.namesById.get(id ?? "") ?? "")?.over === over
+    this.patch(key, { over, asset: { ...was, ...row } })
+    this.act(key, {
+      send,
+      done: (answer) => {
+        if (mine()) this.patchId(id, { over: { row, until: performance.now() } })
+        if (answer.stale.length) say(`That puts ${answer.stale.join(", ")} out of date`)
+      },
+      refused: (error) => {
+        if (mine()) this.patchId(id, { over: undefined, asset: was })
+        say(`Couldn't ${what} ${name}`, error)
+      },
+    })
   }
 
-  async cancelRender(name: string) {
-    if (!this.projectId) return
-    try {
-      await this.client.cancelRender(this.projectId, [name])
-    } catch (error) {
-      say(`Couldn't cancel ${name}`, error)
-    }
+  /** Approves it: this version is what `name` is, until it's unapproved. It turns into that file now, and can flip back. */
+  pin(name: string, number: number) {
+    this.patch(name, { face: undefined, viewed: undefined })
+    this.over(name, { pinned: true, approved: number, version: number }, (served, once) => this.client.approve(this.projectId!, served, String(number), once), "approve")
+  }
+
+  unpin(name: string) {
+    this.over(name, { pinned: false, approved: undefined }, (served, once) => this.client.unpin(this.projectId!, served, once), "unapprove")
+  }
+
+  cancelRender(name: string) {
+    this.patch(name, { asked: undefined })
+    this.act(name, {
+      send: (served, once) => this.client.cancelRender(this.projectId!, [served], once),
+      refused: (error) => say(`Couldn't cancel ${name}`, error),
+    })
   }
 
   async pull() {
@@ -617,6 +690,10 @@ export class CanvasStore {
     const id = this.ids.get(name)
     this.views.delete(name)
     this.ids.delete(name)
+    if (id) {
+      this.namesById.delete(id)
+      this.moving.delete(id)
+    }
     this.masks.delete(name)
     this.shapes.delete(name)
     if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
@@ -624,16 +701,21 @@ export class CanvasStore {
     if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
   }
 
-  /** The same node and view under a new name. */
-  private moveName(from: string, to: string) {
+  /** The same node and view under a new name. `ours`: Calcifer doesn't know yet. */
+  private moveName(from: string, to: string, ours = false) {
     const view = this.views.get(from)
     const id = this.ids.get(from)
     if (!view || !id) return
+    if (!ours) this.served.set(id, to)
     this.views.delete(from)
     this.ids.delete(from)
     if (this.dragging.delete(from)) this.dragging.add(to)
     this.views.set(to, { ...view, name: to })
     this.ids.set(to, id)
+    this.namesById.set(id, to)
+    const mask = this.masks.get(from)
+    this.masks.delete(from)
+    if (mask) this.masks.set(to, mask)
     this.aliases.set(from, to)
     this.aliases.delete(to)
     if (this.editing.get() === from) this.editing.set(to)
@@ -685,31 +767,45 @@ export class CanvasStore {
   /** Writes what's typed. Whether it stands: a refusal leaves it typed. */
   save(name: string): Promise<boolean> {
     const key = this.resolveName(name)
-    const going = (this.saving.get(key) ?? Promise.resolve(true)).then(() => this.write(key))
-    this.saving.set(key, going)
-    return going
+    const view = this.views.get(key)
+    if (!view?.drafts) return Promise.resolve(true)
+    // The person says which: leaving the text doesn't.
+    if (view.conflict) return Promise.resolve(false)
+    return this.write(key, view.drafts, `save ${view.name}`)
   }
 
-  private async write(key: string, force = false): Promise<boolean> {
+  /** `fields`, shown as written now, go in their turn, over what they began from. Whether they stand: refused, they're typed again, and a file that moved under them is a conflict. */
+  private write(key: string, fields: Record<string, unknown>, what: string, force = false): Promise<boolean> {
     const view = this.views.get(key)
-    if (!view?.drafts || !view.asset || !this.projectId) return true
-    // The person says which: leaving the text doesn't.
-    if (view.conflict && !force) return false
-    const drafts = view.drafts
-    this.patch(key, { drafts: undefined, sent: { ...view.sent, ...drafts }, conflict: undefined })
-    try {
-      const answer = await this.client.patchAsset(this.projectId, view.asset.name, { fields: drafts }, force ? undefined : view.base)
-      this.wrote(key, answer)
-      this.patch(key, { base: this.views.get(key)?.drafts ? this.views.get(key)?.base : undefined })
-      return true
-    } catch (error) {
-      const now = this.views.get(key)
-      const sent = Object.fromEntries(Object.entries(now?.sent ?? {}).filter(([field]) => !(field in drafts)))
-      this.patch(key, { drafts: { ...drafts, ...now?.drafts }, sent })
-      if (error instanceof ApiError && error.body.code === "asset_changed") this.patch(key, { conflict: true })
-      else say(`Couldn't save ${view.name}`, error)
-      return false
-    }
+    const id = this.ids.get(key)
+    if (!view?.asset || !id) return Promise.resolve(true)
+    const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
+    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, conflict: undefined, base: view.base ?? view.known ?? view.asset.etag, writing: (view.writing ?? 0) + 1 })
+    const now = () => this.views.get(this.namesById.get(id) ?? "")
+    return new Promise((settled) => {
+      this.act(key, {
+        send: (served, once) => this.client.patchAsset(this.projectId!, served, { fields }, force ? undefined : now()?.base, once),
+        done: (answer) => {
+          const held = now()
+          if (held) {
+            this.wrote(held.name, answer)
+            const writing = (now()?.writing ?? 1) - 1
+            this.patch(held.name, { writing: writing || undefined, base: now()?.drafts || writing ? now()?.base : undefined })
+          }
+          settled(true)
+        },
+        refused: (error) => {
+          const held = now()
+          if (held) {
+            const sent = Object.fromEntries(Object.entries(held.sent ?? {}).filter(([field]) => !(field in fields)))
+            const changed = error instanceof ApiError && error.body.code === "asset_changed"
+            this.patch(held.name, { drafts: { ...fields, ...held.drafts }, sent, writing: (held.writing ?? 1) - 1 || undefined, conflict: changed || held.conflict })
+            if (!changed) say(`Couldn't ${what}`, error)
+          }
+          settled(false)
+        },
+      })
+    })
   }
 
   /** A write of its own moves what the drafts began from; anyone else's doesn't, so that still conflicts. */
@@ -723,7 +819,7 @@ export class CanvasStore {
   /** The file changed under what's typed: this is written over it. */
   keepMine(name: string) {
     const key = this.resolveName(name)
-    return this.write(key, true)
+    return this.write(key, this.views.get(key)?.drafts ?? {}, `save ${name}`, true)
   }
 
   /** The file changed under what's typed: what's typed goes. */
@@ -736,18 +832,14 @@ export class CanvasStore {
     return this.setFields(name, { [field]: value })
   }
 
+  /** A write by what keeps its own `etag`, in its turn like any other. */
+  patchInTurn(name: string, fields: Record<string, unknown>, read?: string): Promise<AssetPatched> {
+    return new Promise((done, refused) => this.act(name, { send: (served, once) => this.client.patchAsset(this.projectId!, served, { fields }, read, once), done, refused }))
+  }
+
   /** What belongs together, in one write. */
-  async setFields(name: string, fields: Record<string, unknown>) {
-    const key = this.resolveName(name)
-    const view = this.views.get(key)
-    if (!view?.asset || !this.projectId) return
-    const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
-    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields } })
-    try {
-      this.wrote(key, await this.client.patchAsset(this.projectId, view.asset.name, { fields }))
-    } catch (error) {
-      say(`Couldn't set ${name}'s ${Object.keys(fields).join(", ")}`, error)
-    }
+  setFields(name: string, fields: Record<string, unknown>) {
+    return this.write(this.resolveName(name), fields, `set ${name}'s ${Object.keys(fields).join(", ")}`)
   }
 
   /** What's typed in one field goes, and what it holds shows again. */
@@ -759,36 +851,45 @@ export class CanvasStore {
   }
 
   /** Its description, as a package would say it: an edit in the field, not saved. It runs on a machine that's up, so with none it asks for one. */
-  async caption(name: string) {
-    const asset = this.get(name)?.asset
-    if (!asset || !this.projectId) return
+  caption(name: string) {
+    const key = this.resolveName(name)
+    if (!this.views.get(key)?.asset) return
     const [on] = this.machines()
     if (!on) {
       say("Caption runs on a machine that's up")
       return this.askMachine()
     }
-    this.patch(name, { captioning: true })
-    try {
-      const answer = await this.client.caption(this.projectId, asset.name, on, `caption-${crypto.randomUUID()}`)
-      this.setDraft(name, "description", answer.text)
-      for (const warning of answer.warnings ?? []) say(warning)
-    } catch (error) {
-      say(`Couldn't caption ${name}`, error)
-    } finally {
-      this.patch(name, { captioning: undefined })
-    }
+    this.patch(key, { captioning: true })
+    const id = this.ids.get(key)
+    const once = `caption-${crypto.randomUUID()}`
+    this.act(key, {
+      long: true,
+      send: (served, signal) => this.client.caption(this.projectId!, served, on, once, signal),
+      done: (answer) => {
+        this.patchId(id, { captioning: undefined })
+        this.setDraft(this.namesById.get(id ?? "") ?? name, "description", answer.text)
+        for (const warning of answer.warnings ?? []) say(warning)
+      },
+      refused: (error) => {
+        this.patchId(id, { captioning: undefined })
+        say(`Couldn't caption ${name}`, error)
+      },
+    })
   }
 
   /** What makes it, among those of its kind. */
-  async setTool(name: string, tool: string) {
+  setTool(name: string, tool: string) {
     const key = this.resolveName(name)
-    const view = this.views.get(key)
-    if (!view?.asset || !this.projectId) return
-    try {
-      this.wrote(key, await this.client.patchAsset(this.projectId, view.asset.name, { tool }))
-    } catch (error) {
-      say(`Couldn't change what makes ${name}`, error)
-    }
+    const id = this.ids.get(key)
+    if (!this.views.get(key)?.asset) return
+    this.act(key, {
+      send: (served, once) => this.client.patchAsset(this.projectId!, served, { tool }, undefined, once),
+      done: (answer) => {
+        const now = this.namesById.get(id ?? "")
+        if (now) this.wrote(now, answer)
+      },
+      refused: (error) => say(`Couldn't change what makes ${name}`, error),
+    })
   }
 
   // Names in a text
@@ -842,28 +943,49 @@ export class CanvasStore {
   // Deleting
 
   /** Gone at once, with no dialog. Files stay: a note offers Undo for a while, and says if something still needs what went. */
-  async remove(names: string[]) {
-    const id = this.projectId
+  remove(names: string[]) {
     const going = names.map((name) => this.resolveName(name)).filter((name) => this.views.get(name)?.asset && !this.views.get(name)?.placing)
-    if (!id || !going.length) return
-    const rows = new Map(going.map((name) => [name, this.position(name) ?? undefined]))
+    if (!going.length) return
     const readers = this.readers(going)
-    for (const name of going) {
+    const gone = going.map((name) => {
+      const id = this.ids.get(name)!
+      const box: Gone = { name, served: () => this.served.get(id) ?? name, view: this.views.get(name)!, row: this.position(name) ?? this.rows?.get(name) ?? { x: 0, y: 0 } }
       this.deleting.add(name)
       this.rows?.delete(name)
       this.removeNode(name)
-    }
-    const answers = await Promise.allSettled(going.map((name) => this.client.deleteAsset(id, name)))
-    const taken: AssetDeleted[] = []
-    answers.forEach((answer, i) => {
-      if (answer.status === "fulfilled") return void taken.push(answer.value)
-      this.deleting.delete(going[i])
-      say(`Couldn't delete ${going[i]}`, answer.reason)
+      return box
     })
-    if (!taken.length) return
-    const what = taken.length === 1 ? taken[0].name : `${taken.length} assets`
+    let note = 0
+    for (const box of gone) {
+      box.going = {
+        send: (once) => this.client.deleteAsset(this.projectId!, box.served(), once),
+        done: (answer) => {
+          box.text = answer.text
+          box.row = answer.at ?? box.row
+        },
+        // Its answer was lost, and with it what puts it back: it stays deleted.
+        landed: (error) => (error.status === 404 ? { name: box.name, text: "" } : undefined),
+        refused: (error) => {
+          this.deleting.delete(box.name)
+          this.bringBack(box)
+          dismiss(note)
+          say(`Couldn't delete ${box.name}`, error)
+        },
+      }
+      this.outbox.add(box.going)
+    }
+    const what = gone.length === 1 ? gone[0].name : `${gone.length} assets`
     const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} this and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
-    say(`Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: () => this.undo(id, taken, rows) }, ms: UNDO_MS })
+    note = say(`Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: () => gone.forEach((box) => this.undo(box)) }, ms: UNDO_MS })
+  }
+
+  /** A box again, as it was, where it was. */
+  private bringBack(box: Gone, pending?: number) {
+    const { view, name, row } = box
+    this.deleting.delete(name)
+    this.rows?.set(name, row)
+    this.views.set(name, { ...view, pending })
+    this.flow?.addNodes(this.node(name, row))
   }
 
   /** What reads these and has nothing of its own held: it can't run again without them. */
@@ -874,17 +996,24 @@ export class CanvasStore {
     return after.map((asset) => asset.name)
   }
 
-  private async undo(id: string, taken: AssetDeleted[], rows: Map<string, Row | undefined>) {
-    for (const node of taken) {
-      const at = node.at ?? rows.get(node.name)
-      try {
-        this.deleting.delete(node.name)
-        if (at) this.rows?.set(node.name, at)
-        await this.client.putAssetBack(id, node.name, node.text, at)
-      } catch (error) {
-        say(`Couldn't put ${node.name} back`, error)
-      }
-    }
+  /** Not sent yet, nothing was ever deleted. Otherwise it's asked back, in its turn. */
+  private undo(box: Gone) {
+    if (box.going && this.outbox.takeBack(box.going)) return this.bringBack(box)
+    this.bringBack(box, NOT_YET)
+    const id = this.ids.get(box.name)
+    this.outbox.add<AssetMade>({
+      send: (once) => this.client.putAssetBack(this.projectId!, box.name, box.text ?? "", box.row, once),
+      done: (answer) => this.patchId(id, { known: answer.etag, pending: performance.now() }),
+      landed: (error) => (error.body.code === "asset_exists" ? { name: box.name, etag: "" } : undefined),
+      refused: (error) => {
+        const name = this.namesById.get(id ?? "")
+        if (name) {
+          this.rows?.delete(name)
+          this.removeNode(name)
+        }
+        say(`Couldn't put ${box.name} back`, error)
+      },
+    })
   }
 
   // An import
@@ -1029,35 +1158,111 @@ export class CanvasStore {
     if (keep) this.move(key, { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) })
   }
 
-  /** A row for a name the project is about to read, so it lands where it was dropped. */
-  expect(name: string, at: Row) {
+  /** Whatever's done to `name`, in its turn, under what it's called by then. Gone by then, there's nothing to do. */
+  private act<T>(name: string, action: Omit<Action<T>, "send"> & { send(name: string, once: AbortSignal): Promise<T> }) {
+    const id = this.ids.get(this.resolveName(name))
+    this.outbox.add<T | typeof NOT_THERE>({
+      ...action,
+      send: async (once) => {
+        const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
+        return served ? action.send(served, once) : NOT_THERE
+      },
+      done: (answer) => {
+        if (answer !== NOT_THERE) action.done?.(answer as T)
+      },
+    } as Action<T | typeof NOT_THERE>)
+  }
+
+  /** The name a new box takes now, as Calcifer would give it: what's on the canvas, what's being placed, and what waits to be brought back is taken. */
+  private nameFor(wanted: string): string {
+    const taken = [...this.views].map(([key, view]) => (view.placing ? view.name : key))
+    return freeName(wanted, [...taken, ...(this.state?.orphans ?? []).map((orphan) => orphan.name)])
+  }
+
+  /**
+   * A box, now, whatever the network is doing. `view` is all that's known of it; `ask` makes it in the project, in its turn. The name is the page's until
+   * the answer: another writer may have taken it, and then the box takes the one it got. Refused, it goes and `refused` says why.
+   */
+  place<T extends { name: string; etag?: string }>(wanted: string, view: Omit<ElementView, "name">, at: Row, ask: (once: AbortSignal) => Promise<T>, refused: (error: unknown) => void, done?: (name: string, answer: T) => void): string {
+    const name = this.nameFor(wanted)
+    const asset = view.asset && { ...view.asset, name }
+    this.adding += 1
+    this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
     this.rows?.set(name, at)
-    this.focusing = name
     this.editing.set(null)
-    this.landings.add(name)
-  }
-
-  /** Coalesced and serial: what's asked while one is going goes next, newest position only. */
-  private move(name: string, row: Row) {
-    this.masks.set(name, row)
-    this.moving.set(name, row)
-    void this.sendMoves()
-  }
-
-  private async sendMoves() {
-    if (this.sending || !this.moving.size || !this.projectId) return
-    this.sending = true
-    const batch = Object.fromEntries(this.moving)
-    this.moving.clear()
-    try {
-      await this.client.moveCards(this.projectId, batch)
-    } catch (error) {
-      say("A move didn't save", error)
-      for (const name of Object.keys(batch)) this.masks.delete(name)
-      void this.client.canvas(this.projectId).then(({ cards }) => this.applyCanvas(cards), () => {})
+    const node = this.node(name, at)
+    this.flow?.addNodes(node)
+    const left = () => {
+      this.adding -= 1
+      if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
     }
-    this.sending = false
-    void this.sendMoves()
+    this.outbox.add<T>({
+      send: ask,
+      done: (answer) => {
+        this.served.set(node.id, answer.name)
+        // Another writer took the name, unless a rename has moved it on since.
+        if (answer.name !== name && this.namesById.get(node.id) === name) this.moveName(name, answer.name)
+        const now = this.namesById.get(node.id)
+        if (now) {
+          const row = this.views.get(now)?.asset
+          this.patch(now, { ...(answer.etag ? { known: answer.etag, asset: row && { ...row, etag: answer.etag } } : {}), pending: performance.now() })
+          done?.(now, answer)
+        }
+        left()
+        this.sendMoves()
+      },
+      refused: (error) => {
+        const now = this.namesById.get(node.id)
+        if (now) {
+          this.rows?.delete(now)
+          this.removeNode(now)
+        }
+        left()
+        refused(error)
+      },
+    })
+    return name
+  }
+
+  /** The newest position of each box, in one write when its turn comes, and only those Calcifer has answered for: the rest go after. */
+  private move(name: string, row: Row) {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    if (!id) return
+    this.masks.set(key, row)
+    this.moving.set(id, row)
+    this.sendMoves()
+  }
+
+  private sendMoves() {
+    if (this.movesOwed || !this.moving.size) return
+    this.movesOwed = true
+    const answered = (id: string) => this.views.get(this.namesById.get(id) ?? "")?.pending !== NOT_YET
+    let sent = new Map<string, Row>()
+    this.outbox.add({
+      send: (once) => {
+        sent = new Map([...this.moving].filter(([id]) => answered(id)))
+        const cards = [...sent].flatMap(([id, row]): [string, Row][] => {
+          const name = this.served.get(id)
+          return name && this.namesById.has(id) ? [[name, row]] : []
+        })
+        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards), once) : Promise.resolve(null)
+      },
+      done: () => {
+        this.movesOwed = false
+        for (const [id, row] of sent) if (this.moving.get(id) === row) this.moving.delete(id)
+        if ([...this.moving.keys()].some(answered)) this.sendMoves()
+      },
+      refused: (error) => {
+        this.movesOwed = false
+        say("A move didn't save", error)
+        for (const id of sent.keys()) {
+          this.moving.delete(id)
+          this.masks.delete(this.namesById.get(id) ?? "")
+        }
+        if (this.projectId) void this.client.canvas(this.projectId).then(({ cards }) => this.applyCanvas(cards), () => {})
+      },
+    })
   }
 
   // Naming
@@ -1087,17 +1292,22 @@ export class CanvasStore {
   }
 
   /** The page shows the new name at once; a refusal puts the old one back and says why. */
-  private async rename(from: string, to: string) {
+  private rename(from: string, to: string) {
     const free = to ? freeName(to, this.takenBesides(from)) : from
-    if (free === from || !this.projectId) return
+    const id = this.ids.get(from)
+    if (free === from || !id) return
     this.renames.set(from, free)
-    this.moveName(from, free)
-    try {
-      await this.client.rename(this.projectId, from, free)
-    } catch (error) {
-      say(`Couldn't rename ${from}`, error)
-      this.renames.delete(from)
-      this.moveName(free, from)
-    }
+    this.moveName(from, free, true)
+    this.act(free, {
+      send: (served, once) => this.client.rename(this.projectId!, served, free, once),
+      done: () => this.served.set(id, free),
+      // A try whose answer was lost: its first did it.
+      landed: (error) => (error.status === 404 ? { from, to: free, versions: 0 } : undefined),
+      refused: (error) => {
+        say(`Couldn't rename ${from}`, error)
+        this.renames.delete(from)
+        this.moveName(this.namesById.get(id) ?? free, from, true)
+      },
+    })
   }
 }

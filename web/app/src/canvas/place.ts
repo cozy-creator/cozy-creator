@@ -1,10 +1,10 @@
 import { ApiError, type Client } from "../api/client"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
-import type { Tool } from "../types"
+import type { Asset, Imported, Tool } from "../types"
 import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage } from "./CanvasStore"
 import { startingFields } from "./controls"
-import { stemName } from "./names"
+import { asName, stemName } from "./names"
 
 const GAP = 32
 
@@ -58,30 +58,39 @@ export class Placer {
     })
   }
 
-  /** A tool dropped at a point: an asset of it, opening on its controls, and as wide as what it makes. Local code is named by Calcifer, from its function. */
-  async addTool(tool: Tool, point: { x: number; y: number }) {
+  /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes. Local code goes by its function. */
+  addTool(tool: Tool, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    try {
-      const id = await this.project()
-      const made = await this.client.newAsset(id, `asset-${crypto.randomUUID()}`, { tool: tool.id, at, name: tool.local ? undefined : tool.label, fields: startingFields(tool) })
-      this.store.expect(made.name, at)
-    } catch (error) {
-      say(`Couldn't place ${tool.label}`, error)
-    }
+    const fields = startingFields(tool)
+    const key = `asset-${crypto.randomUUID()}`
+    const body = { tool: tool.id, at, name: tool.local ? undefined : tool.label, fields, kind: tool.kind }
+    const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
+    const row: Asset = { name: "", standing: "missing", kind: tool.kind, noun: tool.kind === "video" ? "take" : "version", tool: tool.id, versions: 0, status: "", fields, timeline }
+    const wanted = tool.local ? (tool.id.split("/").at(-1) ?? "").split("@")[0] : tool.label
+    this.store.focusing = this.store.place(
+      asName(wanted),
+      { asset: row },
+      at,
+      async (once) => this.client.newAsset(await this.project(), key, body, once),
+      (error) => say(`Couldn't place ${tool.label}`, error),
+    )
   }
 
-  /** A take or version dragged out: its own asset with the same file and what it says it is, and no new bytes. */
-  async addFile(file: { sha256: string; name: string; description?: string }, point: { x: number; y: number }) {
+  /** A take or version dragged out: its own asset with the same file and what it says it is, there at once, and no new bytes. */
+  addFile(file: { sha256: string; field: string; name: string; description?: string }, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16), w: CARD_WIDTH }
-    try {
-      const id = await this.project()
-      const made = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: file.sha256, name: file.name, at })
-      this.store.expect(made.name, at)
-      this.store.focusing = null
-      if (file.description) await this.client.patchAsset(id, made.name, { fields: { description: file.description } })
-    } catch (error) {
-      say(`Couldn't take out ${file.name}`, error)
-    }
+    const key = `import-${crypto.randomUUID()}`
+    const { description } = file
+    this.store.place(
+      asName(file.name),
+      { landed: { sha256: file.sha256, field: file.field } },
+      at,
+      async (once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at }, once),
+      (error) => say(`Couldn't take out ${file.name}`, error),
+      (name) => {
+        if (description) void this.store.setFields(name, { description })
+      },
+    )
   }
 
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }) {
@@ -110,8 +119,8 @@ export class Placer {
     this.store.beginAdding()
     try {
       const id = await this.project()
-      const tried = (attempt: number) => this.store.patchPlacing(key, { attempt: attempt || undefined })
-      const answer = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: digest, name, at }, tried)
+      const once = `import-${crypto.randomUUID()}`
+      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: (signal) => this.client.import(id, once, { source: digest, name, at }, signal), done, refused }))
       this.store.land(key, answer, at)
       if (answer.note) say(answer.note)
     } finally {

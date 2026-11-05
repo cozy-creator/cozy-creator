@@ -259,7 +259,7 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   if (view.asset?.rendering !== undefined) return null
   if (view.asset?.standing === "making") {
     return (
-      <button type="button" className="act nodrag" onClick={() => void store.cancelRender(view.asset?.name ?? name)}>
+      <button type="button" className="act nodrag" onClick={() => store.cancelRender(name)}>
         Cancel
       </button>
     )
@@ -272,7 +272,7 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
       onClick={() => {
         store.editing.set(null)
-        void store.run(name)
+        store.run(name)
       }}
     >
       <Icon name="play" />

@@ -202,6 +202,8 @@ export interface ProjectState {
   stale?: Stale[]
   orphans?: Orphan[]
   busy: boolean
+  /** The page's own: when the read that says this began, so a read from before a write says nothing of it. */
+  began?: number
   moving?: boolean
   absent?: number
   run_files?: number

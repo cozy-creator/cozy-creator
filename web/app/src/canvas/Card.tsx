@@ -30,7 +30,7 @@ function kindOf(view: ElementView): string {
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
 function dotOf(view: ElementView): string {
-  if (view.placing || view.queued) return "s-making"
+  if (view.placing || view.queued || view.asked !== undefined) return "s-making"
   const asset = view.asset
   if (asset?.standing === "making") return "s-making"
   if (asset?.failure && !(asset.pinned && faceOf(view) === "media")) return "s-failed"
@@ -53,7 +53,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   if (versions.length < 2 && !adds && !(versions.length && asset.making?.length)) return null
   const takeOut = (event: DragEvent, version: (typeof versions)[number]) => {
     const description = store.valueOf(name, "description")
-    const file = { sha256: version.main?.sha256, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined }
+    const file = { sha256: version.main?.sha256, field: version.main?.field, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined }
     event.dataTransfer.setData(DRAGGED_FILE, JSON.stringify(file))
     event.dataTransfer.effectAllowed = "copy"
   }
@@ -84,7 +84,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
         </span>
       ))}
       {adds && (
-        <button type="button" className="take add" aria-label={`New ${asset.noun}`} title={`New ${asset.noun}`} onClick={() => void store.run(name)}>
+        <button type="button" className="take add" aria-label={`New ${asset.noun}`} title={`New ${asset.noun}`} onClick={() => store.run(name)}>
           +
         </button>
       )}
@@ -101,14 +101,14 @@ function Approve({ view, name }: { view: ElementView; name: string }) {
   const approved = Boolean(asset.pinned) && (asset.approved === undefined ? view.viewed === undefined : shown?.number === asset.approved)
   if (approved) {
     return (
-      <button type="button" className="act nodrag" onClick={() => void store.unpin(name)}>
+      <button type="button" className="act nodrag" onClick={() => store.unpin(name)}>
         Unapprove
       </button>
     )
   }
   if (shown?.number === undefined) return null
   return (
-    <button type="button" className="act nodrag" onClick={() => void store.pin(name, shown.number!)}>
+    <button type="button" className="act nodrag" onClick={() => store.pin(name, shown.number!)}>
       Approve
     </button>
   )
@@ -133,7 +133,7 @@ function FromHere({ view, name }: { view: ElementView; name: string }) {
         onChange={(event) => store.patch(name, { scrub: Number(event.target.value) })}
       />
       <span className="tc-inline">{clock(at * 1000)}</span>
-      <button type="button" className="act nodrag" disabled={at <= 0} onClick={() => void store.run(name, { take: shown.number, in_s: at })}>
+      <button type="button" className="act nodrag" disabled={at <= 0} onClick={() => store.run(name, { take: shown.number, in_s: at })}>
         New take from here
       </button>
     </div>
@@ -220,7 +220,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       return (
         <div className="status bad">
           Stalled {since} on {stalled.machine}
-          {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => void store.cancelRender(asset.name)} />
+          {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
         </div>
       )
     }
@@ -228,13 +228,13 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     // An Edit's film shows on its own bar, and anything else's on its picture.
     return null
   }
-  if (view.queued) return <div className="status mak">Queued</div>
+  if (view.queued || view.asked !== undefined) return <div className="status mak">Queued</div>
   const approvedFace = asset.pinned && faceOf(view) === "media"
   if (asset.failure && !approvedFace) {
     const reason = noHash(asset.failure.message).replace(`${asset.name}: `, "")
     return (
       <div className="status bad">
-        {reason} {askable && <Act label="Try again" onClick={() => void store.run(name)} />}
+        {reason} {askable && <Act label="Try again" onClick={() => store.run(name)} />}
         {asset.failure.remedy && <div className="next-line">{noHash(asset.failure.remedy)}</div>}
         {asset.failure.next?.map((line) => (
           <div className="next-line" key={line}>
@@ -259,14 +259,14 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     const changed = asset.changed?.length ? `Out of date: ${asset.changed.join(", ")} changed` : noHash(asset.status)
     return (
       <div className="status ood">
-        {changed} {askable && <Act label={`New ${asset.noun}`} onClick={() => void store.run(name)} />}
+        {changed} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
       </div>
     )
   }
   if (asset.standing === "missing" && !makes(view)) {
     return (
       <div className="status">
-        {noHash(asset.status)} {askable && <Act label={`New ${asset.noun}`} onClick={() => void store.run(name)} />}
+        {noHash(asset.status)} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
       </div>
     )
   }
@@ -289,7 +289,7 @@ function Description({ name, view }: { name: string; view: ElementView }) {
           {text || "Describe"}
         </button>
         {shown && !shown.absent && shown.field !== "audio" && (
-          <button type="button" className={`act nodrag ${view.captioning ? "going" : ""}`} disabled={view.captioning} title="Ask a model what this is" onClick={() => void store.caption(name)}>
+          <button type="button" className={`act nodrag ${view.captioning ? "going" : ""}`} disabled={view.captioning} title="Ask a model what this is" onClick={() => store.caption(name)}>
             {view.captioning ? "Captioning" : "Caption"}
           </button>
         )}
@@ -471,7 +471,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
           view.draft === undefined &&
           active &&
           asset && (
-            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => void store.remove([name])}>
+            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
             </button>
           )

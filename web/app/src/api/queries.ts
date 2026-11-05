@@ -35,7 +35,10 @@ export function withAssets(state: ProjectState, rows: Asset[], gone: Iterable<st
 export const projectQuery = (client: Client, id: string) =>
   queryOptions({
     queryKey: ["project", id],
-    queryFn: ({ signal }) => client.project(id, signal),
+    queryFn: async ({ signal }) => {
+      const began = performance.now()
+      return { ...(await client.project(id, signal)), began }
+    },
     structuralSharing: keepAssets,
   })
 
