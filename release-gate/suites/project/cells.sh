@@ -45,14 +45,15 @@ if want project-split || want project-upscale; then
 version: 3
 defaults:
   video:
-    style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
 assets:
+  look_style:
+    text: Naturalistic photo, warm late-afternoon light, handheld camera.
   mural:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 300))
     summary: |
-      <hero_sheet> paints a sign on the long wall of <yard>.
+      <look_style> <hero_sheet> paints a sign on the long wall of <yard>.
     beats:
       - duration: 6
         description: |
@@ -120,9 +121,10 @@ if want project-segments; then
 version: 3
 defaults:
   video:
-    style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
 assets:
+  look_style:
+    text: Naturalistic photo, warm late-afternoon light, handheld camera.
   hero_art:
     approved: hero.png
     description: "$CHAR"
@@ -132,11 +134,11 @@ assets:
     description: "$SCENE"
     asset_type: environment
   walk:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 330 + cf))
     context_frames: $cf
     summary: |
-      <hero_art> walks the length of <yard_art> in one continuous shot with no cuts.
+      <look_style> <hero_art> walks the length of <yard_art> in one continuous shot with no cuts.
     beats:
       - duration: 10
         description: |
@@ -165,7 +167,7 @@ defaults:
     aspect_ratio: "16:9"
 assets:
   look:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 305))
     summary: |
       A slow look around <yard>.
@@ -210,7 +212,7 @@ defaults:
     aspect_ratio: "16:9"
 assets:
   follow:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 301))
     summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."
     beats:
@@ -242,7 +244,7 @@ defaults:
     aspect_ratio: "16:9"
 assets:
   hello:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 302))
     summary: <host_sheet> stands in <yard>, looks into the camera and says "Welcome to the yard."
     beats:

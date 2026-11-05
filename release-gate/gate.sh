@@ -129,6 +129,21 @@ trap end_it EXIT
 trap 'exit 143' TERM INT
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
 run_project "$PWD/project" || { log "cozy project new failed"; exit 1; }
+# one_beat [args...]: H3's call in $BEAT: a text and its length are one beat, which goes to the model as written, and a reference's
+# `kind` is its `asset_type`, or nothing for a clip or a sound, which say what they are by their file.
+one_beat() {
+  local text='' seconds='' arg
+  BEAT=()
+  for arg in "$@"; do
+    case $arg in
+      prompt=*) text=${arg#prompt=} ;;
+      duration_s:=*) seconds=${arg#duration_s:=} ;;
+      references:=*) BEAT+=("references:=$(jq -c 'map(if .kind == "video" or .kind == "audio" then del(.kind) else (.asset_type = .kind | del(.kind)) end)' <<< "${arg#references:=}")") ;;
+      *) BEAT+=("$arg") ;;
+    esac
+  done
+  [ -z "$seconds" ] || BEAT+=("beats:=$(jq -cn --arg d "$text" --argjson s "$seconds" '[{description: $d, duration: $s}]')")
+}
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages.
 # A cell another suite already ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does
@@ -144,6 +159,7 @@ cell() {
   for p in "$@"; do  # quality.py
     case $p in prompt=*) printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv ;; seed:=*) printf '%s\t%s\n' "$name" "${p#seed:=}" >> seeds.tsv ;; esac
   done
+  [[ $target != *minimax-h3*/generate* ]] || { one_beat "$@"; set -- "${BEAT[@]}"; }
   run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
