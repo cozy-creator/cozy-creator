@@ -320,9 +320,8 @@ function calciferMb() {
   }), Boolean, 120_000);
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
-  /** How long the page's own thread has been busy, in ms, in all and at each kind of work. What the compositor and a software rasterizer take isn't in this. */
+  /** The page's own thread, in ms: its time on a core, and by the clock in all and at each kind of work. What the compositor and a software rasterizer take isn't in this. */
   const worked = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(({ name, value }) => [name, value * 1000]));
-  const busy = async () => (await worked()).TaskDuration;
   /** What the page's thread spends `ms` on, by function: what's asked of it isn't, as nothing is. */
   const profiled = async (ms) => {
     await cdp.send('Profiler.enable');
@@ -343,17 +342,20 @@ function calciferMb() {
     const after = await worked();
     const perSecond = (name) => +(((after[name] - before[name]) / REST_MS) * 1000).toFixed(1);
     const rest_ms_per_s = perSecond('TaskDuration');
-    const from = await busy();
+    const from = await worked();
     const moving = summary(await panning(PAN_MS));
-    const panned = (await busy()) - from;
-    // What goes on at rest goes on through a pan, and isn't the pan's: `work_ms_per_frame` is all of it, `added_ms_per_frame` what panning adds.
-    const added = Math.max(0, panned - rest_ms_per_s * (PAN_MS / 1000));
+    const to = await worked();
+    const perFrame = (name) => +((to[name] - from[name]) / moving.frames).toFixed(2);
+    // Time on a core, which a busy runner can't stretch: by the clock macOS read 6 to 14 ms a frame four times, a minute after 1, where Linux and Windows
+    // never passed 4. What goes on at rest goes on through a pan, and isn't the pan's: `work_ms_per_frame` is all of it, `added_ms_per_frame` what panning adds.
+    const added = Math.max(0, to.ThreadTime - from.ThreadTime - perSecond('ThreadTime') * (PAN_MS / 1000));
     return {
       still,
       moving,
       rest_ms_per_s,
       rest_kinds: { script: perSecond('ScriptDuration'), layout: perSecond('LayoutDuration'), style: perSecond('RecalcStyleDuration') },
-      work_ms_per_frame: +(panned / moving.frames).toFixed(2),
+      work_ms_per_frame: perFrame('ThreadTime'),
+      clock_ms_per_frame: { task: perFrame('TaskDuration'), script: perFrame('ScriptDuration'), layout: perFrame('LayoutDuration'), style: perFrame('RecalcStyleDuration') },
       added_ms_per_frame: +(added / moving.frames).toFixed(2),
       mounted: await page.locator('.react-flow__node').count(),
     };

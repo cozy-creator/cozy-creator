@@ -104,12 +104,14 @@ async function openBox(page, name) {
   await page.locator('.open-box').waitFor({ state: 'detached' });
   // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
   await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
+  const media = page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first();
   const middle = async () => {
-    const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
+    const { x, y, width, height } = await media.boundingBox();
     return { x: x + width / 2, y: y + height / 2 };
   };
-  const reached = async () => page.evaluate(({ x, y, name }) => document.elementFromPoint(x, y)?.closest('.card')?.dataset.asset === name, { ...(await middle()), name });
-  // Off the view, or under what floats over it: F brings it all in, as for a person.
+  const reached = async () => (await media.count()) > 0 && page.evaluate(({ x, y, name }) => document.elementFromPoint(x, y)?.closest('.card')?.dataset.asset === name, { ...(await middle()), name });
+  // A box just made takes a moment to draw. Off the view it isn't drawn, or it's under what floats over it: F brings it all in, as for a person.
+  await media.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {});
   if (!(await reached())) {
     await page.keyboard.press('f');
     await page.waitForTimeout(300);

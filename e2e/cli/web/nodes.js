@@ -539,8 +539,12 @@ function linesOf(text, name) {
 
     // Scrolled through: looking changes only this page.
     const fileBefore = yaml();
-    await box('Sheet').locator('.take[aria-label="version 1"]').click();
-    await until('looking at 1', () => box('Sheet').locator('.count').textContent(), (text) => text === '1/2');
+    // What just landed can still move the row from under a press (Firefox, 42006624081): a person presses again.
+    await until('looking at 1', async () => {
+      const count = await box('Sheet').locator('.count').textContent();
+      if (count !== '1/2') await box('Sheet').locator('.take[aria-label="version 1"]').click();
+      return count;
+    }, (text) => text === '1/2');
     check('looking_is_only_this_page', yaml() === fileBefore);
 
     // Approve: it becomes that file, and flips back.
@@ -719,6 +723,8 @@ function linesOf(text, name) {
     await page.keyboard.type('From <source-b>');
     await page.mouse.click(1500, 1000);
     await until('it reads it', () => of('Other'), (held) => held.reads?.some((read) => read.name === 'source-b'));
+    // The note says what the page has heard, a moment behind the file.
+    await page.waitForTimeout(1000);
     await deleteBox('source-b');
     const warned = await until('a plain note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-b')));
     check('note_when_not_approved', warned.some((line) => line.includes('Other reads this') && line.includes("isn't approved yet")), warned);
@@ -752,7 +758,8 @@ function linesOf(text, name) {
     await box('look').waitFor();
     await until('look in the file', () => Promise.resolve(linesOf(yaml(), 'look')), Boolean);
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);
-    await box('Clip').waitFor();
+    // By the project: it can land past the edge of the view, and what's off it isn't drawn.
+    await until('Clip in the project', () => of('Clip'), Boolean);
     await render('Clip', 1);
     await until('its length measured', () => of('Clip'), (held) => held.prefixes?.[0]?.main?.duration_ms > 0);
     await open('Clip');
@@ -761,7 +768,7 @@ function linesOf(text, name) {
     await box('Clip').locator('.from-here .keeps').fill('12');
     await box('Clip').locator('button:has-text("New take from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
-    const given = (await api(`/v1/projects/${id}/assets/Clip`)).versions.at(-1).files.given.path;
+    const given = (await api(`/v1/projects/${id}/assets/Clip`)).body.versions.at(-1).files.given.path;
     const told = JSON.parse(readFileSync(join(folder, given), 'utf8'));
     check('kept_up_to_there', told.keep === 0.5, told);
     check('words_as_they_were', linesOf(yaml(), 'Clip') === clipFile, linesOf(yaml(), 'Clip'));
