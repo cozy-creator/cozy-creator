@@ -361,6 +361,7 @@ jq -n --arg label "$LABEL" --arg cozy "${TDF:+$v}" --arg runtime "${RWF:+$rt}" -
   --arg tensorfs_sha256 "$(digest "$TWF")" --arg pins "${PINS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \
   -S '$ARGS.named | .pins |= (split(" ") | map(select(. != "")) | sort)' > candidate.json
 printf '%s\n' ${SUITES//,/ } > suites
+printf '%s\n' ${ONLY//,/ } > only  # what --only chose, for a suite's check.py (empty: everything)
 for s in ${SUITES//,/ }; do . "$HERE/suites/$s/cells.sh"; done
 # More cells (`--cells FILE`): `name<TAB>target<TAB>args`, args expanded here ($SCENE, $CHAR, $R, $K, $M, $CLI ...).
 for f in "${EXTRA[@]}"; do
