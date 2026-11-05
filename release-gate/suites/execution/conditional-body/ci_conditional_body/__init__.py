@@ -18,9 +18,9 @@ app = App()
 STEPS = 3  # native passes; the eager first step makes STEPS + 1
 MIX = ("memset", "memcpy", "cublas", "cudnn", "sdpa", "triton")
 VARIANTS = ("scalar", "memset", "memset32", "memcpy", "reduce", "parallel", "triton", "triton_pdl",
-            "cublas", "cudnn", "sdpa", "mix", "phases", "legacy")
-#: two runs of equal phases, so two recorded parts
-PHASES = ("a", "a", "b", "b")
+            "cublas", "cudnn", "sdpa", "mix", "labels", "legacy")
+#: two labels, each run twice: eager through b's first step, then a and b natively
+LABELS = ("a", "b", "a", "b")
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
@@ -51,7 +51,7 @@ def launched(name, stream):
 
 
 def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
-    if name in ("scalar", "phases"):
+    if name in ("scalar", "labels"):
         return
     if name in ("memset", "memset32"):
         scratch = torch.full((768,), 0xAB, dtype=torch.uint8, device=device)
@@ -156,20 +156,21 @@ def gpu(payload: Probe, ctx: Context) -> Report:
         part(name, device, ops, checks)
     counter = torch.zeros(64, dtype=torch.float32, device=device)
 
-    def step(index, counter, phase=None):
-        del index, phase
+    def step(index, counter, label=None):
+        del index, label
         for op in ops:
             op()
         counter.add_(1)
 
-    phases = PHASES if payload.variant == "phases" else None
-    denoise_loop(step, range(STEPS + 1), state=(counter,), phases=phases)
+    labels = LABELS if payload.variant == "labels" else None
+    denoise_loop(step, range(STEPS + 1), state=(counter,), labels=labels)
     torch.cuda.synchronize()
     results = {name: bool(check()) for name, check in checks}
     seen = {name: dict(zip(*(v.tolist() for v in SEEN[name].unique(return_counts=True)))) for name in SEEN if not results.get(name, True)}
     results["counter"] = bool(torch.all(counter == STEPS + 1).item())
     row = (loop.ROWS.get(ctx.request_id) or [{}])[-1]
-    native = row.get("mode") == "resident" and row.get("native_steps") == STEPS
+    warm = 1 if labels is None else max(labels.index(label) for label in set(labels)) + 1
+    native = row.get("mode") == "resident" and row.get("native_steps") == STEPS + 1 - warm
     if payload.variant == "legacy":  # its capture must fail, and the call run eagerly to the same values
         native = row.get("mode") == "eager" and bool(row.get("refusals"))
     detail = {"variant": payload.variant, "gpu": gpus(), "checks": results, "want": STEPS + 1, "seen": seen,

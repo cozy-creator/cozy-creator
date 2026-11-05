@@ -6,7 +6,8 @@ runs its first step eagerly and 3 more natively, and checks the values and that 
 
 `scalar`, `memset` (8-bit), `memset32`, `memcpy`, `reduce`, `parallel` (a forked stream), `triton`,
 `triton_pdl`, `cublas`, `cudnn`, `sdpa`, `mix` (memset, memcpy, cuBLAS, cuDNN, SDPA and Triton in
-one body), and `phases` (two recorded parts). `parallel` and the Triton variants write outside the loop's
+one body), and `labels` (A B A B: two bodies, the first call eager through B's first step, then A
+and B natively). `parallel` and the Triton variants write outside the loop's
 state, so their counts show a step run more often than eager would (Runtime 90721eb84's check replayed one:
 32269, 32272, 32305). `legacy` is 28892's shape, a launch on the legacy stream: its capture must fail, and the
 call runs eagerly to the same counts.
