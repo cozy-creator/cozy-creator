@@ -126,6 +126,8 @@ struct Native {
     asked: bool,
     /// Ticks in a row the card has been short: each asks twice the last.
     short: u32,
+    /// The card's use that no row holds, at the last tick.
+    foreign: u64,
     nvml: Option<Nvml>,
     uuid: [u8; 16],
     previous: Option<BTreeMap<u32, u64>>,
@@ -141,6 +143,7 @@ impl Native {
             idle: 0,
             asked: false,
             short: 0,
+            foreign: 0,
             nvml: if host_pids { Nvml::init().ok() } else { None },
             uuid,
             previous: None,
@@ -231,9 +234,12 @@ impl Donor for Native {
         let Ok((free, total)) = sample else { return false };
         let (free, total) = (free as u64, total as u64);
         let reserve = (total / 16).max(512 << 20);
+        // Short only for memory that isn't ours: a process filling its own weights asks for itself.
+        let foreign = (total - free).saturating_sub(table.held());
+        let grew = foreign > std::mem::replace(&mut self.foreign, foreign);
         let want = if self.new_foreign_process(table) {
             total
-        } else if free < reserve {
+        } else if free < reserve && grew {
             // A shortage that outlasts a give is met in a few ticks, not one gigabyte a tick.
             ((2 * reserve - free) << self.short.min(total.leading_zeros())).min(total)
         } else {
