@@ -561,6 +561,8 @@ function linesOf(text, name) {
     await until('described', () => of('Sheet'), (held) => held.fields?.description?.includes('sheet of two'));
     const filesBefore = readdirSync(join(folder, 'files')).length;
     await open('Sheet');
+    // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
+    await until('the page has its words', () => box('Sheet').locator('text=The sheet of two.').count(), (n) => n > 0);
     await box('Sheet').locator('.take[aria-label="version 2"]').dragTo(page.locator('.open-back'), { targetPosition: { x: 60, y: 700 } });
     const out = await until('taken out', () => of('Sheet_2'), Boolean);
     check('taken_out_is_the_same_file', out.sha256 === (await of('Sheet')).prefixes[1].main.sha256 && !out.tool, out);
