@@ -339,7 +339,8 @@ impl Store {
         let names = self.names();
         let cutoff = SystemTime::now().checked_sub(self.grace).unwrap_or(SystemTime::UNIX_EPOCH);
         let lanes = super::gc::lanes(&uses);
-        let kept: BTreeSet<&str> = lanes.iter().flat_map(|l| l.digests.iter().copied()).collect();
+        let count = super::gc::keepers(&lanes);
+        let kept: BTreeSet<&str> = count.keys().copied().collect();
         let mut spare: u64 = objects.iter()
             .filter(|(sha, (_, modified))| *modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha))
             .map(|(_, (length, _))| length).sum();
@@ -353,7 +354,7 @@ impl Store {
             name: lane.uses.iter().find_map(|u| names.get(&u.name)).cloned()
                 .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12])),
             used: lane.used,
-            holders: holders.iter().filter(|(digest, _)| lane.keeps(digest)).flat_map(|(_, pids)| pids.iter().copied()).collect(),
+            holders: holders.iter().filter(|(digest, _)| lane.held_by(digest, &count)).flat_map(|(_, pids)| pids.iter().copied()).collect(),
             digests: lane.digests.iter().map(|d| d.to_string()).collect(),
         }).collect();
         let lengths = objects.into_iter().map(|(sha, (length, _))| (sha, length)).collect();

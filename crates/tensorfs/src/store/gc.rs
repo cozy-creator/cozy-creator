@@ -58,10 +58,22 @@ pub(super) struct Lane<'a> {
 }
 
 impl Lane<'_> {
-    /// Its names and what they keep: a root naming any of them holds it.
-    pub fn keeps(&self, digest: &str) -> bool {
-        self.digests.contains(digest) || self.uses.iter().any(|u| u.name == digest)
+    /// Whether a root of `digest` holds this lane: it names the lane, or an object no other lane
+    /// keeps (`count`: how many lanes keep each). A reader of another checkpoint holds the objects
+    /// the two share, and those stay, but not this lane: H3's renders held what it shares with
+    /// Qwen-Image, so neither could go (valentino, 11-05).
+    pub fn held_by(&self, digest: &str, count: &HashMap<&str, u32>) -> bool {
+        self.uses.iter().any(|u| u.name == digest) || (self.digests.contains(digest) && count.get(digest) == Some(&1))
     }
+}
+
+/// How many lanes keep each digest.
+pub(super) fn keepers<'a>(lanes: &[Lane<'a>]) -> HashMap<&'a str, u32> {
+    let mut count: HashMap<&str, u32> = HashMap::new();
+    for digest in lanes.iter().flat_map(|l| l.digests.iter().copied()) {
+        *count.entry(digest).or_default() += 1;
+    }
+    count
 }
 
 /// `uses` as lanes: a use named by a digest another use keeps (a header its commit keeps, a
@@ -281,18 +293,18 @@ impl Store {
             return Ok(none);
         };
         let lanes = lanes(uses);
-        let mut count: HashMap<&str, u32> = HashMap::new();
-        for digest in lanes.iter().flat_map(|l| &l.digests) {
-            *count.entry(digest).or_default() += 1;
-        }
+        let mut count = keepers(&lanes);
         let length = |sha: &str| objects.get(sha).map_or(0, |(length, _)| *length);
         let old = |sha: &str| objects.get(sha).is_some_and(|(_, modified)| *modified < cutoff);
         let orphan = |sha: &&String| !count.contains_key(sha.as_str()) && !roots.contains(*sha) && old(sha);
         let mut free: u64 = objects.keys().filter(orphan).map(|sha| length(sha)).sum();
         let (mut plan, mut evicted) = (vec![], BTreeSet::new());
-        // A lane any of whose names or objects a root holds is in use (a running or queued call's).
-        let in_use = |l: &Lane| l.uses.iter().any(|u| roots.contains(&u.name)) || l.digests.iter().any(|d| roots.contains(*d));
-        for lane in lanes.iter().filter(|l| l.used <= since && !in_use(l)) {
+        // A lane a root holds is in use (a running or queued call's): what it shares with one that
+        // is held stays either way, as everything a root holds does.
+        let in_use: Vec<bool> = lanes.iter().map(|l| {
+            l.uses.iter().any(|u| roots.contains(&u.name)) || l.digests.iter().any(|d| count[d] == 1 && roots.contains(*d))
+        }).collect();
+        for (lane, _) in lanes.iter().zip(&in_use).filter(|(l, held)| l.used <= since && !**held) {
             if free >= need {
                 break;
             }
