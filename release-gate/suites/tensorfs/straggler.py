@@ -9,29 +9,59 @@ With MIN too, BURST is one 64 KiB and only objects of at least MIN bytes are col
 moves little however often it is asked, and TensorFS must read the object as parallel ranges.
 With FAST too, a cold object's asks of a part (TensorFS's 16 MiB range) or less come at full speed: many parts write at
 once, and writing them must not stand in the way of joining them up (a whole download hung so, tfs-143).
-    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min> [fast]]]"""
+With --link, every object byte goes through one link of that many bytes/s, as a slow pod's: TensorFS must keep moving
+however slow each request gets (run 31103: 72 objects judged slow at 5 MB/s, then nothing for good).
+With --silent, the first ask of 256 KiB to 1 MiB gets its headers and half its body, then a socket held open and silent:
+a range too small to split, the last left, which only the no-bytes stall can end (run 32321 sat 16 min on its last two).
+    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min> [fast]]] [--link <bytes/s>] [--silent]"""
+import argparse
 import http.client
 import json
-import sys
+import socket
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PORT, UPSTREAM, STRAGGLERS, RATE, LOG = int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
-BURST = int(sys.argv[6]) if len(sys.argv) > 6 else 0
-MIN = int(sys.argv[7]) if len(sys.argv) > 7 else 4 * BURST
-FAST = len(sys.argv) > 8
+ap = argparse.ArgumentParser()
+for name in ('port', 'upstream', 'stragglers', 'rate', 'log'):
+    ap.add_argument(name)
+for name in ('burst', 'min', 'fast'):
+    ap.add_argument(name, nargs='?')
+ap.add_argument('--link', type=int, default=0)
+ap.add_argument('--silent', action='store_true')
+a = ap.parse_args()
+PORT, UPSTREAM, STRAGGLERS, RATE, LOG = int(a.port), a.upstream, int(a.stragglers), int(a.rate), a.log
+BURST = int(a.burst or 0)
+MIN = int(a.min) if a.min else 4 * BURST
+FAST, LINK, SILENT = bool(a.fast), a.link, a.silent
 PART = 16 << 20
 up = urllib.parse.urlsplit(UPSTREAM)
 lock = threading.Lock()
-slowed, asked = set(), {}
+slowed, asked, silenced = set(), {}, set()
 HOP = {'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'proxy-authorization', 'host'}
 
 
 def log(**row):
     with lock, open(LOG, 'a') as f:
         f.write(json.dumps({'at': time.time(), **row}) + '\n')
+
+
+link = {'at': time.time(), 'tokens': 0.0}
+
+
+def through(n):
+    """Wait until the link (--link) has carried n more bytes: one bucket for every request."""
+    while LINK:
+        with lock:
+            now = time.time()
+            link['tokens'] = min(max(LINK / 10, n), link['tokens'] + (now - link['at']) * LINK)
+            link['at'] = now
+            if link['tokens'] >= n:
+                link['tokens'] -= n
+                return
+            wait = (n - link['tokens']) / LINK
+        time.sleep(wait)
 
 
 pool = threading.local()
@@ -67,6 +97,33 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def send(self, data):
+        through(len(data))
+        self.wfile.write(data)
+
+    def hold(self, resp):
+        """Headers and half the body, then silence until the client gives the socket up (at most 5 min)."""
+        self.send_response(resp.status)
+        for k, v in resp.getheaders():
+            if k.lower() not in HOP:
+                self.send_header(k, v)
+        self.end_headers()
+        half = resp.read(int(resp.getheader('content-length')) // 2)
+        self.send(half)
+        self.wfile.flush()
+        self.connection.settimeout(1)
+        end = time.time() + 300
+        while time.time() < end:
+            try:
+                if self.connection.recv(1, socket.MSG_PEEK) == b'':
+                    break
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+        self.close_connection = True
+        return len(half)
+
     def relay(self, resp, slow=False):
         self.send_response(resp.status)
         for k, v in resp.getheaders():
@@ -85,10 +142,10 @@ class Handler(BaseHTTPRequestHandler):
             sent = 0
             try:
                 while chunk := resp.read1(1 << 16):
-                    self.wfile.write(chunk if length else b'%x\r\n%s\r\n' % (len(chunk), chunk))
+                    self.send(chunk if length else b'%x\r\n%s\r\n' % (len(chunk), chunk))
                     sent += len(chunk)
                 if not length:
-                    self.wfile.write(b'0\r\n\r\n')
+                    self.send(b'0\r\n\r\n')
             except OSError:
                 pass
             return sent
@@ -98,13 +155,13 @@ class Handler(BaseHTTPRequestHandler):
             sent = 0
             try:
                 while sent < BURST and (chunk := resp.read1(min(1 << 16, BURST - sent))):
-                    self.wfile.write(chunk)
+                    self.send(chunk)
                     sent += len(chunk)
                 self.wfile.flush()
                 rest = resp.read()
                 for i in range(0, len(rest), RATE // 4 or 1):
                     time.sleep(0.25)
-                    self.wfile.write(rest[i:i + (RATE // 4 or 1)])
+                    self.send(rest[i:i + (RATE // 4 or 1)])
                     self.wfile.flush()
                     sent += len(rest[i:i + (RATE // 4 or 1)])
             except OSError:  # the client gave up on it: what a cold object's drip should cause
@@ -121,16 +178,16 @@ class Handler(BaseHTTPRequestHandler):
             while chunk := resp.read(RATE // 4 or 1):
                 try:
                     if length:
-                        self.wfile.write(chunk)
+                        self.send(chunk)
                     else:
-                        self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
+                        self.send(b'%x\r\n%s\r\n' % (len(chunk), chunk))
                     self.wfile.flush()
                 except OSError:  # the client gave up on it: what a straggler should cause
                     return sent
                 sent += len(chunk)
                 time.sleep(0.25)
             if not length:
-                self.wfile.write(b'0\r\n\r\n')
+                self.send(b'0\r\n\r\n')
             return sent
 
     def handle_any(self):
@@ -158,12 +215,16 @@ class Handler(BaseHTTPRequestHandler):
                     slowed.add(self.path)
             if FAST and slow and got.status in (200, 206) and length <= PART:
                 slow = False
-            sent = self.relay(got, slow=slow)
+            with lock:
+                silent = SILENT and not silenced and got.status in (200, 206) and 256 << 10 <= length <= 1 << 20
+                if silent:
+                    silenced.add(self.path)
+            sent = self.hold(got) if silent else self.relay(got, slow=slow)
             if not got.isclosed():  # the client left mid-body: that connection's answer is unread
                 forget(loc)
             # `slow`: the object is a straggler (cold); `dripped`: this ask was sent slowly.
             log(kind='object', path=self.path, slow=self.path in slowed, dripped=slow, ask=asked[self.path], range=fwd.get('Range') or fwd.get('range'),
-                length=length, bytes=sent, s=round(time.time() - t0, 2))
+                length=length, bytes=sent, s=round(time.time() - t0, 2), silent=silent, silenced=self.path in silenced)
             return
         sent = self.relay(resp)
         if not resp.isclosed():

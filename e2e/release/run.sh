@@ -5,12 +5,13 @@
 # GPU; nothing dearer than --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
 # it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
-# rental. On the rental: package install and list, BiRefNet from a YAML request and with --file, each output landed
-# here (one in a folder named with spaces and non-ASCII), machine ls, show and logs, keepalive, a run followed and
-# canceled, an end while a run still goes, checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT trap
-# whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
+# rental, which first takes --pod-tensord (the candidate's Linux TensorD). On the rental: package install and list,
+# BiRefNet from a YAML request and with --file, each output landed here (one in a folder named with spaces and
+# non-ASCII), machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
+# checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT
+# trap whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--release DIR]
-#                      [--tensord F|V] [--tensorfs F|V] [--runtime F|V]
+#                      [--tensord F|V] [--pod-tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 here=$(cd "$(dirname "$0")" && pwd)
@@ -95,7 +96,19 @@ step rental
 before=$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length') || true
 ! cozy --json machine rent "$SKU" --gpus 64 -y > "$OUT/rent-too-many.json" 2>&1 || check "machine rent --gpus 64 bought something"
 [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
-cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
+# No pod in RENT_WAIT s is a not-run, as gate.sh's: an order the Hub never acquires (41977686738's sat 56 min) must not hold
+# the run; the trap ends the rental it names.
+RENT_WAIT=1200
+cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" & rent_pid=$!
+rent_began=$SECONDS
+while kill -0 "$rent_pid" 2> /dev/null; do
+  if (( SECONDS - rent_began > RENT_WAIT )); then
+    kill "$rent_pid" 2> /dev/null; wait "$rent_pid" 2> /dev/null
+    fail "machine rent $SKU: no pod after $(( (SECONDS - rent_began) / 60 )) min: $(tail -c 300 "$OUT/rent.ndjson")"
+  fi
+  sleep 5
+done
+wait "$rent_pid" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
 rented_at=$(date +%s)
 M=$(rented "$OUT/rent.ndjson") || true
 [ -n "$M" ] || fail "machine rent: no machine named"
@@ -103,6 +116,13 @@ echo "rented $M ($SKU)"
 cozy --json machine show "$M" > "$OUT/rental.json" && J '.rental.disk_gb >= 60' "$OUT/rental.json" || check "machine rent --disk-gb 60: $(jq .rental.disk_gb "$OUT/rental.json") GB"
 cozy --json machine ls | J --arg m "$M" '.machines | any(.name == $m and .kind == "rental")' || check "machine ls does not list $M"
 cozy machine logs "$M" --lines 5 > "$OUT/rental-log.txt" && [ -s "$OUT/rental-log.txt" ] || check "machine logs $M --lines 5: nothing"
+# A release's TensorD reaches rentals in its image: the rental takes the candidate's first (gate.sh does the same).
+if [ -n "$POD_TENSORD" ]; then
+  step "the candidate TensorD on $M"
+  cozy --json machine update "$M" --tensord "$POD_TENSORD" -y > "$OUT/update-rental.json" 2>&1 \
+    || fail "machine update $M --tensord $POD_TENSORD: $(tail -c 400 "$OUT/update-rental.json")"
+  echo "$M runs cozy $(cozy --json machine show "$M" | jq -r .status.version)"
+fi
 # Where this OS runs no models itself, the throwaway runs on the rental.
 ON=$M
 [ -z "$LOCAL" ] || ON=local

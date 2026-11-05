@@ -70,6 +70,14 @@ on:
         description: "Publish a PASS as the SKU's new baseline"
         type: boolean
         default: true
+      seeds:
+        description: "Replay: the first seed of a logged gate (its \"seeds from <n>\" line; empty: fresh)"
+        type: string
+        default: ''
+      scenario:
+        description: "Replay: the scenario of a logged gate (its \"scenario <name>\"; empty: by time)"
+        type: string
+        default: ''
       nonce:
         description: "Caller's id, shown in the run name"
         type: string
@@ -236,6 +244,8 @@ jobs:
           IMAGE: ${{ inputs.image }}
           DISK: ${{ matrix.disk }}
           GPUS: ${{ matrix.gpus }}
+          SEEDS: ${{ inputs.seeds }}
+          SCENARIO: ${{ inputs.scenario }}
         run: |
           read -ra args <<< "$ARGS"
           [ -z "$ONLY" ] || args+=(--only "$ONLY")
@@ -246,6 +256,8 @@ jobs:
           [ "$ESTABLISH" != true ] || args+=(--establish)
           [ "$DISK" = 0 ] || args+=(--disk "$DISK")
           [ "$GPUS" = 0 ] || args+=(--gpus "$GPUS")
+          [ -z "$SEEDS" ] || args+=(--seeds "$SEEDS")
+          [ -z "$SCENARIO" ] || args+=(--scenario "$SCENARIO")
           if [[ ",${{ matrix.suite }}," == *,cli,* ]]; then  # every call logged, for the gate tier's coverage check below
             args+=(--cli "$PWD/creator/e2e/bin/cozy")
             export COZY_E2E_LOG=$OUT/argv.log COZY_E2E_BIN=$HOME/.cozy/bin/cozy
