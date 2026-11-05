@@ -52,7 +52,7 @@ const SAMPLES: usize = 256;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
 /// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window.
 const START: usize = 8;
-const WINDOW: Duration = Duration::from_secs(1);
+const WINDOW: Duration = Duration::from_millis(500);
 const GAIN: f64 = 1.1;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
