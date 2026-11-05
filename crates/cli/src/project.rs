@@ -552,7 +552,7 @@ async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch
 
 /// What `--json` keeps of a project (`--full`: all of it): what the view shows, by the record's own names.
 pub(crate) const FIELDS: &[&str] = &[
-    "id", "path", "busy", "moving", "absent", "missing", "stale", "queue", "warnings", "next", "assets.name", "assets.kind",
+    "id", "path", "busy", "moving", "held", "absent", "missing", "stale", "queue", "warnings", "next", "assets.name", "assets.kind",
     "assets.tool", "assets.standing", "assets.versions", "assets.version", "assets.approved", "assets.pinned", "assets.making",
     "assets.status", "assets.failure",
 ];
@@ -642,7 +642,7 @@ pub(crate) fn totals(state: &State) -> String {
 /// is missing and out of date and why, what the file no longer names, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
     if let Some(held) = &state.held {
-        output::say(ctx, &render::held_line(held));
+        println!("{}", render::held_line(held));
     }
     let (running, queued): (Vec<_>, Vec<_>) = state.queue.iter().partition(|item| item.running);
     if !running.is_empty() {
