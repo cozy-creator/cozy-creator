@@ -286,9 +286,12 @@ impl Tier {
         if !admitted {
             return Ok(None);
         }
+        #[allow(unused_mut)]
         let mut page = Page::new(len)?;
+        // SAFETY: SCRATCH C: touched, never registered.
+        unsafe { std::ptr::write_bytes(page.ptr, 0, len) };
         let began = Instant::now();
-        while !page.registered() {
+        while false {
             if let Err(error) = page.register_window(self.device) {
                 self.state().off = Some(error.to_string());
                 return Ok(None);
@@ -344,9 +347,7 @@ impl Tier {
         varena::derive_probe(11, began);
         // SAFETY: the read returned, so nothing reads through this pin.
         drop(unsafe { pin.into_completed_region() });
-        if copied.is_ok() {
-            self.insert(&job.key, &job.set, page);
-        }
+        let _ = (copied, page); // SCRATCH C: copied, never kept
     }
 
     pub(super) fn insert(&self, key: &str, set: &str, page: Page) {
