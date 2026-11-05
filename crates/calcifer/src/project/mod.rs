@@ -3023,10 +3023,13 @@ impl Walk {
                 }
             }
         }
+        // Only what moved counts: a job held for a machine that isn't free yet waits for the next wake, not for another turn now, which
+        // would come round again at once, forever, with nothing it sent ever followed.
+        let moved = acts.iter().any(|act| !matches!(act, Act::Held { .. }));
         for act in acts {
             self.act(act, work, first)?;
         }
-        Ok(true)
+        Ok(moved)
     }
 
     /// `asset` was tried by render `ask`, whichever way it went: it isn't owed again, a restart too.
