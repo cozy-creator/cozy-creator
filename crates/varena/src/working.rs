@@ -129,6 +129,7 @@ pub struct WorkingStats {
     pub observed_mapped: u64,
     pub observed_retired: u64,
     pub observed_ns: u64,
+    pub probe: [u64; 12],
     pub reclaim_ns: u64,
     pub reclaim_longest_ns: u64,
     pub reclaim_longest_step: u64,
@@ -2169,6 +2170,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.reclaim_longest_step,
     ) = owner.driver().times();
     (stats.observed_mapped, stats.observed_retired, stats.observed_ns) = observer::observed();
+    stats.probe = std::array::from_fn(|at| crate::PROBE[at].load(Ordering::Relaxed));
     Ok(stats)
 }
 

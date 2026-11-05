@@ -192,10 +192,14 @@ impl Inner {
                 consumers.declare(consumer).map_err(|error| super::raise(py, error))?;
                 let used = Py::new(py, PyUse::filling(fill, consumers))?;
                 let view = py.import("torch")?.call_method1("from_dlpack", (used.clone_ref(py),))?;
+                let began = Instant::now();
                 let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
+                varena::probe(8, began);
                 if changed || self.stored.is_none() {
                     if let Some(key) = &self.page {
+                        let began = Instant::now();
                         self.keep(key, py, &view)?;
+                        varena::probe(9, began);
                     }
                 }
                 let pin = used.borrow(py).finish(py)?;
@@ -262,7 +266,10 @@ impl varena::Source for PageSource {
         let ahead = consumer.is_none();
         let kept = this.page.as_ref().and_then(|key| this.tier.take(key, fill.len()));
         if let Some(page) = kept {
-            if let Err(error) = this.from_page(&fill, &page) {
+            let dma = Instant::now();
+            let copied = this.from_page(&fill, &page);
+            if !ahead { varena::probe(10, dma); }
+            if let Err(error) = copied {
                 if ahead { this.tier.failed(); }
                 let failure = tensorfs::Failure::from(error.source);
                 let detail = failure.to_string();
@@ -278,7 +285,10 @@ impl varena::Source for PageSource {
             return Err(varena::Error::Busy);
         }
         if let Some(stored) = &this.stored {
-            match this.read(stored, &fill, ahead) {
+            let reading = Instant::now();
+            let read = this.read(stored, &fill, ahead);
+            if !ahead { varena::probe(7, reading); }
+            match read {
                 Ok(bytes) => this.row(bytes, "store", ahead, began),
                 Err(error) => {
                     let (error, failed) = storage(error);

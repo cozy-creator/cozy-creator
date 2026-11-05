@@ -738,6 +738,13 @@ impl Device {
     }
 }
 
+/// SCRATCH, never to land: 0 prepare, 1 yield, 2 source fill, 3 wait on the worker, 4 after use,
+/// 5 whole use, 6 uses, 7 read, 8 derive, 9 keep, 10 kept page DMA, 11 eviction's GPU event wait.
+pub static PROBE: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+pub fn probe(at: usize, began: std::time::Instant) {
+    PROBE[at].fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+}
+
 const MAX_DEVICES: usize = 64;
 static DEVICES: [OnceLock<Device>; MAX_DEVICES] = [const { OnceLock::new() }; MAX_DEVICES];
 static PROCESS: AtomicU32 = AtomicU32::new(0);
@@ -1082,20 +1089,40 @@ impl Region {
     /// `consumer` is live in this primary context and reads nothing before this returns.
     #[allow(unsafe_code)]
     pub unsafe fn use_on(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
+        let whole = std::time::Instant::now();
         let pin = loop {
+            let began = std::time::Instant::now();
             // SAFETY: this method's own contract.
-            match unsafe { self.prepare_on(consumer) } {
+            let prepared = unsafe { self.prepare_on(consumer) };
+            probe(0, began);
+            match prepared {
                 Ok(async_fill::StreamPreparation::Ready(pin) | async_fill::StreamPreparation::Ordered(pin)) => break pin,
                 Ok(async_fill::StreamPreparation::Fill(fill)) => {
+                    let began = std::time::Instant::now();
                     source::yield_to(self);
-                    break self.source.fill(fill, Some(consumer))?
+                    probe(1, began);
+                    let began = std::time::Instant::now();
+                    let pin = self.source.fill(fill, Some(consumer))?
                         .ok_or(Error::Invalid("a Source returned no pin to its consumer"))?;
+                    probe(2, began);
+                    break pin;
                 }
-                Err(Error::Busy) if source::wait_for(self) => {}
+                Err(Error::Busy) => {
+                    let began = std::time::Instant::now();
+                    let waited = source::wait_for(self);
+                    probe(3, began);
+                    if !waited {
+                        return Err(Error::Busy);
+                    }
+                }
                 Err(error) => return Err(error),
             }
         };
+        let began = std::time::Instant::now();
         let _ = source::after_use(self); // Only ever a guess: its failure is not this use's.
+        probe(4, began);
+        probe(5, whole);
+        PROBE[6].fetch_add(1, Ordering::Relaxed);
         Ok(pin)
     }
 

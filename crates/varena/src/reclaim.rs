@@ -230,7 +230,9 @@ impl<'a> Sequence<'a> {
         }
         let hold = crate::enter_producer(self.device)?;
         let events = if wait { first.events.as_slice() } else { &[] };
+        let began = Instant::now();
         wait_outside(self.gpu, events, joining)?;
+        crate::probe(11, began);
         drop(hold);
         self.weight_pass(want, &classes, wait)?;
         Ok(true)
