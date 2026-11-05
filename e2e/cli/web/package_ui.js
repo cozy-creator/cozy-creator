@@ -178,6 +178,10 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     const at = { x: ((nth - 1) % 4) * 340, y: Math.floor((nth - 1) / 4) * 360, w: 300 };
     const made = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': `package-ui-${name}` }, body: JSON.stringify({ tool, name, at }) });
     check(`dropped_${name}`, made.status === 201, made);
+    // Drawn in on a box, the canvas draws only what's near it: a new one is seen at rest, all of it in view.
+    await away();
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box(name).waitFor();
   };
   const fit = async () => {
@@ -251,7 +255,9 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await shot('thrown');
     await fallsBack('later');
     await fallsBack('gone');
-    check('canvas_stays_up', (await page.evaluate(() => window.notReloaded === true)) && (await page.locator('.react-flow__node').count()) === 6);
+    await away();
+    await fit();
+    check('canvas_stays_up', (await page.evaluate(() => window.notReloaded === true)) && (await page.locator('.react-flow__node').count()) === 6, await page.locator('.react-flow__node').count());
     await more('shaded');
     await box('shaded').locator('[data-boxed=shade]').waitFor();
     check('others_still_draw', true);

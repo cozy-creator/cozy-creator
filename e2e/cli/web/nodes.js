@@ -610,6 +610,10 @@ function linesOf(text, name) {
     // What a box mentions goes to the list of what's mentioned. A function's optional frames are the file's to set: filled from mentions, the first
     // picture took the canvas over the shot's aspect_ratio, and the second forced how it ends.
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  mentioning:\n    tool: ${shaped}/shot\n    summary: <source-a> meets <source-b>.\n    aspect_ratio: "16:9"\n`);
+    // Drawn in on a box, the canvas draws only what's near it: a new one is seen at rest, all of it in view.
+    await away();
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box('mentioning').waitFor();
     execFileSync(COZY, ['project', '-p', folder, 'render', 'mentioning', '--on', 'local', '--plain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     const madeBy = statusOf('mentioning').versions.at(-1).runs.at(-1);
