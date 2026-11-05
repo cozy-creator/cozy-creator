@@ -63,6 +63,7 @@ authority() {
     vcell "public-$mode" "$OUT/public-api/public" case="$mode" seed:=$((R + 61 + i)) --gpus=1
   done
   . "$V/faults.sh"
+  . "$V/differential/cell.sh"
 }
 
 if ! grep -q '^GPU 0' machine.txt; then
