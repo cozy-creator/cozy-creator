@@ -76,12 +76,9 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     match ctx.full {
         true => calcifer_record(ctx, &holder, &here).print(ctx),
         false => {
+            // Signed out is said with the machines, by Hub.
             let version = Some(&here.version).filter(|v| *v != env!("CARGO_PKG_VERSION")).map(|v| format!(" on cozy {v}"));
-            let signed = match here.signed_in {
-                true => "signed in".to_owned(),
-                false => format!("signed out: {}", ctx.config.login(ctx.hub().as_str())),
-            };
-            println!("calcifer: up {}{}, {signed}", output::age(holder.started_at_ms), version.unwrap_or_default());
+            println!("calcifer: up {}{}", output::age(holder.started_at_ms), version.unwrap_or_default());
         }
     }
     let next = match &project {

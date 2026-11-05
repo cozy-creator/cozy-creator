@@ -8,9 +8,9 @@ J() { jq -e "$@" > /dev/null; }
 
 # Bytes each view may print on this fixture (about 3 to a token).
 declare -A BUDGET=(
-  [home]=1100 [home-out]=700 [project-status]=900 [project-empty]=400 [machine-ls]=500 [run-ls]=1100 [run-ls-empty]=200
-  [run-show]=900 [run-show-failed]=1500 [json-home]=3300 [json-project-status]=2700 [json-machine-ls]=1500 [json-run-ls]=3300
-  [json-run-show]=2700
+  [home]=650 [home-out]=550 [project-status]=650 [project-empty]=100 [machine-ls]=300 [run-ls]=600 [run-ls-empty]=100
+  [run-show]=300 [run-show-failed]=1500 [json-home]=2000 [json-project-status]=1300 [json-machine-ls]=500 [json-run-ls]=3500
+  [json-run-show]=700
 )
 
 agent() {

@@ -97,11 +97,11 @@ fn pick(value: serde_json::Value, paths: &[&str]) -> serde_json::Value {
 /// The most of a text a view shows; `--full` shows it whole.
 const TEXT: usize = 800;
 
-/// `text` as a view shows it: its first `TEXT` characters, or its last when `tail` (a traceback ends
-/// with what failed), saying how long it is.
+/// `text` as a view shows it: past a quarter more than `TEXT` characters, its first `TEXT`, or its last
+/// when `tail` (a traceback ends with what failed), saying how long it is.
 pub fn cut(ctx: &Context, text: &str, tail: bool) -> String {
     let count = text.chars().count();
-    if ctx.full || count <= TEXT {
+    if ctx.full || count <= TEXT + TEXT / 4 {
         return text.to_owned();
     }
     let said = format!("(cut, {count} chars: --full)");
