@@ -124,6 +124,7 @@ joining
 walking
 walk_restarted
 [ "$(uname)" != Linux ] || walk_window
+no_double_spend
 render_all_n
 queueing
 every_render
@@ -1250,6 +1251,41 @@ for _ in $(seq 120); do J '.busy | not' <<< "$(status "$K")" && break; sleep 0.5
 [ "$(made "$K" held)" = 1 ] || check "window: held has $(made "$K" held) versions"
 [ "$(cozy --json run ls --limit 0 | jq --arg r "$K" '[.runs[] | select(.project == $r and .target == "local/draw/draw")] | length')" = 1 ] || check "window: held ran more than once"
 [ -n "$(file_at "$K" "$(jq -r '.assets.held.versions[0].files.image' "$K/project.lock")")" ] || check "window: held's file isn't in files/"
+}
+
+no_double_spend() {
+step "a project: a folder copied mid-render, and an old project.lock put back mid-render, run nothing twice and lose nothing landed"
+local S=$OUT/spend copy=$OUT/spend-copy run
+mkdir -p "$S"
+cat > "$S/project.yaml" <<YAML
+version: 3
+assets:
+  first:
+    tool: $here/project/draw.py/draw
+    instructions: The one before.
+  slow:
+    tool: $here/project/shots.py/shoot
+    seconds: 15
+  reader:
+    tool: $here/project/draw.py/draw
+    instructions: From <slow>.
+YAML
+render "$S" first || check "spend: first: $(tail -c 300 "$OUT/render.txt")"
+cp "$S/project.lock" "$OUT/spend-old.lock"
+cozy project -p "$S" render slow reader --queue --on local > "$OUT/spend-queue.txt" 2>&1 || check "spend: render: $(tail -c 300 "$OUT/spend-queue.txt")"
+for _ in $(seq 240); do run=$(status "$S" | jq -r '.board.jobs[] | select(.asset == "slow") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ -n "$run" ] || check "spend: slow never ran"
+# A copy is a project of its own, and goes on with none of what this one owes.
+cp -a "$S" "$copy"
+J '(.busy | not) and ((.board.jobs // []) | length == 0)' <<< "$(status "$copy")" || check "spend: a copy goes on with its render: $(status "$copy" | jq -c '{busy, board}')"
+# An old project.lock put back while it renders: what's on its way is the walk's, and lands in it.
+cp "$OUT/spend-old.lock" "$S/project.lock"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$S")" && break; sleep 0.5; done
+{ [ "$(made "$S" first)" = 1 ] && [ "$(made "$S" slow)" = 1 ] && [ "$(made "$S" reader)" = 1 ]; } || check "spend: made $(jq -c '.assets | map_values(.versions | length)' "$S/project.lock")"
+local ran; ran=$(cozy --json run ls --limit 0 | jq -c --arg s "$S" '[.runs[] | select(.project == $s and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
+J '[.[]] | add == 3' <<< "$ran" || check "spend: runs: $ran"
+[ "$(cozy --json run ls --limit 0 | jq --arg c "$copy" '[.runs[] | select(.project == $c)] | length')" = 0 ] || check "spend: the copy sent a run"
+[ ! -e "$copy/.runs/walk.json" ] || check "spend: the copy kept what its original owes"
 }
 
 render_all_n() {
