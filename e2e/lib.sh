@@ -104,8 +104,7 @@ install_cozy() {
     [ "$found" = "$COZY" ] || fail "a login shell finds '$found', not $COZY"
   fi
   cozy --version
-  # Source candidates start from their complete native install. The old released
-  # updater cannot transport this prelaunch shared-library format.
+  # A source candidate's cozy goes in place of the released one.
   if [ -f "$CAND_COZY" ]; then
     install_candidate_binary
     want=$("$CAND_COZY" --version) || fail "the candidate cozy does not start"
@@ -232,13 +231,10 @@ candidates() {
 }
 
 install_candidate_binary() {
-  local dir bundle
-  dir=$(dirname "$COZY") bundle=$(dirname "$CAND_COZY")
-  [ -f "$bundle/varena-native.json" ] || fail "source candidate has no varena-native.json: $CAND_COZY"
-  [ -f "$bundle/cozy-native.tar.gz" ] || fail "source candidate has no cozy-native.tar.gz: $CAND_COZY"
+  local dir
+  dir=$(dirname "$COZY")
   [ "${RUNNER_OS:-}" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
-  python3 "$E2E/../scripts/install-native.py" "$bundle/cozy-native.tar.gz" "$dir" \
-    || fail "installing the candidate native bundle failed"
+  cp "$CAND_COZY" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" || fail "installing the candidate cozy failed"
 }
 
 # Where this OS runs no models itself there is no machine to take candidates: a candidate cozy is this computer's, as

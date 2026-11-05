@@ -53,15 +53,8 @@ elif [ "$what" = cozy ]; then
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
-  bundler=(uv run -q --no-project)
-  case "${RUNNER_OS:-Linux}" in
-    Linux) bundler+=(--with patchelf) ;;
-    Windows) bundler+=(--with lief) ;;
-  esac
-  "${bundler[@]}" python "$src/scripts/bundle-native.py" \
-    --binary "$src/target/release/cozy$exe" --target "$src/target/release" \
-    --runtime-dir "$(cd "$src" && rustc --print target-libdir)" \
-    --out "$out" --archive "$out/cozy-native.tar.gz"
+  # cozy is one file (00e565d72): varena is the TensorFS wheel's.
+  cp "$src/target/release/cozy$exe" "$out/cozy$exe"
 elif [ "$what" = tensorfs ]; then
   # tfs resolved with the extension's features (tensorfs-py's default store), as maturin resolves them: TensorFS and
   # every dependency compile once for both.
