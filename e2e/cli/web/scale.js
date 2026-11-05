@@ -510,14 +510,18 @@ function calciferMb() {
     memory.renders = calciferMb();
   }
 
-  // The whole of it fitted, and panned.
+  // The whole of it fitted, and panned. What the page's own thread did in it says whether a slow fit is the page's work or drawing it.
   const fitting = Date.now();
+  const unfitted = await worked();
   await page.keyboard.press('f');
   await until('fitted, its frames short', shortFrames, (p95) => p95 < 200, 180_000);
   numbers.fit_all_s = seconds(Date.now() - fitting);
-  check('the_whole_of_it_fits', numbers.fit_all_s <= BARS.fit_all_s, numbers.fit_all_s);
+  const fitted = await worked();
+  numbers.fit_work_ms = Object.fromEntries(['TaskDuration', 'ScriptDuration', 'LayoutDuration', 'RecalcStyleDuration'].map((kind) => [kind.replace('Duration', '').toLowerCase(), Math.round(fitted[kind] - unfitted[kind])]));
+  check('the_whole_of_it_fits', numbers.fit_all_s <= BARS.fit_all_s, { s: numbers.fit_all_s, page_thread_ms: numbers.fit_work_ms });
   numbers.mounted_fitted = await page.locator('.react-flow__node').count();
   numbers.pan_fitted = summary(await panning(3000));
+  if (numbers.fit_all_s > BARS.fit_all_s) numbers.fitted_profile = await profiled(2000);
   await shot('fitted');
 
   memory.fitted = calciferMb();

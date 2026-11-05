@@ -37,6 +37,8 @@ async function died(why) {
   const errors = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
+  // A console line doesn't say what failed: this does.
+  page.on('response', (answer) => { if (answer.status() >= 500) errors.push(`${answer.status()} ${answer.request().method()} ${new URL(answer.url()).pathname}`); });
   await page.addInitScript(() => {
     window.violations = [];
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
@@ -284,7 +286,8 @@ assets:
   const pane = page.locator('.react-flow__pane');
   const sizes = [];
   for (const steps of [0, 3, 3]) {
-    for (let i = 0; i < steps; i++) { await pane.hover({ position: { x: 900, y: 500 } }); await page.keyboard.down('Control'); await page.mouse.wheel(0, 200); await page.keyboard.up('Control'); await page.waitForTimeout(150); }
+    // By the page's own zoom keys, a step the same on every OS: a wheel's step is far larger on macOS, and three of them went from 0.9 to 0.05.
+    for (let i = 0; i < steps; i++) { await pane.hover({ position: { x: 900, y: 500 } }); await page.keyboard.press('Control+-'); await page.waitForTimeout(200); }
     await page.waitForTimeout(250);
     const measure = await page.evaluate(() => {
       const chip = document.querySelector('.add-on');

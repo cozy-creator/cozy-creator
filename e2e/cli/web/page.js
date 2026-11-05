@@ -75,13 +75,15 @@ async function pointAt(page, locator) {
   await page.mouse.move(x + width / 2, y + height / 2);
 }
 
-// The canvas still: drawn in on a box or gone back, a person reaches for what's there once it stops moving.
+// The canvas still: drawn in on a box or gone back, a person reaches for what's there once it stops moving. Still across three looks, as a slow
+// runner can draw one frame of a move in longer than a look.
 async function settled(page) {
   const at = () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
-  for (let last = await at(), now; ; last = now) {
-    await page.waitForTimeout(80);
-    now = await at();
-    if (now === last) return;
+  for (let last = await at(), still = 0; still < 3; ) {
+    await page.waitForTimeout(100);
+    const now = await at();
+    still = now === last ? still + 1 : 0;
+    last = now;
   }
 }
 
@@ -89,7 +91,8 @@ async function settled(page) {
 const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
-  if (!(await page.evaluate(() => location.hash.includes('/assets/')))) return;
+  // Left already, by a click off it say, the canvas may still be on its way back.
+  if (!(await page.evaluate(() => location.hash.includes('/assets/')))) return settled(page);
   await page.locator('.card.here').waitFor();
   await page.keyboard.press('Escape');
   await page.locator('.card.here').waitFor({ state: 'detached' });
@@ -117,9 +120,11 @@ async function openBox(page, name) {
     await until(`${name} in reach`, reached, Boolean);
   }
   const { x, y } = await middle();
+  const before = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
   await page.mouse.click(x, y);
   await card.waitFor();
-  // The canvas draws in on it: a person reaches for it once it's there.
+  // The canvas draws in on it: a person reaches for it once it's there. Its move starts a frame after the click, which a slow runner draws late.
+  await until(`the canvas drawing in on ${name}`, () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform), (now) => now !== before, 2000).catch(() => {});
   await settled(page);
 }
 
