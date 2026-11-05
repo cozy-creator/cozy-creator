@@ -31,32 +31,21 @@ def _rel(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 class _Memory:
-    """The device's weight memory as this Runtime exposes it: 0.34+ Runtime residency (explicit
-    reclaim before a ballast, so no allocation leans on the allocator hook), else 0.33's varena,
-    which is Torch's allocator and evicts idle pages for an allocation."""
+    """The device's weight memory: a Torch allocation evicts idle pages, there is no other way in."""
 
-    def __init__(self, placement: Any, device: torch.device) -> None:
-        self.memory, self.device = placement.memory, device
-        self.native = callable(getattr(self.memory, "reclaim", None))
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
         self.capacity = 0
 
     def empty(self) -> None:
         """Every idle page dropped: the next call fills each block afresh."""
-        if self.native:
-            self.memory.reclaim(1 << 62)
-            self.capacity = max(self.capacity, int(self.memory.room().free))
-            return
         held = self._largest(torch.cuda.get_device_properties(self.device).total_memory)
         self.capacity = max(self.capacity, held.numel())
         del held
 
     def ballast(self, room: int) -> torch.Tensor:
         """Bytes held through a call so only `room` is left for weights."""
-        want = max(self.capacity - room, 0)
-        if self.native:
-            self.memory.reclaim(want)
-            return torch.empty(want, dtype=torch.uint8, device=self.device)
-        return self._largest(want)
+        return self._largest(max(self.capacity - room, 0))
 
     def _largest(self, limit: int) -> torch.Tensor:
         size = limit
@@ -141,7 +130,7 @@ def exercise(
     if not per_block:
         raise RuntimeError("this lane bakes no LoRA into pages; run the cell on an int8/fp8 lane")
     common = getattr(held.common, "index", None) if _request_trace() is not None else None
-    memory = _Memory(placement, device)
+    memory = _Memory(device)
     room = int(payload.room_gib * GIB)
     inputs = Inputs(payload.seed, payload.size, payload.steps)
 
@@ -161,7 +150,8 @@ def exercise(
         baked = placement.baked()
 
         def after(_: int) -> None:
-            marks.append(len(trace) if trace is not None else 0)
+            # Reading the trace takes in what TensorFS logged since the last look.
+            marks.append(len(_request_trace() or ()))
 
         try:
             if kind == "base":
