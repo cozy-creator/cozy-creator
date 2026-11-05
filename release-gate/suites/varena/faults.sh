@@ -15,7 +15,7 @@ cc -std=c11 -Wall -Wextra -Werror -fPIC -shared -I include native-tensor-export/
 for _ in $(seq 60); do [ -z "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)" ] && break; sleep 1; done
 FAULT_PROVIDER=$PWD/provider.so "$py" core/faults/run.py --out out
 POD
-  fpod "cd $F && nohup bash -c 'bash start.sh; echo \$? > done' > run.log 2>&1 < /dev/null &" < /dev/null ||
+  fpod "cd $F && { nohup bash -c 'bash start.sh; echo \$? > done' > run.log 2>&1 < /dev/null & }" < /dev/null ||
     { expect faults FAIL "could not start on $M"; return; }
   log "faults started on $M"
   # A hang is a failure: the suite's own files must keep growing. `hold` renews the rental only while runs move.
