@@ -248,7 +248,9 @@ function linesOf(text, name) {
   await page.keyboard.press('Enter');
   await until('a chip', () => sheetText.locator('.chip').count(), (n) => n === 1);
   await page.keyboard.type('and ');
-  check('typing_writes_nothing', yaml() === before2);
+  // Everything saves itself (Paul, 11-05): a pause in typing writes it, a chip as its name.
+  await until('a pause saves it', () => Promise.resolve(linesOf(yaml(), 'Sheet') ?? ''), (lines) => lines.includes('A sheet of <source-a> and'));
+  check('a_pause_saves_it', yaml() !== before2);
 
   // Any element dragged onto the box: its name goes in, where the caret was, and it goes back where it was with no move saved.
   await away();
@@ -696,7 +698,7 @@ function linesOf(text, name) {
     // Render leaves the box: the failure is a toast, and an approved box's is on its words, its picture standing.
     await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render") && line.includes('no longer in the project')));
     await open('Sheet');
-    await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
+    if (await box('Sheet').locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
     await box('Sheet').locator('.status.bad:has-text("no longer in the project")').waitFor();
     check('its_next_steps_as_text', (await box('Sheet').locator('.status.bad .next-line').count()) > 0, await box('Sheet').locator('.status.bad').innerText());
     check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
@@ -733,6 +735,8 @@ function linesOf(text, name) {
 
     // What hasn't been approved when its source goes is worth a plain note, with no dialog, and Undo stays.
     await open('Other');
+    // A box with takes opens on its take: + gives its words.
+    if (await box('Other').locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box('Other').locator('.take.add[aria-label="Its words"]').click();
     await box('Other').locator('.mention-text[data-field=instructions]').click();
     await page.keyboard.type('From <source-b>');
     await page.mouse.click(1500, 1000);
