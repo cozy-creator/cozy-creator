@@ -159,7 +159,8 @@ class Handler(BaseHTTPRequestHandler):
             sent = self.relay(got, slow=slow)
             if not got.isclosed():  # the client left mid-body: that connection's answer is unread
                 forget(loc)
-            log(kind='object', path=self.path, slow=slow, ask=asked[self.path], range=fwd.get('Range') or fwd.get('range'),
+            # `slow`: the object is a straggler (cold); `dripped`: this ask was sent slowly.
+            log(kind='object', path=self.path, slow=self.path in slowed, dripped=slow, ask=asked[self.path], range=fwd.get('Range') or fwd.get('range'),
                 length=length, bytes=sent, s=round(time.time() - t0, 2))
             return
         sent = self.relay(resp)
