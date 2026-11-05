@@ -164,7 +164,10 @@ const launch = (playwright) => (process.env.ENGINE ? playwright[process.env.ENGI
 async function lastLook() {
   if (!looking || !process.env.LAST_LOOK) return;
   await looking.screenshot({ path: `${process.env.LAST_LOOK}-died.png`, timeout: 10_000 }).catch(() => {});
-  const told = boxLog(looking).then((said) => writeFileSync(`${process.env.LAST_LOOK}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
+  const told = boxLog(looking).then(async (said) => {
+    const clicks = await looking.evaluate(() => window.clicks?.slice(-12));
+    writeFileSync(`${process.env.LAST_LOOK}-died.json`, JSON.stringify({ url: looking.url(), clicks, ...said }, null, 2));
+  }).catch(() => {});
   await Promise.race([told, new Promise((done) => setTimeout(done, 10_000))]);
 }
 
