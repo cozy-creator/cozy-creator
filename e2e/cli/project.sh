@@ -70,6 +70,10 @@ counts() { status "$1" | jq -c '[.assets[] | {(.name): (.versions // 0)}] | add'
 runs() { status "$1" | jq '[.assets[].prefixes[]?.run // empty] | length'; }
 # asked <project> <asset> [version index]: what that version's last run was asked.
 asked() { cozy --json run show "$(held "$1" "$2" | jq -r --argjson v "${3:--1}" '.versions[$v].runs[-1]')" --once | jq -c .request; }
+# prompt <project> <asset>: what its newest version's run was told.
+prompt() { asked "$1" "$2" | jq -r .input.prompt; }
+# versions_in <project> <asset>: how many versions its lock lists, for a project whose file doesn't read.
+versions_in() { awk -v asset="  $(tr '_-' '  ' <<< "$2"):" '$0 == asset || $0 == "  \"" substr(asset, 3, length(asset) - 3) "\":" { in_it = 1; next } /^  [^ ]/ || /^[^ ]/ { in_it = 0 } in_it && /^ +(- )?number: / { n++ } END { print n + 0 }' "$1/project.lock"; }
 # read_of <project> <asset>: the names what it reads go by, as status says.
 read_of() { row "$1" "$2" '[.reads[]?.name]'; }
 # file_at <project> <sha256>: where that file is.
@@ -433,7 +437,7 @@ says text "<nothing_here> is no longer in the project"
 
 step "a project: editing a text marks what reaches it, an approved asset stays approved, and a deleted one is gone, not changed"
 cozy project -p "$T" approve poster 1 > /dev/null 2>&1 || check "text: approve poster"
-was=$(runs "$T")
+was=$(made "$T" poster)
 sed -i 's/^      Soft light\.$/      Hard light./' "$T/project.yaml"
 J '.assets[] | select(.name == "sheet") | .standing == "out_of_date"' <<< "$(status "$T")" || check "text: an edit didn't reach sheet, through mood: $(row "$T" sheet .)"
 J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .pinned and (.status | contains("<style>"))' <<< "$(status "$T")" || check "text: poster: $(row "$T" poster .)"
@@ -442,7 +446,7 @@ J '.assets[] | select(.name == "sheet") | .standing == "current"' <<< "$(status 
 sed -i '/^  ring_a: /d; /^  ring_b: /d; /^  ringed: /d; /^  lost: /d' "$T/project.yaml"
 sed -i '/^  style:$/,/^      Soft light\.$/d' "$T/project.yaml"
 J '.assets[] | select(.name == "poster") | .standing == "current" and .pinned' <<< "$(status "$T")" || check "text: a deleted text changed what it was in: $(row "$T" poster .)"
-[ "$(runs "$T")" = "$was" ] || check "text: something ran"
+[ "$(made "$T" poster)" = "$was" ] || check "text: something ran"
 
 step "a project: a name is one name in any case, a text can't be a tag, and a typed name that's taken is refused"
 local N=$OUT/text-names id code
@@ -769,7 +773,7 @@ ls "$R/files/$other"* > /dev/null 2>&1 || check "runs: reclaim with no --yes del
 cozy project -p "$R" reclaim --yes > "$OUT/reclaim.txt" 2>&1 || check "runs: reclaim --yes: $(tail -c 300 "$OUT/reclaim.txt")"
 ! ls "$R/files/$other"* > /dev/null 2>&1 || check "runs: reclaim --yes left a file nothing names"
 ls "$R/files/$hash"* > /dev/null 2>&1 || check "runs: reclaim --yes took the pinned file"
-{ J '.run_files == 1' <<< "$(status "$R")" && [ -n "$(file_at "$R" "$hash")" ]; } || check "runs: rows left: $(status "$R" | jq -c .run_files)"
+{ [ "$(grep -cE '^ +sha256: ' "$R/project.lock")" = 1 ] && [ -n "$(file_at "$R" "$hash")" ]; } || check "runs: rows left: $(grep -E '^ +sha256: ' "$R/project.lock" | cut -c1-40)"
 J '.run_files == 0' <<< "$(status "$R")" || check "runs: status after reclaim: $(status "$R" | jq -c .run_files)"
 
 step "a project: a script named like a module Python already has runs"
@@ -1358,7 +1362,7 @@ local second_file; second_file=$(take_file "$T" second image 0)
 sed -i '/^  second:$/,/^    instructions: Second\.$/d' "$T/project.yaml"
 cozy --json project -p "$T" reclaim > "$OUT/reclaim.json" 2>&1 || check "orphans: reclaim: $(tail -c 300 "$OUT/reclaim.json")"
 J '[.orphans[].name] == ["doomed", "second"] and (.deleted | not)' "$OUT/reclaim.json" || check "orphans: reclaim lists $(jq -c . "$OUT/reclaim.json")"
-{ [ "$(made "$T" second)" = 1 ] && [ -f "$T/files/${second_file#sha256:}.png" ]; } || check "orphans: a listing deleted something"
+{ J '.orphans | any(.name == "second" and .versions == 1)' "$OUT/reclaim.json" && [ -f "$T/files/${second_file#sha256:}.png" ]; } || check "orphans: a listing deleted something"
 cozy --json project -p "$T" reclaim --yes > "$OUT/reclaim.json" 2>&1 || check "orphans: reclaim --yes: $(tail -c 300 "$OUT/reclaim.json")"
 J '.deleted and .files >= 1 and .bytes > 0' "$OUT/reclaim.json" || check "orphans: reclaim --yes says $(jq -c . "$OUT/reclaim.json")"
 { J '(.orphans // []) == []' <<< "$(status "$T")" && ! grep -qE '^    name: (doomed|second)$' "$T/project.lock"; } || check "orphans: their versions are still in the lock"
@@ -1465,8 +1469,8 @@ code=0; cozy project -p "$B" render after --on local > "$OUT/queue-broken-refuse
 [ "$code" != 0 ] || check "broken: a new render read a file that doesn't"
 cozy project -p "$B" cancel also > "$OUT/queue-broken-cancel.txt" 2>&1 || check "broken: cancel: $(tail -c 300 "$OUT/queue-broken-cancel.txt")"
 grep -q 'dropped also' "$OUT/queue-broken-cancel.txt" || check "broken: cancel said $(cat "$OUT/queue-broken-cancel.txt")"
-for _ in $(seq 240); do [ "$(made "$B" after)" = 1 ] && J '.busy | not' <<< "$(cozy --json project -p "$B" status 2>/dev/null || echo '{"busy":false}')" && break; sleep 0.5; done
-{ [ "$(made "$B" slow)" = 1 ] && [ "$(made "$B" after)" = 1 ] && [ "$(made "$B" also)" = 0 ]; } || check "broken: with the file broken, made $(counts "$B")"
+for _ in $(seq 240); do [ "$(versions_in "$B" after)" = 1 ] && J '.busy | not' <<< "$(cozy --json project -p "$B" status 2>/dev/null || echo '{"busy":false}')" && break; sleep 0.5; done
+{ [ "$(versions_in "$B" slow)" = 1 ] && [ "$(versions_in "$B" after)" = 1 ] && [ "$(versions_in "$B" also)" = 0 ]; } || check "broken: with the file broken, made $(grep -cE '^ +number: ' "$B/project.lock")"
 cp "$OUT/queue-broken.yaml" "$B/project.yaml"
 
 step "a project: a render uses the file as it was asked, so an edit waits for the next"
@@ -1492,7 +1496,6 @@ sed -i 's/instructions: Old words\./instructions: New words./' "$W/project.yaml"
 wait "$going" || check "edit: the render: $(tail -c 400 "$OUT/queue-edit.txt")"
 ! grep -q 'cannot render' "$OUT/queue-edit.txt" || check "edit: a pass said it couldn't: $(grep 'cannot render' "$OUT/queue-edit.txt")"
 { [ "$(made "$W" words)" = 1 ] && [ "$(made "$W" reader)" = 1 ]; } || check "edit: the pass made $(counts "$W")"
-prompt() { asked "$1" "$2" | jq -r .input.prompt; }
 [ "$(prompt "$W" words)" = 'Old words.' ] || check "edit: the pass used $(prompt "$W" words)"
 case "$(row "$W" words .status)" in *'out of date'*) ;; *) check "edit: words is $(row "$W" words .status)" ;; esac
 render "$W" reader || check "edit: the next render: $(tail -c 400 "$OUT/render.txt")"

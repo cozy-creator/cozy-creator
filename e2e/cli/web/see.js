@@ -409,8 +409,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await until('looking at the first', () => card.locator('.count').textContent(), (text) => text === '1/2');
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
     await card.locator('button:has-text("Approve")').click();
-    // A hash on one of card's own lines: `image: <hero_art>` further down is hero's.
-    await until('pinned in the file', () => Promise.resolve(readFileSync(yamlAt, 'utf8')), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}image: "?[0-9a-f]/.test(text));
+    // On one of card's own lines: hero has an `approved` of its own further down.
+    await until('pinned in the file', () => Promise.resolve(readFileSync(yamlAt, 'utf8')), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}approved: "?[0-9a-f]/.test(text));
     await open(page, 'card');
     await until('it can be unapproved', () => card.locator('button:has-text("Unapprove")').count(), (n) => n === 1);
     check('approved_is_that_version', (await asset('card')).approved === made.prefixes[0].number, (await asset('card')).approved);
