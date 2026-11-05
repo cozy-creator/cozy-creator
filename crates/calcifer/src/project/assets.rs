@@ -67,13 +67,14 @@ pub(super) async fn create(
         Some(told) => told.name.clone(),
         None => {
             let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
-            let doc = Doc::load(folder).map_err(Refusal)?;
             if text_asset {
                 format::refuse_tag(&lock, &wanted).map_err(Refusal)?;
             }
-            let free = format::free_name(&doc, &lock, &wanted);
+            let text = folder.text().map_err(Refusal)?;
+            let names = assetfile::names(&text);
+            let free = format::free_of(|name| names.contains(&name_key(name)), &lock, &wanted);
             if asked.exact && free != wanted {
-                return Err(Refusal(format::name_taken(&doc, &wanted)));
+                return Err(Refusal(format::name_taken(&Doc::of(folder, &text, &lock).map_err(Refusal)?, &wanted)));
             }
             free
         }
@@ -164,7 +165,6 @@ pub(super) async fn patch(
     }
     let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok());
     let told = RefCell::new((String::new(), vec![]));
-    let lock = folder.lock().map_err(Refusal)?;
     (folder.edit_project(|text| {
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
         let (edited, warnings) = assetfile::set(text, &name, &fields)?;
@@ -172,7 +172,6 @@ pub(super) async fn patch(
         if edited != text && read.is_some_and(|read| read != was) {
             return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds"));
         }
-        Doc::of(folder, &edited, &lock)?;
         *told.borrow_mut() = (was, warnings);
         Ok(edited)
     }))
@@ -193,8 +192,11 @@ struct Deleted {
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let doc = Doc::load(folder).map_err(Refusal)?;
-    let i = doc.find(&name).ok_or_else(|| Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")))?;
+    let unknown = || Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status"));
+    // Its own lines are all this needs of the file.
+    let alone = assetfile::alone(&folder.text().map_err(Refusal)?, &name).ok_or_else(unknown)?;
+    let doc = Doc::read(folder, &alone).map_err(Refusal)?;
+    let i = doc.find(&name).ok_or_else(unknown)?;
     let name = doc.assets[i].name.clone();
     let at = canvas::row(folder, &name).map_err(Refusal)?;
     let lines = RefCell::new(String::new());

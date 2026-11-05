@@ -71,8 +71,12 @@ pub(super) fn set(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Ca
     let changed: BTreeMap<String, Option<Card>> = changed.into_iter().map(|(name, card)| (name, card.map(tidied))).collect();
     let keys: HashSet<String> = changed.keys().map(|name| name_key(name)).collect();
     let now = RefCell::new((BTreeMap::new(), String::new()));
+    let at = folder.dir.join(CANVAS);
+    let held = RefCell::new(TOLD.lock().expect("told lock").remove(id));
     folder.edit_canvas(|text| {
-        let mut cards = rows(text);
+        // What was told of this very file is what it holds: at thousands of rows, reading them again would be most of a move.
+        let told = held.borrow_mut().take().filter(|(read, _)| *read == stamp(&at));
+        let mut cards = told.map_or_else(|| rows(text), |(_, cards)| cards);
         cards.retain(|there, _| !keys.contains(&name_key(there)));
         cards.extend(changed.iter().filter_map(|(name, card)| Some((name.clone(), (*card)?))));
         let written = if cards.is_empty() && text.is_empty() { String::new() } else { written(&cards) };
@@ -81,7 +85,7 @@ pub(super) fn set(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Ca
     })?;
     let (cards, text) = now.into_inner();
     let etag = etag(&text);
-    TOLD.lock().expect("told lock").insert(id.to_owned(), (stamp(&folder.dir.join(CANVAS)), cards));
+    TOLD.lock().expect("told lock").insert(id.to_owned(), (stamp(&at), cards));
     crate::events::canvas(id, &etag, changed);
     Ok(etag)
 }
@@ -106,7 +110,14 @@ pub(super) fn look(dir: &FsPath) {
 
 /// `name`'s row, if it has one.
 pub(super) fn row(folder: &Folder, name: &str) -> Result<Option<Card>, Error> {
-    Ok(rows(&folder.canvas_text()?).into_iter().find(|(there, _)| name_key(there) == name_key(name)).map(|(_, card)| card))
+    let of = |cards: &BTreeMap<String, Card>| cards.get(name).or_else(|| cards.iter().find(|(there, _)| name_key(there) == name_key(name)).map(|(_, card)| card)).copied();
+    let id = project_id(&folder.dir);
+    if let Some((read, cards)) = TOLD.lock().expect("told lock").get(&id)
+        && *read == stamp(&folder.dir.join(CANVAS))
+    {
+        return Ok(of(cards));
+    }
+    Ok(of(&rows(&folder.canvas_text()?)))
 }
 
 /// `from`'s row as `to`'s.

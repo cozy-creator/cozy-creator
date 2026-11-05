@@ -1374,7 +1374,7 @@ impl Folder {
                 false => String::new(),
             };
             if now == before {
-                durable::replace(path, after.as_bytes(), 0o644).map_err(io)?;
+                durable::replace_soon(path, after.as_bytes(), 0o644).map_err(io)?;
                 wrote();
                 crate::events::project_changed(&self.dir);
                 return Ok(());

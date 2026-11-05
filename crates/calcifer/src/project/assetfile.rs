@@ -1,7 +1,10 @@
 //! An asset as project.yaml holds it: the one place that knows where its keys land in the file, so the routes and the page speak of
 //! assets and the file can change under them. A person types prompts in this file, so each write finds its lines, changes only those,
 //! keeps comments and `|`, and checks the file reads as the same project with that one change.
-use std::{collections::HashMap, ops::Range};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 use protocol::{
     error::{Error, Kind},
@@ -60,6 +63,27 @@ impl<'a> Place<'a> {
         let (key, body, child, flow) = block(&lines, start..end, name)?;
         Some(Self { lines, key, body, child, flow })
     }
+}
+
+/// Asset `name` on its own: the text before its lines, it alone under its section, and the text after. An edit reads and proves itself on this,
+/// whatever else the project holds: the rest stays byte for byte, so what's true of it here is true of the file.
+struct Window<'a> {
+    before: &'a str,
+    alone: String,
+    after: &'a str,
+}
+
+fn window<'a>(text: &'a str, name: &str) -> Option<Window<'a>> {
+    let place = Place::find(text, name)?;
+    let end = end_of(&place.lines, place.key, place.body.end);
+    let start: usize = place.lines[..place.key].iter().map(|line| line.len()).sum();
+    let finish = start + place.lines[place.key..end].iter().map(|line| line.len()).sum::<usize>();
+    Some(Window { before: &text[..start], alone: format!("{SECTION}:\n{}", &text[start..finish]), after: &text[finish..] })
+}
+
+/// Asset `name`'s own lines as a project of one, for what needs only it read.
+pub(super) fn alone(text: &str, name: &str) -> Option<String> {
+    window(text, name).map(|at| format!("version: {}\n{}", super::folder::FORMAT, at.alone))
 }
 
 fn significant(line: &str) -> bool {
@@ -178,6 +202,15 @@ fn digest(lines: &[&str]) -> String {
 pub(super) fn etag(text: &str, name: &str) -> Option<String> {
     let place = Place::find(text, name)?;
     Some(digest(&place.lines[place.key..end_of(&place.lines, place.key, place.body.end)]))
+}
+
+/// Every asset's name key, read off its lines with no YAML: what a name has to keep clear of.
+pub(super) fn names(text: &str) -> HashSet<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let Some(header) = lines.iter().position(|line| spaces(line) == 0 && key_of(line).as_deref() == Some(SECTION)) else { return HashSet::new() };
+    let end = ((header + 1)..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+    let Some(at) = lines[header + 1..end].iter().find(|line| significant(line)).map(|line| spaces(line)) else { return HashSet::new() };
+    lines[header + 1..end].iter().filter(|line| significant(line) && spaces(line) == at).filter_map(|line| Some(name_key(&key_of(line)?))).collect()
 }
 
 /// Every asset's ETag, by name key, at once: a read of the project needn't look for each.
@@ -349,6 +382,16 @@ fn write_field(text: &str, name: &str, field: &str, value: &Value) -> Result<(St
 
 /// `text` with these keys of asset `name` set, a null cleared, and what went doing so. Setting what it holds changes nothing.
 pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
+    if let Some(at) = window(text, name)
+        && let Ok((edited, warnings)) = set_in(&at.alone, name, fields)
+        && let Some(lines) = edited.strip_prefix(&format!("{SECTION}:\n"))
+    {
+        return Ok(([at.before, lines, at.after].concat(), warnings));
+    }
+    set_in(text, name, fields)
+}
+
+fn set_in(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
     let mut wanted = read(text)?;
     let (mut edited, mut warnings) = (text.to_owned(), vec![]);
     // An Edit's clips, as the file holds them.
@@ -405,13 +448,19 @@ pub(super) fn renamed(text: &str, from: &str, to: &str) -> Result<String, Error>
 }
 
 fn add_block(text: &str, name: &str, block: &str) -> Result<String, Error> {
+    // In its section, where a hash reads as a hash.
+    let framed: String = block.split_inclusive('\n').map(|line| format!("  {line}")).collect();
+    let framed = read(&format!("{SECTION}:\n{framed}")).map_err(|_| by_hand(name, "its lines don't read"))?;
+    // All that was there, byte for byte, around lines that read as this asset: the rest needn't be read to know.
+    let alone = canonical(&framed);
+    let added = |edited: &String| window(edited, name).is_some_and(|at| [at.before, at.after].concat() == text && read(&at.alone).is_ok_and(|read| canonical(&read) == alone));
+    if let Some(edited) = under_section(text, SECTION, block).into_iter().find(added) {
+        return Ok(edited);
+    }
     let mut wanted = read(text)?;
     if wanted.is_null() {
         wanted = json!({});
     }
-    // In its section, where a hash reads as a hash.
-    let framed: String = block.split_inclusive('\n').map(|line| format!("  {line}")).collect();
-    let framed = read(&format!("{SECTION}:\n{framed}")).map_err(|_| by_hand(name, "its lines don't read"))?;
     let top = wanted.as_object_mut().ok_or_else(|| by_hand(name, "the file is no mapping of sections"))?;
     let held = top.entry(SECTION).or_insert(Value::Null);
     if held.is_null() {
@@ -426,6 +475,15 @@ fn add_block(text: &str, name: &str, block: &str) -> Result<String, Error> {
 
 /// `text` with asset `name`'s lines gone, and what puts them back.
 pub(super) fn removed(text: &str, name: &str) -> Result<(String, String), Error> {
+    if let Some(at) = window(text, name)
+        && let Ok((_, back)) = removed_from(&at.alone, name)
+    {
+        return Ok(([at.before, at.after].concat(), back));
+    }
+    removed_from(text, name)
+}
+
+fn removed_from(text: &str, name: &str) -> Result<(String, String), Error> {
     let place = Place::find(text, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
     let end = end_of(&place.lines, place.key, place.body.end);
     let back = format!("{SECTION}:\n{}", place.lines[place.key..end].concat());

@@ -986,7 +986,12 @@ pub fn plain_name(text: &str) -> Option<String> {
 
 /// `wanted`, or with `_2`, `_3`, … if something in the project goes by it, or versions wait in project.lock for it.
 pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
-    let taken = |name: &str| name_key(name) == ALL || doc.find(name).is_some() || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
+    free_of(|name| doc.find(name).is_some(), lock, wanted)
+}
+
+/// `free_name`, of what `holds` says the project goes by.
+pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -> String {
+    let taken = |name: &str| name_key(name) == ALL || holds(name) || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
     if !taken(wanted) {
         return wanted.to_owned();
     }
