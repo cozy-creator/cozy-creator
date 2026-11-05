@@ -330,6 +330,10 @@ async fn watching(api: &Arc<Api>, project: &Arc<Project>) {
                 release(api, project, Some(Error::new(Kind::Unavailable, "holder_lost", said).next(status_next(&project.folder)[0].clone()))).await;
                 break;
             }
+            Err(error) if error.code == "holder_too_old" => {
+                release(api, project, Some(error)).await;
+                break;
+            }
             Err(error) if error.code == "project_changed" && !held.id.is_empty() => continue,
             Err(error) => {
                 warn!("{}: {} doesn't answer: {}", project.folder.dir.display(), held.machine, error.message);
@@ -773,10 +777,14 @@ async fn call(link: &Link, machine: &str, method: Method, target: &str, body: Op
     }
 }
 
-/// What the holder's refusal said, as its own error.
+/// What the holder's refusal said, as its own error. A 404 that says nothing is a cozy with no such route.
 fn refused(machine: &str, status: StatusCode, body: &[u8]) -> Error {
     match serde_json::from_slice::<Envelope>(body) {
         Ok(envelope) => envelope.error,
+        Err(_) if status == StatusCode::NOT_FOUND => {
+            let said = format!("{machine}'s cozy is older than taking a render over");
+            Error::new(Kind::Conflict, "holder_too_old", said).next(format!("cozy machine update {machine}"))
+        }
         Err(_) => Error::new(Kind::Unavailable, "machine_unanswered", format!("{machine} answered {status}")),
     }
 }
