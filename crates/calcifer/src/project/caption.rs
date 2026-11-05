@@ -61,7 +61,7 @@ pub(super) async fn caption(
     let asking = package.function(CAPTION).map_err(Refusal)?;
     let callable = package.callable(CAPTION).expect("a describer has a caption");
     let kind = ["image", "video"].into_iter().find(|kind| files.contains_key(*kind)).expect("a picture or a video");
-    let given = Given { name: name.clone(), files: files.into_iter().filter(|(field, _)| field.starts_with(kind)).collect(), description: String::new(), asset_type: String::new(), made_by: String::new(), inputs: Map::new() };
+    let given = Given { name: name.clone(), files: files.into_iter().filter(|(field, _)| field.starts_with(kind)).collect(), description: String::new(), asset_type: String::new(), made_by: String::new(), text: String::new() };
     let tool = format!("{}/{CAPTION}", package.name);
     let call = direct::Call { name: &name, tool: &tool, package: &package.name, callable: &callable, inputs: &Map::new(), own: &Default::default(), reads: std::slice::from_ref(&given), lock: &lock, take: None };
     let (input, warnings) = direct::input(call).map_err(Refusal)?;

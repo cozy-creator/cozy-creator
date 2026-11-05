@@ -17,10 +17,37 @@ pub use disk::{DiskClass, Filesystem, cached, cached_runs, filesystem, open_dire
 
 static TEMPS: AtomicU64 = AtomicU64::new(0);
 
+/// Renames `from` over `to`. On Windows, a program holding `to` open with no delete sharing, as a
+/// scanner or an editor does for a moment, refuses it, so it's tried for as long as a moment lasts.
+pub fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::time::{Duration, Instant};
+        const ACCESS_DENIED: i32 = 5;
+        const SHARING_VIOLATION: i32 = 32;
+        const HELD: Duration = Duration::from_secs(5);
+        let began = Instant::now();
+        let mut wait = Duration::from_millis(10);
+        loop {
+            match fs::rename(from, to) {
+                Err(error)
+                    if matches!(error.raw_os_error(), Some(ACCESS_DENIED | SHARING_VIOLATION))
+                        && began.elapsed() < HELD =>
+                {
+                    std::thread::sleep(wait);
+                    wait = (wait * 2).min(Duration::from_millis(250));
+                }
+                done => return done,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    fs::rename(from, to)
+}
+
 /// Replaces `path` with `bytes`: a reader sees the old file or the new one, never a part, and after
 /// this returns a crash keeps the new one. `mode` is the Unix permission; Windows keeps the
-/// profile's ACL, renames with POSIX semantics (a reader holding the old file does not block it),
-/// and has no directory to sync: the rename is atomic in NTFS's journal.
+/// profile's ACL, and has no directory to sync: the rename is atomic in NTFS's journal.
 pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     renamed(path, bytes, mode, true)?;
     sync_dir(
@@ -66,7 +93,7 @@ fn renamed(path: &Path, bytes: &[u8], mode: u32, durable: bool) -> Result<()> {
         .and_then(|()| if durable { file.sync_all() } else { Ok(()) })
         .map_err(Error::io("write", &temp));
     drop(file);
-    let renamed = written.and_then(|()| fs::rename(&temp, path).map_err(Error::io("rename", path)));
+    let renamed = written.and_then(|()| rename_over(&temp, path).map_err(Error::io("rename", path)));
     if renamed.is_err() {
         let _ = fs::remove_file(&temp);
     }

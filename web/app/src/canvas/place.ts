@@ -35,8 +35,8 @@ export class Placer {
     this.hooks = hooks
   }
 
-  /** One file is named by its field, focused; several take their stems, laid out from the point, with no focus. */
-  add(files: File[], point: { x: number; y: number }) {
+  /** One file is named by its field, focused; several take their stems, laid out from the point, with no focus. With `then`, none asks: it's told the name each gets. */
+  add(files: File[], point: { x: number; y: number }, then?: (name: string) => void) {
     const columns = Math.ceil(Math.sqrt(files.length))
     const left = point.x - CARD_WIDTH / 2
     const top = point.y - 16
@@ -51,25 +51,25 @@ export class Placer {
         w: CARD_WIDTH,
       }
       this.store.addPlacing(key, stem, { media, stage: "waiting", done: 0, stem, abort }, at, {
-        naming: files.length === 1,
+        naming: files.length === 1 && !then,
         preview: media === "image" ? URL.createObjectURL(file) : undefined,
       })
-      void this.run(key, file, abort.signal, at)
+      void this.run(key, file, abort.signal, at, then)
     })
   }
 
-  /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes. Local code goes by its function. */
+  /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes, called what its tool says. */
   addTool(tool: Tool, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const fields = text ? { text: "" } : startingFields(tool)
     const key = `asset-${crypto.randomUUID()}`
-    const body = text ? { tool: "", name: "text", fields } : { tool: tool.id, name: tool.local ? undefined : tool.label, fields, kind: tool.kind }
+    const wanted = asName(tool.name ?? tool.label)
+    const body = text ? { tool: "", name: wanted, fields } : { tool: tool.id, name: wanted, fields, kind: tool.kind }
     const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
     const row: Asset = { name: "", standing: text ? "current" : "missing", kind: tool.kind, noun: tool.kind === "video" ? "take" : "version", tool: text ? undefined : tool.id, versions: 0, status: "", fields, timeline }
-    const wanted = text ? "text" : tool.local ? (tool.id.split("/").at(-1) ?? "").split("@")[0] : tool.label
     this.store.focusing = this.store.place(
-      asName(wanted),
+      wanted,
       { asset: row },
       at,
       async (clear, once) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, once),
@@ -94,17 +94,19 @@ export class Placer {
     )
   }
 
-  private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }) {
+  private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then?: (name: string) => void) {
     try {
       const digest = await inLine(() => this.hashAndSend(key, file, signal))
       await this.store.whenNamed(key, signal)
       try {
-        await this.ask(key, digest, dropped)
+        const name = await this.ask(key, digest, dropped)
+        then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
         await inLine(() => this.send(key, file, digest, signal))
-        await this.ask(key, digest, dropped)
+        const name = await this.ask(key, digest, dropped)
+        then?.(name)
       }
     } catch (error) {
       if (signal.aborted) return
@@ -113,7 +115,7 @@ export class Placer {
     }
   }
 
-  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }) {
+  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }): Promise<string> {
     this.stage(key, "adding", 1)
     const at = this.store.position(key) ?? dropped
     const name = this.store.get(key)!.name
@@ -124,6 +126,7 @@ export class Placer {
       const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: (signal) => this.client.import(id, once, { source: digest, name, at }, signal), done, refused }))
       this.store.land(key, answer, at)
       if (answer.note) say(answer.note)
+      return answer.name
     } finally {
       this.store.endAdding()
     }

@@ -11,7 +11,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, pointAt, until } = require('./page');
+const { STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -24,6 +24,8 @@ function check(name, ok, detail) {
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
 const FIRST_RUN_MS = 300_000;
+/** What it made besides its own project: forgotten however it ends, or the next cell's page lands on one that can't be read. */
+let forgetMade = async () => {};
 
 /** A stand-in for a slow network: each call `match` names waits here until `release`. */
 async function hold(page, method, path) {
@@ -86,7 +88,7 @@ async function loseAnswers(page, method, path, times) {
   const status = () => JSON.parse(cozy('--json', 'project', '-p', folder, 'status')).assets;
   const hasAsset = (name) => new RegExp(`^  ${name}:`, 'm').test(yaml());
   const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
-  const box = (name) => page.locator(`.card[data-asset="${name}"]`);
+  const box = (name) => boxOf(page, name);
   const row = (label) => page.locator('.tools .tool', { has: page.locator(`b:text-is("${label}")`) }).first();
   const stage = page.locator('.stage');
   await page.waitForSelector('.tools .tool');
@@ -188,12 +190,10 @@ async function loseAnswers(page, method, path, times) {
   cozy('project', '-p', folder, 'add', 'text', 'words', 'text=A storm.');
   await page.waitForTimeout(600);
   // Nothing held open: what's open lies over what's below it.
-  await page.keyboard.press('Escape');
   await page.keyboard.press('f');
   await box('words').waitFor();
-  await page.mouse.move(2, 500);
   await page.waitForTimeout(400);
-  await pointAt(page, box('words').locator('.nm'));
+  await openBox(page, 'words');
   await box('words').locator('.mention-text').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
   await page.keyboard.press('Control+a');
@@ -204,11 +204,12 @@ async function loseAnswers(page, method, path, times) {
   await until('theirs in the file', () => Promise.resolve(yaml().includes('text: theirs')), Boolean);
   await page.waitForTimeout(600);
   await patches.release();
-  await pointAt(page, box('words').locator('.nm'));
+  await openBox(page, 'words');
   await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
   check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await box('words').getByRole('button', { name: 'Keep mine' }).click();
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
+  await closeBox(page);
 
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
@@ -230,7 +231,7 @@ async function loseAnswers(page, method, path, times) {
     writeFileSync(join(folder, 'project.yaml'), `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
     await box('fixture').waitFor();
     await page.waitForTimeout(500);
-    await box('fixture').locator('.head').hover({ force: true });
+    await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
     await box('fixture').locator('button[aria-label="Render"]').click();
     await page.waitForTimeout(20);
@@ -248,6 +249,13 @@ async function loseAnswers(page, method, path, times) {
   // still there, and what's dropped on it comes back with one line.
   const made = async (word) => (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-instant-${word}-${Date.now()}` }), headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${word}-${Date.now()}` } })).body;
   const [second_project, old] = [await made('tab'), await made('old')];
+  forgetMade = async () => {
+    forgetMade = async () => {};
+    for (const project of [second_project, old]) {
+      await api(`/v1/projects/${project.id}`, { method: 'DELETE' });
+      rmSync(project.path, { recursive: true, force: true });
+    }
+  };
   writeFileSync(join(old.path, 'project.lock'), JSON.stringify({ format: 2 }));
   await page.reload();
   await page.waitForSelector('.ptabs .ptab.on');
@@ -273,17 +281,14 @@ async function loseAnswers(page, method, path, times) {
   await tab(old).click();
   const unread = page.locator('.unread');
   await unread.waitFor();
-  check('what_cant_be_read_says_why', /format 2/.test(await unread.innerText()) && /cozy project upgrade/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
+  check('what_cant_be_read_says_why', /format 2/.test(await unread.innerText()) && /git or a backup/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
   await until('the tools still there', () => row('Edit').count(), (n) => n === 1);
   await row('Edit').dragTo(stage, { targetPosition: { x: 1200, y: 300 } });
   await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
   check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
   await page.locator(`.ptab[title="${folder}"]`).click();
   await box(name).waitFor();
-  for (const project of [second_project, old]) {
-    await api(`/v1/projects/${project.id}`, { method: 'DELETE' });
-    rmSync(project.path, { recursive: true, force: true });
-  }
+  await forgetMade();
 
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
@@ -291,6 +296,7 @@ async function loseAnswers(page, method, path, times) {
   process.exit(failures.length ? 1 : 0);
 })().catch(async (error) => {
   console.error(`during ${during}:`, error);
+  await forgetMade().catch(() => {});
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);

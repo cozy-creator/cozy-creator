@@ -123,7 +123,7 @@ export function Thumb({
 }
 
 /** A video's poster. Hovering scrubs a strip of its frames, one picture from Calcifer, so no `<video>` opens until it's clicked. */
-function Poster({ shown, cardWidth, name, scrubbed }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number }) {
+function Poster({ shown, cardWidth, name, scrubbed, open }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number; open: boolean }) {
   const store = useCanvasStore()
   const [hover, setAt] = useState<number | null>(null)
   const at = hover ?? (scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null)
@@ -132,6 +132,7 @@ function Poster({ shown, cardWidth, name, scrubbed }: { shown: Shown; cardWidth:
     <div
       className="scrub"
       onPointerMove={(event) => {
+        if (!open) return
         const box = event.currentTarget.getBoundingClientRect()
         setAt(Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)))
       }}
@@ -297,7 +298,7 @@ function Progress({ fraction, says }: { fraction?: number; says?: string }) {
   )
 }
 
-export function Media({ view, name, cardWidth, children }: { view: ElementView; name: string; cardWidth: number; children?: ReactNode }) {
+export function Media({ view, name, cardWidth, open, children }: { view: ElementView; name: string; cardWidth: number; open: boolean; children?: ReactNode }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
@@ -331,7 +332,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
           }}
         />
       )}
-      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} />}
+      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} open={open} />}
       {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
@@ -357,7 +358,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
       )}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {making && <Progress fraction={fraction} says={fraction === undefined ? undefined : leftWords(fraction, view.run?.progress?.eta_s)} />}
-      {source && field && store.projectId && (
+      {open && source && field && store.projectId && (
         <Player
           key={JSON.stringify(source)}
           field={field}

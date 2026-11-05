@@ -148,6 +148,8 @@ struct Project {
     ended: Mutex<Option<Event>>,
     collecting: Mutex<(u64, u64)>,
     heard: AtomicI64,
+    /// What opening it did to it, for the first to read it.
+    said: Mutex<Vec<String>>,
 }
 
 pub fn routes() -> Router<Arc<Api>> {
@@ -195,6 +197,7 @@ impl Projects {
 
     /// The project in `dir` (canonical), opened once; its walk goes on when one is owed.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
+        let said = tokio::task::block_in_place(|| upgrade::on_touch(dir))?;
         let folder = Folder::open(dir, api.machines.hubs.home())?;
         crate::events::project_opened(dir);
         let id = project_id(dir);
@@ -220,9 +223,11 @@ impl Projects {
                     ended: Mutex::default(),
                     collecting: Mutex::default(),
                     heard: AtomicI64::new(0),
+                    said: Mutex::default(),
                 })
             })
             .clone();
+        project.said.lock().expect("said lock").extend(said);
         if project.folder.walk_now()?.held.is_some() {
             *project.walking.lock().expect("walking lock") = true;
             takeover::watch(api, &project);
@@ -363,14 +368,18 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         n => format!("{}-{n}", made.output),
     };
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
+    let (upgraded, refused) = match upgrade::on_touch(project) {
+        Ok(said) => (said, None),
+        Err(why) => (vec![], Some(why)),
+    };
     let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
-    let said = unlisted.map(|why| match why.next.first() {
+    let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
         Some(next) => format!("{} is in files/, and its project can't list it: {}: {next}", made.output, why.message),
         None => format!("{} is in files/, and its project can't list it: {}", made.output, why.message),
     });
-    Ok((kept, said))
+    Ok((kept, said.or_else(|| (!upgraded.is_empty()).then(|| upgraded.join("\n")))))
 }
 
 /// An output its machine keeps, in its project's lock.
@@ -786,13 +795,14 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     });
     api.projects.open(&api, &dir).map_err(Refusal)?;
     let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
-    Ok(Json(Opened { next, ..opened(id, &dir) }))
+    let said = api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..).collect();
+    Ok(Json(Opened { next, said, ..opened(id, &dir) }))
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
 fn opened(id: String, dir: &FsPath) -> Opened {
     let name = dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    Opened { id, path: dir.to_owned(), name, next: vec![] }
+    Opened { id, path: dir.to_owned(), name, next: vec![], said: vec![] }
 }
 
 /// A new empty project called `name` under `~/.cozy/projects`, or the next free name: what it could be called, `_2`, `_3`, ….
@@ -906,6 +916,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
     state.held = takeover::held_by(&api, &project);
+    state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
     Ok(Json(state))
 }
 
@@ -1351,7 +1362,7 @@ async fn reclaim(
         folder
             .update_lock(|lock| {
                 lock.assets.retain(|key, _| doc.find(key).is_some());
-                lock.assets.values_mut().for_each(|held| held.discarded.clear());
+                lock.assets.values_mut().for_each(folder::Asset::clear_discarded);
             })
             .map_err(Refusal)?;
     }
@@ -1433,6 +1444,9 @@ async fn rename(
     }
     drop(walking);
     canvas::moved(folder, &id, &from, &to).map_err(Refusal)?;
+    if !queued && doc.tool(i) == Some(Tool::Cut) {
+        film_renamed(folder, &from, &to);
+    }
     Ok(Json(Renamed { from, to, versions, queued }))
 }
 
@@ -1469,6 +1483,19 @@ fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str) -> Ve
         (old != new).then(|| Restamp { key: name_key(name), was: old, is: new, stood })
     };
     (0..doc.assets.len()).filter_map(moved).collect()
+}
+
+/// A cut's film and timeline at the root go by its new name. A file already there under it is someone's, and stays: the next walk sets it aside.
+fn film_renamed(folder: &Folder, from: &str, to: &str) {
+    let (from, to) = (folder.dir.join(cut_name(from)), folder.dir.join(cut_name(to)));
+    for (from, to) in [(from.with_extension("otio"), to.with_extension("otio")), (from, to)] {
+        if !to.exists()
+            && let Err(error) = std::fs::rename(&from, &to)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!("{}: {error}", from.display());
+        }
+    }
 }
 
 /// project.lock with asset `from` called `to`: its row, what is pending or owed of it, and what a cut's versions say of it.
@@ -3320,7 +3347,12 @@ impl Walk {
                     // A render of it since made versions of its own: nothing overwrites those.
                     match lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
                         true => self.say(Event::Warning { message: format!("{from} stays {from}: {to} has versions of its own now"), name: None }),
-                        false => renamed(lock, &from, &to),
+                        false => {
+                            renamed(lock, &from, &to);
+                            if lock.asset(&to).is_some_and(|held| held.versions.iter().any(|version| !version.clips.is_empty())) {
+                                film_renamed(self.folder(), &from, &to);
+                            }
+                        }
                     }
                 }
             })?;
@@ -3532,7 +3564,7 @@ impl Walk {
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
-            let mut version = Version { inputs: inputs.clone(), warnings, ..Default::default() };
+            let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| !new && tried.inputs == inputs).map(|tried| tried.seed);
@@ -4255,9 +4287,7 @@ impl Walk {
             held.numbered = held.numbered.max(given);
             let mut listed = version.clone();
             listed.number = given;
-            held.versions.retain(|version| version.number != given);
-            held.versions.push(listed);
-            held.versions.sort_by_key(|version| version.number);
+            held.list(listed);
             held.tried = None;
             held.failed = None;
         })?;

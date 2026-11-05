@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, drop, lastLook, lookAt, noStall, until, watchBoxes, pointAt } = require('./page');
+const { STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -91,17 +91,20 @@ function plate(path, color, seconds, hz) {
   const tool = tools.find((held) => held.id === 'cozy/edit');
   check('edit_is_a_tool', tool?.label === 'Edit' && tool.kind === 'video' && tool.controls[0]?.type === 'timeline', tool);
   await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1208, y: 144 } });
-  const card = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
+  const card = (name) => boxOf(page, name);
   await card('Edit').waitFor();
   // A box shows as it's dropped, ahead of Calcifer's answer: it's the project that's asked.
   check('its_name', Boolean(await until('the Edit in the project', edit, Boolean)));
   // At rest it's its picture, or what it's for: on a hover, its filmstrip, in the same place, and still no video.
-  const away = () => page.mouse.move(2, 500);
+  const away = async () => {
+    await closeBox(page);
+    await page.mouse.move(2, 500);
+  };
   const openEdit = async () => {
-    await pointAt(page, card('Edit').locator('.head'));
+    await openBox(page, 'Edit');
     await page.waitForSelector('.tl-clips');
   };
-  await pointAt(page, card('Edit').locator('.head'));
+  await openBox(page, 'Edit');
   await away();
   await until('an Edit at rest', () => card('Edit').locator('.tl').count(), (n) => n === 0);
   check('at_rest_says_what_it_is_for', (await card('Edit').locator('.media-note').textContent()) === 'Drag videos and stills here');
@@ -110,22 +113,22 @@ function plate(path, color, seconds, hz) {
   const atRest = await card('Edit').locator('.media').boundingBox();
   await openEdit();
   const onHover = await card('Edit').locator('.tl').boundingBox();
-  check('a_hover_moves_nothing', Math.abs(onHover.y - atRest.y) < 2 && Math.abs(onHover.height - atRest.height) < 2 && Math.abs(onHover.width - atRest.width) < 3, { atRest, onHover });
+  check('opened_it_has_the_room', onHover.width > atRest.width, { atRest, onHover });
   check('hover_opens_no_video', (await page.locator('video').count()) === 0);
   const clips = () => page.$$eval('.tl-clip', (els) => els.map((el) => ({ name: el.dataset.name, in: Number(el.dataset.in), out: Number(el.dataset.out), frames: Number(el.dataset.frames), missing: el.dataset.missing })));
   const order = async () => (await clips()).map((clip) => clip.name).join(' ');
   // A real drag, by its head, on a real mouse: back where it started, and in the box.
+  // A box goes in from the row of the project's pictures in the open Edit, to a place on its track.
   const dragIn = async (name, x, y) => {
-    const before = await card(name).boundingBox();
-    const head = await card(name).locator('.head').boundingBox();
-    await page.mouse.move(head.x + head.width / 2, head.y + head.height / 2);
+    await openEdit();
+    const from = await page.locator(`.picture[title="${name}"]`).boundingBox();
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
     await page.mouse.down();
-    await page.mouse.move(head.x + head.width / 2 + 12, head.y + head.height / 2 + 12, { steps: 3 });
+    await page.mouse.move(from.x + from.width / 2 + 12, from.y + from.height / 2 - 12, { steps: 3 });
     await page.mouse.move(x, y, { steps: 10 });
     await page.mouse.up();
     await until(`${name} on the track`, order, (now) => now.includes(name));
-    const after = await card(name).boundingBox();
-    return Math.abs(before.x - after.x) < 1 && Math.abs(before.y - after.y) < 1;
+    return true;
   };
   // Clips close up with a little overshoot: a person takes hold of what has stopped.
   const settled = () => page.evaluate(() => Promise.all(document.querySelector('.tl').getAnimations({ subtree: true }).map((held) => held.finished.catch(() => {}))));
@@ -150,7 +153,7 @@ function plate(path, color, seconds, hz) {
   check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
   await away();
   check('at_rest_its_first_clip', await until('its first clip\'s picture', () => card('Edit').locator('.media img').count(), (n) => n === 1));
-  check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button').count()) === 0, await card('Edit').innerText());
+  check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button:visible').count()) === 0, await card('Edit').innerText());
   await openEdit();
 
   // Pull an end: the bubble says the timecode, the clips stay snapped.
@@ -219,7 +222,7 @@ function plate(path, color, seconds, hz) {
 
   // Render: free, with no machine, showing how far it is, and a version like any other.
   const render = async () => {
-    await pointAt(page, card('Edit').locator('.head'));
+    await openBox(page, 'Edit');
     await card('Edit').locator('button[aria-label="Render"]').click();
   };
   await page.evaluate(() => { window.rendering = 0; new MutationObserver(() => { if (document.querySelector('.tl-rendering')) window.rendering += 1; }).observe(document.body, { subtree: true, childList: true, attributes: true }); });
@@ -268,7 +271,7 @@ function plate(path, color, seconds, hz) {
   check('second_frames_exact', countFrames(film) === second.reduce((sum, clip) => sum + clip.frames, 0), { film: countFrames(film), second });
 
   // Back to the first: its arrangement shows, and an edit carries on from there.
-  await pointAt(page, card('Edit').locator('.head'));
+  await openBox(page, 'Edit');
   await card('Edit').locator('.take').first().click();
   await until('version 1\'s clips', clips, (now) => now[0].out === placed[0].out);
   await pull('blue', 'in', 10);
@@ -276,18 +279,18 @@ function plate(path, color, seconds, hz) {
   check('carried_on', (await edit()).fields.timeline.tracks[0].clips[0].in > placed[0].in, (await edit()).fields.timeline);
 
   // Dragged out, a version is an asset of its own with the same file, and no new bytes.
-  await pointAt(page, card('Edit').locator('.head'));
-  await card('Edit').locator('.take[draggable=true]').first().dragTo(page.locator('.stage'), { targetPosition: { x: 508, y: 744 } });
+  await openBox(page, 'Edit');
+  await card('Edit').locator('.take[draggable=true]').first().dragTo(page.locator('.open-back'), { targetPosition: { x: 60, y: 880 } });
   const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
   // Approved, that version is what the Edit is, and its film follows.
-  await pointAt(page, card('Edit').locator('.head'));
+  await openBox(page, 'Edit');
   await card('Edit').locator('.take').nth(1).click();
   await card('Edit').locator('button:text-is("Approve")').click();
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));
-  await pointAt(page, card('Edit').locator('.head'));
+  await openBox(page, 'Edit');
   // Unapproved, it has no film of what it holds now, so it's cut there and then, and the call answers when that's done: what's counted below is what's asked below.
   await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Edit').locator('button:text-is("Unapprove")').click()]);
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
@@ -295,7 +298,8 @@ function plate(path, color, seconds, hz) {
 
   // Its right click: the film's shape and size, as a render makes them, and a rate that keeps every clip's times.
   const setting = async (label, value) => {
-    await card('Edit').locator('.nm').click({ button: 'right' });
+    await openBox(page, 'Edit');
+    await card('Edit').locator('[aria-label="More for this box"]').click();
     await page.selectOption(`.asset-menu select[aria-label="${label}"]`, value);
     await page.keyboard.press('Escape');
   };
@@ -320,7 +324,8 @@ function plate(path, color, seconds, hz) {
   await openEdit();
 
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.
-  await pointAt(page, card('red').locator('.head'));
+  await away();
+  await pointAt(page, card('red').locator('.nm'));
   await card('red').locator('button[aria-label="Delete"]').click();
   await openEdit();
   await until('the clip says it\'s offline', clips, (now) => now.some((clip) => clip.name === 'red' && clip.missing === 'no longer in the project'));

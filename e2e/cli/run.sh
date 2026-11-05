@@ -109,6 +109,11 @@ for r in 16:1 1:16 32000:2000 17:1 1:17 32768:32; do
     echo "$name: canvas ${w}x${h}"
   fi
 done
+# What a function doesn't take is said, and the run goes on: these are no input of `ImageRequest`.
+if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry guidance:=3 prompt_upsampling:=true; then
+  grep -q 'ignored unknown fields .*guidance.*negative_prompt.*prompt_upsampling' "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
+    || check "ratio-unknown: what it doesn't take isn't said"
+fi
 }
 
 # Describe reads a checkout's editable install statically (direct_url.json and .pth paths, never their code).
@@ -259,7 +264,7 @@ case $SHARD in
   follow) parts="script_package one_name_two_paths image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || parts="catalog refusals web_serves completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
 
 start
 for part in $parts; do $part; done

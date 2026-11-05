@@ -194,7 +194,7 @@ struct Render {
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
-    #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',', default_value = "local")]
+    #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',')]
     on: Vec<String>,
     /// Ask and return at once: what it queued and what's ahead of each is printed, and `status` shows how it goes.
     #[arg(long)]
@@ -485,8 +485,11 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         true => None,
         false => Some(calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?),
     };
-    let on: Vec<On> =
-        args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?;
+    // Named, it's held to what this OS can do. Unnamed it's `local`, and Calcifer says so only of what needs a machine: an Edit needs none.
+    let on: Vec<On> = match args.on.is_empty() {
+        true => vec![On::from("local".to_owned())],
+        false => args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?,
+    };
     let runs = Runs {
         outdated: args.outdated,
         names: args.names,
@@ -673,5 +676,7 @@ pub(crate) async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> R
         Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
         None => cwd,
     };
-    ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await
+    let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await?;
+    opened.said.iter().for_each(|said| output::warn(said));
+    Ok(opened)
 }

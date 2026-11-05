@@ -37,13 +37,14 @@ const STEP_MS = 60000;
   await page.evaluate((name) => sessionStorage.setItem('cozy.calcifer', name), machine);
   await page.goto(`${new URL(link).origin}/#/projects/${encodeURIComponent(id)}`);
   await page.reload();
-  const box = page.locator('.react-flow__node').filter({ has: page.locator('.nm:text-is("drawn")') });
-  await box.waitFor();
-  // In view, then the pointer on it, as a person's: a hover that retries scrolls, and leaves it over something else.
+  const card = '.card[data-asset="drawn"]';
+  await page.locator(`.react-flow__node ${card}`).waitFor();
+  // In view, then a click opens it: the middle of it, where there's nothing else to press.
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
-  const name = await box.locator('.nm').boundingBox();
-  await page.mouse.move(name.x + name.width / 2, name.y + name.height / 2);
+  const { x, y, width, height } = await page.locator(`.react-flow__node ${card} .media`).boundingBox();
+  await page.mouse.click(x + width / 2, y + height / 2);
+  const box = page.locator(`.open-box ${card}`);
   await box.locator('button[aria-label=Render]').waitFor();
   // The page asks this computer's Calcifer, which has no such code.
   for (let waited = 0; waited < 300 && !toolUi.length; waited++) await page.waitForTimeout(100);

@@ -76,7 +76,7 @@ def _video(payload: ShotInput) -> VideoFile:
     return found[0]
 
 
-@app.entrypoint(node=Node(label="Shaped Shot", show=["soundscape", "music"], hide=["steps", "plate"], fill={"continue_from": "take"}, reserved=["d"]))
+@app.entrypoint(node=Node(label="Shaped Shot", show=["soundscape", "music"], hide=["steps", "plate"], cuts={"every": 17, "offset": 5, "first": 39}, fill={"continue_from": "take"}, reserved=["d"]))
 def shot(payload: ShotInput, out: Outputs) -> Shot:
     """A video in its own words, beat by beat."""
     warned = [f"beat {at + 1} says nothing" for at, beat in enumerate(payload.beats) if not beat.description]
@@ -96,14 +96,15 @@ class Up(msgspec.Struct):
     video: File
 
 
-@app.entrypoint(node=Node(label="Shaped Up", fill={"latents": "video.latents", "prompt": "video.description"}))
+@app.entrypoint(node=Node(label="Shaped Up", fill={"latents": "video.latents", "prompt": "video.text"}))
 def up(payload: UpInput, out: Outputs) -> Up:
-    """A video taken up: it reads its latents, and if it can't, its description."""
+    """A video taken up: it reads its latents, and if it can't, the text that made it, else its description."""
     return Up(out.save_bytes(payload.video.read_bytes(), media_type="video/mp4"))
 
 
 class Mentions(Picture, kw_only=True):
     image: ImageFile | None = None
+    description: str = ""
 
 
 class PictureInput(msgspec.Struct, kw_only=True):

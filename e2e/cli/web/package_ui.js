@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, noStall, until, pointAt, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
+const { STEP_MS, boxOf, closeBox, noStall, openBox, until, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -155,11 +155,13 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const yaml = () => readFileSync(join(folder, 'project.yaml'), 'utf8');
   const status = () => JSON.parse(execFileSync(COZY, ['--json', 'project', '-p', folder, 'status'], quiet).toString());
   const held = (name) => status().assets.find((asset) => asset.name === name);
-  const box = (name) => element(page, name);
-  const away = () => page.mouse.move(2, 500);
+  const box = (name) => boxOf(page, name);
+  const away = async () => {
+    await closeBox(page);
+    await page.mouse.move(2, 500);
+  };
   const open = async (name) => {
-    await away();
-    await pointAt(page, box(name).locator('.nm'));
+    await openBox(page, name);
     await box(name).locator('button[aria-label=Render]').waitFor();
   };
   // Behind its More, opened if it isn't.
@@ -360,6 +362,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
       // Browse: a package of the Hub, on your list with nothing installed, there after a reload, and off it again. A box of it goes on.
       const listRow = page.locator(`.tools [data-tool="${released}"]`);
+      await away();
       await page.locator('.tools button:has-text("Browse")').click();
       const found = page.locator('.browse .browsed', { hasText: name });
       await found.waitFor();
@@ -382,6 +385,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       const unheldStill = await toolUi(released);
       check('adding_installs_nothing', unheldStill.status === 404 && unheldStill.body.error.code === 'tool_ui_not_installed' && !hub.asked.some((line) => line.includes('/download') || line.includes('/wheels/')), { unheldStill, asked: hub.asked });
       await shot('your-list');
+      await away();
       await listRow.hover();
       await listRow.locator('.tool-off').click();
       await listRow.waitFor({ state: 'detached' });

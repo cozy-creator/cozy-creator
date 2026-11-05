@@ -19,7 +19,7 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   what needs no machine and that every local verb refuses `local_unavailable`.
 - `imports/run.sh`: every published first-party package release installs (`cozy package install`) and imports on the candidates;
   a Runtime that moves what a published package imports fails here.
-- `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU (explicit `select` only, until macOS runs models itself).
+- `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU. It can't pass today: macOS answers `local_unavailable` ("local runs aren't available on macOS yet"), so it fails at once if selected. It runs only on an explicit `select`, so nothing else waits on it; it starts to mean something when macOS runs models itself.
 - `capabilities/run.sh`: a run capability (AuthKit's workload grant) reads its private commit and nothing else: signed and
   redeemed as Calcifer and TensorD do, renewed, a copied token refused without its DPoP key, refused for another repository,
   a release, a delete, rentals, another account's repository, an altered or expired capability and, with `--rental`, once the

@@ -6,8 +6,10 @@ import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
+import { controlsOf, fullRows } from "./controls"
 import { asName, freeName, nameKey } from "./names"
 import { faceOf, heightFor, madeHere, makes, widthFor } from "./shown"
+import { clipOf, wire } from "./timeline/model"
 
 export type ElementData = { name: string }
 export type ElementNode = Node<ElementData, "element" | "entity">
@@ -163,18 +165,18 @@ export class CanvasStore {
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
   readonly names = signal(0)
-  /** The right click open, and where. */
-  readonly menu = signal<{ name: string; x: number; y: number } | null>(null)
+  /** The menu open, and where. `full`: from an opened box, with what's asked of it. */
+  readonly menu = signal<{ name: string; x: number; y: number; full?: boolean } | null>(null)
   /** What takes a drop, by its element: a box marks itself `data-drop-target`. */
   readonly dropTargets = new Map<Element, DropTarget>()
   /** Each open text's way to take a name at its caret, by `<node>:<place>`. */
   private carets = new Map<string, (name: string) => void>()
-  /** The box last typed in stays open until a click elsewhere, so what's dragged next can land where its caret was. */
-  readonly editing = signal<string | null>(null)
   /** Has these assets, and what's said of the project, read. */
   readAgain: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
+  /** The box opened over the canvas, if one is. */
+  opened: string | null = null
   /** The name a just-dropped tool will have: its text takes the keys. */
   focusing: string | null = null
   /** The machines a render may go to, a rental before this computer: the walk places it on whichever is free. */
@@ -868,7 +870,6 @@ export class CanvasStore {
     if (mask) this.masks.set(to, mask)
     this.aliases.set(from, to)
     this.aliases.delete(to)
-    if (this.editing.get() === from) this.editing.set(to)
     const shape = this.shapes.get(from)
     this.shapes.delete(from)
     if (shape) this.shapes.set(to, shape)
@@ -1078,11 +1079,36 @@ export class CanvasStore {
       // Only a box being made takes anything: what's made, approved or only words is just in the way.
       if (!view || !makes(view) || faceOf(view) !== "edit") break
       this.setHot(name)
-      const own = el.closest("[data-drop-target]") ?? card.querySelector("[data-drop-target]")
-      return (own && this.dropTargets.get(own)) ?? null
+      return { over: () => {}, drop: (names) => this.takeInto(name, names) }
     }
     this.setHot(null)
     return null
+  }
+
+  /** Names into a box that's shut: its first place for one, after what's there. */
+  takeInto(target: string, names: string[]) {
+    const key = this.resolveName(target)
+    const asset = this.views.get(key)?.asset
+    const given = names.map((name) => this.resolveName(name)).filter((name) => name !== key)
+    if (!asset || !given.length) return
+    const tags = given.map((name) => `<${name}>`)
+    const asText = (held: unknown) => [typeof held === "string" ? held.trimEnd() : "", ...tags].filter(Boolean).join(" ")
+    const controls = controlsOf(asset, this.tools.get())
+    if (asset.timeline) {
+      const clips = asset.timeline.tracks[0]?.clips ?? []
+      const taken = given.flatMap((name) => clipOf(this, name, asset.timeline?.fps ?? 24) ?? [])
+      if (taken.length < given.length) say("Only video and stills go in an Edit for now")
+      if (taken.length) void this.setFields(key, { timeline: wire([...clips, ...taken]) })
+      return
+    }
+    const control = controls.find((held) => held.type === "text" || held.type === "file" || (held.type === "group" && held.members?.some((member) => member.type === "text")))
+    if (!control) return
+    const value = this.valueOf(key, control.field)
+    if (control.type === "text") return void this.setFields(key, { [control.field]: asText(value) })
+    if (control.type === "file") return void this.setFields(key, { [control.field]: control.multiple ? [...(Array.isArray(value) ? value : []), ...tags] : tags.at(-1) })
+    const words = control.members!.find((member) => member.type === "text")!
+    const rows = fullRows(control, Array.isArray(value) ? value : [])
+    void this.setFields(key, { [control.field]: rows.map((row, i) => (i ? row : { ...row, [words.field]: asText(row[words.field]) })) })
   }
 
   private hot: string | null = null
@@ -1368,7 +1394,6 @@ export class CanvasStore {
     this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
     const at = this.clearOf(name, dropped)
     this.rows?.set(name, at)
-    this.editing.set(null)
     const node = this.node(name, at)
     this.flow?.addNodes(node)
     const left = () => {

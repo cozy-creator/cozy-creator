@@ -78,6 +78,23 @@ step "web-package-ui: a package's component drawn, its field saved and read back
 local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
+[ -n "${WEB_ALONE:-}" ] || web_engines "$chrome" "$pw"
+}
+
+# The cells the canvas lives by in a second engine: WebKit on a Mac, Firefox on Linux. Each is Playwright's own build, and WebKit's is not
+# Safari: it finds what differs in the engine, drag and drop above all, and nothing of Safari's own.
+web_engines() {
+  local chrome=$1 pw=$2 ENGINE cell
+  case ${RUNNER_OS:-} in
+    macOS) ENGINE=webkit ;;
+    # H.264 is the system's libavcodec on Linux: with none, Firefox says "This browser can't play it" (41966978063).
+    Linux) ENGINE=firefox; sudo apt-get install -y -qq libavcodec-extra > "$OUT/web-firefox-codec.log" 2>&1 || check "web-firefox: no H.264: $(tail -c 300 "$OUT/web-firefox-codec.log")" ;;
+    *) return 0 ;;
+  esac
+  step "web-$ENGINE: place, see and nodes, in Playwright's $ENGINE"
+  node "$pw/node_modules/playwright-core/cli.js" install $([ "$RUNNER_OS" != Linux ] || echo --with-deps) "$ENGINE" > "$OUT/web-$ENGINE-install.log" 2>&1 \
+    || { check "web-$ENGINE: install failed: $(tail -c 300 "$OUT/web-$ENGINE-install.log")"; return; }
+  for cell in place see nodes; do web_proof "$cell" "$chrome" "$pw" ''; done
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
@@ -100,11 +117,14 @@ web_link() {
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by
 # name, which it forgets, folder and all, whatever happened.
 web_proof() {
-  local name=$1 chrome=$2 pw=$3 restart=$4 json=$OUT/web-$1.json link code=0 id folder lock addr token
+  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot link code=0 id folder lock addr token
+  json=$OUT/web-$pass.json shot=$(web_path "$OUT/web-$pass")
+  # A screenshot in WebKit sets off the CSP on any page, with an inline style of Playwright's: its pass keeps its last look, past caring, and no others.
+  [ "${ENGINE:-}" != webkit ] || shot=''
   web_link || return
-  HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
-    node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$name.err" || code=$?
-  [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
+  HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart ENGINE=${ENGINE:-} LAST_LOOK=$(web_path "$OUT/web-$pass") SHOT=$shot CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
+    node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$pass.err" || code=$?
+  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   lock=$HOME/.cozy/calcifer/calcifer.lock.holder

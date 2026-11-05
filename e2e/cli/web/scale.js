@@ -8,7 +8,7 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFile, execFileSync } = require('child_process');
 const { createHash } = require('crypto');
-const { appendFileSync, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
 const { STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
@@ -24,6 +24,8 @@ function check(name, ok, detail) {
 }
 
 const ASSETS = 5000;
+const HOLE = { col: 3, row: 1 };
+const PAN_MS = 3000;
 const PICTURES = 1000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
@@ -101,7 +103,12 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
   // A grid, each where it'd sit if a person had placed it.
   const side = Math.ceil(Math.sqrt(assetCount));
   const rows = ['# Where cards sit. Only the page reads this. Nothing here is an input.', 'version: 1', 'cards:'];
-  const card = (name, at) => rows.push(`  ${name}: {x: ${(at % side) * 300}, y: ${Math.floor(at / side) * 320}, w: 260}`);
+  // A place left empty near the top: a grid has no other room, and a box that lands on another is moved off it.
+  const hole = side * HOLE.row + HOLE.col;
+  const card = (name, at) => {
+    const place = at < hole ? at : at + 1;
+    rows.push(`  ${name}: {x: ${(place % side) * 300}, y: ${Math.floor(place / side) * 320}, w: 260}`);
+  };
   for (let i = 0; i < assetCount - pictures; i++) card(`shot_${i}`, i);
   for (let i = 0; i < pictures; i++) card(`pic_${i}`, assetCount - pictures + i);
   replaceFile(join(folder, 'project.canvas.yaml'), `${rows.join('\n')}\n`);
@@ -114,6 +121,41 @@ const within = (what, waiting, ms = STEP_MS) => Promise.race([waiting, new Promi
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
   renameSync(`${at}.part`, at);
+}
+
+/** What a plain flush costs on the disk under `dir`, the middle of 20: 4 KB, and as many bytes as `like`. Nothing of cozy's is in it. */
+function flushed(dir, like) {
+  const at = join(dir, '.flush-probe');
+  const flush = (bytes) => {
+    const took = [];
+    for (let i = 0; i < 20; i++) {
+      const held = openSync(at, 'w');
+      writeSync(held, Buffer.alloc(bytes, i));
+      const began = performance.now();
+      fsyncSync(held);
+      took.push(performance.now() - began);
+      closeSync(held);
+    }
+    rmSync(at);
+    return summary(took).median_ms;
+  };
+  // As `durable::replace` goes: written beside it, flushed, renamed over it.
+  const replace = (bytes) => {
+    const took = [];
+    for (let i = 0; i < 20; i++) {
+      const began = performance.now();
+      const held = openSync(`${at}.part`, 'w');
+      writeSync(held, Buffer.alloc(bytes, i));
+      fsyncSync(held);
+      closeSync(held);
+      renameSync(`${at}.part`, at);
+      took.push(performance.now() - began);
+    }
+    rmSync(at);
+    return summary(took).median_ms;
+  };
+  const yaml_bytes = statSync(like).size;
+  return { flush_4k_ms: flush(4096), flush_yaml_ms: flush(yaml_bytes), replace_yaml_ms: replace(yaml_bytes), yaml_bytes };
 }
 
 function summary(frames) {
@@ -227,6 +269,8 @@ function calciferMb() {
   const reads = { whole: 0, heads: 0, assets: 0, whole_bytes: 0 };
   /** Each asset as the page last read it alone, and when. */
   const readAlone = new Map();
+  /** What the page read and found gone. */
+  const readGone = new Set();
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (request.method() !== 'GET') return;
@@ -237,7 +281,10 @@ function calciferMb() {
     if (answer.request().method() !== 'GET') return;
     const { pathname } = new URL(answer.url());
     if (pathname === `/v1/projects/${id}`) answer.body().then((body) => { reads.whole_bytes = Math.max(reads.whole_bytes, body.length); }, () => {});
-    if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() }), () => {});
+    if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => {
+      if (asset) readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() });
+      else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
+    }, () => {});
   });
   const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png`, timeout: 60_000 }).catch(() => {}) : Promise.resolve());
@@ -273,11 +320,22 @@ function calciferMb() {
   const busy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
   const measuredPan = async () => {
     await drawn();
+    const atRest = await busy();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
     const from = await busy();
-    const moving = summary(await panning(3000));
-    const work_ms_per_frame = +(((await busy()) - from) / moving.frames).toFixed(2);
-    return { still, moving, work_ms_per_frame, mounted: await page.locator('.react-flow__node').count() };
+    const moving = summary(await panning(PAN_MS));
+    const worked = (await busy()) - from;
+    // What goes on at rest goes on through a pan, and isn't the pan's: `work_ms_per_frame` is all of it, `added_ms_per_frame` what panning adds.
+    const rest_ms_per_s = from - atRest;
+    const added = Math.max(0, worked - rest_ms_per_s * (PAN_MS / 1000));
+    return {
+      still,
+      moving,
+      rest_ms_per_s: +rest_ms_per_s.toFixed(1),
+      work_ms_per_frame: +(worked / moving.frames).toFixed(2),
+      added_ms_per_frame: +(added / moving.frames).toFixed(2),
+      mounted: await page.locator('.react-flow__node').count(),
+    };
   };
 
   // The same pan of a small project, for what this runner draws whatever a project holds.
@@ -302,8 +360,8 @@ function calciferMb() {
   memory.open = calciferMb();
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
   numbers.pan_big = await measuredPan();
-  const allowed = numbers.pan_small.work_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
-  check('size_adds_nothing_to_a_pan', numbers.pan_big.work_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
+  const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
+  check('size_adds_nothing_to_a_pan', numbers.pan_big.added_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');
@@ -391,16 +449,14 @@ function calciferMb() {
   for (const [i, name] of made.entries()) await write(writes.move, '/canvas', 'PATCH', { cards: { [name]: { x: -9000 - i * 800, y: -12000 } } });
   for (const name of made) await write(writes.delete, `/assets/${name}`, 'DELETE', {});
   numbers.write_ms = Object.fromEntries(Object.entries(writes).map(([what, took]) => [what, summary(took).median_ms]));
-  check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), numbers.write_ms);
+  numbers.write_disk = flushed(folder, join(folder, 'project.yaml'));
+  check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), { bar: BARS.write_ms, ...numbers.write_ms, ...numbers.write_disk });
   check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
   // A render from the CLI, on the fixture tool, landing on the open canvas.
   if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
-    const rect = await page.evaluate((name) => window.boxOf(name).getBoundingClientRect().toJSON(), onScreen.at(-1));
-    const viewport = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).toJSON());
-    const [x, y] = [Math.round((rect.right + 20 - viewport.e) / viewport.a), Math.round((rect.top - viewport.f) / viewport.a)];
-    await project('add', `${TOOL}/still`, 'scale_shot', `at=${x},${y},200`, 'instructions=A landing at scale');
+    await project('add', `${TOOL}/still`, 'scale_shot', `at=${HOLE.col * 300},${HOLE.row * 320},200`, 'instructions=A landing at scale');
     await box('scale_shot').waitFor();
     const landing = within('its picture', page.evaluate((name) => window.pictureOf(name), 'scale_shot'), 300_000);
     const render = await project('render', 'scale_shot', '--on', 'local');
@@ -439,6 +495,8 @@ function calciferMb() {
 
   check('never_reloaded', await page.evaluate(() => window.notReloaded === true));
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
+  // A box deleted is read once more, which is how the page hears it's gone. Nothing else should be.
+  check('only_what_was_deleted_reads_as_gone', [...readGone].every((name) => made.includes(name)), [...readGone]);
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();

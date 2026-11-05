@@ -198,7 +198,11 @@ function Canvas({
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
   const opened = useMatch("/projects/:id/assets/:name")?.params.name
-  const closeBox = useCallback(() => navigate(`/projects/${store.projectId}`), [navigate, store])
+  store.opened = opened ? store.resolveName(opened) : null
+  const closeBox = useCallback(() => {
+    if (opened) void store.save(opened)
+    navigate(`/projects/${store.projectId}`)
+  }, [navigate, store, opened])
   const stage = useRef<HTMLDivElement>(null)
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -345,19 +349,17 @@ function Canvas({
       }
       store.dragDropped(nodes)
       target.drop(nodes.map((node) => node.data.name), clientX, clientY)
-      // The box stays open under the pointer until it moves.
-      window.addEventListener("pointermove", () => store.setHot(null), { once: true })
+      store.setHot(null)
     },
     [store],
   )
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (typing(event.target)) return
+      if (typing(event.target) || document.querySelector(".open-box")) return
       const command = event.metaKey || event.ctrlKey
       if (event.key === "Escape") {
         store.menu.set(null)
-        store.editing.set(null)
         for (const node of flow.getNodes()) {
           const placing = store.get(node.data.name)?.placing
           if (node.selected && placing && placing.stage !== "adding") store.cancel(store.resolveName(node.data.name))
@@ -367,10 +369,7 @@ function Canvas({
         const names = flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
         if (names.length) {
           event.preventDefault()
-          // One box, with one of its takes chosen: it's that take that goes.
-          const take = names.length === 1 ? store.lookingAt(names[0]) : undefined
-          if (take === undefined) store.remove(names)
-          else store.discardTake(names[0], take)
+          store.remove(names)
         }
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
@@ -440,6 +439,7 @@ function Canvas({
           panOnScroll
           panOnScrollSpeed={1}
           selectionMode={SelectionMode.Partial}
+          selectNodesOnDrag={false}
           zoomOnDoubleClick={false}
           minZoom={0.05}
           maxZoom={4}
@@ -452,9 +452,11 @@ function Canvas({
           attributionPosition="bottom-right"
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
-          onPaneClick={() => store.editing.set(null)}
           onNodeClick={(event, node) => {
-            if (node.type !== "element" || !store.projectId || event.shiftKey || event.metaKey || event.ctrlKey) return
+            if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
+            // A click opens: only Shift selects.
+            flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
+            store.focusing = node.data.name
             navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(node.data.name)}`)
           }}
           onNodeContextMenu={(event, node) => {
@@ -474,7 +476,7 @@ function Canvas({
         </ReactFlow>
         {veil && <div className="dropveil" />}
       </div>
-      {opened && <OpenBox name={opened} close={closeBox} />}
+      {opened && <OpenBox name={opened} close={closeBox} addFiles={(files, then) => placer.add(files, visibleCentre(), then)} addTake={(file, x, y) => placer.addFile(JSON.parse(file), flow.screenToFlowPosition({ x, y }))} />}
       <AssetMenu />
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}

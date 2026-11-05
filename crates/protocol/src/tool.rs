@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    interface::{Callable, Constraints, Field, Interface, Node, Struct, TAKE, Type, Wire},
+    interface::{Callable, Constraints, Cuts, Field, Interface, Node, Struct, TAKE, Type, Wire},
     names::shown,
 };
 
@@ -72,6 +72,9 @@ pub struct Tool {
     pub function: String,
     /// The release this box was read from: the one its machine holds, else the Hub's newest.
     pub release: String,
+    /// What a new box of it is called: `shot_1`, counting up as it's taken.
+    #[serde(default)]
+    pub name: String,
     pub label: String,
     /// What a node of it is: `image`, `video` or `audio`.
     pub kind: String,
@@ -87,6 +90,9 @@ pub struct Tool {
     /// A new take can keep the start of one of its: it says `fill: {.. take}`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub takes: bool,
+    /// The frames a kept take can end on, if it can't end on any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuts: Option<Cuts>,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -168,12 +174,14 @@ pub fn edit() -> Tool {
         package: "cozy".to_owned(),
         function: "edit".to_owned(),
         release: String::new(),
+        name: "Edit".to_owned(),
         label: "Edit".to_owned(),
         kind: "video".to_owned(),
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
         local: false,
         ui: None,
         takes: false,
+        cuts: None,
         controls: vec![Control { field: "timeline".to_owned(), ty: ControlType::Timeline, label: "Edit".to_owned(), face: true, ..Control::default() }],
     }
 }
@@ -217,6 +225,7 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
     let node = callable.node.clone().unwrap_or_default();
     Some(Tool {
         id: format!("{package}/{}", callable.name),
+        name: box_name(&package, callable),
         label: if node.label.is_empty() { label(&package, &callable.name) } else { node.label.clone() },
         package,
         function: callable.name.clone(),
@@ -226,8 +235,26 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
         local: false,
         controls: controls(callable, &node),
         takes: node.fill.values().any(|source| source == TAKE),
+        cuts: node.cuts,
         ui: node.ui,
     })
+}
+
+/// What a new box of `callable` is called, which counts up as it's taken: its `Node`'s word, else its package's, numbered.
+pub fn box_name(package: &str, callable: &Callable) -> String {
+    let said = callable.node.as_ref().map(|node| node.name.as_str()).filter(|name| !name.is_empty());
+    first_of(said.unwrap_or_else(|| package_word(package)))
+}
+
+/// The word of a package: the last of its path, with no `.py` if it's a script.
+pub fn package_word(package: &str) -> &str {
+    let last = package.rsplit('/').find(|word| !word.is_empty()).unwrap_or(package);
+    last.strip_suffix(".py").unwrap_or(last)
+}
+
+/// `shot` as the first of its boxes.
+pub fn first_of(word: &str) -> String {
+    format!("{word}_1")
 }
 
 /// `Qwen Image 2 Turbo`, `Minimax H3 Upscale`: a package's words and what the function adds to `generate`.

@@ -1016,6 +1016,8 @@ export interface Tool {
   package: string
   function: string
   release: string
+  /** What a new box of it is called, `shot_1`: its `Node`'s word or its package's. A Calcifer that doesn't say goes by `label`. */
+  name?: string
   label: string
   kind: string
   description?: string
@@ -1026,6 +1028,8 @@ export interface Tool {
   ui?: string
   /** A new take can keep the start of one of its. */
   takes?: boolean
+  /** Where a new take can start, in whole frames of the video: `offset + k * every`, from `first` up. None: any frame. */
+  cuts?: { every: number; offset: number; first: number }
 }
 
 /** Where a tool's component is, for `import()`. */

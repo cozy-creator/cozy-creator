@@ -9,7 +9,7 @@ A project is a folder of files plus a graph that says how each file was made.
 - **Asset:** a stable name holding one main file: a name, what it is, how it's made, the file you approved, and words for whatever mentions it.
 - **Edge:** you don't write edges: `<name>` in any input reads that asset. The only rule is no cycles.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
-- **Version**, or **take** if it has a video: one result of an asset's tool, recorded in `project.lock`.
+- **Version**, or **take** if it has a video: one result of an asset's tool, recorded in `project.lock`, with the words that made it where they changed from the version before.
 
 Calcifer owns all of this. It knows no inputs and no packages by name.
 
@@ -120,7 +120,7 @@ Every other key is an **input**: it goes to the function and counts in the key. 
 - **A name that names nothing** fails that asset before anything runs, at no cost: `<Image-1> is no longer in the project`, with `did you mean <kyogre>?` when it's close. The failure stays until a version lands or its inputs change, what reads it waits, and everything else goes on. `status` says it ahead of a render. Until a function is read, at its first render, its assets' are held back, because they may be its tags. An approved asset runs nothing, so it doesn't fail unless you name it. An edit leaves out a clip it can't read.
 - **A cycle:** a mention that closes one stays plain text, with a warning, and both still render.
 
-**What a reader gets of what it mentions:** `name`, `kind`, `asset_type`, `description`, `files` by role (`image`, `video` or `audio`, `latents`, `voice`), `made_by`, and `inputs` holding only `use_audio` and `follow`. What made it, its `instructions` or a shot's `summary`, is for its maker alone, and never crosses a mention.
+**What a reader gets of what it mentions:** `name`, `kind`, `asset_type`, `description`, `files` by role (`image`, `video` or `audio`, `latents`, `voice`), and `made_by`. What made it, its `instructions` or a shot's `summary`, is for its maker alone, and never crosses a mention.
 
 ## How rendering decides
 
@@ -219,16 +219,18 @@ cozy project render clash
 An asset is a call of its function, the same one `cozy run` and an agent make. Its text goes to the function with its `<mentions>` in it, and everything else the function asks for is filled by its types:
 
 - **A file input** takes the file `<name>` names, and one no mention names takes the first read that has a file of its kind.
-- **A list of structs with a `name` member** (`references`, `pictures`) takes what the text mentions, member by member: `name`, `description`, `asset_type`, `made_by`; `alpha`, `width`, `height` as measured; a file by its role, `image`, `video`, `audio`, `voice`, or an output's name; and how to take it, `use_audio`, `follow`. A prompt never crosses a mention. An output past the main one reaches only the package that made it. With one file member, an entry per file, the rest `<name 2>`, `<name 3>`.
+- **A list of structs with a `name` member** (`references`, `pictures`) takes what the text mentions, member by member: `name`, `description`, `asset_type`, `made_by`; `alpha`, `width`, `height` as measured; a file by its role, `image`, `video`, `audio`, `voice`, or an output's name. A prompt never crosses a mention. An output past the main one reaches only the package that made it. With one file member, an entry per file, the rest `<name 2>`, `<name 3>`.
 - **A list of any other struct** is rows, as long as its type says at the least.
 - **A `Node` says the rest**, in the function's own package:
 
 ```python
 app.entrypoint(generate, node=Node(
+    name="shot",                            # what a box of it is called: `shot_1`, `shot_2`; by default its package
     label="MiniMax H3",                     # its name in the tool list
     show=["soundscape", "music"],           # on its default face, beside its first text and what's required
     hide=["steps", "upscale"],              # never drawn; a file or `cozy run` can still set them
-    fill={"continue_from": "take"},         # the take a new one keeps, or `<input>.<member>` of what that input mentions
+    fill={"continue_from": "take"},         # the take a new one keeps, or `<input>.<member>` of what that input mentions; `<input>.text` is the words its version was made from, else its description
+    cuts={"every": 17, "offset": 5, "first": 124},  # the frames a kept take can end on, if it can't end on any
     reserved=["d", "scenetrans"],           # its model's own tags
 ))
 ```
@@ -253,12 +255,14 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Upgrading from format 2
 
+A project of format 2 upgrades itself the first time anything opens it, or a run lands in it, and says so once. The old files stay beside the new as `project.yaml.v2` and `project.lock.v2`. Each asset's approved version, else its newest, is taken as current, so what was out of date no longer shows it. To keep those marks, upgrade it yourself first:
+
 ```
 cozy project status --json > status.json      # with the cozy that reads format 2
 cozy project upgrade --status status.json     # with this one
 ```
 
-It runs here with no Calcifer, and the old files stay beside the new as `project.yaml.v2` and `project.lock.v2`. It refuses while runs are on their way. With no `--status`, each asset's approved version, else its newest, is taken as current.
+It runs here with no Calcifer. What can't convert is refused, says why and stays as it is: runs on their way, or two names that fold to one. Format 1 isn't moved.
 
 - Each asset's `render` goes flat, `prompt` as `instructions`, and `with` as `tool`, always a function: H3 is `generate`, with `turbo: false` only where a file said so or where it set `steps`; any other package's `turbo: true` is `generate_turbo`, `turbo: false` `generate`, and with neither what made its newest version. A video with only `video` and `resolution` is `upscale`. `with: cozy` is `cozy/edit`, or `cozy/frame` for a picture. `pieces` become `tracks`, `start` `in` and `end` `out`. A hash in `image`, `video` or `audio` is `approved`, and an input under `# was` is back. `kind` lines go. Comments stay.
 - Each entity folds into its sheet, which takes its name, `description` and `asset_type`. Each form becomes an asset, `<entity>.<form>`, and mentions are rewritten.

@@ -255,6 +255,9 @@ pub struct Version {
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The words it was made from, only where they aren't the version before it's (`Asset::text_of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 impl Version {
@@ -364,6 +367,45 @@ impl Asset {
     /// Its versions and those discarded.
     pub fn on_record(&self) -> impl Iterator<Item = &Version> {
         self.versions.iter().chain(&self.discarded)
+    }
+
+    /// The words version `number` was made from: its own, else those of the latest before it that holds any.
+    pub fn text_of(&self, number: u32) -> Option<&str> {
+        self.on_record().filter(|version| version.number <= number && version.text.is_some()).max_by_key(|version| version.number)?.text.as_deref()
+    }
+
+    /// Each version's words, by number.
+    fn texts(&self) -> BTreeMap<u32, String> {
+        self.on_record().filter_map(|version| Some((version.number, self.text_of(version.number)?.to_owned()))).collect()
+    }
+
+    /// `texts` written back, each only where it isn't the one before it's.
+    fn keep_texts(&mut self, mut texts: BTreeMap<u32, String>) {
+        let mut all: Vec<&mut Version> = self.versions.iter_mut().chain(&mut self.discarded).collect();
+        all.sort_by_key(|version| version.number);
+        let mut last = None;
+        for version in all {
+            let text = texts.remove(&version.number);
+            version.text = text.clone().filter(|text| Some(text) != last.as_ref());
+            last = text.or(last);
+        }
+    }
+
+    /// `version` on the list in its place, in place of one of that number.
+    pub fn list(&mut self, mut version: Version) {
+        let mut texts = self.texts();
+        texts.extend(version.text.take().map(|text| (version.number, text)));
+        self.versions.retain(|held| held.number != version.number);
+        self.versions.push(version);
+        self.versions.sort_by_key(|version| version.number);
+        self.keep_texts(texts);
+    }
+
+    /// What's discarded gone for good: what comes after it keeps its words.
+    pub fn clear_discarded(&mut self) {
+        let texts = self.texts();
+        self.discarded.clear();
+        self.keep_texts(texts);
     }
 
     /// Version `number` off the list and on record.
@@ -823,10 +865,15 @@ impl Folder {
 
     /// project.lock as the file says, held while it is the same file.
     fn lock_file(&self) -> Result<Lock, Error> {
+        self.reading_lock(Lock::clone)
+    }
+
+    /// `seen` of project.lock as the file says, with no copy of it made. What the walk owes isn't in it.
+    pub fn reading_lock<R>(&self, seen: impl FnOnce(&Lock) -> R) -> Result<R, Error> {
         let stamp = self.stamp();
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, lock)) = held.as_ref().filter(|(at, _)| *at == stamp) {
-            return Ok(lock.clone());
+            return Ok(seen(lock));
         }
         let path = self.dir.join(LOCK);
         let mut lock = match path.exists() {
@@ -837,8 +884,9 @@ impl Folder {
             false => Lock::default(),
         };
         self.fill(&mut lock);
-        *held = Some((stamp, lock.clone()));
-        Ok(lock)
+        let answer = seen(&lock);
+        *held = Some((stamp, lock));
+        Ok(answer)
     }
 
     fn stamp(&self) -> Stamp {
@@ -1352,9 +1400,10 @@ pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
     }
 }
 
+/// A lock older than its project.yaml, which `Projects::open` would have moved had the file been old too: nothing here can convert it.
 fn old_lock(format: &str) -> Error {
-    let said = format!("{LOCK} is format {format} and cozy reads format {FORMAT}: it is left as it is");
-    Error::new(Kind::Validation, "lock_format", said).next("cozy project upgrade")
+    let said = format!("{LOCK} is format {format} and cozy reads format {FORMAT}: it is left as it is, and {PROJECT} is newer than it, so it can't be upgraded");
+    Error::new(Kind::Validation, "lock_format", said).remedy(format!("put back the {LOCK} that goes with this {PROJECT}, from git or a backup"))
 }
 
 /// The file at `url`, public addresses only at every hop, up to `URL_MOST`. Err: why not.

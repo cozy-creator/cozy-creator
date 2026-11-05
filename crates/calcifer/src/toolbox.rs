@@ -272,11 +272,12 @@ pub(crate) async fn candidates(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(Strin
     found
 }
 
-/// What `tool` makes, `image`, `video` or `audio`, as its function's output says, read as a run of it on this computer would be.
-/// A tool can be local code, by a path from `dir`, and a package with one public function names that one.
-pub(crate) async fn kind(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<String, Error> {
+/// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it
+/// on this computer would be. A tool can be local code, by a path from `dir`, and a package with one public function names that one.
+pub(crate) async fn read(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<(String, String), Error> {
     if tool == tool::EDIT {
-        return Ok(tool::edit().kind);
+        let edit = tool::edit();
+        return Ok((edit.kind, edit.name));
     }
     let hub = api.machines.hubs.default_origin();
     let found = target::describe(api, &hub, tool, Some(dir), &runs::default_on(api)).await?;
@@ -287,6 +288,7 @@ pub(crate) async fn kind(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<Strin
         let functions = interface.public().iter().map(|name| format!("{package}/{name}")).collect::<Vec<_>>().join(", ");
         return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: a tool is one of its functions: {functions}")).next(format!("cozy run {package}")));
     };
-    let made = interface.callables.iter().find(|callable| callable.name == name).and_then(tool::output_kind);
-    made.map(str::to_owned).ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} makes no picture, video or sound")).next("cozy package ls"))
+    let callable = interface.callables.iter().find(|callable| callable.name == name);
+    let made = callable.and_then(|callable| Some((tool::output_kind(callable)?.to_owned(), tool::box_name(&package, callable))));
+    made.ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} makes no picture, video or sound")).next("cozy package ls"))
 }

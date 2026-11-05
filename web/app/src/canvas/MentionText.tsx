@@ -239,7 +239,6 @@ export function MentionText({
         contentEditable="plaintext-only"
         suppressContentEditableWarning
         spellCheck={false}
-        onFocus={() => store.editing.set(asset)}
         onInput={() => {
           emit()
           look()
