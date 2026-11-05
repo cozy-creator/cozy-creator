@@ -85,8 +85,9 @@ pub trait Donor {
     /// Give back about `bytes` of idle memory, without waiting on memory in use.
     /// Returns the bytes actually released.
     fn trim(&mut self, bytes: u64) -> u64;
-    /// Between asks, every `CADENCE`.
-    fn tick(&mut self, table: &Table, row: Row, idle: u64);
+    /// Between asks, every `CADENCE`, or every `TICK` while it says the card is short: a program
+    /// taking what was given is still short, and waits on the next give.
+    fn tick(&mut self, table: &Table, row: Row, idle: u64) -> bool;
 }
 
 /// One process's view of one GPU's page. Lives until the process exits.
@@ -319,8 +320,7 @@ impl Table {
             if now >= sample {
                 let (held, idle) = donor.holdings();
                 self.publish(row, held, idle);
-                donor.tick(self, row, idle);
-                sample = now + CADENCE;
+                sample = now + if donor.tick(self, row, idle) { TICK } else { CADENCE };
                 continue;
             }
             wait(&self.page.generation, generation, sample - now);
