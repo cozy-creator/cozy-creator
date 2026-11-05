@@ -63,7 +63,7 @@ row() { status "$1" | jq -c --arg n "$2" ".assets[] | select(.name == \$n) | $3"
 # made <project> <asset>: how many versions the lock keeps.
 made() { local n; n=$(held "$1" "$2" 2> /dev/null | jq '.versions | length'); echo "${n:-0}"; }
 # held <project> <asset>: what `cozy project status <asset>` says of it, `.asset` and `.versions`. Why it can't goes to the log.
-held() { cozy --json project -p "$1" status "$2" 2> "$OUT/held.err" || echo "status $2 of $1: $(tail -c 200 "$OUT/held.err")" >&2; }
+held() { cozy --json --full project -p "$1" status "$2" 2> "$OUT/held.err" || echo "status $2 of $1: $(tail -c 200 "$OUT/held.err")" >&2; }
 # take_file <project> <asset> <role> [version index]: that version's file by its hash.
 take_file() { held "$1" "$2" | jq -r --arg r "$3" --argjson v "${4:--1}" '.versions[$v].files[$r].sha256 // empty'; }
 # counts <project>: how many versions each asset has.
