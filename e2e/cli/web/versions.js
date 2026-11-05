@@ -83,18 +83,19 @@ async function died(why) {
   const undoIn = (words) => page.locator(`.note:has-text("${words}") button:has-text("Undo")`).first();
 
   const pictures = mkdtempSync(join(tmpdir(), 'web-versions-'));
-  const picture = (shade) => {
+  const picture = (shade, width, height) => {
     const path = join(pictures, `${shade}.png`);
-    writeFileSync(path, png(shade));
+    writeFileSync(path, png(shade, width, height));
     return path;
   };
   const imported = (name, shade) => post(`${at}/imports`, { source: picture(shade), name, exact: true, at: { x: 100 + shade * 4, y: 100 } });
-  const joined = (name, shade) => post(`${at}/assets/${name}/versions`, { source: picture(shade) });
+  const joined = (name, shade, width, height) => post(`${at}/assets/${name}/versions`, { source: picture(shade, width, height) });
 
   // Mentions, in a file a hand wrote, its comments kept whatever comes.
   const comments = ['# Mine, and kept.', '  # A note on words.', '    # Its own note.', '      Two lines,', '      kept as they are.'];
   await imported('Abr', 10);
-  await joined('Abr', 20);
+  // Its second square, so a slide along its row crosses a take of another shape.
+  await joined('Abr', 20, 200, 200);
   await joined('Abr', 30);
   await imported('other', 40);
   const head = yaml();
@@ -182,6 +183,24 @@ async function died(why) {
   const numbers = await until('its numbers', () => page.locator('.card[data-asset="Ada"] .take-no').allInnerTexts(), (held) => held.length === 3, 5000).catch((why) => String(why));
   check('thumbnails_say_their_number', [...numbers].sort().join() === '1,2,3', numbers);
   await shot('numbers');
+  // Held down, the pointer slides along the row from take to take, the row staying under it.
+  await page.waitForTimeout(300);
+  const take = (number) => page.locator(`.card[data-asset="Ada"] .take[data-take="${number}"]`).boundingBox();
+  const [newest, oldest] = [await take(3), await take(1)];
+  const rowAt = async () => (await page.locator('.card[data-asset="Ada"] .takes').boundingBox()).y;
+  await page.mouse.move(newest.x + newest.width / 2, newest.y + newest.height / 2);
+  await page.mouse.down();
+  const rowFrom = await rowAt();
+  let rowMoved = 0;
+  // At a hand's pace: each take it crosses is drawn large before it goes on.
+  for (let step = 1; step <= 10; step++) {
+    await page.mouse.move(newest.x + newest.width / 2 + ((oldest.x - newest.x) * step) / 10, newest.y + newest.height / 2);
+    await page.waitForTimeout(100);
+    rowMoved = Math.max(rowMoved, Math.abs((await rowAt()) - rowFrom));
+  }
+  await page.mouse.up();
+  const slid = await page.locator('.card[data-asset="Ada"] .take.on').getAttribute('data-take');
+  check('a_slide_reaches_each_take', slid === '1' && rowMoved < 2, { slid, rowMoved });
   await shut();
 
   // A take dragged into a text says which, and out onto open canvas it's still a box of its own.
@@ -256,6 +275,22 @@ async function died(why) {
     const other = await asset('other');
     check('a_picture_is_version_1', other.versions === 1 && other.approved === 1 && other.tool === tool.id, other);
     await shot('tool-on-picture');
+    // Drawn out till words are larger than at 1:1, its tool chip stops short of its ratio.
+    const middle = await box('other').locator('.card').boundingBox();
+    await page.mouse.move(middle.x + middle.width / 2, middle.y + middle.height / 2);
+    const scale = () => page.evaluate(() => Number(getComputedStyle(document.querySelector('.stage')).getPropertyValue('--text')));
+    await page.keyboard.down('Control');
+    for (let step = 0; step < 6 && (await scale()) < 1.5; step++) {
+      await page.mouse.wheel(0, 200);
+      await page.waitForTimeout(150);
+    }
+    await page.keyboard.up('Control');
+    const chip = await box('other').locator('.add-on').first().boundingBox();
+    const ratio = (await box('other').locator('.ratio-rest').count()) ? await box('other').locator('.ratio-rest').boundingBox() : null;
+    if (ratio) check('chip_clear_of_its_ratio', chip.x + chip.width <= ratio.x, { chip, ratio, text: await scale() });
+    else seen.no_ratio = tool.id;
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box('other').locator(`button[aria-label^="Take"]`).first().click();
     await until('the tool gone', () => Promise.resolve(lines('other')), (text) => !text.includes('tool:'));
     const off = await asset('other');
