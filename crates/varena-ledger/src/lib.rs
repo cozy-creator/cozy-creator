@@ -259,6 +259,11 @@ impl Table {
         self.page.rows.iter().filter(|row| row.pid.load(Acquire) != 0).map(|row| row.idle.load(Acquire)).sum()
     }
 
+    /// What every live row holds: the card's use less this is not ours.
+    pub fn held(&self) -> u64 {
+        self.page.rows.iter().filter(|row| row.pid.load(Acquire) != 0).map(|row| row.held.load(Acquire)).sum()
+    }
+
     /// The pids in live rows: on this GPU, but not foreign.
     pub fn pids(&self) -> Vec<u32> {
         self.page.rows.iter().map(|row| row.pid.load(Acquire) as u32).filter(|pid| *pid != 0).collect()
