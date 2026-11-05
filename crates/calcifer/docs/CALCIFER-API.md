@@ -244,8 +244,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
     has not answered for an hour.
 - `POST /v1/machines/{name}/keepalive`: `Keepalive`. It restarts a rental's 15-minute idle clock once the
   machine acknowledges.
-- `POST /v1/machines/{name}/update` (`MachineUpdate`), with an `Idempotency-Key`: the machine's Runtime, Any other run for that machine waits here for its end, saying `getting <name> ready`, and goes to what it became.
-  TensorFS and TensorD (its `cozy`) in one update run and one restart.
+- `POST /v1/machines/{name}/update` (`MachineUpdate`), with an `Idempotency-Key`: the machine's Runtime,
+  TensorFS and TensorD (its `cozy`) in one update run and one restart. Any other run for that machine waits here for its end, saying `getting <name> ready`, and goes to what it became.
   - Each component is `{"version": "0.33.1"}` or `{"file": "/abs/path"}`. A file is a dev build on this
     computer: a wheel named `<distribution>-<version>-….whl`, or a `cozy` binary.
   - A wheel version that PyPI lacks is fetched from its GitHub prerelease, matched to the machine's platform.
