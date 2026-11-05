@@ -94,6 +94,8 @@ async fn named(client: &Client, endpoint: &Endpoint, hub: &Origin, default: &str
         None => header_of(&card),
     };
     let facts = read(endpoint, hub, header?).await?;
+    let label = card.model.family.clone().filter(|label| !label.is_empty());
+    let facts = Facts { family: facts.family.or(label), ..facts };
     keep(key, facts.clone());
     Some(facts)
 }
