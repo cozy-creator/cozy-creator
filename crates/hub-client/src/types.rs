@@ -491,6 +491,11 @@ pub struct RentalPlacementRequest {
 #[serde(default)]
 pub struct RentalPlacement {
     pub weight_bytes: i64,
+    /// Whether it runs on a GPU: its own, or the internal functions it calls.
+    pub accelerator: bool,
+    /// Each model slot as the pick loads it, whose bytes sum to `weight_bytes`.
+    #[serde(deserialize_with = "null_is_empty")]
+    pub weights: Vec<RentalPlacementWeights>,
     /// The pick first.
     #[serde(deserialize_with = "null_is_empty")]
     pub machines: Vec<RentalPlacementMachine>,
@@ -499,6 +504,17 @@ pub struct RentalPlacement {
     /// What the Hub changed of the ask, or wants its asker to know.
     #[serde(deserialize_with = "null_is_empty")]
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RentalPlacementWeights {
+    /// `<function>.models.<param>`
+    pub slot: String,
+    pub model: String,
+    pub release: String,
+    pub lane: String,
+    pub bytes: i64,
 }
 
 #[derive(Debug, Default, Deserialize)]

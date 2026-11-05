@@ -729,6 +729,56 @@ fn one() -> u32 {
     1
 }
 
+/// `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
+/// a render reads them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FitAsk {
+    #[serde(default)]
+    pub names: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outdated: bool,
+}
+
+/// How this computer would do what a render asks: each tool it would do poorly, and the GPU to rent instead. Empty: well enough, or
+/// nothing says otherwise.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Fit {
+    pub tools: Vec<ToolFit>,
+    /// What the Hub places them all on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rent: Option<RentFor>,
+}
+
+/// One tool this computer would run poorly.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolFit {
+    pub tool: String,
+    pub label: String,
+    /// The assets of it the render makes.
+    pub names: Vec<String>,
+    /// How it would go here, in a line.
+    pub line: String,
+    /// Its weights' bytes, as its machine would load them; 0: unknown.
+    #[serde(default)]
+    pub bytes: u64,
+    /// Render here was said of it on this computer, for weights as big: nothing asks again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub here: bool,
+}
+
+/// A GPU to rent for it, as `POST /v1/machines` `{kind: rent}` names one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RentFor {
+    pub sku: String,
+    pub gpus: u32,
+    /// The card, in a person's words: `RTX 4090`.
+    pub card: String,
+    pub vram_gb: i64,
+    pub usd_micros_per_hour: i64,
+    /// What renting it does for these, in a line.
+    pub line: String,
+}
+
 /// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),
 /// anything else a hash prefix of any file in the project's `files/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

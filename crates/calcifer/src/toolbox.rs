@@ -42,7 +42,7 @@ const LISTED: u32 = 50;
 /// How many cards it reads at once; each is read once, then kept.
 const READS: usize = 8;
 /// A Hub slower than this leaves the list with what's installed, and says so.
-const HUB_LATE: Duration = Duration::from_secs(5);
+pub(crate) const HUB_LATE: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 pub(crate) struct Asked {

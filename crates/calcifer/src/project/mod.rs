@@ -9,6 +9,7 @@ mod archive;
 mod assetfile;
 mod assets;
 mod canvas;
+mod fit;
 mod folder;
 mod format;
 mod graph;
@@ -165,6 +166,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/canvas", get(canvas::read).patch(canvas::patch))
         .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
         .route("/v1/projects/{id}/runs", post(runs))
+        .route("/v1/projects/{id}/fit", post(fit::fit))
+        .route("/v1/projects/{id}/fit/here", post(fit::here))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
