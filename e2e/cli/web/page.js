@@ -97,13 +97,16 @@ async function closeBox(page) {
 }
 // A click opens a box: the middle of it, where there's nothing else to press.
 async function openBox(page, name) {
-  if (await page.locator(`.open-box .card[data-asset="${name}"]`).count()) return;
+  // By the address too: a box shut a moment ago can still be in the page, and reaching for it finds it gone (macOS, 41977214625).
+  const card = page.locator(`.open-box .card[data-asset="${name}"]`);
+  if (await page.evaluate((asked) => location.hash.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) return card.waitFor();
   await closeBox(page);
+  await page.locator('.open-box').waitFor({ state: 'detached' });
   // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
   await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
   const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
   await page.mouse.click(x + width / 2, y + height / 2);
-  await page.locator(`.open-box .card[data-asset="${name}"]`).waitFor();
+  await card.waitFor();
   // It grows from where it sat: a person reaches for it once it's there.
   await page.locator('.open-box').evaluate((box) => Promise.all(box.getAnimations().map((grow) => grow.finished)));
 }
