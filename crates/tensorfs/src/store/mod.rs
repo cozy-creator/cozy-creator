@@ -341,7 +341,8 @@ impl Store {
     }
 
     /// `object` for a fetch, which writes each range at its offset and can be cut at any moment, a kill
-    /// included ([`Partial`]). One that another fetch holds is left to it, and this one keeps nothing.
+    /// included ([`Partial`]). One that another fetch holds is left to it, and this one keeps nothing: a
+    /// cancelled fetch's commit holds it a moment after the next run claims the object (gate 41991226171).
     pub(crate) fn partial(&self, object: &ObjectRef) -> Result<Partial> {
         self.path(object)?;
         let temp = self.root.join("tmp").join(format!("partial-{}", object.sha256));
@@ -477,7 +478,8 @@ impl Store {
                 .root
                 .join("tmp")
                 .join(format!("{kind}-{}-{n}", std::process::id()));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            // Readable: a partial's commit hashes what it wrote from this file.
+            match OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
                 Ok(file) => return Ok((path, file)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(fail("create", &path)(error)),

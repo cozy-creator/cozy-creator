@@ -171,6 +171,19 @@ def check(gate):
                 f'tensorfs {case}: {sl["slowed"]} slow objects, {sl["reasked"]} re-asked, at most {sl["asks"]} asks of one; '
                 f'{sl["seconds"]:.1f} s vs clean {c["seconds"]:.1f} s (limit {limit:.1f})')
             against(case, sl['seconds'], c['bytes'], f'download with {what}')
+    # Arms that must land: through one 5 MB/s link for every request (run 31103: the old downloader moved nothing for good
+    # on one), and with every object's partial held by another process (gate 41991226171: IO_FAILED, Bad file descriptor).
+    for name, what in (('straggler-link', 'through a 5 MB/s link'), ('straggler-held', "with every object's partial held elsewhere")):
+        sl = st.get(name)
+        if not chosen('straggler'):
+            break
+        if not sl:
+            fails.append(f'tensorfs {name}: the case did not run')
+        elif not sl['ok']:
+            fails.append(f'tensorfs {name}: tfs download {what} failed: {sl["error"]}')
+        else:
+            notes.append(f'tensorfs {name}: {sl["bytes"] / 2**20:.0f} MiB {what} in {sl["seconds"]:.1f} s '
+                         f'({sl["bytes"] / sl["seconds"] / 1e6:.1f} MB/s)')
 
     def rate(name, nbytes, seconds):
         if nbytes and seconds:

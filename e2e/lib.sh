@@ -7,6 +7,7 @@
 #                         cozy and its machine
 #   --tensorfs FILE|V     a candidate TensorFS for the local machine (a wheel, or an exact release version)
 #   --runtime FILE|V      a candidate Runtime for the local machine (a wheel, or an exact release version)
+#   --pod-tensord FILE|V  the Linux TensorD a rental takes first, as a release's image carries it (release suite)
 #   --packages DIR        a packages checkout: its package directories run instead of the published releases
 #   --pins N@R,...        package releases to take instead of the latest unyanked ones (gated candidates)
 #   --published           the imports suite loads published releases, not the packages checkout
@@ -26,7 +27,7 @@
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=0.50 MAX_USD=0.07 QUOTE=''
+OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=0.50 MAX_USD=0.07 QUOTE=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 # Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
@@ -39,6 +40,7 @@ parse() {
     case $1 in
       --out) OUT=$2 ;;
       --tensord) CAND_COZY=$2 ;;
+      --pod-tensord) POD_TENSORD=$2 ;;
       --tensorfs) CAND_TFS=$2 ;;
       --runtime) CAND_RT=$2 ;;
       --packages) PACKAGES=$2 ;;

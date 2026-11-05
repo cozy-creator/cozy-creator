@@ -6,7 +6,12 @@
 #                    15-60 min per chunk read whole, gate 41623354412); then with sixteen, whose 16 MiB ranges come at
 #                    full speed: many write at once, and no download may hang behind them (tfs-143: gate 41823522538's
 #                    stopped for good at 1207 of 11847 MiB). Each lands within a fixed bar of
-#                    the clean download, whatever the range size (check.py)
+#                    the clean download, whatever the range size (check.py). Then through one 5 MB/s link shared by every
+#                    request, as a slow pod's (straggler-link; run 31103: the old downloader judged every range slow, restarted
+#                    72 objects and moved nothing for good with 78 sockets open): it must land; 3 min with no byte into
+#                    its store fails it. Then with every object's partial held by another process, as a cancelled fetch's
+#                    commit holds one while the next run claims it (straggler-held; gate 41991226171: the fetch fell back
+#                    to a temp it could not read back): it must land
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
 #                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
 #                    a scale of 1, as kohya's and ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs, this format,
@@ -99,11 +104,12 @@ tfs_weights() {
   TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$1.safetensors" --converter as-is --name "local/$(basename "$1")" >/dev/null &&
     TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs export "local/$(basename "$1")" "$1" >/dev/null
 }
-# tfs_straggler <name> <stragglers> [<burst> [<min> [fast]]]: `tfs download` of BiRefNet into a store of its own, through straggler.py.
+# tfs_straggler <name> <stragglers> [<burst> [<min> [fast]]] [--link <bytes/s>]: `tfs download` of BiRefNet into a store of its
+# own, through straggler.py.
 tfs_straggler() {
   local port pid t0 tfs seen since now
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-  python3 -I "$HERE/suites/tensorfs/straggler.py" "$port" "${HUB_URL:-https://tensorhub.com}" "$2" 65536 "$T/$1.proxy" ${3:-} ${4:-} ${5:-} &
+  python3 -I "$HERE/suites/tensorfs/straggler.py" "$port" "${HUB_URL:-https://tensorhub.com}" "$2" 65536 "$T/$1.proxy" "${@:3}" &
   pid=$!
   for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.1; done
   t0=$(date +%s%3N)
@@ -112,7 +118,7 @@ tfs_straggler() {
   # A hang is this case's failure, not the gate's: no byte into its store for 3 min ends it.
   seen= since=$SECONDS
   while kill -0 "$tfs" 2>/dev/null; do
-    now=$(du -sb "$T/$1-store" 2>/dev/null | cut -f1)
+    now=$(du -s --block-size=1 "$T/$1-store" 2>/dev/null | cut -f1)  # allocated bytes: a range written in place starts as a sparse file at full length
     [ "$now" = "$seen" ] || { seen=$now since=$SECONDS; }
     if (( SECONDS - since >= 180 )); then echo "no byte into its store for 3 min" >> "$T/$1.err"; kill -9 -- "-$tfs"; break; fi
     sleep 2
@@ -233,5 +239,20 @@ if tfs_case straggler; then
   tfs_straggler straggler-cold 3 2097152
   tfs_straggler straggler-crawl 3 65536 8388608
   tfs_straggler straggler-parts 16 65536 2097152 fast
+  tfs_straggler straggler-link 0 --link 5000000
+  mkdir -p "$T/straggler-held-store/tmp"
+  rm -f "$T/straggler-held.ready"
+  python3 -I - "$T/straggler-clean.proxy" "$T/straggler-held-store/tmp" "$T/straggler-held.ready" <<'PY' & held=$!
+import fcntl, json, os, sys, time
+locks = []
+for sha in {r['path'].rsplit('/', 1)[1] for r in map(json.loads, open(sys.argv[1])) if r.get('kind') == 'object'}:
+    locks.append(open(os.path.join(sys.argv[2], 'partial-' + sha), 'a'))
+    fcntl.flock(locks[-1], fcntl.LOCK_EX)
+open(sys.argv[3], 'w').close()
+time.sleep(3600)
+PY
+  for _ in $(seq 50); do [ -e "$T/straggler-held.ready" ] && break; sleep 0.1; done
+  tfs_straggler straggler-held 0
+  kill "$held"
 fi
 if tfs_case lora-alpha; then tfs_lora_alpha; fi
