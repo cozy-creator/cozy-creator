@@ -53,6 +53,28 @@ file_of() { cozy --json project -p "$P" status "$1" | jq -r --arg f "$2" --arg P
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$1"; }
 seconds() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
 keep_frames() { ffmpeg -v error -y -i "$2" -vf "select='eq(n,0)+eq(n,60)+eq(n,120)'" -vsync 0 "$OUT/frames/$1-%d.png"; }
+# held <old> <new> <join frame>: how far `new` holds `old`'s frames up to the join, and whether the join shows. Each frame's PSNR, frame n of one
+# against frame n of the other, and the step from each frame to the next in `new` beside its neighbours' (run 20751's join was a luma step of 3.7).
+held() {
+  local old=$1 new=$2 join=$3 log=$OUT/take-psnr.txt steps=$OUT/take-steps.txt luma=$OUT/take-luma.txt
+  ffmpeg -v error -i "$new" -i "$old" -lavfi "[0:v]setpts=N/FRAME_RATE/TB[a];[1:v]setpts=N/FRAME_RATE/TB[b];[a][b]psnr=stats_file=$log" -frames:v "$join" -f null - \
+    || fail "PSNR against the kept take"
+  ffmpeg -v error -i "$new" -lavfi "split[a][b];[b]trim=start_frame=1,setpts=N/FRAME_RATE/TB[c];[a]setpts=N/FRAME_RATE/TB[d];[d][c]psnr=stats_file=$steps" -f null - \
+    || fail "PSNR of each frame against the next"
+  ffmpeg -v error -i "$new" -vf "signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=$luma" -f null - || fail "luma of each frame"
+  say "held: $(awk -v join="$join" 'NR <= join { for (i = 1; i <= NF; i++) if ($i ~ /^psnr_avg:/) { v = substr($i, 10); v = (v == "inf") ? 100 : v + 0; n++; sum += v
+      if (!seen || v < low) { low = v; at = n; seen = 1 } if (n > join - 24 && (!last || v < end)) { end = v; last = 1 } } }
+    END { printf "%d frames up to the join at %d: PSNR mean %.2f dB, lowest %.2f dB at frame %d, lowest of the last 24 %.2f dB", n, join, sum / n, low, at, end }' "$log")"
+  say "join: $(awk -v join="$join" '{ for (i = 1; i <= NF; i++) if ($i ~ /^psnr_avg:/) { p = substr($i, 10); s[NR] = (p == "inf") ? 100 : p + 0 } }
+    END { for (i = join - 24; i <= join + 24; i++) if (i != join && i in s) { n++; v[n] = s[i] }
+      for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++) if (v[j] < v[i]) { t = v[i]; v[i] = v[j]; v[j] = t }
+      printf "frame to next %.2f dB across it, %.2f dB is the median of 24 frames either side", s[join], v[int((n + 1) / 2)] }' "$steps"), \
+$(awk -v join="$join" -F= '/YAVG/ { n++; y[n] = $2 } END { for (i = join - 23; i <= join + 25; i++) if (i != join + 1 && (i in y) && ((i - 1) in y)) { d = y[i] - y[i - 1]; m++; v[m] = (d < 0 ? -d : d) }
+      for (i = 1; i <= m; i++) for (j = i + 1; j <= m; j++) if (v[j] < v[i]) { t = v[i]; v[i] = v[j]; v[j] = t }
+      d = y[join + 1] - y[join]; printf "luma step %.2f across it, median %.2f", (d < 0 ? -d : d), v[int((m + 1) / 2)] }' "$luma")"
+  ffmpeg -v error -y -i "$new" -vf "select='between(n,$((join - 1)),$join)'" -vsync 0 "$OUT/frames/join-%d.png"
+  ffmpeg -v error -y -i "$old" -vf "select='eq(n,$((join - 1)))'" -vsync 0 "$OUT/frames/join-kept.png"
+}
 
 quote "$(param traffic_gb 110)" 3600
 rent
@@ -158,9 +180,14 @@ fi
 say "--take and --in: a longer shot, kept to a join and the rest made again"
 drop long "$PK/minimax-h3/generate" '{"summary": "<clean> stands in a quiet studio.", "beats": [{"description": "<clean> looks left.", "duration": 8}, {"description": "<clean> looks right.", "duration": 8}], "soundscape": "Soft room tone."}' video
 accept long
+kept=$(file_of long video)
 step take-long project -p "$P" render long --take 1 --in 6 --on "$NAME" || fail "--in: $(tail -c 500 "$OUT/take-long.txt")"
 J '.input.continue_from | .at_s == 6 and (.video | startswith("sha256:")) and (.latents | startswith("sha256:"))' <<< "$(call long)" || fail "the kept call: $(call long)"
 vid=$(file_of long video); keep_frames take "$vid"; say "kept: $(size "$vid"), $(seconds "$vid") s"
+run=$(cozy --json project -p "$P" status long | jq -r '.versions[-1].runs[-1]')
+kept_s=$(cozy --json run show "$run" --once | jq -r '.result.kept_s // empty')
+[ -n "$kept_s" ] || fail "run $run says no kept_s: it didn't resume from the latents"
+held "$kept" "$vid" "$(awk -v s="$kept_s" 'BEGIN { printf "%d", s * 24 + 0.5 }')"
 
 say "a plate, and a reference video and its sound"
 drop plated "$PK/minimax-h3/generate" '{"summary": "<clean> walks through <shot>.", "beats": [{"description": "<clean> walks on.", "duration": 5}], "plate": {"video": "<shot>"}}' video
