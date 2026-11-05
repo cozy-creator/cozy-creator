@@ -2,7 +2,7 @@
 //! and no store read or bake. One per GPU. Process lifetime, never on disk, each page once, within
 //! half of the host's RAM and beyond a headroom. The tier follows use, not arrival: a page is
 //! worth its refills per request, and only pages worth less make room for it.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use platform::contain::host_memory;
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use tensorfs::io::cuda::HostPin;
+use tensorfs::io::{self, Dst, ReadOpts, Src};
 use tensorfs::io::source::Source as Store;
 
 use super::source::Inner;
@@ -76,6 +77,14 @@ impl Drop for Page {
     }
 }
 
+/// A bake's bytes to keep, whole on the card, once `use` has gone on.
+struct Behind {
+    key: String,
+    set: String,
+    region: Weak<varena::Region>,
+    len: usize,
+}
+
 struct Kept {
     page: Arc<Page>,
     set: String,
@@ -109,6 +118,9 @@ struct State {
     off: Option<String>,
     wanted: HashMap<String, Wanted>,
     pin_failed: u64,
+    /// Pages to keep behind `use`, and whether a thread is keeping them.
+    behind: VecDeque<Behind>,
+    keeping: bool,
     /// A wanted page read whole when a command arrived: it registers at the next idle.
     filled: Option<(String, String, Page)>,
     refills: HashMap<String, u64>,
@@ -284,6 +296,52 @@ impl Tier {
         Ok(Some(page))
     }
 
+    /// Keep `region`'s bytes as `key` behind the thread that called `use`: first touching 21 GB of
+    /// pages there left the card idle for 17 s of H3's first step. The thread ends with its queue.
+    pub(super) fn keep_behind(self: &Arc<Self>, key: &str, set: &str, region: Weak<varena::Region>, len: usize) {
+        let mut state = self.state();
+        state.behind.push_back(Behind { key: key.to_owned(), set: set.to_owned(), region, len });
+        if !std::mem::replace(&mut state.keeping, true) {
+            let tier = self.clone();
+            let spawned = std::thread::Builder::new().name(format!("varena-keep-{}", self.device))
+                .spawn(move || while let Some(job) = tier.next_behind() { tier.keep(job) });
+            if spawned.is_err() {
+                state.behind.clear(); // Those pages' next fills bake again.
+                state.keeping = false;
+            }
+        }
+    }
+
+    fn next_behind(&self) -> Option<Behind> {
+        let mut state = self.state();
+        let job = state.behind.pop_front();
+        state.keeping = job.is_some();
+        job
+    }
+
+    /// The page is set up before the pin, which stops an eviction only for the copy. A Region
+    /// that went first, or a capture, costs its next fill a bake, never a wrong page: its bytes
+    /// never change, and `key` names them.
+    fn keep(&self, job: Behind) {
+        let Ok(Some(page)) = self.reserve(&job.key, job.len) else { return };
+        let Some(region) = job.region.upgrade() else { return };
+        let Ok(_producer) = varena::enter_producer(self.device) else { return };
+        let Ok(Some(pin)) = region.try_pin() else { return };
+        let copies: Vec<_> = page.windows().map(|(at, len)| io::Copy {
+            src: Src::Device { device: self.device, ptr: pin.ptr() + at as u64, stream: 0 },
+            // SAFETY: `at` lies inside the page.
+            dst: Dst::Host { ptr: unsafe { page.ptr().add(at) }, len },
+        }).collect();
+        // SAFETY: the pin holds the source, ready and never written again; the page is this
+        // thread's, registered window by window.
+        let copied = unsafe { io::read(&copies, &ReadOpts::default()) };
+        // SAFETY: the read returned, so nothing reads through this pin.
+        drop(unsafe { pin.into_completed_region() });
+        if copied.is_ok() {
+            self.insert(&job.key, &job.set, page);
+        }
+    }
+
     pub(super) fn insert(&self, key: &str, set: &str, page: Page) {
         let replaced = {
             let mut state = self.state();
@@ -418,6 +476,7 @@ impl Tier {
             let keys: Vec<_> = state.kept.iter().filter(|(_, kept)| set.is_none_or(|set| kept.set == set))
                 .map(|(key, _)| key.clone()).collect();
             state.wanted.retain(|_, wanted| set.is_some_and(|set| wanted.set != set));
+            state.behind.retain(|job| set.is_some_and(|set| job.set != set));
             if set.is_none() {
                 state.filled = None;
             }
