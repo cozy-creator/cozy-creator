@@ -96,7 +96,7 @@ async function use(name, work) {
     await page.click('summary:text-is("Log in over SSH")');
     await page.fill('input[aria-label="An OpenSSH public key"]', process.env.SSH_KEY);
   }
-  await page.locator('.sku').filter({ has: page.locator(`b:text-is("${sku}")`) }).locator('button:text-is("Quote")').click();
+  await page.locator('.sku').filter({ has: page.locator(`b:text-is("${sku}")`) }).locator('button:text-is("Rent")').click();
   await page.waitForSelector('.order .primary');
   await shot('quoted');
   const stated = (await page.textContent('.order .primary')).trim();

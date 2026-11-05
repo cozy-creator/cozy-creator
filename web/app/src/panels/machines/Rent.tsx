@@ -55,7 +55,7 @@ function Sku({ sku, disabled, onPick }: { sku: RentalSku; disabled: boolean; onP
       )}
       <span className="price">{usd(width.price_usd_micros_per_hour)}/h</span>
       <button type="button" className="tb" disabled={disabled} onClick={() => onPick(sku, gpus)}>
-        Quote
+        Rent
       </button>
     </li>
   )
