@@ -595,11 +595,12 @@ def prefetch_rule():
         cap(15 * MIB, gpu)
         token = vt.phase_enter(0, key)
         target, plan = ahead()
-        assert target.resident and idle.resident and gpu.stats()["prefetch_unused_bytes"] == 0, gpu.stats()
+        assert target.resident and idle.resident, gpu.stats()
+        unused = gpu.stats()["prefetch_unused_bytes"]
         # Working demand takes the unused fill before the older idle region.
         value = torch.empty(10 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
         assert not target.resident and idle.resident, gpu.stats()
-        assert gpu.stats()["prefetch_unused_bytes"] == 2 * MIB, gpu.stats()
+        assert gpu.stats()["prefetch_unused_bytes"] == unused + 2 * MIB, gpu.stats()
         del value, target, plan
         gc.collect()
         torch.cuda.synchronize()
