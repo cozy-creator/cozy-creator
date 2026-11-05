@@ -15,6 +15,9 @@ const RULES = [
   [/"(code|media)"\s*:\s*"[0-9a-f]{32,}"/g, `"$1":"${GONE}"`],
   // A signed cap or a JWT, in a link or anywhere else.
   [/\beyJ[\w-]{8,}\.[\w-]{8,}(\.[\w-]+)?/g, GONE],
+  [/\bcap1\.[\w.-]{40,}/g, GONE],
+  // Not a credential, but a person's: whoami's answers and its printed record.
+  [/\b(email["']?\s*[:=]?\s*["']?)[\w.+-]+@[\w.-]+/gi, `$1${GONE}`],
 ];
 const scrubbed = (text) => RULES.reduce((said, [rule, instead]) => said.replace(rule, instead), text);
 
