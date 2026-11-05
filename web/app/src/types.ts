@@ -254,6 +254,31 @@ export interface Asked {
   queued?: { name: string; ahead?: string[] }[]
 }
 
+/** How this computer would do what a render asks: each tool it would do poorly, and the GPU to rent instead. */
+export interface Fit {
+  tools: ToolFit[]
+  rent?: RentFor
+}
+
+export interface ToolFit {
+  tool: string
+  label: string
+  names: string[]
+  line: string
+  bytes: number
+  /** Render here was said of it on this computer: nothing asks again. */
+  here?: boolean
+}
+
+export interface RentFor {
+  sku: string
+  gpus: number
+  card: string
+  vram_gb: number
+  usd_micros_per_hour: number
+  line: string
+}
+
 export interface Unpinned {
   name: string
   version?: number

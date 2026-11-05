@@ -1,7 +1,7 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { ApiError, type Client } from "../api/client"
 import { type Action, Outbox } from "../api/outbox"
-import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
+import type { Entity, Fit, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, ProjectState, RentFor, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
@@ -87,6 +87,8 @@ export interface ElementView {
   conflict?: boolean
   /** Its render waits for a machine, and what it keeps. */
   waiting?: Keep
+  /** This computer would render it poorly, so it asks before it does, with what the render keeps. */
+  asking?: { fit: Fit; keep?: Keep }
   /** Seconds into a video, scrubbed to. */
   scrub?: number
   /** Its ratio while it's being reshaped. */
@@ -143,6 +145,10 @@ const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
+
+/** Only this computer can take it: what it would do poorly is asked first. */
+const onlyHere = (on: string[]) => on.length === 1 && on[0] === "local"
+const unsaid = (fit: Fit | null): fit is Fit => Boolean(fit?.tools.some((tool) => !tool.here))
 
 export function toRow(node: ElementNode): Row {
   return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: node.width ?? CARD_WIDTH }
@@ -203,6 +209,10 @@ export class CanvasStore {
   readAgain: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
+  /** Opens Rent, with a GPU that holds it chosen when one is known. */
+  rent: (pick?: RentFor) => void = () => {}
+  /** What Render all asks first, on its own control, once for every tool this computer would do poorly. */
+  readonly allAsking = signal<{ fit: Fit; outdated: boolean } | null>(null)
   /** The box being worked on where it stands: the view to go back to, the one fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
   inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
@@ -767,7 +777,7 @@ export class CanvasStore {
    * A new take or version: the box says Queued now, and anything typed goes first. What Calcifer runs itself needs no machine; with none up for the rest, it asks
    * for one and goes when one is. Its key is made here, once, so however often this is tried it asks one render.
    */
-  run(name: string, keep?: Keep) {
+  run(name: string, keep?: Keep, here = false) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     const asset = view?.asset
@@ -775,11 +785,17 @@ export class CanvasStore {
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
-      this.patch(key, { waiting: keep ?? {} })
+      this.patch(key, { waiting: keep ?? {}, asking: undefined })
       this.askMachine()
       return
     }
-    this.patch(key, { waiting: undefined, scrub: undefined, asked: NOT_YET })
+    // Queued from the click on, as any render, until Calcifer says whether to ask first.
+    if (!here && !madeHere(asset.tool) && onlyHere(on)) {
+      this.patch(key, { waiting: undefined, asking: undefined, asked: NOT_YET })
+      void this.askFirst(key, keep, saved)
+      return
+    }
+    this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
     const once = `take-${crypto.randomUUID()}`
@@ -796,21 +812,50 @@ export class CanvasStore {
     })
   }
 
+  /** How this computer would do it, by Calcifer, once what's typed is in: poorly, and nothing said for that, the box asks; else it renders. */
+  private async askFirst(key: string, keep: Keep | undefined, saved: Promise<boolean>) {
+    const id = this.ids.get(key)
+    if (!id) return
+    if (!(await saved) || !this.projectId) return this.patchId(id, { asked: undefined })
+    const fit = await this.client.fit(this.projectId, [this.served.get(id) ?? key]).catch(() => null)
+    const name = this.namesById.get(id)
+    if (!name) return
+    if (unsaid(fit)) this.patchId(id, { asked: undefined, asking: { fit, keep } })
+    else this.run(name, keep, true)
+  }
+
+  /** Render here: kept for its tools on this computer, so it isn't asked again, and it renders. */
+  renderHere(name: string) {
+    const key = this.resolveName(name)
+    const asking = this.views.get(key)?.asking
+    this.act(key, { send: (served) => this.client.renderHere(this.projectId!, [served]), refused: (error) => say("Couldn't keep that", error) })
+    this.run(key, asking?.keep, true)
+  }
+
+  /** Rent a GPU: Rent opens with one that holds it, and the box waits for a machine; nothing renders here. */
+  rentInstead(name: string) {
+    const asking = this.get(name)?.asking
+    this.patch(name, { asking: undefined, waiting: asking?.keep ?? {} })
+    this.rent(asking?.fit.rent)
+  }
+
   /** A machine came up: each render that waited for one goes. */
   machineUp() {
     for (const [name, view] of this.views) if (view.waiting) this.run(name, view.waiting)
   }
 
   /** Render all. What's approved stays, and with `outdated`, what's out of date when its turn comes goes too. */
-  runAll(outdated: boolean) {
+  runAll(outdated: boolean, here = false) {
     const on = this.machines()
     const id = this.projectId
     if (!id) return
+    this.allAsking.set(null)
     if (!on.length) return this.askMachine()
     const saved = [...this.views.keys()].map((name) => this.save(name))
     const going = [...this.views].filter(([, view]) => view.asset?.tool && !madeHere(view.asset.tool) && !view.asset.pinned).map(([name]) => this.ids.get(name))
     for (const box of going) this.patchId(box, { asked: NOT_YET })
     const settle = (asked?: number) => going.forEach((box) => this.patchId(box, { asked }))
+    if (!here && onlyHere(on)) return void this.askAllFirst(id, outdated, saved, settle)
     const once = `all-${crypto.randomUUID()}`
     this.outbox.add({
       send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, outdated ? { outdated } : {}, signal) : null),
@@ -823,6 +868,32 @@ export class CanvasStore {
         say("Couldn't render them", error)
       },
     })
+  }
+
+  /** Render all's question, asked once on its control for every tool of it this computer would do poorly; else it renders. */
+  private async askAllFirst(id: string, outdated: boolean, saved: Promise<boolean>[], settle: () => void) {
+    if (!(await Promise.all(saved)).every(Boolean)) return settle()
+    const fit = await this.client.fit(id, ["all"], outdated).catch(() => null)
+    if (this.projectId !== id) return
+    if (!unsaid(fit)) return this.runAll(outdated, true)
+    settle()
+    this.allAsking.set({ fit, outdated })
+  }
+
+  /** Render here, for all of them: kept for each tool on this computer, and they render. */
+  renderAllHere() {
+    const asking = this.allAsking.get()
+    const id = this.projectId
+    if (!asking || !id) return
+    this.outbox.add({ send: () => this.client.renderHere(id, ["all"], asking.outdated), refused: (error) => say("Couldn't keep that", error) })
+    this.runAll(asking.outdated, true)
+  }
+
+  /** Rent a GPU, for all of them: Rent opens with one that holds them all, and nothing renders. */
+  rentForAll() {
+    const asking = this.allAsking.get()
+    this.allAsking.set(null)
+    this.rent(asking?.fit.rent)
   }
 
   /**

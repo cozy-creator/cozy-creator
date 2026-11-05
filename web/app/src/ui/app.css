@@ -907,6 +907,36 @@ code {
 .status.bad {
   color: var(--bad);
 }
+.status.asking {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.status.asking p {
+  margin: 0;
+}
+.status.asking .row {
+  display: flex;
+  gap: 6px;
+  padding-top: 2px;
+}
+.render-all {
+  position: relative;
+}
+.render-all .status.asking {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 320px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--round);
+  background: var(--card);
+  box-shadow: 0 6px 24px #0003;
+  z-index: 20;
+}
 .act {
   color: var(--ink);
   text-decoration: underline;
@@ -1617,6 +1647,10 @@ button:disabled {
 }
 .sku:hover {
   background: var(--tint);
+}
+.sku.chosen {
+  background: var(--tint);
+  box-shadow: inset 0 0 0 1px var(--ember);
 }
 .sku b {
   font: 600 13px var(--mono);
