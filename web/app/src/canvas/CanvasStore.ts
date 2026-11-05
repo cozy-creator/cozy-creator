@@ -453,11 +453,12 @@ export class CanvasStore {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
         // What a new take's run warned of is said as it lands: a box's own mark is only seen opened.
         if (this.hasRead && view.asset && asset.version !== view.asset.version) for (const line of warnings.get(asset.name) ?? []) if (!view.warnings?.includes(line)) say(line)
-        // A render that fails says so as it fails, wherever the person is looking. One that failed before this page opened is the box's to show.
-        if (asset.failure && this.hasRead && asset.failure.message !== view.asset?.failure?.message) say(`${asset.name} didn't render`, new ApiError(0, asset.failure))
+        // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it. One that failed before this page opened is the box's to show.
+        const answered = view.asked !== undefined && view.asked < this.began
+        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }))
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
-        if (view.asked !== undefined && view.asked < this.began) change.asked = undefined
+        if (answered) change.asked = undefined
         const over = view.over && view.over.until >= this.began ? view.over : undefined
         if (view.over && !over) change.over = undefined
         if (view.asset !== asset || view.landed) {
