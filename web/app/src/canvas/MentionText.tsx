@@ -1,4 +1,4 @@
-import { type ClipboardEvent, type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore } from "./context"
