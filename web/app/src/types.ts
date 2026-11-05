@@ -9,6 +9,8 @@ export interface ErrorBody {
   next?: string[]
   cause?: string
   retry_after_s?: number
+  /** That peer's details of its refusal, verbatim. */
+  metadata?: Record<string, unknown>
 }
 
 export interface Session {

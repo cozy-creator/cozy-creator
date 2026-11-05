@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@cozy-creator/paper": "github:cozy-creator/ghibli-component-library#fe4f6ec6abcb22d7f695deabb8e7957c7fb98b60&path:/packages/paper",
-    "@openrails/auth-ui": "1.45.0",
+    "@openrails/auth-ui": "1.47.0",
     "@tanstack/react-query": "^5.104.2",
     "@xyflow/react": "^12.12.1",
     "hash-wasm": "^4.12.0",

@@ -11,6 +11,24 @@ function reply(status: number, body?: unknown, wait?: number): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), { status, headers })
 }
 
+/** AuthKit's AuthResult status for a step, and the member carrying it: a Hub refusing a code with one of these and its `metadata` names a step. */
+const STEPS: Record<string, string> = {
+  second_factor_required: "second_factor",
+  enrollment_required: "enrollment",
+  reauthentication_required: "reauthentication",
+  verification_required: "verification",
+  account_recovery_required: "recovery",
+  device_verification_required: "device_verification",
+}
+
+/** The AuthResult a refusal names as AuthKit's next step, which auth-ui then shows. */
+function stepOf(error: unknown): Record<string, unknown> | undefined {
+  if (!(error instanceof ApiError)) return undefined
+  const { cause, metadata } = error.body
+  const member = cause === undefined ? undefined : STEPS[cause]
+  return member && metadata ? { status: cause, [member]: metadata } : undefined
+}
+
 /** What Calcifer refused, in the AuthKit code auth-ui has words for. A Hub's own code is the cause where Calcifer has no name for it. */
 function refusal(error: unknown, proving: boolean): Response {
   if (!(error instanceof ApiError)) throw error
@@ -29,12 +47,17 @@ function refusal(error: unknown, proving: boolean): Response {
  */
 export function signInClient(client: Client) {
   const sent = new Map<string, string>()
+  // The code waiting on a step AuthKit named: auth-ui's next call is that step, which Calcifer takes for it.
+  let stepping: string | undefined
+  const signedIn = () => reply(200, { status: "complete", token_set: { access_token: "", token_type: "bearer" } })
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), location.origin).pathname.slice(MOUNT.length)
     const ask = init?.body ? JSON.parse(String(init.body)) : {}
     const proving = path === "/passwordless/confirm"
+    const id = proving ? sent.get(ask.identifier) : init?.method === "POST" ? stepping : undefined
     try {
       if (path === "/passwordless/start") {
+        stepping = undefined
         const out = await client.sendCode("sign_in", ask.identifier)
         sent.set(ask.identifier, out.id)
         if (out.retry_after_s === undefined) return reply(204)
@@ -42,14 +65,21 @@ export function signInClient(client: Client) {
         return reply(429, { error: { type: "", code: "rate_limited", message: "Too soon.", metadata } }, out.retry_after_s)
       }
       if (proving) {
-        const id = sent.get(ask.identifier)
         if (!id) return reply(401, { error: { type: "", code: "code_expired", message: "That code has expired." } })
         await client.proveCode(id, ask.code)
-        return reply(200, { status: "complete", token_set: { access_token: "", token_type: "bearer" } })
+        return signedIn()
+      }
+      if (id) {
+        await client.stepCode(id, path.slice(1), ask)
+        stepping = undefined
+        return signedIn()
       }
       return reply(404, { error: { type: "", code: "not_found", message: "Not offered here." } })
     } catch (error) {
-      return refusal(error, proving)
+      const step = stepOf(error)
+      if (!step) return refusal(error, proving)
+      stepping = id
+      return reply(200, step)
     }
   }
   return createAuthClient({ baseUrl: MOUNT, fetch, sessionHint: false })

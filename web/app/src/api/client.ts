@@ -583,6 +583,11 @@ export class Client {
     return this.write("POST", `/v1/account/codes/${encodeURIComponent(id)}`, { code })
   }
 
+  /** The step the Hub's AuthKit named, refusing `id`'s code: `path` under its mount, with `body`. */
+  stepCode(id: string, path: string, body: unknown): Promise<Proven> {
+    return this.write("POST", `/v1/account/codes/${encodeURIComponent(id)}/step`, { path, body })
+  }
+
   nameAccount(name: string): Promise<Account> {
     return this.write("PUT", "/v1/account/name", { name })
   }
