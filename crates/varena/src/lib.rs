@@ -322,7 +322,9 @@ impl State {
             return (reclaim::CONTENTLESS, entry.last_use);
         }
         if entry.prefetched {
-            return (reclaim::PREFETCHED, entry.last_use);
+            // Of unused fills, what the plan needs last goes first: the nearest is about to be used.
+            let next = order.next_use(id).map_or(0, |(phases, position)| phases << 32 | position);
+            return (reclaim::PREFETCHED, u64::MAX - next);
         }
         let touched = self.phase_boundary.is_some_and(|boundary| entry.last_use > boundary);
         match order.next_use(id) {
