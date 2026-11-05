@@ -1518,7 +1518,7 @@ grep -q 'cozy project rename old new' "$OUT/orphan.txt" || check "orphans: statu
 J 'any(.next[]; . == "cozy project rename old new") and any(.next[]; . == "cozy project reclaim")' <<< "$(status "$T")" || check "orphans: status's next: $(status "$T" | jq -c .next)"
 cozy project -p "$T" rename old new > "$OUT/rename.txt" 2>&1 || check "orphans: rename: $(tail -c 300 "$OUT/rename.txt")"
 { J '.orphans == null or (.orphans | length == 0)' <<< "$(status "$T")" && [ "$(made "$T" new)" = 1 ] && [ "$(row "$T" new .status)" = '"current"' ]; } || check "orphans: renamed, new is $(row "$T" new .)"
-case "$(row "$T" reader .status)" in *'out of date'*) ;; *) check "orphans: renaming did not put its reader's text out of date: $(row "$T" reader .status)" ;; esac
+[ "$(row "$T" reader .standing)" = '"current"' ] || check "orphans: a rename put its reader out of date: $(row "$T" reader .status)"
 
 step "a project: reclaim lists, and --yes deletes what nothing else names"
 render "$T" all --missing || check "orphans: render all renamed"
@@ -2470,6 +2470,7 @@ stops
 failed_once
 absent_piece
 rename_waits
+renames_read
 step "a project: another package's take is refused, with nothing sent"
 local H=$OUT/refused; mkdir -p "$H"; plate "$H/look.mp4" testsrc2 440 800
 printf 'version: 3\nassets: {}\n' > "$H/project.yaml"
@@ -2814,6 +2815,54 @@ grep -q '^  entire:$' "$T/project.yaml" || check "rename: the file did not chang
 wait "$going" || check "rename: the render: $(tail -c 300 "$OUT/rename-busy.txt")"
 [ "$(made "$T" new)" = 1 ] || check "rename: new has $(made "$T" new) versions after the render ended"
 [ "$(made "$T" entire)" = 1 ] || check "rename: entire has $(made "$T" entire) versions after the render ended"
+}
+
+# A name is no input: renaming something leaves what reads it as it stood, whatever kind of reader it is.
+renames_read() {
+step "a project: a rename puts nothing out of date: a text reader, a text asset, an Edit, what's approved"
+local T=$OUT/renames-read look name before
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800
+printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
+look=$(prefix "$T" "$T/look.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 3
+assets:
+  look:
+    approved: $look
+  still:
+    tool: $here/project/draw.py/draw
+    instructions: A still.
+  mood:
+    text: Like <still> at dusk.
+  poster:
+    tool: $here/project/draw.py/draw
+    instructions: <still> on a wall. <mood>
+  framed:
+    tool: $here/project/draw.py/draw
+    instructions: <still> in a frame.
+  clash:
+    tool: $here/project/shots.py/shoot
+    summary: Two lights meet on <look>.
+  film:
+    tool: cozy/edit
+    tracks:
+      - clips:
+          - <clash>
+YAML
+render "$T" all || check "renames: render: $(tail -c 300 "$OUT/render.txt")"
+cozy project -p "$T" approve framed 1 > /dev/null || check "renames: approve"
+before=$(counts "$T")
+cozy project -p "$T" rename still picture > /dev/null || check "renames: a read"
+cozy project -p "$T" rename mood tone > /dev/null || check "renames: a text asset"
+cozy project -p "$T" rename clash fight > /dev/null || check "renames: a clip"
+sed -i 's/^  poster:$/  print:/' "$T/project.yaml"
+cozy project -p "$T" rename poster print > /dev/null || check "renames: one the file has already"
+sed -i 's/^  framed:$/  hung:/' "$T/project.yaml"
+cozy project -p "$T" rename framed hung > /dev/null || check "renames: an approved one by hand"
+J '[.assets[] | select(.standing != "current") | {name, status}] == []' <<< "$(status "$T")" || check "renames: out of date: $(status "$T" | jq -c '[.assets[] | select(.standing != "current") | {name, status}]')"
+J '.versions[-1].approved' <<< "$(held "$T" hung)" || check "renames: its approval: $(held "$T" hung | jq -c .versions)"
+render "$T" all --missing || check "renames: render what's missing: $(tail -c 300 "$OUT/render.txt")"
+[ "$(counts "$T" | tr -d '"' | sed 's/picture/still/; s/tone/mood/; s/fight/clash/; s/print/poster/; s/hung/framed/')" = "$(tr -d '"' <<< "$before")" ] || check "renames: something ran: $before then $(counts "$T")"
 }
 
 # Three assets failing alike, a package that isn't there, so no run is made.

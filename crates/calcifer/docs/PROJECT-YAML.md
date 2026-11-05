@@ -155,7 +155,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 | `delete <name> --version <n>` | Discards that take, repeatable, and prints the `restore` line for each: see [Discarded takes](#discarded-takes) |
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
 | `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
-| `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions |
+| `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions. A name is no input: nothing that reads it goes out of date |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, and discarded takes, or with `--yes` deletes them and any file a version or run has on record and nothing names now. A file with no record is listed and stays: it may be all that's left of a take. With `project.lock` gone, unreadable or listing nothing, `--yes` is refused |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
 | `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |

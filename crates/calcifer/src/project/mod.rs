@@ -1338,9 +1338,9 @@ async fn reclaim(
 }
 
 /// Renames asset `from` to `to`: in project.yaml its key and every `<from>`, unless the file has moved to `to` already, then what
-/// project.lock keeps of it, its pin and what is pending or owed of it, and its row on the canvas. Its readers' text changed, so they
-/// go out of date unless pinned. While the project renders, what it renders still says `from`, so project.lock's part happens as that
-/// walk ends. Nothing on disk moves.
+/// project.lock keeps of it, its pin and what is pending or owed of it, and its row on the canvas. A name is no input, so what stood on the
+/// text that said `from` stands on the text that says `to`. While the project renders, what it renders still says `from`, so project.lock's
+/// part happens as that walk ends. Nothing on disk moves.
 async fn rename(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -1386,14 +1386,18 @@ async fn rename(
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
     }
     let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
+    let stamps = restamps(folder, &doc, &back, &from, &to);
     // Under `walking`, as a walk's end is, so that it is done now or that walk does it.
     let walking = project.walking.lock().expect("walking lock");
     let queued = *walking;
-    if queued || old.is_some() {
+    if queued || old.is_some() || !stamps.is_empty() {
         folder
-            .update_lock(|lock| match queued {
-                true => lock.walk.renames.push((from.clone(), to.clone())),
-                false => renamed(lock, &from, &to),
+            .update_lock(|lock| {
+                match queued {
+                    true => lock.walk.renames.push((from.clone(), to.clone())),
+                    false => renamed(lock, &from, &to),
+                }
+                stamps.iter().for_each(|stamp| stamp.written(lock));
             })
             .map_err(Refusal)?;
     }
@@ -1402,10 +1406,51 @@ async fn rename(
     Ok(Json(Renamed { from, to, versions, queued }))
 }
 
-/// project.lock with asset `from` called `to`: its row, and what is pending or owed of it.
+/// One asset's key moved by a rename, its inputs the same: what stood on `was` stands on `is`.
+struct Restamp {
+    key: String,
+    was: String,
+    is: String,
+    /// The version that was its state, on whatever key.
+    stood: Option<u32>,
+}
+
+impl Restamp {
+    fn written(&self, lock: &mut Lock) {
+        let Some(held) = lock.assets.get_mut(&self.key) else { return };
+        let stood = |version: &Version| version.inputs == self.was || Some(version.number) == self.stood;
+        held.versions.iter_mut().chain(&mut held.discarded).filter(|version| stood(version)).for_each(|version| version.inputs.clone_from(&self.is));
+    }
+}
+
+/// What renaming `from` to `to` moves of each key, `doc` being the text that says `to` and `lock` what stands of `from`. It's read from that text said
+/// back, the same whether this call changed the file or a hand did. What was out of date stays so.
+fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str) -> Vec<Restamp> {
+    let then = folder.text().and_then(|text| assetfile::renamed(&text, to, from)).and_then(|text| Doc::of(folder, &text, lock));
+    let Ok(then) = then else { return vec![] };
+    let mut after = lock.clone();
+    renamed(&mut after, from, to);
+    let (was, is) = (then.stand(lock), doc.stand(&after));
+    let moved = |i: usize| {
+        let name = &doc.assets[i].name;
+        let j = then.find(if name_key(name) == name_key(to) { from } else { name })?;
+        let (old, new) = (was[j].inputs.clone()?, is[i].inputs.clone()?);
+        let stood = was[j].version().filter(|_| !matches!(&was[j].state, Stand::Pinned { changed, .. } if !changed.is_empty()));
+        (old != new).then(|| Restamp { key: name_key(name), was: old, is: new, stood })
+    };
+    (0..doc.assets.len()).filter_map(moved).collect()
+}
+
+/// project.lock with asset `from` called `to`: its row, what is pending or owed of it, and what a cut's versions say of it.
 fn renamed(lock: &mut Lock, from: &str, to: &str) {
     lock.untombstone(from);
     let key = name_key(from);
+    for version in lock.assets.values_mut().flat_map(|held| held.versions.iter_mut().chain(&mut held.discarded)) {
+        for clip in version.clips.iter_mut().filter(|clip| graph::mentions(&clip.clip).first().is_some_and(|name| name_key(name) == key)) {
+            clip.clip = format!("<{to}>");
+        }
+        version.without.iter_mut().filter(|left| name_key(&left.piece) == key).for_each(|left| left.piece = to.to_owned());
+    }
     if let Some(mut held) = lock.assets.remove(&key) {
         held.name = to.to_owned();
         lock.assets.insert(name_key(to), held);
