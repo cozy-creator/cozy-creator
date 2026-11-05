@@ -38,6 +38,16 @@ def add_one(pointer, count, BLOCK: tl.constexpr):
     tl.store(pointer + offsets, tl.load(pointer + offsets, mask=mask) + 1.0, mask=mask)
 
 
+# What a counting variant's tensor holds when its check fails: each distinct value and how many hold it.
+SEEN = {}
+# Each launch of theirs: its stream, and whether that stream was capturing then.
+LAUNCHES = {}
+
+
+def launched(name, stream):
+    LAUNCHES.setdefault(name, set()).add((hex(stream.cuda_stream), torch.cuda.is_current_stream_capturing()))
+
+
 def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
     if name == "scalar":
         return
@@ -80,8 +90,13 @@ def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
     elif name in ("triton", "triton_pdl"):
         t = torch.zeros(1 << 16, dtype=torch.float32, device=device)
         extra = {"launch_pdl": True} if name == "triton_pdl" else {}
-        ops.append(lambda: add_one[(t.numel() // 1024,)](t, t.numel(), BLOCK=1024, **extra))
+        def launch():
+            launched(name, torch.cuda.current_stream())
+            add_one[(t.numel() // 1024,)](t, t.numel(), BLOCK=1024, **extra)
+
+        ops.append(launch)
         checks.append((name, lambda: bool((t == STEPS + 1).all())))
+        SEEN[name] = t
     elif name == "parallel":
         side = torch.cuda.Stream(device=device)
         p = torch.zeros(64, dtype=torch.float32, device=device)
@@ -90,11 +105,13 @@ def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
             current = torch.cuda.current_stream()
             side.wait_stream(current)
             with torch.cuda.stream(side):
+                launched(name, side)
                 p.add_(1)
             current.wait_stream(side)
 
         ops.append(fork)
         checks.append((name, lambda: bool((p == STEPS + 1).all())))
+        SEEN[name] = p
     elif name == "reduce":
         big = torch.randn(1 << 22, device=device)
         norm = torch.empty((), device=device)
@@ -119,6 +136,8 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     device = torch.device("cuda", torch.cuda.current_device())
     torch.manual_seed(payload.seed)
     ops, checks = [], []
+    SEEN.clear()
+    LAUNCHES.clear()
     for name in MIX if payload.variant == "mix" else (payload.variant,):
         part(name, device, ops, checks)
     counter = torch.zeros(64, dtype=torch.float32, device=device)
@@ -132,10 +151,12 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     denoise_loop(step, range(STEPS + 1), state=(counter,))
     torch.cuda.synchronize()
     results = {name: bool(check()) for name, check in checks}
+    seen = {name: dict(zip(*(v.tolist() for v in SEEN[name].unique(return_counts=True)))) for name in SEEN if not results.get(name, True)}
     results["counter"] = bool(torch.all(counter == STEPS + 1).item())
     row = (loop.ROWS.get(ctx.request_id) or [{}])[-1]
     native = row.get("mode") == "resident" and row.get("native_steps") == STEPS
-    detail = {"variant": payload.variant, "gpu": gpus(), "checks": results,
+    detail = {"variant": payload.variant, "gpu": gpus(), "checks": results, "want": STEPS + 1, "seen": seen,
+              "launches": {name: sorted(map(list, v)) for name, v in LAUNCHES.items()},
               "loop": {k: row.get(k) for k in ("mode", "native_steps", "refusals")}}
     if not native or not all(results.values()):
         raise RuntimeError(f"conditional body {json.dumps(detail, sort_keys=True)}")
