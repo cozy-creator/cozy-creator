@@ -120,8 +120,10 @@ def _bind_allocator() -> None:
                 "cxx11_abi": int(torch._C._GLIBCXX_USE_CXX11_ABI),
                 "system": platform.system(), "machine": platform.machine(),
             }
-            if runtime_torch not in actual.get("supported_torch", ()) or any(actual.get(key) != value for key, value in expected.items()):
-                raise RuntimeError(f"Varena Torch shim ABI mismatch: built {actual}, running {dict(torch=runtime_torch, **expected)}")
+            supported = actual["supported_torch"]
+            if runtime_torch not in supported or any(actual.get(key) != value for key, value in expected.items()):
+                floor = ".".join(supported[0].split(".")[:2])
+                raise RuntimeError(f"this package's environment has Torch {runtime_torch}, GPU work needs {supported[0]}: relax the package's torch pin to torch>={floor}")
             native = ctypes.CDLL(str(library))
             native.varena_torch_bind.argtypes = [ctypes.c_void_p]
             native.varena_torch_bind.restype = ctypes.c_int
