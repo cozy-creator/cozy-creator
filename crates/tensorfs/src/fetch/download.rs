@@ -1,5 +1,5 @@
 //! The downloader, as S3's own clients do it (aws-cli, CRT, s5cmd): a queue of objects, each read as
-//! 8 MiB ranges (one request for an object of 8 MiB or less), one limit on requests in flight across
+//! 4 MiB ranges (one request for an object of 4 MiB or less), one limit on requests in flight across
 //! every object, and each request asked again by the one retry rule ([`ask`]) from the byte it reached.
 //! Nothing judges a request's rate: asking a slow range again doesn't speed it up (tfs-141), while an
 //! object's ranges side by side do.
@@ -33,8 +33,9 @@ use super::{Admission, ObjectStore, Tier};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::ObjectRef;
 
-/// A range (aws-cli's `multipart_chunksize`, CRT's part size).
-const PART: u64 = 8 << 20;
+/// A range (aws-cli's `multipart_chunksize`). 4 MiB, not their 8: a cold R2 range drips at about
+/// 0.3 MB/s (fresh objects, 11-04), so a smaller one ends its object's tail sooner.
+const PART: u64 = 4 << 20;
 /// Bytes a request gathers before writing them: the most a cut loses per request.
 const WRITE_BYTES: usize = 256 << 10;
 const VOLUME_READS: usize = 8;
@@ -67,6 +68,12 @@ pub(crate) struct Task {
     unanswered: AtomicU32,
     /// Its slowest range: how long it took, and its bytes.
     slowest: Mutex<(Duration, u64)>,
+    /// Where the origin redirected it, and until when (the redirect's `Cache-Control: max-age`): its
+    /// other ranges ask there directly, as an HTTP cache would.
+    delivery: Mutex<Option<(String, Instant)>>,
+    /// One request asks the origin where the object is; its other ranges wait for that answer's head.
+    locating: AtomicBool,
+    located: watch::Sender<bool>,
     /// Its last waiter left.
     left: Notify,
     done: watch::Sender<Option<std::result::Result<Tier, Refusal>>>,
@@ -524,6 +531,9 @@ impl Shared {
                     asked: AtomicU32::new(0),
                     unanswered: AtomicU32::new(0),
                     slowest: Mutex::default(),
+                    delivery: Mutex::default(),
+                    locating: AtomicBool::new(false),
+                    located: watch::channel(false).0,
                     left: Notify::new(),
                     done: watch::channel(None).0,
                 });
@@ -831,11 +841,28 @@ impl Shared {
         self.stats.requests.fetch_add(1, Ordering::Relaxed);
         task.asked.fetch_add(1, Ordering::Relaxed);
         let range = (from > 0 || end < length).then(|| format!("bytes={from}-{}", end - 1));
-        let mut headers = here.headers.to_vec();
-        headers.extend(range.clone().map(|range| ("range".to_owned(), range)));
         let shown_range = range.as_deref().unwrap_or("all");
-        let mut answer = match self.client.get_authorized(here.url, &headers, here.provider).await {
-            Ok(answer) => answer,
+        let ranged: Vec<_> = range.clone().map(|range| ("range".to_owned(), range)).into_iter().collect();
+        // Where the origin redirected this object while that holds, with only the range (credentials stay
+        // with the origin); else the origin.
+        let current = || lock(&task.delivery).clone().filter(|(_, until)| *until > Instant::now());
+        let mut delivered = current();
+        if delivered.is_none() && task.locating.swap(true, Ordering::AcqRel) {
+            let _ = task.located.subscribe().wait_for(|located| *located).await;
+            delivered = current();
+        }
+        let asked = match &delivered {
+            Some((at, _)) => self.client.get_authorized(at, &ranged, None).await,
+            None => self.client.get_authorized(here.url, &[here.headers, &ranged].concat(), here.provider).await,
+        };
+        task.located.send_replace(true);
+        let mut answer = match asked {
+            Ok(answer) => {
+                if let (None, Some(until)) = (&delivered, answer.until) {
+                    *lock(&task.delivery) = Some((answer.url.clone(), until));
+                }
+                answer
+            }
             Err(GetError::Exchange(refusal)) if ask::transient(&refusal) => {
                 tracing::info!(object, range = shown_range, attempt, why = %refusal.detail, "request failed");
                 return Err(Failed::Again(refusal.detail, None));
@@ -850,8 +877,11 @@ impl Shared {
             let why = format!("{object}: {status} from {}; range {shown_range}; said {said:?}", shown(&answer.url));
             let code = match status {
                 _ if ask::weather(status) => return Err(Failed::Again(why, wait)),
-                // From storage the origin sent us to: the next attempt is sent a fresh link.
-                401 | 403 | 404 | 410 if answer.url != here.url => return Err(Failed::Again(why, None)),
+                // From storage the origin sent us to: the next attempt asks the origin for a fresh link.
+                401 | 403 | 404 | 410 if answer.url != here.url => {
+                    *lock(&task.delivery) = None;
+                    return Err(Failed::Again(why, None));
+                }
                 401 | 403 => Code::CREDENTIAL_REQUIRED,
                 404 | 410 => Code::REF_NOT_FOUND,
                 416 => Code::LENGTH_MISMATCH,

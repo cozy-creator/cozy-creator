@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 pub use reqwest::header::HeaderMap;
@@ -26,6 +26,8 @@ const STALL: Duration = Duration::from_secs(30);
 pub(crate) struct Answer {
     pub url: String,
     pub response: reqwest::Response,
+    /// When a redirect led here: until when its `Cache-Control: max-age` lets `url` be asked directly.
+    pub until: Option<Instant>,
 }
 
 /// An exchange failure may be asked again; the caller's own verdict (its credential callback,
@@ -182,7 +184,7 @@ impl Client {
     /// GET `url`, following the redirects the policy allows. Credentials go only to the origin they
     /// were given for: another origin gets only the `range`.
     pub(crate) async fn get_authorized(&self, url: &str, headers: &[(String, String)], mut provider: Option<&dyn TokenProvider>) -> std::result::Result<Answer, GetError> {
-        let (mut url, mut headers, mut challenged) = (url.to_owned(), headers.to_vec(), false);
+        let (mut url, mut headers, mut challenged, mut until) = (url.to_owned(), headers.to_vec(), false, None::<Instant>);
         for _ in 0..=self.policy.max_redirects + 1 {
             let mut presented = headers.clone();
             if let Some(provider) = provider {
@@ -202,10 +204,16 @@ impl Client {
                 if let Some(encoding) = answer.header("content-encoding").filter(|e| !e.trim().is_empty() && !e.trim().eq_ignore_ascii_case("identity")) {
                     return Err(GetError::Exchange(Refusal { code: Code::TRANSFER_FAILED, detail: format!("{}: content-encoding {encoding:?} against `accept-encoding: identity`", shown(&url)) }));
                 }
+                answer.until = until;
                 return Ok(answer);
             }
             let Some(next) = answer.header("location").and_then(|at| join(&url, at)) else {
                 return Err(GetError::Exchange(Refusal { code: Code::REDIRECT_REFUSED, detail: format!("{}: {status} without a usable Location", shown(&url)) }));
+            };
+            let age = max_age(answer.response.headers()).map(|age| Instant::now() + age);
+            until = match (until, age) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
             };
             // Read to its end, so its connection goes back to the pool.
             let _ = answer.said().await;
@@ -235,7 +243,7 @@ impl Client {
             request = request.body(reqwest::Body::from(body));
         }
         match request.send().await {
-            Ok(response) => Ok(Answer { url: url.to_owned(), response }),
+            Ok(response) => Ok(Answer { url: url.to_owned(), response, until: None }),
             Err(error) => {
                 if error.is_connect() {
                     // Answers nothing connects to are asked of the resolver again next time.
@@ -260,6 +268,13 @@ impl reqwest::dns::Resolve for Checked {
             Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
     }
+}
+
+/// A response's `Cache-Control: max-age`.
+fn max_age(headers: &HeaderMap) -> Option<Duration> {
+    let control = headers.get("cache-control")?.to_str().ok()?;
+    let age = control.split(',').find_map(|d| d.trim().strip_prefix("max-age="))?;
+    age.trim().parse().ok().map(Duration::from_secs)
 }
 
 /// `url` without its query: a presigned URL's query is its credential.

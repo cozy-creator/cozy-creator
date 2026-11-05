@@ -149,10 +149,10 @@ def check(gate):
     c = st.get('straggler-clean')
     # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138),
     # crawling objects (every ask moves 64 KiB and drips, tfs-141), and many, whose parts come at full speed (tfs-143).
-    # Judged on the outcome: it lands, and a slowed object costs at most about one 8 MiB range at the proxy's drip rate,
+    # Judged on the outcome: it lands, and a slowed object costs at most about one 4 MiB range at the proxy's drip rate,
     # read beside its other ranges. No request is asked again for its rate (a standard client, Paul 11-04), so the times
-    # are a new series (`-part8`): the old ones judged restarts and 1 MiB parts.
-    drip = (8 << 20) / 65536
+    # are a new series (`-part4`): the old ones judged restarts and 1 MiB parts.
+    drip = (4 << 20) / 65536
     for name, case, what in (('straggler-slow', 'straggler', 'stragglers'), ('straggler-cold', 'straggler-cold', 'cold objects'),
                              ('straggler-crawl', 'straggler-crawl', 'crawling objects'),
                              ('straggler-parts', 'straggler-parts', 'parts at full speed')):
@@ -171,7 +171,7 @@ def check(gate):
             (fails if sl['seconds'] > limit else notes).append(
                 f'tensorfs {case}: {sl["slowed"]} slow objects, {sl["reasked"]} re-asked, at most {sl["asks"]} asks of one; '
                 f'{sl["seconds"]:.1f} s vs clean {c["seconds"]:.1f} s (limit {limit:.1f})')
-            against(f'{case}-part8', sl['seconds'], c['bytes'], f'download with {what}')
+            against(f'{case}-part4', sl['seconds'], c['bytes'], f'download with {what}')
 
     def rate(name, nbytes, seconds):
         if nbytes and seconds:

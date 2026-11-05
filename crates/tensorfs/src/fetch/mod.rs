@@ -151,14 +151,14 @@ impl Landed {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Requests in flight at once, across every object: 64 is where a pod's throughput levelled
-    /// off (fern, 10-01: 1.53 GB/s; 128 added 9-25%).
+    /// Requests in flight at once, across every object. A request moved 7.5-10 MB/s from R2 on a cpu pod
+    /// (11-04), so 64 held a pull to half the old downloader's ~100 streams.
     pub requests: usize,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { requests: 64 }
+        Config { requests: 128 }
     }
 }
 
