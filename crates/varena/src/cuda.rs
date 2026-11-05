@@ -73,6 +73,9 @@ type MemoryInfo = unsafe extern "system" fn(*mut usize, *mut usize) -> Status;
 pub(crate) struct Counters {
     pub(crate) memory_calls: AtomicU64,
     pub(crate) physical_ooms: AtomicU64,
+    /// Development only (`fail_create_after`): calls until cuMemCreate is refused, and how many.
+    pub(crate) fail_create: AtomicU64,
+    pub(crate) fail_creates: AtomicU64,
     pub(crate) event_queries: AtomicU64,
     pub(crate) event_records: AtomicU64,
     pub(crate) event_waits: AtomicU64,
@@ -325,6 +328,15 @@ impl Driver {
     pub(crate) fn create(&self, bytes: usize) -> crate::AllocationResult<u64> {
         let mut handle = 0;
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        match self.counters.fail_create.load(Ordering::Acquire) {
+            0 => {}
+            1 if self.counters.fail_creates.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1)).is_ok() => {
+                self.counters.physical_ooms.fetch_add(1, Ordering::Relaxed);
+                return Err(crate::AllocationFailure::DriverOutOfMemory(bytes));
+            }
+            1 => self.counters.fail_create.store(0, Ordering::Release),
+            _ => { self.counters.fail_create.fetch_sub(1, Ordering::AcqRel); }
+        }
         // SAFETY: valid output pointer and properties; bytes satisfy granularity.
         let code = self.timed(|| unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) });
         if code == 2 {
@@ -543,6 +555,11 @@ impl Driver {
 
     pub(crate) fn context_joins(&self) -> u64 {
         self.counters.context_joins.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn fail_create_after(&self, n: u64, times: u64) {
+        self.counters.fail_creates.store(times, Ordering::Release);
+        self.counters.fail_create.store(n, Ordering::Release);
     }
 
     pub(crate) fn physical_ooms(&self) -> u64 {
