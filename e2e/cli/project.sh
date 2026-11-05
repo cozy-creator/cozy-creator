@@ -3687,7 +3687,7 @@ python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit a second shorter.
 sed 's/      - <a>/      - {video: <a>, start: 0, end: 120}/' "$P/project.yaml" > "$OUT/recut.yaml"
-code_got=$(cozy --json web --no-open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\)$/\1/p')
+code_got=$(cd "$OUT" && cozy --json open --no-open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\)$/\1/p')
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
 pid=$(jq -r .pid "$lock") was_addr=$(jq -r .address "$lock") was_token=$(jq -r .token "$lock")
