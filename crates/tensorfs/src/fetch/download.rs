@@ -353,6 +353,8 @@ struct Pace {
     /// The rate at the last doubling, and the bytes received when it last looked.
     last: Option<f64>,
     seen: u64,
+    /// Windows in a row since the last doubling that grew under `GAIN`.
+    flat: u32,
     settled: bool,
     halved: Option<Instant>,
 }
@@ -447,18 +449,23 @@ impl Shared {
             if self.busy.load(Ordering::Acquire) == 0 {
                 let gone = pace.level.saturating_sub(START.min(pace.max));
                 self.shrink(&mut pace, gone);
-                (pace.last, pace.settled) = (None, false);
+                (pace.last, pace.settled, pace.flat) = (None, false, 0);
                 continue;
             }
             let full = self.requests.available_permits() == 0;
             if !full || pace.settled || pace.level >= pace.max || self.debt.load(Ordering::Acquire) > 0 {
                 continue;
             }
+            // A doubling's new requests take more than a window to deliver: two flat windows settle it.
             if pace.last.is_some_and(|last| rate < last * GAIN) {
-                pace.settled = true;
-                tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
+                pace.flat += 1;
+                if pace.flat >= 2 {
+                    pace.settled = true;
+                    tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
+                }
                 continue;
             }
+            pace.flat = 0;
             let grow = (pace.level * 2).min(pace.max) - pace.level;
             (pace.level, pace.last) = (pace.level + grow, Some(rate));
             self.requests.add_permits(grow);
