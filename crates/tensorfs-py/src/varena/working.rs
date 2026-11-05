@@ -441,6 +441,11 @@ fn _varena_working_reset_peak(py: Python<'_>, device: i32) -> PyResult<()> {
 
 
 #[pyfunction]
+fn _varena_fail_create_after(py: Python<'_>, device: i32, n: u64) -> PyResult<()> {
+    py.detach(|| varena::fail_create_after(device, n)).map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 #[pyo3(signature = (device, limit = None))]
 fn _varena_working_set_limit(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<usize> {
     py.detach(|| {
@@ -825,6 +830,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_phase_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_fail_create_after, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_arm, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_scratch, module)?)?;

@@ -508,6 +508,48 @@ def capture_oom_physical() -> None:
     verdict("typed" if same else "corrupt", retry_replay_matches_eager=same)
 
 
+def create_oom(reclaimable: bool) -> None:
+    """A segment whose 5th handle the driver refuses (`fail_create_after`): what it mapped first is
+    reported and retired as one, so the shim sees no stranger; with idle pages to give back the
+    allocation retries and holds its bytes, else it refuses cleanly. 17e3a8d23 poisoned here."""
+    stream, _ = setup()
+    give_back()
+    if reclaimable:
+        spare = torch.empty(64 * MIB, dtype=torch.uint8, device=device)
+        del spare  # completed and idle: the first step of the reclaim order takes it
+        stream.synchronize()
+    vt._ext._varena_fail_create_after(DEVICE, 5)
+    try:
+        big = torch.empty(256 * MIB, dtype=torch.uint8, device=device)  # 16 handles of 16 MiB
+    except torch.OutOfMemoryError as error:
+        refused = error
+    else:
+        refused = None
+        big.fill_(0x5A)
+        stream.synchronize()
+        held = bool((big == 0x5A).all())
+    after = torch.empty(256 * MIB, dtype=torch.uint8, device=device)
+    after.fill_(0x3C)
+    stream.synchronize()
+    stats = vt.stats(DEVICE)  # a poisoned owner raises here
+    say("allocated", refused=refused is not None, physical_ooms=stats["driver_physical_ooms"],
+        mapped=stats["observed_mapped"], retired=stats["observed_retired"])
+    if stats["driver_physical_ooms"] < 1:
+        verdict("n/a", detail="no handle was refused")
+    elif reclaimable:
+        verdict("correct" if refused is None and held else "wrong_refusal", refused=str(refused)[:200])
+    else:
+        verdict("typed" if refused is not None else "n/a", refused=str(refused)[:200])
+
+
+def create_oom_retry() -> None:
+    create_oom(reclaimable=True)
+
+
+def create_oom_refused() -> None:
+    create_oom(reclaimable=False)
+
+
 def fit_pool_rng_late() -> None:
     """The first RNG tensor of a capture, after its stream freed temporaries in the pool."""
     stream, _ = setup()

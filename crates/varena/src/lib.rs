@@ -1517,6 +1517,13 @@ fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
     Ok(completed)
 }
 
+/// Development only, for the fault suite: the `n`th next cuMemCreate on `device` fails as a
+/// physical out of memory would. Once; 0 clears it.
+pub fn fail_create_after(device: i32, n: u64) -> Result<()> {
+    gpu(device)?.driver.get().ok_or(Error::Invalid("device not opened"))?.fail_create_after(n);
+    Ok(())
+}
+
 /// Development only: use at most this much of the card, as a smaller card would. The core
 /// keeps it true against the driver's own charge, which it samples at every slow path.
 pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {

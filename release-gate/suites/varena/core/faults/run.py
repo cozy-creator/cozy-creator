@@ -292,6 +292,8 @@ CELLS = {
     "source_prepare_error": main_only,
     "capture_oom_pool": main_only,
     "capture_oom_physical": main_only,
+    "create_oom_retry": main_only,
+    "create_oom_refused": main_only,
     "fit_pool_rng_late": main_only,
     "evict_fill_gated": main_only,
     "evict_fill_stress": main_only,
