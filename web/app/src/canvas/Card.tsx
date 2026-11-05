@@ -1,7 +1,10 @@
+import { useQuery } from "@tanstack/react-query"
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
-import type { Tool } from "../types"
+import { runsQuery } from "../api/queries"
+import { useConnection } from "../app/Connection"
+import type { Run, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, Conflict, InFrame, RenderButton, TextAsset } from "./AssetEdit"
@@ -27,6 +30,17 @@ function kindOf(view: ElementView): string {
   if (madeHere(asset.tool)) return asset.kind === "video" ? "edit" : "frame"
   if (asset.field && !asset.tool) return "file"
   return asset.kind === "video" ? "shot" : asset.kind
+}
+
+const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
+
+/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. */
+function Waiting() {
+  const { client } = useConnection()
+  const going = useQuery(runsQuery(client, { status: "in_progress" }, 100))
+  const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
+  const machine = [...(going.data?.runs ?? []), ...(queued.data?.runs ?? [])].find(settingUp)?.machine
+  return <div className="status mak">{machine ? `Getting ${machine} ready` : "Queued"}</div>
 }
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
@@ -261,7 +275,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     // An Edit's film shows on its own bar, and anything else's on its picture.
     return null
   }
-  if (view.queued || view.asked !== undefined) return <div className="status mak">Queued</div>
+  if (view.queued || view.asked !== undefined) return <Waiting />
   const approvedFace = asset.pinned && faceOf(view) === "media"
   if (asset.failure && !approvedFace) {
     const reason = noHash(asset.failure.message).replace(`${asset.name}: `, "")

@@ -105,12 +105,16 @@ function ProjectSync({ id }: { id: string }) {
   return null
 }
 
-/** The machines a render may go to: there's no choosing, the walk places it. With none, Render asks for one under Machines. Null until they're read. */
+/**
+ * The machines a render may go to: there's no choosing, the walk places it. A rental of yours is what a render is for, so this computer is one only with
+ * none up, and another computer's rental of your account takes nothing from here. With none, Render asks for one under Machines. Null until they're read.
+ */
 function useMachines(store: CanvasStore): string[] | null {
   const { client, status } = useConnection()
   const { data, isPending } = useQuery(machinesQuery(client))
-  const up = (data?.machines ?? []).filter((machine) => machine.state === "ready" && !machine.offline && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
-  const names = [...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
+  const up = (data?.machines ?? []).filter((machine) => machine.state === "ready" && machine.recorded !== false && !machine.offline && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
+  const rented = up.filter((machine) => machine.kind !== "local")
+  const names = (rented.length ? rented : up).map((machine) => machine.name)
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
