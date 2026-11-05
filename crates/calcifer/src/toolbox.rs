@@ -189,7 +189,13 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, held: &[Tool])
 async fn named_here(api: &Arc<Api>, hub: &str, project: &str, on: &On) -> Result<Vec<Tool>, Refusal> {
     let mut tools = vec![];
     for (written, path) in crate::project::local_code_named(api, project)? {
-        let Ok((package, document)) = local_code::describe(api, &path, on, hub).await else { continue };
+        let (package, document) = match local_code::describe(api, &path, on, hub).await {
+            Ok(described) => described,
+            Err(why) => {
+                tracing::warn!("{written} isn't listed: {}", why.message);
+                continue;
+            }
+        };
         let Ok(interface) = Interface::parse(&document) else { continue };
         tools.extend(tool::tools_of(&package, "local", &interface).into_iter().map(|tool| Tool {
             id: format!("{written}/{}", tool.function),

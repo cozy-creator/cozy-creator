@@ -89,7 +89,7 @@ const WATCH = () => {
   /** What of `spec` doesn't hold, as the page has it. */
   window.unshown = (spec) => (spec.all ?? [spec]).filter((one) => !holds(one)).map((one) => {
     const node = box(one.name ?? one.gone);
-    return { wanted: one, text: node?.textContent.slice(0, 160), place: node && placeOf(node) };
+    return { wanted: one, drawn: Boolean(node), text: node?.textContent.slice(0, 160), place: node && placeOf(node) };
   });
   /** Each place its progress reached, until it has none. */
   window.progressOf = (name) => new Promise((done) => {
@@ -214,7 +214,7 @@ function linesOf(text, name) {
     const calcifer = await Promise.all(page_has.slice(0, 4).map(async ({ wanted }) => {
       const name = wanted.name ?? wanted.gone;
       const { status: answered, body } = await api(`/v1/projects/${id}/assets/${name}`);
-      return { name, answered, fields: body?.fields, row: canvas[name] };
+      return { name, answered, fields: body?.asset?.fields, row: canvas[name] };
     }));
     return `never showed ${JSON.stringify(spec)}, of it ${page_has.length} not: ${JSON.stringify({ page_has: page_has.slice(0, 4), calcifer, reads })}`;
   });
@@ -534,11 +534,14 @@ function linesOf(text, name) {
   const fixed = Array.from({ length: 12 }, (_, i) => `burst_${i}`);
   // Clear of everything so far, and all of it fitted on the screen.
   await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * 400},260`, 'description=start')));
-  // Fitted to what's there as they arrive.
+  // Fitted to all of them: a box that comes after a fit is drawn for a moment, then not, off the screen (macOS, 41955999465).
   await until('the boxes for the burst', async () => {
     await page.keyboard.press('f');
     await page.waitForTimeout(250);
-    return page.evaluate((names) => names.every((name) => Boolean(window.boxOf(name))), fixed);
+    return page.evaluate((names) => names.every((name) => {
+      const at = window.boxOf(name)?.getBoundingClientRect();
+      return at && at.bottom <= innerHeight && at.right <= innerWidth;
+    }), fixed);
   }, Boolean);
   const lanes = Array.from({ length: 8 }, () => []);
   const last = new Map();

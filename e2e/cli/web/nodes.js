@@ -423,6 +423,8 @@ function linesOf(text, name) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
+    // Read with this machine's Runtime, as a run reads it: PyPI's can't, and this may be the first run of it here.
+    execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     const wire = await until('its functions listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.filter((held) => held.local && held.id.startsWith(fixture)), (held) => held.length > 0, FIRST_RUN_MS);
     const labelOf = (name) => wire.find((held) => held.function === name).label;
     const reload = async () => {
