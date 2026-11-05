@@ -176,31 +176,15 @@ impl<'a> Choices<'a> {
         self.own.iter().find(|s| s.param == asked || s.path == asked)
     }
 
-    /// Where a LoRA naming no slot goes: each call's main model (its first constructed slot, the
-    /// one `--lane` names), when those are one model. More than one is refused, naming each.
+    /// Where a LoRA naming no slot goes: [`main_models`], when those are one model. More than one is refused, naming each.
     fn lora_slots(&self, written: &str) -> Result<Vec<String>, Error> {
-        let candidates: Vec<(String, &Slot)> = match main_slot(self.own.iter()) {
-            Some(own) => vec![(own.param.clone(), own)],
-            None => {
-                let mut callees: Vec<&str> = self.calls.iter().map(|s| callee(&s.path)).collect();
-                callees.dedup();
-                (callees.into_iter())
-                    .filter_map(|c| main_slot(self.calls.iter().copied().filter(|s| callee(&s.path) == c)))
-                    .map(|s| (s.path.clone(), s))
-                    .collect()
-            }
-        };
-        // One model: the same default `org/name`, else (no default) the same class.
-        let model = |s: &Slot| match &s.default {
-            Some(default) => default.split('@').next().unwrap_or(default).to_ascii_lowercase(),
-            None => s.class.clone(),
-        };
+        let candidates = main_models(self.own, &self.calls);
         let mut models: Vec<(String, Vec<&str>)> = Vec::new();
         for (_, slot) in &candidates {
-            match models.iter_mut().find(|(m, _)| *m == model(slot)) {
+            match models.iter_mut().find(|(m, _)| *m == model_of(slot)) {
                 Some((_, params)) if params.contains(&slot.param.as_str()) => {}
                 Some((_, params)) => params.push(&slot.param),
-                None => models.push((model(slot), vec![&slot.param])),
+                None => models.push((model_of(slot), vec![&slot.param])),
             }
         }
         let name = self.target;
@@ -294,6 +278,34 @@ fn ident(s: &str) -> bool {
 /// names (TensorD's `main_model`).
 fn main_slot<'s>(mut slots: impl Iterator<Item = &'s Slot>) -> Option<&'s Slot> {
     slots.find(|s| !s.weights && !s.on_demand)
+}
+
+/// A function's main model: its first constructed slot, or each call's when it has none of its own. Each with what `Choices` names it by.
+fn main_models<'s>(own: &'s [Slot], calls: &[&'s Slot]) -> Vec<(String, &'s Slot)> {
+    if let Some(slot) = main_slot(own.iter()) {
+        return vec![(slot.param.clone(), slot)];
+    }
+    let mut callees: Vec<&str> = calls.iter().map(|s| callee(&s.path)).collect();
+    callees.dedup();
+    (callees.into_iter())
+        .filter_map(|c| main_slot(calls.iter().copied().filter(|s| callee(&s.path) == c)))
+        .map(|s| (s.path.clone(), s))
+        .collect()
+}
+
+/// One model: the same default `org/name`, else (no default) the same class.
+fn model_of(slot: &Slot) -> String {
+    match &slot.default {
+        Some(default) => default.split('@').next().unwrap_or(default).to_ascii_lowercase(),
+        None => slot.class.clone(),
+    }
+}
+
+/// What a function runs when that's one model, by its main slot: what `models:` and a LoRA naming no slot go on.
+pub fn main_model<'s>(own: &'s [Slot], calls: &[&'s Slot]) -> Option<&'s Slot> {
+    let mains = main_models(own, calls);
+    let (_, first) = mains.first()?;
+    mains.iter().all(|(_, slot)| model_of(slot) == model_of(first) && slot.param == first.param).then_some(*first)
 }
 
 /// The callable a slot path (`<callable>.models.<param>`) belongs to.

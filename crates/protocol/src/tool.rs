@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    choices,
     interface::{Callable, Constraints, Cuts, Field, Interface, Node, Struct, TAKE, Type, Wire},
     names::shown,
 };
@@ -96,6 +97,22 @@ pub struct Tool {
     /// With another tool of its package of the same `label` this is one box, and a toggle by this word turns it on: `Turbo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
+    /// What a checkpoint dropped on its box goes on: the one model its function runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ToolModel>,
+}
+
+/// The model a tool runs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolModel {
+    /// Its key in a node's `models`.
+    pub slot: String,
+    /// What its package loads unless told otherwise: `[org/]model@release`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// That checkpoint's family, as its header says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -186,6 +203,7 @@ pub fn edit() -> Tool {
         takes: false,
         cuts: None,
         variant: None,
+        model: None,
         controls: vec![Control { field: "timeline".to_owned(), ty: ControlType::Timeline, label: "Edit".to_owned(), face: true, ..Control::default() }],
     }
 }
@@ -242,6 +260,11 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
         cuts: node.cuts,
         ui: node.ui,
         variant: Some(node.variant).filter(|word| !word.is_empty()),
+        model: choices::main_model(&callable.models, &callable.calls.iter().collect::<Vec<_>>()).map(|slot| ToolModel {
+            slot: slot.param.clone(),
+            default: slot.default.clone(),
+            family: None,
+        }),
     })
 }
 
