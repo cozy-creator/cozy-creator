@@ -197,6 +197,19 @@ def check_counts() -> dict[str, int]:
     return {"uses": uses, "unmapped_bytes": unmapped, "perturbed_bytes": perturbed}
 
 
+def replay_differs(eager: Any, replayed: Any) -> str:
+    """Why a replay is not its eager pass bit for bit ("" when it is): every graph's one check
+    before it is trusted. Both are pytrees of one shape; NaNs in the same place agree."""
+    import torch
+    from torch.utils._pytree import tree_leaves
+
+    for index, (a, b) in enumerate(zip(tree_leaves(eager), tree_leaves(replayed), strict=True)):
+        if isinstance(a, torch.Tensor):
+            count = int(((a != b) & ~(a.isnan() & b.isnan())).sum())
+            if count:
+                return f"output {index}: {count} of {a.numel()} values differ"
+    return ""
+
 
 def unit_bytes() -> int:
     """How large a block a whole module may be before its children bind instead."""

@@ -82,17 +82,6 @@ def _configuration(module):
             for child in module.modules()]
 
 
-def _same(eager, replayed):
-    for a, b in zip(tree_flatten(eager)[0], tree_flatten(replayed)[0], strict=True):
-        if isinstance(a, torch.Tensor):
-            if not a.is_floating_point():
-                if not torch.equal(a, b):
-                    return False
-            elif (a - b).abs().max() > 0.01 * a.abs().max().clamp_min(1e-3):
-                return False
-    return True
-
-
 class _Graph:
     __slots__ = ("cuda", "inputs", "spec", "outputs", "regions", "configuration")
 
@@ -228,7 +217,7 @@ class Graphs:
                 graph = candidate.graphs[key] = self._capture(candidate, leaves, spec, args, kwargs, units, stream, row["peak_bytes"])
                 self.counts["captures"] += 1
                 replayed = self._replay(candidate, key, graph, leaves, spec)
-                reason = "replay refused" if replayed is None else None if _same(eager, replayed) else "replay differs from eager"
+                reason = "replay refused" if replayed is None else vt.replay_differs(eager, replayed) or None
             except Exception as error:  # A graph is an optimization: any failure declines it.
                 reason = f"{type(error).__name__}: {str(error)[:200]}"
         if reason is not None:

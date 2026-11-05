@@ -43,7 +43,7 @@ Works on any `nn.Module` or pipeline exposing `components`, with materialized CP
 
 `graphs="eager"` turns them off. A module called with the same arguments three times in a row is a loop. Its next pass runs eager, as the request's
 answer, under a check for what a replay would not repeat: randomness, host reads, writes to inputs or buffers, hooks, a
-change to the modules' Python state. Then it is captured, and one replay is compared with that answer. Any doubt or failure
+change to the modules' Python state. Then it is captured, and one replay is compared with that answer, bit for bit. Any doubt or failure
 declines that key, and eager serves it.
 
 All of a handle's graphs share one pool, replayed one at a time, and their tensors are scratch: inputs are copied in and
