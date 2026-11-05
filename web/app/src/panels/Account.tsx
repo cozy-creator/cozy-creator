@@ -8,6 +8,8 @@ import { useTo } from "../app/Shell"
 import type { Account as Who, Code, OrgClaim } from "../types"
 import { Copyable } from "../ui/Copyable"
 import { say } from "../ui/notes"
+import { useSignal } from "../ui/signal"
+import { theme } from "../ui/theme"
 import { Confirm, Failure, KV, Section, useAsk } from "./common"
 import { DrawerFrame } from "./Drawer"
 import { usd } from "./format"
@@ -47,11 +49,12 @@ function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: strin
 function SignIn({ onSignedIn, keyRefused }: { onSignedIn: () => void; keyRefused: boolean }) {
   const { client } = useConnection()
   const [auth] = useState(() => signInClient(client))
+  const now = useSignal(theme)
   return (
     <>
       {keyRefused && <p className="warn">The Hub no longer accepts this computer's key: it was revoked from another computer.</p>}
       <AuthProvider client={auth} autoStart={false}>
-        <AuthUiProvider appearance={appearance} messages={messages}>
+        <AuthUiProvider appearance={appearance(now)} messages={messages}>
           <ContactSignIn hideProviders onSignedIn={onSignedIn} />
         </AuthUiProvider>
       </AuthProvider>

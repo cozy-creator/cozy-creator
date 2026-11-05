@@ -10,7 +10,7 @@ const HOLDER = join(homedir(), ".cozy", "calcifer", "calcifer.lock.holder")
 // What Calcifer sends with the page (`crates/calcifer/src/page.rs`), so `vite preview` holds the build to it.
 const PAGE_HEADERS = {
   "Content-Security-Policy":
-    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "Referrer-Policy": "no-referrer",
 }
 

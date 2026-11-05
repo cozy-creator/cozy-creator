@@ -1,6 +1,7 @@
 import { createAuthClient } from "@openrails/auth-ui/client"
 import type { AuthUiAppearance, AuthUiMessageBundle } from "@openrails/auth-ui"
 import { ApiError, type Client } from "../api/client"
+import type { Theme } from "../ui/theme"
 
 const MOUNT = "/account"
 
@@ -52,34 +53,33 @@ export function signInClient(client: Client) {
 }
 
 /** The page's tokens, by name, so a change to them carries here. */
-export const appearance: AuthUiAppearance = {
-  theme: "dark",
-  variables: {
-    background: "var(--panel)",
-    foreground: "var(--ink)",
-    card: "var(--card)",
-    cardForeground: "var(--ink)",
-    popover: "var(--float)",
-    popoverForeground: "var(--ink)",
-    primary: "var(--ember)",
-    primaryForeground: "var(--bg)",
-    primarySolid: "var(--ember)",
-    primarySolidForeground: "var(--bg)",
-    secondary: "var(--card2)",
-    secondaryForeground: "var(--ink)",
-    muted: "var(--card2)",
-    mutedForeground: "var(--mute)",
-    accent: "var(--card2)",
-    accentForeground: "var(--ink)",
-    destructive: "var(--bad)",
-    success: "var(--cur)",
-    border: "var(--line)",
-    input: "var(--line2)",
-    ring: "var(--ember)",
-    radius: "var(--round)",
-    fontFamily: "var(--sans)",
-  },
+const variables: AuthUiAppearance["variables"] = {
+  background: "var(--panel)",
+  foreground: "var(--ink)",
+  card: "var(--card)",
+  cardForeground: "var(--ink)",
+  popover: "var(--float)",
+  popoverForeground: "var(--ink)",
+  primary: "var(--ember)",
+  primaryForeground: "var(--on-ember)",
+  primarySolid: "var(--ember)",
+  primarySolidForeground: "var(--on-ember)",
+  secondary: "var(--card2)",
+  secondaryForeground: "var(--ink)",
+  muted: "var(--card2)",
+  mutedForeground: "var(--mute)",
+  accent: "var(--card2)",
+  accentForeground: "var(--ink)",
+  destructive: "var(--bad)",
+  success: "var(--cur)",
+  border: "var(--line)",
+  input: "var(--line2)",
+  ring: "var(--ember)",
+  radius: "var(--round)",
+  fontFamily: "var(--sans)",
 }
+
+export const appearance = (theme: Theme): AuthUiAppearance => ({ theme: theme === "dark" ? "dark" : "light", variables })
 
 /** A Hub's codes go by email only, and the waits are what the refusal stated. */
 export const messages = {

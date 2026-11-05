@@ -110,7 +110,7 @@ two routes need no credential; the guard's first three checks still apply.
 - `GET /assets/{file}`: a file named by its hash, `immutable`; `404 asset_not_found` for any other.
 
 Each answers `Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:;
-media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` and
+media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` and
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status

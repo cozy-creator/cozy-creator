@@ -419,7 +419,7 @@ function Canvas({
       />
       <div
         ref={stage}
-        className="stage"
+        className="stage paper-sky"
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
         onDragEnter={(event) => {

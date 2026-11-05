@@ -1,0 +1,53 @@
+/* Paper's drawn edges. Each is one image the browser nine-slices, so a frame adds no element, no measuring and no script. Dark keeps plain borders. */
+:root:not([data-theme="dark"]) {
+  --frame-panel: url("./frames/frame-panel.svg");
+  --frame-sheet: url("./frames/frame-sheet.svg");
+  --frame-control: url("./frames/frame-control.svg");
+  --frame-field: url("./frames/frame-field.svg");
+  --frame-chosen: url("./frames/frame-chosen.svg");
+  --frame-primary: url("./frames/frame-primary.svg");
+
+  .ptabs,
+  .tools,
+  .main-menu nav,
+  .asset-menu {
+    background: none;
+    border-color: transparent;
+    border-image: var(--frame-panel) 18 fill / 18px / 7px round;
+  }
+  .open-box,
+  .drawer {
+    background: none;
+    border-color: transparent;
+    border-image: var(--frame-sheet) 18 fill / 18px / 7px round;
+  }
+  .tb,
+  .mtabs,
+  .render-all label {
+    background: none;
+    border-color: transparent;
+    border-image: var(--frame-control) 12 fill / 12px / 4px round;
+  }
+  .tb.primary {
+    border-image: var(--frame-primary) 12 fill / 12px / 4px round;
+  }
+  .ptab.on {
+    background: none;
+    border-image: var(--frame-chosen) 12 fill / 12px / 3px round;
+  }
+}
+
+/* A box stands off the sheet, in either theme: an edge, and a shadow it sits on. One with nothing in it is a lighter sheet, not a hole. */
+.react-flow__node .media {
+  box-shadow: 0 0 0 1px var(--box-edge), 0 1px 2px var(--box-shade), 0 6px 14px var(--box-shade);
+}
+.react-flow__node .media.blank {
+  background-color: var(--box);
+}
+
+/* The sky is Paper's. Its empty layers stay in dark: they lift the canvas off the sheet, so a pan doesn't repaint the sheet, at half the cost. */
+:root[data-theme="dark"] .paper-sky::before,
+:root[data-theme="dark"] .paper-sky::after {
+  background: none;
+  animation: none;
+}

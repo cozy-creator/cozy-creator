@@ -166,7 +166,7 @@ local session media
 session=$(jq -r .session.token "$OUT/web.json") media=$(jq -r .session.media "$OUT/web.json")
 
 J '.document.status == 200 and .document.referrer_policy == "no-referrer"' "$OUT/web.json" || check "web-serves: GET /: $(jq -c .document "$OUT/web.json")"
-for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "style-src 'self'" "img-src 'self' blob: data:" "media-src 'self' blob:" "connect-src 'self'" "base-uri 'none'" "form-action 'none'" "frame-ancestors 'none'"; do
+for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "style-src 'self'" "img-src 'self' blob: data:" "media-src 'self' blob:" "font-src 'self'" "connect-src 'self'" "base-uri 'none'" "form-action 'none'" "frame-ancestors 'none'"; do
   J --arg d "$directive" '.document.csp // "" | contains($d)' "$OUT/web.json" || check "web-serves: the page's CSP has no $directive: $(jq -c .document.csp "$OUT/web.json")"
 done
 J ".document.csp // \"\" | contains(\"'unsafe-eval'\") | not" "$OUT/web.json" || check "web-serves: the page's CSP allows eval: $(jq -c .document.csp "$OUT/web.json")"

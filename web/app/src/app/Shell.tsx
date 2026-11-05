@@ -6,11 +6,13 @@ import { projectQuery, projectsQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
 import { noHash } from "../canvas/text"
+import { MachineTabs } from "../panels/machines/MachineTabs"
 import { RunsLink } from "../panels/runs/RunsLink"
 import type { ProjectRow } from "../types"
 import { Icon } from "../ui/Icon"
 import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
+import { setTheme, theme } from "../ui/theme"
 import { useConnection } from "./Connection"
 
 export function useProjectId(): string | null {
@@ -97,6 +99,15 @@ function ProjectTabs({ id }: { id: string | null }) {
   )
 }
 
+function ThemeSwitch() {
+  const now = useSignal(theme)
+  return (
+    <button type="button" className="tb" onClick={() => setTheme(now === "dark" ? "paper" : "dark")}>
+      {now === "dark" ? "Paper" : "Dark"}
+    </button>
+  )
+}
+
 /** All but the canvas, a click away. */
 function MainMenu({ id }: { id: string | null }) {
   const { client } = useConnection()
@@ -133,6 +144,7 @@ function MainMenu({ id }: { id: string | null }) {
             project.yaml
           </Link>
         )}
+        <ThemeSwitch />
       </nav>
     </details>
   )
@@ -185,6 +197,7 @@ export function Shell() {
         )}
         <Connectivity />
         <span className="gap" />
+        <MachineTabs to={to} />
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>
