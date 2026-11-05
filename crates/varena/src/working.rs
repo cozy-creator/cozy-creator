@@ -416,6 +416,22 @@ impl State {
         self.blocks.insert(at, tail);
     }
 
+    fn phase_size(&mut self, size: usize, taken: bool) {
+        let Some(active) = &mut self.phases.active else {
+            return;
+        };
+        let (live, most) = active.sizes.entry(size).or_default();
+        if taken {
+            *live += 1;
+            if *live > *most {
+                *most = *live;
+                active.capture_bytes += size;
+            }
+        } else {
+            *live = live.saturating_sub(1);
+        }
+    }
+
     fn phase_changed(
         &mut self,
         before: usize,
@@ -438,19 +454,6 @@ impl State {
             active.owned_charged += after;
         }
         active.owned_peak = active.owned_peak.max(active.owned_charged);
-        if was_owned != is_owned {
-            let size = before.max(after);
-            let (live, most) = active.sizes.entry(size).or_default();
-            if is_owned {
-                *live += 1;
-                if *live > *most {
-                    *most = *live;
-                    active.capture_bytes += size;
-                }
-            } else {
-                *live = live.saturating_sub(1);
-            }
-        }
         let segment = self
             .segments
             .get_mut(&segment)
@@ -829,6 +832,9 @@ impl Device {
     }
 
     fn activate(state: &mut State, ptr: u64, requested: usize) -> u64 {
+        if state.phases.active.is_some() {
+            state.phase_size(state.blocks[&ptr].capacity, true);
+        }
         state.stats.allocated_bytes += requested;
         state.stats.allocated_peak = state.stats.allocated_peak.max(state.stats.allocated_bytes);
         state.stats.allocations += 1;
@@ -1492,6 +1498,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     }
     if let Some((charge, phase, segment)) = observed {
         state.phase_changed(class, charge, phase, phase, segment);
+        state.phase_size(class, false);
         split::refresh(&mut state);
     }
     if reusable && class > LARGE {
