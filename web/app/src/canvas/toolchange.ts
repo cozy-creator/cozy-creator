@@ -1,0 +1,108 @@
+import type { Asset, Tool } from "../types"
+import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
+import { madeHere } from "./shown"
+
+// What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Calcifer does the same to the file (`with_tool`): attaching or detaching
+// changes only which instruction fields it has, and its pictures, numbers, approval, description and words stay. This holds no state.
+
+type Fields = Record<string, unknown>
+
+/** One step and the way back from it. */
+export interface ToolStep {
+  /** What the box shows now. */
+  row: Partial<Asset>
+  /** What's sent: `tool`, `""` taking it off, and the fields that go with it. */
+  tool: string
+  fields: Fields
+  /** The step that undoes this. */
+  back: { row: Partial<Asset>; tool: string; fields: Fields }
+  /** What it can't take, in words. */
+  lost: string[]
+}
+
+/** What keeps its place whatever the tool: the platform's words about a box. */
+const OWN = ["description", "asset_type", "voice"]
+const WORDS = ["instructions", "summary"]
+const said = (value: unknown) => typeof value === "string" && value.trim() !== ""
+const wordsIn = (fields: Fields) => WORDS.find((field) => said(fields[field]))
+const nounOf = (kind: string) => (kind === "video" ? "take" : "version")
+
+/** A box with no pictures and no tool is a text box. */
+export const holdsPictures = (asset: Asset) => Boolean(asset.prefixes?.length || asset.sha256)
+
+function rowBack(asset: Asset): Partial<Asset> {
+  const { tool, kind, noun, standing, fields, prefixes, versions, version, approved, status } = asset
+  return { tool, kind, noun, standing, fields, prefixes, versions, version, approved, status }
+}
+
+/** What `lora` and `models` keep on `next`, and what they lose: a LoRA is for a family, and a slot of `models` for a tool. */
+function addOnsOn(fields: Fields, from: Tool | undefined, next: Tool): { kept: Fields; lost: string[] } {
+  const runs = modelsOf(next)
+  const same = modelsOf(from).some((held) => held.family && runs.some((model) => model.family === held.family))
+  let [lora, models] = [fields.lora, fields.models]
+  const lost: string[] = []
+  for (const addOn of addOnsOf(lora, models)) {
+    if (same && (!addOn.slot || runs.some((model) => model.slot === addOn.slot))) continue
+    lost.push(`${addOn.lora ? "the LoRA" : "the fine-tune"} ${wordOf(addOn.ref)}`)
+    const off = takenOff(addOn, lora, models)
+    if ("lora" in off) lora = off.lora
+    if ("models" in off) models = off.models
+  }
+  return { kept: { lora: lora ?? null, models: models ?? null }, lost }
+}
+
+/** `tool` going on `asset`, whatever it holds now. `fields` is what it says, what's typed included. */
+export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, tool: Tool): ToolStep {
+  const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: {} as Fields }
+  const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.kind, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.kind) }
+  if (!asset.tool && !holdsPictures(asset)) {
+    // Its words are the prompt.
+    const { text, ...rest } = fields
+    return { row: { ...row, standing: "missing", fields: { ...rest, instructions: text ?? "" } }, tool: tool.id, fields: {}, back, lost: [] }
+  }
+  if (!asset.tool) {
+    const first = asset.prefixes?.length ? undefined : 1
+    const number = first ?? asset.approved ?? asset.prefixes?.at(-1)?.number
+    const main = first && asset.sha256 && asset.path && asset.field ? { output: asset.field, path: asset.path, sha256: asset.sha256, field: asset.field, width: asset.width, height: asset.height, duration_ms: asset.duration_ms, alpha: asset.alpha } : undefined
+    const numbered: Partial<Asset> = main ? { prefixes: [{ number: 1, prefix: main.sha256.slice(0, 12), main }], versions: 1, version: 1, approved: 1 } : {}
+    const words = fields.instructions === undefined ? { instructions: `<self.${number}>` } : {}
+    back.fields = "instructions" in words ? { instructions: null } : {}
+    return { row: { ...row, ...numbered, fields: { ...fields, ...words } }, tool: tool.id, fields: {}, back, lost: [] }
+  }
+  // A swap: what the new tool asks of keeps, and so do its words, in the field it reads them from.
+  const asks = new Set(tool.controls.map((control) => control.field))
+  const { kept: addOns, lost } = addOnsOn(fields, from, tool)
+  const words = wordsIn(fields)
+  const reads = tool.controls.find((control) => control.type === "text")?.field ?? "instructions"
+  const send: Fields = {}
+  for (const field of Object.keys(fields)) if (!asks.has(field) && !OWN.includes(field) && field !== "lora" && field !== "models" && field !== "instructions") send[field] = null
+  if (words && words !== reads) {
+    send[words] = null
+    send[reads] = fields[words]
+  }
+  if (JSON.stringify(addOns.lora ?? undefined) !== JSON.stringify(fields.lora)) send.lora = addOns.lora
+  if (JSON.stringify(addOns.models ?? undefined) !== JSON.stringify(fields.models)) send.models = addOns.models
+  const shown = Object.fromEntries(Object.entries({ ...fields, ...send }).filter(([, value]) => value !== null))
+  back.fields = Object.fromEntries(Object.keys(send).map((field) => [field, fields[field] ?? null]))
+  return { row: { ...row, fields: shown }, tool: tool.id, fields: send, back, lost }
+}
+
+/** Its tool coming off: only that, unless it holds no pictures, when its words are all it is. */
+export function comingOff(asset: Asset, fields: Fields): ToolStep {
+  const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: {} as Fields }
+  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current" }, tool: "", fields: {}, back, lost: [] }
+  const words = wordsIn(fields)
+  const { [words ?? ""]: text, ...rest } = fields
+  return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...rest, text: text ?? "" } }, tool: "", fields: {}, back, lost: [] }
+}
+
+/** A tool carried: dropped on a box it goes on, or takes the place of the one there. On open canvas it's a new box. */
+export const carryingTool = (tool: Tool): Carried => ({
+  canvas: true,
+  whyNot(name, view) {
+    if (!view?.asset || view.placing) return `${tool.label} can't go on ${name}`
+    if (madeHere(view.asset.tool)) return `${name} is made here, so ${tool.label} can't go on it`
+    return view.asset.tool === tool.id ? `${tool.label} is on ${name} already` : null
+  },
+  put: (store, name) => store.putTool(name, tool),
+})

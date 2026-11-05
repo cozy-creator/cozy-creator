@@ -130,7 +130,7 @@ function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: 
                 type="button"
                 title={other.description || other.id}
                 onClick={() => {
-                  store.setTool(name, other.id)
+                  store.putTool(name, other)
                   close()
                 }}
               >

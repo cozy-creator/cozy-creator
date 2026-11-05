@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react"
+import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { holdMedia, playingHere } from "../api/events"
@@ -123,24 +123,33 @@ export function Thumb({
   )
 }
 
-/** A video's poster. Hovering scrubs a strip of its frames, one picture from Calcifer, so no `<video>` opens until it's clicked. */
-function Poster({ shown, cardWidth, name, scrubbed, open }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number; open: boolean }) {
+/** Where the pointer is across what's under it, 0 to 1, for walking a video's frames. A finger has nothing to follow, and a held button is a drag. */
+export function useWalk() {
+  const [at, setAt] = useState<number | null>(null)
+  return {
+    at,
+    walk(event: PointerEvent<HTMLElement>) {
+      if (event.pointerType === "touch" || event.buttons) return
+      const box = event.currentTarget.getBoundingClientRect()
+      setAt(Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)))
+    },
+    stop: () => setAt(null),
+  }
+}
+
+/** A video's frames walked across, one picture from Calcifer, so no `<video>` opens until it's clicked. */
+export function WalkedFrames({ sha256, cardWidth, at }: { sha256: string; cardWidth: number; at: number }) {
+  return <Thumb sha256={sha256} cardWidth={cardWidth} strip={STRIP_FRAMES} frame={Math.min(STRIP_FRAMES - 1, Math.floor(at * STRIP_FRAMES))} className="strip" />
+}
+
+/** A video's poster, and its frames under the pointer. */
+function Poster({ shown, cardWidth, name, scrubbed, hover }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number; hover: number | null }) {
   const store = useCanvasStore()
-  const [hover, setAt] = useState<number | null>(null)
   const at = hover ?? (scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null)
-  const frame = at === null ? 0 : Math.min(STRIP_FRAMES - 1, Math.floor(at * STRIP_FRAMES))
   return (
-    <div
-      className="scrub"
-      onPointerMove={(event) => {
-        if (!open) return
-        const box = event.currentTarget.getBoundingClientRect()
-        setAt(Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)))
-      }}
-      onPointerLeave={() => setAt(null)}
-    >
+    <div className="scrub">
       <Thumb sha256={shown.sha256} cardWidth={cardWidth} onSize={(aspect) => store.setAspect(name, aspect)} onShown={() => store.showThumb(name)} />
-      {at !== null && <Thumb sha256={shown.sha256} cardWidth={cardWidth} strip={STRIP_FRAMES} frame={frame} className="strip" />}
+      {at !== null && <WalkedFrames sha256={shown.sha256} cardWidth={cardWidth} at={at} />}
       {at !== null && shown.duration_ms ? <span className="tc">{clock(at * shown.duration_ms)}</span> : null}
     </div>
   )
@@ -152,7 +161,7 @@ type Source = { path: string } | { run: number; output: string }
 // A project's file, by its hash. Anything else from a state isn't followed: a remote Calcifer's answers are hostile.
 const FILE = /^files\/[0-9a-f]{64}(\.\w+)?$/
 
-function sourceOf(view: ElementView, shown: Shown | null): Source | null {
+export function sourceOf(view: ElementView, shown: Shown | null): Source | null {
   const asset = view.asset
   if (!asset || view.placing) return null
   if (asset.making?.length && asset.kind === "video" && view.viewed === undefined) return { run: Math.min(...asset.making), output: "video" }
@@ -182,10 +191,17 @@ async function fromMachine(client: Client, source: { run: number; output: string
   }
 }
 
-/** Played on click, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"] }) {
+/** What a double-click can show large: the file itself, here or on its machine, and nothing that's only words. */
+export function viewable(view: ElementView | undefined): boolean {
+  const shown = view ? shownOf(view) : null
+  if (!view || !shown || view.hereWords) return false
+  return shown.field === "image" ? !shown.absent && FILE.test(shown.path) : shown.field === "video" && Boolean(sourceOf(view, shown))
+}
+
+/** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
+export function Player({ field, path, machine, seek, auto }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean }) {
   const { client, stream } = useConnection()
-  const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
+  const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">(auto ? "waiting" : "idle")
   const [why, setWhy] = useState("This browser can't play it")
   const element = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   const stopRef = useRef<() => void>(() => {})
@@ -299,10 +315,13 @@ function Progress({ fraction, says }: { fraction?: number; says?: string }) {
   )
 }
 
-export function Media({ view, name, cardWidth, open, children }: { view: ElementView; name: string; cardWidth: number; open: boolean; children?: ReactNode }) {
+export function Media({ view, name, cardWidth, children }: { view: ElementView; name: string; cardWidth: number; children?: ReactNode }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
+  // Being worked on, a take can be played and scrubbed, unless its words are over it.
+  const open = Boolean(view.here && !view.hereWords)
+  const { at: hover, walk, stop } = useWalk()
   const shown = shownOf(view)
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
@@ -321,7 +340,10 @@ export function Media({ view, name, cardWidth, open, children }: { view: Element
   const blank = !preview && !shown && !firstClip
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
-    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })}>
+    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })}
+      onPointerMove={field === "video" && !view.hereWords ? walk : undefined}
+      onPointerLeave={stop}
+    >
       {preview && (
         <img
           src={preview}
@@ -333,7 +355,7 @@ export function Media({ view, name, cardWidth, open, children }: { view: Element
           }}
         />
       )}
-      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} open={open} />}
+      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} hover={hover} />}
       {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}

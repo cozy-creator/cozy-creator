@@ -95,7 +95,7 @@ export function useAsk() {
   return { run, busy, error, clear }
 }
 
-/** A button that first says what it'll do, in a native `<dialog>`. Nothing happens but on its yes. */
+/** A button that first says what it'll do, there under it. Nothing happens but on its yes. */
 export function Confirm({
   label,
   says,
@@ -111,30 +111,32 @@ export function Confirm({
   disabled?: boolean
   onYes: () => void
 }) {
-  const dialog = useRef<HTMLDialogElement>(null)
+  const [asking, setAsking] = useState(false)
   return (
     <>
-      <button type="button" className={`tb ${danger ? "danger" : ""}`} disabled={disabled} onClick={() => dialog.current?.showModal()}>
+      <button type="button" className={`tb ${danger ? "danger" : ""}`} disabled={disabled} aria-expanded={asking} onClick={() => setAsking(!asking)}>
         {label}
       </button>
-      <dialog ref={dialog} className="confirm">
-        <div className="says">{says}</div>
-        <div className="row end">
-          <button type="button" className="tb" onClick={() => dialog.current?.close()}>
-            Not now
-          </button>
-          <button
-            type="button"
-            className={`tb ${danger ? "danger" : "primary"}`}
-            onClick={() => {
-              dialog.current?.close()
-              onYes()
-            }}
-          >
-            {yes}
-          </button>
+      {asking && (
+        <div className="confirm">
+          <div className="says">{says}</div>
+          <div className="row end">
+            <button type="button" className="tb" onClick={() => setAsking(false)}>
+              Not now
+            </button>
+            <button
+              type="button"
+              className={`tb ${danger ? "danger" : "primary"}`}
+              onClick={() => {
+                setAsking(false)
+                onYes()
+              }}
+            >
+              {yes}
+            </button>
+          </div>
         </div>
-      </dialog>
+      )}
     </>
   )
 }

@@ -320,6 +320,11 @@ export class Client {
     return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at }, undefined, { once })
   }
 
+  /** A file joins a box as its next version. */
+  addVersion(id: string, name: string, source: string, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/versions`, { source }, undefined, { once })
+  }
+
   /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
   discardVersion(id: string, name: string, number: number, once?: AbortSignal): Promise<VersionMoved> {
     return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, { once })

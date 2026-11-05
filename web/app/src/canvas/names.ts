@@ -26,7 +26,8 @@ export function nameKey(name: string): string {
 
 /** A taken name counts up: `hero` is `hero_2`, and `shot_1` is `shot_2`. */
 export function freeName(name: string, taken: Iterable<string>): string {
-  const keys = new Set<string>()
+  // `self` is what a box calls itself in its own text.
+  const keys = new Set(["self"])
   for (const other of taken) keys.add(nameKey(other))
   if (!keys.has(nameKey(name))) return name
   const counted = /^(.+)_(\d+)$/.exec(name)

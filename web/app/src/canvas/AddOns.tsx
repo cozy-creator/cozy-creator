@@ -4,13 +4,14 @@ import { useSignal } from "../ui/signal"
 import "./addons.css"
 import { type AddOn, addOnsOf, atStrength, carried, takenOff, wordOf } from "./checkpoints"
 import { useCanvasStore, useElement } from "./context"
+import { madeHere } from "./shown"
 
 const said = (addOn: AddOn) => `${addOn.lora ? "LoRA" : "Fine-tune"} ${addOn.ref}`
 
 /** One thing on a box: its word, and an X when it can come off. */
-export function Chip({ word, title, strong, off }: { word: string; title: string; strong?: boolean; off?: { label: string; take(): void } }) {
+export function Chip({ word, title, kind, off }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void } }) {
   return (
-    <li className={`add-on ${strong ? "fine-tune" : ""}`} title={title} onClick={(event) => event.stopPropagation()}>
+    <li className={`add-on ${kind ?? ""}`} title={title} onClick={(event) => event.stopPropagation()}>
       <span className="add-on-word">{word}</span>
       {off && (
         <button type="button" className="nodrag" aria-label={off.label} title="Take it off" onClick={off.take}>
@@ -29,29 +30,41 @@ function useAddOns(name: string) {
   return { held: addOnsOf(lora, models), lora, models, store }
 }
 
-/** Beside a box, on the canvas: what's on it, each with its X, and while a checkpoint is carried whether it would take it. It follows the box, and is no part of its size. */
-export function AddOns({ name }: { name: string }) {
+/** What's on a box, its tool first, each with its X: as many as it holds. */
+export function Stack({ name }: { name: string }) {
   const { held, lora, models, store } = useAddOns(name)
+  const view = useElement(name)
+  const tools = useSignal(store.tools)
+  const tool = view?.asset?.tool
+  const made = tool && !madeHere(tool) ? (tools.get(tool)?.label ?? tool.split("/").at(-2) ?? tool) : null
+  if (!made && !held.length) return null
+  return (
+    <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
+      {made && <Chip word={made} title={tool ?? made} kind="tool" off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
+      {held.map((addOn) => (
+        <Chip
+          key={`${addOn.slot}:${addOn.ref}`}
+          word={wordOf(addOn.ref)}
+          title={said(addOn)}
+          kind={addOn.lora ? undefined : "fine-tune"}
+          off={{ label: `Take ${wordOf(addOn.ref)} off ${name}`, take: () => store.putOn(name, takenOff(addOn, lora, models)) }}
+        />
+      ))}
+    </ul>
+  )
+}
+
+/** Under a box on the canvas, at its left: its stack, and while something's carried whether it would take it. It follows the box, and is no part of its size. Written in where it stands, the stack goes with what's under it. */
+export function AddOns({ name }: { name: string }) {
+  const store = useCanvasStore()
   const view = useElement(name)
   const tools = useSignal(store.tools)
   const going = useSignal(carried)
   if (!view?.asset) return null
   return (
     <>
-      {going && !going.whyNot(name, view, tools) && <span className="takes" />}
-      {held.length > 0 && (
-        <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
-          {held.map((addOn) => (
-            <Chip
-              key={`${addOn.slot}:${addOn.ref}`}
-              word={wordOf(addOn.ref)}
-              title={said(addOn)}
-              strong={!addOn.lora}
-              off={{ label: `Take ${wordOf(addOn.ref)} off ${name}`, take: () => store.putOn(name, takenOff(addOn, lora, models)) }}
-            />
-          ))}
-        </ul>
-      )}
+      {going && !going.whyNot(name, view, tools) && <span className="box-takes" />}
+      {!view.here && <Stack name={name} />}
     </>
   )
 }

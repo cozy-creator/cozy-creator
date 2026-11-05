@@ -3,7 +3,7 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), checkpoints on boxes (web/addons.js), an Edit rendered (web/timeline.js),
+# models (web/drawers.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and on Windows a save past a file held open (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
@@ -73,6 +73,8 @@ web_proof nodes "$chrome" "$pw" ''
 step "web-addons: the checkpoint explorer, a LoRA and a fine-tune dragged onto a box, chips, why one doesn't fit, a hand's file kept"
 web_proof addons "$chrome" "$pw" ''
 jq -c '.seen.skipped // empty' "$OUT/web-addons.json" 2> /dev/null || true
+step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, and a rename during a real render"
+web_proof versions "$chrome" "$pw" ''
 step "web-timeline: real clips and a still in an Edit, trims and a reorder, rendered free, frame-exact, read back in its .otio, its versions"
 # Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.
 local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)

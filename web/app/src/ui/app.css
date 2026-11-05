@@ -256,13 +256,16 @@ code {
 .react-flow__node.selected {
   z-index: 1000 !important;
 }
+.react-flow__node:has(.card.here) {
+  z-index: 1001 !important;
+}
 /* Picked up, it's only the picture. */
 .react-flow__node.dragging .card {
   transform: scale(1.015);
   opacity: 0.94;
   will-change: transform;
 }
-.react-flow__node.dragging .asset-more {
+.react-flow__node.dragging .here-under {
   display: none;
 }
 .head {
@@ -283,7 +286,7 @@ code {
   min-width: 0;
   cursor: text;
 }
-.card.active .nm,
+.card.here .nm,
 .react-flow__node.selected .nm {
   color: var(--ink);
 }
@@ -385,6 +388,10 @@ code {
   align-items: center;
   justify-content: center;
 }
+.card:active > .media {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
 .card:hover > .media,
 .react-flow__node.selected .media {
   outline: 1px solid var(--line2);
@@ -428,7 +435,7 @@ code {
 .blank-glyph {
   color: var(--faint);
 }
-.card.editing .blank-glyph {
+.card.here .blank-glyph {
   display: none;
 }
 .blank-glyph .icon {
@@ -497,7 +504,7 @@ code {
   background: var(--ember);
   color: var(--on-ember);
 }
-.card:not(.active) .play {
+.card:not(.here) .play {
   opacity: 0;
 }
 /* How far it's got, on the picture itself: a veil that only ever moves. */
@@ -570,17 +577,6 @@ code {
   overflow: hidden;
   overflow-wrap: anywhere;
 }
-.card.editing .words {
-  display: none;
-}
-.text-asset {
-  padding: 8px;
-}
-
-.text-asset .mention-text {
-  min-height: 72px;
-}
-
 .in-frame {
   position: absolute;
   inset: 0;
@@ -636,29 +632,106 @@ code {
   opacity: 1;
   transform: translate(1px, 1px);
 }
-/* Written in where it stands: the words over whatever it shows, and what it can do just under it, at the size the words are. */
+/* Worked on where it stands: its words over whatever it shows, and all else just under it, at one size at any zoom. */
 .card.here .words {
   visibility: hidden;
 }
 .card.here .in-frame {
   background: var(--card);
 }
-.here-under {
+.card.here .media {
+  user-select: text;
+}
+/* What it can do at its head and on its picture stays one size too: the canvas is drawn in on it. */
+.card.here .head .iconb {
+  width: calc(30px * var(--text, 1));
+  height: calc(30px * var(--text, 1));
+  font-size: calc(22px * var(--text, 1));
+  border-radius: calc(5px * var(--text, 1));
+}
+.card.here .head .iconb .icon,
+.card.here .play .icon,
+.card.here .stop .icon {
+  width: calc(20px * var(--text, 1));
+  height: calc(20px * var(--text, 1));
+}
+.card.here .count {
+  font-size: calc(16px * var(--text, 1));
+}
+.card.here .dot {
+  width: calc(10px * var(--text, 1));
+  height: calc(10px * var(--text, 1));
+}
+.card.here .play,
+.card.here .stop {
+  width: calc(40px * var(--text, 1));
+  height: calc(40px * var(--text, 1));
+}
+.card.here .tc {
+  font-size: calc(15px * var(--text, 1));
+}
+.rest-waiting {
   position: absolute;
   top: calc(100% + 4px);
+  white-space: nowrap;
   left: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: calc(100% / var(--text, 1));
   transform: scale(var(--text, 1));
   transform-origin: top left;
   z-index: 5;
 }
-.here-acts {
+/* All of a box, under it. --here-width and --here-room come with each fit, and --here is how large it's drawn for the screen. */
+.stage {
+  --here: 1.4;
+}
+@media (min-width: 2400px) {
+  .stage {
+    --here: 1.8;
+  }
+}
+@media (max-width: 760px) {
+  .stage {
+    --here: 1.15;
+  }
+}
+.here-under {
+  position: absolute;
+  top: calc(100% + 8px * var(--text, 1));
+  left: 50%;
+  width: var(--here-width, 520px);
+  max-height: var(--here-room, 60vh);
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line2);
+  border-radius: var(--round2);
+  background: var(--panel);
+  box-shadow: 0 10px 28px var(--shadow);
+  transform: translateX(-50%) scale(calc(var(--text, 1) * var(--here)));
+  transform-origin: top center;
+  user-select: text;
+  z-index: 5;
+  animation: fade-in 120ms ease-out;
+}
+.here-under > * {
+  --text: 1;
+}
+.here-all {
+  padding: 8px 10px 10px;
+}
+.here-all .field,
+.here-all .tb {
+  font-size: 14px;
+}
+.here-all .row.actions,
+.here-all .edit-shown,
+.here-all .edit-more,
+.here-all .status,
+.here-all .desc-row,
+.here-all .desc-open,
+.here-all .warned-lines {
+  padding-left: 0;
+  padding-right: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
 }
 .here-under .takes {
@@ -666,34 +739,134 @@ code {
   padding: 0;
 }
 .here-under .take {
-  width: clamp(120px, 9vw, 260px);
-  height: clamp(80px, 6vw, 173px);
+  width: 150px;
+  height: 100px;
+}
+/* Being rendered: the box says so, in place of what it made last. A take picked in its row still shows. */
+.media-making {
+  position: absolute;
+  inset: 0;
+  background: var(--card);
+}
+.media-making::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--ember);
+  opacity: 0.1;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+/* The big tile, picked up: a take leaves from here. It stops short of the corner, and gives way to what's playing. */
+.take-out {
+  position: absolute;
+  inset: 0 28px 28px 0;
+  cursor: grab;
+  z-index: 1;
+}
+.media:has(.live) .take-out {
+  display: none;
+}
+/* The one being looked at, and the one approved: each plain at a glance, on the row and the tile. */
+.here-under .takes {
+  padding: 6px;
+}
+.here-under .take.on {
+  outline: 4px solid var(--ember);
+  outline-offset: 2px;
+}
+.take.approved::after {
+  content: "✓";
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #33a852;
+  color: #fff;
+  font: 700 16px/26px var(--mono);
+  text-align: center;
+}
+.card.showing-approved > .media {
+  box-shadow: 0 0 0 calc(4px * var(--text, 1)) #33a852;
+}
+.here-under .take.making {
+  flex: none;
+  background: var(--card);
+  border: 1px solid var(--ember);
+  color: var(--ink);
+  font-size: 22px;
 }
 .here-under .take.add {
   flex: none;
   background: var(--card);
   border: 1px solid var(--line2);
   color: var(--ink);
-  font-size: 44px;
+  font-size: 30px;
 }
 .here-under .take.add.on {
   border-color: var(--ember);
 }
 .here-under .take-off {
   display: inline-flex;
-  top: 4px;
-  right: 4px;
-  width: 30px;
-  height: 30px;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
   color: #fff;
 }
 .here-under .take-off .icon {
-  width: 18px;
-  height: 18px;
+  width: 12px;
+  height: 12px;
 }
-.here-acts .act,
-.here-acts .tb {
-  font-size: 18px;
+.pictures {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  flex: none;
+}
+.picture {
+  flex: none;
+  width: 64px;
+  height: 48px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--well);
+  cursor: grab;
+}
+.picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.picture:hover {
+  border-color: var(--ember);
+}
+.in-frame .mention-thumbs {
+  padding: 0 12px 10px;
+}
+.mention-thumbs {
+  padding: 0 12px 10px;
+}
+.mention-thumbs:empty {
+  display: none;
+}
+.mention-thumb {
+  position: relative;
+  width: 44px;
+  height: 30px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--well);
+}
+.mention-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .ratio-rest {
   position: absolute;
@@ -722,31 +895,6 @@ code {
   font-weight: 600;
 }
 
-/* What opens under it: asked for, there at once, and over its neighbours. */
-.asset-more {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 8px);
-  padding: 2px 0;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--round2);
-  box-shadow: 0 10px 28px var(--shadow);
-  animation: open-up 90ms ease-out;
-}
-.asset-more:empty {
-  display: none;
-}
-/* The pointer crosses the gap without leaving the box. */
-.asset-more::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -9px;
-  height: 9px;
-}
 .status {
   padding: 5px 10px;
   font-size: 11px;
@@ -809,18 +957,14 @@ code {
 .run:hover {
   background: var(--ember2);
 }
+/* New take from here: what's held is marked, under the take it's held from. */
 .run:active {
   transform: scale(0.96);
 }
 .from-here {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 10px;
-}
-.from-here input {
-  flex: 1;
-  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
 }
 .tc-inline {
   font: 10px var(--mono);
@@ -855,6 +999,16 @@ code {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.take-thumb {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.take img.strip {
+  width: 800%;
+  max-width: none;
+  object-fit: fill;
 }
 .take.on {
   border-color: var(--ember);
@@ -892,6 +1046,7 @@ code {
 .take-at:hover .take-off,
 .take-off:focus-visible {
   display: inline-flex;
+  animation: pulse 2.4s ease-in-out infinite;
 }
 .take.making {
   color: var(--mak);
@@ -1388,19 +1543,21 @@ button:disabled {
 }
 .stillframe {
   position: relative;
+/* What a button is about to do, said under it, before it's done. */
   min-height: 42px;
   background: var(--well);
 }
 .confirm {
-  width: min(420px, calc(100vw - 32px));
-  padding: 14px;
+  flex: 1 0 100%;
+  margin: 6px 0;
+  padding: 10px;
   border: 1px solid var(--line2);
   border-radius: 9px;
   background: var(--card2);
   color: var(--ink);
 }
-.confirm::backdrop {
-  background: var(--veil);
+.row:has(> .confirm) {
+  flex-wrap: wrap;
 }
 .confirm .says {
   margin-bottom: 12px;
@@ -1937,7 +2094,7 @@ a.tab:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 6px 0;
 }
 .edit-face .mention-text {
   min-height: 30px;
@@ -1961,12 +2118,6 @@ a.tab:hover {
 }
 .text-box .mention-text:empty::before {
   content: none;
-}
-.edit-more .desc-row,
-.edit-more .desc-open,
-.edit-more .from-here {
-  padding-left: 0;
-  padding-right: 0;
 }
 .more-toggle {
   flex: 1 1 40px;
@@ -2158,7 +2309,7 @@ input[type="checkbox"] {
   font-size: 11px;
   color: var(--mute);
 }
-.card.active [data-drop-target]:hover {
+.card.here [data-drop-target]:hover {
   border-color: var(--ember);
 }
 .desc-row {
@@ -2513,130 +2664,14 @@ input[type="checkbox"] {
 
 /* On the canvas a box shows its X and its corner only under the pointer, with nothing else opening. */
 .card .on-hover,
-.card:not(.active) .corner {
+.card:not(.here) .corner {
   visibility: hidden;
 }
 .card:hover .on-hover,
 .card:hover .corner {
   visibility: visible;
 }
-.open-box .card .on-hover {
-  visibility: visible;
-}
 
-/* A box opened: the canvas dims behind it, and all of it is here. */
-.open-back {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: calc(var(--top) + 8px) 24px 24px;
-  background: var(--veil);
-}
-.open-box {
-  --text: 1;
-  width: min(1240px, 100%);
-  max-height: 100%;
-  overflow: auto;
-  padding: 16px 18px 18px;
-  border: 1px solid var(--line2);
-  border-radius: 14px;
-  background: var(--panel);
-  box-shadow: 0 24px 80px var(--shadow);
-}
-.open-box .card {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 10px 18px;
-  user-select: text;
-}
-.open-box .head {
-  grid-column: 1 / -1;
-}
-.open-box .nm {
-  font-size: 22px;
-}
-.open-box .field,
-.open-box .tb {
-  font-size: 14px;
-}
-.open-box .asset-more {
-  position: static;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  box-shadow: none;
-  animation: none;
-}
-.open-box .asset-more::before {
-  content: none;
-}
-.open-box .card > .media {
-  max-height: calc(100vh - var(--top) - 110px);
-}
-.open-box .take {
-  width: 84px;
-  height: 56px;
-}
-.open-box .takes {
-  gap: 6px;
-  padding-top: 0;
-}
-.pictures {
-  display: flex;
-  gap: 6px;
-  margin-top: 12px;
-  padding-top: 10px;
-  overflow-x: auto;
-  border-top: 1px solid var(--line);
-}
-.picture {
-  flex: none;
-  width: 64px;
-  height: 48px;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--well);
-  cursor: grab;
-}
-.picture:hover {
-  border-color: var(--ember);
-}
-.picture img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-/* New take from here: what's held is marked, under the take it's held from. */
-.open-box .from-here {
-  grid-column: 1;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-  padding: 0;
-}
-.open-box .card > .media {
-  grid-column: 1;
-  grid-row: 2;
-}
-.open-box .from-here {
-  grid-row: 3;
-}
-.open-box .asset-more {
-  grid-column: 2;
-  grid-row: 2 / span 2;
-}
-.open-box .card:has(.tl) .asset-more,
-.open-box .card > .tl {
-  grid-column: 1;
-  grid-row: auto;
-}
 .from-here .keeps {
   flex: none;
   width: 100%;
@@ -2665,9 +2700,16 @@ input[type="checkbox"] {
   align-items: center;
   gap: 6px;
 }
-/* An Edit's clips want the whole width. */
-.open-box .card:has(.tl) {
-  grid-template-columns: minmax(0, 1fr);
+/* A file looked at large: the one thing over the canvas. */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000000eb;
+  animation: fade-in 100ms ease-out;
 }
 @media (max-width: 760px) {
   .open-box .card {

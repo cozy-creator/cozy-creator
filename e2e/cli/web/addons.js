@@ -1,6 +1,6 @@
 // Checkpoints on boxes (Paul, 11-05), in a real browser on a real Calcifer: the explorer in the left panel lists the Hub's fine-tunes and LoRAs and fetches nothing; one
-// carried shows what takes it; dropped where it can't go, a toast says why and nothing changes; dropped where it can, a chip stands beside the box at once, follows it, leaves
-// its size alone, keeps clear of other boxes, and stays near one size at any zoom. An X takes it off, strength is behind More, a hand-written `lora:` or `models:` is a chip, and
+// carried shows what takes it; dropped where it can't go, a toast says why and nothing changes; dropped where it can, a chip stands under the box at once, follows it, leaves
+// its size alone, keeps other boxes clear of it, and stays near one size at any zoom. An X takes it off, strength is behind More, a hand-written `lora:` or `models:` is a chip, and
 // the file keeps every comment and `|`. It names no model: what it drops comes from `GET /v1/models` and `GET /v1/tools`.
 //   node addons.js <sign-in link from `cozy open --no-open`, or the address of a page that needs none>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $RENDER: a machine with a GPU, on which a box with a LoRA and a fine-tune
@@ -115,7 +115,7 @@ assets:
   await box('hand').waitFor();
   await box('shot').waitFor();
   const kept = () => comments.filter((line) => !yaml().includes(line));
-  const chips = (name) => box(name).locator('.add-on');
+  const chips = (name) => box(name).locator('.add-on:not(.tool)');
   const toast = (words) => until(`the toast ${words}`, () => page.locator('.notes, .note-list, [role=status]').allInnerTexts().then((all) => all.join(' | ')), (all) => all.includes(words)).then(() => true, (why) => String(why));
 
   // A hand-written one is a chip.
@@ -158,7 +158,7 @@ assets:
 
   // Carried: only what takes it shows.
   await carry(loraA, 'boat');
-  const takes = await page.locator('.react-flow__node:has(.takes) .card').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
+  const takes = await page.locator('.react-flow__node:has(.box-takes) .card').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
   check('carried_shows_what_takes_it', takes.sort().join() === 'flowed,hand,shot', takes);
   await shot('carried');
   const before = yaml();
@@ -189,7 +189,7 @@ assets:
   check('default_strength', /strength: 1(\.0)?\n/.test(yaml().split(`ref: ${loraA.model}`)[1]), yaml());
   const sized = await cardRect('shot');
   check('chip_leaves_its_size', sized.width === size.width && sized.height === size.height, { size, sized });
-  check('no_more_than_it_said', (await page.locator('.takes').count()) === 0);
+  check('no_more_than_it_said', (await page.locator('.box-takes').count()) === 0);
 
   await carry(loraB, 'shot');
   await page.mouse.up();
@@ -280,7 +280,7 @@ assets:
   await until('off the one line', () => Promise.resolve(yaml()), (text) => !text.includes('wushu'));
   check('one_line_goes', (await chips('flowed').count()) === 0 && yaml().includes('instructions: One line.'), yaml());
 
-  // Near one size at any zoom, and never wider than its room.
+  // Near one size at any zoom, and never wider than its box.
   const pane = page.locator('.react-flow__pane');
   const sizes = [];
   for (const steps of [0, 3, 3]) {
@@ -297,7 +297,7 @@ assets:
   }
   seen.sizes = sizes;
   const screens = sizes.filter((one) => one.zoom >= 0.25).map((one) => one.screen);
-  check('chip_near_one_size', screens.length > 1 && Math.max(...screens) / Math.min(...screens) < 1.2 && sizes.every((one) => one.wide <= 177), sizes);
+  check('chip_near_one_size', screens.length > 1 && Math.max(...screens) / Math.min(...screens) < 1.2 && sizes.every((one) => one.wide <= 320), sizes);
 
   // Its tool changes, and they stay.
   const held3 = yaml();

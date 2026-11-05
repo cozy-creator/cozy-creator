@@ -1,9 +1,10 @@
 import { ApiError, type Client } from "../api/client"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
-import type { Asset, Imported, Tool } from "../types"
-import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage } from "./CanvasStore"
+import type { Asset, Imported, Row, Tool } from "../types"
+import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
+import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
 
 const GAP = 32
@@ -62,27 +63,71 @@ export class Placer {
   addTool(tool: Tool, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
-    const fields = text ? { text: "" } : startingFields(tool)
-    const key = `asset-${crypto.randomUUID()}`
-    const wanted = asName(tool.name ?? tool.label)
-    const body = text ? { tool: "", name: wanted, fields } : { tool: tool.id, name: wanted, fields, kind: tool.kind }
     const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    const row: Asset = { name: "", standing: text ? "current" : "missing", kind: tool.kind, noun: tool.kind === "video" ? "take" : "version", tool: text ? undefined : tool.id, versions: 0, status: "", fields, timeline }
-    this.store.focusing = this.store.place(
-      wanted,
-      { asset: row },
-      at,
-      async (clear, once) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, once),
-      (error) => say(`Couldn't place ${tool.label}`, error),
-    )
+    this.store.focusing = this.box(asName(tool.name ?? tool.label), { kind: tool.kind, tool: text ? undefined : tool.id, fields: text ? { text: "" } : startingFields(tool), timeline }, at, `Couldn't place ${tool.label}`)
+  }
+
+  /** An asset that holds these, there at once, with nothing made yet. */
+  private box(wanted: string, { kind, tool, fields, timeline }: Pick<Asset, "kind" | "tool" | "fields" | "timeline">, at: Row, failed: string): string {
+    const key = `asset-${crypto.randomUUID()}`
+    const text = !tool
+    const body = text ? { tool: "", name: wanted, fields } : { tool, name: wanted, fields, kind }
+    const row: Asset = { name: "", standing: text ? "current" : "missing", kind, noun: kind === "video" ? "take" : "version", tool, versions: 0, status: "", fields, timeline }
+    return this.store.place(wanted, { asset: row }, at, async (clear, once) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, once), (error) => say(failed, error))
+  }
+
+  /** Boxes copied, laid out as they were and together clear of what's there, around a point. All of them are there at once, in the queue like anything else, and a note offers Undo. */
+  paste(boxes: CopiedBox[], point: { x: number; y: number }) {
+    const left = Math.min(...boxes.map(({ at }) => at.x))
+    const top = Math.min(...boxes.map(({ at }) => at.y))
+    const w = Math.max(...boxes.map(({ at }) => at.x + at.w)) - left
+    const h = Math.max(...boxes.map(({ at }) => at.y + at.h)) - top
+    const spot = this.store.clearFor({ x: Math.round(point.x - w / 2), y: Math.round(point.y - h / 2), w, h })
+    const names = boxes.map((box) => {
+      const at = { x: spot.x + box.at.x - left, y: spot.y + box.at.y - top, w: box.at.w }
+      return "file" in box ? this.file(box.file, at) : this.box(box.made.name, box.made, at, `Couldn't paste ${box.made.name}`)
+    })
+    this.pasted(names)
+  }
+
+  /** Files from the system's clipboard: each a box near a point, named by what it's called there, and Undo. */
+  pasteFiles(files: File[], point: { x: number; y: number }) {
+    const names: string[] = []
+    this.add(files, point, (name) => {
+      names.push(name)
+      if (names.length === files.length) this.pasted(names)
+    })
+  }
+
+  private pasted(names: string[]) {
+    say(`Pasted ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.remove(names) }, ms: UNDO_MS })
+  }
+
+  /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. */
+  join(files: File[], name: string) {
+    for (const file of files) {
+      const landed = this.store.joining(name)
+      const signal = new AbortController().signal
+      const sent = async () => {
+        const digest = await hashFile(file, signal, () => {})
+        if (!this.store.holdsFile(digest.slice("sha256:".length))) await sendFile(this.client, file, digest, signal, () => {}, () => {})
+        return digest
+      }
+      void inLine(sent)
+        .then((digest) => this.store.joinVersion(name, { sha256: digest.slice("sha256:".length), field: mediaOf(file) }, digest, file.name), (error) => say(file.name, error))
+        .finally(landed)
+    }
   }
 
   /** A take or version dragged out: its own asset with the same file and what it says it is, there at once, and no new bytes. */
   addFile(file: { sha256: string; field: string; name: string; description?: string }, point: { x: number; y: number }) {
-    const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16), w: CARD_WIDTH }
+    this.file(file, { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16), w: CARD_WIDTH })
+  }
+
+  private file(file: { sha256: string; field: string; name: string; description?: string }, at: Row): string {
     const key = `import-${crypto.randomUUID()}`
     const { description } = file
-    this.store.place(
+    return this.store.place(
       asName(file.name),
       { landed: { sha256: file.sha256, field: file.field } },
       at,

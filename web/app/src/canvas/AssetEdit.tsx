@@ -3,11 +3,12 @@ import type { Control, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { AddOnRows } from "./AddOns"
+import { addOnsOf } from "./checkpoints"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
 import { MentionText } from "./MentionText"
-import { faceOf, madeHere, shownOf } from "./shown"
+import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
 
@@ -303,7 +304,7 @@ export function ControlRow({ name, control, view, focus, named }: { name: string
 export function TextAsset({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   return (
-    <div className="text-asset">
+    <div className="in-frame">
       <MentionText
         asset={name}
         place="text"
@@ -354,8 +355,9 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
       aria-label="Render"
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
       onClick={() => {
+        // Left first, so what a render asks of the page stands. With a conflict nothing goes, and it stays to be seen.
+        if (!view.conflict) store.leaveHere()
         store.run(name)
-        store.leaveHere()
       }}
     >
       <Icon name="play" />
@@ -366,16 +368,8 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
 
 /** What goes in the frame while nothing's made to fill it, so you write on what you're making: its words, else the slot for its file. A tool with its own box draws all of that itself. */
 function framed(view: ElementView, controls: Control[], tool: Tool | undefined): Control | undefined {
-  const covered = view.here ? !view.hereWords : Boolean(shownOf(view)) || faceOf(view) !== "edit"
-  if (covered || tool?.ui) return undefined
+  if (!view.hereWords || tool?.ui) return undefined
   return controls.find((control) => control.type === "text") ?? controls.find((control) => control.type === "file")
-}
-
-/** A box that makes pictures is used where it stands; all else opens. */
-export const writesHere = (view: ElementView | undefined, tools: Map<string, Tool>): boolean => {
-  const asset = view?.asset
-  if (!view || !asset?.tool || asset.kind !== "image" || madeHere(asset.tool) || tools.get(asset.tool)?.ui) return false
-  return controlsOf(asset, tools).some((control) => control.type === "text")
 }
 
 export function InFrame({ name, view }: { name: string; view: ElementView }) {
@@ -403,17 +397,20 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
   )
 }
 
-/** The face a box opens on: its words and whatever a render can't go without, then Render, then More for all else, each drawn from its tool's controls or by its package. It knows no function. */
-export function AssetEdit({ name, view, actions, children }: { name: string; view: ElementView; actions: ReactNode; children: ReactNode }) {
+/** What beside Render is only a thing to set: the rest of what a box shows unasked wants a line. */
+const set = (control: Control) => control.type === "toggle" || control.type === "range" || control.type === "choice"
+
+/** What a box asks and holds, under it. On its words: what a render can't go without and Render, each drawn from its tool's controls or by its package. On a take: what's done with that. Everything else is under More, if there's anything. */
+export function AssetEdit({ name, view, editing, actions, children }: { name: string; view: ElementView; editing: boolean; actions: ReactNode; children: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
-  const controls = controlsOf(view.asset, tools)
+  const controls = makes(view) ? controlsOf(view.asset, tools) : []
   const inFrame = framed(view, controls, tool)
   const first = controls.find((control) => control.type === "text")
   const rest = controls.filter((control) => control !== inFrame && control.type !== "timeline")
-  const asked = shownControls(controls)
+  const asked = editing ? shownControls(controls) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, controls)
   const folded = rest.filter((control) => !asked.includes(control))
   const described = store.valueOf(name, "description")
@@ -423,38 +420,48 @@ export function AssetEdit({ name, view, actions, children }: { name: string; vie
     ...(typeof described === "string" && described ? ["Description"] : []),
   ]
   const open = store.showsMore(name)
+  const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
   // A caption is typed into its field, and shows until it's kept or dropped.
   const typing = view.drafts !== undefined && "description" in view.drafts
+  const shown = rest.filter((control) => asked.includes(control))
   return (
     <div className="edit-face">
       <ToolBox
         tool={tool}
         name={name}
         view={view}
-        shown={rest.filter((control) => asked.includes(control))}
+        shown={shown.filter((control) => !set(control))}
         folded={folded}
         row={(control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={store.focusing === name && control === first} named={folded.includes(control)} />}
       >
-        {(shown, more) => {
+        {(lines, more) => {
           // A package's whole face holds what would be behind More, so nothing's hidden there.
           const marks = marksOf(more !== null)
+          const behind = (more !== null && folded.length > 0) || addOns || beyond.length > 0
           return (
             <>
-              {shown && <div className="edit-shown">{shown}</div>}
+              {editing && lines && <div className="edit-shown">{lines}</div>}
               <div className="row actions">
                 {actions}
-                <button type="button" className="more-toggle nodrag" aria-expanded={open} title={marks.join(", ") || undefined} onClick={() => store.setMore(name, !open)}>
-                  {!open && marks.length > 0 && <span className="more-marks">{marks.join(", ")}</span>}
-                  <span className="more-word">{open ? "Less" : "More"}</span>
-                </button>
+                {more !== null && shown.filter(set).map((control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={false} named={false} />)}
+                {behind && (
+                  <button type="button" className="more-toggle nodrag" aria-expanded={open} title={marks.join(", ") || undefined} onClick={() => store.setMore(name, !open)}>
+                    {!open && marks.length > 0 && <span className="more-marks">{marks.join(", ")}</span>}
+                    <span className="more-word">{open ? "Less" : "More"}</span>
+                  </button>
+                )}
               </div>
-              {(open || typing) && (
-                <div className="edit-more">
-                  {open && more}
-                  {open && <AddOnRows name={name} />}
-                  {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
-                  {children}
-                </div>
+              {behind ? (
+                (open || typing) && (
+                  <div className="edit-more">
+                    {open && more}
+                    {open && <AddOnRows name={name} />}
+                    {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
+                    {children}
+                  </div>
+                )
+              ) : (
+                children
               )}
             </>
           )

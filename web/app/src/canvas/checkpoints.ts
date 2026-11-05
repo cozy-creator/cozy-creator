@@ -6,6 +6,8 @@ import { madeHere } from "./shown"
 
 /** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
 export interface Carried {
+  /** On open canvas it's for whatever let it go: it isn't dropped for nothing. */
+  canvas?: boolean
   /** Why this box can't take it, in plain words, or null when it can. */
   whyNot(name: string, view: ElementView | undefined, tools: Map<string, Tool>): string | null
   put(store: CanvasStore, name: string): void
@@ -23,9 +25,12 @@ export interface AddOn {
   strength: number
 }
 
-/** The room beside a box its add-ons take, and each one's height at its largest: `--text` makes them taller as the canvas zooms out, never wider. */
-export const ADD_ON_ROOM = 188
-export const ADD_ON_HEIGHT = 76
+/** The room under a box its stack takes: at rest, as other boxes keep clear of it whatever a tab is zoomed to. */
+export const STACK_GAP = 4
+export const ADD_ON_HEIGHT = 26
+
+/** What a checkpoint can go on in what a tool runs. One for now. */
+export const modelsOf = (tool: Tool | undefined) => (tool?.model ? [tool.model] : [])
 
 type Entry = Record<string, unknown>
 type Fields = Record<string, unknown>
@@ -82,10 +87,12 @@ export function whyNot(found: FoundModel, name: string, view: ElementView | unde
   if (!made || madeHere(made)) return `No model makes ${name}, so ${word} has nothing to go on`
   const tool = tools.get(made)
   if (!tool) return `Can't tell which model ${name} runs, so ${word} stays off it`
-  if (!tool.model) return `${name} runs no one model, so ${word} has nothing to go on`
+  const models = modelsOf(tool)
+  if (!models.length) return `${name} runs no one model, so ${word} has nothing to go on`
   if (!found.kind || !found.family) return `Can't tell what ${word} is for, so it stays off ${name}`
-  if (!tool.model.family) return `Can't tell which model ${name} runs, so ${word} stays off it`
-  return found.family === tool.model.family ? null : `${word} is for ${found.family}, and ${name} runs ${tool.model.family}`
+  const families = models.flatMap((model) => model.family ?? [])
+  if (!families.length) return `Can't tell which model ${name} runs, so ${word} stays off it`
+  return families.includes(found.family) ? null : `${word} is for ${found.family}, and ${name} runs ${families.join(", ")}`
 }
 
 /** The box under a point, its add-ons being part of it. */
@@ -111,7 +118,7 @@ export function letGo(store: CanvasStore, x: number, y: number) {
   if (!held) return false
   store.setHot(null)
   const name = boxAt(store, x, y)
-  if (!name) return true
+  if (!name) return !held.canvas
   const why = held.whyNot(name, store.get(name), store.tools.get())
   if (why) say(why)
   else held.put(store, name)
@@ -125,7 +132,7 @@ export const carrying = (found: FoundModel): Carried => ({
     const lora = store.valueOf(name, "lora")
     const models = store.valueOf(name, "models")
     if (addOnsOf(lora, models).some((addOn) => addOn.ref === found.model)) return void say(`${wordOf(found.model)} is already on ${name}`)
-    const slot = store.tools.get().get(store.get(name)?.asset?.tool ?? "")?.model?.slot
+    const slot = modelsOf(store.tools.get().get(store.get(name)?.asset?.tool ?? "")).find((model) => model.family === found.family)?.slot
     if (found.kind === "lora") store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model, strength: 1 }] })
     else if (slot) store.putOn(name, { models: { ...slotsOf(models), [slot]: { ...slotsOf(models)[slot], ref: found.model } } })
   },

@@ -40,8 +40,8 @@ export const makes = (view: ElementView | undefined) => Boolean(view?.asset?.too
 /** What Calcifer makes itself, free, with no machine. */
 export const madeHere = (tool: string | undefined) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
 
-/** A box that makes something opens on its controls; approved, it's that file, and either way can flip. */
-export const faceOf = (view: ElementView): "edit" | "media" => (makes(view) ? (view.face ?? (view.asset?.pinned ? "media" : "edit")) : "media")
+/** A box that makes something is what it's asked for; approved, it's that file, until its words are asked for. */
+export const faceOf = (view: ElementView): "edit" | "media" => (makes(view) && (view.hereWords || !view.asset?.pinned) ? "edit" : "media")
 
 export const widthFor = (view: ElementView | undefined): number => (view?.asset?.timeline ? 720 : view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
 

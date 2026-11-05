@@ -15,7 +15,7 @@
     border-color: transparent;
     border-image: var(--frame-panel) 18 fill / 18px / 7px round;
   }
-  .open-box,
+  .here-under,
   .drawer {
     background: none;
     border-color: transparent;
@@ -48,12 +48,9 @@
   background-color: var(--box);
 }
 
-/* Warm cream around a picture skews how it reads, so an open box shows it on neutral grey, with a margin of it. */
-.open-box .card > .media:not(.blank) {
-  margin: 12px;
-  border-radius: 3px;
+/* Warm cream around a picture skews how it reads, so a box being worked on shows it on neutral grey. */
+.card.here > .media:not(.blank) {
   background-color: var(--stage);
-  box-shadow: 0 0 0 12px var(--stage);
 }
 .output video,
 .stillframe {

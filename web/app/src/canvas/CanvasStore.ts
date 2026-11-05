@@ -1,7 +1,7 @@
-import type { Edge, Node, ReactFlowInstance } from "@xyflow/react"
+import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { ApiError, type Client } from "../api/client"
 import { type Action, Outbox } from "../api/outbox"
-import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, ProjectState, Row, Run, Standing, Tool } from "../types"
+import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { ADD_ON_HEIGHT, ADD_ON_ROOM, addOnsOf } from "./checkpoints"
@@ -68,13 +68,11 @@ export interface ElementView {
   /** The name field's text, while it's open. */
   draft?: string
   aspect?: number
-  /** Being written in where it stands, the canvas drawn in on it. */
+  /** Being worked on where it stands, the canvas drawn in on it and all it can do around it. */
   here?: boolean
-  /** Written in where it stands, and showing its words, not a picture. */
+  /** Worked on where it stands, and showing its words, not a take. */
   hereWords?: boolean
   run?: Run
-  /** Which face it shows, when a person flipped it. Nothing leaves this page. */
-  face?: "edit" | "media"
   /** What's typed and not saved, by field. A card culled away keeps it here. */
   drafts?: Record<string, unknown>
   /** What was written and not read back yet, by field. */
@@ -125,7 +123,7 @@ export const CARD_WIDTH = 240
 type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
-const UNDO_MS = 10_000
+export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
 
@@ -176,6 +174,8 @@ export class CanvasStore {
   readonly names = signal(0)
   /** The menu open, and where. `full`: from an opened box, with what's asked of it. */
   readonly menu = signal<{ name: string; x: number; y: number; full?: boolean } | null>(null)
+  /** The box whose file is being looked at large, over everything. */
+  readonly viewing = signal<string | null>(null)
   /** What takes a drop, by its element: a box marks itself `data-drop-target`. */
   readonly dropTargets = new Map<Element, DropTarget>()
   /** Each open text's way to take a name at its caret, by `<node>:<place>`. */
@@ -184,14 +184,14 @@ export class CanvasStore {
   readAgain: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
-  /** The box being written in where it stands, and the view to go back to. */
-  inPlace: { name: string; back: { x: number; y: number; zoom: number } } | null = null
-  /** From a box written in where it stands: all of it, over the canvas. */
-  openBox: (name: string) => void = () => {}
-  /** Done writing where it stands: the canvas goes back. */
+  /** The box being worked on where it stands: the view to go back to, the one fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
+  inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
+  /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
   leaveHere: () => void = () => {}
-  /** The box opened over the canvas, if one is. */
-  opened: string | null = null
+  /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
+  fitHere: (only?: boolean) => void = () => {}
+  /** The box being worked on has another name now. */
+  hereRenamed: (name: string) => void = () => {}
   /** The name a just-dropped tool will have: its text takes the keys. */
   focusing: string | null = null
   /** The machines a render may go to, a rental before this computer: the walk places it on whichever is free. */
@@ -306,6 +306,11 @@ export class CanvasStore {
   /** The names an element can't take. */
   takenBesides(name: string): string[] {
     return [...this.views].filter(([key, view]) => key !== name && !view.placing).map(([key]) => key)
+  }
+
+  /** Its node's id, the same whatever it's called. */
+  idOf(name: string): string | undefined {
+    return this.ids.get(this.resolveName(name))
   }
 
   position(name: string): Row | null {
@@ -633,8 +638,13 @@ export class CanvasStore {
     return held ? { ...box, w: box.w + ADD_ON_ROOM, h: Math.max(box.h, held * ADD_ON_HEIGHT) } : box
   }
 
+  /** Where a block of boxes goes to lie on nothing: there if it can. */
+  clearFor(box: Box): { x: number; y: number } {
+    return clearSpot(box, this.field())
+  }
+
   /** Its place and size, from what every tab holds alike. */
-  private boxOf(name: string): Box | null {
+  boxOf(name: string): Box | null {
     const id = this.ids.get(name)
     const view = this.views.get(name)
     const node = id ? this.flow?.getNode(id) : undefined
@@ -858,7 +868,7 @@ export class CanvasStore {
 
   /** Approves it: this version is what `name` is, until it's unapproved. It turns into that file now, and can flip back. */
   pin(name: string, number: number) {
-    this.patch(name, { face: undefined, viewed: undefined })
+    this.patch(name, { hereWords: undefined, viewed: undefined })
     this.over(name, { pinned: true, approved: number, version: number }, (served, once) => this.client.approve(this.projectId!, served, String(number), once), "approve")
   }
 
@@ -927,6 +937,10 @@ export class CanvasStore {
     if (row) {
       this.rows!.delete(from)
       this.rows!.set(to, row)
+    }
+    if (this.inPlace?.name === from) {
+      this.inPlace.name = to
+      this.hereRenamed(to)
     }
     this.notify(to)
     this.flow?.updateNodeData(id, { name: to })
@@ -1119,7 +1133,7 @@ export class CanvasStore {
 
   // A drag
 
-  /** Whatever box is under the pointer, with `dragged` taken away: it opens, and what takes a drop is the nearest of its parts, else its first. */
+  /** Whatever box is under the pointer, with `dragged` taken away. One being worked on takes a drop in the part it's let go on. */
   dropTargetAt(x: number, y: number, dragged: Element[]): DropTarget | null {
     for (const el of document.elementsFromPoint(x, y)) {
       if (dragged.some((held) => held.contains(el))) continue
@@ -1127,6 +1141,12 @@ export class CanvasStore {
       if (!card) continue
       const name = this.resolveName(card.dataset.asset ?? "")
       const view = this.views.get(name)
+      const at = view?.here && el.closest("[data-drop-target]")
+      const part = at && this.dropTargets.get(at)
+      if (part) {
+        this.setHot(name)
+        return part
+      }
       // Only a box being made takes anything: what's made, approved or only words is just in the way.
       if (!view || !makes(view) || faceOf(view) !== "edit") break
       this.setHot(name)
