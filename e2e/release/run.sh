@@ -5,12 +5,13 @@
 # GPU; nothing dearer than --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
 # it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
-# rental. On the rental: package install and list, BiRefNet from a YAML request and with --file, each output landed
-# here (one in a folder named with spaces and non-ASCII), machine ls, show and logs, keepalive, a run followed and
-# canceled, an end while a run still goes, checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT trap
-# whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
+# rental, which first takes --pod-tensord (the candidate's Linux TensorD). On the rental: package install and list,
+# BiRefNet from a YAML request and with --file, each output landed here (one in a folder named with spaces and
+# non-ASCII), machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
+# checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT
+# trap whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--release DIR]
-#                      [--tensord F|V] [--tensorfs F|V] [--runtime F|V]
+#                      [--tensord F|V] [--pod-tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 here=$(cd "$(dirname "$0")" && pwd)
@@ -103,6 +104,13 @@ echo "rented $M ($SKU)"
 cozy --json machine show "$M" > "$OUT/rental.json" && J '.rental.disk_gb >= 60' "$OUT/rental.json" || check "machine rent --disk-gb 60: $(jq .rental.disk_gb "$OUT/rental.json") GB"
 cozy --json machine ls | J --arg m "$M" '.machines | any(.name == $m and .kind == "rental")' || check "machine ls does not list $M"
 cozy machine logs "$M" --lines 5 > "$OUT/rental-log.txt" && [ -s "$OUT/rental-log.txt" ] || check "machine logs $M --lines 5: nothing"
+# A release's TensorD reaches rentals in its image: the rental takes the candidate's first (gate.sh does the same).
+if [ -n "$POD_TENSORD" ]; then
+  step "the candidate TensorD on $M"
+  cozy --json machine update "$M" --tensord "$POD_TENSORD" -y > "$OUT/update-rental.json" 2>&1 \
+    || fail "machine update $M --tensord $POD_TENSORD: $(tail -c 400 "$OUT/update-rental.json")"
+  echo "$M runs cozy $(cozy --json machine show "$M" | jq -r .status.version)"
+fi
 # Where this OS runs no models itself, the throwaway runs on the rental.
 ON=$M
 [ -z "$LOCAL" ] || ON=local

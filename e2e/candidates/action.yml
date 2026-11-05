@@ -117,6 +117,14 @@ runs:
         retention-days: 14
         # cli-os and mps (or cli-release) on one OS in one run build the same cozy.
         overwrite: true
+    # Where this OS runs no models, its rental (e2e/release) takes this run's Linux TensorD: the candidate job's build.
+    - if: runner.os != 'Linux' && inputs.tensord == '' && inputs.release == ''
+      continue-on-error: true
+      uses: actions/download-artifact@v4
+      with:
+        pattern: candidate-cozy-*
+        merge-multiple: true
+        path: ${{ runner.temp }}/pod
     # The run's files in one directory, as its release would hold them (e2e/lib.sh --release).
     - if: inputs.release != ''
       shell: bash
@@ -153,6 +161,10 @@ runs:
           [ -n "$TENSORFS" ] || [ -z "$machine" ] || bash "$BUILD_SH" tensorfs "$creator" "$out" > /dev/null
           [ -n "$RUNTIME" ] || [ -z "$machine" ] || bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
         fi
+        # The TensorD a rental takes, as the release's image will carry it: the version taken, else the Linux build.
+        pod=$TENSORD
+        [ -n "$pod$RELEASE" ] || pod=$out/cozy
+        [ -n "$machine$TENSORD" ] || pod=$(ls "$RUNNER_TEMP/pod/cozy" 2> /dev/null || true)
         # A taken candidate stays its version; a built one is its file (an artifact keeps no file mode); a release
         # run's is what its installer installs.
         if [ -n "$RELEASE" ]; then args=(--release "$RUNNER_TEMP/release")
@@ -162,5 +174,6 @@ runs:
         fi
         [ -z "$machine" ] || args+=(--tensorfs "${TENSORFS:-$(ls "$out"/tensorfs-*.whl)}" --runtime "${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}")
         [[ " $BUILD " != *" package "* ]] || args+=(--packages .src)
+        [ -z "$pod" ] || args+=(--pod-tensord "$pod")
         echo "CANDIDATES=${args[*]}" >> "$GITHUB_ENV"
         echo "candidates: ${args[*]}"
