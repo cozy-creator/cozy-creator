@@ -2295,6 +2295,8 @@ struct Walk {
 
 /// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
 const WINDOW: usize = 32;
+/// How often what's landing tries a project that won't take it.
+const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Something a walker started came to its end.
 enum Done {
@@ -2620,7 +2622,7 @@ impl Walk {
             }
             let Some(run) = self.host.numbered(number) else { continue };
             let name = coming.as_ref().map(|coming| coming.name.clone());
-            work.push(async move { Done::Arrived { name, result: self.host.wait(&run.id).await.and_then(|run| self.arrived(&run, coming)) } }.boxed());
+            work.push(async move { Done::Arrived { name, result: self.arrived_owed(&run.id, coming).await } }.boxed());
         }
         loop {
             self.deletions()?;
@@ -3247,7 +3249,7 @@ impl Walk {
                 }
                 if let Some((id, version)) = self.landed(landed, followed, first)? {
                     let name = asset.clone();
-                    work.push(async move { Done::Arrived { name, result: self.host.wait(&id).await.and_then(|run| self.arrived(&run, version)) } }.boxed());
+                    work.push(async move { Done::Arrived { name, result: self.arrived_owed(&id, version).await } }.boxed());
                 }
                 // Its next call, if its operation has one, goes on under its own key.
                 let goes_on = self.folder().walk_now()?.pending.iter().any(|(sent, pending)| pending.job_of(sent) == job);
@@ -3762,8 +3764,57 @@ impl Walk {
         Ok(())
     }
 
-    /// Follows the run sent under `key` to its end and lands it, its pending entry gone however it ends (a lock that cannot be
-    /// written ends the walk).
+    /// Whether `error` is the project refusing a write it may take later: a run is paid for and its bytes are here, so what's landing
+    /// stays owed in `.runs/walk.json`, says so, and nothing runs again. A folder that's gone isn't that.
+    fn held_up(&self, error: &Error) -> bool {
+        if !matches!(error.code.as_str(), "file_held" | "project_io") || !self.folder().dir.is_dir() {
+            return false;
+        }
+        if self.folder().unsaved().is_none() {
+            self.say(Event::Warning { message: format!("Not saved yet: {}, and what landed goes in as soon as it can", error.message), name: None });
+            self.folder().set_unsaved(Some(error.message.clone()));
+            crate::events::project_settled(&self.folder().dir);
+        }
+        true
+    }
+
+    /// The project took what was held up.
+    fn taken(&self) {
+        if self.folder().unsaved().is_some() {
+            self.folder().set_unsaved(None);
+            crate::events::project_settled(&self.folder().dir);
+        }
+    }
+
+    /// `land`, however long the project takes to take it.
+    async fn land_owed(&self, key: &str, run: &Run) -> Result<Option<Coming>, Error> {
+        loop {
+            match self.land(key, run).await {
+                Err(error) if self.held_up(&error) => tokio::time::sleep(HELD_UP).await,
+                done => {
+                    self.taken();
+                    return done;
+                }
+            }
+        }
+    }
+
+    /// Run `id`'s files, once they're all here, onto its version, however long the project takes to take that.
+    async fn arrived_owed(&self, id: &RunId, version: Option<Coming>) -> Result<(), Error> {
+        let run = self.host.wait(id).await?;
+        loop {
+            match self.arrived(&run, version.clone()) {
+                Err(error) if self.held_up(&error) => tokio::time::sleep(HELD_UP).await,
+                done => {
+                    self.taken();
+                    return done;
+                }
+            }
+        }
+    }
+
+    /// Follows the run sent under `key` to its end and lands it, its pending entry gone however it ends, and kept while the project
+    /// won't take it (`owed`).
     async fn follow(&self, key: String) -> Followed {
         let owed = self.folder().walk_now().ok().and_then(|walk| walk.pending.get(&key).map(|pending| (pending.asset.clone(), pending.version.inputs.clone(), pending.run)));
         let (name, inputs, run) = match owed {
@@ -3774,7 +3825,7 @@ impl Walk {
             let Some(run) = self.host.sent(&key)? else { return Ok(None) };
             let ended = self.host.ended(&run.id).await?;
             // What reads it goes now, on its machine. The walk isn't over until the bytes are here.
-            Ok(Some((run.id, self.land(&key, &ended).await?)))
+            Ok(Some((run.id, self.land_owed(&key, &ended).await?)))
         };
         let landed = landed.await;
         let landed = match self.folder().update_walk(|walk| drop(walk.pending.remove(&key))) {

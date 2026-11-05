@@ -298,6 +298,9 @@ impl Doc {
             return Err(invalid("project_format", said).next(if version.is_none_or(|version| version == 2) { "cozy project upgrade" } else { "cozy project new" }));
         }
         let mut warnings = vec![];
+        if let Some(why) = folder.unsaved() {
+            warnings.push(Warning::of_file(format!("Not saved yet: {why}, and what landed goes in as soon as it can")));
+        }
         if folder.lock_gone() {
             warnings.push(Warning::of_file(format!("{0} is gone and files/ holds files: their versions aren't read, so only what is approved stands. Put {0} back from git or a backup", folder::LOCK)));
         }
