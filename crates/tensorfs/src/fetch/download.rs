@@ -49,7 +49,8 @@ const CLAIM_POLL: Duration = Duration::from_millis(250);
 /// while that half is at least `STEAL` (aria2's dynamic split, BitTorrent's end game).
 const STEAL: u64 = 512 << 10;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
-/// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window.
+/// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window, never
+/// below `START`, and the ramp probes again.
 const START: usize = 8;
 const WINDOW: Duration = Duration::from_millis(500);
 const GAIN: f64 = 1.1;
@@ -621,15 +622,17 @@ impl Shared {
         })
     }
 
-    /// An error or a timeout: half the requests go, once a window.
+    /// An error or a timeout: half the requests go, once a window, never below `START`; the ramp then
+    /// probes again (settled, a burst of 503s left it at one request for good: run 32321).
     fn congested(&self) {
         let mut pace = lock(&self.pace);
-        if pace.level <= 1 || pace.halved.is_some_and(|at| at.elapsed() < WINDOW) {
+        let floor = START.min(pace.max);
+        if pace.level <= floor || pace.halved.is_some_and(|at| at.elapsed() < WINDOW) {
             return;
         }
-        let gone = pace.level / 2;
+        let gone = (pace.level / 2).min(pace.level - floor);
         self.shrink(&mut pace, gone);
-        (pace.halved, pace.last) = (Some(Instant::now()), None);
+        (pace.halved, pace.last, pace.settled, pace.flat) = (Some(Instant::now()), None, false, 0);
         tracing::info!(streams = pace.level, "fewer streams: an error or a timeout");
     }
 
@@ -743,17 +746,18 @@ impl Shared {
                 slot = self.slots.take() => slot,
                 () = self.closed() => return,
             };
-            let task = loop {
-                let notified = self.queued.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if self.closed.load(Ordering::Acquire) {
-                    return;
-                }
-                if let Some(task) = self.pop() {
-                    break task;
-                }
+            let notified = self.queued.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            // Nothing to start: the place goes back to the ranges waiting for one until a want comes.
+            // Held here at the tail it starved them for good (run 32321).
+            let Some(task) = self.pop() else {
+                drop(permit);
                 notified.await;
+                continue;
             };
             let shared = Arc::clone(&self);
             tokio::spawn(async move {

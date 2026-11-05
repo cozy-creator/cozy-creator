@@ -145,7 +145,9 @@ def check(gate):
         st[name] = {'ok': code == '0', 'seconds': int(ms) / 1000, 'slowed': len(slow),
                     'reasked': sum(1 for r in objs if r['ask'] > 1), 'bytes': sum(r['bytes'] for r in objs),
                     'asks': max((r['ask'] for r in objs if r['path'] in slow), default=0),
-                    'error': open(os.path.join(t, name + '.err')).read()[-300:] if code != '0' else ''}
+                    'error': open(os.path.join(t, name + '.err')).read()[-300:] if code != '0' else '',
+                    'silenced': {r['path'] for r in objs if r.get('silent')},
+                    'body_failed': sum('body failed' in line for line in open(os.path.join(t, name + '.err'), errors='replace'))}
     c = st.get('straggler-clean')
     # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138),
     # crawling objects (every ask moves 64 KiB and drips, tfs-141), and many, whose parts come at full speed (tfs-143).
@@ -172,8 +174,10 @@ def check(gate):
                 f'{sl["seconds"]:.1f} s vs clean {c["seconds"]:.1f} s (limit {limit:.1f})')
             against(case, sl['seconds'], c['bytes'], f'download with {what}')
     # Arms that must land: through one 5 MB/s link for every request (run 31103: the old downloader moved nothing for good
-    # on one), and with every object's partial held by another process (gate 41991226171: IO_FAILED, Bad file descriptor).
-    for name, what in (('straggler-link', 'through a 5 MB/s link'), ('straggler-held', "with every object's partial held elsewhere")):
+    # on one), with every object's partial held by another process (gate 41991226171: IO_FAILED, Bad file descriptor), and
+    # through 8 s of 503s once the ramp has settled (run 32321: one request left, held by nothing to start).
+    for name, what in (('straggler-link', 'through a 5 MB/s link'), ('straggler-held', "with every object's partial held elsewhere"),
+                       ('straggler-burst', 'through a burst of 503s')):
         sl = st.get(name)
         if not chosen('straggler'):
             break
@@ -184,6 +188,22 @@ def check(gate):
         else:
             notes.append(f'tensorfs {name}: {sl["bytes"] / 2**20:.0f} MiB {what} in {sl["seconds"]:.1f} s '
                          f'({sl["bytes"] / sl["seconds"] / 1e6:.1f} MB/s)')
+
+    # One small ask's socket held silent after half its body, the last range left (run 32321 sat 16 min on its last two):
+    # the no-bytes stall ends it and it is asked again from the byte reached, within 60 s.
+    sl = st.get('straggler-silent')
+    if chosen('straggler'):
+        if not sl:
+            fails.append('tensorfs straggler-silent: the case did not run')
+        elif not sl['ok']:
+            fails.append(f'tensorfs straggler-silent: tfs download with a silent socket failed: {sl["error"]}')
+        elif not sl['silenced']:
+            fails.append('tensorfs straggler-silent: no ask was held silent: the case tested nothing')
+        else:
+            asks = max((r['ask'] for r in events(os.path.join(t, 'straggler-silent.proxy')) if r.get('path') in sl['silenced']), default=0)
+            good = sl['seconds'] <= 60 and sl['body_failed'] >= 1 and asks >= 2
+            (notes if good else fails).append(f'tensorfs straggler-silent: {sl["seconds"]:.1f} s (limit 60), {sl["body_failed"]} body '
+                                              f'failed, the silent object asked {asks} times')
 
     def rate(name, nbytes, seconds):
         if nbytes and seconds:
