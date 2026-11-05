@@ -65,6 +65,8 @@ pub(crate) struct Task {
     /// Its requests, and the attempts in a row that moved nothing.
     asked: AtomicU32,
     unanswered: AtomicU32,
+    /// Its slowest range: how long it took, and its bytes.
+    slowest: Mutex<(Duration, u64)>,
     /// Its last waiter left.
     left: Notify,
     done: watch::Sender<Option<std::result::Result<Tier, Refusal>>>,
@@ -521,6 +523,7 @@ impl Shared {
                     moved_ms: AtomicU64::new(unix_ms()),
                     asked: AtomicU32::new(0),
                     unanswered: AtomicU32::new(0),
+                    slowest: Mutex::default(),
                     left: Notify::new(),
                     done: watch::channel(None).0,
                 });
@@ -623,7 +626,9 @@ impl Shared {
                     Ok(Tier::Local) => {}
                     Ok(tier) => {
                         let (bytes, kept, requests) = (task.object.length, task.kept(), task.asked.load(Ordering::Relaxed));
-                        tracing::info!(object = %task.object.sha256, bytes, kept, ?tier, seconds = began.elapsed().as_secs_f64(), requests, "landed");
+                        let (took, range) = *lock(&task.slowest);
+                        let (slowest_range_s, slowest_range_kbps) = (took.as_secs_f64(), range as f64 / took.as_secs_f64().max(1e-3) / 1e3);
+                        tracing::info!(object = %task.object.sha256, bytes, kept, ?tier, seconds = began.elapsed().as_secs_f64(), requests, slowest_range_s, slowest_range_kbps, "landed");
                     }
                 }
                 shared.finish(&task, outcome);
@@ -784,11 +789,20 @@ impl Shared {
     /// One range into `into`, asked again by the one rule (`ask`) from the byte reached.
     async fn range(&self, task: &Task, here: &HttpLocation<'_>, into: &mut Target<'_, '_>) -> Result<()> {
         let (mut backoff, mut attempt, mut still) = (Backoff::new(), 0, 0);
+        let (began, first) = (Instant::now(), into.reached());
         loop {
             attempt += 1;
             let from = into.reached();
             let (why, wait) = match self.request(task, here, into, attempt).await {
-                Ok(()) => return into.flush().await,
+                Ok(()) => {
+                    {
+                        let mut slowest = lock(&task.slowest);
+                        if began.elapsed() > slowest.0 {
+                            *slowest = (began.elapsed(), into.reached() - first);
+                        }
+                    }
+                    return into.flush().await;
+                }
                 Err(Failed::Fatal(refusal)) => return Err(refusal),
                 Err(Failed::Again(why, wait)) => (why, wait),
             };
