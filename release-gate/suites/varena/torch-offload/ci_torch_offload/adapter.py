@@ -1,5 +1,6 @@
 """vt.offload's promises on a real GPU, with real tiny Diffusers and Torch models."""
 
+import copy
 import gc
 import json
 import os
@@ -79,24 +80,32 @@ x = torch.randn(1, 4)
 
 @check("a block too big to pin descends to its children")
 def split():
-    model = nn.Sequential(*(nn.Sequential(nn.Linear(7168, 7168), nn.Linear(7168, 7168)) for _ in range(2))).eval()
+    template = nn.Sequential(*(nn.Sequential(nn.Linear(7168, 7168), nn.Linear(7168, 7168)) for _ in range(2))).eval()
     y = torch.randn(1, 7168)
     with torch.inference_mode():
-        want = model(y).to(device)
-    handle = offload(model, device=0)
-    torch.cuda.empty_cache()
-    # Room for a layer (196 MiB) and not a half (392, under `vt.unit_bytes`, so it starts whole). A cap counts what's
-    # outside us, so the core says what one leaves; 40 MiB of that comes back in the first call.
-    wide = torch.cuda.mem_get_info(0)[1]
-    vt.set_limit(0, wide)
-    vt.set_limit(0, wide - api.open(0).room()["free"] + 280 * 2**20)
-    try:
-        with torch.inference_mode():
-            got = model(y.to(device))
-    finally:
-        vt.set_limit(0, None)
-    assert torch.allclose(got, want, rtol=1e-3, atol=1e-3)
-    assert any(unit.split for unit in handle.units), "a block fit whole: nothing descended"
+        want = template(y).to(device)
+    gpu, wide = api.open(0), torch.cuda.mem_get_info(0)[1]
+    # What's outside us moves by host, so no one cap is right. A layer is 196 MiB and a half 392: climbing in smaller
+    # steps, the first room that runs is one a layer fits and a half doesn't.
+    for room in range(64, 1024, 64):
+        model = copy.deepcopy(template)
+        handle = offload(model, device=0)
+        torch.cuda.empty_cache()
+        vt.set_limit(0, wide)
+        vt.set_limit(0, wide - gpu.room()["free"] + room * 2**20)
+        try:
+            with torch.inference_mode():
+                got = model(y.to(device))
+        except torch.OutOfMemoryError:
+            del model, handle
+            gc.collect()
+            continue
+        finally:
+            vt.set_limit(0, None)
+        assert torch.allclose(got, want, rtol=1e-3, atol=1e-3)
+        assert any(unit.split for unit in handle.units), f"{room} MiB of room ran and nothing descended"
+        return
+    raise AssertionError("no room ran the model")
 
 
 @check("a dropped handle keeps working, identities and ties preserved")
