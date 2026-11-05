@@ -47,7 +47,7 @@ const VOLUME_STALL: Duration = Duration::from_secs(30);
 const CLAIM_POLL: Duration = Duration::from_millis(250);
 /// A free place with nothing waiting takes the back half of the in-flight range with the most left,
 /// while that half is at least `STEAL` (aria2's dynamic split, BitTorrent's end game).
-const STEAL: u64 = 1 << 20;
+const STEAL: u64 = 512 << 10;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
 /// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window.
 const START: usize = 8;
