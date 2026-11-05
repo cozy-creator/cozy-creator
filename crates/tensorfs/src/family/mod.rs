@@ -12,7 +12,7 @@ pub mod probe;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::format::{Component, Header, Metadata, Value};
 
@@ -169,7 +169,7 @@ fn is_lora(component: &Component) -> bool {
 }
 
 /// What a checkpoint is, from its header alone.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Facts {
     /// It holds only a LoRA's factors, and no weights of its own.
     pub lora: bool,
