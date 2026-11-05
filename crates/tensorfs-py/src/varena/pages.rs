@@ -199,13 +199,17 @@ impl Tier {
     }
 
     /// The host RAM this process can still take, re-read at most every `LOOK`, after kept pages
-    /// go, the least worth first, while it is under the headroom. Unreadable: they all go.
+    /// go, the least worth first, while it is under the headroom. Unreadable: they all go. Clean
+    /// page cache is room, active too: a page kept here is read from the store no more, so the
+    /// page cache its reads kept active ages out. Counting only inactive pages, a 46 GB pod's
+    /// own Flux-2 refills left no room, and every refill read the store (runs 33701-33815).
     fn trim(&self, state: &mut State) -> Vec<Kept> {
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
             return Vec::new();
         }
         state.looked = Some(Instant::now());
-        let mut room = host_memory::read().available;
+        let memory = host_memory::read();
+        let mut room = if memory.available < 0 { memory.available } else { memory.available + memory.active };
         state.room = room;
         let mut gone = Vec::new();
         if room >= self.headroom {
