@@ -1,8 +1,8 @@
 //! The downloader, as S3's own clients do it (aws-cli, CRT, s5cmd): a queue of objects, each read as
 //! 4 MiB ranges (one request for an object of 4 MiB or less), one limit on requests in flight across
 //! every object, and each request asked again by the one retry rule ([`ask`]) from the byte it reached.
-//! Nothing judges a request's rate: asking a slow range again doesn't speed it up (tfs-141), while an
-//! object's ranges side by side do.
+//! A range is written at its offset in the object's one file, as aws-cli writes parts; nothing is joined.
+//! One far slower than the others (an eighth of the median, after 5 s) is restarted, at most 3 times.
 //!
 //! - **Order.** The queue is a plain number, smaller first; equal numbers go in arrival order. An
 //!   object wanted twice is downloaded once. Requests take their places in line as their object
@@ -10,13 +10,13 @@
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
-//! - **Cut or killed.** What landed stays in the store's `tmp/` ([`ObjectStore::resume`]), ranges
-//!   too, and the next fetch asks only for the rest (tfs-143).
+//! - **Cut or killed.** What landed stays in the store's `tmp/` ([`ObjectStore::admit`]), and the next
+//!   fetch asks only for the rest (tfs-143).
 //! - **Every answer that is not 2xx is logged** with its object, range and attempt, and counted.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,7 +29,7 @@ use super::ask::{self, Backoff, ATTEMPTS};
 use super::net::{shown, Client, GetError};
 use super::origin::{HttpLocation, Location, Origin};
 use super::volume::{blocking, VolumeOrigin, Wrote, STEP};
-use super::{Admission, ObjectStore, Tier};
+use super::{Admission, ObjectStore, RangeWrite, Tier};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::ObjectRef;
 
@@ -44,6 +44,16 @@ const WRITE_BACKS: usize = 2;
 const VOLUME_STALL: Duration = Duration::from_secs(30);
 /// How often an object another process is fetching is looked at again.
 const CLAIM_POLL: Duration = Duration::from_millis(250);
+/// A request under an eighth of the median range rate after this long is restarted, at most
+/// `RESTARTS` times a range; the median is of the last `SAMPLES` finished ranges.
+const SLOW_AFTER: Duration = Duration::from_secs(5);
+const RESTARTS: u32 = 3;
+const SAMPLES: usize = 256;
+/// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
+/// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window.
+const START: usize = 8;
+const WINDOW: Duration = Duration::from_secs(1);
+const GAIN: f64 = 1.1;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -216,13 +226,18 @@ pub(crate) struct Shared {
     queued: Notify,
     closed: AtomicBool,
     closing: Notify,
-    /// Requests in flight, across every object.
+    /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
     requests: Arc<Semaphore>,
+    pace: Mutex<Pace>,
+    /// Places the ramp gave up that are still out: each is forgotten as it comes back (`Slot`).
+    debt: Arc<AtomicUsize>,
     /// Tasks and write-backs not yet ended.
     busy: AtomicUsize,
     settle: Notify,
     volume_reads: Semaphore,
     write_backs: Semaphore,
+    /// Bytes per second of the last finished ranges.
+    rates: Mutex<VecDeque<f64>>,
     pub stats: Counters,
 }
 
@@ -230,6 +245,10 @@ pub(crate) struct Shared {
 pub(crate) struct Counters {
     pub requests: AtomicU64,
     pub retries: AtomicU64,
+    /// Requests restarted as far slower than the others.
+    pub restarts: AtomicU64,
+    /// Bytes received from the origin.
+    pub received: AtomicU64,
     pub volume_written: AtomicU64,
     pub volume_skipped: AtomicU64,
     /// Answers that were not 2xx, by status.
@@ -240,6 +259,8 @@ pub(crate) struct Counters {
 enum Failed {
     /// Ask again (after the answer's stated wait, when it gave one).
     Again(String, Option<Duration>),
+    /// Far slower than the other ranges: asked again from the byte reached.
+    Slow(String),
     Fatal(Refusal),
 }
 
@@ -251,194 +272,100 @@ impl From<Refusal> for Failed {
 
 /// How a file read ended.
 enum FileRead {
-    Admitted,
+    /// Every byte written, for commit to judge.
+    Done,
     Absent,
-    /// The bytes were not the object's.
-    Corrupt(Refusal),
     /// Abandoned as silent; the operation may still be blocked.
     Stuck(String),
     Failed(Refusal),
 }
 
-/// Bytes gathered for one file, written off the runtime `WRITE_BYTES` at a time.
-async fn spill<W: Send + 'static>(out: &mut Option<W>, buffer: &mut Vec<u8>, write: impl FnOnce(&mut W, &[u8]) -> Result<()> + Send + 'static) -> Result<()> {
-    if buffer.is_empty() {
-        return Ok(());
-    }
-    let (Some(mut target), mut bytes) = (out.take(), std::mem::take(buffer)) else {
-        return refuse(Code::IO_FAILED, "its file is gone");
-    };
-    let written = tokio::task::spawn_blocking(move || {
-        let written = write(&mut target, &bytes);
-        bytes.clear();
-        (target, bytes, written)
-    })
-    .await;
-    let (target, bytes, written) = written.map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })?;
-    (*out, *buffer) = (Some(target), bytes);
-    written
-}
-
-/// One object's bytes on their way into the store's admission, in order.
-struct Sink<'s> {
-    shared: &'s Shared,
-    task: &'s Task,
-    admission: Option<Box<dyn Admission>>,
-    buffer: Vec<u8>,
-    reached: u64,
-}
-
-impl<'s> Sink<'s> {
-    /// The object's door, with whatever an earlier fetch left: taking that up hashes it, off the runtime.
-    async fn open(shared: &'s Shared, task: &'s Task) -> Result<Sink<'s>> {
-        let (store, object) = (Arc::clone(&shared.store), task.object.clone());
-        let admission = tokio::task::spawn_blocking(move || store.resume(&object))
-            .await
-            .map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })??;
-        let (reached, ahead) = admission.held();
-        if reached + ahead > 0 {
-            tracing::info!(object = %task.object.sha256, reached, ahead, "an earlier fetch's bytes taken up");
-        }
-        task.kept.store(reached + ahead, Ordering::Release);
-        task.received.store(reached + ahead, Ordering::Release);
-        Ok(Sink { shared, task, admission: Some(admission), buffer: Vec::with_capacity(WRITE_BYTES), reached })
-    }
-
-    /// Start the object over, nothing kept.
-    fn fresh(&mut self) -> Result<()> {
-        if let Some(admission) = self.admission.take() {
-            admission.discard();
-        }
-        self.admission = Some(self.shared.store.resume(&self.task.object)?);
-        self.task.kept.store(0, Ordering::Release);
-        self.task.received.store(0, Ordering::Release);
-        self.buffer.clear();
-        self.reached = 0;
-        Ok(())
-    }
-
-    /// Whether ranges have somewhere to land.
-    fn keeps(&self) -> bool {
-        self.admission.as_ref().is_some_and(|admission| admission.keeps())
-    }
-
-    /// The file for the range at byte `at`, and what it holds.
-    fn range(&mut self, at: u64) -> Result<Option<(std::fs::File, u64)>> {
-        match &mut self.admission {
-            Some(admission) => admission.range(at),
-            None => refuse(Code::IO_FAILED, "the admission is gone"),
-        }
-    }
-
-    async fn push(&mut self, data: &[u8]) -> Result<()> {
-        let length = self.task.object.length;
-        if self.reached + data.len() as u64 > length {
-            return refuse(Code::LENGTH_MISMATCH, format!("{}: the origin sent more than its {length} B", self.task.object.sha256));
-        }
-        self.buffer.extend_from_slice(data);
-        self.reached += data.len() as u64;
-        self.task.gained(data.len() as u64);
-        if self.buffer.len() >= WRITE_BYTES {
-            self.flush().await?;
-        }
-        Ok(())
-    }
-
-    async fn flush(&mut self) -> Result<()> {
-        spill(&mut self.admission, &mut self.buffer, |admission, bytes| admission.write(bytes)).await
-    }
-
-    /// The whole range at the byte reached, whose arrival has counted already, joins the bytes in order.
-    async fn take(&mut self) -> Result<()> {
-        self.flush().await?;
-        let Some(mut admission) = self.admission.take() else {
-            return refuse(Code::IO_FAILED, "the admission is gone");
-        };
-        let taken = tokio::task::spawn_blocking(move || {
-            let taken = admission.take();
-            (admission, taken)
-        })
-        .await;
-        let (admission, taken) = taken.map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })?;
-        self.admission = Some(admission);
-        self.reached = taken?;
-        Ok(())
-    }
-
-    /// Everything written, hashed and admitted; the sink is spent until `fresh`.
-    async fn commit(&mut self) -> Result<()> {
-        self.flush().await?;
-        let Some(admission) = self.admission.take() else {
-            return refuse(Code::IO_FAILED, "the admission is gone");
-        };
-        tokio::task::spawn_blocking(move || admission.commit())
-            .await
-            .map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })?
-    }
-}
-
-/// One range of an object, landing in its own file.
+/// One range of an object, its bytes written at their offsets as they arrive (`WRITE_BYTES` at a time,
+/// off the runtime).
 struct Part {
-    at: u64,
-    reached: u64,
     end: u64,
-    file: Option<std::fs::File>,
+    /// Bytes received; those before `written` are in the store, the rest in `buffer`.
+    reached: u64,
+    written: u64,
+    writer: Option<Box<dyn RangeWrite>>,
     buffer: Vec<u8>,
 }
 
 impl Part {
-    async fn flush(&mut self) -> Result<()> {
-        let at = self.at;
-        spill(&mut self.file, &mut self.buffer, move |file, bytes| {
-            file.write_all(bytes).map_err(|error| crate::store::fail("write", format!("the range at {at}"))(error).refusal())
-        })
-        .await
-    }
-}
-
-/// Where a request's body goes: the object, in order, or one of its ranges.
-enum Target<'a, 's> {
-    Sink(&'a mut Sink<'s>),
-    Part(&'a mut Part),
-}
-
-impl Target<'_, '_> {
-    fn reached(&self) -> u64 {
-        match self {
-            Target::Sink(sink) => sink.reached,
-            Target::Part(part) => part.reached,
-        }
-    }
-
-    fn end(&self, length: u64) -> u64 {
-        match self {
-            Target::Sink(_) => length,
-            Target::Part(part) => part.end,
-        }
+    fn new(admission: &dyn Admission, from: u64, end: u64) -> Result<Part> {
+        Ok(Part { end, reached: from, written: from, writer: Some(admission.writer()?), buffer: Vec::new() })
     }
 
     async fn push(&mut self, task: &Task, data: &[u8]) -> Result<()> {
-        match self {
-            Target::Sink(sink) => sink.push(data).await,
-            Target::Part(part) => {
-                if part.reached + data.len() as u64 > part.end {
-                    return refuse(Code::LENGTH_MISMATCH, format!("{}: the origin sent more than the range asked", task.object.sha256));
-                }
-                part.buffer.extend_from_slice(data);
-                part.reached += data.len() as u64;
-                task.gained(data.len() as u64);
-                match part.buffer.len() >= WRITE_BYTES {
-                    true => part.flush().await,
-                    false => Ok(()),
-                }
-            }
+        if self.reached + data.len() as u64 > self.end {
+            return refuse(Code::LENGTH_MISMATCH, format!("{}: the origin sent more than the range asked", task.object.sha256));
+        }
+        self.buffer.extend_from_slice(data);
+        self.reached += data.len() as u64;
+        task.gained(data.len() as u64);
+        match self.buffer.len() >= WRITE_BYTES {
+            true => self.flush().await,
+            false => Ok(()),
         }
     }
 
     async fn flush(&mut self) -> Result<()> {
-        match self {
-            Target::Sink(sink) => sink.flush().await,
-            Target::Part(part) => part.flush().await,
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let (Some(mut writer), bytes, at) = (self.writer.take(), std::mem::take(&mut self.buffer), self.written) else {
+            return refuse(Code::IO_FAILED, "the range's writer is gone");
+        };
+        let written = tokio::task::spawn_blocking(move || {
+            let written = writer.write_at(at, &bytes);
+            (writer, bytes, written)
+        })
+        .await;
+        let (writer, mut bytes, written) = written.map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })?;
+        written?;
+        self.written += bytes.len() as u64;
+        bytes.clear();
+        (self.writer, self.buffer) = (Some(writer), bytes);
+        Ok(())
+    }
+}
+
+/// `[from, end)` stretches of `length` not in `held`, cut at multiples of `PART`.
+fn lacking(held: &[(u64, u64)], length: u64) -> Vec<(u64, u64)> {
+    let mut gaps = Vec::new();
+    let mut at = 0;
+    for &(a, b) in held.iter().chain(std::iter::once(&(length, length))) {
+        let mut from = at;
+        while from < a {
+            let end = ((from / PART + 1) * PART).min(a);
+            gaps.push((from, end));
+            from = end;
+        }
+        at = at.max(b);
+    }
+    gaps
+}
+
+#[derive(Default)]
+struct Pace {
+    level: usize,
+    max: usize,
+    /// The rate at the last doubling, and the bytes received when it last looked.
+    last: Option<f64>,
+    seen: u64,
+    settled: bool,
+    halved: Option<Instant>,
+}
+
+/// A place among the requests in flight, given back as it drops unless the ramp has shrunk since.
+struct Slot(Option<OwnedSemaphorePermit>, Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Some(permit) = self.0.take() {
+            if self.1.try_update(Ordering::AcqRel, Ordering::Acquire, |debt| debt.checked_sub(1)).is_ok() {
+                permit.forget();
+            }
         }
     }
 }
@@ -453,11 +380,14 @@ impl Shared {
             queued: Notify::new(),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
-            requests: Arc::new(Semaphore::new(crate::descriptors::requests(requests.max(1)))),
+            requests: Arc::new(Semaphore::new(START.min(requests.max(1)))),
+            pace: Mutex::new(Pace { level: START.min(requests.max(1)), max: crate::descriptors::requests(requests.max(1)), ..Pace::default() }),
+            debt: Arc::default(),
             busy: AtomicUsize::new(0),
             settle: Notify::new(),
             volume_reads: Semaphore::new(VOLUME_READS),
             write_backs: Semaphore::new(WRITE_BACKS),
+            rates: Mutex::default(),
             stats: Counters::default(),
         }
     }
@@ -497,10 +427,61 @@ impl Shared {
     fn unbusy(&self) {
         if self.busy.fetch_sub(1, Ordering::AcqRel) == 1 {
             let statuses = lock(&self.stats.statuses).clone();
-            let (requests, retries) = (self.stats.requests.load(Ordering::Relaxed), self.stats.retries.load(Ordering::Relaxed));
-            tracing::info!(requests, retries, ?statuses, "downloads settled (counts since start)");
+            let (requests, retries, restarts) = (self.stats.requests.load(Ordering::Relaxed), self.stats.retries.load(Ordering::Relaxed), self.stats.restarts.load(Ordering::Relaxed));
+            tracing::info!(requests, retries, restarts, ?statuses, "downloads settled (counts since start)");
             self.settle.notify_waiters();
         }
+    }
+
+    /// The ramp, once a window: more requests while the bytes received grow, back to `START` when idle.
+    pub async fn pace(self: Arc<Self>) {
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(WINDOW) => {}
+                () = self.closed() => return,
+            }
+            let received = self.stats.received.load(Ordering::Relaxed);
+            let mut pace = lock(&self.pace);
+            let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
+            pace.seen = received;
+            if self.busy.load(Ordering::Acquire) == 0 {
+                let gone = pace.level.saturating_sub(START.min(pace.max));
+                self.shrink(&mut pace, gone);
+                (pace.last, pace.settled) = (None, false);
+                continue;
+            }
+            let full = self.requests.available_permits() == 0;
+            if !full || pace.settled || pace.level >= pace.max || self.debt.load(Ordering::Acquire) > 0 {
+                continue;
+            }
+            if pace.last.is_some_and(|last| rate < last * GAIN) {
+                pace.settled = true;
+                tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
+                continue;
+            }
+            let grow = (pace.level * 2).min(pace.max) - pace.level;
+            (pace.level, pace.last) = (pace.level + grow, Some(rate));
+            self.requests.add_permits(grow);
+            tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
+        }
+    }
+
+    /// An error or a timeout: half the requests go, once a window.
+    fn congested(&self) {
+        let mut pace = lock(&self.pace);
+        if pace.level <= 1 || pace.halved.is_some_and(|at| at.elapsed() < WINDOW) {
+            return;
+        }
+        let gone = pace.level / 2;
+        self.shrink(&mut pace, gone);
+        (pace.halved, pace.last) = (Some(Instant::now()), None);
+        tracing::info!(streams = pace.level, "fewer streams: an error or a timeout");
+    }
+
+    fn shrink(&self, pace: &mut Pace, gone: usize) {
+        pace.level -= gone;
+        let forgotten = self.requests.forget_permits(gone);
+        self.debt.fetch_add(gone - forgotten, Ordering::AcqRel);
     }
 
     /// A place in line for `object`, joining its task when one is open.
@@ -606,7 +587,7 @@ impl Shared {
         loop {
             let permit = tokio::select! {
                 permit = Arc::clone(&self.requests).acquire_owned() => match permit {
-                    Ok(permit) => permit,
+                    Ok(permit) => Slot(Some(permit), Arc::clone(&self.debt)),
                     Err(_) => return,
                 },
                 () = self.closed() => return,
@@ -648,7 +629,7 @@ impl Shared {
 
     /// `task`'s object from the first tier that has it. Another process on this store fetching it
     /// now (TensorD, for an executor's read) is waited for, so it downloads once on this machine.
-    async fn fetch(self: &Arc<Self>, task: &Arc<Task>, permit: OwnedSemaphorePermit) -> Result<Tier> {
+    async fn fetch(self: &Arc<Self>, task: &Arc<Task>, permit: Slot) -> Result<Tier> {
         if self.store.has(&task.object) {
             return Ok(Tier::Local);
         }
@@ -662,41 +643,61 @@ impl Shared {
         if self.store.has(&task.object) {
             return Ok(Tier::Local);
         }
-        let mut sink = Sink::open(self, task).await?;
-        let fetched = self.through_tiers(task, &mut sink, permit).await;
-        if fetched.is_err() {
-            // What arrived and was waiting for a write is kept with the rest.
-            let _ = sink.flush().await;
-        }
-        fetched
+        let admission = self.admit(task).await?;
+        self.through_tiers(task, admission, permit).await
     }
 
-    /// `sink`'s object from the volume, else the origin, from the byte it holds.
-    async fn through_tiers(self: &Arc<Self>, task: &Arc<Task>, sink: &mut Sink<'_>, permit: OwnedSemaphorePermit) -> Result<Tier> {
+    /// The object's door, with what an earlier fetch left: those bytes count as here already.
+    async fn admit(&self, task: &Task) -> Result<Box<dyn Admission>> {
+        let (store, object) = (Arc::clone(&self.store), task.object.clone());
+        let admission = tokio::task::spawn_blocking(move || store.admit(&object))
+            .await
+            .map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })??;
+        let held: u64 = admission.held().iter().map(|(a, b)| b - a).sum();
+        if held > 0 {
+            tracing::info!(object = %task.object.sha256, held, "an earlier fetch's bytes taken up");
+        }
+        task.kept.store(held, Ordering::Release);
+        task.received.store(held, Ordering::Release);
+        Ok(admission)
+    }
+
+    /// Hashes and admits what was written: only the object's digest lets it in.
+    async fn commit(admission: Box<dyn Admission>) -> Result<()> {
+        tokio::task::spawn_blocking(move || admission.commit())
+            .await
+            .map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })?
+    }
+
+    /// The object from the volume, else the origin.
+    async fn through_tiers(self: &Arc<Self>, task: &Arc<Task>, mut admission: Box<dyn Admission>, permit: Slot) -> Result<Tier> {
         let mut replace = false;
         if let Some(volume) = self.volume.clone().filter(VolumeOrigin::answering) {
             let _reading = self.volume_reads.acquire().await;
             if volume.answering() {
                 task.enter(Phase::Volume);
-                match self.read_file_into(sink, volume.blob(&task.object), Some(&volume)).await {
-                    FileRead::Admitted => {
-                        let (touching, object) = (volume.clone(), task.object.clone());
-                        tokio::task::spawn_blocking(move || touching.touch(&object));
-                        return Ok(Tier::Volume);
-                    }
-                    FileRead::Corrupt(refusal) => {
-                        tracing::info!(object = %task.object.sha256, %refusal, "volume copy refused");
-                        // Bytes kept from an earlier fetch are as suspect as the copy: only a whole
-                        // read of the volume blames it.
-                        replace = task.kept() == 0;
-                        sink.fresh()?;
-                    }
+                match self.read_file(task, &*admission, volume.blob(&task.object), Some(&volume)).await {
+                    FileRead::Done => match Shared::commit(admission).await {
+                        Ok(()) => {
+                            let (touching, object) = (volume.clone(), task.object.clone());
+                            tokio::task::spawn_blocking(move || touching.touch(&object));
+                            return Ok(Tier::Volume);
+                        }
+                        Err(refusal) if refusal.code == Code::OBJECT_ID_MISMATCH => {
+                            tracing::info!(object = %task.object.sha256, %refusal, "volume copy refused");
+                            // Bytes kept from an earlier fetch are as suspect as the copy: only a whole
+                            // read of the volume blames it.
+                            replace = task.kept() == 0;
+                            admission = self.admit(task).await?;
+                        }
+                        Err(refusal) => return Err(refusal),
+                    },
                     FileRead::Absent | FileRead::Stuck(_) => {}
                     FileRead::Failed(refusal) => return Err(refusal),
                 }
             }
         }
-        self.origin_copy(task, sink, permit).await?;
+        self.origin_copy(task, admission, permit).await?;
         if task.origin.public() {
             self.write_back(task.object.clone(), replace);
         }
@@ -705,7 +706,7 @@ impl Shared {
 
     /// The origin's copy. Wrong bytes are asked for once more, from nothing: different wrong bytes
     /// may be the link's, the same twice are the origin's.
-    async fn origin_copy(&self, task: &Arc<Task>, sink: &mut Sink<'_>, permit: OwnedSemaphorePermit) -> Result<()> {
+    async fn origin_copy(&self, task: &Arc<Task>, mut admission: Box<dyn Admission>, permit: Slot) -> Result<()> {
         let (mut permit, mut wrong) = (Some(permit), None::<String>);
         loop {
             task.enter(Phase::Origin);
@@ -714,109 +715,88 @@ impl Shared {
                 return refuse(Code::REF_NOT_FOUND, format!("{}: the origin located nothing", task.object.sha256));
             };
             match &here {
-                Location::File(path) => match self.read_file_into(sink, path.clone(), None).await {
-                    FileRead::Admitted => return Ok(()),
+                Location::File(path) => match self.read_file(task, &*admission, path.clone(), None).await {
+                    FileRead::Done => {}
                     FileRead::Absent => return refuse(Code::REF_NOT_FOUND, format!("{}: absent", path.display())),
-                    // Bytes kept from an earlier fetch are as suspect as the file: read it whole.
-                    FileRead::Corrupt(_) if task.kept() > 0 => {
-                        sink.fresh()?;
-                        continue;
-                    }
-                    FileRead::Corrupt(refusal) | FileRead::Failed(refusal) => return Err(refusal),
                     FileRead::Stuck(why) => return refuse(Code::TRANSFER_FAILED, why),
+                    FileRead::Failed(refusal) => return Err(refusal),
                 },
-                http => self.ranges(task, sink, &http.http().expect("a URL location"), &mut permit).await?,
+                http => self.ranges(task, &*admission, &http.http().expect("a URL location"), &mut permit).await?,
             }
-            match sink.commit().await {
+            match Shared::commit(admission).await {
                 Ok(()) => return Ok(()),
                 Err(refusal) if refusal.code == Code::OBJECT_ID_MISMATCH && wrong.as_ref() != Some(&refusal.detail) => {
                     tracing::info!(object = %task.object.sha256, %refusal, "refused, asked again");
                     wrong = Some(refusal.detail.clone());
-                    sink.fresh()?;
+                    admission = self.admit(task).await?;
                 }
                 Err(refusal) => return Err(refusal),
             }
         }
     }
 
-    /// What `sink` lacks: one request when it is one range or the store keeps no ranges, else every
-    /// `PART` range in a file of its own, side by side, each joining the bytes in order once whole.
-    async fn ranges(&self, task: &Task, sink: &mut Sink<'_>, here: &HttpLocation<'_>, first: &mut Option<OwnedSemaphorePermit>) -> Result<()> {
-        let length = task.object.length;
-        if length - sink.reached <= PART || !sink.keeps() {
-            let _permit = self.request_slot(first).await?;
-            return self.range(task, here, &mut Target::Sink(sink)).await;
-        }
-        sink.flush().await?;
-        let mut parts = Vec::new();
-        let mut at = sink.reached;
-        while at < length {
-            let end = ((at / PART + 1) * PART).min(length);
-            let Some((file, held)) = sink.range(at)? else {
-                return refuse(Code::IO_FAILED, "the store keeps no ranges");
-            };
-            parts.push(Part { at, reached: at + held.min(end - at), end, file: Some(file), buffer: Vec::new() });
-            at = end;
-        }
+    /// What the object lacks, as `PART` ranges side by side, each written at its offset.
+    async fn ranges(&self, task: &Task, admission: &dyn Admission, here: &HttpLocation<'_>, first: &mut Option<Slot>) -> Result<()> {
+        let parts = lacking(&admission.held(), task.object.length)
+            .into_iter()
+            .map(|(from, end)| Part::new(admission, from, end))
+            .collect::<Result<Vec<_>>>()?;
         let mut flying: FuturesUnordered<_> = parts
             .into_iter()
             .map(|mut part| {
                 let first = first.take();
                 async move {
-                    if part.reached < part.end {
-                        let _permit = match first {
-                            Some(permit) => permit,
-                            None => self.request_slot(&mut None).await?,
-                        };
-                        self.range(task, here, &mut Target::Part(&mut part)).await?;
-                    }
-                    Ok::<u64, Refusal>(part.at)
+                    let _permit = match first {
+                        Some(permit) => permit,
+                        None => self.request_slot(&mut None).await?,
+                    };
+                    self.range(task, here, &mut part).await
                 }
             })
             .collect();
-        let mut whole = BTreeSet::new();
         while let Some(done) = flying.next().await {
-            whole.insert(done?);
-            while whole.remove(&sink.reached) {
-                sink.take().await?;
-            }
+            done?;
         }
-        match sink.reached == length {
-            true => Ok(()),
-            // A disk short of space drops ranges: the next fetch asks for them again.
-            false => refuse(Code::TRANSFER_FAILED, format!("{}: a range went missing at {}", task.object.sha256, sink.reached)),
-        }
+        Ok(())
     }
 
     /// A place among the requests in flight: `first` when the task still holds the one it started with.
-    async fn request_slot(&self, first: &mut Option<OwnedSemaphorePermit>) -> Result<OwnedSemaphorePermit> {
-        if let Some(permit) = first.take() {
-            return Ok(permit);
+    async fn request_slot(&self, first: &mut Option<Slot>) -> Result<Slot> {
+        if let Some(slot) = first.take() {
+            return Ok(slot);
         }
-        Arc::clone(&self.requests).acquire_owned().await.map_err(|_| Refusal { code: Code::TRANSFER_FAILED, detail: "the fetcher closed".into() })
+        let permit = Arc::clone(&self.requests).acquire_owned().await.map_err(|_| Refusal { code: Code::TRANSFER_FAILED, detail: "the fetcher closed".into() })?;
+        Ok(Slot(Some(permit), Arc::clone(&self.debt)))
     }
 
-    /// One range into `into`, asked again by the one rule (`ask`) from the byte reached.
-    async fn range(&self, task: &Task, here: &HttpLocation<'_>, into: &mut Target<'_, '_>) -> Result<()> {
-        let (mut backoff, mut attempt, mut still) = (Backoff::new(), 0, 0);
-        let (began, first) = (Instant::now(), into.reached());
+    /// One range, asked again by the one rule (`ask`) from the byte reached. A request far slower than
+    /// the others is restarted, at most `RESTARTS` times (Paul, 10-01: "going super slow we restart it").
+    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part) -> Result<()> {
+        let (mut backoff, mut attempt, mut still, mut restarts) = (Backoff::new(), 0, 0, 0);
+        let (began, first) = (Instant::now(), part.reached);
         loop {
             attempt += 1;
-            let from = into.reached();
-            let (why, wait) = match self.request(task, here, into, attempt).await {
+            let from = part.reached;
+            let failed = self.request(task, here, part, attempt, restarts < RESTARTS).await;
+            let (why, wait, moved) = match failed {
                 Ok(()) => {
-                    {
-                        let mut slowest = lock(&task.slowest);
-                        if began.elapsed() > slowest.0 {
-                            *slowest = (began.elapsed(), into.reached() - first);
-                        }
+                    part.flush().await?;
+                    let took = began.elapsed();
+                    self.ranged(part.reached - first, took);
+                    let mut slowest = lock(&task.slowest);
+                    if took > slowest.0 {
+                        *slowest = (took, part.reached - first);
                     }
-                    return into.flush().await;
+                    return Ok(());
                 }
                 Err(Failed::Fatal(refusal)) => return Err(refusal),
-                Err(Failed::Again(why, wait)) => (why, wait),
+                Err(Failed::Again(why, wait)) => (why, wait, part.reached > from),
+                Err(Failed::Slow(why)) => {
+                    restarts += 1;
+                    self.stats.restarts.fetch_add(1, Ordering::Relaxed);
+                    (why, None, false)
+                }
             };
-            let moved = into.reached() > from;
             still = if moved { 0 } else { still + 1 };
             task.unanswered.store(still, Ordering::Release);
             self.stats.retries.fetch_add(1, Ordering::Relaxed);
@@ -830,10 +810,29 @@ impl Shared {
         }
     }
 
-    /// One GET of what `into` still lacks, its body read to the end.
-    async fn request(&self, task: &Task, here: &HttpLocation<'_>, into: &mut Target<'_, '_>, attempt: u32) -> std::result::Result<(), Failed> {
+    /// A finished range's rate, among the last `SAMPLES`.
+    fn ranged(&self, bytes: u64, took: Duration) {
+        let mut rates = lock(&self.rates);
+        if rates.len() == SAMPLES {
+            rates.pop_front();
+        }
+        rates.push_back(bytes as f64 / took.as_secs_f64().max(1e-3));
+    }
+
+    /// The median rate of the last finished ranges, once there are `SAMPLES / 8` of them.
+    fn median_rate(&self) -> Option<f64> {
+        let mut rates: Vec<f64> = lock(&self.rates).iter().copied().collect();
+        (rates.len() >= SAMPLES / 8).then(|| {
+            rates.sort_by(f64::total_cmp);
+            rates[rates.len() / 2]
+        })
+    }
+
+    /// One GET of what `part` still lacks, its body read to the end. With `restart`, one moving under an
+    /// eighth of the median range rate after `SLOW_AFTER` is dropped, to be asked again.
+    async fn request(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part, attempt: u32, restart: bool) -> std::result::Result<(), Failed> {
         let (object, length) = (&task.object.sha256, task.object.length);
-        let (from, end) = (into.reached(), into.end(length));
+        let (from, end) = (part.reached, part.end);
         // Nothing left to ask: a range past the end is refused (R2: 400 for `bytes=N-(N-1)`).
         if from == end {
             return Ok(());
@@ -851,6 +850,7 @@ impl Shared {
             let _ = task.located.subscribe().wait_for(|located| *located).await;
             delivered = current();
         }
+        let began = Instant::now();
         let asked = match &delivered {
             Some((at, _)) => self.client.get_authorized(at, &ranged, None).await,
             None => self.client.get_authorized(here.url, &[here.headers, &ranged].concat(), here.provider).await,
@@ -865,6 +865,7 @@ impl Shared {
             }
             Err(GetError::Exchange(refusal)) if ask::transient(&refusal) => {
                 tracing::info!(object, range = shown_range, attempt, why = %refusal.detail, "request failed");
+                self.congested();
                 return Err(Failed::Again(refusal.detail, None));
             }
             Err(error) => return Err(Failed::Fatal(error.refusal())),
@@ -876,7 +877,10 @@ impl Shared {
             tracing::warn!(object, status, range = shown_range, attempt, from = shown(&answer.url), %said, "answer not 2xx");
             let why = format!("{object}: {status} from {}; range {shown_range}; said {said:?}", shown(&answer.url));
             let code = match status {
-                _ if ask::weather(status) => return Err(Failed::Again(why, wait)),
+                _ if ask::weather(status) => {
+                    self.congested();
+                    return Err(Failed::Again(why, wait));
+                }
                 // From storage the origin sent us to: the next attempt asks the origin for a fresh link.
                 401 | 403 | 404 | 410 if answer.url != here.url => {
                     *lock(&task.delivery) = None;
@@ -890,57 +894,69 @@ impl Shared {
             return Err(Failed::Fatal(Refusal { code, detail: why }));
         }
         let mismatch = |detail: String| Failed::Fatal(Refusal { code: Code::LENGTH_MISMATCH, detail: format!("{object}: {detail}") });
-        match (status, &mut *into) {
-            (206, _) => {
+        match status {
+            206 => {
                 let got = answer.content_range();
                 if !got.is_some_and(|(first, total)| first == from && total.is_none_or(|t| t == length)) {
                     return Err(mismatch(format!("content-range {got:?} for byte {from}")));
                 }
             }
-            (200, Target::Part(_)) => return Err(mismatch("the origin ignores ranges".into())),
-            (200, Target::Sink(sink)) => {
+            200 if range.is_some() => return Err(mismatch("the origin ignores ranges".into())),
+            200 => {
                 if let Some(sent) = answer.header("content-length").and_then(|v| v.parse::<u64>().ok()).filter(|sent| *sent != length) {
                     return Err(mismatch(format!("{sent} B, not {length}")));
-                }
-                // The origin ignored the range: the object starts over from this answer.
-                if from > 0 {
-                    sink.fresh()?;
                 }
             }
             _ => return Err(mismatch(format!("{status} to a GET"))),
         }
         loop {
             match answer.frame().await {
-                Ok(Some(data)) => into.push(task, &data).await?,
+                Ok(Some(data)) => {
+                    self.stats.received.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    part.push(task, &data).await?
+                }
                 Ok(None) => break,
                 Err(refusal) => {
-                    let at = into.reached();
+                    let at = part.reached;
                     tracing::info!(object, range = shown_range, attempt, at, why = %refusal.detail, "body failed");
+                    self.congested();
                     return Err(Failed::Again(format!("{object}: {} at {at}", refusal.detail), None));
                 }
             }
+            let took = began.elapsed();
+            if restart && took >= SLOW_AFTER {
+                let rate = (part.reached - from) as f64 / took.as_secs_f64();
+                if let Some(median) = self.median_rate().filter(|median| rate < median / 8.0) {
+                    let (at, kbps, median_kbps) = (part.reached, rate / 1e3, median / 1e3);
+                    tracing::info!(object, range = shown_range, attempt, at, kbps, median_kbps, "restart: far slower than the others");
+                    return Err(Failed::Slow(format!("{object}: {kbps:.0} KB/s against a median {median_kbps:.0} KB/s")));
+                }
+            }
         }
-        match into.reached() == into.end(length) {
+        match part.reached == end {
             true => Ok(()),
-            false => Err(Failed::Again(format!("{object}: the body ended at {} of {}", into.reached(), into.end(length)), None)),
+            false => Err(Failed::Again(format!("{object}: the body ended at {} of {end}", part.reached), None)),
         }
     }
 
-    /// `sink`'s object from a file, from the byte it holds. A step that takes `VOLUME_STALL` is
-    /// abandoned, and a volume's abandoned read keeps it out of every fetch until it returns.
-    async fn read_file_into(&self, sink: &mut Sink<'_>, path: PathBuf, volume: Option<&VolumeOrigin>) -> FileRead {
-        let (length, from) = (sink.task.object.length, sink.reached);
+    /// The object read whole from a file. A step that takes `VOLUME_STALL` is abandoned, and a
+    /// volume's abandoned read keeps it out of every fetch until it returns.
+    async fn read_file(&self, task: &Task, admission: &dyn Admission, path: PathBuf, volume: Option<&VolumeOrigin>) -> FileRead {
+        let length = task.object.length;
         let stuck = || FileRead::Stuck(format!("{}: no step in {} s", path.display(), VOLUME_STALL.as_secs()));
+        let mut part = match Part::new(admission, 0, length) {
+            Ok(part) => part,
+            Err(refusal) => return FileRead::Failed(refusal),
+        };
         let opening = path.clone();
         let opened = blocking(
             volume,
             move || -> std::io::Result<std::fs::File> {
-                let mut file = std::fs::File::open(&opening)?;
+                let file = std::fs::File::open(&opening)?;
                 let metadata = file.metadata()?;
                 if !metadata.is_file() || metadata.len() != length {
                     return Err(std::io::ErrorKind::NotFound.into());
                 }
-                file.seek(SeekFrom::Start(from))?;
                 Ok(file)
             },
             tokio::time::sleep(VOLUME_STALL),
@@ -951,8 +967,11 @@ impl Shared {
             Some(Err(_)) => return FileRead::Absent,
             Some(Ok(file)) => file,
         };
-        while sink.reached < length {
-            let want = (length - sink.reached).min(STEP as u64) as usize;
+        // The file's bytes replace whatever an earlier fetch kept, and count as they come.
+        task.received.store(0, Ordering::Release);
+        task.kept.store(0, Ordering::Release);
+        while part.reached < length {
+            let want = (length - part.reached).min(STEP as u64) as usize;
             let step = blocking(
                 volume,
                 move || {
@@ -970,13 +989,12 @@ impl Shared {
                 return FileRead::Absent;
             }
             file = back;
-            if let Err(refusal) = sink.push(&buffer).await {
+            if let Err(refusal) = part.push(task, &buffer).await {
                 return FileRead::Failed(refusal);
             }
         }
-        match sink.commit().await {
-            Ok(()) => FileRead::Admitted,
-            Err(refusal) if refusal.code == Code::OBJECT_ID_MISMATCH => FileRead::Corrupt(refusal),
+        match part.flush().await {
+            Ok(()) => FileRead::Done,
             Err(refusal) => FileRead::Failed(refusal),
         }
     }

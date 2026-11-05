@@ -73,43 +73,29 @@ pub trait ObjectStore: Send + Sync + 'static {
     fn has(&self, object: &ObjectRef) -> bool;
     /// A held object's bytes.
     fn open(&self, object: &ObjectRef) -> std::io::Result<File>;
-    /// The one door for `object`: its bytes in order, then `commit`, which hashes them and
-    /// refuses anything but `object` (`OBJECT_ID_MISMATCH`, naming the digest it got).
+    /// The one door for a fetch of `object`: its bytes at their offsets, then `commit`, which hashes them
+    /// and refuses anything but `object` (`OBJECT_ID_MISMATCH`). A fetch may be cut at any moment: what it
+    /// wrote stays for the next fetch of `object` ([`Admission::held`]).
     fn admit(&self, object: &ObjectRef) -> Result<Box<dyn Admission>>;
     /// Claims `object`'s download among everything sharing this store, until the claim drops. None:
     /// another holds it now.
     fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>>;
-    /// [`admit`](Self::admit) for a fetch, which may be cut at any moment: a store that can keeps its
-    /// bytes for the next fetch of `object`, and hands over what an earlier one left ([`Admission::held`]).
-    fn resume(&self, object: &ObjectRef) -> Result<Box<dyn Admission>> {
-        self.admit(object)
-    }
 }
 
 /// One object on its way into a store.
-pub trait Admission: Send {
-    fn write(&mut self, bytes: &[u8]) -> Result<()>;
+pub trait Admission: Send + Sync {
+    /// What an earlier fetch left: sorted, disjoint `[start, end)` stretches. `commit` judges them too.
+    fn held(&self) -> Vec<(u64, u64)>;
+    /// A writer of bytes at their offsets, one per request.
+    fn writer(&self) -> Result<Box<dyn RangeWrite>>;
     fn commit(self: Box<Self>) -> Result<()>;
-    /// Whether what it holds outlives it, and ranges can be kept ([`range`](Self::range)).
-    fn keeps(&self) -> bool {
-        false
-    }
-    /// What an earlier fetch left: bytes in order, which the next `write` follows, and bytes in
-    /// ranges ahead of them. `commit` judges all of them.
-    fn held(&self) -> (u64, u64) {
-        (0, 0)
-    }
-    /// The file for the range of the object starting at byte `at`, to append to, and its length.
-    fn range(&mut self, _at: u64) -> Result<Option<(File, u64)>> {
-        Ok(None)
-    }
-    /// The finished range starting at the first byte it lacks joins the bytes in order. The bytes
-    /// in order now: the same when there is no such range.
-    fn take(&mut self) -> Result<u64> {
-        refuse(Code::IO_FAILED, "this store keeps no ranges")
-    }
     /// Ends it, nothing kept.
-    fn discard(self: Box<Self>) {}
+    fn discard(self: Box<Self>);
+}
+
+/// Bytes of an object at their offsets.
+pub trait RangeWrite: Send {
+    fn write_at(&mut self, at: u64, bytes: &[u8]) -> Result<()>;
 }
 
 /// Where an object came from.
@@ -151,8 +137,8 @@ impl Landed {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Requests in flight at once, across every object. A request moved 7.5-10 MB/s from R2 on a cpu pod
-    /// (11-04), so 64 held a pull to half the old downloader's ~100 streams.
+    /// The most requests in flight at once, across every object; the ramp reaches it while that pays.
+    /// A request moved 7.5-10 MB/s from R2 on a cpu pod (11-04).
     pub requests: usize,
 }
 
@@ -208,6 +194,7 @@ pub struct Pulled {
 pub struct Stats {
     pub requests: u64,
     pub retries: u64,
+    pub restarts: u64,
     /// Answers that were not 2xx, by status.
     pub statuses: std::collections::BTreeMap<u16, u64>,
     pub volume_written: u64,
@@ -236,6 +223,7 @@ impl Fetcher {
     ) -> Fetcher {
         let shared = Arc::new(Shared::new(store, client, volume, config.requests));
         tokio::spawn(Arc::clone(&shared).dispatch());
+        tokio::spawn(Arc::clone(&shared).pace());
         Fetcher { shared }
     }
 
@@ -248,6 +236,7 @@ impl Fetcher {
         Stats {
             requests: counters.requests.load(Ordering::Relaxed),
             retries: counters.retries.load(Ordering::Relaxed),
+            restarts: counters.restarts.load(Ordering::Relaxed),
             statuses: counters.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
             volume_written: counters.volume_written.load(Ordering::Relaxed),
             volume_skipped: counters.volume_skipped.load(Ordering::Relaxed),

@@ -149,10 +149,10 @@ def check(gate):
     c = st.get('straggler-clean')
     # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138),
     # crawling objects (every ask moves 64 KiB and drips, tfs-141), and many, whose parts come at full speed (tfs-143).
-    # Judged on the outcome: it lands, and a slowed object costs at most about one 4 MiB range at the proxy's drip rate,
-    # read beside its other ranges. No request is asked again for its rate (a standard client, Paul 11-04), so the times
-    # are a new series (`-part4`): the old ones judged restarts and 1 MiB parts.
-    drip = (4 << 20) / 65536
+    # Judged on the outcome: it lands, and a slowed object costs at most about two 4 MiB ranges at the proxy's drip rate
+    # (its ranges share the requests the ramp allows) and three 5 s restarts of a range, not the whole object crawled
+    # (64 MiB at 64 KB/s: 1,024 s). The times are a new series (`-part4`): the old ones judged 1 MiB parts.
+    drip = 2 * (4 << 20) / 65536 + 3 * 5
     for name, case, what in (('straggler-slow', 'straggler', 'stragglers'), ('straggler-cold', 'straggler-cold', 'cold objects'),
                              ('straggler-crawl', 'straggler-crawl', 'crawling objects'),
                              ('straggler-parts', 'straggler-parts', 'parts at full speed')):
