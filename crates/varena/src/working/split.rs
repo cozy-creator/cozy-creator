@@ -124,6 +124,7 @@ pub struct Room {
 }
 
 pub fn room(device: i32) -> Result<Room> {
+    let _timed = crate::diag::T::new(10);
     let owner = initialize_owner(device)?;
     let gate = crate::gate(device)?;
     gate.not_capturing()?;
@@ -522,6 +523,7 @@ pub fn split_select(
     choices: Vec<(String, Vec<usize>)>,
     stream: u64,
 ) -> Result<SplitSelection> {
+    let _timed = crate::diag::T::new(7);
     let result = split_select_inner(device, key, choices, stream);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "split_select_error");
@@ -611,6 +613,7 @@ pub fn split_begin(
     stream: u64,
     plan_generation: Option<u64>,
 ) -> Result<u64> {
+    let _timed = crate::diag::T::new(8);
     let result = split_begin_inner(
         device,
         key,
@@ -818,6 +821,7 @@ pub(super) fn invalidate(state: &mut State, reason: &str) {
 /// Host submission is not completion. Queue eligible candidates under the explicit phase
 /// owner; phase_leave's already-proven completion publishes them without a per-leaf sync.
 pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<SplitObservation> {
+    let _timed = crate::diag::T::new(9);
     let owner = owner(device)?;
     let mut state = owner
         .state
