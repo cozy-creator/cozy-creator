@@ -113,7 +113,8 @@ function useMachines(store: CanvasStore): string[] | null {
   const { client, status } = useConnection()
   const { data, isPending } = useQuery(machinesQuery(client))
   const up = (data?.machines ?? []).filter((machine) => machine.state === "ready" && machine.recorded !== false && !machine.offline && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
-  const rented = up.filter((machine) => machine.kind !== "local")
+  // One still booting takes what's sent to it, which waits for it there.
+  const rented = (data?.machines ?? []).filter((machine) => machine.kind === "rental" && machine.recorded !== false && !machine.offline && (machine.state === "ready" || machine.state === "booting"))
   const names = (rented.length ? rented : up).map((machine) => machine.name)
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
