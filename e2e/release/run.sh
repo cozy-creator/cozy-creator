@@ -46,10 +46,18 @@ trap cleanup EXIT
 # A runner's cancel or timeout signals the script: it exits, so the trap ends the rental.
 trap 'exit 1' INT TERM HUP
 usd() { awk -v m="$1" 'BEGIN { printf "%.2f", m / 1e6 }'; }
-# The rental's GPU time so far at its quoted rate, from when it is ready: a rental is billed from then, and an order can
-# wait an hour for a card (cli-release windows-2025, run 41586979774).
+# What the Hub bills the rental so far, or its provider if that's more, in USD: read, as an order is placed afresh and can
+# land elsewhere than its quote (42018791462, 42024605457). Unread, its GPU time at the quoted rate from ready, when billing
+# starts: an order can wait an hour for a card (cli-release windows-2025, run 41586979774).
 rented_at='' hourly=0
-spent() { awk -v h="$hourly" -v s="$(( $(date +%s) - ${rented_at:-$(date +%s)} ))" 'BEGIN { printf "%.3f", h / 1e6 * s / 3600 }'; }
+spent() {
+  local id billed
+  id=$(jq -r '.rental_id // empty' "$OUT/rental.json" 2> /dev/null)
+  billed=$([ -z "$id" ] || cozy --json machine ls --since 24h 2> /dev/null | jq -er --arg r "$id" \
+    '[.rentals[] | select(.rental_id == $r) | [.spend_usd_micros // 0, .provider_cost_usd_micros // 0] | max][0] / 1e6' 2> /dev/null)
+  [ -n "$billed" ] && { printf '%.3f' "$billed"; return; }
+  awk -v h="$hourly" -v s="$(( $(date +%s) - ${rented_at:-$(date +%s)} ))" 'BEGIN { printf "%.3f", h / 1e6 * s / 3600 }'
+}
 # Every step after the order first holds the rental to --max-usd: past it the suite fails and the trap ends the pod.
 step() {
   echo "::endgroup::"
