@@ -738,6 +738,13 @@ impl Device {
     }
 }
 
+/// SCRATCH, never to land: inside a derive, 0 its whole time, 1 nested uses, 2 their eviction waits.
+pub static DERIVE: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+thread_local! { pub static DERIVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+pub fn derive_probe(at: usize, began: std::time::Instant) {
+    DERIVE[at].fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+}
+
 const MAX_DEVICES: usize = 64;
 static DEVICES: [OnceLock<Device>; MAX_DEVICES] = [const { OnceLock::new() }; MAX_DEVICES];
 static PROCESS: AtomicU32 = AtomicU32::new(0);
@@ -1082,6 +1089,14 @@ impl Region {
     /// `consumer` is live in this primary context and reads nothing before this returns.
     #[allow(unsafe_code)]
     pub unsafe fn use_on(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
+        let nested = DERIVING.with(|on| on.get()).then(std::time::Instant::now);
+        let result = unsafe { self.use_on_inner(consumer) };
+        if let Some(began) = nested { derive_probe(1, began); }
+        result
+    }
+
+    #[allow(unsafe_code)]
+    unsafe fn use_on_inner(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
         let pin = loop {
             // SAFETY: this method's own contract.
             match unsafe { self.prepare_on(consumer) } {

@@ -174,7 +174,12 @@ impl Inner {
                 consumers.declare(consumer).map_err(|error| super::raise(py, error))?;
                 let used = Py::new(py, PyUse::filling(fill, consumers))?;
                 let view = py.import("torch")?.call_method1("from_dlpack", (used.clone_ref(py),))?;
-                let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
+                let began = Instant::now();
+                varena::DERIVING.with(|on| on.set(true));
+                let changed = derive.call1(py, (&view,));
+                varena::DERIVING.with(|on| on.set(false));
+                varena::derive_probe(0, began);
+                let changed = changed?.is_truthy(py)?;
                 let pin = used.borrow(py).finish(py)?;
                 Ok((changed, pin))
             })();

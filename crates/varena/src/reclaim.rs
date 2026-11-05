@@ -232,7 +232,9 @@ impl<'a> Sequence<'a> {
         }
         let hold = crate::enter_producer(self.device)?;
         let events = if wait { first.events.as_slice() } else { &[] };
+        let began = Instant::now();
         wait_outside(self.gpu, events, joining)?;
+        if crate::DERIVING.with(|on| on.get()) { crate::derive_probe(2, began); }
         drop(hold);
         self.weight_pass(want, &classes, wait)?;
         Ok(true)
