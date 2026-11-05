@@ -422,6 +422,8 @@ fn _varena_working_stats(
         ("prefetch_attempts", stats.prefetch_attempts),
         ("prefetch_admissions", stats.prefetch_admissions),
         ("prefetch_declines", stats.prefetch_declines),
+        ("split_decisions", stats.split_decisions),
+        ("split_lookups", stats.split_lookups),
         ("cache_reserved_bytes", stats.cache_reserved_bytes as u64),
         ("cache_mapped_bytes", stats.cache_mapped_bytes as u64),
         ("cache_live_bytes", stats.cache_live_bytes as u64),
