@@ -1246,6 +1246,7 @@ impl Pool {
         self.tenants.lock().unwrap().retain(|_, t|
             !(t.plan == env && t.start == start && gone.contains(t.exact.birth())));
         // Only now is what it held free: an asker waits on this, not on its lock dropping.
+        #[cfg(target_os = "linux")]
         for ledger in self.devices.iter().filter_map(|device| device.ledger.as_ref()) {
             ledger.exited();
         }
