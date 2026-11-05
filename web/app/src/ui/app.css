@@ -842,10 +842,10 @@ code {
 .picture:hover {
   border-color: var(--ember);
 }
-.in-frame .mention-thumbs {
-  padding: 0 12px 10px;
-}
 .mention-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   padding: 0 12px 10px;
 }
 .mention-thumbs:empty {
