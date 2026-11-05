@@ -1867,9 +1867,9 @@ assets:
 YAML
 status "$V" > "$OUT/numbers-status.json" || check "numbers: a person's file was refused: $(cozy project -p "$V" status 2>&1 | tail -c 300)"
 for name in over fits digits zero; do
-  J --arg n "$name" --arg p "sha256:$(eval echo "\$$name")" '[.assets[] | select(.name == $n)][0] | .pinned and (.sha256 | startswith($p))' "$OUT/numbers-status.json" || check "numbers: $name is not its file: $(jq -c --arg n "$name" '.assets[] | select(.name == $n) | {sha256, status}' "$OUT/numbers-status.json")"
+  J --arg n "$name" --arg p "sha256:$(eval echo "\$$name")" '[.assets[] | select(.name == $n)][0] | .pinned and (.files.image.sha256 | startswith($p))' "$OUT/numbers-status.json" || check "numbers: $name is not its file: $(jq -c --arg n "$name" '.assets[] | select(.name == $n) | {files, status}' "$OUT/numbers-status.json")"
 done
-J --arg p "sha256:$fits" --arg z "sha256:$zero" '([.assets[] | select(.name == "hero.image")][0].sha256 | startswith($p)) and ([.assets[] | select(.name == "hero.young.image")][0].sha256 | startswith($z))' "$OUT/numbers-status.json" || check "numbers: an entity's links: $(jq -c '[.assets[] | {name, sha256}]' "$OUT/numbers-status.json")"
+J --arg p "sha256:$fits" --arg z "sha256:$zero" '([.assets[] | select(.name == "hero.image")][0].files.image.sha256 | startswith($p)) and ([.assets[] | select(.name == "hero.young.image")][0].files.image.sha256 | startswith($z))' "$OUT/numbers-status.json" || check "numbers: an entity's links: $(jq -c '[.assets[] | {name, sha256}]' "$OUT/numbers-status.json")"
 J '[.assets[] | select(.name == "reader")][0].inputs != null' "$OUT/numbers-status.json" || check "numbers: what mentions them has no inputs: $(jq -c '.assets[] | select(.name == "reader")' "$OUT/numbers-status.json")"
 ! jq -c .warnings "$OUT/numbers-status.json" | grep -Eq "is not a hash|no file's hash" || check "numbers: warned: $(jq -c .warnings "$OUT/numbers-status.json")"
 cozy project -p "$V" approve zero "$over" > "$OUT/numbers-approve.txt" 2>&1 || check "numbers: approving over one: $(cat "$OUT/numbers-approve.txt")"

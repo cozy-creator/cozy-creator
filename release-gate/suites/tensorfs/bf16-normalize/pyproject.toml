@@ -6,7 +6,7 @@ build-backend = "uv_build"
 name = "ci-bf16-normalize"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.32,<0.34", "tensorfs>=0.15.6,<0.17", "msgspec>=0.19", "numpy>=2,<3"]
+dependencies = ["cozy-runtime>=0.32", "tensorfs>=0.15.6", "msgspec>=0.19", "numpy>=2,<3"]
 
 [project.entry-points."cozy.application"]
 default = "ci_bf16_normalize:app"

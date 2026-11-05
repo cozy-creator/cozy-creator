@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.19.1"
+version = "0.19.6"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -33,6 +33,7 @@ homepage = "https://github.com/cozy-creator/cozy-creator"
 publish = false
 
 [workspace.dependencies]
+backon = { version = "1.6", default-features = false, features = ["std", "tokio-sleep"] }
 calcifer = { path = "crates/calcifer" }
 cli = { path = "crates/cli" }
 executor-protocol = { path = "crates/executor-protocol" }

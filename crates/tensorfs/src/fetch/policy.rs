@@ -191,10 +191,10 @@ pub struct SourcePolicy {
     pub resolved: Resolved,
 }
 
-/// Answers by host and port, each behind its own lock so one lookup serves every caller.
-type Answers = HashMap<(String, u16), Arc<Mutex<Option<Vec<SocketAddr>>>>>;
+/// Answers by host, each behind its own lock so one lookup serves every caller.
+type Answers = HashMap<String, Arc<Mutex<Option<Vec<SocketAddr>>>>>;
 
-/// One resolution per host and port for as long as the policy that made it lives. Callers
+/// One resolution per host for as long as the policy that made it lives. Callers
 /// that ask for a host while it resolves wait for that answer: a pull's 512 requests sent
 /// as many lookups to a pod's Docker resolver at once, which answered some after 4-8 s.
 #[derive(Clone, Default)]
@@ -207,19 +207,13 @@ impl std::fmt::Debug for Resolved {
 }
 
 impl Resolved {
-    fn lookup(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
-        let slot = Arc::clone(
-            self.0
-                .lock()
-                .unwrap()
-                .entry((host.to_string(), port))
-                .or_default(),
-        );
+    fn lookup(&self, host: &str) -> std::io::Result<Vec<SocketAddr>> {
+        let slot = Arc::clone(self.0.lock().unwrap().entry(host.to_string()).or_default());
         let mut answer = slot.lock().unwrap();
         if let Some(addrs) = answer.as_ref() {
             return Ok(addrs.clone());
         }
-        let addrs = resolve(host, port)?;
+        let addrs = resolve(host, 0)?;
         if !addrs.is_empty() {
             *answer = Some(addrs.clone());
         }
@@ -227,8 +221,8 @@ impl Resolved {
     }
 
     /// Answers no connection could use: the next lookup asks the resolver again.
-    pub fn forget(&self, host: &str, port: u16) {
-        self.0.lock().unwrap().remove(&(host.to_string(), port));
+    pub fn forget(&self, host: &str) {
+        self.0.lock().unwrap().remove(host);
     }
 }
 
@@ -289,27 +283,23 @@ impl SourcePolicy {
         Ok((https, host, port, target))
     }
 
-    fn resolve_checked(
-        &self,
-        https: bool,
-        host: String,
-        port: u16,
-        target: String,
-    ) -> Result<CheckedUrl> {
-        let addrs = self
-            .resolved
-            .lookup(&host, port)
-            .map_err(|error| crate::err::Refusal {
-                code: if crate::descriptors::exhausted(&error) {
-                    Code::FD_HEADROOM
-                } else {
-                    Code::HUB_UNREACHABLE
-                },
-                detail: format!(
-                    "{host}: name resolution failed ({error}); an address this module cannot \
-                 check is not an address it will connect to"
-                ),
-            })?;
+    fn resolve_checked(&self, https: bool, host: String, port: u16, target: String) -> Result<CheckedUrl> {
+        let mut addrs = self.addresses_for(&host, https)?;
+        addrs.iter_mut().for_each(|addr| addr.set_port(port));
+        Ok(CheckedUrl { https, host, port, target, addrs })
+    }
+
+    /// Every answer for `host`, each checked: what the client dials (its port set by the URL). The
+    /// scheme was checked with the URL, so a fake-IP answer passes here as it would over https.
+    pub(crate) fn addresses(&self, host: &str) -> Result<Vec<SocketAddr>> {
+        self.addresses_for(host, true)
+    }
+
+    fn addresses_for(&self, host: &str, https: bool) -> Result<Vec<SocketAddr>> {
+        let addrs = self.resolved.lookup(host).map_err(|error| crate::err::Refusal {
+            code: if crate::descriptors::exhausted(&error) { Code::FD_HEADROOM } else { Code::HUB_UNREACHABLE },
+            detail: format!("{host}: name resolution failed ({error}); an address this module cannot check is not an address it will connect to"),
+        })?;
         if addrs.is_empty() {
             return refuse(Code::HUB_UNREACHABLE, format!("{host} resolved to nothing"));
         }
@@ -338,13 +328,7 @@ impl SourcePolicy {
                 }
             }
         }
-        Ok(CheckedUrl {
-            https,
-            host,
-            port,
-            target,
-            addrs,
-        })
+        Ok(addrs)
     }
 }
 

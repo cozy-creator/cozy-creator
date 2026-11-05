@@ -1,6 +1,6 @@
 [package]
 name = "tensorfs"
-version = "0.19.0"
+version = "0.19.2"
 edition = "2021"
 license.workspace = true
 publish.workspace = true
@@ -18,7 +18,7 @@ default = ["store"]
 cuda = ["dep:varena"]
 # `Writer::quantize` and its SVDQ fit: faer and its tree. The wheel's; `cozy` never quantizes.
 quantize = ["store", "dep:faer", "dep:rayon", "dep:pulp", "dep:rand", "dep:rand_chacha", "dep:rand_distr"]
-store = ["dep:hmac", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:tokio-rustls", "dep:hyper", "dep:hyper-util", "dep:tower-service", "dep:async-trait", "dep:http-body-util", "dep:bytes", "dep:futures", "dep:tracing-subscriber"]
+store = ["dep:hmac", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:reqwest", "dep:backon", "dep:async-trait", "dep:bytes", "dep:futures", "dep:tracing-subscriber"]
 
 [dependencies]
 # SVDQ producer revision pins its factorization and random-sketch implementation.
@@ -41,18 +41,15 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2.workspace = true
 thiserror.workspace = true
 rustix = { workspace = true, features = ["net", "event"], optional = true }
-# The one HTTP client (src/fetch/net.rs). rustls is the one TLS stack, used only there.
+# The one HTTP client (src/fetch/net.rs): reqwest, over rustls with the webpki roots.
+reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
-# Requests in flight are tasks, never a thread each: hyper's pooled HTTP/1.1 client over our
-# connector (egress policy, TLS).
+# Requests in flight are tasks, never a thread each.
 tokio = { workspace = true, optional = true }
-tokio-rustls = { workspace = true, optional = true }
-hyper = { workspace = true, features = ["client", "http1"], optional = true }
-hyper-util = { workspace = true, features = ["client-legacy", "http1"], optional = true }
-tower-service = { workspace = true, optional = true }
+# Exponential backoff with jitter between attempts (src/fetch/ask.rs).
+backon = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
-http-body-util = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 futures = { version = "0.3.31", default-features = false, features = ["std", "executor"], optional = true }
 tracing.workspace = true

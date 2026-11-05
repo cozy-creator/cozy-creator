@@ -43,6 +43,12 @@ pub async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     if let Some(found) = usable_ffmpeg(home) {
         return Ok(found);
     }
+    // One fetch here at a time: a cut that needs it now waits for the one a walk began behind it.
+    static FETCHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = FETCHING.lock().await;
+    if let Some(found) = usable_ffmpeg(home) {
+        return Ok(found);
+    }
     let archives = tools::ffmpeg_build();
     if archives.is_empty() {
         return Err(unpinned("ffmpeg"));

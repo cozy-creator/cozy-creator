@@ -278,12 +278,21 @@ impl Machines {
         // A machine can't know what it's called here, and a refusal for its age says what ends it, wherever the run was headed.
         if let (Some(name), Some(reason)) = (row.machine.as_deref(), outcome.reason.as_mut()) {
             reason.message = reason.message.replace("<machine>", name);
+            if reason.next.is_empty() {
+                reason.next = commands(&reason.message);
+            }
             if for_its_age(reason)
                 && let Ok(m) = self.show(name).await
                 && let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version))
             {
                 reason.message += &format!("; {name} runs cozy {}: `{}` brings it up", status.version, bring_up_command(name));
+                reason.next.insert(0, bring_up_command(name));
             }
+            for next in &mut reason.next {
+                *next = next.replace("<machine>", name);
+            }
+            reason.next.dedup();
+            reason.next.truncate(2);
         }
         let Some(name) = row.machine.as_deref().filter(|_| row.kind == wire::Kind::Update && outcome.status == "succeeded") else {
             return outcome;
@@ -328,7 +337,7 @@ impl Machines {
             code: "update_unapplied".into(),
             message: unapplied(&m, &status, &want, line.as_deref()),
             origin: "machine".into(),
-            detail: String::new(),
+            ..Default::default()
         });
         outcome
     }
@@ -500,6 +509,13 @@ fn unapplied(m: &Machine, s: &MachineStatus, want: &[(&str, Value)], line: Optio
         Some(line) => format!("{message}: {}", line.trim()),
         None => message,
     }
+}
+
+/// The exact commands a machine's words name, as it writes them: `cozy …` in backticks, with no
+/// placeholder left.
+fn commands(message: &str) -> Vec<String> {
+    let exact = |said: &&str| said.starts_with("cozy ") && *said != "cozy run" && !said.contains(['<', '…', '{']);
+    message.split('`').skip(1).step_by(2).filter(exact).map(str::to_owned).collect()
 }
 
 /// Whether release `a` is newer than `b`, by their leading dotted numbers.

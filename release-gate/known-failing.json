@@ -38,5 +38,15 @@
    "qwen"
   ],
   "what": "pending fix cr-223 (d6766ae3f, needs a Runtime 0.32.x candidate): the fusion RecursionError on Qwen-Image 2.1's first request"
+ },
+ {
+  "cell": "stock-memory gpu and driver (the execution suite)",
+  "issue": "cr-262",
+  "sku": "*",
+  "cells": [
+   "stock-memory-gpu",
+   "stock-memory-driver"
+  ],
+  "what": "stale probe suspected: drives cozy_runtime.internal.residency directly, budget changed 10-29 (50186e1aa), not ported. gpu: CUDA out of memory on a 2 MiB copy under its 160 MiB budget; driver: ResidencyError, float64 weight under a changed module (41932118525). Parked on the lead's word, 11-04; varena v2 takes it"
  }
 ]

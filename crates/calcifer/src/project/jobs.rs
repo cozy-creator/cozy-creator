@@ -190,6 +190,17 @@ impl Jobs {
         self.publish(&mut held);
     }
 
+    /// The files of a version listed before they landed came, or never will: it's no version then, and its failure says so.
+    pub fn arrived(&self, asset: &str, number: u32, came: bool) {
+        let mut held = self.held.lock().expect("jobs lock");
+        let mine = |job: &Job| job.asset == asset && job.number == Some(number);
+        match came {
+            true => held.ended.iter_mut().filter(|job| mine(job)).for_each(|job| job.why = None),
+            false => held.ended.retain(|job| !mine(job)),
+        }
+        self.publish(&mut held);
+    }
+
     /// Whether `asset` has said `message` already; it has now.
     pub fn warned(&self, asset: &str, message: &str) -> bool {
         !self.held.lock().expect("jobs lock").warned.insert((asset.to_owned(), message.to_owned()))

@@ -137,7 +137,7 @@ def run(payload: Request, ctx: Context) -> Report:
                 output.quantize(source, changed, max_buffer_bytes=256 << 10,
                                 max_new_bytes=allowance, control=tensorfs.ConversionControl())
             except tensorfs.InvalidError as error:
-                assert "recipe changed" in str(error)
+                assert "selected by another conversion" in str(error)
             else:
                 raise AssertionError("resume accepted changed recipe")
             resumed = output.quantize(source, selected, max_buffer_bytes=256 << 10,

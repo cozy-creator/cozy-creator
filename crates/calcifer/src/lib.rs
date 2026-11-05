@@ -94,7 +94,8 @@ pub struct Calcifer {
     /// What asks do once their run's machine completes it, by the ask's key (`hub::after`).
     after: PathBuf,
     /// When this Calcifer opened its store (Unix ms).
-    opened_ms: i64,
+    /// Since when it can have heard from a machine: its start, or this computer's waking.
+    opened_ms: std::sync::atomic::AtomicI64,
 }
 
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
@@ -146,10 +147,9 @@ enum Stop {
 impl From<LinkError> for Stop {
     fn from(e: LinkError) -> Self {
         match e {
-            // A run's reason has only its words: what to do goes in them.
             LinkError::Refused { code, message, remedy, next } => {
-                let message = remedy.into_iter().chain(next.into_iter().map(|next| format!("next: {next}"))).fold(message, |said, more| format!("{said}; {more}"));
-                Stop::Refused(Reason { code, message, ..Default::default() })
+                let message = remedy.into_iter().fold(message, |said, remedy| format!("{said}; {remedy}"));
+                Stop::Refused(Reason { code, message, next, ..Default::default() })
             }
             LinkError::Released(message) => Stop::Released(message),
             LinkError::NoRun => Stop::Lost,
@@ -194,7 +194,7 @@ impl Calcifer {
             warm: Mutex::default(),
             granting: OnceLock::new(),
             after: home.join("after"),
-            opened_ms: store::now_ms(),
+            opened_ms: std::sync::atomic::AtomicI64::new(store::now_ms()),
         });
         calcifer.sweep_inputs()?;
         Ok(calcifer)
@@ -406,13 +406,18 @@ impl Calcifer {
             return None;
         }
         let moved = run.progress.as_ref().map(|p| p.at_ms).filter(|at| *at > 0);
-        let since = moved.or(run.started_at_ms).or(run.accepted_at_ms)?.max(self.opened_ms);
+        let since = moved.or(run.started_at_ms).or(run.accepted_at_ms)?.max(self.opened_ms.load(std::sync::atomic::Ordering::Relaxed));
         let machine = run.machine.clone()?;
         (store::now_ms() - since >= STALLED_MS).then(|| Stalled {
             since_ms: since,
             usd_micros_per_hour: self.machines().and_then(|machines| machines.hourly(&machine)),
             machine,
         })
+    }
+
+    /// This computer slept, or went without a turn: it heard nothing meanwhile, which says nothing of what a run did.
+    pub(crate) fn woke(&self) {
+        self.opened_ms.store(store::now_ms(), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Says once, on its record, that a run stopped moving: where, and what that costs. The run
@@ -695,7 +700,7 @@ impl Calcifer {
                     self.waiting(id, format!("local cannot start: {}", e.message));
                     pause.wait(wake, None).await;
                 } else {
-                    let reason = Reason { code: e.code, message: e.message, ..Default::default() };
+                    let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
                     match self.store.fail(id.as_str(), reason) {
                         Ok(events) => self.publish(id, events),
                         Err(e) => warn!(run = %id, "{e}"),

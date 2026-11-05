@@ -156,17 +156,23 @@ else
   log "tensord: placement not run, $M has ${NGPU:-1} GPU"
 fi
 
-# Output delivery: an output's landing against this computer's own download speed (5.9 MB took 4 min on 10-23).
-link=$(curl -sfL -o /dev/null -w '%{speed_download}' "https://github.com/cozy-creator/cozy-creator/releases/latest/download/cozy-x86_64-unknown-linux-gnu.tar.gz")
+# Output delivery (cl-781): an output's landing against this pod's own link, measured over SSH right after it, so a slow
+# host doesn't read as our transport and a fast one doesn't hide it (5.9 MB took 4 min on 10-23). Bar: half that speed, and 2 s
+# to begin (past landings: 0.1-1.5 s). No measure is no pass.
 "$CLI" --json run -p "$RUN_PROJECT" "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43)) 2>/dev/null \
   | while IFS= read -r l; do jq -c --arg t "$(date +%s.%N)" '. + {at_here: ($t | tonumber)}' <<< "$l" 2>/dev/null; done > "$T/delivery.ndjson"
 end=$(date +%s.%N)
 read -r done_ bytes <<< "$(jq -r 'select(.type == "output_item.done") | "\(.at_here) \(.item.length)"' "$T/delivery.ndjson" | tail -1)"
-python3 - "${done_:-0}" "$end" "${bytes:-0}" "${link:-0}" <<'PY' > "$T/delivery.txt"
+link=$(timeout 40 "$CLI" machine ssh "$M" -- 'head -c 134217728 /dev/urandom' </dev/null 2>"$T/link.err" | python3 -I "$HERE/suites/tensord/link.py")
+python3 - "${done_:-0}" "$end" "${bytes:-0}" "${link:-0}" "$(tail -c 200 "$T/link.err" | tr '\n' ' ')" <<'PY' > "$T/delivery.txt"
 import sys
-done, end, size, link = map(float, sys.argv[1:])
-took = end - done; expect = size / link if link else 0
-print('PASS' if size and took <= 10 * expect + 5 else 'FAIL', f'{size / 1e6:.1f} MB landed in {took:.1f} s; this computer downloads {link / 1e6:.1f} MB/s, so {expect:.1f} s (bar: 10x + 5 s)')
+done, end, size, link = map(float, sys.argv[1:5])
+took = end - done
+if not link:
+    print('FAIL', f'{size / 1e6:.1f} MB landed in {took:.1f} s; no measure of this pod\'s link: {sys.argv[5]}')
+else:
+    expect = size / link
+    print('PASS' if size and took <= 2 * expect + 2 else 'FAIL', f'{size / 1e6:.1f} MB landed in {took:.1f} s; this pod gives {link / 1e6:.1f} MB/s over SSH, so {expect:.1f} s (bar: 2x + 2 s)')
 PY
 read -r v rest < "$T/delivery.txt"; expect tensord-output-delivery "$v" "$rest"
 

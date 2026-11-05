@@ -1,11 +1,12 @@
 # Suite `tensorfs` (gate.sh --suite tensorfs): TensorFS moves weights as fast as before and dedups.
 #   straggler        on this host: `tfs download` of BiRefNet clean and through straggler.py, which drips its first
-#                    objects as a slow storage GET does (10-01): TensorFS must re-ask a straggler, not wait out its tail;
-#                    then with three cold objects, each ask of which sends 2 MiB and drips the rest, as a cold R2
-#                    object stalls again at a later MiB for whoever asks: re-asked every time, however often before
-#                    (tfs-138: one 64 MiB chunk dripped unjudged for 5-8.5 min on a 3090 pod, runs 20867/20878);
-#                    then with three crawling objects, each ask of which sends 64 KiB and drips, as R2's coldest do:
-#                    read as parallel ranges, not crawled through (tfs-141: 15-60 min per chunk, gate 41623354412)
+#                    objects as a slow storage GET does (10-01); then with three cold objects, each ask of which sends
+#                    2 MiB and drips the rest (tfs-138: one 64 MiB chunk dripped for 5-8.5 min, runs 20867/20878); then
+#                    with three crawling objects, each ask of which sends 64 KiB and drips, as R2's coldest do (tfs-141:
+#                    15-60 min per chunk read whole, gate 41623354412); then with sixteen, whose 16 MiB ranges come at
+#                    full speed: many write at once, and no download may hang behind them (tfs-143: gate 41823522538's
+#                    stopped for good at 1207 of 11847 MiB). Each lands within a fixed bar of
+#                    the clean download, whatever the range size (check.py)
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
 #                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
 #                    a scale of 1, as kohya's and ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs, this format,
@@ -17,7 +18,7 @@
 #   download-cut/-resume  new random weights ($TFS_RESUME_MB MiB), uploaded private from this computer's machine, cancelled
 #                    part-way on $M, then downloaded again: only the rest comes, from the Hub. No datacenter volume
 #                    holds them (TensorFS writes back public objects only), so a cache never serves the resume (cl-686)
-#   kill-cut         the same with TensorD killed in place of the cancel, as a crash ends it: a rental only (over SSH).
+#   kill-cut         a rental's only: the same with TensorD killed in place of the cancel, as a crash ends it (kill-at.sh).
 #                    Its stable parent starts it again and the same run goes on, so that run's record is the resume:
 #                    what landed is still there, unfinished chunks too
 #   upload           new random weights (a CozyTensors folder) to a throwaway <account>/ci-tfs-<R>
@@ -43,25 +44,33 @@ tfs_step() {
   printf '%s\t%s\t%s\n' "$name" "$(cat "$T/$name.number")" "$(( $(date +%s%3N) - t0 ))" >> "$T/steps.tsv"
   log "tensorfs $name: run $(cat "$T/$name.number") $(run_get "$T" "$name" .status)"
 }
-# tfs_cancel <run>: the run cancelled. tfs_kill: TensorD on $M killed under it: the service, the child of the pod's PID 1,
-# which starts it again; the follower is told by the machine going away.
-tfs_cancel() { "$CLI" run cancel "$1" -y >/dev/null 2>&1; }
-tfs_kill() {
-  "$CLI" machine ssh "$M" -- 'kill -9 $(ps -eo pid=,ppid=,args= | awk "\$2 == 1 && /machine serve/ {print \$1}")' </dev/null
-}
-# tfs_cut <name> <stage> <fraction> <cancel|kill> <cozy args...>: the command, cut so once its <stage> progress passes
-# the fraction; the bytes it had moved by then go in <name>.cut.
+# tfs_cut <name> <stage> <fraction> <cozy args...>: the command, cancelled once its <stage> progress passes the
+# fraction; the bytes it had moved by then go in <name>.cut.
 tfs_cut() {
-  local name=$1 stage=$2 frac=$3 how=$4 n moved=; shift 4
+  local name=$1 stage=$2 frac=$3 n moved=; shift 3
   n=$(run_submit "$T" "$name" "$@")
   while [ -n "$n" ] && kill -0 "$(cat "$T/$name.pid")" 2>/dev/null; do
     moved=$(python3 -I "$HERE/suites/tensorfs/check.py" --past "$T/$name.ndjson" "$stage" "$frac")
-    if [ -n "$moved" ]; then "tfs_$how" "$n"; echo "$moved" > "$T/$name.cut"; break; fi
+    if [ -n "$moved" ]; then "$CLI" run cancel "$n" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
     sleep 0.5
   done
   run_wait "$T" "$name"
   printf '%s\t%s\t\n' "$name" "${n:-none}" >> "$T/steps.tsv"
-  log "tensorfs $name: run ${n:-none}: $how at $(cat "$T/$name.cut" 2>/dev/null || echo '?') bytes"
+  log "tensorfs $name: run ${n:-none} cancelled at $(cat "$T/$name.cut" 2>/dev/null || echo '?') bytes"
+}
+# tfs_kill_cut <name> <bytes> <stage> <cozy args...>: the command, with kill-at.sh armed on $M to kill TensorD <bytes> into it. Its
+# parent starts TensorD again and the same run goes on, followed here to its end; the bytes it had moved when the machine
+# went go in <name>.cut. What the machine said across the kill stays in <name>.machine, should it not come back.
+tfs_kill_cut() {
+  local name=$1 bytes=$2 stage=$3 tail; shift 3
+  "$CLI" machine ssh "$M" -- 'cat > /tmp/kill-at.sh' <"$HERE/suites/tensorfs/kill-at.sh" || return 1
+  "$CLI" machine ssh "$M" -- "setsid sh /tmp/kill-at.sh $bytes >/tmp/kill-at.log 2>&1 </dev/null & echo \$! >/tmp/kill-at.pid" </dev/null || return 1
+  "$CLI" machine ssh "$M" -- 'tail -f -s 0.1 ---disable-inotify -n 0 /var/lib/cozy/machine/logs/tensord.*.log' </dev/null >"$T/$name.machine" 2>&1 & tail=$!
+  tfs_step "$name" "$@"
+  kill "$tail" 2>/dev/null
+  "$CLI" machine ssh "$M" -- 'kill $(cat /tmp/kill-at.pid) 2>/dev/null; cat /tmp/kill-at.log' </dev/null >>"$T/$name.machine" 2>&1
+  python3 -I "$HERE/suites/tensorfs/check.py" --dropped "$T/$name.ndjson" "$stage" > "$T/$name.cut"
+  log "tensorfs $name: TensorD killed at $(cat "$T/$name.cut") bytes"
 }
 # tfs_fixture <step> <dest>: new random weights uploaded private from this computer's machine; their commit in TFS_COMMIT.
 tfs_fixture() {
@@ -90,16 +99,25 @@ tfs_weights() {
   TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$1.safetensors" --converter as-is --name "local/$(basename "$1")" >/dev/null &&
     TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs export "local/$(basename "$1")" "$1" >/dev/null
 }
-# tfs_straggler <name> <stragglers> [<burst> [<min>]]: `tfs download` of BiRefNet into a store of its own, through straggler.py.
+# tfs_straggler <name> <stragglers> [<burst> [<min> [fast]]]: `tfs download` of BiRefNet into a store of its own, through straggler.py.
 tfs_straggler() {
-  local port pid t0
+  local port pid t0 tfs seen since now
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-  python3 -I "$HERE/suites/tensorfs/straggler.py" "$port" "${HUB_URL:-https://tensorhub.com}" "$2" 65536 "$T/$1.proxy" ${3:-} ${4:-} &
+  python3 -I "$HERE/suites/tensorfs/straggler.py" "$port" "${HUB_URL:-https://tensorhub.com}" "$2" 65536 "$T/$1.proxy" ${3:-} ${4:-} ${5:-} &
   pid=$!
   for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.1; done
   t0=$(date +%s%3N)
-  TENSORFS_HOME=$T/$1-store uv tool run -q --from "${TWF:-tensorfs}" tfs --endpoint "http://127.0.0.1:$port" --json \
-    download zhengpeng7/birefnet --dir "$T/$1-out" >"$T/$1.out" 2>"$T/$1.err"
+  TENSORFS_HOME=$T/$1-store setsid uv tool run -q --from "${TWF:-tensorfs}" tfs --endpoint "http://127.0.0.1:$port" --json \
+    download zhengpeng7/birefnet --dir "$T/$1-out" >"$T/$1.out" 2>"$T/$1.err" & tfs=$!
+  # A hang is this case's failure, not the gate's: no byte into its store for 3 min ends it.
+  seen= since=$SECONDS
+  while kill -0 "$tfs" 2>/dev/null; do
+    now=$(du -sb "$T/$1-store" 2>/dev/null | cut -f1)
+    [ "$now" = "$seen" ] || { seen=$now since=$SECONDS; }
+    if (( SECONDS - since >= 180 )); then echo "no byte into its store for 3 min" >> "$T/$1.err"; kill -9 -- "-$tfs"; break; fi
+    sleep 2
+  done
+  wait "$tfs"
   printf '%s\t%s\t%s\n' "$1" "$?" "$(( $(date +%s%3N) - t0 ))" >> "$T/straggler.tsv"
   kill "$pid"; wait "$pid" 2>/dev/null || true  # the proxy ends on TERM
   rm -rf "$T/$1-store" "$T/$1-out"
@@ -157,19 +175,19 @@ if tfs_case download; then
   d=$WHO/ci-tfs-resume-$R
   tfs_fixture download-fixture "$d"
   if [ -n "${TFS_COMMIT:-}" ]; then
-    tfs_cut download-cut download 0.3 cancel model download "$d@$TFS_COMMIT" --on "$M" -y
+    tfs_cut download-cut download 0.3 model download "$d@$TFS_COMMIT" --on "$M" -y
     tfs_step download-resume model download "$d@$TFS_COMMIT" --on "$M" -y
   else
     expect tensorfs-download-resume FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" download-fixture .reason.message)"
   fi
   tfs_cleanup
 fi
-# A rental's only: `--on` a machine that is someone's own never has its service killed.
-if [ -z "$ON" ] && tfs_case kill; then
+# A rental's only (gate.sh rents it with SSH): a machine that is someone's own never has its service killed.
+if [ -n "${SSH:-}" ] && tfs_case kill; then
   d=$WHO/ci-tfs-kill-$R
   tfs_fixture kill-fixture "$d"
   if [ -n "${TFS_COMMIT:-}" ]; then
-    tfs_cut kill-cut download 0.3 kill model download "$d@$TFS_COMMIT" --on "$M" -y
+    tfs_kill_cut kill-cut $((TFS_RESUME_MB * 3 / 10 << 20)) download model download "$d@$TFS_COMMIT" --on "$M" -y
   else
     expect tensorfs-kill-cut FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" kill-fixture .reason.message)"
   fi
@@ -188,7 +206,7 @@ elif [ -n "$WHO" ] && tfs_weights "$T/up-a" "$TFS_UPLOAD_MB" && tfs_weights "$T/
   d=$WHO/ci-tfs-$R; TFS_DESTS+=("$d")
   tfs_step upload model upload "$T/up-a" "$d" --lane bf16 --on "$M" -y
   tfs_step upload-again model upload "$T/up-a" "$d" --lane bf16-b --on "$M" -y
-  tfs_cut upload-cut "uploading to" 0.3 cancel model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
+  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
   tfs_step upload-resume model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
   tfs_cleanup
 else
@@ -214,5 +232,6 @@ if tfs_case straggler; then
   tfs_straggler straggler-slow 3
   tfs_straggler straggler-cold 3 2097152
   tfs_straggler straggler-crawl 3 65536 8388608
+  tfs_straggler straggler-parts 16 65536 2097152 fast
 fi
 if tfs_case lora-alpha; then tfs_lora_alpha; fi
