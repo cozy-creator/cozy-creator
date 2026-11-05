@@ -3,7 +3,7 @@
 # h asks a GPU of its own. The computer that asks is a second user on the pod, with its own home and Calcifer, reaching the pod's TensorD
 # over fixtures/client-gone/link.py, a line this session throttles and cuts. X is the pod's own Calcifer, root's, which its TensorD keeps.
 #   a. Handed over, then that computer gone for real: the line down and its CLI and Calcifer `kill -9`'d once X walks. X makes a still, a
-#      shot reading it, a clip, a cut of it and a frame of it, each once. The line back at 200 KB/s and Calcifer started: `status` says
+#      shot reading it, a clip, a cut of it and a frame of it, each once. The line back at 1 MB/s and Calcifer started: `status` says
 #      what isn't here yet and until when, then everything X made comes down, its bytes its hash.
 #   k. Kills during the hand-off: a 25 MB plate imported there, the line down for the first ask, then at 300 KB/s while that computer's
 #      Calcifer is killed every few seconds wherever the hand-off is (said from its walk file each time) and started again. X makes the shot
@@ -14,7 +14,7 @@
 #   cozy        the cozy under test, for `machine update --tensord`: a version, a file or URL#sha256= (default: the session's)
 #   runtime     a Runtime for the pod with `cozy`: a wheel or a version (default: the pod's)
 #   parts       which of a, k, e, h run (default a,k,e)
-#   h3          the function h renders its shot with (default minimax-h3/generate_turbo)
+#   h3          the function h renders its shot with (default minimax-h3/generate, Turbo)
 #   rent_lock   a file to hold while ordering, where several sessions rent from one computer
 #   traffic_gb  GB the provider bills (default 12)
 #   seconds     the least time the cap must buy (default 3600)
@@ -22,7 +22,7 @@
 FIX=$(cd "$(dirname "$0")/fixtures/client-gone" && pwd)
 [ -f "$FIX/art.py" ] && [ -f "$FIX/link.py" ] || fail "no fixture checkout"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
-UNDER=$(param cozy "$(command -v cozy)") LOCK=$(param rent_lock) RUNTIME=$(param runtime) H3=$(param h3 minimax-h3/generate_turbo) LINK=7777
+UNDER=$(param cozy "$(command -v cozy)") LOCK=$(param rent_lock) RUNTIME=$(param runtime) H3=$(param h3 minimax-h3/generate) LINK=7777
 PARTS=,$(param parts a,k,e),
 has() { [[ $PARTS == *",$1,"* ]]; }
 RENT_ARGS=--ssh
@@ -60,8 +60,10 @@ write /home/client/art.py < "$FIX/art.py" || fail "copy art"
 
 step update machine update "$NAME" --tensord "$UNDER" ${RUNTIME:+--runtime "$RUNTIME"} -y || fail "update to $UNDER"
 # A command in a shell there restarts the pod's Calcifer on the new binary.
+was=$(sh 'grep -o "\"pid\":[0-9]*" /root/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2')
 sh 'cozy machine show local --json' > "$OUT/local.json" || fail "cozy machine show local"
-say "the pod runs $(sh 'cozy --version'); its Calcifer is pid $(sh 'grep -o "\"pid\":[0-9]*" /root/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2')"
+now=$(sh 'grep -o "\"pid\":[0-9]*" /root/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2')
+say "the pod runs $(sh 'cozy --version'); its Calcifer was pid $was, is $now, running $(sh "readlink /proc/$now/exe")"
 ADDRESS=$(jq -r .address "$OUT/local.json") FINGERPRINT=$(jq -r .fingerprint "$OUT/local.json")
 [ -n "$ADDRESS" ] && [ "$ADDRESS" != null ] || fail "local has no address: $(head -c 300 "$OUT/local.json")"
 sh "echo up > /tmp/link; nohup python3 /root/link.py $LINK ${ADDRESS%:*} ${ADDRESS##*:} /tmp/link > /tmp/link.log 2>&1 < /dev/null & echo started" > /dev/null
@@ -96,12 +98,12 @@ collected() {
   return $ok
 }
 
-# once <asset> <n>: X's copy holds n versions of it, and X's runs that made them are n, none twice.
+# once <asset> <function> <n>: X's copy holds n versions of it, and X ran its function n times, none twice.
 once() {
   local versions runs
   versions=$(x "--json project status" | jq --arg a "$1" '[.assets[] | select(.name == $a) | .versions] | first // 0')
-  runs=$(x "--json project status" | jq --arg a "$1" '[.assets[] | select(.name == $a) | .prefixes[]?.run] | unique | length')
-  [ "$versions" = "$2" ] && [ "$runs" = "$2" ] || fail "$TAG: $1 has $versions versions from $runs runs on X, not $2"
+  runs=$(x "--json run ls --limit 200" | jq --arg f "$2" --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and (.target | split("@")[0] | split("/")[-1] == $f))] | length')
+  [ "$versions" = "$3" ] && [ "$runs" = "$3" ] || fail "$TAG: $1 has $versions versions, and X ran $2 $runs times, not $3"
 }
 
 part_a() {
@@ -120,7 +122,7 @@ assets:
     instructions: reads <still> $RANDOM
   clip:
     tool: ./art.py/film
-    seconds: 6
+    seconds: 3
     instructions: noise $RANDOM
   edit:
     tool: cozy/edit
@@ -156,8 +158,10 @@ YAML
   done
   x "--json project status" > "$OUT/a-x-status.json"
   say "a: X made all five in $t s with nobody here; its idle clock at its least had $([ "$least" = 999999999 ] && echo 'never run' || echo "${least} s left")"
-  once still 1; once shot 1; once clip 1
-  line "up 200000"
+  once still make 1; once shot read 1; once clip film 1
+  line "up 1000000"
+  c "project status" > /dev/null 2>&1
+  sleep 8
   c "project status" > "$OUT/a-back.txt" 2>&1
   say "a: this computer back: $(grep -E 'on box|rendering on|all here' "$OUT/a-back.txt" | head -2 | paste -sd'|')"
   grep -qE 'on box until [0-9]{2}:[0-9]{2}|rendering on box' "$OUT/a-back.txt" || fail "a: status says nothing of where its render is"
@@ -212,7 +216,7 @@ YAML
     [ $t -lt 300 ] || fail "k: X didn't make shotk in $t s"
     t=$((t + 5)); sleep 5
   done
-  once shotk 1
+  once shotk read 1
   local plate; plate=$(x "--json project status" | jq -r '[.assets[] | select(.name == "plate") | .sha256] | first')
   [ "sha256:$(sh "sha256sum /root/.cozy/projects/k-*/files/${plate#sha256:}.png" | cut -c1-64)" = "$plate" ] || fail "k: the plate on X is not its hash"
   x "--json project status" > "$OUT/k-x-status.json"
