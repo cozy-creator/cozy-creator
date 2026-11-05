@@ -1224,7 +1224,17 @@ impl Folder {
         })
     }
 
-    /// The file at `source` (an absolute path, or an `http(s)` URL) kept as a real file
+    /// The held file at `at` put where project.lock has it, whatever it is. Err: why not.
+    pub fn place_held(&self, at: &Path, path: &str) -> Result<(), String> {
+        let to = self.path(path);
+        let placed = to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| match std::fs::rename(at, &to) {
+            Ok(()) => Ok(()),
+            // Another disk.
+            Err(_) => std::fs::copy(at, &to).and_then(|_| std::fs::remove_file(at)),
+        });
+        placed.map_err(|e| format!("{}: {e}", to.display()))
+    }
+
     /// `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock. Err: why not.
     pub async fn import(&self, source: &str) -> Result<Kept, String> {
         if is_url(source) {

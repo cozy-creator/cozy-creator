@@ -170,6 +170,9 @@ pub struct State {
     /// Another machine holds its render, and what of it isn't here yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldBy>,
+    /// What kept its last render from reaching a machine, each once, until another is asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsent: Vec<Error>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -150,6 +150,8 @@ struct Project {
     heard: AtomicI64,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
+    /// What kept its last render from reaching a machine (`State::unsent`).
+    unsent: Mutex<Vec<Error>>,
 }
 
 pub fn routes() -> Router<Arc<Api>> {
@@ -224,6 +226,7 @@ impl Projects {
                     collecting: Mutex::default(),
                     heard: AtomicI64::new(0),
                     said: Mutex::default(),
+                    unsent: Mutex::default(),
                 })
             })
             .clone();
@@ -911,13 +914,14 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), held: takeover::held_by(&api, &project) }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), held: takeover::held_by(&api, &project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
     state.held = takeover::held_by(&api, &project);
+    state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
     Ok(Json(state))
 }
