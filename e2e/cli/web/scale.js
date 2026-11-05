@@ -36,9 +36,10 @@ const BARS = {
   open_settled_s: 10,
   edit_shows_ms: 1500,
   landing_shows_ms: 1500,
-  // A runner draws with no GPU, so a pan is held to the same pan of a project of 36, the same boxes on screen, on the same runner: size adds nothing.
-  pan_times_small: 1.5,
-  pan_slack_ms: 17,
+  // What a pan costs the page itself, per frame, against the same pan of a project of 36, the same boxes on screen, on the same runner: size adds
+  // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
+  pan_work_times_small: 1.5,
+  pan_work_slack_ms: 2,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
@@ -263,11 +264,17 @@ function calciferMb() {
     const images = [...document.querySelectorAll('.react-flow__node .media img')];
     return images.length > 0 && images.every((image) => image.complete);
   }), Boolean, 120_000);
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Performance.enable');
+  /** How long the page's own thread has been busy, in ms. What the compositor and a software rasterizer take isn't in this. */
+  const busy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
   const measuredPan = async () => {
     await drawn();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
+    const from = await busy();
     const moving = summary(await panning(3000));
-    return { still, moving, mounted: await page.locator('.react-flow__node').count() };
+    const work_ms_per_frame = +(((await busy()) - from) / moving.frames).toFixed(2);
+    return { still, moving, work_ms_per_frame, mounted: await page.locator('.react-flow__node').count() };
   };
 
   // The same pan of a small project, for what this runner draws whatever a project holds.
@@ -292,8 +299,8 @@ function calciferMb() {
   memory.open = calciferMb();
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
   numbers.pan_big = await measuredPan();
-  const allowed = numbers.pan_small.moving.p95_ms * BARS.pan_times_small + BARS.pan_slack_ms;
-  check('size_adds_nothing_to_a_pan', numbers.pan_big.moving.p95_ms <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
+  const allowed = numbers.pan_small.work_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
+  check('size_adds_nothing_to_a_pan', numbers.pan_big.work_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');
@@ -311,14 +318,18 @@ function calciferMb() {
   const before = { ...reads };
   const shownEdit = outOfDate(edited);
   const edit = await project('set', edited, 'instructions=ONE EDIT FROM THE CLI');
-  numbers.set_command_s = seconds(edit.ms);
-  check('a_command_is_quick', numbers.set_command_s <= BARS.command_s, numbers.set_command_s);
   numbers.edit_shows_ms = (await shownEdit) - edit.at;
   check('one_edit_shows_live', numbers.edit_shows_ms <= BARS.edit_shows_ms, numbers.edit_shows_ms);
   await page.waitForTimeout(600);
   numbers.edit_reads = { whole: reads.whole - before.whole, heads: reads.heads - before.heads, assets: reads.assets - before.assets };
   check('one_edit_reads_only_it', numbers.edit_reads.whole === 0 && numbers.edit_reads.assets >= 1 && numbers.edit_reads.assets <= 3, numbers.edit_reads);
   check('one_edit_read_is_right', readAlone.get(edited)?.words === 'ONE EDIT FROM THE CLI', readAlone.get(edited));
+  // The middle of five: one alone on a Windows runner has taken 2.3 s, in a run whose edits averaged 0.8 s, and the others are what a person gets.
+  const sets = [edit.ms];
+  for (let turn = 1; turn < 5; turn++) sets.push((await project('set', edited, `instructions=EDIT ${turn} FROM THE CLI`)).ms);
+  numbers.set_commands_s = sets.map(seconds);
+  numbers.set_command_s = seconds([...sets].sort((a, b) => a - b)[2]);
+  check('a_command_is_quick', numbers.set_command_s <= BARS.command_s, numbers.set_commands_s);
 
   // A hand's save, the same way.
   const byHand = onScreen[1] ?? edited;
@@ -339,7 +350,7 @@ function calciferMb() {
   }, edited);
   const [movedX, movedY] = [fromX + 30, fromY + 30];
   const shownMove = within('moved', page.evaluate(([name, x, y]) => window.placedAt(name, x, y), [edited, movedX, movedY]));
-  const move = await project('canvas', edited, String(movedX), String(movedY));
+  const move = await project('set', edited, `at=${movedX},${movedY}`);
   numbers.move_command_s = seconds(move.ms);
   numbers.move_shows_ms = (await shownMove) - move.at;
   check('a_move_shows_live', numbers.move_shows_ms <= BARS.edit_shows_ms, numbers.move_shows_ms);
@@ -368,7 +379,7 @@ function calciferMb() {
     const rect = await page.evaluate((name) => window.boxOf(name).getBoundingClientRect().toJSON(), onScreen.at(-1));
     const viewport = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).toJSON());
     const [x, y] = [Math.round((rect.right + 20 - viewport.e) / viewport.a), Math.round((rect.top - viewport.f) / viewport.a)];
-    await project('add', `${TOOL}/still`, 'scale_shot', '--at', `${x},${y},200`, 'instructions=A landing at scale');
+    await project('add', `${TOOL}/still`, 'scale_shot', `at=${x},${y},200`, 'instructions=A landing at scale');
     await box('scale_shot').waitFor();
     const landing = within('its picture', page.evaluate((name) => window.pictureOf(name), 'scale_shot'), 300_000);
     const render = await project('render', 'scale_shot', '--on', 'local');

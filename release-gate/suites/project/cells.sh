@@ -31,7 +31,7 @@ imported() {
 }
 render() { local c=$1 P=$2; shift 2; "$CLI" project -p "$P" render "$@" --on "$M" > "$c.log" 2>&1; }
 # approved <folder> <asset>: the record of its newest version, as JSON.
-approved() { "$CLI" --json project -p "$1" show "$2" | jq -c '(.versions[-1] // {}) | . + {files: (.files | map_values(.sha256)), run: (.runs[-1] // null)}'; }
+approved() { "$CLI" --json project -p "$1" status "$2" | jq -c '(.versions[-1] // {}) | . + {files: (.files | map_values(.sha256)), run: (.runs[-1] // null)}'; }
 # file <folder> <version record's sha256>: its path.
 file_of() { [ -n "$2" ] && (cd "$1" && ls "files/${2#sha256:}"* | head -1); }
 # made <folder> <asset>: the path of the file people mean by its newest version.

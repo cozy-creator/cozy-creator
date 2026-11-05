@@ -437,7 +437,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   Makes any tool whose reads settled, with no machine.
 - `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale}`. Takes its `approved` away. A constant, nothing but its file, keeps it (`400 project_edit`).
 - `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions, queued?}`. With `from` under `assets:` and `to` free, project.yaml's key and every `<from>` change. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names now with no versions (`409 rename_taken`), and its canvas row moves. `400 project_name` when `to` can't be a name. While it renders, `queued`: project.lock's part happens as that walk ends, unless `to` has versions by then. Nothing on disk moves. What reads it goes out of date unless pinned.
-- `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, deleted?, next?}`. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too, and canvas rows nothing names (`409 project_busy` while it renders). Never automatic.
+- `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, deleted?, next?, lost?}`. `lost` says why `yes` would be `409 project_history_lost`: project.lock is gone, can't be read, or lists no version or run while `files/` holds what nothing names. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too, and canvas rows nothing names (`409 project_busy` while it renders). Never automatic.
 - `POST /v1/projects/{id}/push` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Sends every file
   project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. A file over 5 GiB goes as 1 GiB parts,
   each its own object, which its first push lists in project.lock under the file's `parts`. `transferred` on the events ends it.
@@ -470,16 +470,13 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project push`, `pull` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull`; exits 3 when `skipped` names a file |
 | `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
 | `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
-| `cozy project import <file\|hash> [name] [--description <words>] [--at x,y[,w]]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/imports` |
+| `cozy project import <file\|hash> [name] [--description <words>]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/imports` |
 | `cozy project upgrade [--status <file>]` | No route: the folder's files, here, in this process, for a Calcifer of this format can't read them yet |
-| `cozy project tools [words]` | `POST /v1/projects {path}` if in one, `GET /v1/tools` |
-| `cozy project add <tool\|text> [name] [field=value…]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/assets` |
-| `cozy project set <name> field=value…` | `POST /v1/projects {path}`, `PATCH /v1/projects/{id}/assets/{name}`; `--if-match` its `If-Match`, `tool=` its `tool` |
-| `cozy project show <name>` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/assets/{name}` |
+| `cozy project add <tool\|text> [name] [field=value…]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/assets`; `at=` its `at` |
+| `cozy project set <name> field=value…` | `POST /v1/projects {path}`, `PATCH /v1/projects/{id}/assets/{name}`, `tool=` its `tool`; `at=` `GET` it, then `PATCH /v1/projects/{id}/canvas` |
+| `cozy project status <name>` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/assets/{name}` |
 | `cozy project delete <name>…` | `POST /v1/projects {path}`, `DELETE /v1/projects/{id}/assets/{name}`; prints the `restore` line, its `text` and `at` as one word |
 | `cozy project restore <name> <kept>` | `POST /v1/projects {path}`, `PUT /v1/projects/{id}/assets/{name}` |
-| `cozy project canvas [name [x y [w]]]` | `POST /v1/projects {path}`, `GET` or `PATCH /v1/projects/{id}/canvas` |
-| `cozy project caption <name>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/assets/{name}/caption` |
 | `cozy project unapprove <name>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/unpin` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events` |

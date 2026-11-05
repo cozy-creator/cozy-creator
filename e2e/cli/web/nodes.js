@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes, pointAt } = require('./page');
+const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes, pointAt, inView } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -58,7 +58,7 @@ function linesOf(text, name) {
     const url = new URL(answer.url());
     // HEAD on a file asks whether it's held, and no is an answer: what then doesn't get sent shows on a PUT or at the import.
     if (answer.status() < 400 || (answer.request().method() === 'HEAD' && url.pathname.startsWith('/v1/files/'))) return;
-    const refusal = { status: answer.status(), url: url.pathname, during };
+    const refusal = { status: answer.status(), method: answer.request().method(), url: url.pathname, during };
     refused.push(refusal);
     answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
   });
@@ -97,12 +97,14 @@ function linesOf(text, name) {
     await away();
     await pointAt(page, box(name).locator('.nm'));
     await box(name).locator('.head [aria-label=Delete]').waitFor();
+    await inView(page, box(name));
   };
   // Behind its More, opened if it isn't.
   const more = async (name) => {
     await open(name);
     if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
     await box(name).locator('.edit-more').waitFor();
+    await inView(page, box(name));
   };
   await page.evaluate(() => { window.notReloaded = true; });
 
@@ -279,6 +281,7 @@ function linesOf(text, name) {
   // Nothing has moved the pointer since it opened More. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
   await page.waitForTimeout(300);
   check('a_box_in_use_stays_open', (await knobs.locator('.edit-more').count()) === 1, await boxLog(page));
+  check('the_canvas_cannot_scroll', (await page.locator('.react-flow').evaluate((el) => getComputedStyle(el).overflow)) === 'clip');
   await more('knobs');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field(/turbo: (\S+)/), (value) => value === 'false');
@@ -515,27 +518,28 @@ function linesOf(text, name) {
     check('a_default_isnt_written', !(linesOf(yaml(), 'asker') ?? '').includes('bright'), linesOf(yaml(), 'asker'));
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
-    await open('source-b');
+    await open('Other');
     const beforeCaption = yaml();
-    await box('source-b').locator('button:text-is("Caption")').click();
-    const typed = box('source-b').locator('.desc-open .mention-text');
+    await box('Other').locator('button:text-is("Caption")').click();
+    const typed = box('Other').locator('.desc-open .mention-text');
     await typed.waitFor({ timeout: FIRST_RUN_MS });
     check('caption_in_the_field', (await typed.innerText()).includes('THE-PACKAGE-ASKS'), await typed.innerText());
     check('caption_not_written', yaml() === beforeCaption);
-    await box('source-b').locator('.desc-open button:text-is("Save")').click();
-    await until('its description in the file', async () => (await of('source-b')).fields?.description ?? '', (text) => text.includes('THE-PACKAGE-ASKS'));
+    await box('Other').locator('.desc-open button:text-is("Save")').click();
+    await until('its description in the file', async () => (await of('Other')).fields?.description ?? '', (text) => text.includes('THE-PACKAGE-ASKS'));
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const heldFile = (await of('Sheet')).sha256;
+    const filesThen = readdirSync(join(folder, 'files')).length;
     await open('source-a');
     await box('source-a').locator('.head [aria-label=Delete]').click();
     await until('gone at once', () => box('source-a').count(), (n) => n === 0);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
-    const noted = await page.locator('.note .line').allTextContents();
-    check('approved_reader_says_nothing', noted.some((line) => line.includes('source-a')) && !noted.some((line) => line.includes('reads this')), noted);
-    check('a_deleted_file_stays', readdirSync(join(folder, 'files')).length === filesBefore);
+    const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
+    check('approved_reader_says_nothing', !noted.some((line) => line.includes('reads this')), noted);
+    check('a_deleted_file_stays', readdirSync(join(folder, 'files')).length === filesThen);
     await until('out of the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), (lines) => lines === null);
     await away();
     await page.waitForTimeout(300);
@@ -580,7 +584,7 @@ function linesOf(text, name) {
     await page.keyboard.press('Delete');
     await until('the Delete key', () => box('Other').count(), (n) => n === 0);
     await until('no versions showing', () => of('Other'), (held) => !held);
-    check('orphan_is_listed', (await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
+    check('deleted_is_no_orphan', !(await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
     await page.locator('.note:has-text("Other") button:has-text("Undo")').click();
     await box('Other').waitFor();
     check('undo_brings_its_versions', (await versions('Other')) === takes, await versions('Other'));
@@ -617,7 +621,10 @@ function linesOf(text, name) {
     check('render_all_leaves_approved', (await versions('Sheet')) === sheetTakes);
 
     // A new take from here: scrubbed to a time, its words as they were, and the adapter told to keep up to there.
+    // One file dropped asks its name first: Enter takes the one offered.
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
+    await page.waitForSelector('.nm-field');
+    await page.keyboard.press('Enter');
     await box('look').waitFor();
     await until('look in the file', () => Promise.resolve(linesOf(yaml(), 'look')), Boolean);
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);
@@ -669,7 +676,8 @@ function linesOf(text, name) {
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
   // Only the conflict it asked for: anything else a project's route refused is a fault, however the page took it.
-  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_changed' && refusal.url.endsWith('/assets/Sheet')));
+  // Nor a read of what the stream said changed, gone by then: that's how the page hears it's gone.
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_changed' && refusal.url.endsWith('/assets/Sheet')) && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
   check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
   console.log(JSON.stringify({ failures, seen }, null, 2));

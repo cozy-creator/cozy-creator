@@ -73,6 +73,17 @@ async function pointAt(page, locator) {
   await page.mouse.move(x + width / 2, y + height / 2);
 }
 
+// A box's controls open under it and may pass the window's edge. The canvas doesn't scroll for them, so this takes it up by the wheel, as a person
+// does, and comes back to the box.
+async function inView(page, box) {
+  const controls = await box.locator('.asset-more').boundingBox({ timeout: 500 }).catch(() => null);
+  const over = controls ? controls.y + controls.height + 16 - page.viewportSize().height : 0;
+  if (over <= 0) return;
+  await page.mouse.wheel(0, over);
+  await page.waitForTimeout(250);
+  await pointAt(page, box.locator('.nm'));
+}
+
 async function drop(page, files, x, y) {
   const transfer = await page.evaluateHandle((list) => {
     const data = new DataTransfer();
@@ -135,4 +146,4 @@ async function lastLook() {
   await boxLog(looking).then((said) => writeFileSync(`${process.env.SHOT}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
 }
 
-module.exports = { MP4, STEP_MS, boxLog, drop, lastLook, lookAt, png, pointAt, until, watchBoxes, wav };
+module.exports = { MP4, STEP_MS, boxLog, drop, inView, lastLook, lookAt, png, pointAt, until, watchBoxes, wav };

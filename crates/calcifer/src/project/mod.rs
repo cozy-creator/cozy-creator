@@ -388,12 +388,7 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
 /// than it was, or a file comes to or goes from `files/`, as a pull's do with no write to either. Read from their stats alone, so a look at it
 /// costs nothing: every write replaces the file, so its inode tells two writes in one clock tick apart.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    // A person may write over a film at the root, and status says what it holds.
-    let films: String = (std::fs::read_dir(dir).into_iter().flatten().flatten())
-        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "mp4"))
-        .map(|entry| stamp(&entry.path()))
-        .collect();
-    format!("{films}.{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
+    format!("{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
 }
 
 /// What a file's stats say of it: another text whenever it's another file than it was.
@@ -1336,6 +1331,11 @@ async fn reclaim(
     }
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let (orphans, kept) = (orphans(&doc, folder, &lock), kept_files(&doc, &lock));
+    let lost = folder.history_lost(&lock, &kept);
+    if let (true, Some(why)) = (asked.yes, &lost) {
+        let remedy = format!("put {} back from git or a backup, or delete what you don't want from files/ by hand", folder::LOCK);
+        return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy project status")));
+    }
     if asked.yes {
         // An orphaned cut's film at the root goes with it.
         for held in lock.assets.iter().filter(|(key, _)| doc.find(key).is_none()).map(|(_, held)| held) {
@@ -1352,8 +1352,8 @@ async fn reclaim(
     if asked.yes {
         canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
     }
-    let next = (!asked.yes && (files > 0 || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
-    Ok(Json(Reclaimed { orphans, files, bytes, deleted: asked.yes, next }))
+    let next = (!asked.yes && lost.is_none() && (files > 0 || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
+    Ok(Json(Reclaimed { orphans, files, bytes, deleted: asked.yes, next, lost }))
 }
 
 /// Renames asset `from` to `to`: in project.yaml its key and every `<from>`, unless the file has moved to `to` already, then what
@@ -2797,9 +2797,15 @@ impl Walk {
             walker.facts.insert(with.to_owned(), (function.to_owned(), widths));
             if !walker.learned.contains_key(&(name.clone(), function.to_owned())) {
                 let mut learned = sim::Learned::default();
+                // Runs before this walk are taken as as long as this job, which the store doesn't say: a guess its own runs put right.
+                let length = walker.graph.job(key).and_then(|job| {
+                    let walk = self.folder().walk_now().ok()?;
+                    let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
+                    Some(walker.readings.get(&ask.digest)?.nodes.get(job.node)?.length)
+                });
                 // Oldest first, so the newest run's exchange is what counts.
-                for (measured, length) in self.host.last_measured(function, &name).into_iter().rev() {
-                    learned.took(measured.width, measured.busy_s / length, measured.exchange_share);
+                for measured in self.host.last_measured(function, &name).into_iter().rev() {
+                    learned.took(measured.width, measured.busy_s / length.unwrap_or(1.0), measured.exchange_share);
                 }
                 walker.learned.insert((name.clone(), function.to_owned()), learned);
             }

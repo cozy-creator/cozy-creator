@@ -150,7 +150,7 @@ function linesOf(text, name) {
   page.on('response', (answer) => {
     const url = new URL(answer.url());
     if (answer.status() < 400) return;
-    const refusal = { status: answer.status(), url: url.pathname, during };
+    const refusal = { status: answer.status(), method: answer.request().method(), url: url.pathname, during };
     refused.push(refusal);
     answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
   });
@@ -180,6 +180,8 @@ function linesOf(text, name) {
   const scratch = mkdtempSync(join(tmpdir(), 'web-live-'));
 
   await page.evaluate(() => { window.notReloaded = true; });
+  // Off where the form's button was: a box arriving under the pointer opens, and an Edit open says its words behind More.
+  await page.mouse.move(2, 500);
   let documents = 0;
   let streams = 0;
   const reads = { project: 0, heads: 0, canvas: 0, assets: 0 };
@@ -204,6 +206,7 @@ function linesOf(text, name) {
   const project = (...words) => cozy('project', '-p', folder, ...words);
   const asJson = async (...words) => JSON.parse((await cozy('--json', 'project', '-p', folder, ...words)).stdout);
   const status = () => asJson('status');
+  const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const held = async (name) => (await status()).assets.find((asset) => asset.name === name);
 
   const times = {};
@@ -235,7 +238,8 @@ function linesOf(text, name) {
   let spots = 0;
   const spot = () => {
     const at = spots++;
-    return { x: 800 + (at % 3) * 360, y: 90 + Math.floor(at / 3) * 240 };
+    // Left of 1060: an Edit open is 720 wide, its X at its right, and the canvas never scrolls to reach it.
+    return { x: 700 + (at % 2) * 340, y: 90 + Math.floor(at / 2) * 340 };
   };
   const overlaps = () => page.evaluate(() => {
     const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
@@ -252,7 +256,7 @@ function linesOf(text, name) {
 
   // A command adds it: it shows by itself where it was told, and lands.
   let place = spot();
-  const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', '--at', `${place.x},${place.y},260`, 'description=Words from the CLI'));
+  const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
   check('add_prints_its_name', added.stdout.trim() === 'live_a', added.stdout);
   check('add_lands', added.landing);
   check('add_in_the_status', (await held('live_a'))?.tool === 'cozy/edit');
@@ -264,14 +268,12 @@ function linesOf(text, name) {
   // A picture.
   const picture = join(scratch, 'Live Picture.png');
   writeFileSync(picture, png(77));
-  place = spot();
-  const imported = await timed('import', { name: 'live_pic', x: place.x, y: place.y }, () => cozy('--json', 'project', '-p', folder, 'import', picture, 'live_pic', '--at', `${place.x},${place.y},260`));
+  const imported = await timed('import', { name: 'live_pic' }, () => cozy('--json', 'project', '-p', folder, 'import', picture, 'live_pic'));
   check('import_lands', imported.landing);
   const hash = JSON.parse(imported.stdout).sha256.replace('sha256:', '').slice(0, 12);
 
   // A file of the project's lifted out as an asset of its own, with its description.
-  place = spot();
-  const lifted = await timed('lift_a_file', { name: 'live_lift', x: place.x, y: place.y }, () => project('import', hash, 'live_lift', '--description', 'Lifted out', '--at', `${place.x},${place.y},260`));
+  const lifted = await timed('lift_a_file', { name: 'live_lift' }, () => project('import', hash, 'live_lift', '--description', 'Lifted out'));
   check('lift_prints_its_name', lifted.stdout.trim() === 'live_lift', lifted.stdout);
   check('lift_keeps_its_words', (await held('live_lift'))?.fields?.description === 'Lifted out');
 
@@ -283,7 +285,7 @@ function linesOf(text, name) {
   const handBox = '  live_tool:\n    tool: no-such-package-here\n    instructions: Hand instructions\n';
   const handAdded = await timed('hand_add', { name: 'live_tool' }, () => saved(() => replaceFile(yamlAt, `${yaml().trimEnd()}\n${handBox}`)));
   check('hand_add_lands', handAdded.landing);
-  const toolRow = await until('its row', async () => (await asJson('canvas')).cards.live_tool, Boolean);
+  const toolRow = await until('its row', async () => (await rows()).live_tool, Boolean);
   check('hand_add_row_written', Number.isFinite(toolRow.x), toolRow);
   check('hand_add_on_screen', await onScreen('live_tool'), toolRow);
   check('hand_add_on_nothing', (await overlaps()).length === 0, await overlaps());
@@ -291,7 +293,7 @@ function linesOf(text, name) {
   // The same for a command that gives no place.
   const auto = await timed('add_placed', { name: 'live_auto' }, () => project('add', 'cozy/edit', 'live_auto', 'description=Placed by the page'));
   check('add_placed_lands', auto.landing);
-  const autoRow = await until('its row', async () => (await asJson('canvas', 'live_auto')).cards.live_auto, Boolean);
+  const autoRow = await until('its row', async () => (await rows()).live_auto, Boolean);
   check('add_placed_on_screen', await onScreen('live_auto'), autoRow);
   check('add_placed_on_nothing', (await overlaps()).length === 0, await overlaps());
 
@@ -304,8 +306,8 @@ function linesOf(text, name) {
 
   // Moved and made wider by a command.
   place = spot();
-  await timed('move', { name: 'live_a', x: place.x, y: place.y, w: 320 }, () => project('canvas', 'live_a', String(place.x), String(place.y), '320'));
-  check('canvas_reads_back', (await asJson('canvas', 'live_a')).cards.live_a.w === 320);
+  await timed('move', { name: 'live_a', x: place.x, y: place.y, w: 320 }, () => project('set', 'live_a', `at=${place.x},${place.y},320`));
+  check('its_place_reads_back', (await rows()).live_a.w === 320);
 
   // Renamed by a command: the same box, where it was, landing on nothing.
   const renamed = await timed('rename', { all: [{ name: 'live_b', x: place.x, y: place.y }, { gone: 'live_a' }] }, () => project('rename', 'live_a', 'live_b'));
@@ -398,14 +400,14 @@ function linesOf(text, name) {
     check(`page_${label}_reads_back`, times[`page_${label}`] <= LIVE_MS, times[`page_${label}`]);
   };
   const moved = await box('live_b').locator('.nm').boundingBox();
-  const canvasBefore = (await asJson('canvas', 'live_b')).cards.live_b;
+  const canvasBefore = (await rows()).live_b;
   await away();
   await page.mouse.move(moved.x + 5, moved.y + 5);
   await page.mouse.down();
   await page.mouse.move(moved.x + 9, moved.y + 5);
   await page.mouse.move(moved.x + 25, moved.y + 25, { steps: 4 });
   await page.mouse.up();
-  await readsBack('move', async () => (await asJson('canvas', 'live_b')).cards.live_b, (row) => row.x !== canvasBefore.x && row.y !== canvasBefore.y);
+  await readsBack('move', async () => (await rows()).live_b, (row) => row.x !== canvasBefore.x && row.y !== canvasBefore.y);
   await open('live_held');
   const heldWords = box('live_held').locator('.mention-text[data-field=instructions]');
   await heldWords.click();
@@ -425,21 +427,17 @@ function linesOf(text, name) {
   await readsBack('undo', () => held('live_c'), Boolean);
   await away();
 
-  // A tool dropped on the canvas is what the CLI lists, and reads.
-  const listed = await asJson('tools');
-  check('tools_lists_the_edit', listed.tools.some((tool) => tool.id === 'cozy/edit' && tool.kind === 'video' && tool.controls.some((control) => control.field === 'timeline')), listed.tools.map((tool) => tool.id));
-  const shown = await asJson('show', 'live_held');
-  check('show_reads_one', shown.asset.name === 'live_held' && shown.asset.etag && Array.isArray(shown.versions), shown.asset);
-  // Only what that etag read: a read older than the last write is refused, and names what's next.
-  const stale = await project('set', 'live_held', 'style=late', '--if-match', '"0"').then(() => null, (error) => error.message);
-  check('if_match_refuses', stale?.includes('changed since it was read') && stale.includes('cozy project show live_held'), stale);
-  await project('set', 'live_held', 'style=', '--if-match', shown.asset.etag);
-  check('if_match_passes_and_clears', !('style' in (await held('live_held')).fields));
+  // One asset, whatever the project holds, and a field cleared.
+  const shown = await asJson('status', 'live_held');
+  check('status_reads_one', shown.asset.name === 'live_held' && Array.isArray(shown.versions), shown.asset);
+  await project('set', 'live_held', 'style=');
+  check('a_field_cleared', !('style' in (await held('live_held')).fields));
   // An Edit's tracks and clips from a file, as its timeline's gestures write them: the page shows its clip.
   place = spot();
   const cutFile = join(scratch, 'cut.yaml');
   writeFileSync(cutFile, 'description: A cut from a file\ntimeline:\n  tracks:\n    - clips:\n        - {clip: live_pic, frames: 24}\n');
-  await timed('edit_from_a_file', { name: 'live_cut', picture: true }, () => project('add', 'cozy/edit', 'live_cut', '--at', `${place.x},${place.y},260`, '--input', cutFile));
+  await project('add', 'cozy/edit', 'live_cut', `at=${place.x},${place.y},260`);
+  await timed('edit_from_a_file', { name: 'live_cut', picture: true }, () => project('set', 'live_cut', '--input', cutFile));
   check('edit_reads_back', (await held('live_cut')).timeline?.tracks?.[0]?.clips?.[0]?.name === 'live_pic', (await held('live_cut')).timeline);
   await project('delete', 'live_cut');
 
@@ -448,7 +446,7 @@ function linesOf(text, name) {
     // Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     place = spot();
-    await project('add', `${TOOL}/slow`, 'live_shot', '--at', `${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=0.1');
+    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=0.1');
     await box('live_shot').waitFor();
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
@@ -469,10 +467,19 @@ function linesOf(text, name) {
     check('approve_a_take_in_the_status', (await held('live_shot')).approved === 2);
     await project('unapprove', 'live_shot');
 
+    // A text asset's words stand wherever it's mentioned: changed by a command, what mentions it is out of date on the open canvas.
+    place = spot();
+    await project('add', 'text', 'live_mood', 'text=Soft morning light.');
+    await project('add', `${TOOL}/still`, 'live_styled', `at=${place.x},${place.y},260`, 'instructions=A still in <live_mood>.');
+    await project('render', 'live_styled', '--on', 'local');
+    await page.evaluate((asked) => window.shown(asked), { name: 'live_styled', dot: 's-current' });
+    await timed('text_asset_outdates', { name: 'live_styled', dot: 's-ood' }, () => project('set', 'live_mood', 'text=Hard evening light.'));
+    await project('delete', 'live_styled', 'live_mood');
+
     // What waits its turn says so, and when it has landed no longer does: what's said of the project besides its assets goes when it's over.
     await project('set', 'live_shot', 'seconds:=3');
     place = spot();
-    await project('add', `${TOOL}/still`, 'live_after', '--at', `${place.x},${place.y},260`, 'instructions=After <live_shot>.');
+    await project('add', `${TOOL}/still`, 'live_after', `at=${place.x},${place.y},260`, 'instructions=After <live_shot>.');
     const waiting = page.evaluate((asked) => window.shown(asked), { name: 'live_after', dot: 's-making' });
     await project('render', 'live_shot', 'live_after', '--on', 'local', '--queue');
     await waiting;
@@ -492,27 +499,18 @@ function linesOf(text, name) {
     await timed('restore_after_a_render', { name: 'live_shot' }, () => project('restore', 'live_shot', stopped.stdout.trim().split(' ').at(-1)));
     check('restore_keeps_its_takes', (await held('live_shot')).versions === 3, await held('live_shot'));
 
-    // A description from a run: printed, and put in the field by the next command.
-    const said = (await project('caption', 'live_pic', '--on', 'local')).stdout.trim();
-    check('caption_prints_its_answer', said.includes('THE-PACKAGE-ASKS'), said);
-    check('caption_writes_nothing', !(await held('live_pic')).fields?.description);
-    // A picture says its words when it's open.
-    await open('live_pic');
-    await timed('caption_set', { name: 'live_pic', has: 'THE-PACKAGE-ASKS' }, () => project('set', 'live_pic', `description=${said}`));
-    await away();
   }
+  // A description, on what has a picture. It says its words when it's open.
+  await open('live_pic');
+  await timed('description_set', { name: 'live_pic', has: 'Said by the CLI' }, () => project('set', 'live_pic', 'description=Said by the CLI'));
+  await away();
   await shot('single');
 
   // A burst: 200 edits as fast as they go. Twelve boxes on screen are written and moved, each by its own line of commands so the last is known,
   // and 40 come with no place. Few reads, shown as it goes, right at the end with no reload, and frames sampled through it.
   const fixed = Array.from({ length: 12 }, (_, i) => `burst_${i}`);
-  // Their rows first, clear of everything so far, and all of it fitted on the screen.
-  await project('canvas', '--input', (() => {
-    const file = join(scratch, 'home.yaml');
-    writeFileSync(file, (fixed.map((name, i) => `${name}: {x: ${260 + (i % 4) * 300}, y: ${2000 + Math.floor(i / 4) * 400}, w: 260}`).join('\n')));
-    return file;
-  })());
-  await Promise.all(fixed.map((name) => project('add', 'cozy/edit', name, 'description=start')));
+  // Clear of everything so far, and all of it fitted on the screen.
+  await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * 400},260`, 'description=start')));
   // Fitted to what's there as they arrive.
   await until('the boxes for the burst', async () => {
     await page.keyboard.press('f');
@@ -528,7 +526,7 @@ function linesOf(text, name) {
     if (edit % 4 === 3) {
       targets[which].x += 2;
       const { name, x, y } = targets[which];
-      lane.push(['canvas', name, String(x), String(y), '260']);
+      lane.push(['set', name, `at=${x},${y},260`]);
     } else {
       const text = `burst-text-${edit}-end`;
       last.set(fixed[which], text);
@@ -569,12 +567,16 @@ function linesOf(text, name) {
   for (const [name, text] of last) if (after.assets.find((asset) => asset.name === name)?.fields?.description !== text) check(`burst_${name}_in_the_file`, false, text);
   const arrived = after.assets.filter((asset) => asset.name.startsWith('arrived_'));
   check('burst_all_arrived', arrived.length === 40, arrived.length);
-  await page.keyboard.press('f');
-  await until('every box placed and shown', () => page.evaluate(() => [...document.querySelectorAll('.nm')].filter((name) => name.textContent.startsWith('arrived_')).length), (count) => count === 40);
+  // Fitted to what's there as the last of them find their places.
+  await until('every box placed and shown', async () => {
+    await page.keyboard.press('f');
+    await page.waitForTimeout(250);
+    return page.evaluate(() => [...document.querySelectorAll('.nm')].filter((name) => name.textContent.startsWith('arrived_')).length);
+  }, (count) => count === 40);
   await page.waitForTimeout(400);
   await shot('burst');
-  const rows = await until('every row written', async () => (await asJson('canvas')).cards, (cards) => arrived.every((asset) => cards[asset.name]));
-  check('burst_rows_written', arrived.every((asset) => rows[asset.name]));
+  const cards = await until('every row written', rows, (now) => arrived.every((asset) => now[asset.name]));
+  check('burst_rows_written', arrived.every((asset) => cards[asset.name]));
   check('burst_on_nothing', (await overlaps()).length === 0, (await overlaps()).slice(0, 12));
 
   // The stream made to fall behind. The page stops reading, Calcifer's socket to it fills, and the ring goes round: what happened in between
@@ -596,8 +598,8 @@ function linesOf(text, name) {
   }
   await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: Object.fromEntries(Object.keys(big).map((name) => [name, null])) }) });
   await project('set', fixed[0], 'description=SAID-WHILE-BEHIND');
-  await project('canvas', fixed[1], '700', '700', '260');
-  await project('add', 'cozy/edit', 'made_while_behind', '--at', '1000,700,260', 'description=Made while behind');
+  await project('set', fixed[1], 'at=700,700,260');
+  await project('add', 'cozy/edit', 'made_while_behind', 'at=1000,700,260', 'description=Made while behind');
   for (let ping = 0; ping < RING + 64; ping++) {
     const answer = await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { ping: { x: ping, y: 0 } } }) });
     if (answer.status !== 200) throw new Error(`pinging: ${JSON.stringify(answer)}`);
@@ -628,7 +630,7 @@ function linesOf(text, name) {
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
   // An asset gone by the time the page read it is no fault: that's how it hears it's gone.
-  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && refusal.code !== 'asset_changed' && refusal.code !== 'asset_unknown');
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && refusal.code !== 'asset_changed' && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
   check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
 
