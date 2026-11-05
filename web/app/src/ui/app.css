@@ -171,10 +171,11 @@ code {
 }
 
 /* The canvas: the whole window, with what floats over it. */
+/* Clipped, never scrolled: a focus or a scroll into view would shift everything on it from where the canvas thinks it is. */
 .stage {
   position: fixed;
   inset: 0;
-  overflow: hidden;
+  overflow: clip;
   background: var(--bg);
 }
 .picker {

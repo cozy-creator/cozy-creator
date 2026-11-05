@@ -154,7 +154,7 @@ export function MentionText({
 
   useEffect(() => {
     if (!focus || !box.current) return
-    box.current.focus()
+    box.current.focus({ preventScroll: true })
     // Typing goes on from what it says.
     window.getSelection()?.selectAllChildren(box.current)
     window.getSelection()?.collapseToEnd()

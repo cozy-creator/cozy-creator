@@ -44,6 +44,10 @@
 .react-flow__node .media {
   box-shadow: 0 0 0 1px var(--box-edge), 0 1px 2px var(--box-shade), 0 6px 14px var(--box-shade);
 }
+/* Far out a shadow can't be seen, and thousands of blurs are what drawing them costs. */
+.stage[data-lod="2"] .react-flow__node .media {
+  box-shadow: 0 0 0 1px var(--box-edge);
+}
 .react-flow__node .media.blank {
   background-color: var(--box);
 }
