@@ -120,7 +120,7 @@ export const CARD_WIDTH = 240
 type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
-const UNDO_MS = 5 * 60_000
+const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
 
