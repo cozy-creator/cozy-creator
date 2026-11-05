@@ -66,7 +66,15 @@ killed() {
     sh "kill -9 $pid; sleep 1; ! kill -0 $pid 2>/dev/null" || fail "$TAG: $pid lives after kill -9"
   done
 }
-write() { cozy machine ssh "$NAME" -- "cat > $1; chown client $1" 2>> "$OUT/ssh.err"; }
+# write <path>: stdin, as the file <path> of the computer that asks, whole or not at all, and checked by its length: a connection that
+# stalls (seen here: 6 min on one cat) is asked again.
+write() {
+  local text tries=0; text=$(cat)
+  until [ "$(printf '%s\n' "$text" | timeout 60 cozy machine ssh "$NAME" -- "cat > $1.new && chown client $1.new && mv $1.new $1 && wc -c < $1" 2>> "$OUT/ssh.err" | tr -dc 0-9)" = "$(printf '%s\n' "$text" | wc -c)" ]; do
+    tries=$((tries + 1)); [ $tries -lt 4 ] || return 1
+    say "writing $1 again"
+  done
+}
 walk_file() { sh "cat /home/client/$TAG/.runs/walk.json 2>/dev/null"; }
 # Where the hand-off stands, from that computer's walk file.
 handing() { jq -r 'if .held == null then "nothing held" elif (.held.id // "") == "" then "not yet taken" elif (.held.asking // []) != [] then "taken, the render not yet asked" else "asked" end' <<<"${1:-{\}}" 2>/dev/null; }
@@ -133,7 +141,7 @@ once() {
 part_a() {
   new_project a
   say "a: handed over, then this computer gone"
-  write "/home/client/a/project.yaml" <<YAML
+  write "/home/client/a/project.yaml" <<YAML || fail "a: its project.yaml wasn't written"
 version: 3
 assets:
   still:
@@ -211,7 +219,7 @@ part_k() {
   new_project k
   say "k: kills during the hand-off"
   sh "ffmpeg -v error -f lavfi -i 'nullsrc=s=2900x2900,geq=random(1)*255:random(1)*255:random(1)*255' -frames:v 1 -y /home/client/plate.png && chown client /home/client/plate.png && stat -c %s /home/client/plate.png" > "$OUT/k-plate.txt" || fail "k: no plate"
-  write "/home/client/k/project.yaml" <<YAML
+  write "/home/client/k/project.yaml" <<YAML || fail "k: its project.yaml wasn't written"
 version: 3
 assets:
   shotk:
@@ -269,7 +277,7 @@ part_h() {
   new_project h
   say "h: a real H3 shot on X, reading a picture the hand-off uploads"
   sh "ffmpeg -v error -f lavfi -i 'color=c=0x1d4e89:s=832x480,drawbox=x=300:y=140:w=232:h=200:color=0xf2c14e:t=fill' -frames:v 1 -y /home/client/sea.png && chown client /home/client/sea.png" || fail "h: no picture"
-  write "/home/client/h/project.yaml" <<YAML
+  write "/home/client/h/project.yaml" <<YAML || fail "h: its project.yaml wasn't written"
 version: 3
 assets:
   seashot:
