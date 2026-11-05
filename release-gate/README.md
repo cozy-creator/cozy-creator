@@ -122,6 +122,9 @@ or `release`, End through the door.
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
 `disk-valentino` (cl-774) is a 100 GB 4090 past a full disk: Qwen-Image 2.1 and turbo, then H3, which makes its room by
 ending turbo's idle executor and evicting both, H3 untouched while it renders, H3 bf16 refused before it downloads.
+`h3-joins` (cl-774) renders two H3 shots through `cozy project render` on one 4090, from a `packages_refs` checkout `pk`: two 8 s beats
+across a join with two mentioned characters (frames, the join against its neighbours, each segment's retention lines, the carry read),
+and a 1:1 `first_frame` with them at `aspect_ratio: 16:9` (its centre crop and warning, frame 0, references not keyframes, Ref2VA).
 `probes` (cl-775, cl-633) measures on one cpu pod whether an executor can read TensorD's memory (a benign check of a mapping's first four bytes), and WebRTC from the published HTTPS player in Chromium, Firefox and WebKit, which isn't Safari.
 `multi-machine` (xs-126) rents two pods with SSH and works in a shell on each (`cozy machine ssh`): a pod's `cozy` uses
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
