@@ -272,7 +272,7 @@ async function loseAnswers(page, method, path, times) {
   await tab(old).click();
   const unread = page.locator('.unread');
   await unread.waitFor();
-  check('what_cant_be_read_says_why', /format 2/.test(await unread.innerText()) && /cozy project upgrade/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
+  check('what_cant_be_read_says_why', /format 2/.test(await unread.innerText()) && /git or a backup/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
   await until('the tools still there', () => row('Edit').count(), (n) => n === 1);
   await row('Edit').dragTo(stage, { targetPosition: { x: 1200, y: 300 } });
   await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);

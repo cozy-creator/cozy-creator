@@ -1334,9 +1334,10 @@ fn parse_lock(text: &str) -> Result<Lock, Error> {
     }
 }
 
+/// A lock older than its project.yaml, which `Projects::open` would have moved had the file been old too: nothing here can convert it.
 fn old_lock(format: &str) -> Error {
-    let said = format!("{LOCK} is format {format} and cozy reads format {FORMAT}: it is left as it is");
-    Error::new(Kind::Validation, "lock_format", said).next("cozy project upgrade")
+    let said = format!("{LOCK} is format {format} and cozy reads format {FORMAT}: it is left as it is, and {PROJECT} is newer than it, so it can't be upgraded");
+    Error::new(Kind::Validation, "lock_format", said).remedy(format!("put back the {LOCK} that goes with this {PROJECT}, from git or a backup"))
 }
 
 /// The file at `url`, public addresses only at every hop, up to `URL_MOST`. Err: why not.
