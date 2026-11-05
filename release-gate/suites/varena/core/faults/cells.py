@@ -42,6 +42,8 @@ DEVICE, MIB, HALF = 0, 1 << 20, torch.float16
 device = torch.device("cuda", DEVICE)
 cuda = ctypes.CDLL("libcuda.so.1")
 cuda.cuMemsetD8Async.argtypes = [ctypes.c_uint64, ctypes.c_ubyte, ctypes.c_size_t, ctypes.c_void_p]
+cuda.cuMemsetD8_v2.argtypes = [ctypes.c_uint64, ctypes.c_ubyte, ctypes.c_size_t]
+cuda.cuMemcpyDtoH_v2.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_size_t]
 
 
 def say(step: str, **facts: object) -> None:
@@ -976,6 +978,85 @@ def workspace_reuse() -> None:
     same = b.run(sample(1)) == reference
     changed = int((found != 0xA5).sum())
     verdict("corrupt" if changed or not same else "correct", overwritten_bytes=changed, output_identical=same)
+
+
+def read(address: int, bytes: int) -> bytes:
+    """What the device holds at an address, whoever owns it now."""
+    held = ctypes.create_string_buffer(bytes)
+    assert cuda.cuMemcpyDtoH_v2(held, address, bytes) == 0
+    return held.raw
+
+
+def tool_unmap() -> None:
+    """The gate's own tool: `vt.checks` takes a pool before its use and scrambles it, so an owner
+    that skips its input copy is caught, and the differential cells can be believed."""
+    stream, _ = setup()
+    graph = Graph(model(seed=21), stream, static_in_pool=True)
+    control = graph.run(sample(9))
+    assert graph.run(None) == control, "a kept input repeats"
+    vt.pool_scratch(graph.pool, [graph.input, graph.output], DEVICE)
+    vt.record_pool_stream(graph.pool, stream)
+    stream.synchronize()
+    vt.checks(unmap_idle=True, perturb=True)
+    vt.prepare_pool(graph.pool, 0, DEVICE)
+    skipped = graph.run(None)
+    vt.record_pool_stream(graph.pool, stream)
+    vt.prepare_pool(graph.pool, 0, DEVICE)
+    recopied = graph.run(sample(9))
+    vt.record_pool_stream(graph.pool, stream)
+    vt.checks()
+    counts = vt.check_counts()
+    gone = counts["uses"] == 2 and counts["unmapped_bytes"] >= 2 * graph.bytes
+    good = skipped != control and recopied == control and gone
+    verdict("correct" if good else "corrupt", skipped_identical=skipped == control,
+            recopied_identical=recopied == control, **counts)
+
+
+def tool_perturb() -> None:
+    """Freed blocks read as the pattern, in their stream's order, and so does a block reused."""
+    stream, _ = setup()
+    vt.checks(perturb=True)
+    block = torch.full((4 * MIB,), 0x11, dtype=torch.uint8, device=device)
+    address = block.data_ptr()
+    del block
+    stream.synchronize()
+    freed = read(address, 4 * MIB)
+    again = torch.empty(4 * MIB, dtype=torch.uint8, device=device)
+    stream.synchronize()
+    reused = bytes(again.cpu().numpy()) if again.data_ptr() == address else b""
+    vt.checks()
+    good = freed == b"\xa5" * (4 * MIB) and reused == freed
+    verdict("correct" if good else "corrupt", freed_stale=sum(b != 0xA5 for b in freed), reused_at_address=bool(reused))
+
+
+def overrun(guards: bool):
+    """A write just past the first of two large blocks; what that left in the second."""
+    stream, _ = setup()
+    vt.checks(guards=guards)
+    first = torch.zeros(8 * MIB, dtype=torch.uint8, device=device)
+    second = torch.zeros(8 * MIB, dtype=torch.uint8, device=device)
+    stream.synchronize()
+    say("blocks", gap=second.data_ptr() - first.data_ptr() - 8 * MIB)
+    code = cuda.cuMemsetD8_v2(first.data_ptr() + 8 * MIB, 0xE7, 4096)
+    stream.synchronize()
+    return code, int((second != 0).sum()), first
+
+
+def guard_control() -> None:
+    """With no guard an overrun lands on its neighbour and nothing says so: why guards exist."""
+    code, changed, _ = overrun(False)
+    verdict("correct" if code == 0 and changed else "n/a", memset=code, neighbour_bytes_changed=changed)
+
+
+def tool_guard() -> None:
+    """With guards the same overrun faults, here and in a real model's differential."""
+    try:
+        code, changed, _ = overrun(True)
+    except torch.AcceleratorError as error:
+        code, changed = getattr(error, "error_code", 999), 0
+    verdict("correct" if code and not changed else "corrupt", memset=code, neighbour_bytes_changed=changed)
+    sys.stdout.flush()
+    os._exit(0)  # Its context is faulted: nothing past this can leave cleanly.
 
 
 if __name__ == "__main__":

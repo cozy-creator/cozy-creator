@@ -25,6 +25,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PROBLEM_OUTCOMES = {"corrupt", "device_fault", "untyped", "wrong_refusal"}
 STALL = 45.0
+# The cells whose point is a page fault: the rest of the suite fails on any Xid.
+FAULTS = {"tool_guard": {31}}
 
 
 class Nvml:
@@ -308,6 +310,10 @@ CELLS = {
     "no_stream_graph": main_only,
     "workspace_unmapped": main_only,
     "workspace_reuse": main_only,
+    "tool_unmap": main_only,
+    "tool_perturb": main_only,
+    "guard_control": main_only,
+    "tool_guard": main_only,
 }
 
 
@@ -340,7 +346,7 @@ def run_cell(cell: str, root: Path, nvml: Nvml, baseline: int) -> dict:
         ctx.problem("recovery probe failed")
     time.sleep(1.5)
     xids = [xid for at, xid in nvml.xids if at >= began]
-    if xids:
+    if set(xids) - FAULTS.get(cell, set()):
         ctx.problem(f"Xid {sorted(set(xids))}")
     outcomes = {c.role: (c.steps[-1].get("outcome") if c.steps else None) for c in ctx.children}
     na = outcomes.get("main") == "n/a"

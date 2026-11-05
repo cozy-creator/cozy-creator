@@ -8,7 +8,9 @@ kernels, time and VRAM against the last pass.
   - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run kept its anonymous host
     high-water under the cap (its page/spill bytes are noted: a model that fits pages nothing);
   - every H3 cell produced its whole video;
-  - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it.
+  - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it;
+  - a graph served each cell of WARM. Falling back to eager is fine for a call and never an error, so nothing else would
+    say that a model stopped using graphs: SDXL's steady step went from 0.08 s to 0.27 s with every rule and fault passing.
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
 
@@ -18,6 +20,7 @@ from runs import Run  # noqa: E402
 
 GIB = 1 << 30
 CHURN = 0.25
+WARM = 'warm-sdxl',  # a warm call whose model has graphs on every card; known-failing.json parks one that can't
 FLOOR, KEEP = 0.8, 5
 CELL = re.compile(r's(\d+)-([a-z0-9]+)(?:-(\d+))?')
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -157,11 +160,25 @@ def unowned(recs):
     return fails, []
 
 
+def warm(recs):
+    fails, notes = [], []
+    for name in WARM:
+        run = recs.get(name)
+        if run is None:  # analyze.py fails a cell that ran and didn't complete; check.py has no such cell to read
+            continue
+        if run.replays:
+            notes.append(f'{name}: {run.replays} steps replayed')
+        else:
+            why = next((why[0] for why in run.safeguards.values()), 'no capture refused: nothing recorded it')
+            fails.append(f'{name}: run {run.number} replayed no step, so its graphs are off: {why[:240]}')
+    return fails, notes
+
+
 def check(gate):
     recs, sku = gate['runs'], gate.get('sku', '')
     fails, notes = [], []
     for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs),
-                 unowned(recs)):
+                 unowned(recs), warm(recs)):
         fails += f; notes += n
     parked = [c for k in json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
               if k['sku'] in (sku, '*') for c in k.get('cells', [])]

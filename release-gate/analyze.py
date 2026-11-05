@@ -80,6 +80,9 @@ for name, target, number in cells:
     obs, gemm, attn = run.observations, run.gemm, run.attention
     for off in run.capabilities_off:
         fails.append(f'{name}: the Runtime turned off {off}')
+    # A graph that differed from eager was caught, and is still a bug. A refusal only costs speed: check.py judges that.
+    for code, why in run.safeguards.items():
+        (fails if code == 'replay_mismatch' else notes).append(f'{name}: {code}: {why[0][:200]} ({len(why)})')
     for o in obs:
         text = f"{o.get('name')} {o.get('value')}"
         if fp8_weight_only(o):
@@ -219,8 +222,14 @@ for leg in ('cuda_init', 'measure_device'):
 # A GPU fault, or a kernel self-check that crashed its process, fails the gate even when every cell passed: a group walked
 # into a faulting kernel on corteo with only the machine's record saying so. The machine's own log and record, kept by end_it.
 LOG = os.path.join(out, 'machine-tensord.log')
+# The page faults tool_guard reports it caused, on purpose and off every run, are the only ones forgiven.
+SUMMARY = os.path.join(out, 'faults', 'out', 'summary.txt')
+meant = sum(len(json.loads(l)['xids']) for l in open(SUMMARY) if json.loads(l)['cell'] == 'tool_guard') if os.path.exists(SUMMARY) else 0
 for line in (l for l in open(LOG, errors='replace') if re.search(r'GPU \d+ (reported Xid|was lost).*: failing', l)) if os.path.exists(LOG) else ():
-    fails.append(f'gpu fault: {line.strip()[:200]}')
+    if meant and 'Xid 31' in line:
+        meant -= 1
+    else:
+        fails.append(f'gpu fault: {line.strip()[:200]}')
 END = os.path.join(out, 'machine-end.json')
 for kernel in (json.load(open(END)).get('status', {}).get('kernels', []) if os.path.getsize(END) else []) if os.path.exists(END) else []:
     if not kernel.get('ok'):

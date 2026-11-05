@@ -5,6 +5,7 @@
 #
 #   ceiling          this machine's pinned host-to-device and cold disk-read bandwidth (ceiling.py)
 #   cold-*           each model loaded from disk into a fresh process
+#   warm-sdxl        the next call: a graph must serve it (check.py)
 #   co-*             all three again on one card: what does not fit is evicted and refilled
 #   reload-*         after an unload (a restart ends every executor), each model back from page cache or disk
 #   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times
@@ -15,6 +16,7 @@
 #   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (torch-offload/)
 #   public-*         C, Rust and Python clients on one core; sizing and Region priority (public-api/)
 #   fault-*          deliberate faults: correct bytes or a typed error, the GPU recovered, no hang, no Xid (faults.sh)
+#   diff-*           real models repeat byte for byte, under a cap and with memory taken and perturbed (differential/cell.sh)
 #
 # check.py judges caps, host RAM, alternation and load/refill bandwidth as a share of `ceiling`; analyze.py, time
 # and peak VRAM against the last pass. A cell named in known-failing.json's `cells` for this SKU or "*" is skipped.
@@ -72,6 +74,7 @@ if ! grep -q '^GPU 0' machine.txt; then
 fi
 vcell ceiling ./ceiling.py
 vcell cold-sdxl "$SDXL" prompt="$SCENE, photo" seed:=$((R + 1))
+vcell warm-sdxl "$SDXL" prompt="$SCENE, photo, late light" seed:=$((R + 16))
 vcell cold-klein "$KLEIN" prompt="$CHAR" seed:=$((R + 2))
 h3 cold-h3 3 5 ""
 vcell co-sdxl "$SDXL" prompt="$OBJECT on a wooden table, product photo" seed:=$((R + 4))

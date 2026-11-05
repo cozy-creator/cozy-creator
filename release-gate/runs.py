@@ -85,6 +85,22 @@ class Run:
         return 'native' if any((l.get('native_steps') or 0) > 0 for l in loops) else 'eager'
 
     @property
+    def replays(self):
+        """Steps a captured graph served: native loops', and each component's regions and decode steps."""
+        return sum(sum(l.get('native_steps') or 0 for l in (m.get('execution') or {}).get('loops') or [])
+                   + sum(g.get('replays') or 0 for g in ((m.get('residency') or {}).get('graphs') or {}).values())
+                   for m in self.measurements)
+
+    @property
+    def safeguards(self):
+        """`execution.safeguards` over the run and its calls: {code: [why, ...]}."""
+        found = {}
+        for m in self.measurements:
+            for code, why in ((m.get('execution') or {}).get('safeguards') or {}).items():
+                found.setdefault(code, []).extend(why)
+        return found
+
+    @property
     def capabilities_off(self):
         """What the Runtime turned off on its executor (`capability.off`: CUDA graphs, Triton sets) and why."""
         return sorted({f"{o.get('value')} ({(o.get('fields') or {}).get('reason', '')})" for o in self.observations
