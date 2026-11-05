@@ -1,7 +1,7 @@
 """Every kernel this Runtime ships, on this card, through its real launch path, with a numeric check
 against a slow reference. One kernel per run (`gpu`), so a fault ends only its executor and names it.
-`inventory` reads what this card claims from the code (`declared`); a name with no exerciser fails
-its cell, and a compiled entry or jit function no cell launched fails `check.py`."""
+`inventory` reads what this card claims from the code (`declared`, `launched_jits`); a name with no
+exerciser fails its cell, and a compiled entry or jit function no cell launched fails `check.py`."""
 
 import ast
 import json
@@ -108,20 +108,41 @@ def _sources() -> dict[str, ast.Module]:
     }
 
 
-def jit_functions(module: ast.Module) -> set[str]:
-    """Jit functions a launch or an entry names: a helper another kernel calls is not launched."""
-    jits = {
-        node.name
-        for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef)
-        and any(ast.unparse(d) == "triton.jit" for d in node.decorator_list)
+def launched_jits(sources: dict[str, ast.Module], names: list[str]) -> dict[str, list[str]]:
+    """Each module's jit functions this row launches: one in a Triton set only where the row declares
+    that set, one in none on every row. A helper, which any jit function calls by name or attribute, is
+    launched by its caller."""
+    defs = {
+        module: [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and any(ast.unparse(getattr(d, "func", d)) == "triton.jit" for d in node.decorator_list)
+        ]
+        for module, tree in sources.items()
     }
-    called = {
-        node.func.id
-        for node in ast.walk(module)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    helpers = {
+        call.func.id if isinstance(call.func, ast.Name) else call.func.attr
+        for nodes in defs.values()
+        for node in nodes
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, (ast.Name, ast.Attribute))
     }
-    return {name for name in jits if name not in called}
+    owners: dict[tuple[str, str], set[str]] = {}
+    for kernels in author_kernels._SETS.values():
+        for entry in kernels.entries:
+            owners.setdefault((entry.kernel.__module__, entry.kernel.__name__), set()).add(kernels.name)
+    claimed = {name.removeprefix("triton:") for name in names if name.startswith("triton:")}
+    found = {
+        module: sorted(
+            node.name
+            for node in nodes
+            if node.name not in helpers
+            and (not owners.get((module, node.name)) or owners[(module, node.name)] & claimed)
+        )
+        for module, nodes in defs.items()
+    }
+    return {module: jits for module, jits in found.items() if jits}
 
 
 def declared(row: arch.Row, sm: int) -> dict:
@@ -872,7 +893,7 @@ def _off_request(work: Callable[[], dict], index: int) -> dict:
 def inventory(payload: Probe, ctx: Context) -> Report:
     device = measure_device(torch, 0)
     found = declared(arch.row(device.sm), device.sm)
-    found["jits"] = {m: sorted(jit_functions(t)) for m, t in _sources().items() if jit_functions(t)}
+    found["jits"] = launched_jits(_sources(), found["names"])
     found["gpus"] = torch.cuda.device_count()
     found["mismatches"] = [*static_check.mismatches([Path(cozy_runtime.__file__).parent])[0], *_launcher_order()]
     print("KERNEL-INVENTORY " + json.dumps(found, sort_keys=True), flush=True)

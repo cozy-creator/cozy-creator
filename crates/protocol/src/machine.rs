@@ -626,6 +626,9 @@ pub struct Reason {
     /// It explains the failure after its machine is gone.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub detail: String,
+    /// The exact commands to run next, when a refusal leaves one; at most two.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
 }
 
 /// One settled call the run made: a child run, or an effect such as its weights publication.

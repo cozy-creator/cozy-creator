@@ -930,17 +930,17 @@ impl Binder<'_> {
         }
         for file in files {
             let media_type = sniff(file)?.media_type;
+            let category = media_type.split('/').next().unwrap_or_default();
+            // An input of its own kind first. An open one takes its kind's whole set, which reads
+            // a GIF as video and a video's sound as audio, as the Runtime does.
             let rank = |input: &Input| -> u8 {
-                let accepted = input.media_types.is_empty()
-                    || input
-                        .media_types
-                        .iter()
-                        .any(|t| t.eq_ignore_ascii_case(&media_type));
-                let category = media_type.split('/').next().unwrap_or_default();
-                match (accepted, input.kind) {
-                    (false, _) => 0,
-                    (true, kind) if kind == category => 2,
-                    (true, "file") => 1,
+                let open = input.media_types.is_empty();
+                let listed = input.media_types.iter().any(|t| t.eq_ignore_ascii_case(&media_type));
+                let crosses = matches!((input.kind, category), ("file", _) | ("audio", "video"))
+                    || (input.kind, media_type.as_str()) == ("video", "image/gif");
+                match (open || listed, input.kind == category) {
+                    (true, true) => 2,
+                    (true, false) if listed || crosses => 1,
                     _ => 0,
                 }
             };
