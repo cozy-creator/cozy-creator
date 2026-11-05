@@ -739,7 +739,7 @@ impl Device {
 }
 
 /// SCRATCH, never to land: inside a derive, 0 its whole time, 1 nested uses, 2 their eviction waits.
-pub static DERIVE: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7]; // 3 use, 4 prepare, 5 fill, 6 wait
+pub static DERIVE: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9]; // 3 use, 4 prepare, 5 fill, 6 wait, 7 commit join ns, 8 joins
 thread_local! { pub static DERIVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 pub fn derive_probe(at: usize, began: std::time::Instant) {
     DERIVE[at].fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1316,7 +1316,10 @@ impl Fill {
     fn finish(mut self, join: bool) -> Result<Pin> {
         let region = self.region();
         if join {
+            let began = std::time::Instant::now();
             reclaim::join(region.gpu)?;
+            derive_probe(7, began);
+            DERIVE[8].fetch_add(1, Ordering::Relaxed);
         }
         let gate = gate(region.gpu.ordinal)?;
         gate.not_capturing()?;

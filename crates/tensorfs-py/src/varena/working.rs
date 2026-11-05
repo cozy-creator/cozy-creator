@@ -407,6 +407,8 @@ fn _varena_working_stats(
         ("probe_prepare_ns", stats.derive_probe[4]),
         ("probe_fill_ns", stats.derive_probe[5]),
         ("probe_wait_ns", stats.derive_probe[6]),
+        ("probe_join_ns", stats.derive_probe[7]),
+        ("probe_joins", stats.derive_probe[8]),
         ("reclaim_ns", stats.reclaim_ns),
         ("reclaim_longest_ns", stats.reclaim_longest_ns),
         ("reclaim_longest_step", stats.reclaim_longest_step),
