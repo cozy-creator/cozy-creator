@@ -113,7 +113,15 @@ pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Resul
     let mut fields = fields_of(None, &terms)?;
     // `text`, no tool: a text asset.
     let tool = if args.tool == "text" { String::new() } else { args.tool };
-    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields };
+    // What can't be a tool is said here, as `POST` waits on nothing. A Hub that's away isn't a reason not to add it: a render says.
+    if !tool.is_empty()
+        && tool != protocol::tool::EDIT
+        && let Err(why) = crate::run::target(ctx, &tool, &opened.path, None).await
+        && matches!(why.kind, Kind::NotFound | Kind::Usage | Kind::Validation)
+    {
+        return Err(why);
+    }
+    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None };
     let made: AssetMade = ctx.calcifer().await?.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&made);

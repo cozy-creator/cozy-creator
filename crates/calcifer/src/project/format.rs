@@ -26,7 +26,7 @@ pub(super) const FORMAT: u64 = 3;
 const PLATFORM: [&str; 7] = ["tool", "approved", "description", "asset_type", "voice", "models", "lora"];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
-const KINDS: [&str; 3] = ["image", "video", "audio"];
+pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
 const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// What a text asset holds, and what it is.

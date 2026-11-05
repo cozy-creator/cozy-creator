@@ -565,6 +565,9 @@ pub struct NewAsset {
     /// A person typed `name`: refused if the project has it, not numbered.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exact: bool,
+    /// What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// What a write of an asset answers: its name, and what `If-Match` names from here on.
@@ -720,6 +723,9 @@ pub struct Approved {
     pub stale: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// What `If-Match` names from here on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so its state follows its inputs again.
@@ -736,6 +742,9 @@ pub struct Unpinned {
     pub version: Option<u32>,
     /// What this put out of date, itself too.
     pub stale: Vec<String>,
+    /// What `If-Match` names from here on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no

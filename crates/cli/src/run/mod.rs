@@ -326,7 +326,7 @@ async fn functions(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Re
     Ok(ExitCode::SUCCESS)
 }
 
-async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<Target, Error> {
+pub(crate) async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<Target, Error> {
     let cwd = cwd.to_string_lossy();
     let mut query = vec![("target", raw), ("hub", ctx.hub().as_str()), ("cwd", &cwd)];
     query.extend(on.map(|on| ("on", on)));

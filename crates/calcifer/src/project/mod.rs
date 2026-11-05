@@ -1452,7 +1452,8 @@ async fn runs(
     let idempotency = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
     if let Some((key, digest)) = &idempotency {
         // Kept in the lock too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
-        let kept = project.folder.lock().map_err(Refusal)?.walk.asked.get(key).cloned();
+        let held = project.folder.lock().map_err(Refusal)?;
+        let kept = held.walk.asked.get(key).cloned().or_else(|| held.assets_made.get(key).map(|row| row.digest.clone()));
         let mut keys = project.keys.lock().expect("keys lock");
         match keys.get(key).or(kept.as_ref()) {
             Some(seen) if seen == digest => {
@@ -1595,12 +1596,18 @@ async fn runs(
     .map_err(Refusal)?;
     // One write of the project per ask: what the file has lost is set aside, and what's asked again fails no more.
     {
+        let at_ms = now_ms();
         (project.folder.update_lock(|lock| {
             lock.tombstone(|key| doc.find(key).is_some());
             for take in &ask.takes {
                 if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
                     held.failed = None;
                 }
+            }
+            // The walk's own record goes as it ends: this one outlives it, so a retry however late runs nothing twice.
+            if let Some((key, digest)) = &idempotency {
+                lock.assets_made.retain(|_, row| at_ms - row.at_ms < IMPORT_KEPT_MS);
+                lock.assets_made.insert(key.clone(), folder::KeyedAsset { digest: digest.clone(), at_ms, name: String::new() });
             }
         }))
         .map_err(Refusal)?;
@@ -1951,7 +1958,8 @@ async fn approve(
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings }))
+    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name);
+    Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings, etag }))
 }
 
 /// `POST /v1/projects/{id}/unpin`: `approved` gone from project.yaml, so the asset's state follows its inputs again. A constant,
@@ -1982,7 +1990,8 @@ async fn unpin(
         let _ = project.events.send(Event::Warning { message, name: None });
     }
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    Ok(Json(Unpinned { name, version, stale }))
+    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name);
+    Ok(Json(Unpinned { name, version, stale, etag }))
 }
 
 fn stale_names(doc: &Doc, stand: &[Standing]) -> BTreeSet<String> {

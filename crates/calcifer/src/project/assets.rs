@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use protocol::{
     error::{Error, Kind},
     project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Version as VersionRow, VersionBack, VersionMoved},
+    tool,
 };
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -35,7 +36,8 @@ fn own_lines(name: &str) -> Error {
 }
 
 /// `POST /v1/projects/{id}/assets`: an asset from a tool, and with `at` its row, in one call. The name goes in the lock first, so a retry
-/// under the same key, whatever it finds written, ends with this one asset.
+/// under the same key, whatever it finds written, ends with this one asset. It reads no network: what the tool makes comes with the ask or is
+/// held already, and if neither, it's worked out behind the answer, and a render would learn it anyway.
 pub(super) async fn create(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -48,11 +50,11 @@ pub(super) async fn create(
     let folder = &project.folder;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
     // With no tool, it's a text asset.
-    let kind = match asked.tool.is_empty() {
-        true if !asked.fields.contains_key(format::TEXT) => return Err(Refusal(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, or a text").remedy("name a tool from GET /v1/tools, or set `fields.text`"))),
-        true => None,
-        false => Some(crate::toolbox::kind(&api, &asked.tool, &folder.dir).await.map_err(Refusal)?),
-    };
+    let text_asset = asked.tool.is_empty();
+    if text_asset && !asked.fields.contains_key(format::TEXT) {
+        return Err(Refusal(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, or a text").remedy("name a tool from GET /v1/tools, or set `fields.text`")));
+    }
+    let plain = (!text_asset).then(|| format::plain_tool(&asked.tool, folder));
     let _one = project.importing.lock().expect("importing lock");
     let lock = folder.lock().map_err(Refusal)?;
     let told = key.as_ref().and_then(|(key, _)| lock.assets_made.get(key));
@@ -64,9 +66,9 @@ pub(super) async fn create(
     let name = match told {
         Some(told) => told.name.clone(),
         None => {
-            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| kind.as_ref().map_or(format::TEXT, |_| "asset").to_owned());
+            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
             let doc = Doc::load(folder).map_err(Refusal)?;
-            if kind.is_none() {
+            if text_asset {
                 format::refuse_tag(&lock, &wanted).map_err(Refusal)?;
             }
             let free = format::free_name(&doc, &lock, &wanted);
@@ -76,11 +78,19 @@ pub(super) async fn create(
             free
         }
     };
-    if let (None, Some((key, digest))) = (told, &key) {
+    // What it outputs: what `defaults` fill of it before it has a version.
+    let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().kind));
+    let makes = plain.as_ref().and_then(|plain| said.as_ref().filter(|kind| lock.makes.get(plain) != Some(kind)).map(|kind| (plain.clone(), kind.clone())));
+    let unknown = plain.as_ref().filter(|plain| said.is_none() && !lock.makes.contains_key(*plain)).cloned();
+    let keyed = key.as_ref().filter(|_| told.is_none());
+    if keyed.is_some() || makes.is_some() {
         let at_ms = now_ms();
         (folder.update_lock(|lock| {
-            lock.assets_made.retain(|_, row| at_ms - row.at_ms < IMPORT_KEPT_MS);
-            lock.assets_made.insert(key.clone(), folder::KeyedAsset { digest: digest.clone(), at_ms, name: name.clone() });
+            if let Some((key, digest)) = keyed {
+                lock.assets_made.retain(|_, row| at_ms - row.at_ms < IMPORT_KEPT_MS);
+                lock.assets_made.insert(key.clone(), folder::KeyedAsset { digest: digest.clone(), at_ms, name: name.clone() });
+            }
+            lock.makes.extend(makes.clone());
         }))
         .map_err(Refusal)?;
     }
@@ -93,13 +103,23 @@ pub(super) async fn create(
         None => assetfile::added(text, &name, &asked.tool, &asked.fields).map(|(edited, _)| edited),
     }))
     .map_err(Refusal)?;
-    // What it outputs: what `defaults` fill of it before it has a version.
-    if let Some(kind) = &kind {
-        let plain = format::plain_tool(&asked.tool, folder);
-        folder.update_lock(|lock| drop(lock.makes.insert(plain.clone(), kind.clone()))).map_err(Refusal)?;
-    }
     let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
+    if let Some(plain) = unknown {
+        tokio::spawn(learn_kind(api.clone(), project.clone(), asked.tool, plain));
+    }
     Ok((StatusCode::CREATED, Json(AssetMade { name, etag })))
+}
+
+/// What `tool` makes, for what no one said, kept in project.lock. What can't be read here a render says.
+async fn learn_kind(api: Arc<Api>, project: Arc<Project>, tool: String, plain: String) {
+    match crate::toolbox::kind(&api, &tool, &project.folder.dir).await {
+        Ok(kind) => {
+            if let Err(why) = project.folder.update_lock(|lock| drop(lock.makes.insert(plain.clone(), kind.clone()))) {
+                tracing::warn!("{tool}: {}", why.message);
+            }
+        }
+        Err(why) => tracing::debug!("{tool}: {}", why.message),
+    }
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: the asset and each of its versions.
@@ -147,10 +167,11 @@ pub(super) async fn patch(
     let lock = folder.lock().map_err(Refusal)?;
     (folder.edit_project(|text| {
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
-        if read.is_some_and(|read| read != was) {
+        let (edited, warnings) = assetfile::set(text, &name, &fields)?;
+        // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.
+        if edited != text && read.is_some_and(|read| read != was) {
             return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds"));
         }
-        let (edited, warnings) = assetfile::set(text, &name, &fields)?;
         Doc::of(folder, &edited, &lock)?;
         *told.borrow_mut() = (was, warnings);
         Ok(edited)
