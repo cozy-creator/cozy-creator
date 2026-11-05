@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use varena_ledger::{Donor, Recovery, Row, Table};
 
-/// What to ask for when a CUDA context itself is refused (xs-112: 2 to 3 GB).
-const CONTEXT_BYTES: usize = 3 << 30;
+/// The room a process needs to come up: its CUDA context and first stream (xs-112: 2 to 3 GB).
+const BRING_UP_BYTES: usize = 3 << 30;
 /// How long an ask waits on peers that have stopped answering.
 const PEER_WAIT: Duration = Duration::from_secs(2);
 /// How long a donor waits on its own cache owners, which may need a GIL someone holds.
@@ -41,7 +41,7 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
     if working::cooperation_bound(device)? {
         return Ok(());
     }
-    // The row comes first: a context can itself be refused for memory, and then we ask.
+    // The row comes first: coming up can itself be refused for memory, and then we ask.
     let uuid = cuda::device_uuid(device)?;
     let service = match Table::open(&uuid).map(|table| table.claim().map(|row| Service { table, row })) {
         Ok(Some(service)) => Some(Arc::new(service)),
@@ -51,14 +51,20 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
     if let Some(service) = &service {
         SERVICES.lock().unwrap_or_else(|error| error.into_inner()).insert(device, Arc::clone(service));
     }
+    // One ask for the context and the first stream together: Torch creates that stream, where a
+    // refusal reaches nobody who could give room.
     let mut last = false;
     loop {
-        match working::initialize(device) {
-            Err(Error::Cuda { code: 2, .. }) if !last => {
-                last = recover(device, CONTEXT_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
-            }
-            result => break result,
+        let started = working::initialize(device);
+        let short = match &started {
+            Err(Error::Cuda { code: 2, .. }) => true,
+            Ok(()) => working::peer::memory_info(device).is_ok_and(|(free, _)| free < BRING_UP_BYTES),
+            Err(_) => false,
+        };
+        if !short || last {
+            break started;
         }
+        last = recover(device, BRING_UP_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
     }?;
     if let Some(service) = service {
         let mut donor = Native::new(device, shared, uuid)?;
