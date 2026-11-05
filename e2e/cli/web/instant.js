@@ -191,22 +191,24 @@ async function loseAnswers(page, method, path, times) {
   await page.keyboard.press('Escape');
   await page.keyboard.press('f');
   await box('words').waitFor();
+  await page.mouse.move(2, 500);
   await page.waitForTimeout(400);
   await pointAt(page, box('words').locator('.nm'));
-  await box('words').locator('.desc-line').click();
+  await box('words').locator('.mention-text').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
+  await page.keyboard.press('Control+a');
   await page.keyboard.type('mine');
   await page.mouse.click(1500, 1050);
   await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
-  cozy('project', '-p', folder, 'set', 'words', 'description=theirs');
-  await until('theirs in the file', () => Promise.resolve(yaml().includes('description: theirs')), Boolean);
+  cozy('project', '-p', folder, 'set', 'words', 'text=theirs');
+  await until('theirs in the file', () => Promise.resolve(yaml().includes('text: theirs')), Boolean);
   await page.waitForTimeout(600);
   await patches.release();
   await pointAt(page, box('words').locator('.nm'));
   await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
-  check('conflict_keeps_both', yaml().includes('description: theirs') && (await box('words').locator('.mention-text').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
+  check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await box('words').getByRole('button', { name: 'Keep mine' }).click();
-  await until('mine in the file', () => Promise.resolve(yaml().includes('description: mine')), Boolean);
+  await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
 
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
@@ -261,7 +263,7 @@ async function loseAnswers(page, method, path, times) {
   const kept = await view();
   await tab(second_project).click();
   await page.locator(`.ptab.on[title="${second_project.path}"]`).waitFor();
-  await page.waitForSelector('.react-flow__node');
+  await page.waitForSelector('.empty-canvas');
   check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
   await page.locator(`.ptab[title="${folder}"]`).click();
   await box(name).waitFor({ timeout: 2000 });
