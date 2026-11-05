@@ -9,7 +9,7 @@ pub(crate) mod peer;
 use crate::fence::Waits;
 use crate::reclaim::{self, Protect, Wait};
 use crate::{Device, Error, GlobalCaptureGuard, Result};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -85,10 +85,6 @@ struct ActivePhase {
     owned_peak: usize,
     backing: usize,
     backing_peak: usize,
-    // A pool reuses a block only at its exact size, so a capture of this pass needs each size's own
-    // high-water: live and most so far, by size, and their sum.
-    sizes: HashMap<usize, (u32, u32)>,
-    capture_bytes: usize,
     invalid: Option<String>,
 }
 
@@ -98,8 +94,6 @@ struct Phases {
     active: Option<ActivePhase>,
     samples: BTreeMap<String, PhaseStats>,
     replay_samples: BTreeMap<String, PhaseStats>,
-    // What a capture of the last completed eager pass needs.
-    capture_bytes: usize,
 }
 
 impl Phases {
@@ -130,7 +124,6 @@ pub struct WorkingStats {
     pub ooms: u64,
     pub driver_memory_calls: u64,
     pub driver_physical_ooms: u64,
-    pub capture_bytes: usize,
     pub driver_memory_ns: u64,
     pub driver_memory_longest_ns: u64,
     pub reclaim_ns: u64,
@@ -416,22 +409,6 @@ impl State {
         self.blocks.insert(at, tail);
     }
 
-    fn phase_size(&mut self, size: usize, taken: bool) {
-        let Some(active) = &mut self.phases.active else {
-            return;
-        };
-        let (live, most) = active.sizes.entry(size).or_default();
-        if taken {
-            *live += 1;
-            if *live > *most {
-                *most = *live;
-                active.capture_bytes += size;
-            }
-        } else {
-            *live = live.saturating_sub(1);
-        }
-    }
-
     fn phase_changed(
         &mut self,
         before: usize,
@@ -586,7 +563,7 @@ const AUXILIARY_CLASS: usize = 512;
 /// units, and a smaller one moves fewer bytes for more calls.
 pub const UNIT_BYTES: usize = 512 << 20;
 
-/// A pool's size from what a capture needs: a capture can't grow it.
+/// A pool's size for a capture from an eager pass's measured peak: a capture can't grow it.
 pub fn pool_bytes(peak: usize) -> usize {
     peak.saturating_mul(5) / 4
 }
@@ -832,9 +809,6 @@ impl Device {
     }
 
     fn activate(state: &mut State, ptr: u64, requested: usize) -> u64 {
-        if state.phases.active.is_some() {
-            state.phase_size(state.blocks[&ptr].capacity, true);
-        }
         state.stats.allocated_bytes += requested;
         state.stats.allocated_peak = state.stats.allocated_peak.max(state.stats.allocated_bytes);
         state.stats.allocations += 1;
@@ -1498,7 +1472,6 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     }
     if let Some((charge, phase, segment)) = observed {
         state.phase_changed(class, charge, phase, phase, segment);
-        state.phase_size(class, false);
         split::refresh(&mut state);
     }
     if reusable && class > LARGE {
@@ -1868,8 +1841,6 @@ pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<
         owned_peak: 0,
         backing: 0,
         backing_peak: 0,
-        sizes: HashMap::new(),
-        capture_bytes: 0,
         invalid,
     });
     state.refresh_phase();
@@ -1998,7 +1969,6 @@ pub fn phase_leave(
         &reason,
     );
     let mut sample = PhaseStats::default();
-    let mut capture_bytes = None;
     let record = observed.as_ref().filter(|_| qualified).map(|key| {
         let samples = if active.mode == PhaseMode::Replay {
             &mut state.phases.replay_samples
@@ -2009,9 +1979,6 @@ pub fn phase_leave(
     });
     if let Some(record) = record {
         if published {
-            if active.mode == PhaseMode::Eager {
-                capture_bytes = Some(active.capture_bytes);
-            }
             record.known = true;
             record.peak_bytes = active.owned_peak;
             record.total_peak_bytes = active.peak;
@@ -2021,9 +1988,6 @@ pub fn phase_leave(
             record.aborted_passes += 1;
         }
         sample = record.clone();
-    }
-    if let Some(bytes) = capture_bytes {
-        state.phases.capture_bytes = bytes;
     }
     Ok(PhaseObservation {
         split_observations,
@@ -2180,7 +2144,6 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.event_waits,
     ) = owner.driver().calls();
     stats.driver_physical_ooms = owner.driver().physical_ooms();
-    stats.capture_bytes = state.phases.capture_bytes;
     (
         stats.driver_memory_ns,
         stats.driver_memory_longest_ns,

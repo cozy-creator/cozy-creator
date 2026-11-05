@@ -370,7 +370,6 @@ fn _varena_working_stats(
         ("driver_reservation", driver_reservation as u64),
         ("allocated_bytes", stats.allocated_bytes as u64),
         ("allocated_peak", stats.allocated_peak as u64),
-        ("capture_bytes", stats.capture_bytes as u64),
         ("mapped_bytes", stats.mapped_bytes as u64),
         ("mapped_peak", stats.mapped_peak as u64),
         ("pending_bytes", stats.pending_bytes as u64),
