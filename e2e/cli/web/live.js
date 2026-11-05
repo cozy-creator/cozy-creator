@@ -433,9 +433,10 @@ function linesOf(text, name) {
     times[`page_${label}`] = Date.now() - from;
     check(`page_${label}_reads_back`, times[`page_${label}`] <= LIVE_MS, times[`page_${label}`]);
   };
+  // Measured at rest: a box worked on has the canvas drawn in on it, and leaving it moves everything back.
+  await away();
   const moved = await box('live_b').locator('.nm').boundingBox();
   const canvasBefore = (await rows()).live_b;
-  await away();
   await page.mouse.move(moved.x + 5, moved.y + 5);
   await page.mouse.down();
   await page.mouse.move(moved.x + 9, moved.y + 5);
@@ -456,6 +457,9 @@ function linesOf(text, name) {
   await page.keyboard.press('Enter');
   await readsBack('rename', () => held('live_c'), Boolean);
   await away();
+  // An Edit is wide, and back at rest its X, at its right, can be past the window: F brings it all in, as for a person.
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
   await pointAt(page, box('live_c').locator('.nm'));
   await box('live_c').locator('.head [aria-label=Delete]').click();
   await readsBack('delete', () => held('live_c'), (asset) => !asset);

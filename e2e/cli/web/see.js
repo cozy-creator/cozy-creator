@@ -234,7 +234,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_reads', shotReads.hero?.includes('summary') && shotReads.clip?.includes('summary') && shotReads.older?.includes('beats.0.description'), of('shot').reads);
   check('wire_fields', of('shot').fields?.summary?.includes('looks hard') && of('shot').fields?.beats?.[1]?.description?.includes('goes on'), of('shot').fields);
   check('wire_fields_no_platform_field', !('tool' in (of('shot').fields ?? {})) && !('kind' in (of('shot').fields ?? {})), of('shot').fields);
-  check('wire_warning_named', read.warnings?.some((said) => said.name === 'odd' && said.message.includes('kind')) && read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
+  // `hollow_thing` is its words since 27c5db3f5: a box with no tool, which warns of nothing.
+  check('wire_warning_named', read.warnings?.some((said) => said.name === 'odd' && said.message.includes('kind')) && !read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
   check('wire_asset_type', of('hero').fields?.asset_type === 'character' && of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
   // Elements of every kind, each by what it is.
@@ -244,10 +245,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
+  check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
   await open(page, 'odd');
   check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
   check('wire_warning_of_an_asset_type', read.warnings?.some((said) => said.name === 'older' && said.message.includes('asset_type')), read.warnings);
-  check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
+  // Drawn in on one box, the canvas holds only what's near it: the rest is read at rest.
+  await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
   check('no_checkerboard_without_alpha', (await element(page, 'older_art').locator('.media.alpha').count()) === 0);
@@ -282,7 +285,9 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await away(page);
   const numberBefore = Math.max(0, ...((await asset('picture')).prefixes ?? []).map((version) => version.number));
   await open(page, 'picture');
-  await picture.locator('.take.add').click();
+  // Render is with its words: + goes to them when it shows a take.
+  if (await picture.locator('.take.add').count()) await picture.locator('.take.add').click();
+  await picture.locator('button[aria-label=Render]').click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1).catch(async (error) => {
@@ -330,12 +335,13 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // A failure is named and stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
   await open(page, 'needs');
-  await needs.locator('.take.add').click();
+  if (await needs.locator('.take.add').count()) await needs.locator('.take.add').click();
+  await needs.locator('button[aria-label=Render]').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
-  // Its reason shows on the box the pointer is still on. On Windows (41909619528) it had closed, and its neighbour opened.
+  // Render ends working on it, and the view goes back: no other box is taken up under the pointer.
   await page.waitForTimeout(300);
-  check('a_box_stays_open_under_the_pointer', await needs.locator('.card').evaluate((el) => el.classList.contains('active')), await boxLog(page));
+  check('render_leaves_the_box', (await page.locator('.card.here').count()) === 0, await boxLog(page));
   await until('its reason shows', async () => {
     await open(page, 'needs');
     return needs.locator('.status.bad').count();
@@ -357,6 +363,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
   await until('and from the card', () => needs.locator('.status.bad').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
+  await away(page);
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
 
@@ -394,6 +401,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const versions = async () => (await asset('card')).prefixes?.length ?? 0;
     const take = async (count) => {
       await open(page, 'card');
+      if (await card.locator('.take.add').count()) await card.locator('.take.add').click();
       await card.locator('button[aria-label=Render]').click();
       await until(`version ${count}`, versions, (n) => n === count, FIRST_RUN_MS);
     };
@@ -403,7 +411,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await until('its count', () => card.locator('.count').textContent(), (text) => text === '2/2');
     const made = await asset('card');
     check('wire_execution_ms', made.prefixes.every((version) => version.execution_ms > 0 && version.run > 0), made.prefixes);
-    await card.locator('.take').first().click();
+    await card.locator('.take[aria-label$=" 1"]').click();
     await until('looking at the first', () => card.locator('.count').textContent(), (text) => text === '1/2');
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
     await card.locator('button:has-text("Approve")').click();

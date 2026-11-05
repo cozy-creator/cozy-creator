@@ -364,12 +364,14 @@ async function died(why) {
     await box('sheet').locator('.card').click({ button: 'right' });
     await page.locator('.asset-menu button:has-text("Rename")').click();
     await page.locator('input[aria-label="Name"]').fill('drawn');
+    await page.evaluate(() => { window.entered = performance.now(); });
     await page.keyboard.press('Enter');
     const after = await until('the file and the lock', async () => [await asset('drawn'), (await state()).orphans ?? []], ([row]) => row?.versions === 1, 2000);
     check('rename_during_a_render_keeps_its_versions', after[0].versions === 1 && after[0].making?.length > 0 && !after[1].length, after);
     check('what_reads_it_says_the_new_name', yaml().includes('<drawn> and on'), yaml());
     await page.waitForTimeout(500);
-    const frames = await page.evaluate(() => { cancelAnimationFrame(window.looking); return window.shown; });
+    // From Enter on: before it, the fit has only just drawn the box, and its picture may still be on its way.
+    const frames = await page.evaluate(() => { cancelAnimationFrame(window.looking); return window.shown.filter((frame) => frame.at >= window.entered); });
     check('no_empty_frame_after_enter', frames.length > 10 && frames.every((frame) => frame.img > 0), frames.filter((frame) => !frame.img).slice(0, 5));
     seen.frames = frames.length;
     await shot('renamed-rendering');
@@ -400,6 +402,10 @@ async function died(why) {
     await api(`${at}/assets/seeded`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/wait` }) });
     await until('its prompt', () => asset('seeded'), (row) => row?.fields?.instructions === '<self.1>');
     writeFileSync(yamlAt, `${yaml().trimEnd()}\n  second:\n    tool: ${fixture}/wait\n    instructions: <Ada.2> as it was\n`);
+    // Placed where there's room, which may be off the view: a box off it isn't drawn.
+    await until('second placed', async () => (await api(`${at}/canvas`)).body?.cards?.second, Boolean);
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box('second').waitFor();
     await render(['seeded', 'second'], `versions-${Date.now()}`);
     const ran = async (name) => {

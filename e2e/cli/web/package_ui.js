@@ -234,7 +234,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     check('whole_face_replaces_the_controls', (await box('faced').locator('.mention-text[data-field=instructions], input[type=range]').count()) === 0);
     await whole.click();
     await page.keyboard.type('Its own words');
-    await box('faced').locator('.nm').click();
+    // Anywhere else on it takes the keys away, as a person clicks: its name would rename it.
+    await box('faced').locator('.here-under').click({ position: { x: 4, y: 4 } });
     await until('its words in the file', () => Promise.resolve(yaml()), (text) => text.includes('Its own words'));
     check('whole_face_saves', held('faced').fields.instructions === 'Its own words', held('faced').fields);
 

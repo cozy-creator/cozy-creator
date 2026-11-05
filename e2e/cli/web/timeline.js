@@ -158,6 +158,8 @@ function plate(path, color, seconds, hz) {
 
   // Pull an end: the bubble says the timecode, the clips stay snapped.
   const pull = async (name, side, by, off = 0) => {
+    // Render ends working on it: its clips are on it again once it's opened.
+    await openEdit();
     await settled();
     const handle = await page.locator(`.tl-clip[data-name="${name}"] .tl-handle.${side}`).boundingBox();
     await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);

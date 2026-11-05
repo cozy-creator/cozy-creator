@@ -273,23 +273,24 @@ function linesOf(text, name) {
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
 
   // No box lies on another. Dropped on one that can't take it, it slides to the nearest clear place, the other stays, and where it ended is what's saved.
+  // Words can't take a picture: a picture box would take it as its version (27c5db3f5).
   const canvasAt = join(folder, 'project.canvas.yaml');
   const lies = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
   const apart = async (a, b) => !lies(await box(a).boundingBox(), await box(b).boundingBox());
   await away();
   const stood = await rows();
   const carried = await box('source-b').locator('.nm').boundingBox();
-  const onto = await box('source-a').boundingBox();
+  const onto = await box('kept_words').boundingBox();
   await page.mouse.move(carried.x + 4, carried.y + 4);
   await page.mouse.down();
   await page.mouse.move(carried.x + 12, carried.y + 4);
   await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 });
   await page.waitForTimeout(100);
-  check('a_box_that_cant_take_it_doesnt_offer', (await box('source-a').locator('.card.hot').count()) === 0 && (await page.locator('.stage[data-offering]').count()) === 0);
+  check('a_box_that_cant_take_it_doesnt_offer', (await box('kept_words').locator('.card.hot').count()) === 0 && (await page.locator('.stage[data-offering]').count()) === 0);
   await page.mouse.up();
-  await until('it slid clear', () => apart('source-a', 'source-b'), Boolean);
+  await until('it slid clear', () => apart('kept_words', 'source-b'), Boolean);
   check('a_box_cant_lie_on_a_box', true);
-  check('the_other_box_stays', (await rows())['source-a'].x === stood['source-a'].x && (await rows())['source-a'].y === stood['source-a'].y, await rows());
+  check('the_other_box_stays', (await rows()).kept_words.x === stood.kept_words.x && (await rows()).kept_words.y === stood.kept_words.y, await rows());
   await until('where it ended, saved', rows, (now) => now['source-b'].x !== stood['source-b'].x || now['source-b'].y !== stood['source-b'].y);
 
   // Another writer's `at`, on a box, settles the same way; so does a file that arrives with two on one spot, as a converted project does, with no input changing.
@@ -361,7 +362,8 @@ function linesOf(text, name) {
   await page.mouse.move(corner.x + 60, corner.y + 6, { steps: 6 });
   await page.mouse.up();
   await until('the width written', rows, (now) => now.knobs.w && now.knobs.w !== widthBefore);
-  check('corner_is_only_layout', (await field(/aspect_ratio: (\S+)/)) === '"3:4"');
+  // Pulled wider, it takes the nearest shape its tool makes (2a50453b1), and its width with it.
+  check('corner_takes_its_shape', (await field(/aspect_ratio: (\S+)/)) !== '"3:4"', await field(/aspect_ratio: (\S+)/));
   seen.width_before_reshape = widthBefore;
 
   // Beats: one text and a duration slider each; add, remove, down to the one that always stays; what else a beat holds stays.
