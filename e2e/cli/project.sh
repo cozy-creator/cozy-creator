@@ -532,7 +532,7 @@ render "$T" hero -n 2 || check "version text: render: $(tail -c 300 "$OUT/render
 sed -i 's/A red door/A blue door/' "$T/project.yaml"
 render "$T" hero || check "version text: again: $(tail -c 300 "$OUT/render.txt")"
 J '[.versions[].text] == ["A red door.", "A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: $(held "$T" hero | jq -c '[.versions[].text]')"
-[ "$(grep -c 'text: A ' "$T/project.lock")" = 2 ] || check "version text: stored where it didn't change: $(grep 'text: ' "$T/project.lock")"
+[ "$(grep -cE 'text: "?A ' "$T/project.lock")" = 2 ] || check "version text: stored where it didn't change: $(grep 'text: ' "$T/project.lock")"
 cozy project -p "$T" delete hero --version 1 > /dev/null || check "version text: discard"
 cozy project -p "$T" reclaim --yes > /dev/null 2>&1 || check "version text: reclaim"
 J '[.versions[].text] == ["A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: what held it went: $(held "$T" hero | jq -c '[.versions[].text]')"
