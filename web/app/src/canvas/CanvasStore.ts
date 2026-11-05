@@ -4,9 +4,10 @@ import { type Action, Outbox } from "../api/outbox"
 import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, ProjectState, Row, Run, Standing, Tool } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
+import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { asName, freeName, nameKey } from "./names"
-import { heightFor, madeHere, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, widthFor } from "./shown"
 
 export type ElementData = { name: string }
 export type ElementNode = Node<ElementData, "element" | "entity">
@@ -197,6 +198,11 @@ export class CanvasStore {
   private landings = new Set<string>()
   /** A position of ours that the stream hasn't echoed: it wins until then. */
   private masks = new Map<string, Row>()
+  private gliding = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Boxes to clear of what they lie on, as soon as this turn's changes are in. */
+  private unsettled = new Set<string>()
+  /** When each of this page's moves was answered, by name. */
+  private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
   private moving = new Map<string, Row>()
   private movesOwed = false
@@ -285,10 +291,15 @@ export class CanvasStore {
     if (this.rows && this.flow) this.reconcile()
   }
 
-  /** `GET canvas`: every row. */
-  applyCanvas(cards: Record<string, Row>) {
+  /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
+  applyCanvas(cards: Record<string, Row>, began = 0) {
     const first = !this.rows
-    this.rows = new Map(Object.entries(cards))
+    const rows = new Map(Object.entries(cards))
+    for (const [name, at] of this.movedAt) {
+      const mine = this.rows?.get(name)
+      if (at >= began && mine) rows.set(name, mine)
+    }
+    this.rows = rows
     if (first) {
       if (this.state && this.flow) this.reconcile()
       return
@@ -303,6 +314,7 @@ export class CanvasStore {
       if (row) {
         this.rows.set(name, row)
         this.applyRow(name, row)
+        if (!this.masks.has(name)) this.unsettle(name)
       } else {
         this.rows.delete(name)
       }
@@ -431,6 +443,9 @@ export class CanvasStore {
     if (!this.seen) {
       this.seen = true
       this.onFirstRead?.(present.size > 0)
+      this.separate()
+    } else {
+      for (const { name } of fresh) this.unsettle(name)
     }
   }
 
@@ -555,6 +570,78 @@ export class CanvasStore {
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
     this.flow?.updateNode(id, { measured: { width, height } })
+    this.unsettle(key)
+  }
+
+  // Keeping clear: no box lies on another
+
+  /** Its place and size, from what every tab holds alike. */
+  private boxOf(name: string): Box | null {
+    const id = this.ids.get(name)
+    const view = this.views.get(name)
+    const node = id ? this.flow?.getNode(id) : undefined
+    const row = this.rows?.get(name)
+    if ((!node && !row) || !view) return null
+    // A row is what the page last said of it, and a node may not have heard yet.
+    const w = row?.w ?? node?.width ?? widthFor(view)
+    return { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) }
+  }
+
+  private field(besides?: Set<string>): Field {
+    const field = new Field()
+    for (const name of this.ids.keys()) {
+      const box = besides?.has(name) ? null : this.boxOf(name)
+      if (box) field.add(name, box)
+    }
+    return field
+  }
+
+  /** Slides there, briefly. */
+  private glide(name: string, at: { x: number; y: number }) {
+    const id = this.ids.get(name)
+    if (!id) return
+    clearTimeout(this.gliding.get(id))
+    this.flow?.updateNode(id, { position: at, className: "glide" })
+    this.gliding.set(id, setTimeout(() => this.flow?.updateNode(id, { className: undefined }), GLIDE_MS))
+  }
+
+  private toClear(name: string, field: Field, box: Box) {
+    const spot = clearSpot(box, field)
+    if (spot.x === box.x && spot.y === box.y) return box
+    this.glide(name, spot)
+    const row = { x: Math.round(spot.x), y: Math.round(spot.y), w: box.w }
+    if (!this.views.get(name)?.placing) this.move(name, row)
+    return { ...box, ...spot }
+  }
+
+  private unsettle(name: string) {
+    if (!this.seen) return
+    if (!this.unsettled.size) queueMicrotask(() => this.settle())
+    this.unsettled.add(name)
+  }
+
+  /** What arrived or changed its size lying on something goes to the nearest clear place, by name order, so every tab does the same. What's held in a drag waits for its drop. */
+  private settle() {
+    const names = [...this.unsettled].filter((name) => this.ids.has(name) && !this.dragging.has(name)).sort()
+    this.unsettled.clear()
+    if (!names.length) return
+    const field = this.field(new Set(names))
+    for (const name of names) {
+      const box = this.boxOf(name)
+      if (box) field.add(name, this.toClear(name, field, box))
+    }
+  }
+
+  /** Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes, so nothing goes out of date. */
+  private separate() {
+    const field = this.field()
+    for (const name of [...this.ids.keys()].sort()) {
+      const box = this.boxOf(name)
+      if (!box) continue
+      field.remove(name, box)
+      if ([...field.under(box).keys()].some((other) => other < name)) field.add(name, this.toClear(name, field, box))
+      else field.add(name, box)
+    }
   }
 
   /** What's selected now. */
@@ -691,6 +778,7 @@ export class CanvasStore {
 
   private removeNode(name: string) {
     const id = this.ids.get(name)
+    this.unsettled.delete(name)
     this.views.delete(name)
     this.ids.delete(name)
     if (id) {
@@ -926,7 +1014,11 @@ export class CanvasStore {
       if (dragged.some((held) => held.contains(el))) continue
       const card = el.closest<HTMLElement>(".card[data-asset]")
       if (!card) continue
-      this.setHot(this.resolveName(card.dataset.asset ?? ""))
+      const name = this.resolveName(card.dataset.asset ?? "")
+      const view = this.views.get(name)
+      // Only a box being made takes anything: what's made, approved or only words is just in the way.
+      if (!view || !makes(view) || faceOf(view) !== "edit") break
+      this.setHot(name)
       const own = el.closest("[data-drop-target]") ?? card.querySelector("[data-drop-target]")
       return (own && this.dropTargets.get(own)) ?? null
     }
@@ -1031,7 +1123,15 @@ export class CanvasStore {
 
   addPlacing(key: string, name: string, placing: Placing, at: Row, opts: { naming: boolean; preview?: string }) {
     this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview, landing: true })
-    this.flow?.addNodes(this.node(key, at))
+    this.flow?.addNodes(this.node(key, this.clearOf(key, at)))
+  }
+
+  /** `at`, or the nearest place to it that's clear, for a box not on the canvas yet. Asked for, it stays where it can be seen. */
+  private clearOf(key: string, at: Row, inside?: Box): Row {
+    const view = this.views.get(key)
+    if (!view) return at
+    const w = at.w ?? widthFor(view)
+    return { ...at, ...clearSpot({ x: at.x, y: at.y, w, h: heightFor(view, w) }, this.field(), inside) }
   }
 
   /** The name it will get, as far as this page can tell: placing elements take theirs in the order they were dropped. */
@@ -1130,12 +1230,20 @@ export class CanvasStore {
     }
   }
 
+  /** Let go: each lands where it was let go, or if that's on another box, at the nearest clear place, and the other doesn't move. */
   dragStopped(nodes: ElementNode[]) {
-    for (const node of nodes) {
+    const names = nodes.map((node) => node.data.name)
+    const field = this.field(new Set(names))
+    for (const node of [...nodes].sort((a, b) => (a.data.name < b.data.name ? -1 : 1))) {
       const name = node.data.name
       this.dragging.delete(name)
       this.dragFrom.delete(name)
-      if (!this.views.get(name)?.placing) this.move(name, toRow(node))
+      const view = this.views.get(name)
+      if (!view) continue
+      const row = toRow(node)
+      const box = { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) }
+      if (!view.placing) this.move(name, row)
+      field.add(name, this.toClear(name, field, box))
     }
   }
 
@@ -1147,7 +1255,7 @@ export class CanvasStore {
       const id = this.ids.get(name)
       this.dragging.delete(name)
       this.dragFrom.delete(name)
-      if (from && id) this.flow?.updateNode(id, { position: from })
+      if (from && id) this.glide(name, from)
     }
   }
 
@@ -1158,7 +1266,10 @@ export class CanvasStore {
     const node = id ? this.flow?.getNode(id) : undefined
     if (!id || !node) return
     this.flow?.updateNode(id, { width })
-    if (keep) this.move(key, { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) })
+    if (!keep) return
+    this.move(key, { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) })
+    this.reshape(key)
+    this.unsettle(key)
   }
 
   /** Whatever's done to `name`, in its turn, under what it's called by then. Gone by then, there's nothing to do. */
@@ -1186,11 +1297,12 @@ export class CanvasStore {
    * A box, now, whatever the network is doing. `view` is all that's known of it; `ask` makes it in the project, in its turn. The name is the page's until
    * the answer: another writer may have taken it, and then the box takes the one it got. Refused, it goes and `refused` says why.
    */
-  place<T extends { name: string; etag?: string }>(wanted: string, view: Omit<ElementView, "name">, at: Row, ask: (once: AbortSignal) => Promise<T>, refused: (error: unknown) => void, done?: (name: string, answer: T) => void): string {
+  place<T extends { name: string; etag?: string }>(wanted: string, view: Omit<ElementView, "name">, dropped: Row, ask: (at: Row, once: AbortSignal) => Promise<T>, refused: (error: unknown) => void, done?: (name: string, answer: T) => void): string {
     const name = this.nameFor(wanted)
     const asset = view.asset && { ...view.asset, name }
     this.adding += 1
     this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
+    const at = this.clearOf(name, dropped)
     this.rows?.set(name, at)
     this.editing.set(null)
     const node = this.node(name, at)
@@ -1200,7 +1312,7 @@ export class CanvasStore {
       if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
     }
     this.outbox.add<T>({
-      send: ask,
+      send: (once) => ask(at, once),
       done: (answer) => {
         this.served.set(node.id, answer.name)
         // Another writer took the name, unless a rename has moved it on since.
@@ -1233,7 +1345,9 @@ export class CanvasStore {
     const id = this.ids.get(key)
     if (!id) return
     this.masks.set(key, row)
+    this.rows?.set(key, row)
     this.moving.set(id, row)
+    this.movedAt.set(key, NOT_YET)
     this.sendMoves()
   }
 
@@ -1253,7 +1367,14 @@ export class CanvasStore {
       },
       done: () => {
         this.movesOwed = false
-        for (const [id, row] of sent) if (this.moving.get(id) === row) this.moving.delete(id)
+        const at = performance.now()
+        for (const [id, row] of sent) {
+          const name = this.namesById.get(id) ?? ""
+          if (this.moving.get(id) === row) {
+            this.moving.delete(id)
+            this.movedAt.set(name, at)
+          }
+        }
         if ([...this.moving.keys()].some(answered)) this.sendMoves()
       },
       refused: (error) => {
@@ -1262,6 +1383,7 @@ export class CanvasStore {
         for (const id of sent.keys()) {
           this.moving.delete(id)
           this.masks.delete(this.namesById.get(id) ?? "")
+          this.movedAt.delete(this.namesById.get(id) ?? "")
         }
         if (this.projectId) void this.client.canvas(this.projectId).then(({ cards }) => this.applyCanvas(cards), () => {})
       },

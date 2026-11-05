@@ -305,6 +305,18 @@ code {
 .card.hot .tl {
   outline: 2px solid var(--ember);
   outline-offset: 2px;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--ember) 22%, transparent);
+  transition: box-shadow 90ms ease-out;
+}
+/* What's held over a box that takes it is going in: it draws back, so the box is what you see. */
+.stage[data-offering] .react-flow__node.dragging .card {
+  transform: scale(0.7);
+  opacity: 0.55;
+  transition: transform 90ms ease-out, opacity 90ms ease-out;
+}
+/* Let go, it slides: back from a box that took its name, or off one it can't lie on. */
+.react-flow__node.glide {
+  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 .dot {
   width: 7px;

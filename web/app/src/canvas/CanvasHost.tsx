@@ -69,7 +69,7 @@ function ProjectSync({ id }: { id: string }) {
     }
   }, [store, client, id, queries, state, tools])
   useEffect(() => {
-    if (canvas) store.applyCanvas(canvas.cards)
+    if (canvas) store.applyCanvas(canvas.cards, canvas.began)
   }, [store, canvas])
   // A file that doesn't read, said once, and gone when it does: someone's still saving it.
   useEffect(() => {
@@ -219,34 +219,14 @@ function Canvas({
     return flow.screenToFlowPosition({ x: (left + right) / 2, y: box.top + box.height / 2 })
   }, [flow])
 
-  // A click puts a box in the middle of what's visible, or the nearest place clear of what's there, so none lands hidden under another.
-  const clearSpot = useCallback(
-    (width: number, height: number) => {
-      const { x: middle, y } = visibleCentre()
-      const box = stage.current!.getBoundingClientRect()
-      const leftmost = flow.screenToFlowPosition({ x: (document.querySelector(".tools")?.getBoundingClientRect().right ?? box.left) + 24, y: box.top }).x
-      const rightmost = flow.screenToFlowPosition({ x: (document.querySelector(".drawer")?.getBoundingClientRect().left ?? box.right) - 24, y: box.top }).x
-      const spot = { x: Math.round(middle - width / 2), y: Math.round(y - height / 2) }
-      for (let tries = 0; tries < 60; tries++) {
-        const under = flow.getIntersectingNodes({ ...spot, width, height })
-        if (!under.length) break
-        spot.x = Math.round(Math.max(...under.map((node) => node.position.x + (node.width ?? CARD_WIDTH))) + 32)
-        if (spot.x + width > rightmost) {
-          spot.x = Math.round(leftmost)
-          spot.y += Math.round(height + 48)
-        }
-      }
-      return spot
-    },
-    [flow, visibleCentre],
-  )
+  // A click puts a box in the middle of what's visible, and `place` keeps it clear of what's there.
   const placeTool = useCallback(
     (tool: Tool) => {
       const width = tool.controls.some((control) => control.type === "timeline") ? 720 : tool.kind === "video" ? 360 : 300
-      const { x, y } = clearSpot(width, width * 0.75)
-      placer.addTool(tool, { x: x + CARD_WIDTH / 2, y: y + 16 })
+      const { x, y } = visibleCentre()
+      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
     },
-    [placer, clearSpot],
+    [placer, visibleCentre],
   )
 
   const picked = useCallback(
@@ -255,10 +235,10 @@ function Canvas({
       event.target.value = ""
       if (!files.length) return
       const columns = Math.ceil(Math.sqrt(files.length))
-      const { x, y } = clearSpot(columns * CARD_WIDTH, Math.ceil(files.length / columns) * CARD_WIDTH)
-      placer.add(files, { x: x + CARD_WIDTH / 2, y: y + 16 })
+      const { x, y } = visibleCentre()
+      placer.add(files, { x: x - (columns * CARD_WIDTH) / 2 + CARD_WIDTH / 2, y: y - (Math.ceil(files.length / columns) * CARD_WIDTH) / 2 + 16 })
     },
-    [placer, clearSpot],
+    [placer, visibleCentre],
   )
 
   const drop = useCallback(
@@ -314,13 +294,16 @@ function Canvas({
   const dragging = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       const { clientX, clientY } = pointOf(event)
-      store.dropTargetAt(clientX, clientY, draggedEls(nodes))?.over(nodes.map((node) => node.data.name), clientX, clientY)
+      const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
+      target?.over(nodes.map((node) => node.data.name), clientX, clientY)
+      stage.current?.toggleAttribute("data-offering", Boolean(target))
     },
     [store],
   )
   const dragStop = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       carrying(false)
+      stage.current?.removeAttribute("data-offering")
       const { clientX, clientY } = pointOf(event)
       const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
       if (!target) {

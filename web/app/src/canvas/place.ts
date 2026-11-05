@@ -63,7 +63,7 @@ export class Placer {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const fields = startingFields(tool)
     const key = `asset-${crypto.randomUUID()}`
-    const body = { tool: tool.id, at, name: tool.local ? undefined : tool.label, fields, kind: tool.kind }
+    const body = { tool: tool.id, name: tool.local ? undefined : tool.label, fields, kind: tool.kind }
     const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
     const row: Asset = { name: "", standing: "missing", kind: tool.kind, noun: tool.kind === "video" ? "take" : "version", tool: tool.id, versions: 0, status: "", fields, timeline }
     const wanted = tool.local ? (tool.id.split("/").at(-1) ?? "").split("@")[0] : tool.label
@@ -71,7 +71,7 @@ export class Placer {
       asName(wanted),
       { asset: row },
       at,
-      async (once) => this.client.newAsset(await this.project(), key, body, once),
+      async (clear, once) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, once),
       (error) => say(`Couldn't place ${tool.label}`, error),
     )
   }
@@ -85,7 +85,7 @@ export class Placer {
       asName(file.name),
       { landed: { sha256: file.sha256, field: file.field } },
       at,
-      async (once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at }, once),
+      async (clear, once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear }, once),
       (error) => say(`Couldn't take out ${file.name}`, error),
       (name) => {
         if (description) void this.store.setFields(name, { description })

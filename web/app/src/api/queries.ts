@@ -55,7 +55,10 @@ export const toolsQuery = (client: Client, q: string, on: string | null, project
 export const canvasQuery = (client: Client, id: string) =>
   queryOptions({
     queryKey: ["canvas", id],
-    queryFn: ({ signal }) => client.canvas(id, signal),
+    queryFn: async ({ signal }) => {
+      const began = performance.now()
+      return { ...(await client.canvas(id, signal)), began }
+    },
     structuralSharing: false,
   })
 
