@@ -3,7 +3,8 @@
 // to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. Scrubbing opens no <video>; playing is Range with ?media=,
 // at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
-// run. With the Hub unreachable it still answers. 300 elements, measured: seen.scale.
+// run. With the Hub unreachable it still answers. 300 elements, measured: seen.scale. The project tabs: as many as fit, still while the
+// window resizes, "N more" opening All projects with the rest first, a search there, and + ready for a new name.
 //   node see.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
@@ -12,7 +13,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
-const { join } = require('path');
+const { basename, join } = require('path');
 const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
@@ -523,6 +524,97 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   } finally {
     await api(`/v1/projects/${made.id}`, { method: 'DELETE' }).catch(() => {});
     if (made.path?.includes('web-see-scale-')) rmSync(made.path, { recursive: true, force: true });
+  }
+
+  // The tabs: as many as fit the bar, each where it was and as wide while the window resizes, the rest behind "N more", which opens All
+  // projects with them first; a search there, by name and by folder; and + ready for a new one's name.
+  const trees = ['alder', 'birch', 'cedar', 'dogwood', 'elm', 'fir', 'ginkgo', 'hazel', 'ironwood', 'juniper', 'larch', 'maple', 'oak', 'pine', 'rowan', 'spruce'];
+  const forest = mkdtempSync(join(tmpdir(), 'web-tabs-'));
+  const listed = async () => (await api('/v1/projects?limit=200')).projects.filter((row) => !row.missing);
+  let ours = [];
+  try {
+    for (const tree of trees) execFileSync(COZY, ['project', 'new', join(forest, tree)], { stdio: 'ignore' });
+    ours = (await listed()).filter((row) => row.path.startsWith(forest));
+    check('tabs_projects_made', ours.length === trees.length, ours.map((row) => row.name));
+    const tab = await context.newPage();
+    watch(tab);
+    tab.setDefaultTimeout(STEP_MS);
+    const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+    await tab.setViewportSize({ width: 1000, height: 800 });
+    await tab.goto(`${base}/#/projects/${ours.find((row) => row.name === 'spruce').id}`);
+    await tab.waitForSelector('nav.ptabs a.ptab.on');
+    // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
+    await tab.evaluate(() => {
+      window.frames_seen = [];
+      new ResizeObserver(() => window.frames_seen.push([...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => {
+        const { x, width } = link.getBoundingClientRect();
+        return { id: link.getAttribute('href').split('/').pop(), on: link.classList.contains('on'), x, width };
+      }))).observe(document.querySelector('.top'));
+    });
+    const frame = () => tab.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const bar = () => tab.evaluate(() => ({
+      tabs: [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => link.getAttribute('href').split('/').pop()),
+      more: document.querySelector('nav.ptabs .ptab.more')?.textContent ?? null,
+    }));
+    const narrow = await bar();
+    const all = await listed();
+    const hidden = all.map((row) => row.id).filter((held) => !narrow.tabs.includes(held));
+    await snap('tabs-narrow');
+    check('tabs_overflow', hidden.length > 0 && narrow.more === `${hidden.length} more`, { narrow, projects: all.length });
+    for (let width = 1000; width <= 1800; width += 40) {
+      await tab.setViewportSize({ width, height: 800 });
+      await frame();
+    }
+    const wide = await bar();
+    await snap('tabs-wide');
+    check('tabs_more_when_wider', wide.tabs.length > narrow.tabs.length && wide.tabs.slice(0, narrow.tabs.length).join() === narrow.tabs.join(), { narrow, wide });
+    check('tabs_wide_counts_hidden', wide.more === (all.length > wide.tabs.length ? `${all.length - wide.tabs.length} more` : null), wide);
+    for (let width = 1800; width >= 1000; width -= 40) {
+      await tab.setViewportSize({ width, height: 800 });
+      await frame();
+    }
+    const frames = await tab.evaluate(() => window.frames_seen);
+    const first = new Map();
+    const moved = [];
+    for (const seen of frames) for (const one of seen) {
+      const was = first.get(one.id) ?? (first.set(one.id, one), one);
+      if (Math.abs(was.width - one.width) > 0.5 || (!one.on && Math.abs(was.x - one.x) > 0.5)) moved.push({ was, now: one });
+    }
+    check('tabs_still_while_resizing', frames.length >= 40 && moved.length === 0, { frames: frames.length, moved: moved.slice(0, 5) });
+    check('tabs_back_when_narrower', (await bar()).tabs.join() === narrow.tabs.join(), { narrow, now: await bar() });
+
+    // "N more": All projects, those with no tab first.
+    await tab.click('nav.ptabs .ptab.more');
+    await tab.waitForSelector('.drawer .list li');
+    const drawn = () => tab.evaluate(() => [...document.querySelectorAll('.drawer .list li a')].map((link) => link.getAttribute('href').split('/').pop()));
+    const order = await drawn();
+    await snap('tabs-more');
+    const line = await tab.evaluate(() => [...document.querySelectorAll('.drawer .list li')].findIndex((item) => item.classList.contains('tabbed')));
+    check('tabs_more_lists_hidden_first', order.slice(0, hidden.length).sort().join() === [...hidden].sort().join() && line === hidden.length, { hidden, order, line });
+
+    // Found by name, and by a folder no name holds.
+    const find = tab.locator('.drawer input[aria-label="Search projects"]');
+    await find.fill('ginkgo');
+    const ginkgo = ours.find((row) => row.name === 'ginkgo').id;
+    await until('one found by name', drawn, (now) => now.join() === ginkgo).then(() => check('tabs_find_by_name', true), (error) => check('tabs_find_by_name', false, error.message));
+    await find.fill(basename(forest));
+    const ids = ours.map((row) => row.id).sort().join();
+    await until('ours found by folder', drawn, (now) => [...now].sort().join() === ids).then(() => check('tabs_find_by_folder', true), (error) => check('tabs_find_by_folder', false, error.message));
+    await snap('tabs-found');
+    await find.fill('');
+
+    // +: the New field, ready, from the drawer open and from the canvas.
+    const naming = () => tab.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+    await tab.click('nav.ptabs .ptab.new');
+    await until('+ in the drawer names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus_in_drawer', true), (error) => check('tabs_plus_in_drawer', false, error.message));
+    await tab.click('.drawer [aria-label="Close"]');
+    await tab.waitForSelector('.drawer', { state: 'detached' });
+    await tab.click('nav.ptabs .ptab.new');
+    await until('+ names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus', true), (error) => check('tabs_plus', false, error.message));
+    await tab.close();
+  } finally {
+    for (const row of ours) await api(`/v1/projects/${row.id}`, { method: 'DELETE' }).catch(() => {});
+    rmSync(forest, { recursive: true, force: true });
   }
 
   // Each refusal's words have had their moment to arrive.
