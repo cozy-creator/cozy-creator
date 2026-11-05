@@ -302,6 +302,7 @@ export interface Import {
   source: string
   name?: string
   at?: Row
+  description?: string
   remove_background?: boolean
   on?: string
 }
