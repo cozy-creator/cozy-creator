@@ -305,7 +305,7 @@ impl Machines {
                 outcome.reason = Some(v1::Reason {
                     code: "update_unapplied".into(),
                     message: format!("{name}'s update could not verify the requested mode: {error}"),
-                    origin: "machine".into(), detail: String::new(),
+                    origin: "machine".into(), detail: String::new(), next: Vec::new(),
                 });
                 return outcome;
             }
