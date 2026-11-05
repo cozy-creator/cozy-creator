@@ -197,7 +197,7 @@ YAML
   t=0
   until collected; do
     [ $t -lt 600 ] || fail "a: not all collected in $t s: $(c 'project status' | tail -4 | paste -sd'|' | cut -c1-300)"
-    c "project status" > "$OUT/a-back.txt" 2>&1
+    c "project status 2>&1" > "$OUT/a-back.txt"
     grep -E 'on box until|rendering on box|all here' "$OUT/a-back.txt" >> "$OUT/a-held.txt"
     t=$((t + 5)); sleep 3
   done
