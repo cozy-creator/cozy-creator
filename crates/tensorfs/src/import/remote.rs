@@ -17,7 +17,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 
 use crate::err::{refuse, Code, Refusal, Result};
-use crate::fetch::ask::{self, Patience};
+use crate::fetch::ask;
 use crate::fetch::policy::{base_host, SourcePolicy};
 use crate::fetch::{Client, GetError};
 
@@ -331,13 +331,12 @@ impl<'a> Scope<'a> {
             )?,
             None => Client::new(self.policy(p)),
         };
-        let patience = Patience::default();
         let work = self.until(async {
             let mut sink = |at, frame: &[u8]| {
                 self.check()?;
                 sink(at, frame)
             };
-            let got = ask::get(&client, url, &headers, self.token.as_deref(), &patience, range, &mut sink).await;
+            let got = ask::get(&client, url, &headers, self.token.as_deref(), range, &mut sink).await;
             let what = |status| format!("{url}: HTTP {status}");
             match got.map_err(GetError::refusal)? {
                 Ok(headers) => Ok(headers.get("link").and_then(|v| v.to_str().ok()).and_then(next_link)),

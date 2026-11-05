@@ -110,9 +110,8 @@ impl SigV4 {
     /// The headers that sign `request` (all of its headers) at `now`, seconds since the epoch.
     fn sign(&self, request: &Request<'_>, now: u64) -> Result<Vec<(String, String)>> {
         let failed = |detail: String| Refusal { code: Code::CREDENTIAL_REQUIRED, detail: format!("SigV4: {detail}") };
-        let uri: hyper::Uri = request.url.parse().map_err(|e| failed(format!("{}: {e}", request.url)))?;
-        let authority = uri.authority().ok_or_else(|| failed(format!("{} names no host", request.url)))?;
-        let default_port = matches!((uri.scheme_str(), authority.port_u16()), (Some("https"), Some(443)) | (Some("http"), Some(80)));
+        let uri = super::net::Url::parse(request.url).map_err(|e| failed(format!("{}: {e}", request.url)))?;
+        let name = uri.host_str().ok_or_else(|| failed(format!("{} names no host", request.url)))?;
         let stamp = utc_stamp(now);
         let scope = format!("{}/{}/s3/aws4_request", &stamp[..8], self.region);
         let payload = request.payload.unwrap_or("UNSIGNED-PAYLOAD");
@@ -127,8 +126,9 @@ impl SigV4 {
         for (name, value) in request.headers.iter().filter(|(name, _)| !UNSIGNED.iter().any(|u| name.eq_ignore_ascii_case(u))) {
             headers.entry(name.to_ascii_lowercase()).or_default().push(value.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" "));
         }
-        let host = if default_port { authority.host() } else { authority.as_str() };
-        headers.entry("host".into()).or_insert_with(|| vec![host.to_owned()]);
+        // `port` is None at the scheme's default, as the Host header leaves it out.
+        let host = uri.port().map_or_else(|| name.to_owned(), |port| format!("{name}:{port}"));
+        headers.entry("host".into()).or_insert_with(|| vec![host]);
         for (name, value) in &own {
             headers.insert(name.clone(), vec![value.clone()]);
         }

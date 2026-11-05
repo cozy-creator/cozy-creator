@@ -245,6 +245,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+ "tokio",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3968,14 +3978,12 @@ name = "tensorfs"
 version = "0.19.1"
 dependencies = [
  "async-trait",
+ "backon",
  "base64 0.23.1",
  "bytes",
  "faer",
  "futures",
  "hmac",
- "http-body-util",
- "hyper",
- "hyper-util",
  "libc",
  "libloading 0.9.0",
  "pep440_rs",
@@ -3985,6 +3993,7 @@ dependencies = [
  "rand_chacha",
  "rand_distr",
  "rayon",
+ "reqwest",
  "rustix",
  "rustls",
  "serde",
@@ -3992,8 +4001,6 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "tokio",
- "tokio-rustls",
- "tower-service",
  "tracing",
  "tracing-subscriber",
  "webpki-roots",
