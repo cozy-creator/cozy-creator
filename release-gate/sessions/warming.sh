@@ -332,7 +332,7 @@ PROMPTS=("a lighthouse keeper's chart table under a brass lamp, gouache" "a glas
 P=0
 sdxl_input() {  # sdxl_input <file> <steps>: a request with its own prompt and seed
   jq -n --arg p "${PROMPTS[$P]}" --argjson s "$((RANDOM * 7 + P))" --argjson n "$2" \
-    '{megapixels: 1.0, aspect_ratio: "1:1", steps: $n, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$1"
+    '{megapixels: 1.0, aspect_ratio: "1:1", steps: $n, guidance: 7.0, hidiffusion: false, prompt: $p, seed: $s}' > "$1"
   P=$(( (P + 1) % ${#PROMPTS[@]} ))
 }
 gpu_parent() { jq -r '[.[] | select(.kind == "executor" and .nvidia_fds == 0)] | .[0].pid // empty' "$1"; }
