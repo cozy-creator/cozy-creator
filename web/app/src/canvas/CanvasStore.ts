@@ -174,6 +174,8 @@ export class CanvasStore {
   private aliases = new Map<string, string>()
   private subscribers = new Map<string, Set<() => void>>()
   private shapes = new Map<string, string>()
+  /** Each view's stack, by the view: a change is a new view. */
+  private stacks = new WeakMap<ElementView, number>()
   private pauses = new Map<string, ReturnType<typeof setTimeout>>()
   private asked = new Set<number>()
   /** What's been said of a render that never reached a machine. */
@@ -606,7 +608,7 @@ export class CanvasStore {
     const view = this.views.get(name)!
     const width = row.w ?? widthFor(view)
     const height = heightFor(view, width)
-    this.shapes.set(name, `${width}:${height}`)
+    this.shapes.set(name, this.shapeOf(name, width, height))
     return {
       id,
       type: view.entity ? "entity" : "element",
@@ -634,7 +636,7 @@ export class CanvasStore {
     if (!id || !view || !node) return
     const width = node.width ?? widthFor(view)
     const height = heightFor(view, width)
-    const shape = `${width}:${height}:${this.stacked(key)}`
+    const shape = this.shapeOf(key, width, height)
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
     this.flow?.updateNode(id, { measured: { width, height } })
@@ -643,10 +645,22 @@ export class CanvasStore {
 
   // Keeping clear: no box lies on another
 
-  /** How many are in the stack under it: its tool and what's on that. */
+  /** What a box takes on the canvas, as one key: the same from its first node on, so only a real change moves anything. */
+  private shapeOf(name: string, width: number, height: number) {
+    return `${width}:${height}:${this.stacked(name)}`
+  }
+
+  /** How many are in the stack under it: its tool and what's on that. Read once per view, as every box's is read wherever one moves. */
   stacked(name: string): number {
-    const tool = this.get(name)?.asset?.tool
-    return addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
+    const view = this.get(name)
+    if (!view) return 0
+    let held = this.stacks.get(view)
+    if (held === undefined) {
+      const tool = view.asset?.tool
+      held = addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
+      this.stacks.set(view, held)
+    }
+    return held
   }
 
   /** A box and the stack under it, which nothing else lies on. With none it's only the box. */

@@ -2743,6 +2743,12 @@ input[type="checkbox"] {
   line-height: 1.45;
 }
 
+/* Clear of the tools while they're open, so a note never covers what's to be dragged from there. */
+@media (min-width: 641px) {
+  body:has(.tools:not(.shut)) .notes {
+    left: calc(8px + 188px * var(--ui) + 16px + 2px + 8px);
+  }
+}
 @media (max-width: 640px) {
   .notes {
     left: 12px;
