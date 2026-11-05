@@ -68,6 +68,7 @@ jobs:
             release-gate/sessions
             release-gate/ref
             release-gate/suites/tensord
+            release-gate/suites/disk
             e2e/candidates
             e2e/capabilities
             e2e/publish

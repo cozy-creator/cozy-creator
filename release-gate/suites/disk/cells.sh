@@ -15,6 +15,7 @@
 #   disk-room  a render that needs more than the disk can make free (H3 bf16 here) fails `machine_disk_full` while it
 #              prepares, naming the sizes and `--disk-gb`, with nothing downloaded; SDXL again, which fits only by
 #              evicting, runs and its warnings name what was evicted
+# DISK_INSTALLS=no (the `disk` session) leaves out disk-envs and torch-layer: their installs are most of the suite's time.
 T=$OUT/disk; mkdir -p "$T"
 use() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r --arg s "$1" '.status | [$s, .disk_free_bytes, .disk_models_bytes,
   .disk_environments_bytes, .disk_runtime_bytes] | @tsv' >> "$T/use.tsv"; }
@@ -23,6 +24,7 @@ released() { "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] |
 logs() { "$CLI" machine logs "$M" tensord -n 0 > "$T/tensord.log" 2>&1; grep -c -- "$1" "$T/tensord.log"; }
 
 use start; bad=()
+if [ "${DISK_INSTALLS:-yes}" != no ]; then
 for p in sdxl qwen-image-2 minimax-h3 seedvr2; do
   for r in $(released "$p"); do
     "$CLI" package install "$p@$r" --on "$M" -y > "$T/install-$p-$r.log" 2>&1 || bad+=("$p@$r install failed"); use "$p@$r"
@@ -40,6 +42,7 @@ most=$(awk -F'\t' 'NR > 1 && p - $2 > m {m = p - $2; w = $1} {p = $2} END {print
 [ "$own" = 0 ] && [ "${most%% *}" -lt $((1 << 30)) ] \
   && expect torch-layer PASS "every install took the machine's Torch; the largest took $(( ${most%% *} >> 20 )) MiB (${most#* })" \
   || expect torch-layer FAIL "$own installs brought their own Torch; the largest took $(( ${most%% *} >> 20 )) MiB (${most#* }); $(grep -h -m2 'installs its own' "$T"/install-*.log "$T/tensord.log" | tr '\n' ' ')"
+fi
 
 held=$(basename "$(mktemp -u "$T/run-XXXXXX")")
 run_submit "$T" "$held" run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, held through a full disk" steps:=8 seed:=$((R + 700)) > /dev/null
@@ -80,8 +83,8 @@ after=$(tail -1 "$T/use.tsv" | cut -f3); grew=$(( after > before ? after - befor
 fits=$(step sdxl-room run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, after a full disk" steps:=1 seed:=$((R + 703)))
 said=$("$CLI" --json --full run show "$(cat "$T/sdxl-room.number")" --once 2>/dev/null | jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' | grep -m1 'evicted' || true)
 evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
-# A disk bought larger than asked may hold H3 bf16 whole: then only SDXL's half is judged.
-if [ "$total" -gt $((180 << 30)) ]; then
+# H3 bf16 is 130 GiB: a disk that could hold it whole once all else is evicted (a CPU pod gets 160 GB for 100) judges SDXL's half only.
+if [ "$total" -gt $((135 << 30)) ]; then
   [ "$fits" = completed ] && expect disk-room PASS "a $((total >> 30)) GiB disk holds H3 bf16 (not judged); SDXL ran: ${said:-no eviction needed}" \
     || expect disk-room FAIL "SDXL $fits: $(run_get "$T" sdxl-room .reason.message)"
 elif [ "$big$code" = failedmachine_disk_full ] && [[ $why == *--disk-gb* ]] && [ "$grew" -lt $((1 << 30)) ] && [ "$fits" = completed ] \
