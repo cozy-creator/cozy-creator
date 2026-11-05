@@ -346,7 +346,7 @@ impl Fetch {
             let last = if moved == 0 { String::new() } else { format!(", last moved {}", clock(moved)) };
             let attempt = match unanswered {
                 0 => String::new(),
-                unanswered => format!(", no answer from the origin, attempt {}/{}", unanswered + 1, tensorfs::fetch::DEAD_PEER),
+                unanswered => format!(", {unanswered} attempts in a row moved nothing (of {})", tensorfs::fetch::ATTEMPTS),
             };
             format!("{label}: {} of {} chunks to fetch, {} of their {} received ({}){last}{attempt}",
                 absent.len(), objects.len(), gib(reached), gib(length), phases.join(", "))

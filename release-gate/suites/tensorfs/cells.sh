@@ -1,13 +1,12 @@
 # Suite `tensorfs` (gate.sh --suite tensorfs): TensorFS moves weights as fast as before and dedups.
 #   straggler        on this host: `tfs download` of BiRefNet clean and through straggler.py, which drips its first
-#                    objects as a slow storage GET does (10-01): TensorFS must re-ask a straggler, not wait out its tail;
-#                    then with three cold objects, each ask of which sends 2 MiB and drips the rest, as a cold R2
-#                    object stalls again at a later MiB for whoever asks: re-asked every time, however often before
-#                    (tfs-138: one 64 MiB chunk dripped unjudged for 5-8.5 min on a 3090 pod, runs 20867/20878);
-#                    then with three crawling objects, each ask of which sends 64 KiB and drips, as R2's coldest do:
-#                    read as parallel ranges, not crawled through (tfs-141: 15-60 min per chunk, gate 41623354412);
-#                    then with sixteen, whose parts come at full speed: many write at once, and no download may hang
-#                    behind them (tfs-143: gate 41823522538's stopped for good at 1207 of 11847 MiB)
+#                    objects as a slow storage GET does (10-01); then with three cold objects, each ask of which sends
+#                    2 MiB and drips the rest (tfs-138: one 64 MiB chunk dripped for 5-8.5 min, runs 20867/20878); then
+#                    with three crawling objects, each ask of which sends 64 KiB and drips, as R2's coldest do (tfs-141:
+#                    15-60 min per chunk read whole, gate 41623354412); then with sixteen, whose 8 MiB ranges come at
+#                    full speed: many write at once, and no download may hang behind them (tfs-143: gate 41823522538's
+#                    stopped for good at 1207 of 11847 MiB). Each lands, and a slowed object costs at most about one
+#                    8 MiB range at the drip rate: its ranges are read side by side (check.py)
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
 #                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
 #                    a scale of 1, as kohya's and ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs, this format,
