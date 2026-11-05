@@ -805,7 +805,7 @@ mkdir -p "$S"
 cat > "$S/project.yaml" <<YAML
 version: 3
 assets:
-  slow: {tool: $here/project/shots.py/shoot, seconds: 30}
+  slow: {tool: $here/project/shots.py/slow, seconds: 30}
 YAML
 cozy project -p "$S" render slow --queue --on local > "$OUT/discards.txt" 2>&1 || check "discards: slow: $(tail -c 300 "$OUT/discards.txt")"
 for _ in $(seq 100); do
