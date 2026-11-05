@@ -227,6 +227,8 @@ function calciferMb() {
   const reads = { whole: 0, heads: 0, assets: 0, whole_bytes: 0 };
   /** Each asset as the page last read it alone, and when. */
   const readAlone = new Map();
+  /** What the page read and found gone. */
+  const readGone = new Set();
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (request.method() !== 'GET') return;
@@ -237,7 +239,10 @@ function calciferMb() {
     if (answer.request().method() !== 'GET') return;
     const { pathname } = new URL(answer.url());
     if (pathname === `/v1/projects/${id}`) answer.body().then((body) => { reads.whole_bytes = Math.max(reads.whole_bytes, body.length); }, () => {});
-    if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() }), () => {});
+    if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => {
+      if (asset) readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() });
+      else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
+    }, () => {});
   });
   const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png`, timeout: 60_000 }).catch(() => {}) : Promise.resolve());
@@ -439,6 +444,8 @@ function calciferMb() {
 
   check('never_reloaded', await page.evaluate(() => window.notReloaded === true));
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
+  // A box deleted is read once more, which is how the page hears it's gone. Nothing else should be.
+  check('only_what_was_deleted_reads_as_gone', [...readGone].every((name) => made.includes(name)), [...readGone]);
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
