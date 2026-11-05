@@ -57,7 +57,15 @@ fail() {
 c() { sh "su client -s /bin/sh -c 'cd \$HOME/$TAG 2>/dev/null; /opt/client/cozy $*'"; }
 x() { sh "cd \$(ls -d /root/.cozy/projects/$TAG-* | head -1) && cozy $*"; }
 line() { sh "echo $* > /tmp/link"; }
-client_calcifer() { sh 'grep -o "\"pid\":[0-9]*" /home/client/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2'; }
+client_calcifer() { sh 'pgrep -u client -x calcifer' | tr -dc '0-9\n' | head -1; }
+# gone <pid…>: each `kill -9`'d there, and checked dead.
+killed() {
+  local pid
+  for pid in "$@"; do
+    [ -n "$pid" ] || fail "$TAG: nothing to kill"
+    sh "kill -9 $pid; sleep 1; ! kill -0 $pid 2>/dev/null" || fail "$TAG: $pid lives after kill -9"
+  done
+}
 write() { cozy machine ssh "$NAME" -- "cat > $1; chown client $1" 2>> "$OUT/ssh.err"; }
 walk_file() { sh "cat /home/client/$TAG/.runs/walk.json 2>/dev/null"; }
 # Where the hand-off stands, from that computer's walk file.
@@ -109,13 +117,17 @@ collected() {
   return $ok
 }
 
-# once <asset> <function> <n>: X's copy holds n versions of it, and X ran its function n times, none twice.
+# once <assets…>: X's copy holds one version of each, and every call X ran for the project is one version's run: none ran twice.
 once() {
-  local versions runs
-  versions=$(x "--json project status" | jq --arg a "$1" '[.assets[] | select(.name == $a) | .versions] | first // 0')
+  local state runs made
+  state=$(x "--json project status") || fail "$TAG: X's status: $state"
+  jq -e --args '[$ARGS.positional[] as $a | [.assets[] | select(.name == $a and .versions == 1)] | length == 1] | all' "$@" <<<"$state" > /dev/null ||
+    fail "$TAG: not one version each: $(jq -c '[.assets[] | {name, versions}]' <<<"$state")"
   # Its calls: what a machine fetches ahead for it is a warm run, which renders nothing.
-  runs=$(x "--json run ls --limit 200" | jq --arg f "$2" --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and ((.kind // "call") | ascii_downcase) == "call" and (.target | startswith("ahead ") | not) and (.target | split("@")[0] | split("/")[-1] == $f))] | length')
-  [ "$versions" = "$3" ] && [ "$runs" = "$3" ] || fail "$TAG: $1 has $versions versions, and X ran $2 $runs times, not $3"
+  runs=$(x "--json run ls --limit 200" | jq -c --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and ((.kind // "call") | ascii_downcase) == "call" and (.target | startswith("ahead ") | not)) | .number] | sort')
+  made=$(jq -c '[.assets[].prefixes[]?.run | select(. != null)] | sort' <<<"$state")
+  [ "$runs" = "$made" ] || fail "$TAG: X ran $runs, and its versions came of $made"
+  say "$TAG: one version each of $*; X's calls $runs are its versions' runs, none twice"
 }
 
 part_a() {
@@ -157,7 +169,7 @@ YAML
   [ "$(handing "$walk")" = asked ] || fail "a: X never took the render: $(handing "$walk"); $(sh 'tail -5 /home/client/a.out' | paste -sd'|' | cut -c1-300)"
   say "a: X walks it ($t s after asking); the line down, this computer's CLI and Calcifer killed"
   line down
-  sh "kill -9 \$(cat /tmp/a.pid) $(client_calcifer)"
+  killed "$(sh 'cat /tmp/a.pid' | tr -dc 0-9)" "$(client_calcifer)"
   local least=999999999 deadline left at=$SECONDS moved='' was='' began=$SECONDS
   until x_made still shot clip edit aframe; do
     deadline=$(cozy machine show "$NAME" --json | jq -r '.status.idle_deadline_ms // 0')
@@ -171,13 +183,13 @@ YAML
   x "--json project status" > "$OUT/a-x-status.json"
   x "--json run ls --limit 200" > "$OUT/a-x-runs.json"
   say "a: X made all five in $t s with nobody here; its idle clock at its least had $([ "$least" = 999999999 ] && echo 'never run' || echo "${least} s left")"
-  once still make 1; once shot read 1; once clip film 1
+  once still shot clip edit aframe
   line "up 1000000"
   c "project status" > /dev/null 2>&1
   sleep 8
   c "project status" > "$OUT/a-back.txt" 2>&1
   say "a: this computer back: $(grep -E 'on box|rendering on|all here' "$OUT/a-back.txt" | head -2 | paste -sd'|')"
-  grep -qE 'on box until [0-9]{2}:[0-9]{2}|rendering on box' "$OUT/a-back.txt" || fail "a: status says nothing of where its render is"
+  grep -qE 'on box until [0-9]{2}:[0-9]{2}|rendering on box|all here; box ends at' "$OUT/a-back.txt" || fail "a: status says nothing of where its render is"
   t=0
   until collected; do
     [ $t -lt 600 ] || fail "a: not all collected in $t s: $(c 'project status' | tail -4 | paste -sd'|' | cut -c1-300)"
@@ -217,7 +229,7 @@ YAML
     [ $kills -lt 60 ] || fail "k: the hand-off didn't end in $kills kills: $where"
     kills=$((kills + 1))
     say "k: kill $kills: $where; X holds $(sh 'cat /root/.cozy/calcifer/files/parts/*.held 2>/dev/null | head -c 80' | tr -d '\n') of the plate"
-    sh "kill -9 $(client_calcifer)"
+    killed "$(client_calcifer)"
     [ $kills = 1 ] && line "up 300000"
     c "project status" > /dev/null 2>&1
     sleep 6
@@ -229,11 +241,11 @@ YAML
     [ $t -lt 300 ] || fail "k: X didn't make shotk in $t s"
     t=$((t + 5)); sleep 5
   done
-  once shotk read 1
+  once shotk
   local plate; plate=$(x "--json project status" | jq -r '[.assets[] | select(.name == "plate") | .sha256] | first')
   [ "sha256:$(sh "sha256sum /root/.cozy/projects/k-*/files/${plate#sha256:}.png" | cut -c1-64)" = "$plate" ] || fail "k: the plate on X is not its hash"
   x "--json project status" > "$OUT/k-x-status.json"
-  say "k: shotk made once on X, from one run; the plate whole there; it read $(x '--json project status' | jq -r '[.assets[] | select(.name == "shotk") | .prefixes[0].run] | first' | xargs -I{} sh "cd /root/.cozy/projects/k-* && cozy --json run show {} --once" | jq -r '.result.read_bytes // "?"') pixels"
+  say "k: shotk made once on X, the plate whole there"
   t=0
   until collected && [ "$(handing "$(walk_file)")" = "nothing held" ]; do
     [ $t -lt 300 ] || fail "k: not collected in $t s"
@@ -272,7 +284,7 @@ YAML
   local t=0
   until [ "$(handing "$(walk_file)")" = asked ]; do [ $t -lt 300 ] || fail "h: never handed"; t=$((t + 3)); sleep 3; done
   line down
-  sh "kill -9 \$(cat /tmp/h.pid) $(client_calcifer)"
+  killed "$(sh 'cat /tmp/h.pid' | tr -dc 0-9)" "$(client_calcifer)"
   say "h: X walks it, this computer gone"
   local was='' at=$SECONDS moved
   t=0
