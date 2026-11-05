@@ -216,7 +216,9 @@ impl Donor for Native {
     /// Design §4.6: `free < H` gives back up to `2H - free`, wherever a foreign program or this
     /// card's own fill put it, and speculation regrows at a pass boundary only once `2H` is free.
     fn tick(&mut self, table: &Table, row: Row, idle: u64) -> bool {
-        if std::mem::take(&mut self.asked) {
+        // Right after a give its taker may not have taken it yet: the next look comes as soon.
+        let gave = std::mem::take(&mut self.asked);
+        if gave {
             table.stop_asking(row);
         }
         if !self.shared || idle == 0 {
@@ -238,11 +240,11 @@ impl Donor for Native {
             0
         };
         let _ = working::peer::pressure(self.device, want != 0, want == 0 && free >= 2 * reserve);
-        self.short = if want != 0 { self.short + 1 } else { 0 };
+        self.short = if want != 0 { self.short + 1 } else if gave { self.short } else { 0 };
         if want != 0 {
             table.ask(row, want);
             self.asked = true;
         }
-        want != 0
+        want != 0 || gave
     }
 }
