@@ -1,4 +1,5 @@
-//! Takeover (cl-746): `cozy project render … --on X` makes X the render's holder. X's Calcifer walks it, with the code any walk has,
+//! Takeover (cl-746), no longer taken: Paul, 11-05, a project stays on this computer and a render is its function calls. What's here serves a
+//! hold left from before, and goes with his yes. `cozy project render … --on X` made X the render's holder. X's Calcifer walks it, with the code any walk has,
 //! keeps what it makes and drives any other machine named; this computer's Calcifer hands it over, then only collects. No job waits on
 //! this computer: it may sleep, lose its network or be closed, and X goes on. A machine ends 15 minutes after its last job, so what isn't
 //! collected by then is lost; `status` and `render` say when that is.
@@ -205,9 +206,7 @@ pub(super) async fn render(api: &Arc<Api>, project: &Arc<Project>, asked: &Runs,
             let said = format!("{} holds this project's render: ask it of {0}, or here once it ends", held.machine);
             return Err(Refusal(Error::new(Kind::Conflict, "project_held", said).next(status_next(&project.folder)[0].clone())));
         }
-        // A render going here keeps going here, and drives what this one names too. So does local code from outside the folder, which only this
-        // computer can read: it's installed on the machine as it's called.
-        (None, Some(first)) if !*project.walking.lock().expect("walking lock") && !code_outside(api, project) => first.clone(),
+        // A render is walked here, whatever its tools: a machine only runs the calls it's sent, with the files each is given.
         _ => return Ok(None),
     };
     // A rental still booting takes it: the watcher hands it over once it answers.
@@ -480,12 +479,6 @@ async fn hand(api: &Arc<Api>, project: &Project, link: &Link, machine: &str, eta
         }
         gave = true;
     }
-}
-
-/// Whether a tool names local code outside the project's folder, which a walk on another machine can't reach.
-fn code_outside(api: &Arc<Api>, project: &Project) -> bool {
-    let named = super::local_code_named(api, &project_id(&project.folder.dir)).unwrap_or_default();
-    named.iter().any(|(_, path)| !path.starts_with(&project.folder.dir))
 }
 
 /// The local code the project's tools name, each file by its path in the folder.
