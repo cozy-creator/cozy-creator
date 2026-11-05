@@ -83,20 +83,30 @@ enum Verb {
     Add(assets::Add),
     Set(assets::Set),
     /// Delete assets, as the X on a box: their work stops, what they made stays until `reclaim`, and it prints what puts each back.
-    #[command(after_help = "Example:\n  cozy project delete whale\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line it printed")]
+    /// With `--version`, discards takes of one asset instead.
+    #[command(after_help = "Examples:\n  cozy project delete whale\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line it printed\n  cozy project delete whale --version 2 --version 3")]
     Delete {
         /// The assets.
         #[arg(required = true, value_name = "NAME")]
         names: Vec<String>,
+        /// Discard this take or version: it's off the asset, its number is never used again, and its files stay until `reclaim`. Repeatable.
+        #[arg(long = "version", value_name = "N")]
+        versions: Vec<u32>,
     },
-    /// Put a deleted asset back as it was, where it was, with what it made.
-    #[command(after_help = "Example:\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line `delete` printed")]
+    /// Put back a deleted asset as it was, where it was, with what it made, or with `--version` a take it discarded.
+    #[command(after_help = "Examples:\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line `delete` printed\n  cozy project restore whale --version 2")]
     Restore {
         /// The asset.
         name: String,
         /// What `delete` printed for it.
-        #[arg(value_name = "KEPT")]
-        kept: String,
+        #[arg(value_name = "KEPT", required_unless_present = "versions", conflicts_with = "versions")]
+        kept: Option<String>,
+        /// The take or version to put back. Repeatable.
+        #[arg(long = "version", value_name = "N")]
+        versions: Vec<u32>,
+        /// And its approval, as `delete --version` printed.
+        #[arg(long, requires = "versions")]
+        approved: bool,
     },
     Render(Render),
     /// Approve a take or version: its hash goes on the asset's line in project.yaml.
@@ -250,8 +260,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Upgrade { status } => return upgrade(ctx, args.path.as_ref(), status.as_ref()),
         Verb::Add(add) => return assets::add(ctx, args.path.as_ref(), add).await,
         Verb::Set(set) => return assets::set(ctx, args.path.as_ref(), set).await,
-        Verb::Delete { names } => return assets::delete(ctx, args.path.as_ref(), names).await,
-        Verb::Restore { name, kept } => return assets::restore(ctx, args.path.as_ref(), name, kept).await,
+        Verb::Delete { names, versions } => return assets::delete(ctx, args.path.as_ref(), names, versions).await,
+        Verb::Restore { name, kept, versions, approved } => return assets::restore(ctx, args.path.as_ref(), name, kept, versions, approved).await,
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;

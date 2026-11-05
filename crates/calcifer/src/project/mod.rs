@@ -44,7 +44,7 @@ use axum::{
         IntoResponse as _, Response,
         sse::{self, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures_util::{FutureExt as _, Stream, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use protocol::{
@@ -161,6 +161,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
         .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete).put(assets::put_back))
+        .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard).put(assets::undiscard))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/archive", get(archive::archive))
@@ -1255,14 +1256,14 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
     };
     let mut counted = BTreeSet::new();
     (lock.assets.iter())
-        .filter(|(key, held)| doc.find(key).is_none() && !held.versions.is_empty())
+        .filter(|(key, held)| doc.find(key).is_none() && held.on_record().next().is_some())
         .map(|(key, held)| {
-            let files = held.versions.iter().flat_map(|version| version.files.values());
+            let files = held.on_record().flat_map(|version| version.files.values());
             let freed: Vec<&String> = files.filter(|sha256| !kept.contains(*sha256) && counted.insert((*sha256).clone())).collect();
             Orphan {
                 name: if held.name.is_empty() { key.clone() } else { held.name.clone() },
                 kind: held.kind.clone(),
-                versions: held.versions.len() as u32,
+                versions: held.on_record().count() as u32,
                 bytes: freed.iter().map(|sha256| folder.size(lock, sha256)).sum(),
                 renamed_to: match empty(&held.kind).as_slice() {
                     [only] => Some((*only).to_owned()),
@@ -1277,6 +1278,8 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
 fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
     let mut kept: BTreeSet<String> = lock.named(|key| doc.find(key).is_some()).into_iter().map(str::to_owned).collect();
     kept.extend(doc.assets.iter().filter_map(|asset| asset.pin.clone()));
+    let clips = lock.assets.iter().filter(|(key, _)| doc.find(key).is_some()).flat_map(|(_, held)| &held.versions).flat_map(|version| &version.clips);
+    kept.extend(clips.filter_map(|clip| clip.sha256.clone()));
     kept
 }
 
@@ -1321,7 +1324,12 @@ async fn reclaim(
                 let _ = std::fs::remove_file(folder.dir.join(FsPath::new(&name).with_extension("otio")));
             }
         }
-        folder.update_lock(|lock| lock.assets.retain(|key, _| doc.find(key).is_some())).map_err(Refusal)?;
+        folder
+            .update_lock(|lock| {
+                lock.assets.retain(|key, _| doc.find(key).is_some());
+                lock.assets.values_mut().for_each(|held| held.discarded.clear());
+            })
+            .map_err(Refusal)?;
     }
     let (files, bytes, unrecorded) = folder.sweep(&kept, &recorded, asked.yes).map_err(Refusal)?;
     if asked.yes {
@@ -1366,7 +1374,7 @@ async fn rename(
     };
     let mut back = lock.clone();
     back.untombstone(&asked.from);
-    let old = back.asset(&asked.from).filter(|held| !held.versions.is_empty());
+    let old = back.asset(&asked.from).filter(|held| held.on_record().next().is_some());
     let stands = !free && doc.find(&asked.from).is_some();
     if old.is_none() && stands {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
@@ -1376,7 +1384,7 @@ async fn rename(
         return Err(Refusal(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status")));
     }
     let to = doc.assets[i].name.clone();
-    if old.is_some() && lock.asset(&to).is_some_and(|held| !held.versions.is_empty()) {
+    if old.is_some() && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
     }
     let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
@@ -3226,7 +3234,7 @@ impl Walk {
             self.folder().update_lock(|lock| {
                 for (from, to) in std::mem::take(&mut lock.walk.renames) {
                     // A render of it since made versions of its own: nothing overwrites those.
-                    match lock.asset(&to).is_some_and(|held| !held.versions.is_empty()) {
+                    match lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
                         true => self.say(Event::Warning { message: format!("{from} stays {from}: {to} has versions of its own now"), name: None }),
                         false => renamed(lock, &from, &to),
                     }
@@ -3783,7 +3791,9 @@ impl Walk {
             lock.walk.runs.remove(&run.number);
             lock.walk.landing.retain(|row| row.run != run.number);
             if let (Some(coming), true) = (&version, lost.is_some()) {
-                lock.asset_mut(&coming.name, "").versions.retain(|version| version.number != coming.number);
+                let held = lock.asset_mut(&coming.name, "");
+                held.versions.retain(|version| version.number != coming.number);
+                held.discarded.retain(|version| version.number != coming.number);
             }
         })?;
         let Some(Coming { name, number, take }) = version else { return Ok(()) };

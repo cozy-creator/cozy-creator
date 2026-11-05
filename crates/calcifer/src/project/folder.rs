@@ -340,6 +340,9 @@ pub struct Asset {
     pub versions: Vec<Version>,
     #[serde(default)]
     pub numbered: u32,
+    /// Versions set aside: off the list, on record until `reclaim`, each number still given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded: Vec<Version>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tried: Option<Tried>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -364,6 +367,28 @@ pub struct Tried {
 impl Asset {
     pub fn version(&self, number: u32) -> Option<&Version> {
         self.versions.iter().find(|version| version.number == number)
+    }
+
+    /// Its versions and those discarded.
+    pub fn on_record(&self) -> impl Iterator<Item = &Version> {
+        self.versions.iter().chain(&self.discarded)
+    }
+
+    /// Version `number` off the list and on record.
+    pub fn discard(&mut self, number: u32) {
+        self.numbered = self.numbered.max(number);
+        if let Some(at) = self.versions.iter().position(|version| version.number == number) {
+            self.discarded.push(self.versions.remove(at));
+            self.discarded.sort_by_key(|version| version.number);
+        }
+    }
+
+    /// What `discard` set aside of `number`, back in its place.
+    pub fn undiscard(&mut self, number: u32) {
+        if let Some(at) = self.discarded.iter().position(|version| version.number == number) {
+            self.versions.push(self.discarded.remove(at));
+            self.versions.sort_by_key(|version| version.number);
+        }
     }
 }
 
@@ -627,8 +652,7 @@ impl Lock {
     /// The lock as it's written. A file holds a row only for what can't be read again from a file here: where it stays, its parts, or, with nothing
     /// else naming it, its whole hash, which `project.yaml` holds only the start of.
     pub fn written(&self) -> String {
-        let mut named = self.named(|_| true);
-        named.extend(self.runs.iter().map(|row| row.sha256.as_str()));
+        let named = self.recorded();
         let mut value = serde_json::to_value(self).expect("a lock serializes");
         if let Some(files) = value["files"].as_object_mut() {
             files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
@@ -648,7 +672,7 @@ impl Lock {
 
     /// The row under `key` set aside: its versions stay, an orphan's, and that name starts with none.
     pub fn bury(&mut self, key: &str) {
-        let Some(mut held) = self.assets.remove(key).filter(|held| !held.versions.is_empty()) else { return };
+        let Some(mut held) = self.assets.remove(key).filter(|held| held.on_record().next().is_some()) else { return };
         if held.name.is_empty() {
             held.name = key.to_owned();
         }
@@ -656,9 +680,10 @@ impl Lock {
         self.assets.insert(free, held);
     }
 
-    /// Every sha256 a version or a run has on record here, of any asset: all `reclaim` may delete, once nothing uses it.
+    /// Every sha256 a version or a run has on record here, of any asset, discarded too: all `reclaim` may delete, once nothing uses it.
     pub fn recorded(&self) -> BTreeSet<String> {
-        self.named(|_| true).into_iter().chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
+        let discarded = self.assets.values().flat_map(|held| &held.discarded).flat_map(|version| version.files.values()).map(String::as_str);
+        self.named(|_| true).into_iter().chain(discarded).chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
     }
 
     /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that.
@@ -800,7 +825,7 @@ impl Folder {
             format!("{LOCK} can't be read and is kept as {BROKEN}")
         } else if !self.dir.join(LOCK).exists() {
             format!("{LOCK} is gone")
-        } else if lock.runs.is_empty() && lock.assets.values().all(|held| held.versions.is_empty()) {
+        } else if lock.runs.is_empty() && lock.assets.values().all(|held| held.on_record().next().is_none()) {
             format!("{LOCK} lists no versions")
         } else {
             return None;
@@ -815,8 +840,7 @@ impl Folder {
             file.sha256.clone_from(sha256);
             file.path = format!("{FILES}/{}{}", hex_of(sha256), file.ext);
         }
-        let named: Vec<String> = lock.named(|_| true).into_iter().map(str::to_owned).chain(lock.runs.iter().map(|row| row.sha256.clone())).collect();
-        for sha256 in named {
+        for sha256 in lock.recorded() {
             let file = lock.files.entry(sha256.clone()).or_default();
             file.path = format!("{FILES}/{}{}", hex_of(&sha256), file.ext);
             file.sha256 = sha256;
@@ -1229,8 +1253,7 @@ impl Folder {
     pub fn drop_unused(&self, sha256s: &[String]) -> Result<(), Error> {
         let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
-        let mut named = lock.named(|_| true);
-        named.extend(lock.runs.iter().map(|row| row.sha256.as_str()));
+        let named = lock.recorded();
         for sha256 in sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())) {
             let Some(file) = lock.files.get(sha256) else { continue };
             let at = self.path(&file.path);

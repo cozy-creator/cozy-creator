@@ -134,6 +134,7 @@ upgrades
 old_landing
 lock_kept
 lost_lock
+discards
 text_assets
 memo
 pins
@@ -709,6 +710,111 @@ eval "$line" > /dev/null || check "deleted: restore: $line"
 cozy project -p "$D" delete kept > /dev/null || check "deleted: delete again"
 cozy project -p "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: reclaim: $(tail -c 300 "$OUT/deleted.txt")"
 { J '(.orphans // []) == []' <<< "$(status "$D")" && [ "$(ls "$D/files" | wc -l)" = 0 ]; } || check "deleted: reclaim left: $(ls "$D/files"), $(status "$D" | jq -c .orphans)"
+}
+
+# A take discarded: off its box at once, its number never given again, its files there until `reclaim`, and nothing made again.
+discards() {
+step "a project: a take discarded, and put back"
+local T=$OUT/discards second third line back code
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 3
+assets:
+  hero: {tool: $here/project/draw.py/draw, instructions: One of three.}
+  scene: {tool: $here/project/draw.py/draw, instructions: <hero> in a doorway.}
+YAML
+render "$T" hero -n 3 || check "discards: render: $(tail -c 300 "$OUT/render.txt")"
+cozy project -p "$T" approve hero 3 > /dev/null || check "discards: approve"
+render "$T" scene || check "discards: render scene: $(tail -c 300 "$OUT/render.txt")"
+second=$(take_file "$T" hero image 1); third=$(take_file "$T" hero image 2)
+line=$(cozy project -p "$T" delete hero --version 2) || check "discards: delete the middle"
+[ "$line" = "cozy project -p $T restore hero --version 2" ] || check "discards: delete printed: $line"
+J '[.versions[].number] == [1, 3] and .discarded == [2] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: after the middle: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
+[ -n "$(file_at "$T" "$second")" ] || check "discards: its file went at once"
+grep -q '^    discarded:' "$T/project.lock" || check "discards: the lock has no record of it"
+back=$(cozy --json project -p "$T" delete hero --version 3) || check "discards: delete the approved: $back"
+J --arg back "cozy project -p $T restore hero --version 3 --approved" '.approved and .stands == 1 and .stale == ["scene"] and .next == [$back]' <<< "$back" || check "discards: the approved's answer: $back"
+! grep -q 'approved:' "$T/project.yaml" || check "discards: approved: stayed"
+J '[.versions[].number] == [1] and .discarded == [2, 3] and .asset.standing == "current"' <<< "$(held "$T" hero)" || check "discards: after the approved: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded, standing: .asset.standing}')"
+J '.asset.standing == "out_of_date" and (.versions | length) == 1' <<< "$(held "$T" scene)" || check "discards: its reader: $(held "$T" scene | jq -c .asset)"
+eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: restore the approved"
+eval "$line" > /dev/null || check "discards: restore the middle: $line"
+J '[.versions[].number] == [1, 2, 3] and (.discarded // []) == [] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: Undo: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
+grep -q 'approved:' "$T/project.yaml" || check "discards: Undo left no approved:"
+J '.asset.standing == "current"' <<< "$(held "$T" scene)" || check "discards: its reader after Undo: $(held "$T" scene | jq -c .asset)"
+render "$T" all || check "discards: render all: $(tail -c 300 "$OUT/render.txt")"
+[ "$(made "$T" hero) $(made "$T" scene)" = "3 1" ] || check "discards: something ran again: $(counts "$T")"
+
+step "a project: a discarded number is never given again, and reclaim clears only what nothing names"
+cozy project -p "$T" delete hero --version 2 --version 3 > "$OUT/discards.txt" || check "discards: delete of two"
+[ "$(grep -c ' restore hero --version ' "$OUT/discards.txt")" = 2 ] || check "discards: delete of two printed: $(cat "$OUT/discards.txt")"
+cozy project -p "$T" import "${second:7:12}" kept > /dev/null || check "discards: import what another asset then names"
+render "$T" hero -n 1 || check "discards: another: $(tail -c 300 "$OUT/render.txt")"
+J '[.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: a number given again: $(held "$T" hero | jq -c '[.versions[].number]')"
+J '.files >= 1 and .next == ["cozy project reclaim --yes"]' <<< "$(cozy --json project -p "$T" reclaim)" || check "discards: reclaim lists: $(cozy --json project -p "$T" reclaim)"
+[ -n "$(file_at "$T" "$third")" ] || check "discards: reclaim with no --yes deleted"
+cozy project -p "$T" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards: reclaim: $(tail -c 300 "$OUT/discards.txt")"
+[ -z "$(file_at "$T" "$third")" ] || check "discards: reclaim left what nothing names"
+[ -n "$(file_at "$T" "$second")" ] || check "discards: reclaim took what another asset names"
+J '(.discarded // []) == [] and [.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: after reclaim: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
+code=0; cozy project -p "$T" restore hero --version 3 > "$OUT/discards.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'reclaim' "$OUT/discards.txt"; } || check "discards: restore after reclaim (exit $code): $(cat "$OUT/discards.txt")"
+render "$T" hero -n 1 || check "discards: after reclaim: $(tail -c 300 "$OUT/render.txt")"
+J '[.versions[].number] == [1, 4, 5]' <<< "$(held "$T" hero)" || check "discards: reclaim gave a number again: $(held "$T" hero | jq -c '[.versions[].number]')"
+
+step "a project: a box with its last take discarded stays, with none, until it's put back"
+printf '  lone: {tool: %s/project/draw.py/draw, instructions: Only one.}\n' "$here" >> "$T/project.yaml"
+render "$T" lone || check "discards: lone: $(tail -c 300 "$OUT/render.txt")"
+back=$(cozy --json project -p "$T" delete lone --version 1) || check "discards: the last: $back"
+J '.stands == null' <<< "$back" || check "discards: the last's answer: $back"
+J '.asset.standing == "missing" and .asset.versions == 0 and .discarded == [1]' <<< "$(held "$T" lone)" || check "discards: the box: $(held "$T" lone | jq -c .asset)"
+eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: restore the last"
+J '.asset.standing == "current"' <<< "$(held "$T" lone)" || check "discards: the last back: $(held "$T" lone | jq -c .asset)"
+
+step "a project: a take built on a discarded one stands, and a cut's clip keeps its file"
+local C=$OUT/discards-cut look first
+mkdir -p "$C"; plate "$C/look.mp4" testsrc2 440 800
+printf 'version: 3\nassets: {}\n' > "$C/project.yaml"
+look=$(prefix "$C" "$C/look.mp4")
+cat > "$C/project.yaml" <<YAML
+version: 3
+assets:
+  clash:
+    tool: $here/project/shots.py/shoot
+    summary: Two lights meet on <look>.
+  look:
+    approved: $look
+  film:
+    tool: cozy/edit
+    tracks:
+      - clips:
+          - <clash>
+YAML
+render "$C" all || check "discards: cut: $(tail -c 300 "$OUT/render.txt")"
+first=$(take_file "$C" clash video 0)
+render "$C" clash --take 1 --in 3 || check "discards: --take 1: $(tail -c 300 "$OUT/render.txt")"
+cozy project -p "$C" delete clash --version 1 > /dev/null || check "discards: delete what's built on"
+J '[.versions[].number] == [2] and .versions[0].kept.take == 1 and .asset.standing == "current"' <<< "$(held "$C" clash)" || check "discards: what's built on it: $(held "$C" clash | jq -c '{versions, standing: .asset.standing}')"
+cozy project -p "$C" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards: reclaim with a clip: $(tail -c 300 "$OUT/discards.txt")"
+[ -n "$(file_at "$C" "$first")" ] || check "discards: reclaim took what a cut's clip names"
+
+step "a project: a take still being made is canceled, not discarded"
+local S=$OUT/discards-going
+mkdir -p "$S"
+cat > "$S/project.yaml" <<YAML
+version: 3
+assets:
+  slow: {tool: $here/project/shots.py/shoot, seconds: 30}
+YAML
+cozy project -p "$S" render slow --queue --on local > "$OUT/discards.txt" 2>&1 || check "discards: slow: $(tail -c 300 "$OUT/discards.txt")"
+for _ in $(seq 100); do
+  cozy project -p "$S" delete slow --version 1 > "$OUT/discards.txt" 2>&1 || true
+  grep -q 'still being made' "$OUT/discards.txt" && break
+  sleep 0.1
+done
+{ grep -q 'still being made' "$OUT/discards.txt" && grep -q 'cozy project cancel slow' "$OUT/discards.txt"; } || check "discards: a running take: $(cat "$OUT/discards.txt")"
+cozy project -p "$S" cancel slow > /dev/null 2>&1 || check "discards: cancel"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$S")" && break; sleep 0.5; done
 }
 
 # The key: a run only when an asset has no state. What doesn't change it, what does, reverting, and what reads what.

@@ -544,6 +544,9 @@ pub struct Asset {
 pub struct AssetVersions {
     pub asset: Asset,
     pub versions: Vec<Version>,
+    /// The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded: Vec<u32>,
 }
 
 /// `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
@@ -607,6 +610,31 @@ pub struct AssetBack {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Card>,
+}
+
+/// `DELETE` and `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: a version discarded, or back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VersionMoved {
+    pub name: String,
+    pub number: u32,
+    /// `take` or `version`.
+    pub noun: String,
+    /// It's the approved one: `approved:` went with it, or came back with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
+    /// What the asset stands on now, else its newest. None: it has none left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stands: Option<u32>,
+    /// What is out of date now and wasn't.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<String>,
+}
+
+/// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` answered.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct VersionBack {
+    #[serde(default)]
+    pub approved: bool,
 }
 
 /// One version (a take, if it holds a video).

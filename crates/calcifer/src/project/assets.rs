@@ -1,6 +1,10 @@
 //! `/v1/projects/{id}/assets`: what a project holds, in the page's words. A tool dropped on the canvas, its inputs set one by one, gone
 //! and back. Each is one call the CLI sees at once, and `assetfile` alone knows how the file says it.
-use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use axum::{
     Json,
@@ -11,12 +15,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use protocol::{
     error::{Error, Kind},
-    project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Version as VersionRow},
+    project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Version as VersionRow, VersionBack, VersionMoved},
 };
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{Doc, IMPORT_KEPT_MS, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, listed, assetfile, model, now_ms};
+use super::{
+    Doc, IMPORT_KEPT_MS, Project, Tool, Walk, assetfile, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, listed, model, noun, now_ms, pin_in_file, stale_names,
+};
 use crate::api::{Api, Refusal, parse};
 
 /// What to call an asset with no name asked: the tool's last word, with no release.
@@ -117,7 +123,8 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
         })
         .collect();
-    Ok(Json(AssetVersions { asset, versions }))
+    let discarded = lock.asset(&asset.name).into_iter().flat_map(|held| &held.discarded).map(|version| version.number).collect();
+    Ok(Json(AssetVersions { asset, versions, discarded }))
 }
 
 /// `PATCH /v1/projects/{id}/assets/{name}`: its inputs set over what the file holds this moment. With `If-Match`, only if it is still
@@ -193,6 +200,89 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     project.asked.notify_one();
     let text = serde_json::to_string(&Deleted { lines: lines.into_inner() }).expect("what's deleted serializes");
     Ok(Json(AssetDeleted { name, text, at }))
+}
+
+/// `DELETE /v1/projects/{id}/assets/{name}/versions/{number}`: that version off the asset, at once. Its number stays given and its files on record
+/// until `reclaim`, and what's approved goes with it. What read it is out of date only as anything is when what it reads moves.
+pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)): Path<(String, String, String)>) -> Result<Json<VersionMoved>, Refusal> {
+    let project = api.projects.get(&api, &id)?;
+    let folder = &project.folder;
+    let number = number.parse().unwrap_or(0);
+    let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
+    let i = find(&doc, &name).map_err(Refusal)?;
+    let name = doc.assets[i].name.clone();
+    let noun = noun(&doc, &lock, i);
+    let Some(held) = lock.asset(&name).filter(|held| held.version(number).is_some()) else { return Err(Refusal(no_version(&lock, &name, noun, number))) };
+    let main = held.version(number).and_then(folder::Version::main);
+    let approved = doc.assets[i].pin.as_ref().is_some_and(|pin| main == Some(pin) && !held.versions.iter().any(|other| other.number != number && other.main() == Some(pin)));
+    let before = stale_names(&doc, &doc.stand(&lock));
+    if approved {
+        folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?;
+    }
+    folder.update_lock(|lock| lock.asset_mut(&name, "").discard(number)).map_err(Refusal)?;
+    moved(&api, &project, name, number, noun, approved, &before).await
+}
+
+/// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` set aside, back in its place. Its approval too, unless another has come since.
+pub(super) async fn undiscard(
+    State(api): State<Arc<Api>>,
+    Path((id, name, number)): Path<(String, String, String)>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<VersionMoved>, Refusal> {
+    let asked: VersionBack = parse(&body?)?;
+    let project = api.projects.get(&api, &id)?;
+    let folder = &project.folder;
+    let number = number.parse().unwrap_or(0);
+    let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
+    let i = find(&doc, &name).map_err(Refusal)?;
+    let name = doc.assets[i].name.clone();
+    let noun = noun(&doc, &lock, i);
+    let Some(version) = lock.asset(&name).and_then(|held| held.on_record().find(|version| version.number == number)) else {
+        let said = format!("{name} has no {noun} {number} to put back: `reclaim` clears what's discarded");
+        return Err(Refusal(Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy project status {name}"))));
+    };
+    let main = version.main().filter(|_| asked.approved && doc.assets[i].pin.is_none());
+    if let Some(sha256) = main {
+        pin_in_file(folder, &name, sha256).map_err(Refusal)?;
+    }
+    let before = stale_names(&doc, &doc.stand(&lock));
+    folder.update_lock(|lock| lock.asset_mut(&name, "").undiscard(number)).map_err(Refusal)?;
+    moved(&api, &project, name, number, noun, main.is_some(), &before).await
+}
+
+/// Why `name` has no version `number` to discard.
+fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error {
+    let key = name_key(name);
+    if lock.pending.values().any(|pending| name_key(&pending.asset) == key && pending.version.number == number) {
+        let said = format!("{name}'s {noun} {number} is still being made: canceling stops what it would spend");
+        return Error::new(Kind::Conflict, "version_running", said).next(format!("cozy project cancel {name}"));
+    }
+    let held = lock.asset(name);
+    if held.is_some_and(|held| held.discarded.iter().any(|version| version.number == number)) {
+        let said = format!("{name}'s {noun} {number} is already discarded");
+        return Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy project restore {name} --version {number}"));
+    }
+    let numbers: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
+    let said = match numbers.as_slice() {
+        [] => format!("{name} has no {noun} yet"),
+        numbers => format!("{name} has no {noun} {number}: it has {}", numbers.join(", ")),
+    };
+    Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy project status {name}"))
+}
+
+/// What a version going or coming back left: what's reading `name` looks again, a cut's film follows, and the answer.
+async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32, noun: &str, approved: bool, before: &BTreeSet<String>) -> Result<Json<VersionMoved>, Refusal> {
+    project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
+    project.asked.notify_one();
+    let (doc, lock) = (Doc::load(&project.folder).map_err(Refusal)?, project.folder.lock().map_err(Refusal)?);
+    let stand = doc.stand(&lock);
+    let i = find(&doc, &name).map_err(Refusal)?;
+    if doc.tool(i) == Some(Tool::Cut) {
+        Walk::new(api, project).film_follows(&doc, &stand, &lock, i).await;
+    }
+    let stands = stand[i].version().or(lock.asset(&name).and_then(|held| held.versions.last()).map(|version| version.number));
+    let stale = stale_names(&doc, &stand).into_iter().filter(|name| !before.contains(name)).collect();
+    Ok(Json(VersionMoved { name, number, noun: noun.to_owned(), approved, stands, stale }))
 }
 
 fn taken(name: &str) -> Error {

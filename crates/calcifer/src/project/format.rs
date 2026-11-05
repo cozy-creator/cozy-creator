@@ -873,7 +873,8 @@ impl Doc {
 
     /// `--take`, `--in`: what its adapter is told of the take a new one keeps, its files as records; None if it holds no video.
     pub fn keep(&self, i: usize, lock: &Lock, keeps: Keeps) -> Option<Value> {
-        let held = lock.asset(&self.assets[i].name)?.version(keeps.take)?;
+        // Discarded since it was asked, it's still on record, and reclaim waits for this render.
+        let held = lock.asset(&self.assets[i].name)?.on_record().find(|version| version.number == keeps.take)?;
         let video = lock.files.get(held.files.get("video")?)?;
         let latents = held.files.get("latents").and_then(|sha256| lock.files.get(sha256));
         let ends_s = if video.fps > 0.0 { video.frames as f64 / video.fps } else { 0.0 };
