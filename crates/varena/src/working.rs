@@ -2189,7 +2189,9 @@ pub fn pool_cancel_preparation(device: i32, pool: PoolId) -> Result<()> {
     Ok(())
 }
 pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
-    invalidate_eager_phase(device, "capture_preparation")?;
+    if bytes != 0 {  // Zero is a use of a recorded pool: an LM's token, inside its eager phase.
+        invalidate_eager_phase(device, "capture_preparation")?;
+    }
     let owner = initialize_owner(device)?;
     let wanted = rounded(bytes, owner.page())?;
     let keep = Protect { pool: Some(pool), ..Default::default() };

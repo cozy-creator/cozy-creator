@@ -501,6 +501,10 @@ def pool_follows_its_pass():
         torch.empty(16 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
     held = vt.stats(0)["pools_bytes"]
     assert 16 * MIB <= held <= 24 * MIB, vt.stats(0)
+    token = vt.phase_enter(0, "core/pool")  # A use of the pool leaves a measured pass measured.
+    vt.prepare_pool(pool, 0, 0)
+    vt.record_pool_stream(pool, torch.cuda.current_stream(0), 0)
+    assert vt.phase_leave(0, token, completed=True)["published"]
     graph.reset()
     settle()
     return {"pool_mib": held // MIB}
