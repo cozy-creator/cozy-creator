@@ -414,6 +414,8 @@ export class CanvasStore {
       const view = this.views.get(asset.name)
       if (view) {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
+        // What a new take's run warned of is said as it lands: a box's own mark is only seen opened.
+        if (this.hasRead && view.asset && asset.version !== view.asset.version) for (const line of warnings.get(asset.name) ?? []) if (!view.warnings?.includes(line)) say(line)
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (view.asked !== undefined && view.asked < this.began) change.asked = undefined
