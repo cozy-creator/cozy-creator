@@ -127,6 +127,7 @@ cut_versions
 by_asset
 hard_cut
 upgrades
+old_landing
 lock_kept
 text_assets
 memo
@@ -277,6 +278,14 @@ render "$U" all || check "upgrade: making it: $(tail -c 300 "$OUT/render.txt")"
 before=$(runs "$U")
 cozy project -p "$U" approve wall 1 > /dev/null 2>&1 || check "upgrade: approve wall"
 wall=$(take_file "$U" wall image 0); wall=${wall#sha256:}; wall=${wall:0:12}
+# What a format 2 lock said of the same, read while this cozy can read it.
+local was_lock
+old_row() { held "$U" "$1" | jq --arg n "$1" '{name: $n, kind: "image", versions: [.versions[] | {number, seed, runs, inputs: "old-key-\(.number)", made_by: {with: "local/draw/draw"}, files: (.files | map_values(.sha256))}]}'; }
+old_files() { held "$U" "$1" | jq '[.versions[].files[] | {(.sha256): {path, sha256}}] | add'; }
+was_lock=$(jq -n --argjson a "$(old_row hero_sheet)" --argjson b "$(old_row old_sheet)" --argjson c "$(old_row wall)" --argjson d "$(old_row poster)" \
+  --argjson files "$(jq -n --argjson a "$(old_files hero_sheet)" --argjson b "$(old_files old_sheet)" --argjson c "$(old_files wall)" --argjson d "$(old_files poster)" '$a + $b + $c + $d')" \
+  '{format: 2, files: $files, assets: {"hero sheet": $a, "old sheet": $b, wall: $c, poster: $d,
+    "table.1": {name: "table.1", kind: "image", versions: [{number: 7, inputs: "old-frame", files: {image: $c.versions[0].files.image}, made_by: {with: "cozy/frame"}}]}}}') || check "upgrade: what it holds: $(tail -c 300 "$OUT/held.err")"
 # What a format 2 file said of the same, and what its status said.
 cat > "$U/project.yaml" <<YAML
 # A hand's note.
@@ -314,12 +323,7 @@ assets:
     pieces:
       - <hero.old>
 YAML
-old_row() { held "$U" "$1" | jq --arg n "$1" '{name: $n, kind: "image", versions: [.versions[] | {number, seed, runs, inputs: "old-key-\(.number)", made_by: {with: "local/draw/draw"}, files: (.files | map_values(.sha256))}]}'; }
-old_files() { held "$U" "$1" | jq '[.versions[].files[] | {(.sha256): {path, sha256}}] | add'; }
-jq -n --argjson a "$(old_row hero_sheet)" --argjson b "$(old_row old_sheet)" --argjson c "$(old_row wall)" --argjson d "$(old_row poster)" \
-  --argjson files "$(jq -n --argjson a "$(old_files hero_sheet)" --argjson b "$(old_files old_sheet)" --argjson c "$(old_files wall)" --argjson d "$(old_files poster)" '$a + $b + $c + $d')" \
-  '{format: 2, files: $files, assets: {"hero sheet": $a, "old sheet": $b, wall: $c, poster: $d,
-    "table.1": {name: "table.1", kind: "image", versions: [{number: 7, inputs: "old-frame", files: {image: $c.versions[0].files.image}, made_by: {with: "cozy/frame"}}]}}}' > "$U/project.lock"
+printf '%s\n' "$was_lock" > "$U/project.lock"
 jq -n '{assets: [
   {name: "art", standing: "current", pinned: true},
   {name: "hero_sheet", standing: "current", inputs: "old-key-1"},
@@ -465,6 +469,55 @@ assets:
 YAML
 render "$R" look > /dev/null 2>&1 || true
 J '[.warnings[].message] | any(contains("so a text asset can'"'"'t go by it: cozy project rename D"))' <<< "$(status "$R")" || check "tags: not said: $(status "$R" | jq -c .warnings)"
+}
+
+# Paid-for bytes reach `files/` whatever the project is. A project of format 2, its run in flight over the upgrade, and one that can't convert.
+old_landing() {
+step "a project: a run's output reaches files/ in a project of format 2, and says what to run"
+local T=$OUT/old-landing n
+mkdir -p "$T"
+printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
+printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
+(cd "$T" && cozy --json run "$here/project/draw.py" prompt=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
+n=$(run_number "$OUT/old-landing.ndjson")
+[ "$(ls "$T/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: nothing in files/: $(ls -a "$T" "$T/.runs" 2>&1 | tr '\n' ' ')"
+J '[.warnings[]?.message] | any(contains("cozy project upgrade"))' <<< "$(cozy --json run show "$n" --once)" || check "old landing: no warning names the upgrade: $(cozy --json run show "$n" --once | jq -c .warnings)"
+
+step "a project: a run in flight over the upgrade lands, and is listed"
+cozy project -p "$T" upgrade > "$OUT/old-landing-upgrade.txt" 2>&1 || check "old landing: upgrade: $(tail -c 300 "$OUT/old-landing-upgrade.txt")"
+printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
+printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
+rm -f "$T/project.yaml.v2" "$T/project.lock.v2"
+local going
+(cd "$T" && cozy --json run "$here/project/shots.py/slow" seconds=8) > "$OUT/old-landing-slow.ndjson" 2>&1 & going=$!
+until grep -q '"status": *"in_progress"\|in_progress' "$OUT/old-landing-slow.ndjson" 2> /dev/null || ! kill -0 "$going" 2> /dev/null; do sleep 0.2; done
+cozy project -p "$T" upgrade > "$OUT/old-landing-upgrade.txt" 2>&1 || check "old landing: upgrade in flight: $(tail -c 300 "$OUT/old-landing-upgrade.txt")"
+wait "$going" || check "old landing: the slow run: $(tail -c 300 "$OUT/old-landing-slow.ndjson")"
+[ "$(ls "$T/files" | wc -l)" = 2 ] || check "old landing: its output isn't in files/: $(ls "$T/files" | tr '\n' ' ')"
+J '.run_files >= 1' <<< "$(status "$T")" || check "old landing: it isn't listed: $(status "$T" | jq -c .run_files)"
+
+step "a project: a project that can't convert still takes a run's bytes"
+local C=$OUT/old-landing-stuck
+mkdir -p "$C"
+printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' > "$C/project.yaml"
+code=0; cozy project -p "$C" upgrade > "$OUT/old-landing-stuck.txt" 2>&1 || code=$?
+[ "$code" != 0 ] || check "old landing: names that are one converted"
+(cd "$C" && cozy --json run "$here/project/draw.py" prompt=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
+[ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
+
+step "a project: an upgrade cut short starts again from the originals"
+local K=$OUT/old-landing-cut
+mkdir -p "$K"
+printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$K/project.yaml"
+printf '{"format": 2, "assets": {}, "files": {}}\n' > "$K/project.lock"
+cp "$K/project.yaml" "$OUT/cut-short.yaml"; cp "$K/project.lock" "$OUT/cut-short.lock"
+cozy project -p "$K" upgrade > /dev/null 2>&1 || check "cut short: upgrade"
+cp "$K/project.yaml" "$OUT/cut-done.yaml"
+# As a kill just before the last write leaves it: the new lock, and the file still of format 2.
+cp "$OUT/cut-short.yaml" "$K/project.yaml"
+cozy project -p "$K" upgrade > "$OUT/cut-again.txt" 2>&1 || check "cut short: again: $(tail -c 300 "$OUT/cut-again.txt")"
+cmp -s "$K/project.yaml" "$OUT/cut-done.yaml" || check "cut short: it came out otherwise: $(cat "$K/project.yaml")"
+cmp -s "$K/project.lock.v2" "$OUT/cut-short.lock" && cmp -s "$K/project.yaml.v2" "$OUT/cut-short.yaml" || check "cut short: an original went"
 }
 
 # A lock that can't be read is kept, and said. A name the file lost, and a render since, leaves its versions an orphan, and that name starts over.

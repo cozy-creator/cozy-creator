@@ -199,7 +199,8 @@ fn tool_of(with: &str, kind: &str, inputs: &Map<String, Value>, turbo: Option<bo
         false => with.split('@').next().unwrap_or(with).trim_start_matches("_/").contains('/'),
     };
     if named {
-        return with.to_owned();
+        // H3's one function takes Turbo.
+        return if names_package(with, "minimax-h3") { with.replace("/generate_turbo", "/generate") } else { with.to_owned() };
     }
     let (path, release) = match is_path {
         true => (with.trim_end_matches('/'), None),
@@ -334,7 +335,7 @@ fn filled_in(inputs: &mut Map<String, Value>, section: Option<&Map<String, Value
     } else if let (true, Some((name, _))) = (h3, style) {
         let field = if said(inputs, "summary").is_none() && said(inputs, "instructions").is_some() { "instructions" } else { "summary" };
         let front = match said(inputs, field) {
-            Some(words) => format!("<{name}>\n{words}"),
+            Some(words) => in_front(&words, name),
             None => format!("<{name}>"),
         };
         inputs.insert(field.to_owned(), json!(front));
@@ -344,6 +345,16 @@ fn filled_in(inputs: &mut Map<String, Value>, section: Option<&Map<String, Value
         }
     } else if let Some((name, _)) = style {
         inputs.insert("style".to_owned(), json!(format!("<{name}>")));
+    }
+}
+
+/// `<name>` at the front of `words`, after a `[…]` they open with: H3 reads its task there, and writes its own if it finds none.
+fn in_front(words: &str, name: &str) -> String {
+    let words = words.trim_start();
+    let tag = words.strip_prefix('[').and_then(|rest| rest.find([']', '\n']).filter(|&end| rest.as_bytes()[end] == b']')).map(|end| end + 2);
+    match tag {
+        Some(end) => format!("{} <{name}>\n{}", &words[..end], words[end..].trim_start()),
+        None => format!("<{name}>\n{words}"),
     }
 }
 
@@ -668,8 +679,10 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         Some(2) | None => {}
         Some(other) => return Err(refused("project_format", format!("{} is format {other}, and this moves format 2", folder::PROJECT)).next("cozy project new")),
     }
-    // A move cut short left the old lock beside the new: it starts from that.
-    let lock_at = [dir.join(WAS_LOCK), dir.join(folder::LOCK)].into_iter().find(|at| at.is_file());
+    // A move cut short left the new lock beside the old: it starts from the old. A lock still of format 2 is the truth, whatever is beside it.
+    let here = dir.join(folder::LOCK);
+    let is_new = std::fs::read_to_string(&here).ok().and_then(|text| to_json(&text).ok()).is_some_and(|lock| lock["format"] == json!(folder::FORMAT));
+    let lock_at = [here.clone(), dir.join(WAS_LOCK)].into_iter().filter(|at| !(is_new && *at == here)).find(|at| at.is_file());
     let mut old: Value = match &lock_at {
         Some(at) => {
             let read = std::fs::read_to_string(at).map_err(|e| io(at, e))?;
@@ -849,18 +862,20 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         .collect();
     doc.stamped(&mut lock, &current);
 
-    // Old files aside, then the lock and the file, each whole: a move cut short starts again from the old lock.
+    // Old files aside, then the lock, the canvas and last the file, each whole. Until the file is replaced it's format 2, and this starts again
+    // from the originals, which are kept at every step.
     let yaml_at = dir.join(folder::PROJECT);
     if !dir.join(WAS_YAML).is_file() {
         platform::durable::replace(&dir.join(WAS_YAML), text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
     }
     if let Some(at) = lock_at.filter(|at| !at.ends_with(WAS_LOCK)) {
-        std::fs::copy(&at, dir.join(WAS_LOCK)).map_err(|e| io(&at, e))?;
+        let bytes = std::fs::read(&at).map_err(|e| io(&at, e))?;
+        platform::durable::replace(&dir.join(WAS_LOCK), &bytes, 0o644).map_err(|e| io(&dir, e))?;
     }
     platform::durable::replace(&dir.join(MEASURED), json!(measured).to_string().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
     platform::durable::replace(&dir.join(folder::LOCK), lock.written().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
-    platform::durable::replace(&yaml_at, new_text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
     canvas::all_renamed(&folder, &renamed)?;
+    platform::durable::replace(&yaml_at, new_text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
 
     // As a status would read it now, from what is on disk.
     let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);

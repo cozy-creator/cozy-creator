@@ -775,9 +775,10 @@ impl Folder {
     }
 
     /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. Listed as
-    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path.
-    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<PathBuf, Error> {
-        let (path, old) = {
+    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path, and why it
+    /// isn't listed: paid-for bytes are kept whatever the project can say of them.
+    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<(PathBuf, Option<Error>), Error> {
+        let (path, old, unlisted) = {
             let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
@@ -789,19 +790,20 @@ impl Folder {
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
             }
-            self.tabled(path.clone(), digest)?;
             let old = std::cell::RefCell::new(vec![]);
-            self.update_lock(|lock| {
-                let earlier = lock.runs.iter().position(|row| row.run == made.run && row.output == made.output);
-                match earlier {
-                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut lock.runs[at], made.clone()).sha256],
-                    None => lock.runs.push(made.clone()),
-                }
-            })?;
-            (self.path(&path), old.into_inner())
+            let listed = self.tabled(path.clone(), digest).and_then(|()| {
+                self.update_lock(|lock| {
+                    let earlier = lock.runs.iter().position(|row| row.run == made.run && row.output == made.output);
+                    match earlier {
+                        Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut lock.runs[at], made.clone()).sha256],
+                        None => lock.runs.push(made.clone()),
+                    }
+                })
+            });
+            (self.path(&path), old.into_inner(), listed.err())
         };
         self.drop_unused(&old)?;
-        Ok(path)
+        Ok((path, unlisted))
     }
 
     /// An output its machine keeps, in the lock's table: its hash, which machine, and no file.
