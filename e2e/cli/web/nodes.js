@@ -621,7 +621,10 @@ function linesOf(text, name) {
     check('render_all_leaves_approved', (await versions('Sheet')) === sheetTakes);
 
     // A new take from here: scrubbed to a time, its words as they were, and the adapter told to keep up to there.
+    // One file dropped asks its name first: Enter takes the one offered.
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
+    await page.waitForSelector('.nm-field');
+    await page.keyboard.press('Enter');
     await box('look').waitFor();
     await until('look in the file', () => Promise.resolve(linesOf(yaml(), 'look')), Boolean);
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);
