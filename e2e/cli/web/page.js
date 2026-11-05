@@ -104,8 +104,19 @@ async function openBox(page, name) {
   await page.locator('.open-box').waitFor({ state: 'detached' });
   // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
   await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
-  const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
-  await page.mouse.click(x + width / 2, y + height / 2);
+  const middle = async () => {
+    const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
+    return { x: x + width / 2, y: y + height / 2 };
+  };
+  const reached = async () => page.evaluate(({ x, y, name }) => document.elementFromPoint(x, y)?.closest('.card')?.dataset.asset === name, { ...(await middle()), name });
+  // Off the view, or under what floats over it: F brings it all in, as for a person.
+  if (!(await reached())) {
+    await page.keyboard.press('f');
+    await page.waitForTimeout(300);
+    await until(`${name} in reach`, reached, Boolean);
+  }
+  const { x, y } = await middle();
+  await page.mouse.click(x, y);
   await card.waitFor();
   // It grows from where it sat: a person reaches for it once it's there.
   await page.locator('.open-box').evaluate((box) => Promise.all(box.getAnimations().map((grow) => grow.finished)));

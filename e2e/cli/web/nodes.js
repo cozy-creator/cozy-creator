@@ -79,6 +79,16 @@ function linesOf(text, name) {
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
   seen.ran = local;
 
+  // Answers read as the project opens are kept out until the file below names local code: what they list isn't the last word on it (Firefox, 42002036309).
+  let letGo;
+  const lateList = new Promise((done) => { letGo = done; });
+  const listRead = /\/v1\/tools\?.*project=/;
+  await page.route(listRead, async (route) => {
+    const answer = await route.fetch();
+    await lateList;
+    await route.fulfill({ response: answer }).catch(() => {});
+  });
+
   await page.goto(`${base}/#/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-assets-${Date.now()}`);
   await page.click('form button[type=submit]');
@@ -117,6 +127,8 @@ function linesOf(text, name) {
   // Local code is a tool once something in the project names it. A real render needs no GPU this way.
   writeFileSync(yamlAt, local ? `${head}  named_here:\n    tool: ${drawer}/draw\n` : head);
   await box('kept_words').waitFor();
+  letGo();
+  await page.unroute(listRead);
 
   // The shell: a name, Render all, and a menu holding the rest. No dock, no edges, no path, no zoom, no machine picker.
   check('no_dock', (await page.locator('.dock').count()) === 0);
@@ -512,6 +524,8 @@ function linesOf(text, name) {
     const versions = async (name) => (await of(name))?.prefixes?.length ?? 0;
     const render = async (name, count) => {
       await open(name);
+      // Render is on its controls, and it may be showing what it made.
+      if (await box(name).locator('[aria-label=Edit]').count()) await box(name).locator('[aria-label=Edit]').click();
       await box(name).locator('button[aria-label=Render]').click();
       await until(`${name}'s ${count}`, () => versions(name), (n) => n === count, FIRST_RUN_MS);
     };
