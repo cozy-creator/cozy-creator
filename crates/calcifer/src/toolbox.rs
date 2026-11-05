@@ -61,12 +61,18 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     let hub = runs::hub(&api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
-    let local = match &asked.project {
-        Some(project) => named_here(&api, &hub, project, &on).await?,
+    let mine = mine(&api);
+    let mut named = match &asked.project {
+        Some(project) => crate::project::local_code_named(&api, project)?,
         None => vec![],
     };
+    for package in mine.packages.iter().filter(|package| is_local(package)) {
+        if !named.iter().any(|(written, _)| written == package) {
+            named.push((package.clone(), PathBuf::from(package)));
+        }
+    }
+    let local = read_local(&api, &hub, named, &on).await;
     let held = held(&api, &hub, &on).await;
-    let mine = mine(&api);
     let (cards, mut note) = on_your_list(&api, &hub, &mine, &held).await;
     let place = |tool: &Tool| mine.packages.iter().position(|package| shown(package) == tool.package);
     let (mut first, rest): (Vec<Tool>, Vec<Tool>) = held.into_iter().partition(|tool| place(tool).is_some());
@@ -101,9 +107,14 @@ fn mine(api: &Api) -> ToolList {
     kept.unwrap_or_else(|| ToolList { packages: DEFAULTS.map(str::to_owned).to_vec(), without: vec![] })
 }
 
-/// A package as the Hub's paths name it.
+/// Whether a package on your list is local code, a directory by its absolute path, rather than a Hub's.
+fn is_local(package: &str) -> bool {
+    Path::new(package).is_absolute()
+}
+
+/// A package as the Hub's paths name it. Local code stays its path.
 fn owned(package: &str) -> String {
-    match package.contains('/') {
+    match package.contains('/') || is_local(package) {
         true => package.to_owned(),
         false => format!("{ROOT}/{package}"),
     }
@@ -179,16 +190,16 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, held: &[Tool])
             None => (None, Some(why)),
         }
     };
-    let lacking = mine.packages.iter().filter(|package| !held.iter().any(|tool| tool.package == shown(package)));
+    let lacking = mine.packages.iter().filter(|package| !is_local(package) && !held.iter().any(|tool| tool.package == shown(package)));
     let (wanted, notes): (Vec<_>, Vec<_>) = futures_util::future::join_all(lacking.map(newest)).await.into_iter().unzip();
     (read_all(api, hub, wanted.into_iter().flatten().collect()).await, notes.into_iter().flatten().next())
 }
 
-/// The tools of each local package `project`'s nodes name, named by its path as they write it, and saying they're local. One that can't be
-/// read is left out, and a render says why.
-async fn named_here(api: &Arc<Api>, hub: &str, project: &str, on: &On) -> Result<Vec<Tool>, Refusal> {
+/// The tools of each local package `named`, by its path as it's written, and saying they're local: what a project's nodes name, and what's on
+/// your list. One that can't be read is left out, and a render says why.
+async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on: &On) -> Vec<Tool> {
     let mut tools = vec![];
-    for (written, path) in crate::project::local_code_named(api, project)? {
+    for (written, path) in named {
         let (package, document) = match local_code::describe(api, &path, on, hub).await {
             Ok(described) => described,
             Err(why) => {
@@ -204,7 +215,7 @@ async fn named_here(api: &Arc<Api>, hub: &str, project: &str, on: &On) -> Result
             ..tool
         }));
     }
-    Ok(tools)
+    tools
 }
 
 /// Whether every word of `q` is in what `tool` is called or says it does.
