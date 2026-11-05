@@ -24,6 +24,7 @@ function check(name, ok, detail) {
 }
 
 const ASSETS = 5000;
+const HOLE = { col: 3, row: 1 };
 const PICTURES = 1000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
@@ -101,7 +102,12 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
   // A grid, each where it'd sit if a person had placed it.
   const side = Math.ceil(Math.sqrt(assetCount));
   const rows = ['# Where cards sit. Only the page reads this. Nothing here is an input.', 'version: 1', 'cards:'];
-  const card = (name, at) => rows.push(`  ${name}: {x: ${(at % side) * 300}, y: ${Math.floor(at / side) * 320}, w: 260}`);
+  // A place left empty near the top: a grid has no other room, and a box that lands on another is moved off it.
+  const hole = side * HOLE.row + HOLE.col;
+  const card = (name, at) => {
+    const place = at < hole ? at : at + 1;
+    rows.push(`  ${name}: {x: ${(place % side) * 300}, y: ${Math.floor(place / side) * 320}, w: 260}`);
+  };
   for (let i = 0; i < assetCount - pictures; i++) card(`shot_${i}`, i);
   for (let i = 0; i < pictures; i++) card(`pic_${i}`, assetCount - pictures + i);
   replaceFile(join(folder, 'project.canvas.yaml'), `${rows.join('\n')}\n`);
@@ -402,10 +408,7 @@ function calciferMb() {
   // A render from the CLI, on the fixture tool, landing on the open canvas.
   if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
-    const rect = await page.evaluate((name) => window.boxOf(name).getBoundingClientRect().toJSON(), onScreen.at(-1));
-    const viewport = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).toJSON());
-    const [x, y] = [Math.round((rect.right + 20 - viewport.e) / viewport.a), Math.round((rect.top - viewport.f) / viewport.a)];
-    await project('add', `${TOOL}/still`, 'scale_shot', `at=${x},${y},200`, 'instructions=A landing at scale');
+    await project('add', `${TOOL}/still`, 'scale_shot', `at=${HOLE.col * 300},${HOLE.row * 320},200`, 'instructions=A landing at scale');
     await box('scale_shot').waitFor();
     const landing = within('its picture', page.evaluate((name) => window.pictureOf(name), 'scale_shot'), 300_000);
     const render = await project('render', 'scale_shot', '--on', 'local');

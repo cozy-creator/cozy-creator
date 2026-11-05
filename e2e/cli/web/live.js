@@ -59,6 +59,8 @@ const WATCH = () => {
   };
   const box = (name) => [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
   window.boxOf = box;
+  /** All it says: a box open is a dialog of its own, beside its place on the canvas. */
+  const wordsOf = (name) => `${box(name)?.textContent ?? ''}${document.querySelector(`.open-box:has(.card[data-asset="${name}"])`)?.textContent ?? ''}`;
   const placeOf = (node) => {
     const m = new DOMMatrix(getComputedStyle(node).transform);
     return { x: m.e, y: m.f };
@@ -68,13 +70,13 @@ const WATCH = () => {
     if (spec.gone) return !box(spec.gone);
     const node = box(spec.name);
     if (!node) return false;
-    if (spec.has !== undefined && !node.textContent.includes(spec.has)) return false;
-    if (spec.lacks !== undefined && node.textContent.includes(spec.lacks)) return false;
+    if (spec.has !== undefined && !wordsOf(spec.name).includes(spec.has)) return false;
+    if (spec.lacks !== undefined && wordsOf(spec.name).includes(spec.lacks)) return false;
     if (spec.x !== undefined && (Math.abs(placeOf(node).x - spec.x) > 0.5 || Math.abs(placeOf(node).y - spec.y) > 0.5)) return false;
     if (spec.w !== undefined && Math.abs(node.offsetWidth - spec.w) > 0.5) return false;
     if (spec.dot && !node.querySelector(`.dot.${spec.dot}`)) return false;
     if (spec.picture !== undefined && Boolean(node.querySelector('.media img')) !== spec.picture) return false;
-    if (spec.conflict && !node.textContent.includes('The file changed under this')) return false;
+    if (spec.conflict && !wordsOf(spec.name).includes('The file changed under this')) return false;
     return true;
   };
   /** When `spec` first holds, by the page's own frames, and whether its box was landing then. */
