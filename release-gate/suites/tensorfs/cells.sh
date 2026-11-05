@@ -11,7 +11,11 @@
 #                    72 objects and moved nothing for good with 78 sockets open): it must land; 3 min with no byte into
 #                    its store fails it. Then with every object's partial held by another process, as a cancelled fetch's
 #                    commit holds one while the next run claims it (straggler-held; gate 41991226171: the fetch fell back
-#                    to a temp it could not read back): it must land
+#                    to a temp it could not read back): it must land. Then with one small ask's socket held silent
+#                    after half its body (straggler-silent; run 32321 sat 16 min on its last two chunks): it must land
+#                    within 60 s, asked again. Then new random weights from origin.py through a 40 MB/s link, every
+#                    storage ask answered 503 for 8 s once the ramp has settled (straggler-burst; R2 sent 13 near run
+#                    32321's end, which left one request held by nothing to start): it must land
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
 #                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
 #                    a scale of 1, as kohya's and ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs, this format,
@@ -107,14 +111,43 @@ tfs_weights() {
 # tfs_straggler <name> <stragglers> [<burst> [<min> [fast]]] [--link <bytes/s>]: `tfs download` of BiRefNet into a store of its
 # own, through straggler.py.
 tfs_straggler() {
-  local port pid t0 tfs seen since now
+  local port pid
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   python3 -I "$HERE/suites/tensorfs/straggler.py" "$port" "${HUB_URL:-https://tensorhub.com}" "$2" 65536 "$T/$1.proxy" "${@:3}" &
   pid=$!
-  for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.1; done
+  tfs_fetch "$1" "$port" zhengpeng7/birefnet
+  kill "$pid"; wait "$pid" 2>/dev/null || true  # the proxy ends on TERM
+}
+# tfs_burst <name>: `tfs download` of new random weights, 24 objects of 40 MiB (three ranges each), from origin.py through
+# one 40 MB/s link, every storage ask answered 503 from 8 s to 16 s, after the ramp has settled: enough halvings to reach
+# the floor.
+tfs_burst() {
+  local port pid tree
+  rm -rf "$T/$1-origin"
+  uv run -q --no-project --with numpy --with safetensors python -I - "$T/$1.safetensors" <<'PY' || return 1
+import sys
+import numpy as np
+from safetensors.numpy import save_file
+rng = np.random.default_rng()
+save_file({f"blocks.{i}.weight": rng.standard_normal((20480, 1024)).astype(np.float16) for i in range(24)}, sys.argv[1])
+PY
+  tree=$(uv tool run -q --from "${TWF:-tensorfs}" tfs --store "$T/$1-origin" --json import "$T/$1.safetensors" --converter as-is \
+    --name local/burst | python3 -c 'import json, sys; print(json.load(sys.stdin)["tree"]["sha256"])')
+  rm -f "$T/$1.safetensors"
+  port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  python3 -I "$HERE/suites/tensorfs/origin.py" "$port" "$T/$1-origin" "$T/$1.proxy" 40000000 8 16 & pid=$!
+  tfs_fetch "$1" "$port" "sha256:$tree"
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  rm -rf "$T/$1-origin"
+}
+# tfs_fetch <name> <port> <ref>: `tfs download` of <ref> from the server at <port> into a store of its own; its exit and time
+# in straggler.tsv.
+tfs_fetch() {
+  local t0 tfs seen since now
+  for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$2") 2>/dev/null && break; sleep 0.1; done
   t0=$(date +%s%3N)
-  TENSORFS_HOME=$T/$1-store setsid uv tool run -q --from "${TWF:-tensorfs}" tfs --endpoint "http://127.0.0.1:$port" --json \
-    download zhengpeng7/birefnet --dir "$T/$1-out" >"$T/$1.out" 2>"$T/$1.err" & tfs=$!
+  TENSORFS_HOME=$T/$1-store setsid uv tool run -q --from "${TWF:-tensorfs}" tfs --endpoint "http://127.0.0.1:$2" --json \
+    download "$3" --dir "$T/$1-out" >"$T/$1.out" 2>"$T/$1.err" & tfs=$!
   # A hang is this case's failure, not the gate's: no byte into its store for 3 min ends it.
   seen= since=$SECONDS
   while kill -0 "$tfs" 2>/dev/null; do
@@ -125,7 +158,6 @@ tfs_straggler() {
   done
   wait "$tfs"
   printf '%s\t%s\t%s\n' "$1" "$?" "$(( $(date +%s%3N) - t0 ))" >> "$T/straggler.tsv"
-  kill "$pid"; wait "$pid" 2>/dev/null || true  # the proxy ends on TERM
   rm -rf "$T/$1-store" "$T/$1-out"
   log "tensorfs $1: $(tail -n 1 "$T/straggler.tsv")"
 }
@@ -254,5 +286,7 @@ PY
   for _ in $(seq 50); do [ -e "$T/straggler-held.ready" ] && break; sleep 0.1; done
   tfs_straggler straggler-held 0
   kill "$held"
+  tfs_straggler straggler-silent 0 --silent
+  tfs_burst straggler-burst
 fi
 if tfs_case lora-alpha; then tfs_lora_alpha; fi

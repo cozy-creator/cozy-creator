@@ -11,10 +11,13 @@ With FAST too, a cold object's asks of a part (TensorFS's 16 MiB range) or less 
 once, and writing them must not stand in the way of joining them up (a whole download hung so, tfs-143).
 With --link, every object byte goes through one link of that many bytes/s, as a slow pod's: TensorFS must keep moving
 however slow each request gets (run 31103: 72 objects judged slow at 5 MB/s, then nothing for good).
-    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min> [fast]]] [--link <bytes/s>]"""
+With --silent, the first ask of 256 KiB to 1 MiB gets its headers and half its body, then a socket held open and silent:
+a range too small to split, the last left, which only the no-bytes stall can end (run 32321 sat 16 min on its last two).
+    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min> [fast]]] [--link <bytes/s>] [--silent]"""
 import argparse
 import http.client
 import json
+import socket
 import threading
 import time
 import urllib.parse
@@ -26,15 +29,16 @@ for name in ('port', 'upstream', 'stragglers', 'rate', 'log'):
 for name in ('burst', 'min', 'fast'):
     ap.add_argument(name, nargs='?')
 ap.add_argument('--link', type=int, default=0)
+ap.add_argument('--silent', action='store_true')
 a = ap.parse_args()
 PORT, UPSTREAM, STRAGGLERS, RATE, LOG = int(a.port), a.upstream, int(a.stragglers), int(a.rate), a.log
 BURST = int(a.burst or 0)
 MIN = int(a.min) if a.min else 4 * BURST
-FAST, LINK = bool(a.fast), a.link
+FAST, LINK, SILENT = bool(a.fast), a.link, a.silent
 PART = 16 << 20
 up = urllib.parse.urlsplit(UPSTREAM)
 lock = threading.Lock()
-slowed, asked = set(), {}
+slowed, asked, silenced = set(), {}, set()
 HOP = {'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'proxy-authorization', 'host'}
 
 
@@ -96,6 +100,29 @@ class Handler(BaseHTTPRequestHandler):
     def send(self, data):
         through(len(data))
         self.wfile.write(data)
+
+    def hold(self, resp):
+        """Headers and half the body, then silence until the client gives the socket up (at most 5 min)."""
+        self.send_response(resp.status)
+        for k, v in resp.getheaders():
+            if k.lower() not in HOP:
+                self.send_header(k, v)
+        self.end_headers()
+        half = resp.read(int(resp.getheader('content-length')) // 2)
+        self.send(half)
+        self.wfile.flush()
+        self.connection.settimeout(1)
+        end = time.time() + 300
+        while time.time() < end:
+            try:
+                if self.connection.recv(1, socket.MSG_PEEK) == b'':
+                    break
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+        self.close_connection = True
+        return len(half)
 
     def relay(self, resp, slow=False):
         self.send_response(resp.status)
@@ -188,12 +215,16 @@ class Handler(BaseHTTPRequestHandler):
                     slowed.add(self.path)
             if FAST and slow and got.status in (200, 206) and length <= PART:
                 slow = False
-            sent = self.relay(got, slow=slow)
+            with lock:
+                silent = SILENT and not silenced and got.status in (200, 206) and 256 << 10 <= length <= 1 << 20
+                if silent:
+                    silenced.add(self.path)
+            sent = self.hold(got) if silent else self.relay(got, slow=slow)
             if not got.isclosed():  # the client left mid-body: that connection's answer is unread
                 forget(loc)
             # `slow`: the object is a straggler (cold); `dripped`: this ask was sent slowly.
             log(kind='object', path=self.path, slow=self.path in slowed, dripped=slow, ask=asked[self.path], range=fwd.get('Range') or fwd.get('range'),
-                length=length, bytes=sent, s=round(time.time() - t0, 2))
+                length=length, bytes=sent, s=round(time.time() - t0, 2), silent=silent, silenced=self.path in silenced)
             return
         sent = self.relay(resp)
         if not resp.isclosed():
