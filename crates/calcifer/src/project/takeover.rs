@@ -53,6 +53,8 @@ const MOST: Duration = Duration::from_secs(60);
 /// How often a walk on a rental renews its clock, and how long since something last moved it still does.
 const RENEW: Duration = Duration::from_secs(5 * 60);
 const QUIET_MS: i64 = 15 * 60 * 1000;
+/// How many times a machine says the same no to a hand-off before the render comes back here.
+const REFUSALS: u32 = 3;
 /// Where a file being collected waits until it's whole.
 const COLLECTING: &str = ".runs/collecting";
 
@@ -161,7 +163,7 @@ fn standing_files(api: &Api, folder: &Folder, text: &str) -> Result<Vec<String>,
             continue;
         }
         match uploaded(api, sha256) {
-            Some(at) => drop(folder.take_held(&at, sha256).map_err(|why| Error::new(Kind::Unavailable, "project_io", why))?),
+            Some(at) => folder.place_held(&at, &file.path).map_err(|why| Error::new(Kind::Unavailable, "project_io", why))?,
             None => wants.push(sha256.clone()),
         }
     }
@@ -191,6 +193,7 @@ pub(super) fn keep_clock(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task:
 /// The render `asked` when it isn't this computer's to walk: handed to the machine named first, or to the one holding it. None: it's
 /// walked here.
 pub(super) async fn render(api: &Arc<Api>, project: &Arc<Project>, asked: &Runs, key: Option<&(String, String)>) -> Result<Option<(StatusCode, Json<Asked>)>, Refusal> {
+    project.unsent.lock().expect("unsent lock").clear();
     let walk = project.folder.walk_now().map_err(Refusal)?;
     let first = match asked.on.first() {
         Some(On::Machine(name)) if !name.eq_ignore_ascii_case("local") => Some(name.clone()),
@@ -305,6 +308,7 @@ enum Next {
 
 async fn watching(api: &Arc<Api>, project: &Arc<Project>) {
     let (mut mirror, mut wait): (Option<(String, tokio::task::JoinHandle<()>)>, Duration) = (None, TICK);
+    let (mut no, mut refusals) = (String::new(), 0);
     loop {
         let held = match project.folder.walk_now() {
             Ok(walk) => match walk.held {
@@ -340,6 +344,21 @@ async fn watching(api: &Arc<Api>, project: &Arc<Project>) {
             Err(error) => {
                 warn!("{}: {} doesn't answer: {}", project.folder.dir.display(), held.machine, error.message);
                 wait = (wait * 2).min(MOST);
+                // A machine that answers, and keeps saying no to what's asked, won't take it. One that doesn't answer yet may.
+                let down = matches!(error.code.as_str(), "machine_unreachable" | "machine_unanswered" | "machine_failed" | "machine_released");
+                refusals = match held.asking.is_empty() || down {
+                    true => 0,
+                    false if no == error.message => refusals + 1,
+                    false => 1,
+                };
+                no.clone_from(&error.message);
+                if refusals == REFUSALS {
+                    let said = format!("{} couldn't take this render: {}", held.machine, error.message);
+                    let unsent = Error { message: said, ..error.clone() };
+                    project.unsent.lock().expect("unsent lock").push(unsent);
+                    release(api, project, Some(error)).await;
+                    break;
+                }
             }
         }
         tokio::select! {

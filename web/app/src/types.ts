@@ -194,6 +194,8 @@ export interface AssetVersions {
 export interface ProjectState {
   id: string
   path: string
+  /** What kept its last render from reaching a machine, each once. */
+  unsent?: ErrorBody[]
   name?: string
   assets: Asset[]
   entities?: Entity[]
