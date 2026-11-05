@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
-use pyo3::{exceptions::PyRuntimeError, ffi, prelude::*};
+use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use tensorfs::io::source::{IoTally, Item, ItemSource, Mode, Placement, Source as Store};
 use tensorfs::io::{self, Dst, ObjectRange, ReadControl, ReadOpts, Src};
 
@@ -164,24 +164,6 @@ impl Inner {
             .map(drop).map_err(|error| error.to_string())
     }
 
-    fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>) -> PyResult<()> {
-        let Some(page) = self.tier.reserve(key, self.bytes)? else { return Ok(()) };
-        // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
-        let host = unsafe {
-            Bound::from_owned_ptr_or_err(py, ffi::PyMemoryView_FromMemory(page.ptr().cast(), self.bytes as isize, ffi::PyBUF_WRITE))
-        }?;
-        let torch = py.import("torch")?;
-        let kwargs = pyo3::types::PyDict::new(py);
-        kwargs.set_item("dtype", torch.getattr("uint8")?)?;
-        let kept = torch.call_method("frombuffer", (host,), Some(&kwargs))?;
-        for (at, len) in page.windows() {
-            let window = pyo3::types::PySlice::new(py, at as isize, (at + len) as isize, 1);
-            kept.get_item(&window)?.call_method1("copy_", (view.get_item(&window)?,))?;
-        }
-        self.tier.insert(key, &self.set, page);
-        Ok(())
-    }
-
     /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor.
     fn derive(&self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>) -> varena::Result<varena::Pin> {
         let device = fill.device();
@@ -193,20 +175,17 @@ impl Inner {
                 let used = Py::new(py, PyUse::filling(fill, consumers))?;
                 let view = py.import("torch")?.call_method1("from_dlpack", (used.clone_ref(py),))?;
                 let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
-                if changed || self.stored.is_none() {
-                    if let Some(key) = &self.page {
-                        self.keep(key, py, &view)?;
-                    }
-                }
                 let pin = used.borrow(py).finish(py)?;
                 Ok((changed, pin))
             })();
             match done {
                 Ok((changed, pin)) => {
-                    if !changed && self.stored.is_some() {
-                        self.plain.store(true, Ordering::Release);
-                        if let Some(key) = &self.page {
-                            self.tier.want(key, &self.set, this, region);
+                    let plain = !changed && self.stored.is_some();
+                    self.plain.store(plain, Ordering::Release);
+                    if let Some(key) = &self.page {
+                        match plain {
+                            true => self.tier.want(key, &self.set, this, region),
+                            false => self.tier.keep_behind(key, &self.set, region, self.bytes),
                         }
                     }
                     Ok(pin)
