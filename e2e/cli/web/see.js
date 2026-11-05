@@ -381,6 +381,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   const inputs = async () => JSON.stringify((await state()).assets.map((held) => [held.name, held.inputs]));
   const inputsBefore = await inputs();
   const wasAt = (await cards()).hero_art;
+  await away(page);
   await drag(page, element(page, 'hero_art').locator('.nm'), 90, 70);
   const movedTo = (await until('the moved row', cards, (now) => now.hero_art.x !== wasAt.x || now.hero_art.y !== wasAt.y)).hero_art;
   check('move_writes_its_row', movedTo.x > wasAt.x, { wasAt, movedTo });

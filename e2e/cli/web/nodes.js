@@ -398,7 +398,6 @@ function linesOf(text, name) {
 
   // Right click: rename, delete, and what it's made with.
   await away();
-  await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
@@ -439,6 +438,7 @@ function linesOf(text, name) {
     };
     await reload();
     const place = async (name) => {
+      await away();
       await page.locator('.tools li.tool', { has: page.locator(`b:text-is("${labelOf(name)}")`) }).click();
       await box(`${name}_1`).waitFor();
       await open(`${name}_1`);
