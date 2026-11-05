@@ -547,6 +547,9 @@ pub struct Asset {
 pub struct AssetVersions {
     pub asset: Asset,
     pub versions: Vec<Version>,
+    /// The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded: Vec<u32>,
 }
 
 /// `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
@@ -565,6 +568,9 @@ pub struct NewAsset {
     /// A person typed `name`: refused if the project has it, not numbered.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exact: bool,
+    /// What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// What a write of an asset answers: its name, and what `If-Match` names from here on.
@@ -610,6 +616,31 @@ pub struct AssetBack {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Card>,
+}
+
+/// `DELETE` and `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: a version discarded, or back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VersionMoved {
+    pub name: String,
+    pub number: u32,
+    /// `take` or `version`.
+    pub noun: String,
+    /// It's the approved one: `approved:` went with it, or came back with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
+    /// What the asset stands on now, else its newest. None: it has none left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stands: Option<u32>,
+    /// What is out of date now and wasn't.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<String>,
+}
+
+/// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` answered.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct VersionBack {
+    #[serde(default)]
+    pub approved: bool,
 }
 
 /// One version (a take, if it holds a video).
@@ -695,6 +726,9 @@ pub struct Approved {
     pub stale: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// What `If-Match` names from here on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so its state follows its inputs again.
@@ -711,6 +745,9 @@ pub struct Unpinned {
     pub version: Option<u32>,
     /// What this put out of date, itself too.
     pub stale: Vec<String>,
+    /// What `If-Match` names from here on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no
@@ -746,6 +783,9 @@ pub struct Reclaimed {
     /// The files nothing but the orphans names, or nothing at all, and their bytes.
     pub files: u64,
     pub bytes: u64,
+    /// Of what nothing names, what nothing has a record of: it may be all that's left of a take, so `yes` leaves it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unrecorded: u64,
     /// Whether they are gone (`yes`), or only listed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
@@ -755,6 +795,10 @@ pub struct Reclaimed {
     /// Why `yes` would be refused: its lock was lost, so these files may be all that's left of its takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost: Option<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file

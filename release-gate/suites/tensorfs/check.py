@@ -3,7 +3,8 @@ the suite is selected). Times are held against the SKU's last passed suite (base
 product cells: the worst known-good plus 25%, unless the known-good spread is wider. Rates are reported beside the
 probe's disk ceiling; an executor never dials, so there is no network ceiling to read them against. A PASS appends
 this run to the baseline.
-    check.py --past <ndjson> <stage> <fraction>   bytes moved once <stage> passed the fraction (cells.sh's tfs_cut)"""
+    check.py --past <ndjson> <stage> <fraction>   bytes moved once <stage> passed the fraction (cells.sh's tfs_cut)
+    check.py --dropped <ndjson> <stage>   bytes moved when the machine went: progress lost, or a wait after it began; none if it never did"""
 import json
 import os
 import sys
@@ -32,6 +33,20 @@ def stage_progress(evs, stage):
         if e.get('type') == 'run.progress' and stage in (p.get('stage') or ''):
             last = (p.get('bytes_done') or 0, p.get('bytes_total') or 0)
     return last
+
+
+def dropped(evs, stage):
+    """The bytes <stage> had moved when the machine went: a wait after progress began, or progress lost. None if it never did."""
+    last = 0
+    for e in evs:
+        p = e.get('progress') or {}
+        if e.get('type') == 'run.progress' and stage in (p.get('stage') or ''):
+            if (p.get('bytes_done') or 0) < last:
+                return last
+            last = p.get('bytes_done') or 0
+        elif e.get('type') == 'run.waiting' and last:
+            return last
+    return None
 
 
 def stage_seconds(evs, stage):
@@ -133,9 +148,10 @@ def check(gate):
                     'error': open(os.path.join(t, name + '.err')).read()[-300:] if code != '0' else ''}
     c = st.get('straggler-clean')
     # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138),
-    # crawling objects (every ask moves 64 KiB and drips, tfs-141).
+    # crawling objects (every ask moves 64 KiB and drips, tfs-141), and many, whose parts come at full speed (tfs-143).
     for name, case, what in (('straggler-slow', 'straggler', 'stragglers'), ('straggler-cold', 'straggler-cold', 'cold objects'),
-                             ('straggler-crawl', 'straggler-crawl', 'crawling objects')):
+                             ('straggler-crawl', 'straggler-crawl', 'crawling objects'),
+                             ('straggler-parts', 'straggler-parts', 'parts at full speed')):
         sl = st.get(name)
         if not chosen('straggler'):
             break
@@ -147,7 +163,7 @@ def check(gate):
             fails.append(f'tensorfs {case}: no object was slowed: the case tested nothing')
         else:
             # Crawling objects pay their parts' drip through this proxy; crawled through, they take over 5 min.
-            limit = 2 * c['seconds'] + 60 if name == 'straggler-crawl' else 1.5 * c['seconds'] + 20
+            limit = 2 * c['seconds'] + 60 if name in ('straggler-crawl', 'straggler-parts') else 1.5 * c['seconds'] + 20
             (fails if sl['seconds'] > limit else notes).append(
                 f'tensorfs {case}: {sl["slowed"]} slow objects, {sl["reasked"]} re-asked, at most {sl["asks"]} asks of one; '
                 f'{sl["seconds"]:.1f} s vs clean {c["seconds"]:.1f} s (limit {limit:.1f})')
@@ -176,7 +192,7 @@ def check(gate):
         # landed (`local`) and fetch only the rest of the model's bytes. Bytes arrived count in `moved` as they arrive
         # (tfs-141), unfinished chunks too, and a chunk's kept bytes count in `local`, so this is every byte's fate.
         path = os.path.join(t, cut + '.cut')
-        moved = int(open(path).read()) if os.path.exists(path) else 0
+        moved = int(open(path).read().strip() or 0) if os.path.exists(path) else 0
         rec = rows[resume]['rec']
         hub, vol = hub_bytes(rec)
         found = landed_bytes(rec)
@@ -279,3 +295,5 @@ if __name__ == '__main__' and sys.argv[1:2] == ['--past']:
     done_, total = stage_progress(events(sys.argv[2]), sys.argv[3])
     if total and done_ >= float(sys.argv[4]) * total:
         print(done_)
+if __name__ == '__main__' and sys.argv[1:2] == ['--dropped']:
+    print(dropped(events(sys.argv[2]), sys.argv[3]) or '')

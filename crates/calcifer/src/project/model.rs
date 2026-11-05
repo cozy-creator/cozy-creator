@@ -17,7 +17,7 @@ use super::{
     folder::{Folder, Lock},
     format::{Doc, Standing, State as Stand, Tool},
     graph::name_key,
-    kept_files, known_packages, making_now, next_steps, orphans, queue, revision, row, unadapted,
+    kept_files, known_packages, making_now, next_steps, orphans, queue, revision, row, unmade,
 };
 use crate::api::Api;
 
@@ -80,7 +80,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let mut warnings = doc.warnings.clone();
     warnings.extend(doc.said_of_known());
     let known = known_packages(api, &doc);
-    warnings.extend(unadapted(&doc, &known));
+    warnings.extend(unmade(&doc, &known));
     for (i, standing) in stand.iter().enumerate() {
         let held = lock.asset(&doc.assets[i].name);
         let made = standing.version().and_then(|number| held?.version(number));

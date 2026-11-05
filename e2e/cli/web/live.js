@@ -4,7 +4,7 @@
 // screen and lands. A render from the CLI shows progress on its card and lands, on the fixture tool. What's typed and unsaved stays when the
 // CLI changes that field, and the page shows the conflict. What the page does reads back in the CLI. 200 edits as fast as they go: right at the
 // end, shown as it goes, only what changed read, frames sampled. And the stream made to fall behind for real, so `resync` runs: nothing's lost.
-//   node live.js <sign-in link from `cozy web --no-open`>
+//   node live.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -12,10 +12,11 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, png, until, pointAt } = require('./page');
+const { STEP_MS, lastLook, lookAt, noStall, png, until, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 let during = 'the start';
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
@@ -84,6 +85,11 @@ const WATCH = () => {
       done({ when: Date.now(), landing: Boolean(node?.querySelector('.card.landing')) });
     };
     look();
+  });
+  /** What of `spec` doesn't hold, as the page has it. */
+  window.unshown = (spec) => (spec.all ?? [spec]).filter((one) => !holds(one)).map((one) => {
+    const node = box(one.name ?? one.gone);
+    return { wanted: one, drawn: Boolean(node), text: node?.textContent.slice(0, 160), place: node && placeOf(node) };
   });
   /** Each place its progress reached, until it has none. */
   window.progressOf = (name) => new Promise((done) => {
@@ -195,9 +201,26 @@ function linesOf(text, name) {
   });
 
   /** A call of the real CLI, and when it returned. */
+  /** `waiting`, or what `said` says after `ms`. */
+  const bounded = (waiting, ms, said) => {
+    let timer;
+    const late = new Promise((_, fail) => { timer = setTimeout(async () => fail(new Error(await said())), ms); });
+    return Promise.race([waiting, late]).finally(() => clearTimeout(timer));
+  };
+  /** When `spec` first shows. One that never does says what the page has of it, and what Calcifer does, so it's plain which of them is behind. */
+  const shows = (spec, ms = FIRST_RUN_MS) => bounded(page.evaluate((asked) => window.shown(asked), spec), ms, async () => {
+    const page_has = await page.evaluate((asked) => window.unshown(asked), spec);
+    const canvas = await rows();
+    const calcifer = await Promise.all(page_has.slice(0, 4).map(async ({ wanted }) => {
+      const name = wanted.name ?? wanted.gone;
+      const { status: answered, body } = await api(`/v1/projects/${id}/assets/${name}`);
+      return { name, answered, fields: body?.asset?.fields, row: canvas[name] };
+    }));
+    return `never showed ${JSON.stringify(spec)}, of it ${page_has.length} not: ${JSON.stringify({ page_has: page_has.slice(0, 4), calcifer, reads })}`;
+  });
   const cozy = (...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
-    execFile(COZY, words, { cwd: folder, encoding: 'utf8', maxBuffer: 1 << 26 }, (error, stdout, stderr) => {
+    execFile(COZY, words, { cwd: folder, encoding: 'utf8', maxBuffer: 1 << 26, timeout: FIRST_RUN_MS }, (error, stdout, stderr) => {
       const at = Date.now();
       if (error) fail(new Error(`cozy ${words.join(' ')}: ${error.message}: ${stdout}${stderr}`));
       else done({ stdout, stderr, at });
@@ -213,10 +236,10 @@ function linesOf(text, name) {
   seen.times_ms = times;
   /** `act`, and how long from its return until `spec` showed. */
   const timed = async (label, spec, act, within = LIVE_MS) => {
-    const showing = page.evaluate((asked) => window.shown(asked), spec);
-    const waited = new Promise((_, fail) => { const timer = setTimeout(() => fail(new Error(`${label}: never showed ${JSON.stringify(spec)}`)), FIRST_RUN_MS); timer.unref(); });
+    const showing = shows(spec);
+    showing.catch(() => {});
     const done = await act();
-    const { when, landing } = await Promise.race([showing, waited]);
+    const { when, landing } = await showing;
     const ms = when - done.at;
     times[label] = ms;
     check(`${label}_live`, ms <= within, { ms, within });
@@ -299,7 +322,7 @@ function linesOf(text, name) {
 
   // Approved by a command: it turns into that picture. Unapproved: back.
   await timed('approve', { name: 'live_tool', dot: 's-current' }, () => project('approve', 'live_tool', hash));
-  await page.evaluate((asked) => window.shown(asked), { name: 'live_tool', picture: true });
+  await shows({ name: 'live_tool', picture: true });
   check('approve_in_the_status', (await held('live_tool')).pinned === true);
   await timed('unapprove', { name: 'live_tool', picture: false }, () => project('unapprove', 'live_tool'));
   check('unapprove_in_the_status', !(await held('live_tool')).pinned);
@@ -451,7 +474,7 @@ function linesOf(text, name) {
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
     await project('set', 'live_shot', 'seconds:=8');
-    const moving = page.evaluate((name) => window.progressOf(name), 'live_shot');
+    const moving = bounded(page.evaluate((name) => window.progressOf(name), 'live_shot'), FIRST_RUN_MS, () => 'its progress never ended');
     await timed('render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     const landed = until('two takes', async () => (await held('live_shot')).versions, (versions) => versions === 2, FIRST_RUN_MS).then(() => Date.now());
     const places = await moving;
@@ -472,7 +495,7 @@ function linesOf(text, name) {
     await project('add', 'text', 'live_mood', 'text=Soft morning light.');
     await project('add', `${TOOL}/still`, 'live_styled', `at=${place.x},${place.y},260`, 'instructions=A still in <live_mood>.');
     await project('render', 'live_styled', '--on', 'local');
-    await page.evaluate((asked) => window.shown(asked), { name: 'live_styled', dot: 's-current' });
+    await shows({ name: 'live_styled', dot: 's-current' });
     await timed('text_asset_outdates', { name: 'live_styled', dot: 's-ood' }, () => project('set', 'live_mood', 'text=Hard evening light.'));
     await project('delete', 'live_styled', 'live_mood');
 
@@ -480,11 +503,11 @@ function linesOf(text, name) {
     await project('set', 'live_shot', 'seconds:=3');
     place = spot();
     await project('add', `${TOOL}/still`, 'live_after', `at=${place.x},${place.y},260`, 'instructions=After <live_shot>.');
-    const waiting = page.evaluate((asked) => window.shown(asked), { name: 'live_after', dot: 's-making' });
+    const waiting = shows({ name: 'live_after', dot: 's-making' });
     await project('render', 'live_shot', 'live_after', '--on', 'local', '--queue');
     await waiting;
     const afterAt = await until('what waited landed', async () => (await held('live_after')).versions, (versions) => versions === 1, FIRST_RUN_MS).then(() => Date.now());
-    const afterDone = await page.evaluate((asked) => window.shown(asked), { name: 'live_after', dot: 's-current' });
+    const afterDone = await shows({ name: 'live_after', dot: 's-current' });
     times.queued_goes = afterDone.when - afterAt;
     check('queued_goes_when_it_lands', times.queued_goes <= LIVE_MS, times.queued_goes);
     await project('delete', 'live_after');
@@ -511,11 +534,14 @@ function linesOf(text, name) {
   const fixed = Array.from({ length: 12 }, (_, i) => `burst_${i}`);
   // Clear of everything so far, and all of it fitted on the screen.
   await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * 400},260`, 'description=start')));
-  // Fitted to what's there as they arrive.
+  // Fitted to all of them: a box that comes after a fit is drawn for a moment, then not, off the screen (macOS, 41955999465).
   await until('the boxes for the burst', async () => {
     await page.keyboard.press('f');
     await page.waitForTimeout(250);
-    return page.evaluate((names) => names.every((name) => Boolean(window.boxOf(name))), fixed);
+    return page.evaluate((names) => names.every((name) => {
+      const at = window.boxOf(name)?.getBoundingClientRect();
+      return at && at.bottom <= innerHeight && at.right <= innerWidth;
+    }), fixed);
   }, Boolean);
   const lanes = Array.from({ length: 8 }, () => []);
   const last = new Map();
@@ -545,8 +571,8 @@ function linesOf(text, name) {
   }));
   const ended = Math.max(...lasts);
   const right = { all: fixed.map((name, i) => ({ name, has: last.get(name), x: targets[i].x, y: targets[i].y })) };
-  const { when } = await page.evaluate((asked) => window.shown(asked), right);
-  const { frames, texts } = await page.evaluate(() => new Promise((done) => { window.stopWatching = done; }));
+  const { when } = await shows(right, STEP_MS);
+  const { frames, texts } = await bounded(page.evaluate(() => new Promise((done) => { window.stopWatching = done; })), STEP_MS, () => 'no frame came');
   const burst = {
     edits: 200,
     seconds: +((ended - started) / 1000).toFixed(2),
@@ -577,7 +603,9 @@ function linesOf(text, name) {
   await shot('burst');
   const cards = await until('every row written', rows, (now) => arrived.every((asset) => now[asset.name]));
   check('burst_rows_written', arrived.every((asset) => cards[asset.name]));
-  check('burst_on_nothing', (await overlaps()).length === 0, (await overlaps()).slice(0, 12));
+  // What the page placed: the rest are where this cell said.
+  const placedOver = (await overlaps()).filter((pair) => pair.includes('arrived_'));
+  check('burst_on_nothing', placedOver.length === 0, placedOver.slice(0, 12));
 
   // The stream made to fall behind. The page stops reading, Calcifer's socket to it fills, and the ring goes round: what happened in between
   // never reaches it as events. A real text, a move and a new box are in there, and only `resync` can tell it of them.
@@ -607,7 +635,7 @@ function linesOf(text, name) {
   const heldUp = Date.now() - stalled;
   await cdp.send('Debugger.resume');
   await cdp.send('Debugger.disable');
-  const caughtUp = await page.evaluate((asked) => window.shown(asked), { all: [{ name: fixed[0], has: 'SAID-WHILE-BEHIND' }, { name: fixed[1], x: 700, y: 700 }] });
+  const caughtUp = await shows({ all: [{ name: fixed[0], has: 'SAID-WHILE-BEHIND' }, { name: fixed[1], x: 700, y: 700 }] }, STEP_MS);
   const behind = {
     stalled_ms: heldUp,
     caught_up_ms: caughtUp.when - stalled - heldUp,
@@ -643,9 +671,11 @@ function linesOf(text, name) {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch(async (error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen, during }, null, 2));
   process.exit(2);
-});
+}

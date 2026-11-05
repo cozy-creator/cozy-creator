@@ -26,7 +26,7 @@ pub(super) const FORMAT: u64 = 3;
 const PLATFORM: [&str; 7] = ["tool", "approved", "description", "asset_type", "voice", "models", "lora"];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
-const KINDS: [&str; 3] = ["image", "video", "audio"];
+pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
 const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// What a text asset holds, and what it is.
@@ -242,22 +242,27 @@ impl Standing {
     }
 }
 
+/// What a read gives the function that reads it.
+#[derive(Clone)]
+pub struct Given {
+    pub name: String,
+    pub files: Files,
+    pub description: String,
+    pub asset_type: String,
+    /// `org/package/function@release`.
+    pub made_by: String,
+    /// How to take its file: `use_audio`, `follow`.
+    pub inputs: Map<String, Value>,
+}
+
 /// What an operation reads now.
 #[derive(Clone)]
 pub struct ReadNow {
-    /// As it reaches the adapter.
     pub name: String,
     pub asset: usize,
     pub files: Files,
     /// A tool reading a newest version out of date: its number.
     pub newest: Option<u32>,
-}
-
-impl ReadNow {
-    /// What it reads as: what this version holds.
-    fn kind(&self) -> &'static str {
-        KINDS.iter().copied().find(|kind| self.files.contains_key(*kind)).unwrap_or_default()
-    }
 }
 
 impl Doc {
@@ -853,27 +858,21 @@ impl Doc {
         self.parts(i, reads).into_iter().filter(|(_, part)| !held.contains(&part.as_bytes())).map(|(name, _)| format!("<{name}>")).collect()
     }
 
-    /// The operation asset `i` is, as its adapter takes it: the function its tool names, its inputs, and what it reads with what is known of
-    /// each file.
-    pub fn operation(&self, i: usize, function: &str, reads: &[ReadNow], lock: &Lock, keep: Option<Value>, stand: &[Standing]) -> Value {
-        let asset = &self.assets[i];
-        let file = |sha256: &String| lock.files.get(sha256).map_or_else(|| json!({"sha256": sha256}), folder::File::record);
-        let reads: Vec<Value> = reads
-            .iter()
-            .map(|read| {
-                let of = &self.assets[read.asset];
-                let files: Map<String, Value> = read.files.iter().map(|(name, sha256)| (name.clone(), file(sha256))).collect();
-                let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
-                let made_by = made.map_or("", |made| made.tool.as_deref().unwrap_or(&of.target));
-                json!({"name": read.name, "kind": read.kind(), "asset_type": of.asset_type, "description": of.description, "files": files, "inputs": for_readers(&of.inputs), "made_by": made_by})
-            })
-            .collect();
-        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "function": function, "inputs": self.inputs_of(i), "reads": reads, "keep": keep})
+    /// What each of `reads` gives the function that reads it: its files, and the words meant for a reader. A prompt never crosses a mention.
+    pub fn given(&self, reads: &[ReadNow], lock: &Lock, stand: &[Standing]) -> Vec<Given> {
+        let given = |read: &ReadNow| {
+            let of = &self.assets[read.asset];
+            let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
+            let made_by = made.map_or("", |made| made.tool.as_deref().unwrap_or(&of.target)).to_owned();
+            Given { name: read.name.clone(), files: read.files.clone(), description: of.description.clone(), asset_type: of.asset_type.clone(), made_by, inputs: for_readers(&of.inputs) }
+        };
+        reads.iter().map(given).collect()
     }
 
-    /// `--take`, `--in`: what its adapter is told of the take a new one keeps, its files as records; None if it holds no video.
+    /// `--take`, `--in`: the take a new one keeps, its files as records; None if it holds no video.
     pub fn keep(&self, i: usize, lock: &Lock, keeps: Keeps) -> Option<Value> {
-        let held = lock.asset(&self.assets[i].name)?.version(keeps.take)?;
+        // Discarded since it was asked, it's still on record, and reclaim waits for this render.
+        let held = lock.asset(&self.assets[i].name)?.on_record().find(|version| version.number == keeps.take)?;
         let video = lock.files.get(held.files.get("video")?)?;
         let latents = held.files.get("latents").and_then(|sha256| lock.files.get(sha256));
         let ends_s = if video.fps > 0.0 { video.frames as f64 / video.fps } else { 0.0 };
@@ -985,7 +984,12 @@ pub fn plain_name(text: &str) -> Option<String> {
 
 /// `wanted`, or with `_2`, `_3`, … if something in the project goes by it, or versions wait in project.lock for it.
 pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
-    let taken = |name: &str| name_key(name) == ALL || doc.find(name).is_some() || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
+    free_of(|name| doc.find(name).is_some(), lock, wanted)
+}
+
+/// `free_name`, of what `holds` says the project goes by.
+pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -> String {
+    let taken = |name: &str| name_key(name) == ALL || holds(name) || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
     if !taken(wanted) {
         return wanted.to_owned();
     }

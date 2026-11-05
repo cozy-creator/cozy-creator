@@ -1,28 +1,14 @@
 // What the page reads of an asset's words. `text` is whatever a person or a pod wrote, so each read takes only the shape it wants and
 // nothing here is more than text.
 
-export interface Beat {
-  duration?: number
-  description: string
-}
+import type { Control } from "../types"
+
+export type Row = Record<string, unknown>
 
 const string = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value : null)
-const number = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined)
 
-/** How long a beat with no `duration` lasts, as Calcifer reads it. */
-export const BEAT_S = 5
-
-export function beatsOf(text?: Record<string, unknown>): Beat[] {
-  const beats = text?.beats
-  if (!Array.isArray(beats)) return []
-  return beats.flatMap((beat): Beat[] => {
-    if (typeof beat !== "object" || beat === null) return []
-    const { duration, description } = beat as Record<string, unknown>
-    return [{ duration: number(duration), description: string(description) ?? "" }]
-  })
-}
-
-export const beatLength = (beat: Beat) => beat.duration ?? BEAT_S
+/** What a group holds: only its rows. */
+export const rowsIn = (value: unknown): Row[] => (Array.isArray(value) ? value.filter((row): row is Row => typeof row === "object" && row !== null) : [])
 
 /** What an Edit holds, in order, as its `timeline` says: the names in `<>`. */
 export function piecesOf(text?: Record<string, unknown>): string[] {
@@ -35,8 +21,11 @@ export function piecesOf(text?: Record<string, unknown>): string[] {
 }
 
 /** The words a card shows when it has nothing else to show. */
-export function lineOf(text?: Record<string, unknown>): string | null {
-  return string(text?.instructions) ?? string(text?.summary) ?? string(text?.description) ?? beatsOf(text)[0]?.description ?? null
+export function lineOf(text: Record<string, unknown> | undefined, controls: Control[]): string | null {
+  const said = controls.flatMap((control) =>
+    control.type === "group" ? rowsIn(text?.[control.field]).flatMap((row) => (control.members ?? []).filter((member) => member.type === "text").map((member) => row[member.field])) : control.type === "text" ? [text?.[control.field]] : [],
+  )
+  return said.map(string).find((words) => words !== null) ?? string(text?.description)
 }
 
 /** Text with its mentions told apart, for showing, never as HTML. */

@@ -1,7 +1,7 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project in the file format as it stands, a real Calcifer, the real CLI, a real
 // Chrome. How long `cozy project status` takes, opening it in the page, one edit to show, what's read for it, a render landing, panning, memory.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
-//   node scale.js <sign-in link from `cozy web --no-open`>
+//   node scale.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $HOLDER: Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
 // Prints what it saw as JSON and exits 1 if anything failed.
@@ -11,10 +11,11 @@ const { createHash } = require('crypto');
 const { appendFileSync, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, png, until } = require('./page');
+const { STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 let during = 'the start';
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
@@ -35,6 +36,8 @@ const BARS = {
   open_boxes_s: 5,
   open_settled_s: 10,
   edit_shows_ms: 1500,
+  // A person's write, flushed to disk and answered, the middle of nine. "Under 100-ms is pretty much fast enough for most operations" (Paul, 11-05).
+  write_ms: 100,
   landing_shows_ms: 1500,
   // What a pan costs the page itself, per frame, against the same pan of a project of 36, the same boxes on screen, on the same runner: size adds
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
@@ -373,6 +376,24 @@ function calciferMb() {
 
   memory.edits = calciferMb();
 
+  // Each local write at this size: a box made, an input set, a box moved, a box gone, out where nothing's looked at. The file is whole after each.
+  const writes = { post: [], patch: [], move: [], delete: [] };
+  const write = async (held, path, method, body, headers = {}) => {
+    const from = performance.now();
+    const answer = await fetch(`${base}/v1/projects/${id}${path}`, { method, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...headers } });
+    if (!answer.ok) throw new Error(`${method} ${path}: ${answer.status} ${await answer.text()}`);
+    held.push(performance.now() - from);
+    return answer.json();
+  };
+  const made = [];
+  for (let i = 0; i < 9; i++) made.push((await write(writes.post, '/assets', 'POST', { tool: 'cozy/edit', kind: 'video', name: `written ${i}`, at: { x: -9000 - i * 800, y: -9000 } }, { 'Idempotency-Key': `scale-${Date.now()}-${i}` })).name);
+  for (const name of made) await write(writes.patch, `/assets/${name}`, 'PATCH', { fields: { description: 'A box in a big project.' } });
+  for (const [i, name] of made.entries()) await write(writes.move, '/canvas', 'PATCH', { cards: { [name]: { x: -9000 - i * 800, y: -12000 } } });
+  for (const name of made) await write(writes.delete, `/assets/${name}`, 'DELETE', {});
+  numbers.write_ms = Object.fromEntries(Object.entries(writes).map(([what, took]) => [what, summary(took).median_ms]));
+  check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), numbers.write_ms);
+  check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
+
   // A render from the CLI, on the fixture tool, landing on the open canvas.
   if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
@@ -422,9 +443,11 @@ function calciferMb() {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch(async (error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen, during }, null, 2));
   process.exit(2);
-});
+}

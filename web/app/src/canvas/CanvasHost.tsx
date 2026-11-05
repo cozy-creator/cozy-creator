@@ -13,12 +13,13 @@ import {
 } from "@xyflow/react"
 import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { useNavigate } from "react-router-dom"
+import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../types"
+import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
@@ -27,12 +28,19 @@ import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore } from "./context"
 import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
+import { OpenBox } from "./OpenBox"
 import { Placer } from "./place"
 import { madeHere } from "./shown"
+import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 
 const nodeTypes = { element: Card, entity: EntityCard }
-const fitOver = (toolsShut: boolean) => ({ maxZoom: 1, padding: { top: "56px", right: "24px", bottom: "24px", left: toolsShut ? "56px" : "220px" } as const })
+/** A fit, clear of what floats over the canvas. */
+const fitOver = () => {
+  const left = (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24
+  const top = (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12
+  return { maxZoom: 1, padding: { top: `${top}px`, right: "24px", bottom: "24px", left: `${left}px` } as const }
+}
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
@@ -69,13 +77,13 @@ function ProjectSync({ id }: { id: string }) {
     }
   }, [store, client, id, queries, state, tools])
   useEffect(() => {
-    if (canvas) store.applyCanvas(canvas.cards)
+    if (canvas) store.applyCanvas(canvas.cards, canvas.began)
   }, [store, canvas])
-  // A file that doesn't read, said once, and gone when it does: someone's still saving it.
+  // Gone: there's nothing to show. Anything else that stops it being read is said on the canvas (`Unread`), for as long as it holds.
   useEffect(() => {
-    if (!stateError) return
+    if (!(stateError instanceof ApiError && stateError.status === 404)) return
     const note = say("Couldn't read this project", stateError)
-    if (stateError instanceof ApiError && stateError.status === 404) navigate("/", { replace: true })
+    navigate("/", { replace: true })
     return () => dismiss(note)
   }, [stateError, navigate])
   useEffect(() => {
@@ -86,10 +94,14 @@ function ProjectSync({ id }: { id: string }) {
       stream.subscribe((event) => {
         if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
         if (event.type === "resync" || event.type === "hello") store.fellBehind()
+        if (event.type === "hello") store.outbox.back()
       }),
     [stream, store, id],
   )
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
+  useEffect(() => {
+    store.readAgain = (names) => bridge.changed(id, { assets: names, head: true })
+  }, [bridge, store, id])
   return null
 }
 
@@ -121,7 +133,7 @@ function RenderAll({ id }: { id: string }) {
   if (!fresh && !late) return null
   return (
     <span className="render-all">
-      <button type="button" className="tb primary" onClick={() => void store.runAll(also)}>
+      <button type="button" className="tb primary" onClick={() => store.runAll(also)}>
         Render all {fresh + (also ? late : 0)}
       </button>
       {late > 0 && (
@@ -131,6 +143,23 @@ function RenderAll({ id }: { id: string }) {
         </label>
       )}
     </span>
+  )
+}
+
+/** A project this Calcifer can't read: why, and what to do, where its boxes would be. */
+function Unread({ error }: { error: unknown }) {
+  const body = error instanceof ApiError ? error.body : undefined
+  return (
+    <div className="unread" role="alert">
+      <div>
+        <h2>This project can't be opened yet</h2>
+        <p>{error instanceof Error ? noHash(error.message) : String(error)}</p>
+        {body?.remedy && <p>{noHash(body.remedy)}</p>}
+        {body?.next?.map((line) => (
+          <Copyable key={line} text={line} />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -168,13 +197,27 @@ function Canvas({
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
+  const opened = useMatch("/projects/:id/assets/:name")?.params.name
+  const closeBox = useCallback(() => navigate(`/projects/${store.projectId}`), [navigate, store])
   const stage = useRef<HTMLDivElement>(null)
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store)
   const machine = machines?.at(-1) ?? null
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, projectId), enabled: machines !== null })
+  // What can't be read says so on the canvas, and everything around it still works.
+  const { error: unread } = useQuery({ ...projectQuery(client, projectId ?? ""), enabled: Boolean(projectId) })
+  const readable = unread ? null : projectId
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
+
+  // Something not saved yet, with Calcifer unreachable: the browser's own question is the only one the page ever asks.
+  useEffect(() => {
+    const leaving = (event: BeforeUnloadEvent) => {
+      if (store.outbox.owed) event.preventDefault()
+    }
+    window.addEventListener("beforeunload", leaving)
+    return () => window.removeEventListener("beforeunload", leaving)
+  }, [store])
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
@@ -183,7 +226,7 @@ function Canvas({
     const fitOnce = async () => {
       if (fitted || !store.projectId) return
       fitted = true
-      if (openedOn) await flow.fitView(fitOver(loadToolsShut()))
+      if (openedOn) await flow.fitView(fitOver())
       saveViewport(scope, store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
@@ -198,7 +241,7 @@ function Canvas({
     return () => store.detach()
   }, [store, flow, saved, scope, openedOn, bridge, navigate])
 
-  const fit = useCallback(() => void flow.fitView({ ...fitOver(loadToolsShut()), duration: 150 }), [flow])
+  const fit = useCallback(() => void flow.fitView({ ...fitOver(), duration: 150 }), [flow])
   const choose = useCallback(() => picker.current?.click(), [])
 
   // The middle of what's visible: the canvas between whatever floats over it.
@@ -209,34 +252,14 @@ function Canvas({
     return flow.screenToFlowPosition({ x: (left + right) / 2, y: box.top + box.height / 2 })
   }, [flow])
 
-  // A click puts a box in the middle of what's visible, or the nearest place clear of what's there, so none lands hidden under another.
-  const clearSpot = useCallback(
-    (width: number, height: number) => {
-      const { x: middle, y } = visibleCentre()
-      const box = stage.current!.getBoundingClientRect()
-      const leftmost = flow.screenToFlowPosition({ x: (document.querySelector(".tools")?.getBoundingClientRect().right ?? box.left) + 24, y: box.top }).x
-      const rightmost = flow.screenToFlowPosition({ x: (document.querySelector(".drawer")?.getBoundingClientRect().left ?? box.right) - 24, y: box.top }).x
-      const spot = { x: Math.round(middle - width / 2), y: Math.round(y - height / 2) }
-      for (let tries = 0; tries < 60; tries++) {
-        const under = flow.getIntersectingNodes({ ...spot, width, height })
-        if (!under.length) break
-        spot.x = Math.round(Math.max(...under.map((node) => node.position.x + (node.width ?? CARD_WIDTH))) + 32)
-        if (spot.x + width > rightmost) {
-          spot.x = Math.round(leftmost)
-          spot.y += Math.round(height + 48)
-        }
-      }
-      return spot
-    },
-    [flow, visibleCentre],
-  )
+  // A click puts a box in the middle of what's visible, and `place` keeps it clear of what's there.
   const placeTool = useCallback(
     (tool: Tool) => {
       const width = tool.controls.some((control) => control.type === "timeline") ? 720 : tool.kind === "video" ? 360 : 300
-      const { x, y } = clearSpot(width, width * 0.75)
-      void placer.addTool(tool, { x: x + CARD_WIDTH / 2, y: y + 16 })
+      const { x, y } = visibleCentre()
+      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
     },
-    [placer, clearSpot],
+    [placer, visibleCentre],
   )
 
   const picked = useCallback(
@@ -245,10 +268,10 @@ function Canvas({
       event.target.value = ""
       if (!files.length) return
       const columns = Math.ceil(Math.sqrt(files.length))
-      const { x, y } = clearSpot(columns * CARD_WIDTH, Math.ceil(files.length / columns) * CARD_WIDTH)
-      placer.add(files, { x: x + CARD_WIDTH / 2, y: y + 16 })
+      const { x, y } = visibleCentre()
+      placer.add(files, { x: x - (columns * CARD_WIDTH) / 2 + CARD_WIDTH / 2, y: y - (Math.ceil(files.length / columns) * CARD_WIDTH) / 2 + 16 })
     },
-    [placer, clearSpot],
+    [placer, visibleCentre],
   )
 
   const drop = useCallback(
@@ -259,8 +282,8 @@ function Canvas({
       if (tool || taken) {
         event.preventDefault()
         const named = store.tools.get().get(tool)
-        if (named) void placer.addTool(named, point)
-        if (taken) void placer.addFile(JSON.parse(taken), point)
+        if (named) placer.addTool(named, point)
+        if (taken) placer.addFile(JSON.parse(taken), point)
         return
       }
       if (!hasFiles(event)) return
@@ -304,13 +327,16 @@ function Canvas({
   const dragging = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       const { clientX, clientY } = pointOf(event)
-      store.dropTargetAt(clientX, clientY, draggedEls(nodes))?.over(nodes.map((node) => node.data.name), clientX, clientY)
+      const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
+      target?.over(nodes.map((node) => node.data.name), clientX, clientY)
+      stage.current?.toggleAttribute("data-offering", Boolean(target))
     },
     [store],
   )
   const dragStop = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       carrying(false)
+      stage.current?.removeAttribute("data-offering")
       const { clientX, clientY } = pointOf(event)
       const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
       if (!target) {
@@ -341,7 +367,10 @@ function Canvas({
         const names = flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
         if (names.length) {
           event.preventDefault()
-          void store.remove(names)
+          // One box, with one of its takes chosen: it's that take that goes.
+          const take = names.length === 1 ? store.lookingAt(names[0]) : undefined
+          if (take === undefined) store.remove(names)
+          else store.discardTake(names[0], take)
         }
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
@@ -375,6 +404,7 @@ function Canvas({
   return (
     <CanvasStoreProvider value={store}>
       <ToolPanel
+        project={readable}
         machine={machine}
         waiting={machines === null}
         shut={shut}
@@ -423,6 +453,10 @@ function Canvas({
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onPaneClick={() => store.editing.set(null)}
+          onNodeClick={(event, node) => {
+            if (node.type !== "element" || !store.projectId || event.shiftKey || event.metaKey || event.ctrlKey) return
+            navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(node.data.name)}`)
+          }}
           onNodeContextMenu={(event, node) => {
             if (node.type !== "element") return
             event.preventDefault()
@@ -436,10 +470,11 @@ function Canvas({
           onSelectionDragStop={(event, nodes) => dragStop(event, nodes)}
         >
           <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
-          <Empty choose={choose} />
+          {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
         </ReactFlow>
         {veil && <div className="dropveil" />}
       </div>
+      {opened && <OpenBox name={opened} close={closeBox} />}
       <AssetMenu />
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}

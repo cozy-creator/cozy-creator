@@ -1,17 +1,18 @@
 // Place, in a real browser (web-ui.md §1): a PNG, an MP4 and a WAV dropped together; one chosen from the selector; one renamed; a
 // move read back from project.canvas.yaml; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
-//   node place.js <sign-in link from `cozy web --no-open`>
+//   node place.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
 // terminal sees the same project; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, drop, png, until, wav } = require('./page');
+const { MP4, STEP_MS, drop, png, noStall, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
   if (!ok) failures.push(name);
@@ -252,8 +253,10 @@ const constants = (folder) => {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}

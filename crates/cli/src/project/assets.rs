@@ -10,7 +10,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use protocol::{
     error::{Error, Kind},
-    project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, CanvasPatch, CanvasPatched, Card, NewAsset},
+    project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, CanvasPatch, CanvasPatched, Card, NewAsset, VersionBack, VersionMoved},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
@@ -113,7 +113,7 @@ pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Resul
     let mut fields = fields_of(None, &terms)?;
     // `text`, no tool: a text asset.
     let tool = if args.tool == "text" { String::new() } else { args.tool };
-    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields };
+    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None };
     let made: AssetMade = ctx.calcifer().await?.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&made);
@@ -196,6 +196,14 @@ struct Deleted<'a> {
     next: [String; 1],
 }
 
+/// `delete --version --json`: what the route answers, and the command that undoes it.
+#[derive(Serialize)]
+struct VersionDeleted<'a> {
+    #[serde(flatten)]
+    moved: &'a VersionMoved,
+    next: [String; 1],
+}
+
 /// The words of `-p` when it was given, as what's printed has to work from here.
 fn from(at: Option<&PathBuf>) -> String {
     at.map_or_else(String::new, |at| match at.to_string_lossy().contains(' ') {
@@ -205,7 +213,10 @@ fn from(at: Option<&PathBuf>) -> String {
 }
 
 /// `names` deleted, each printing the command that restores it.
-pub(super) async fn delete(ctx: &Context, at: Option<&PathBuf>, names: Vec<String>) -> Result<ExitCode, Error> {
+pub(super) async fn delete(ctx: &Context, at: Option<&PathBuf>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
+    if !versions.is_empty() {
+        return discard(ctx, at, names, versions).await;
+    }
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
     for name in names {
@@ -223,8 +234,39 @@ pub(super) async fn delete(ctx: &Context, at: Option<&PathBuf>, names: Vec<Strin
     Ok(ExitCode::SUCCESS)
 }
 
-/// `delete`'s line: the asset back as it was, where it was, with what it made.
-pub(super) async fn restore(ctx: &Context, at: Option<&PathBuf>, name: String, kept: String) -> Result<ExitCode, Error> {
+/// `versions` of one asset discarded, each printing the command that brings it back.
+async fn discard(ctx: &Context, at: Option<&PathBuf>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
+    let [name] = names.as_slice() else {
+        return Err(input_error("project_usage", "--version is of one asset".to_owned()).next(format!("cozy project delete {} --version {}", names[0], versions[0])));
+    };
+    let opened = open(ctx, at, false).await?;
+    let calcifer = ctx.calcifer().await?;
+    for number in versions {
+        let moved: VersionMoved = calcifer.delete(&route(&["v1", "projects", &opened.id, "assets", name, "versions", &number.to_string()])).await?;
+        let back = format!("cozy project{} restore {} --version {number}{}", from(at), moved.name, if moved.approved { " --approved" } else { "" });
+        if ctx.json {
+            output::json(&VersionDeleted { moved: &moved, next: [back] });
+            continue;
+        }
+        let (name, noun) = (&moved.name, &moved.noun);
+        let approval = if moved.approved { ", and its approval with it" } else { "" };
+        let stands = moved.stands.map_or_else(|| format!("it has no {noun} now"), |stands| format!("it's on {noun} {stands} now"));
+        output::say(ctx, &format!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy project reclaim`"));
+        say_stale(ctx, &moved);
+        anstream::println!("{back}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn say_stale(ctx: &Context, moved: &VersionMoved) {
+    if !moved.stale.is_empty() {
+        output::say(ctx, &format!("out of date now: {}", moved.stale.join(", ")));
+    }
+}
+
+/// `delete`'s line: the asset back as it was, where it was, with what it made, or a take it discarded.
+pub(super) async fn restore(ctx: &Context, at: Option<&PathBuf>, name: String, kept: Option<String>, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
+    let Some(kept) = kept else { return undiscard(ctx, at, name, versions, approved).await };
     let unreadable = |why: String| input_error("restore_unreadable", format!("that isn't what deleting {name} printed: {why}")).next("cozy project status");
     let bytes = URL_SAFE_NO_PAD.decode(kept.trim()).map_err(|why| unreadable(why.to_string()))?;
     let kept: Kept = serde_json::from_slice(&bytes).map_err(|why| unreadable(why.to_string()))?;
@@ -233,6 +275,25 @@ pub(super) async fn restore(ctx: &Context, at: Option<&PathBuf>, name: String, k
     match ctx.json {
         true => output::json(&made),
         false => output::say(ctx, &format!("{} is back", made.name)),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn undiscard(ctx: &Context, at: Option<&PathBuf>, name: String, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
+    if approved && versions.len() > 1 {
+        return Err(input_error("project_usage", "--approved is of one --version: the one `delete` printed it for".to_owned()).next(format!("cozy project restore {name} --version {} --approved", versions[0])));
+    }
+    let opened = open(ctx, at, false).await?;
+    let calcifer = ctx.calcifer().await?;
+    for number in versions {
+        let moved: VersionMoved = calcifer.put(&route(&["v1", "projects", &opened.id, "assets", &name, "versions", &number.to_string()]), &VersionBack { approved }).await?;
+        if ctx.json {
+            output::json(&moved);
+            continue;
+        }
+        let approval = if moved.approved { ", approved" } else { "" };
+        output::say(ctx, &format!("{}'s {} {number} is back{approval}", moved.name, moved.noun));
+        say_stale(ctx, &moved);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -260,5 +321,9 @@ pub(super) async fn one(ctx: &Context, at: Option<&PathBuf>, name: String) -> Re
         [version.number.to_string(), if version.approved { "yes" } else { "-" }.to_owned(), version.made_by.clone().unwrap_or_else(|| "-".into()), version.seed.map_or("-".to_owned(), |seed| seed.to_string()), file]
     });
     rows.fold(table, output::Table::row).print();
+    if !held.discarded.is_empty() {
+        let numbers: Vec<String> = held.discarded.iter().map(u32::to_string).collect();
+        output::say(ctx, &format!("discarded, until `cozy project reclaim`: {}. To bring one back: cozy project restore {} --version <n>", numbers.join(", "), asset.name));
+    }
     Ok(ExitCode::SUCCESS)
 }

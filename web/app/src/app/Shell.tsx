@@ -2,11 +2,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
-import { projectQuery } from "../api/queries"
+import { projectQuery, projectsQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
 import { noHash } from "../canvas/text"
 import { RunsLink } from "../panels/runs/RunsLink"
+import type { ProjectRow } from "../types"
 import { Icon } from "../ui/Icon"
 import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
@@ -22,7 +23,7 @@ export function useTo() {
   return (rest = "") => (id ? `/projects/${id}${rest && `/${rest}`}` : `/${rest}`)
 }
 
-/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy web` does anywhere. A pod's Calcifer is its own. */
+/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. A pod's Calcifer is its own. */
 const SAYS_HOW = 5
 
 function Connectivity() {
@@ -38,7 +39,7 @@ function Connectivity() {
           {!remote && health.attempt >= SAYS_HOW && (
             <>
               {" "}
-              · run <code>cozy web</code>
+              · run <code>cozy open</code>
             </>
           )}
         </span>
@@ -53,17 +54,40 @@ function Connectivity() {
   )
 }
 
-function ProjectName({ id }: { id: string | null }) {
+/** How many projects have a tab. The rest are behind +. */
+const TABS = 6
+
+/** The project open, and those used lately, each staying where it is so a tab doesn't jump from under the pointer. What's new takes the end. */
+function useTabs(id: string | null, rows: ProjectRow[]): ProjectRow[] {
+  const order = useRef<string[]>([])
+  const known = new Map(rows.map((row) => [row.id, row]))
+  order.current = [...order.current.filter((held) => known.has(held)), ...rows.map((row) => row.id).filter((held) => !order.current.includes(held))]
+  const shown = order.current.slice(0, TABS)
+  if (id && known.has(id) && !shown.includes(id)) shown[shown.length - 1] = id
+  return shown.flatMap((held) => known.get(held) ?? [])
+}
+
+function ProjectTabs({ id }: { id: string | null }) {
   const { client } = useConnection()
   const to = useTo()
   const { data } = useQuery({ ...projectQuery(client, id ?? ""), enabled: Boolean(id) })
-  const name = data?.path.split(/[/\\]/).filter(Boolean).pop() ?? (id ? "…" : "untitled")
+  const { data: list } = useQuery(projectsQuery(client))
+  const tabs = useTabs(id, (list?.projects ?? []).filter((row) => !row.missing))
   const saidOfFile = data ? warningsOf(data).ofProject : []
+  const name = data?.path.split(/[/\\]/).filter(Boolean).pop()
   return (
     <>
-      <Link className="proj" to={to("projects")} title="Projects">
-        {name}
-      </Link>
+      <nav className="ptabs" aria-label="Projects">
+        {tabs.map((tab) => (
+          <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={`/projects/${tab.id}`} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
+            {tab.name}
+          </Link>
+        ))}
+        {!tabs.some((tab) => tab.id === id) && <span className="ptab on">{name ?? (id ? "…" : "untitled")}</span>}
+        <Link className="ptab more" to={to("projects")} title="All projects" aria-label="All projects">
+          <Icon name="plus" />
+        </Link>
+      </nav>
       {saidOfFile.length > 0 && (
         <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
           !
@@ -153,7 +177,7 @@ export function Shell() {
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
-        <ProjectName id={id} />
+        <ProjectTabs id={id} />
         {remote && (
           <Link className="pill warn" to={to("machines")}>
             On {remote}

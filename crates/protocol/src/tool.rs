@@ -1,20 +1,19 @@
 //! A tool: a public function that makes a picture, a video or a sound, as `GET /v1/tools` lists it. What it makes comes from its
-//! output, and its box from what it takes: the typed `inputs` of an adapter that speaks for it, else its own inputs. Nothing here
-//! knows a model.
+//! output, and its box from its own typed inputs, with the little its `Node` adds. Nothing here knows a model.
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    interface::{Callable, Constraints, Field, Interface, Struct, Type, Wire},
+    interface::{Callable, Constraints, Field, Interface, Node, Struct, TAKE, Type, Wire},
     names::shown,
 };
 
 /// The kinds of file a node can be.
 const MEDIA: [&str; 3] = ["image", "video", "audio"];
-/// What no tool's box asks for: a run sets the seed, and every asset can have a description, whatever made it.
-const NOT_ASKED: [&str; 2] = ["seed", "description"];
+/// What no tool's box asks for: the platform's words on any asset, whatever made it.
+const NOT_ASKED: [&str; 6] = ["seed", "lora", "models", "description", "asset_type", "voice"];
 /// What a node's text is called, whatever input of its function it goes to.
 pub const TEXT: &str = "instructions";
 
@@ -28,6 +27,41 @@ pub struct Tools {
     /// Why the list holds only what's installed: the Hub didn't answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolList {
+    pub packages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<String>,
+}
+
+/// `POST /v1/tools/list`: a package on the list, all its functions with it, or these tools off it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolListChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove: Vec<String>,
+}
+
+/// One row of `GET /v1/tools/browse`: a package of the Hub that makes media.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrowsedPackage {
+    pub package: String,
+    /// What it does, in a line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// The `id`s of its tools.
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Browsed {
+    pub packages: Vec<BrowsedPackage>,
+    /// How many more a bigger `limit` reads.
+    pub older: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -50,6 +84,9 @@ pub struct Tool {
     /// The path in its package of a component that draws its box, where it ships one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<String>,
+    /// A new take can keep the start of one of its: it says `fill: {.. take}`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub takes: bool,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -59,11 +96,13 @@ pub struct ToolUi {
     pub module: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlType {
+    #[default]
     Text,
-    Beats,
+    /// A list of rows, each its `members`.
+    Group,
     Shape,
     Range,
     Choice,
@@ -74,7 +113,7 @@ pub enum ControlType {
 }
 
 /// One thing a box asks for.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Control {
     /// What a node's fields call it.
     pub field: String,
@@ -97,13 +136,29 @@ pub struct Control {
     /// `file`: several, in order.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub multiple: bool,
-    /// `beats`: the longest a beat can be, the package's own limit.
+    /// `group`: a row's controls, and how few and how many rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<Control>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_duration: Option<f64>,
+    pub min_items: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
+    /// A group's member whose sum it shows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub total: bool,
+    /// What an empty text reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// What a number counts: `s`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+    /// On its box's default face: its first text, what's required, and what its `Node` shows. The rest folds away.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub face: bool,
 }
 
 /// The Edit as a tool, listed before any function: clips on a track, rendered here.
@@ -118,20 +173,8 @@ pub fn edit() -> Tool {
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
         local: false,
         ui: None,
-        controls: vec![Control {
-            field: "timeline".to_owned(),
-            ty: ControlType::Timeline,
-            label: "Edit".to_owned(),
-            options: None,
-            min: None,
-            max: None,
-            step: None,
-            accept: None,
-            multiple: false,
-            max_duration: None,
-            default: None,
-            required: false,
-        }],
+        takes: false,
+        controls: vec![Control { field: "timeline".to_owned(), ty: ControlType::Timeline, label: "Edit".to_owned(), face: true, ..Control::default() }],
     }
 }
 
@@ -155,38 +198,35 @@ pub fn output_text(callable: &Callable, result: &Value) -> Option<String> {
     callable.result.fields.iter().filter(|field| field.name != "warnings").find_map(said).filter(|text| !text.trim().is_empty())
 }
 
-/// The input of a function no adapter speaks for that takes a node's `instructions`: the one its author calls that or `prompt`, else its
-/// first required text.
+/// The input that takes an asset's `instructions`: the one its author calls that or `prompt`, else its first required text.
 pub fn text_input(request: &Struct) -> Option<&Field> {
     let named = request.fields.iter().find(|field| matches!(field.name.as_str(), "instructions" | "prompt"));
     named.or_else(|| request.fields.iter().find(|field| field.wire == Wire::Required && *optional(&field.ty) == Type::Str))
 }
 
-/// Every tool of a package's interface: what a person runs of it that makes media.
+/// Every tool of a package's interface: what a person runs of it that makes media, and only what declares a `Node` if anything does.
 pub fn tools_of(package: &str, release: &str, interface: &Interface) -> Vec<Tool> {
+    let declared = interface.callables.iter().any(|callable| callable.node.is_some());
     let callables = interface.public().into_iter().filter_map(|name| interface.callables.iter().find(|c| c.name == name));
-    callables.filter_map(|callable| tool_of(package, release, interface, callable)).collect()
+    callables.filter(|callable| !declared || callable.node.is_some()).filter_map(|callable| tool_of(package, release, callable)).collect()
 }
 
-fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Callable) -> Option<Tool> {
+fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
     let kind = output_kind(callable)?;
     let package = shown(package);
-    let box_of = interface.adapter(&callable.name).and_then(|adapter| Some((adapter, adapter.typed_inputs()?)));
-    let controls = match box_of {
-        Some((adapter, fields)) => controls(fields, adapter, "request/inputs/"),
-        None => controls(&callable.request, callable, "request/"),
-    };
+    let node = callable.node.clone().unwrap_or_default();
     Some(Tool {
         id: format!("{package}/{}", callable.name),
-        label: label(&package, &callable.name),
+        label: if node.label.is_empty() { label(&package, &callable.name) } else { node.label.clone() },
         package,
         function: callable.name.clone(),
         release: release.to_owned(),
         kind: kind.to_owned(),
         description: callable.description.clone(),
         local: false,
-        controls,
-        ui: callable.ui.clone(),
+        controls: controls(callable, &node),
+        takes: node.fill.values().any(|source| source == TAKE),
+        ui: node.ui,
     })
 }
 
@@ -206,45 +246,40 @@ fn capitalized(text: &str) -> String {
     chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
-/// The box of `fields`, as `callable` takes them under `path`, where its author's defaults are kept.
-fn controls(fields: &Struct, callable: &Callable, path: &str) -> Vec<Control> {
-    let text = text_input(fields);
-    let mut controls: Vec<Control> = fields.fields.iter().filter_map(|field| control(field, callable, path)).collect();
-    for control in controls.iter_mut().filter(|control| text.is_some_and(|text| text.name == control.field)) {
-        control.field = TEXT.to_owned();
-        if !text.is_some_and(|text| text.extra.contains_key("label")) {
-            control.label = capitalized(TEXT);
+/// The box of `callable`: every input a person can set by hand, by these same rules however it nests.
+fn controls(callable: &Callable, node: &Node) -> Vec<Control> {
+    let request = &callable.request;
+    let undrawn = |field: &&Field| !NOT_ASKED.contains(&field.name.as_str()) && !callable.is_assets(&field.name) && !node.hide.contains(&field.name) && !node.fill.contains_key(&field.name);
+    let default = |field: &Field| callable.invocable.defaults.get(&format!("request/{}", field.name)).cloned();
+    let text = text_input(request).filter(|text| undrawn(text)).or_else(|| request.fields.iter().filter(undrawn).find(|field| *optional(&field.ty) == Type::Str));
+    let mut controls = vec![];
+    for field in request.fields.iter().filter(undrawn) {
+        let Some(mut control) = control(field, default(field)) else { continue };
+        control.face = control.required || node.show.contains(&field.name) || text.is_some_and(|text| text.name == field.name);
+        if text.is_some_and(|text| text.name == field.name) && matches!(field.name.as_str(), "instructions" | "prompt") {
+            control.field = TEXT.to_owned();
+            if !field.extra.contains_key("label") {
+                control.label = capitalized(TEXT);
+            }
         }
+        controls.push(control);
     }
     controls
 }
 
-/// A field as its control. None: it isn't one, because a run sets it, mentions fill it, or a person couldn't set it by hand.
-fn control(field: &Field, callable: &Callable, path: &str) -> Option<Control> {
-    let hidden = field.extra.get("hidden").and_then(Value::as_bool) == Some(true);
-    if hidden || NOT_ASKED.contains(&field.name.as_str()) || callable.is_assets(&field.name) {
-        return None;
-    }
+/// A field as its control, its author's `default` over its own. None: a person couldn't set it by hand, or mentions fill it.
+fn control(field: &Field, default: Option<Value>) -> Option<Control> {
     let ty = optional(&field.ty);
     let mut control = Control {
         field: field.name.clone(),
-        ty: ControlType::Text,
         label: field.extra.get("label").and_then(Value::as_str).map_or_else(|| capitalized(&words(&field.name)), str::to_owned),
-        options: None,
-        min: None,
-        max: None,
-        step: None,
-        accept: None,
-        multiple: false,
-        max_duration: None,
-        default: callable.invocable.defaults.get(&format!("{path}{}", field.name)).or(field.default.as_ref()).filter(|value| !value.is_null()).cloned(),
+        placeholder: field.extra.get("placeholder").and_then(Value::as_str).map(str::to_owned),
+        unit: field.extra.get("unit").and_then(Value::as_str).map(str::to_owned),
+        total: field.extra.get("total").and_then(Value::as_bool) == Some(true),
+        default: default.or(field.default.clone()).filter(|value| !value.is_null()),
         required: field.wire == Wire::Required,
+        ..Control::default()
     };
-    if let Some(accept) = field.extra.get("accept").and_then(Value::as_str) {
-        control.ty = ControlType::File;
-        control.accept = Some(accept.to_owned());
-        return Some(control);
-    }
     if field.name == "aspect_ratio" {
         control.ty = ControlType::Shape;
         control.options = choices(ty).or_else(|| field.extra.get("options").and_then(Value::as_array).cloned());
@@ -262,7 +297,7 @@ fn control(field: &Field, callable: &Callable, path: &str) -> Option<Control> {
             let (min, max) = bounds(field)?;
             control.ty = ControlType::Range;
             (control.min, control.max) = (Some(min), Some(max));
-            control.step = field.constraints.multiple_of.or((*ty == Type::Int).then_some(1.0));
+            control.step = field.constraints.multiple_of.or_else(|| number(field, "step")).or((*ty == Type::Int).then_some(1.0));
         }
         Type::Asset(kind) if MEDIA.contains(&kind.as_str()) => {
             control.ty = ControlType::File;
@@ -274,12 +309,11 @@ fn control(field: &Field, callable: &Callable, path: &str) -> Option<Control> {
                 control.accept = Some(kind.clone());
                 control.multiple = true;
             }
-            Type::Struct(item) => {
-                let beat = |name: &str| item.fields.iter().find(|member| member.name == name);
-                let duration = beat("duration").filter(|duration| matches!(optional(&duration.ty), Type::Int | Type::Float))?;
-                beat("description").filter(|description| *optional(&description.ty) == Type::Str)?;
-                control.ty = ControlType::Beats;
-                control.max_duration = duration.extra.get("max_duration").and_then(Value::as_f64).or(duration.constraints.le);
+            Type::Struct(row) if !row.is_mention() => {
+                control.ty = ControlType::Group;
+                control.members = row.fields.iter().filter_map(|member| self::control(member, None)).collect();
+                control.min_items = field.constraints.min_length;
+                control.max_items = field.constraints.max_length;
             }
             _ => return None,
         },

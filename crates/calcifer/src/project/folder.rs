@@ -36,6 +36,11 @@ pub const FILES: &str = "files";
 pub const RUNS: &str = ".runs";
 /// What a walk owes, in `.runs`: no one commits it, and it moves without touching what the project is.
 pub const WALK: &str = ".runs/walk.json";
+/// What `Idempotency-Key`s answered, for their retries. Not in project.lock, which a key would rewrite whole and which goes with the project, and
+/// not in `.runs`, which `reclaim` empties.
+const KEYS: &str = ".keys.json";
+/// How long a key is kept: as long as a held file waits.
+const KEY_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 /// A cache of what is measured of each file, which a read of the file can always make again.
 pub(super) const MEASURED: &str = ".measured.json";
 /// Where a project.lock that can't be read goes.
@@ -310,21 +315,8 @@ pub struct Pending {
     /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpin: Option<String>,
-    /// Where it goes, and each call after this one of the operation's list.
+    /// Where it goes.
     pub target: Target,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rest: Vec<Invocation>,
-    /// What each call before this one saved, for a later one that reads it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub done: Vec<Files>,
-}
-
-/// One call an adapter answered: a function of its package, and its exact input.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Invocation {
-    pub function: String,
-    #[serde(default)]
-    pub input: Map<String, Value>,
 }
 
 /// An asset's versions by number, the last number given (numbers are never given again), and the seed of a run that failed,
@@ -340,6 +332,9 @@ pub struct Asset {
     pub versions: Vec<Version>,
     #[serde(default)]
     pub numbered: u32,
+    /// Versions set aside: off the list, on record until `reclaim`, each number still given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded: Vec<Version>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tried: Option<Tried>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -364,6 +359,28 @@ pub struct Tried {
 impl Asset {
     pub fn version(&self, number: u32) -> Option<&Version> {
         self.versions.iter().find(|version| version.number == number)
+    }
+
+    /// Its versions and those discarded.
+    pub fn on_record(&self) -> impl Iterator<Item = &Version> {
+        self.versions.iter().chain(&self.discarded)
+    }
+
+    /// Version `number` off the list and on record.
+    pub fn discard(&mut self, number: u32) {
+        self.numbered = self.numbered.max(number);
+        if let Some(at) = self.versions.iter().position(|version| version.number == number) {
+            self.discarded.push(self.versions.remove(at));
+            self.discarded.sort_by_key(|version| version.number);
+        }
+    }
+
+    /// What `discard` set aside of `number`, back in its place.
+    pub fn undiscard(&mut self, number: u32) {
+        if let Some(at) = self.discarded.iter().position(|version| version.number == number) {
+            self.versions.push(self.discarded.remove(at));
+            self.versions.sort_by_key(|version| version.number);
+        }
     }
 }
 
@@ -392,32 +409,19 @@ pub struct Lock {
     /// As `pending`.
     #[serde(skip)]
     pub walk: Owed,
-    /// What each import under an `Idempotency-Key` answered, for its retries, by that key.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub imported: BTreeMap<String, Keyed>,
-    /// The name each `Idempotency-Key` a new asset was asked under took, kept as `imported` is.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub assets_made: BTreeMap<String, KeyedAsset>,
-    /// The digest of each render asked under an `Idempotency-Key`, kept as `imported` is: a render handed here and asked again after its
-    /// walk ended adds nothing.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub renders: BTreeMap<String, Keyed<String>>,
 }
 
-/// What was answered under a key, and the digest of what asked it.
+/// What an `Idempotency-Key` answered, and the digest of what asked it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Keyed<T = protocol::project::Imported> {
+pub struct Keyed {
     pub digest: String,
     pub at_ms: i64,
-    pub answer: T,
-}
-
-/// The name a new asset took, and the digest of what asked it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KeyedAsset {
-    pub digest: String,
-    pub at_ms: i64,
+    /// What a new asset was called.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// An import's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<protocol::project::Imported>,
 }
 
 /// One file a `cozy run` left in the project.
@@ -431,7 +435,7 @@ pub struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), walk: Owed::default(), imported: BTreeMap::new(), assets_made: BTreeMap::new(), renders: BTreeMap::new() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), walk: Owed::default() }
     }
 }
 
@@ -663,8 +667,7 @@ impl Lock {
     /// The lock as it's written. A file holds a row only for what can't be read again from a file here: where it stays, its parts, or, with nothing
     /// else naming it, its whole hash, which `project.yaml` holds only the start of.
     pub fn written(&self) -> String {
-        let mut named = self.named(|_| true);
-        named.extend(self.runs.iter().map(|row| row.sha256.as_str()));
+        let named = self.recorded();
         let mut value = serde_json::to_value(self).expect("a lock serializes");
         if let Some(files) = value["files"].as_object_mut() {
             files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
@@ -679,14 +682,23 @@ impl Lock {
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
             .collect();
         let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
-        for key in lost {
-            let Some(mut held) = self.assets.remove(&key) else { continue };
-            if held.name.is_empty() {
-                held.name.clone_from(&key);
-            }
-            let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
-            self.assets.insert(free, held);
+        lost.iter().for_each(|key| self.bury(key));
+    }
+
+    /// The row under `key` set aside: its versions stay, an orphan's, and that name starts with none.
+    pub fn bury(&mut self, key: &str) {
+        let Some(mut held) = self.assets.remove(key).filter(|held| held.on_record().next().is_some()) else { return };
+        if held.name.is_empty() {
+            held.name = key.to_owned();
         }
+        let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
+        self.assets.insert(free, held);
+    }
+
+    /// Every sha256 a version or a run has on record here, of any asset, discarded too: all `reclaim` may delete, once nothing uses it.
+    pub fn recorded(&self) -> BTreeSet<String> {
+        let discarded = self.assets.values().flat_map(|held| &held.discarded).flat_map(|version| version.files.values()).map(String::as_str);
+        self.named(|_| true).into_iter().chain(discarded).chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
     }
 
     /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that.
@@ -846,6 +858,14 @@ impl Folder {
         self.dir.join(BROKEN).exists()
     }
 
+    /// A lock for a project about to hold a file: `files/` with none reads as a project that lost its own.
+    pub fn start_lock(&self) -> Result<(), Error> {
+        match self.dir.join(LOCK).exists() {
+            true => Ok(()),
+            false => self.update_lock(|_| {}),
+        }
+    }
+
     /// Whether project.lock is gone from a project that has files.
     pub fn lock_gone(&self) -> bool {
         !self.dir.join(LOCK).exists() && std::fs::read_dir(self.dir.join(FILES)).is_ok_and(|mut files| files.next().is_some())
@@ -861,7 +881,7 @@ impl Folder {
             format!("{LOCK} can't be read and is kept as {BROKEN}")
         } else if !self.dir.join(LOCK).exists() {
             format!("{LOCK} is gone")
-        } else if lock.runs.is_empty() && lock.assets.values().all(|held| held.versions.is_empty()) {
+        } else if lock.runs.is_empty() && lock.assets.values().all(|held| held.on_record().next().is_none()) {
             format!("{LOCK} lists no versions")
         } else {
             return None;
@@ -876,8 +896,7 @@ impl Folder {
             file.sha256.clone_from(sha256);
             file.path = format!("{FILES}/{}{}", hex_of(sha256), file.ext);
         }
-        let named: Vec<String> = lock.named(|_| true).into_iter().map(str::to_owned).chain(lock.runs.iter().map(|row| row.sha256.clone())).collect();
-        for sha256 in named {
+        for sha256 in lock.recorded() {
             let file = lock.files.entry(sha256.clone()).or_default();
             file.path = format!("{FILES}/{}{}", hex_of(&sha256), file.ext);
             file.sha256 = sha256;
@@ -963,6 +982,25 @@ impl Folder {
     /// No render holds any.
     pub fn drop_texts(&self) {
         let _ = std::fs::remove_dir_all(self.dir.join(RUNS).join("asked"));
+    }
+
+    /// What `Idempotency-Key` `key` answered here.
+    pub fn keyed(&self, key: &str) -> Option<Keyed> {
+        self.keys().remove(key)
+    }
+
+    fn keys(&self) -> BTreeMap<String, Keyed> {
+        std::fs::read(self.dir.join(KEYS)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    }
+
+    /// Keeps what `key` answered.
+    pub fn keep_key(&self, key: &str, digest: &str, name: &str, answer: Option<protocol::project::Imported>) -> Result<(), Error> {
+        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut keys = self.keys();
+        let at_ms = super::now_ms();
+        keys.retain(|_, row| at_ms - row.at_ms < KEY_KEPT_MS);
+        keys.insert(key.to_owned(), Keyed { digest: digest.to_owned(), at_ms, name: name.to_owned(), answer });
+        durable::replace(&self.dir.join(KEYS), serde_json::to_string(&keys).expect("keys serialize").as_bytes(), 0o644).map_err(io)
     }
 
     /// Applies `change` to what the walk owes, touching nothing of what the project is.
@@ -1243,17 +1281,24 @@ impl Folder {
         })
     }
 
-    /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, and
-    /// their bytes. With `delete` they go, from disk and from the table: what `reclaim --yes` frees.
-    pub fn sweep(&self, named: &BTreeSet<String>, delete: bool) -> Result<(u64, u64), Error> {
+    /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, their bytes, and how many
+    /// of them nothing has a record of. With `delete` those on record go, from disk and from the table: what `reclaim --yes` frees. One with no
+    /// record may be all that's left of a take, so it's said and it stays.
+    pub fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64), Error> {
         let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
-        let (mut files, mut bytes) = (0, 0);
+        let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
             let path = format!("{FILES}/{}", entry.file_name().to_string_lossy());
-            let used = lock.files.values().any(|file| file.path == path && named.contains(&file.sha256));
-            if path.contains("/.") || used || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let file = lock.files.values().find(|file| file.path == path);
+            if path.contains("/.") || file.is_some_and(|file| named.contains(&file.sha256)) || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
+            }
+            if !file.is_some_and(|file| recorded.contains(&file.sha256)) {
+                unrecorded += 1;
+                if delete {
+                    continue;
+                }
             }
             bytes += entry.metadata().map_or(0, |meta| meta.len());
             files += 1;
@@ -1272,7 +1317,7 @@ impl Folder {
             })?;
             let _ = std::fs::remove_dir_all(self.dir.join(RUNS));
         }
-        Ok((files, bytes))
+        Ok((files, bytes, unrecorded))
     }
 
     /// Bytes on disk of `sha256`, if here.
@@ -1284,8 +1329,7 @@ impl Folder {
     pub fn drop_unused(&self, sha256s: &[String]) -> Result<(), Error> {
         let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
-        let mut named = lock.named(|_| true);
-        named.extend(lock.runs.iter().map(|row| row.sha256.as_str()));
+        let named = lock.recorded();
         for sha256 in sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())) {
             let Some(file) = lock.files.get(sha256) else { continue };
             let at = self.path(&file.path);

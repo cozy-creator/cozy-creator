@@ -3,6 +3,8 @@ const { writeFileSync } = require('fs');
 const zlib = require('zlib');
 
 const STEP_MS = 60_000;
+// Past live.js's first run, the longest any cell waits between two checks.
+const STALL_MS = 8 * 60_000;
 const crc = (() => {
   const table = Array.from({ length: 256 }, (_, n) => {
     for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
@@ -143,7 +145,22 @@ const boxLog = (page) => page.evaluate(() => ({
 async function lastLook() {
   if (!looking || !process.env.SHOT) return;
   await looking.screenshot({ path: `${process.env.SHOT}-died.png`, timeout: 10_000 }).catch(() => {});
-  await boxLog(looking).then((said) => writeFileSync(`${process.env.SHOT}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
+  const told = boxLog(looking).then((said) => writeFileSync(`${process.env.SHOT}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
+  await Promise.race([told, new Promise((done) => setTimeout(done, 10_000))]);
 }
 
-module.exports = { MP4, STEP_MS, boxLog, drop, inView, lastLook, lookAt, png, pointAt, until, watchBoxes, wav };
+/** `died`, the cell's own ending, once `seen` stops growing: a wait on a page or a command that never answers ends no other way. */
+function noStall(seen, died) {
+  let [held, since] = [-1, Date.now()];
+  const watch = setInterval(() => {
+    const now = Object.keys(seen).length;
+    if (now !== held) [held, since] = [now, Date.now()];
+    else if (Date.now() - since > STALL_MS) {
+      clearInterval(watch);
+      died(new Error(`nothing new for ${STALL_MS} ms, after ${Object.keys(seen).at(-1)}`));
+    }
+  }, 5000);
+  watch.unref();
+}
+
+module.exports = { MP4, STEP_MS, boxLog, drop, inView, lastLook, lookAt, noStall, png, pointAt, until, watchBoxes, wav };

@@ -260,6 +260,12 @@ jobs:
         run: |
           r=$(cat "$OUT/rental" 2>/dev/null) || exit 0
           . creator/release-gate/machines.sh
+          # A cap ends the job with its cell still running, and the pod's logs leave with the pod.
+          if listed "$r"; then
+            for log in memory tensord; do
+              if timeout 60 cozy machine logs "$r" "$log" -n 0 > "$OUT/machine-$log.log.new" 2>&1; then mv -f "$OUT/machine-$log.log.new" "$OUT/machine-$log.log"; else rm -f "$OUT/machine-$log.log.new"; fi
+            done
+          fi
           for _ in $(seq 1 30); do
             listed "$r" || { echo "$r is gone"; exit 0; }
             cozy machine end "$r" -y || true; sleep 10

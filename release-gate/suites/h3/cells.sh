@@ -310,8 +310,7 @@ fi
 # Regenerate from a shot's latents (#762): a shot delivers its latents beside its video, and an upscale given both, with
 # no prompt, reads the shot's own text back at strength 0.7 and never encodes the video (no encode_video stage).
 SAVED=$ONLY; [[ $ONLY == *",h3-continue,"* ]] && ONLY="$ONLY,latents-shot,"
-cell latents-shot "$SHOT" prompt=$'[Shot 1] A lighthouse keeper in a yellow oilskin climbs the spiral stair of a stone lighthouse, lantern in hand.\nAt 00:02.000, he reaches the lamp room and opens the shutters to the sea.' \
-  style="soft watercolor, muted greens" \
+cell latents-shot "$SHOT" prompt=$'Soft watercolor, muted greens.\n[Shot 1] A lighthouse keeper in a yellow oilskin climbs the spiral stair of a stone lighthouse, lantern in hand.\nAt 00:02.000, he reaches the lamp room and opens the shutters to the sea.' \
   duration_s:=5 resolution=768p seed:=$((R + 98))
 if [ -f latents-shot.number ] && [ "$(run_get "$OUT" latents-shot .status)" = completed ]; then
   # Its latents stay on its machine: by their hash, which `--file` fetches here when it's asked for them.
@@ -335,8 +334,7 @@ ONLY=$SAVED
 # join holds as a piece boundary does (span_seams' bar). It names no picture: the package starts it from the video's
 # last frame (h3a-098; 0.3.0 refused this request, run 25881).
 if [ -n "${lt:-}" ]; then
-  cell h3-continue "$SHOT" prompt=$'[Shot 1] In the lamp room of a stone lighthouse, a lighthouse keeper in a yellow oilskin sets down his lantern.\nAt 00:07.000, he lights the great lamp; its beam sweeps out over the dark sea.' \
-    style="soft watercolor, muted greens" \
+  cell h3-continue "$SHOT" prompt=$'Soft watercolor, muted greens.\n[Shot 1] In the lamp room of a stone lighthouse, a lighthouse keeper in a yellow oilskin sets down his lantern.\nAt 00:07.000, he lights the great lamp; its beam sweeps out over the dark sea.' \
     duration_s:=10 seed:=$((R + 94)) --file continue_from.video="$lv" --file continue_from.latents="$lt"
   if [ -f h3-continue.number ] && [ "$(run_get "$OUT" h3-continue .status)" = completed ]; then
     # The head is latents-shot's frames, counted (its container duration runs a little past its last frame, and a

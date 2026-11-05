@@ -4,15 +4,12 @@ import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { controlsOf, fieldWords, heldBeyond, markOf, newBeat, shownControls } from "./controls"
+import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls } from "./controls"
 import { MentionText } from "./MentionText"
 import { faceOf, shownOf } from "./shown"
-import { BEAT_S, mentionsIn } from "./text"
+import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
 
-type Beat = Record<string, unknown>
-
-const beatsIn = (value: unknown): Beat[] => (Array.isArray(value) ? value.filter((beat): beat is Beat => typeof beat === "object" && beat !== null) : [])
 const said = (value: unknown): string => (typeof value === "string" ? value : "")
 
 function TextControl({ name, control, view, focus, named }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean }) {
@@ -23,6 +20,7 @@ function TextControl({ name, control, view, focus, named }: { name: string; cont
       place={control.field}
       value={said(store.valueOf(name, control.field))}
       label={control.label}
+      placeholder={control.placeholder}
       missing={view.asset?.missing ?? []}
       focus={focus}
       onDraft={(words) => store.setDraft(name, control.field, words)}
@@ -38,57 +36,84 @@ function TextControl({ name, control, view, focus, named }: { name: string; cont
   )
 }
 
-/** One text box and a duration slider per beat, and always one: a file with none shows one to write in, which it holds once it's touched, and until then it's as long as its tool makes it. The slider's most is the tool's word; a shot is as long as its beats. */
-function BeatsControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
+/** One member of a group's row, drawn by what it is: a text can hold mentions, and the rest change as they go. */
+function RowMember({ name, member, place, label, row, set, save, view }: { name: string; member: Control; place: string; label: string; row: Row; set(row: Row): void; save(): void; view: ElementView }) {
+  const value = row[member.field] ?? member.default
+  const change = (next: unknown) => set({ ...row, [member.field]: next })
+  switch (member.type) {
+    case "range": {
+      const most = Math.max(member.max ?? 0, Number(value) || 0)
+      return (
+        <label className="slide">
+          <input className="nodrag nopan" type="range" aria-label={label} min={member.min} max={most} step={member.step ?? "any"} value={Number(value) || 0} onChange={(event) => change(Number(event.target.value))} onPointerUp={save} onKeyUp={save} />
+          <span>{member.unit ? `${String(value)} ${member.unit}` : String(value)}</span>
+        </label>
+      )
+    }
+    case "toggle":
+      return (
+        <label className="slide">
+          <input className="nodrag" type="checkbox" aria-label={label} checked={value === true} onChange={(event) => { change(event.target.checked); save() }} />
+          <span className="ctl-name">{member.label}</span>
+        </label>
+      )
+    case "choice":
+      return (
+        <select className="field nodrag" aria-label={label} value={(member.options ?? []).findIndex((option) => JSON.stringify(option) === JSON.stringify(value))} onChange={(event) => { change((member.options ?? [])[Number(event.target.value)]); save() }}>
+          {(member.options ?? []).map((option, i) => (
+            <option key={i} value={i}>
+              {String(option)}
+            </option>
+          ))}
+        </select>
+      )
+    default:
+      return <MentionText asset={name} place={place} value={said(value)} label={label} placeholder={member.placeholder} missing={view.asset?.missing ?? []} onDraft={change} onSave={save} />
+  }
+}
+
+/** A list of rows, each its members drawn by these same rules, with add and remove down to its least: a file holding fewer shows them, to write in, and holds them once one's touched. */
+function GroupControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
   const store = useCanvasStore()
-  const held = beatsIn(store.valueOf(name, control.field))
-  const beats: Beat[] = held.length ? held : [newBeat(control)]
-  const most = control.max_duration ?? Math.max(30, ...beats.map((beat) => Number(beat.duration) || 0))
-  const set = (next: Beat[]) => store.setDraft(name, control.field, next)
-  const change = (at: number, beat: Beat) => set(beats.map((one, i) => (i === at ? beat : one)))
+  const rows = fullRows(control, rowsIn(store.valueOf(name, control.field)))
+  const members = control.members ?? []
+  const called = control.label.replace(/s$/, "")
+  const set = (next: Row[]) => store.setDraft(name, control.field, next)
   const save = () => void store.save(name)
-  const lasts = beats.reduce((sum, beat) => sum + (Number(beat.duration) || BEAT_S), 0)
-  const add = (
-    <button type="button" className="add-beat nodrag" title="Add a beat" onClick={() => set([...beats, newBeat(control)])}>
-      + Beat
+  const total = members.find((member) => member.total)
+  const sum = total && rows.reduce((all, row) => all + (Number(row[total.field] ?? total.default) || 0), 0)
+  const least = control.min_items ?? 0
+  const add = (rows.length < (control.max_items ?? Infinity)) && (
+    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => set([...rows, newRow(control)])}>
+      + {called}
     </button>
   )
   return (
     <div className="beats-edit" role="group" aria-label={control.label}>
-      {beats.map((beat, i) => {
-        const duration = Number(beat.duration) || BEAT_S
+      {rows.map((row, i) => {
+        const each = (member: Control) => (
+          <RowMember
+            key={member.field}
+            name={name}
+            member={member}
+            place={`${control.field}.${i}.${member.field}`}
+            label={member.type === "text" ? `${called} ${i + 1}` : `${called} ${i + 1}'s ${member.label.toLowerCase()}`}
+            row={row}
+            set={(one) => set(rows.map((other, at) => (at === i ? one : other)))}
+            save={save}
+            view={view}
+          />
+        )
         return (
-          <div className={`beat ${beats.length > 1 ? "can-go" : ""}`} key={i}>
-            <MentionText
-              asset={name}
-              place={`${control.field}.${i}.description`}
-              value={said(beat.description)}
-              label={`Beat ${i + 1}`}
-              missing={view.asset?.missing ?? []}
-              onDraft={(text) => change(i, { ...beat, description: text })}
-              onSave={save}
-            />
+          <div className={`beat ${rows.length > least ? "can-go" : ""}`} key={i}>
+            {members.filter((member) => member.type === "text").map(each)}
             <div className="beat-time">
-              <label className="slide">
-                <input
-                  className="nodrag nopan"
-                  type="range"
-                  aria-label={`Beat ${i + 1}'s seconds`}
-                  min={1}
-                  max={most}
-                  step={1}
-                  value={Math.min(duration, most)}
-                  onChange={(event) => change(i, { ...beat, duration: Number(event.target.value) })}
-                  onPointerUp={save}
-                  onKeyUp={save}
-                />
-                <span>{held.length ? `${duration} s` : "Auto"}</span>
-              </label>
-              {beats.length === 1 && add}
+              {members.filter((member) => member.type !== "text").map(each)}
+              {rows.length === 1 && add}
             </div>
-            {beats.length > 1 && (
-              <button type="button" className="iconb nodrag" aria-label={`Remove beat ${i + 1}`} onClick={() => {
-                set(beats.filter((_, at) => at !== i))
+            {rows.length > least && (
+              <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
+                set(rows.filter((_, at) => at !== i))
                 save()
               }}>
                 <Icon name="close" />
@@ -97,9 +122,9 @@ function BeatsControl({ name, control, view }: { name: string; control: Control;
           </div>
         )
       })}
-      {beats.length > 1 && (
+      {rows.length !== 1 && (
         <div className="beats-last">
-          <span>{lasts} s</span>
+          {total && <span>{sum} {total.unit ?? ""}</span>}
           {add}
         </div>
       )}
@@ -221,8 +246,8 @@ function ControlRow({ name, control, view, focus, named }: { name: string; contr
   switch (control.type) {
     case "text":
       return <TextControl name={name} control={control} view={view} focus={focus} named={named} />
-    case "beats":
-      return <BeatsControl name={name} control={control} view={view} />
+    case "group":
+      return <GroupControl name={name} control={control} view={view} />
     case "range":
       return <RangeControl name={name} control={control} />
     case "choice":
@@ -234,6 +259,26 @@ function ControlRow({ name, control, view, focus, named }: { name: string; contr
     default:
       return null
   }
+}
+
+/** A text asset: only its words, which whatever mentions it reads. It has nothing to render, no takes and nothing to approve. */
+export function TextAsset({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  return (
+    <div className="text-asset">
+      <MentionText
+        asset={name}
+        place="text"
+        value={said(store.valueOf(name, "text"))}
+        label="Text"
+        missing={view.asset?.missing ?? []}
+        focus={store.focusing === name}
+        onDraft={(words) => store.setDraft(name, "text", words)}
+        onSave={() => void store.save(name)}
+      />
+      {view.conflict && <Conflict name={name} />}
+    </div>
+  )
 }
 
 /** The file changed under what's typed. */
@@ -259,7 +304,7 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   if (view.asset?.rendering !== undefined) return null
   if (view.asset?.standing === "making") {
     return (
-      <button type="button" className="act nodrag" onClick={() => void store.cancelRender(view.asset?.name ?? name)}>
+      <button type="button" className="act nodrag" onClick={() => store.cancelRender(name)}>
         Cancel
       </button>
     )
@@ -272,7 +317,7 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
       onClick={() => {
         store.editing.set(null)
-        void store.run(name)
+        store.run(name)
       }}
     >
       <Icon name="play" />

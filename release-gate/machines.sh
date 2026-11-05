@@ -17,11 +17,19 @@ listed() {
   jq -e --arg r "$1" '.machines[] | select((.rental_id == $r or .name == $r) and .state != "ended")' <<<"$j" > /dev/null
 }
 
+# run_stands <machine> [cli]: where each running run says it stands, a line each: number, stage, steps done of steps, and
+# for a download its bytes. A bare clock moves on any event, so a run can crawl for an hour inside one stage (41904557331).
+run_stands() {
+  timeout 60 "${2:-cozy}" --json run ls --all --on "$1" < /dev/null 2> /dev/null | jq -er '
+    .runs[] | select(.status == "in_progress") | (.progress.stage // "starting") as $s
+    | "\(.number) \($s) \(.progress.completed // 0)/\(.progress.total // 0)\(if ($s | test("download")) then " \(.progress.bytes_done // 0)" else "" end)"'
+}
+
 # run_clock <machine> [cli]: that machine's runs by their own clock: the ms of their newest move (`.progress.at_ms`, which
 # stands still on a silent run; a run with none yet by its start or end), then the numbers of those not settled. Fails when
 # no listing answers.
 run_clock() {
-  timeout 60 "${2:-cozy}" --json run ls --on "$1" < /dev/null 2> /dev/null | jq -er '
+  timeout 60 "${2:-cozy}" --json run ls --all --on "$1" < /dev/null 2> /dev/null | jq -er '
     ([.runs[] | .progress.at_ms, .settled_at_ms, .started_at_ms, .accepted_at_ms, .created_at_ms | numbers] | max // 0) as $at
     | [$at, (.runs[] | select(.status == "queued" or .status == "in_progress") | .number)] | map(tostring) | join(" ")'
 }

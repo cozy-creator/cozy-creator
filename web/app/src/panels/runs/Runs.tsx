@@ -47,7 +47,7 @@ export function Runs() {
   const machine = params.get("machine") ?? ""
   const { data, error } = useQuery(runsQuery(client, { project: all ? undefined : id, status, machine }, limit))
   const { data: machines } = useQuery(machinesQuery(client))
-  const runs = data?.runs.filter((run) => !run.adapter) ?? []
+  const runs = data?.runs ?? []
   const now = useNow(runs.some((run) => !settled(run)))
 
   const set = (name: string, value: string | null) => {

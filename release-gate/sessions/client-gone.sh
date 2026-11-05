@@ -159,7 +159,7 @@ YAML
   c "project render still shot --on box --queue" > "$OUT/b-$TAG.txt" 2>&1 || wrong "b: render: $(tail -3 "$OUT/b-$TAG.txt")"
   local t=0 lock still shot
   while [ $t -lt 900 ]; do
-    lock=$(sh "cat /home/client/$TAG/project.lock")
+    lock=$(lock_now)
     jq -e '(.assets.still.versions // []) != [] and (.assets.shot.versions // []) != [] and (.pending // {}) == {}' <<<"$lock" > /dev/null 2>&1 && break
     t=$((t + 3)); sleep 3
   done
@@ -203,7 +203,7 @@ YAML
   line up
   local t=0 lock
   while [ $t -lt 300 ]; do
-    lock=$(sh "cat /home/client/$TAG/project.lock")
+    lock=$(lock_now)
     jq -e '(.assets.first.versions // []) != [] and (.assets.second.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && break
     t=$((t + 5)); sleep 5
   done
@@ -216,6 +216,8 @@ YAML
 }
 
 # newest <lock> <asset>: the sha256 of its newest version's main file.
+# project.lock as JSON, which is how this reads it: on disk it's YAML.
+lock_now() { sh "cat /home/client/$TAG/project.lock" | uv run -q --no-project --with pyyaml python -c 'import json, sys, yaml; json.dump(yaml.safe_load(sys.stdin), sys.stdout)'; }
 newest() { jq -r --arg a "$2" '.assets[$a].versions[-1].files | (.video // .image // empty)' <<<"$1"; }
 
 part_v() {
@@ -241,7 +243,7 @@ YAML
   c "project render all --on box --queue" > "$OUT/v-$TAG.txt" 2>&1 || wrong "v: render: $(tail -3 "$OUT/v-$TAG.txt" | cut -c1-200)"
   local t=0 lock
   while [ $t -lt 900 ]; do
-    lock=$(sh "cat /home/client/$TAG/project.lock")
+    lock=$(lock_now)
     jq -e '[.assets.clip, .assets.edit, .assets.aframe | (.versions // []) | length > 0] | all' <<<"$lock" > /dev/null 2>&1 && break
     # Its own failure ends the wait: it won't be made.
     [ "$(c "--json project status" | jq '[.board.jobs[]? | select(.state == "failed")] | length')" = 0 ] || break
@@ -277,7 +279,7 @@ YAML
   sh "su client -s /bin/sh -c 'cd \$HOME/$TAG; PATH=/opt/client /opt/client/cozy project render firstm secondm --on box --queue'" > "$OUT/m-$TAG.txt" 2>&1
   local t=0 lock='' asked=$SECONDS
   while [ $t -lt 150 ]; do
-    lock=$(sh "cat /home/client/$TAG/project.lock")
+    lock=$(lock_now)
     jq -e '(.assets.secondm.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && break
     t=$((SECONDS - asked)); sleep 3
   done
@@ -337,7 +339,7 @@ YAML
   c "project render lost --on box --queue" > "$OUT/l-$TAG.txt" 2>&1 || wrong "l: render: $(tail -3 "$OUT/l-$TAG.txt" | cut -c1-200)"
   local t=0 lock
   while [ $t -lt 300 ]; do
-    lock=$(sh "cat /home/client/$TAG/project.lock")
+    lock=$(lock_now)
     jq -e '(.assets.lost.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && break
     t=$((t + 3)); sleep 3
   done
@@ -354,7 +356,7 @@ YAML
     t=$((t + 3)); sleep 3
   done
   echo "$board" > "$OUT/l-$TAG-board.json"
-  lock=$(sh "cat /home/client/$TAG/project.lock"); echo "$lock" > "$OUT/l-$TAG.lock.json"
+  lock=$(lock_now); echo "$lock" > "$OUT/l-$TAG.lock.json"
   [ -n "$failed" ] || wrong "l: its job never failed: $(c 'project status' | cut -c1-160 | head -4 | paste -sd'|')"
   [ "$(jq '.assets.lost.versions // [] | length' <<<"$lock")" = 0 ] || wrong "l: a version with no file stands"
   say "$TAG l: its version gone, its job failed: ${failed:0:200}"

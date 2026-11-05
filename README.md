@@ -87,6 +87,7 @@ cozy project render all --on <machine>
 cozy project render clash -n 3 --on <machine>
 cozy project approve clash 2               # clash holds take 2, as `approved` in project.yaml
 cozy project status
+cozy open                                  # the canvas, in your browser
 ```
 
 The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).

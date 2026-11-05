@@ -94,7 +94,7 @@ impl Sessions {
         let expires_ms = self.codes.lock().expect("session codes").remove(&digest(code));
         if !expires_ms.is_some_and(|expires_ms| now < expires_ms) {
             let said = "this sign-in code is unknown, used or expired";
-            return Err(Refusal(Error::new(Kind::Validation, "session_code_invalid", said).next("cozy web")));
+            return Err(Refusal(Error::new(Kind::Validation, "session_code_invalid", said).next("cozy open")));
         }
         let (token, media) = (secret(), secret());
         let mut live = self.live.lock().expect("sessions");
@@ -151,7 +151,7 @@ impl Sessions {
 pub(crate) async fn code(State(api): State<Arc<Api>>, headers: HeaderMap) -> Result<Json<SessionCode>, Refusal> {
     if !api::bearer(&headers).is_some_and(|token| api.admits(token)) {
         let said = "a sign-in code comes from the bearer in Calcifer's lock record, not a session";
-        return Err(Refusal(Error::new(Kind::Forbidden, "session_code_needs_bearer", said).next("cozy web")));
+        return Err(Refusal(Error::new(Kind::Forbidden, "session_code_needs_bearer", said).next("cozy open")));
     }
     let host = headers.get(header::HOST).and_then(|host| host.to_str().ok()).unwrap_or_default();
     let (code, expires_ms) = api.sessions.mint_code();

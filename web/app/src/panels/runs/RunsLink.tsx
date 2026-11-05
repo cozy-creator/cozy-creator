@@ -4,7 +4,7 @@ import { runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import type { RunList } from "../../types"
 
-const going = (list?: RunList) => (list?.runs.filter((run) => !run.adapter).length ?? 0) + (list?.older ?? 0)
+const going = (list?: RunList) => (list?.runs.length ?? 0) + (list?.older ?? 0)
 
 /** Runs in the top bar, with how many are going: read once, then kept by `run.updated`. */
 export function RunsLink({ to }: { to: string }) {

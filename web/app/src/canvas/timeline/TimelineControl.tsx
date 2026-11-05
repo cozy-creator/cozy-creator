@@ -271,7 +271,7 @@ export function TimelineControl({ name }: { name: string }) {
   const [saver] = useState(
     () =>
       new Saver(
-        (fields, etag) => client.patchAsset(store.projectId!, store.get(name)?.name ?? name, { fields }, etag),
+        (fields, etag) => store.patchInTurn(name, fields, etag),
         (etag) => {
           awaited.current = etag
           if (!etag && !gesture.current) setDraft(null)

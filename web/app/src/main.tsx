@@ -34,7 +34,7 @@ function SignedOut() {
     <main className="gate">
       <h1>This page isn't signed in</h1>
       <p>Run this in a terminal to open it signed in:</p>
-      <Copyable text="cozy web" />
+      <Copyable text="cozy open" />
     </main>
   )
 }
@@ -44,7 +44,7 @@ function Unreachable() {
     <main className="gate">
       <h1>Calcifer isn't answering</h1>
       <p>Run this in a terminal, then reload:</p>
-      <Copyable text="cozy web" />
+      <Copyable text="cozy open" />
       <button type="button" className="tb" onClick={() => location.reload()}>
         Reload
       </button>

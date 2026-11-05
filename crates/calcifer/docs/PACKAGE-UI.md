@@ -5,7 +5,7 @@ A package's declared fields are the normal path, and no first-party package uses
 A package that wants more ships a component: a real ES module in the page, with no sandbox and no prompt. Installing a package is the trust decision, as its code already runs on that machine.
 
 ```python
-@app.entrypoint(ui="ui/box.js")
+@app.entrypoint(node=Node(ui="ui/box.js"))
 def generate(payload: Input, out: Outputs) -> Output: ...
 ```
 
@@ -30,7 +30,7 @@ export default function Box({ React, asset, fields, setFields, mentions, limits,
 | `fields` | What it holds now, what's typed included. |
 | `setFields(fields)` | Writes these to the project file. Resolves to whether that stood. |
 | `mentions` | `[{name, kind}]`: what its text can name as `<name>`. |
-| `limits` | What the tool declares of each field, by field: `{type, label, min?, max?, step?, options?, accept?, multiple?, max_duration?, default?, required?}`. |
+| `limits` | What the tool declares of each field, by field: `{type, label, min?, max?, step?, options?, accept?, multiple?, members?, min_items?, max_items?, placeholder?, default?, required?}`. |
 | `tokens` | The host's look, as CSS values: `bg card panel line ink mute faint accent good warn busy bad sans mono`. |
 
 A component for one field is drawn where that field's control would be: behind the box's More, unless it's the box's first text, its beats or required. A whole face is drawn in place of them all, and More then holds only what the app adds.

@@ -6,7 +6,9 @@ import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
+import { controlsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
+import { useSignal } from "../ui/signal"
 import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
 import { clock, lineOf, withMentions } from "./text"
 
@@ -306,7 +308,8 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   // A run that ended says no more of how far: it's all there, on its way here.
   const fraction = making ? (view.run?.status === "completed" ? 1 : view.run?.progress?.done_fraction) : undefined
   const here = shown && !shown.absent ? shown : null
-  const words = lineOf(asset?.fields)
+  const tools = useSignal(store.tools)
+  const words = lineOf(asset?.fields, asset ? controlsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
   // An Edit with no film yet is its first clip, and with no clip, what it's for.
   const clips = asset?.timeline?.tracks[0]?.clips

@@ -4,7 +4,7 @@
 // at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
 // run. With the Hub unreachable it still answers. 300 elements, measured: seen.scale.
-//   node see.js <sign-in link from `cozy web --no-open`>
+//   node see.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
@@ -13,10 +13,11 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav, pointAt, inView } = require('./page');
+const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, noStall, until, watchBoxes, wav, pointAt, inView } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 // The last thing checked, so a refusal says when it happened.
 let during = 'the start';
 function check(name, ok, detail) {
@@ -522,9 +523,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch(async (error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}

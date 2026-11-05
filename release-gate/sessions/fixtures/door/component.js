@@ -1,6 +1,6 @@
 // door.sh's look at a package's component through the door: the page on a machine's project, in a real Chrome, with the machine saying its tool
 // ships one. Prints what its box drew and where the page asked for a component, and door.sh judges it.
-//   node component.js <sign-in link from `cozy web --no-open`> <machine> <its project's id>
+//   node component.js <sign-in link from `cozy open --no-open`> <machine> <its project's id>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome. Every step is bounded.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const [link, machine, id] = process.argv.slice(2);

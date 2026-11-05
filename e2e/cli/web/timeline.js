@@ -3,7 +3,7 @@
 // The film's frames are counted, its `.otio` read back with OpenTimelineIO's own reader. Two different edits make two versions, each with
 // its own clips, and the same edit twice makes one; a version carries on and drags out to its own asset; a clip whose asset is deleted says
 // so on the clip, and a render goes on without it.
-//   node timeline.js <sign-in link from `cozy web --no-open`>
+//   node timeline.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep its
 // screenshots; ffmpeg, ffprobe and uv on PATH. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -11,10 +11,11 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, drop, lastLook, lookAt, until, pointAt } = require('./page');
+const { STEP_MS, drop, lastLook, lookAt, noStall, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
   if (!ok) failures.push(name);
@@ -46,6 +47,7 @@ function plate(path, color, seconds, hz) {
   const context = await browser.newContext({ viewport: { width: 1900, height: 1000 } });
   const page = await context.newPage();
   lookAt(page);
+  await watchBoxes(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
@@ -91,7 +93,8 @@ function plate(path, color, seconds, hz) {
   await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1208, y: 144 } });
   const card = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   await card('Edit').waitFor();
-  check('its_name', Boolean(await edit()), (await read()).assets.map((asset) => asset.name));
+  // A box shows as it's dropped, ahead of Calcifer's answer: it's the project that's asked.
+  check('its_name', Boolean(await until('the Edit in the project', edit, Boolean)));
   // At rest it's its picture, or what it's for: on a hover, its filmstrip, in the same place, and still no video.
   const away = () => page.mouse.move(2, 500);
   const openEdit = async () => {
@@ -340,9 +343,11 @@ function plate(path, color, seconds, hz) {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch(async (error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}

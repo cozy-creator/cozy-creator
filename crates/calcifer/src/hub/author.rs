@@ -318,7 +318,8 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
             blocking(|| stage.relock_pinned(python.request.as_str(), &pins)).map_err(|e| unmet(e, &pins, &account, &hub))?;
         }
     }
-    let (files, unshipped) = blocking(|| built(&stage, &python.request, &committed, &result.package, &hub))?;
+    let (files, unshipped, slips) = blocking(|| built(&stage, &python.request, &committed, &result.package, &hub))?;
+    slips.iter().for_each(|slip| say(slip));
     for ui in unshipped {
         say(&format!("the wheel doesn't hold {ui}, so that function draws its declared box: keep it beside the module that names it, and have your build include it"));
     }
@@ -369,7 +370,7 @@ fn built(
     committed: &str,
     package: &str,
     hub: &Origin,
-) -> Result<(Vec<File>, Vec<String>), Error> {
+) -> Result<(Vec<File>, Vec<String>, Vec<String>), Error> {
     run(uv(&stage.uv, &stage.src).args(["lock", "--no-progress", "--python", python]), "lock_failed")?;
     let bound = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
     let (before, after) = (versions(committed)?, versions(&bound)?);
@@ -407,6 +408,7 @@ fn built(
     fs::write(&interface_path, said.trim_end()).map_err(|e| refuse("stage_unavailable", e))?;
     let wheel = single(&dist, ".whl")?;
     let unshipped = crate::tool_ui::not_in_wheel(&wheel, &interface);
+    let slips = interface.node_slips();
     let sdist = single(&dist, ".tar.gz")?;
     // Where each file is declared: the Hub's PackageReleasePath.
     let named = |dir: &str, local: &Path| format!("{dir}{}", local.file_name().unwrap_or_default().to_string_lossy());
@@ -421,7 +423,7 @@ fn built(
     for local in git_wheels {
         files.push(File::new(named("artifacts/dependencies/", &local), local)?);
     }
-    Ok((files, unshipped))
+    Ok((files, unshipped, slips))
 }
 
 /// A relock that could not keep the lock's account-index pins on `hub`: the pin uv names, by
