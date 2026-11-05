@@ -1086,6 +1086,7 @@ impl Device {
                 // Track ownership before map: a partial mapping failure must retain the VA and handle.
                 chunk.handle = Some(handle);
                 self.working.fetch_add(chunk.bytes, Ordering::AcqRel);
+                self.owned_peak.fetch_max(self.owned(), Ordering::AcqRel);
                 state.stats.mapped_bytes += chunk.bytes;
                 state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
                 let at = base + chunk.offset as u64;

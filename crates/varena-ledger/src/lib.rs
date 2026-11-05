@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering:
 use std::time::{Duration, Instant};
 
 const ROWS: usize = 32;
+const PLANS: usize = 32;
 const PAGE: usize = 4096;
 /// Between asks: how often a donor republishes and samples.
 const CADENCE: Duration = Duration::from_millis(500);
@@ -62,6 +63,10 @@ struct Page {
     /// Bytes given back, plus one per death: any change is a reason to retry the driver.
     released: AtomicU64,
     rows: [Words; ROWS],
+    /// Each plan's last measured peak, (key, bytes) by a key its processes share, so its next
+    /// process knows what it needs before it loads. Direct-mapped: a collision only loses a
+    /// measure. A page from before them reads zeros, which is no measure.
+    plans: [[AtomicU64; 2]; PLANS],
 }
 const _: () = assert!(size_of::<Page>() <= PAGE);
 
@@ -384,6 +389,37 @@ impl Table {
             }
             let limit = if supervisor.is_some() { TICK } else { TICK.min(deadline.saturating_duration_since(now)) };
             wait(&page.answers, seen, limit);
+        }
+    }
+
+    /// What `key`'s last process held at its most, if one ran here.
+    pub fn peak(&self, key: u64) -> Option<u64> {
+        let slot = &self.page.plans[key as usize % PLANS];
+        (key != 0 && slot[0].load(Acquire) == key).then(|| slot[1].load(Acquire))
+    }
+
+    pub fn note_peak(&self, key: u64, bytes: u64) {
+        let slot = &self.page.plans[key as usize % PLANS];
+        slot[0].store(0, Release);
+        slot[1].store(bytes, Release);
+        slot[0].store(key, Release);
+    }
+
+    /// The idle bytes of processes in no request: what they would give back to an ask.
+    pub fn peers_idle_bytes(&self, row: Row) -> u64 {
+        self.page.rows.iter().enumerate().filter(|(index, words)| *index != row.0 && words.pid.load(Acquire) != 0
+            && words.running.load(Acquire) == 0).map(|(_, words)| words.idle.load(Acquire)).sum()
+    }
+
+    /// Before memory is short: TensorD's supervisor ends the least recently used idle executor,
+    /// as for an asker its peers could not help, while this process is still loading.
+    pub fn ask_exit(&self, row: Row) {
+        // Even one that gave back all its idle bytes: its context stays until it exits.
+        let idle = self.page.rows.iter().enumerate()
+            .any(|(index, words)| index != row.0 && words.pid.load(Acquire) != 0 && words.running.load(Acquire) == 0);
+        if idle {
+            self.page.rows[row.0].short.store(self.page.released.load(Acquire) + 1, Release);
+            self.changed();
         }
     }
 

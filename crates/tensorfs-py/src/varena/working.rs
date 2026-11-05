@@ -349,8 +349,9 @@ fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool) {
-    py.detach(|| varena::request_boundary(device, begin));
+#[pyo3(signature = (device, begin, plan = None))]
+fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool, plan: Option<String>) {
+    py.detach(|| varena::request_boundary(device, begin, plan.as_deref()));
 }
 
 #[pyfunction]

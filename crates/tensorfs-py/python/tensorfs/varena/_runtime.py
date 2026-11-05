@@ -31,9 +31,11 @@ def poisoned() -> str | None:
     return _ext._varena_poisoned()
 
 
-def request_boundary(device: int, *, begin: bool) -> None:
-    """A request started or ended here: orders who donates first. An atomic store, never fails."""
-    _ext._varena_request_boundary(device, begin)
+def request_boundary(device: int, *, begin: bool, plan: str | None = None) -> None:
+    """A request started or ended here: orders who donates first. `plan` names what runs, the same in
+    every process of it: its last measured peak lets an idle process leave room before this one
+    loads. Never fails."""
+    _ext._varena_request_boundary(device, begin, plan)
 
 
 def bind_torch_allocator() -> None:

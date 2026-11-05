@@ -94,9 +94,36 @@ pub(crate) fn ask_idle_peers(device: i32, bytes: usize) -> bool {
     service(device).is_some_and(|service| service.table.ask_idle_peers(service.row, bytes as u64, Instant::now() + PEER_WAIT))
 }
 
-pub(crate) fn request_boundary(device: i32, begin: bool) {
-    if let Some(service) = service(device) {
-        if begin { service.table.request_begin(service.row) } else { service.table.request_end(service.row) }
+/// Each device's running plan, by its key on the ledger.
+static PLANS: Mutex<BTreeMap<i32, u64>> = Mutex::new(BTreeMap::new());
+
+pub(crate) fn request_boundary(device: i32, begin: bool, plan: Option<&str>) {
+    let Some(service) = service(device) else { return };
+    let mut plans = PLANS.lock().unwrap_or_else(|error| error.into_inner());
+    if !begin {
+        service.table.request_end(service.row);
+        if let (Some(key), Ok(gpu)) = (plans.get(&device), crate::gpu(device)) {
+            service.table.note_peak(*key, gpu.owned_peak.load(Ordering::Acquire) as u64);
+        }
+        return;
+    }
+    service.table.request_begin(service.row);
+    let Some(plan) = plan else { plans.remove(&device); return };
+    let key = { let mut hasher = std::hash::DefaultHasher::new(); std::hash::Hash::hash(plan, &mut hasher); std::hash::Hasher::finish(&hasher) | 1 };
+    plans.insert(device, key);
+    drop(plans);
+    // Its last process's peak, against the card beside what idle processes keep after they give
+    // back their idle bytes: short, an idle one leaves now, while this one loads, not mid-step.
+    let Some(peak) = service.table.peak(key) else { return };
+    let Ok(gpu) = crate::gpu(device) else { return };
+    let sampled = crate::gate(device).and_then(|gate| {
+        gate.not_capturing()?;
+        let _context = gpu.driver().enter()?;
+        gpu.sample()
+    });
+    let given = service.table.peers_idle_bytes(service.row) as usize;
+    if sampled.is_ok() && !gpu.fits_beside(peak as usize, given) {
+        service.table.ask_exit(service.row);
     }
 }
 

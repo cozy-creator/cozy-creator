@@ -375,14 +375,17 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
 }
 
 /// A request started or ended on `device`: an atomic store, which orders who donates first.
-pub fn request_boundary(device: i32, begin: bool) {
+/// `plan` names what runs, the same in every process of it: its last measured peak, when one ran
+/// here, says before it loads whether an idle process must leave room for it.
+pub fn request_boundary(device: i32, begin: bool, plan: Option<&str>) {
     if begin && let Ok(device) = gpu(device) {
         device.held_peak.store(0, Ordering::Release);
+        device.owned_peak.store(device.owned(), Ordering::Release);
     }
     #[cfg(target_os = "linux")]
-    cooperative::request_boundary(device, begin);
+    cooperative::request_boundary(device, begin, plan);
     #[cfg(not(target_os = "linux"))]
-    let _ = (device, begin);
+    let _ = (device, begin, plan);
 }
 
 /// What the driver's own charge may grow by between samples under a development cap.
@@ -429,6 +432,8 @@ pub struct Device {
     held_peak: AtomicUsize,
     // Weight bytes held for use now: regions with a pin.
     held: AtomicUsize,
+    // Our own bytes' high-water this request: what the next process of its plan will need.
+    owned_peak: AtomicUsize,
     // Moves when the room this process can have shrinks for a reason outside its program: a cap,
     // foreign use, a refused allocation or a peer's ask. A split's chosen level holds until it does.
     room: AtomicU64,
@@ -470,6 +475,7 @@ impl Device {
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
+            owned_peak: AtomicUsize::new(0),
             room: AtomicU64::new(0),
             room_outside: AtomicU64::new(0),
             any_high: AtomicBool::new(false),
@@ -588,6 +594,17 @@ impl Device {
         Ok(())
     }
 
+    /// Whether `bytes` of our own fit this card once other processes give back `given` idle bytes.
+    fn fits_beside(&self, bytes: usize, given: usize) -> bool {
+        let outside = self.outside.load(Ordering::Acquire).saturating_sub(given);
+        let total = self.total.load(Ordering::Acquire);
+        let ceiling = match self.ceiling.load(Ordering::Acquire) {
+            usize::MAX => usize::MAX,
+            ceiling => ceiling.saturating_sub(self.reservation.get().copied().unwrap_or(0)).saturating_sub(CAP_SLACK),
+        };
+        bytes <= total.min(ceiling).saturating_sub(outside)
+    }
+
     /// The room this process can have shrank for a reason outside its program.
     fn room_shrank(&self) {
         self.room.fetch_add(1, Ordering::AcqRel);
@@ -618,6 +635,7 @@ impl Device {
         }
         let handle = self.driver().create(bytes)?;
         self.pages.fetch_add(bytes, Ordering::AcqRel);
+        self.owned_peak.fetch_max(self.owned(), Ordering::AcqRel);
         Ok(handle)
     }
 
