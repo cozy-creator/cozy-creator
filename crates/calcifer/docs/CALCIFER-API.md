@@ -257,8 +257,9 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - The run fails `update_unapplied` unless the machine then runs what it asked for.
 - `GET /v1/machines/{name}/packages[?fresh=true&hub=]`: `MachinePackages {machine, packages: [{machine, package, release, runtime, level, hub, source, warning}]}`. `source` is
   `local`, `hub`, or another Hub's URL, for a client of `hub` (default this computer's).
-- `GET /v1/machines/{name}/models[?fresh=true]`: `MachineModels {machine, models: [{machine, model, release, lane, precision, checkpoint, bytes, shared_bytes}], silent?, repositories, bytes}`.
-  `silent`: it has reported no Status yet. `repositories` and `bytes` are its store's, shared content counted once.
+- `GET /v1/machines/{name}/models[?fresh=true]`: `MachineModels {machine, models: [{machine, model, release, lane, precision, checkpoint, bytes, shared_bytes}], silent?, repositories, bytes, stored_bytes}`.
+  `silent`: it has reported no Status yet. `repositories` and `bytes` are its store's, shared content counted once;
+  `stored_bytes` is all its store takes on the disk, models or not (0 from a machine that doesn't measure it).
 - `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`, and on `local` `logs/calcifer`, Calcifer's own (`400 log_not_kept` elsewhere; the CLI reads its file, so it works with Calcifer down):
   - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
     stamped at or after `T`.
