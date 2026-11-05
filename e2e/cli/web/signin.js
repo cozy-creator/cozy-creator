@@ -178,12 +178,10 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   await code.waitFor();
   check('too_soon_mails_nothing', count() === 1, mailed());
   const wait = () => said().then((text) => Number(/ask for another code in (\d+) s/.exec(text)?.[1]));
-  const stated = await wait().catch(() => NaN);
-  seen.stated_wait = Number.isNaN(stated) ? 'auth-ui counts its own 30 s' : stated;
-  if (!Number.isNaN(stated)) {
-    check('stated_wait_says_check_your_email', /Check your email/.test(await said()), await said());
-    await until('the wait to fall', wait, (left) => left < stated);
-  }
+  const stated = await until('a stated wait', wait, (left) => left > 0);
+  seen.stated_wait = stated;
+  check('stated_wait_says_check_your_email', /Check your email/.test(await said()), await said());
+  await until('the wait to fall', wait, (left) => left < stated);
 
   // Past it, a second code goes, and the first still signs in: each email has its own.
   const resend = page.getByRole('button', { name: /^Resend/ });
