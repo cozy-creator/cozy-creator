@@ -8,10 +8,11 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, drop, png, until } = require('./page');
+const { STEP_MS, drop, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
   if (!ok) failures.push(name);
@@ -112,8 +113,10 @@ const row = (folder, name) => {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}

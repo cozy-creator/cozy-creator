@@ -7,11 +7,12 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync, spawn } = require('child_process');
 const { join } = require('path');
-const { STEP_MS, until } = require('./page');
+const { STEP_MS, noStall, until } = require('./page');
 
 const link = process.argv[2];
 const failures = [];
 const seen = {};
+noStall(seen, died);
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
   if (!ok) failures.push(name);
@@ -165,8 +166,10 @@ async function runs(page, base, id, folder) {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}
