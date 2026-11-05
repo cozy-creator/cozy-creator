@@ -17,7 +17,7 @@
 # params:
 #   cozy        the cozy under test, for `machine update --tensord`: a version, a file or URL#sha256= (default: the session's)
 #   runtime     a Runtime for the pod with `cozy`: a wheel or a version (default: the pod's)
-#   parts       which of a, k, e, h, y, l run (default a,k,e); y and l rent a second pod
+#   parts       which of a, k, e, h, y, l run, in that order (default a,k,e); y rents a second pod
 #   h3          the function h renders its shot with (default minimax-h3/generate, Turbo)
 #   rent_lock   a file to hold while ordering, where several sessions rent from one computer
 #   traffic_gb  GB the provider bills (default 12)
@@ -422,7 +422,8 @@ YAML
   say "l: this computer's render ended $t s later: $(grep -m1 -E 'gone before' "$OUT/l-out.txt" | cut -c1-200); X now: $(cat "$OUT/l-x-machine.txt")"
 }
 
-for part in a k h y l e; do
-  ! has "$part" || "part_$part"
+# In the order asked.
+for part in $(tr , ' ' <<<"$(param parts a,k,e)"); do
+  "part_$part"
 done
 say "done: $PARTS"
