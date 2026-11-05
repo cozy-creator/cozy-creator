@@ -58,16 +58,17 @@ fn next(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
     }
 }
 
-/// The absent Region to fill after `region`, passing one that only its caller can fill: a cast
-/// comes before the stored bytes it needs.
+/// How far past a use the core looks for what to fill: models that run between each other's
+/// blocks (a LoRA's beside a DiT's) must not leave the one that matters a moment's notice.
+const HORIZON: usize = 4;
+
+/// The nearest absent Region after `region` that needs no caller: a cast comes before the stored
+/// bytes it reads, and a resident Region before one that isn't.
 fn upcoming(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
     let mut at = Arc::clone(region);
-    for _ in 0..2 {
+    for _ in 0..HORIZON {
         let Some(next) = next(&at)? else { return Ok(None) };
-        if next.uses.state() != Contents::Cold || next.uses.unused.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        if next.source.ahead() {
+        if next.uses.state() == Contents::Cold && !next.uses.unused.load(Ordering::Relaxed) && next.source.ahead() {
             return Ok(Some(next));
         }
         at = next;
