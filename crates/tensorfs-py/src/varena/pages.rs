@@ -301,6 +301,7 @@ impl Tier {
     /// Keep `region`'s bytes as `key` behind the thread that called `use`: first touching 21 GB of
     /// pages there left the card idle for 17 s of H3's first step. The thread ends with its queue.
     pub(super) fn keep_behind(self: &Arc<Self>, key: &str, set: &str, region: Weak<varena::Region>, len: usize) {
+        if true { return; } // SCRATCH B: nothing kept
         let mut state = self.state();
         state.behind.push_back(Behind { key: key.to_owned(), set: set.to_owned(), region, len });
         if !std::mem::replace(&mut state.keeping, true) {
