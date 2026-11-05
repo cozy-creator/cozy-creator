@@ -3,11 +3,11 @@ import { useConnection } from "../../app/Connection"
 import type { ClipNow } from "../../types"
 import { say } from "../../ui/notes"
 import { useSignal } from "../../ui/signal"
-import type { CanvasStore, DropTarget } from "../CanvasStore"
+import type { DropTarget } from "../CanvasStore"
 import { useCanvasStore, useElement } from "../context"
 import { Thumb } from "../Media"
-import { shownOf, widthFor } from "../shown"
-import { frameAt, indexAt, isStill, lay, type Layout, mention, moved, named, type Placed, STILL_S, timecode, trimmedIn, trimmedOut, wire, xOf } from "./model"
+import { widthFor } from "../shown"
+import { frameAt, indexAt, isStill, lay, type Layout, moved, named, type Placed, timecode, trimmedIn, trimmedOut, wire, xOf, clipOf } from "./model"
 import { Preview } from "./Preview"
 import "./timeline.css"
 
@@ -41,26 +41,6 @@ function follow(event: ReactPointerEvent, moving: (event: PointerEvent) => void,
   window.addEventListener("pointermove", move)
   window.addEventListener("pointerup", up)
   window.addEventListener("pointercancel", up)
-}
-
-/** What's known of an asset dropped in, until Calcifer has read the Edit that holds it. */
-function clipOf(store: CanvasStore, name: string, fps: number): ClipNow | null {
-  const view = store.get(name)
-  const shown = view && shownOf(view)
-  const field = shown?.field ?? view?.asset?.kind
-  if (field !== "video" && field !== "image") return null
-  return {
-    clip: mention(view?.name ?? name),
-    name: view?.name ?? name,
-    field,
-    frames: field === "image" ? Math.round(STILL_S * fps) : undefined,
-    sha256: shown?.sha256,
-    path: shown?.path,
-    width: shown?.width,
-    height: shown?.height,
-    holds: field === "video" && shown?.duration_ms ? Math.floor((shown.duration_ms * fps) / 1000) : undefined,
-    missing: shown ? undefined : "no version yet",
-  }
 }
 
 /** Its frames side by side, each where it falls in the source: a trim only moves the window on them. */

@@ -1,17 +1,17 @@
 import type { NodeProps } from "@xyflow/react"
-import { useReactFlow, useStore } from "@xyflow/react"
-import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { useReactFlow } from "@xyflow/react"
+import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, Conflict, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
-import { controlsOf, shapesOf, snapped } from "./controls"
+import { controlsOf } from "./controls"
 import { DRAGGED_FILE } from "./drag"
 import { Media, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, madeHere, makes, ratioOf, shownOf } from "./shown"
+import { faceOf, madeHere, makes, shownOf } from "./shown"
 import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 
@@ -118,29 +118,39 @@ function Approve({ view, name }: { view: ElementView; name: string }) {
   )
 }
 
-/** On a video: scrub to a point, and a new take keeps it up to there. Its words stay as they are. */
+/** A frame, for stepping. */
+const FRAME_S = 1 / 24
+
+/** On a take of what can go on from one: scrub to a point, a frame at a time, and a new take holds all before it and carries on from there. Its words stay as they are. */
 function FromHere({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const shown = shownOf(view)
   if (!makes(view) || !tools.get(view.asset?.tool ?? "")?.takes || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
-  const at = view.scrub ?? 0
+  const whole = shown.duration_ms / 1000
+  const at = Math.min(whole, view.scrub ?? 0)
+  const go = (to: number) => {
+    const held = Math.max(0, Math.min(whole, to))
+    store.patch(name, { scrub: held })
+    store.seek(name, held)
+  }
   return (
-    <div className="from-here">
-      <input
-        className="nodrag nopan"
-        type="range"
-        aria-label="Where to keep it up to"
-        min={0}
-        max={shown.duration_ms / 1000}
-        step={0.1}
-        value={at}
-        onChange={(event) => store.patch(name, { scrub: Number(event.target.value) })}
-      />
-      <span className="tc-inline">{clock(at * 1000)}</span>
-      <button type="button" className="act nodrag" disabled={at <= 0} onClick={() => store.run(name, { take: shown.number, in_s: at })}>
-        New take from here
-      </button>
+    <div className="from-here" style={{ "--kept": `${(at / whole) * 100}%` } as CSSProperties}>
+      <input className="nodrag nopan keeps" type="range" aria-label="Where to keep it up to" min={0} max={whole} step={FRAME_S} value={at} onChange={(event) => go(Number(event.target.value))} />
+      <div className="row">
+        <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={at <= 0} onClick={() => go(at - FRAME_S)}>
+          ‹
+        </button>
+        <span className="tc-inline">{clock(at * 1000)}</span>
+        <button type="button" className="iconb nodrag" aria-label="A frame on" title="A frame on" disabled={at >= whole} onClick={() => go(at + FRAME_S)}>
+          ›
+        </button>
+        <span className="muted" title="It carries on from a whole join, so this cuts at the nearest one">Nearest join</span>
+        <span className="sp" />
+        <button type="button" className="run nodrag" disabled={at <= 0} title={`Keep up to about ${clock(at * 1000)} and make the rest again`} onClick={() => store.run(name, { take: shown.number, in_s: at })}>
+          New take from here
+        </button>
+      </div>
     </div>
   )
 }
@@ -335,69 +345,55 @@ function Description({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-/** The corner. On a box's controls it reshapes what it will make, snapping to what's allowed and saying which; anywhere else it's only the width. */
-function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
+/** The corner, pulled to make a box wider or narrower on the canvas. What it makes is another matter, and that's in the box. */
+function Corner({ name, width }: { name: string; width: number }) {
   const store = useCanvasStore()
   const flow = useReactFlow()
-  const tools = useSignal(store.tools)
-  const from = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+  const from = useRef<{ x: number; w: number } | null>(null)
   const wide = useRef<number | null>(null)
-  const shape = faceOf(view) === "edit" && view.asset ? controlsOf(view.asset, tools).find((control) => control.type === "shape") : undefined
-
   const moved = (event: PointerEvent) => {
     if (!from.current) return
-    const zoom = flow.getZoom()
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + (event.clientX - from.current.x) / zoom))
+    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + (event.clientX - from.current.x) / flow.getZoom()))
     wide.current = w
-    if (shape) store.patch(name, { shape: snapped(w / Math.max(40, from.current.h + (event.clientY - from.current.y) / zoom), shapesOf(shape)) })
     store.setWidth(name, w, false)
   }
   const done = () => {
     if (!from.current) return
     from.current = null
-    const now = store.get(name)
     if (wide.current !== null) store.setWidth(name, wide.current)
     wide.current = null
-    if (shape && now?.shape) void store.setField(name, shape.field, now.shape).then(() => store.patch(name, { shape: undefined }))
   }
   return (
-    <>
-      {shape && <span className="ratio-shown">{String(view.shape ?? store.valueOf(name, shape.field) ?? shape.default ?? "")}</span>}
-      <div
-        className="corner nodrag nopan"
-        role="slider"
-        aria-label={shape ? "Its shape" : "Its width"}
-        aria-valuenow={Math.round(width)}
-        tabIndex={-1}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId)
-          from.current = { x: event.clientX, y: event.clientY, w: width, h: width / (ratioOf(view.shape) ?? aspectOf(view)) }
-        }}
-        onPointerMove={moved}
-        onPointerUp={done}
-        onPointerCancel={done}
-      />
-    </>
+    <div
+      className="corner nodrag nopan"
+      role="slider"
+      aria-label="Its width"
+      aria-valuenow={Math.round(width)}
+      tabIndex={-1}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId)
+        from.current = { x: event.clientX, w: width }
+      }}
+      onPointerMove={moved}
+      onPointerUp={done}
+      onPointerCancel={done}
+    />
   )
 }
 
-const CardBody = memo(function CardBody({ name, width, selected, close }: { name: string; width: number; selected: boolean; close?: () => void }) {
+const CardBody = memo(function CardBody({ name, width, close }: { name: string; width: number; close?: () => void }) {
   const store = useCanvasStore()
   const view = useElement(name)
-  const far = useStore((state) => state.transform[2] < 0.2)
-  const [hover, setHover] = useState(false)
-  const [focused, setFocused] = useState(false)
-  const typedIn = useSyncExternalStore(store.editing.subscribe, () => store.editing.get() === name)
-  const open = useCallback(() => store.openName(name), [store, name])
+  const open = Boolean(close)
+  const naming = useCallback(() => store.openName(name), [store, name])
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
     else store.patch(name, { draft: undefined })
   }, [store, name])
-  // A dropped tool's text has taken the keys, or isn't going to, and the box goes by what's true now.
+  // Opened, its first text has taken the keys.
   useEffect(() => {
-    if (store.focusing !== name) return
-    store.focusing = null
-    store.patch(name, {})
+    if (store.focusing === name) store.focusing = null
   })
   if (!view) return null
 
@@ -407,9 +403,8 @@ const CardBody = memo(function CardBody({ name, width, selected, close }: { name
   const at = versions.findIndex((version) => version.number === shown?.number)
   const face = faceOf(view)
   const canFlip = makes(view)
-  // At rest a box is its picture or its text and a name. All else comes when it's asked for, and isn't there until then, so 300 boxes cost little.
-  const active = Boolean(close) || (!far && (hover || selected || focused || typedIn || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name))
-  const editing = face === "edit" && active
+  // On the canvas a box is its name, its picture or its text, its state and an X. All else is in it, a click away, so 300 boxes cost little.
+  const editing = face === "edit" && open
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
   const actions = (
@@ -423,48 +418,51 @@ const CardBody = memo(function CardBody({ name, width, selected, close }: { name
       )}
     </>
   )
-  const more = asset && !view.placing && (
-    <>
-      {!asset.timeline && <FromHere view={view} name={name} />}
-      <Description name={name} view={view} />
-    </>
-  )
+  const more = asset && !view.placing && <Description name={name} view={view} />
   return (
     <div
-      className={`card ${editing ? "editing" : ""} ${active ? "active" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${editing ? "editing" : ""} ${open ? "active" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       onClick={buttonsOnly}
-      onPointerEnter={() => setHover(true)}
-      onPointerLeave={() => setHover(false)}
-      onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
-      }}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
       }}
     >
       <div className="head">
-        {view.draft !== undefined ? (
+        {view.draft !== undefined && (open || store.opened !== view.name) ? (
           <NameField name={name} draft={view.draft} onCancel={cancel} />
         ) : (
-          <span className="nm" title={view.name} onDoubleClick={open}>
+          <span className="nm" title={view.name} onDoubleClick={open ? naming : undefined}>
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
         {view.draft === undefined && <span className="sp" />}
-        {view.draft === undefined && active && versions.length > 1 && (
+        {view.draft === undefined && open && versions.length > 1 && (
           <span className="count">
             {at + 1}/{versions.length}
           </span>
         )}
-        {view.draft === undefined && active && warned ? (
+        {view.draft === undefined && open && warned ? (
           <button type="button" className="iconb warned nodrag" aria-label="Warnings" title={noHash(view.warnings!.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
             !
           </button>
         ) : null}
-        {view.draft === undefined && active && canFlip && (
+        {open && (
+          <button
+            type="button"
+            className="iconb nodrag"
+            aria-label="More for this box"
+            title="More"
+            onClick={(event) => {
+              const at = event.currentTarget.getBoundingClientRect()
+              store.menu.set({ name, x: at.left, y: at.bottom, full: true })
+            }}
+          >
+            ⋯
+          </button>
+        )}
+        {view.draft === undefined && open && canFlip && (
           <button
             type="button"
             className="iconb nodrag"
@@ -485,26 +483,26 @@ const CardBody = memo(function CardBody({ name, width, selected, close }: { name
           </button>
         ) : (
           view.draft === undefined &&
-          active &&
           asset && (
-            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
+            <button type="button" className="iconb nodrag on-hover" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
             </button>
           )
         )}
         <span className={`dot ${dotOf(view)}`} />
       </div>
-      {asset?.kind === "text" ? (
+      {open && asset?.kind === "text" ? (
         <TextAsset name={name} view={view} />
       ) : asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
-        <Media view={view} name={name} cardWidth={width}>
+        <Media view={view} name={name} cardWidth={width} open={open}>
           {editing && <InFrame name={name} view={view} />}
-          {active && asset && !view.placing && <Corner name={name} view={view} width={width} />}
+          {!open && asset && !view.placing && <Corner name={name} width={width} />}
         </Media>
       )}
-      {active && asset?.kind !== "text" && (
+      {open && asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
+      {open && asset?.kind !== "text" && (
         <div className="asset-more">
           {asset && !view.placing && <Takes view={view} name={name} width={width} />}
           {editing ? (
@@ -514,7 +512,6 @@ const CardBody = memo(function CardBody({ name, width, selected, close }: { name
           ) : (
             <>
               {asset && !view.placing && <div className="row actions">{actions}</div>}
-              {asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
               <Bar view={view} name={name} />
               {asset && !view.placing && <Description name={name} view={view} />}
               {view.conflict && <Conflict name={name} />}
@@ -536,10 +533,10 @@ const CardBody = memo(function CardBody({ name, width, selected, close }: { name
 
 /** A box opened: all of it, at the size of the room it's given. */
 export function OpenCard({ name, close }: { name: string; close: () => void }) {
-  return <CardBody name={name} width={960} selected close={close} />
+  return <CardBody name={name} width={960} close={close} />
 }
 
 /** Thin, as React Flow renders it: `data` is only the name. Element types are `nodeTypes`, looks are `CardBody`. */
-export function Card({ data, width, selected }: NodeProps<ElementNode>) {
-  return <CardBody name={data.name} width={width ?? 240} selected={Boolean(selected)} />
+export function Card({ data, width }: NodeProps<ElementNode>) {
+  return <CardBody name={data.name} width={width ?? 240} />
 }

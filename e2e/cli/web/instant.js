@@ -11,7 +11,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, pointAt, until } = require('./page');
+const { STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -86,7 +86,7 @@ async function loseAnswers(page, method, path, times) {
   const status = () => JSON.parse(cozy('--json', 'project', '-p', folder, 'status')).assets;
   const hasAsset = (name) => new RegExp(`^  ${name}:`, 'm').test(yaml());
   const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
-  const box = (name) => page.locator(`.card[data-asset="${name}"]`);
+  const box = (name) => boxOf(page, name);
   const row = (label) => page.locator('.tools .tool', { has: page.locator(`b:text-is("${label}")`) }).first();
   const stage = page.locator('.stage');
   await page.waitForSelector('.tools .tool');
@@ -188,12 +188,10 @@ async function loseAnswers(page, method, path, times) {
   cozy('project', '-p', folder, 'add', 'text', 'words', 'text=A storm.');
   await page.waitForTimeout(600);
   // Nothing held open: what's open lies over what's below it.
-  await page.keyboard.press('Escape');
   await page.keyboard.press('f');
   await box('words').waitFor();
-  await page.mouse.move(2, 500);
   await page.waitForTimeout(400);
-  await pointAt(page, box('words').locator('.nm'));
+  await openBox(page, 'words');
   await box('words').locator('.mention-text').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
   await page.keyboard.press('Control+a');
@@ -204,11 +202,12 @@ async function loseAnswers(page, method, path, times) {
   await until('theirs in the file', () => Promise.resolve(yaml().includes('text: theirs')), Boolean);
   await page.waitForTimeout(600);
   await patches.release();
-  await pointAt(page, box('words').locator('.nm'));
+  await openBox(page, 'words');
   await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
   check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await box('words').getByRole('button', { name: 'Keep mine' }).click();
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
+  await closeBox(page);
 
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
@@ -230,7 +229,7 @@ async function loseAnswers(page, method, path, times) {
     writeFileSync(join(folder, 'project.yaml'), `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
     await box('fixture').waitFor();
     await page.waitForTimeout(500);
-    await box('fixture').locator('.head').hover({ force: true });
+    await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
     await box('fixture').locator('button[aria-label="Render"]').click();
     await page.waitForTimeout(20);

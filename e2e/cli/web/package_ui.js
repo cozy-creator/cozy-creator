@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, noStall, until, pointAt, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
+const { STEP_MS, boxOf, closeBox, noStall, openBox, until, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -155,11 +155,13 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const yaml = () => readFileSync(join(folder, 'project.yaml'), 'utf8');
   const status = () => JSON.parse(execFileSync(COZY, ['--json', 'project', '-p', folder, 'status'], quiet).toString());
   const held = (name) => status().assets.find((asset) => asset.name === name);
-  const box = (name) => element(page, name);
-  const away = () => page.mouse.move(2, 500);
+  const box = (name) => boxOf(page, name);
+  const away = async () => {
+    await closeBox(page);
+    await page.mouse.move(2, 500);
+  };
   const open = async (name) => {
-    await away();
-    await pointAt(page, box(name).locator('.nm'));
+    await openBox(page, name);
     await box(name).locator('button[aria-label=Render]').waitFor();
   };
   // Behind its More, opened if it isn't.

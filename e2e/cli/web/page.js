@@ -86,6 +86,22 @@ async function inView(page, box) {
   await pointAt(page, box.locator('.nm'));
 }
 
+// A box as a person reaches it: opened if it is, else on the canvas. An opened box comes after the canvas in the page.
+const boxOf = (page, name) => page.locator(`.open-box:has(.card[data-asset="${name}"]), .react-flow__node:has(.card[data-asset="${name}"])`).last();
+async function closeBox(page) {
+  if (!(await page.locator('.open-box').count())) return;
+  await page.keyboard.press('Escape');
+  await page.locator('.open-box').waitFor({ state: 'detached' });
+}
+// A click opens a box: the middle of it, where there's nothing else to press.
+async function openBox(page, name) {
+  if (await page.locator(`.open-box .card[data-asset="${name}"]`).count()) return;
+  await closeBox(page);
+  const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
+  await page.mouse.click(x + width / 2, y + height / 2);
+  await page.locator(`.open-box .card[data-asset="${name}"]`).waitFor();
+}
+
 async function drop(page, files, x, y) {
   const transfer = await page.evaluateHandle((list) => {
     const data = new DataTransfer();
@@ -163,4 +179,4 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { MP4, STEP_MS, boxLog, drop, inView, lastLook, lookAt, noStall, png, pointAt, until, watchBoxes, wav };
+module.exports = { MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, drop, inView, lastLook, lookAt, noStall, png, pointAt, until, watchBoxes, wav };

@@ -8,7 +8,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, drop, png, noStall, until, wav } = require('./page');
+const { MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, noStall, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -20,7 +20,7 @@ function check(name, ok, detail) {
 
 const names = (page) => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .nm, .react-flow__node .nm-field')]
   .map((el) => el.value ?? el.textContent).sort());
-const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
+const element = boxOf;
 const yaml = (folder) => readFileSync(join(folder, 'project.yaml'), 'utf8');
 function rows(folder) {
   let text;
@@ -124,11 +124,13 @@ const constants = (folder) => {
   await until('the chosen file named', () => constants(folder).Hero_Shot_v2, Boolean);
 
   // Renamed by double-click.
+  await openBox(page, 'sea_sound');
   await element(page, 'sea_sound').locator('.nm').dblclick();
   await page.waitForSelector('.nm-field');
   await page.keyboard.type('ocean');
   await page.keyboard.press('Enter');
   await until('renamed in project.yaml', () => constants(folder), (all) => all.ocean && !all.sea_sound);
+  await closeBox(page);
   check('renamed_row_moved', Boolean((await until('renamed row', () => rows(folder), (all) => all.ocean)).ocean));
   check('rename_shown', (await names(page)).includes('ocean'), await names(page));
 

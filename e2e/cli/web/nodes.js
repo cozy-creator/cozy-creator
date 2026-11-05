@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, noStall, until, watchBoxes, pointAt, inView } = require('./page');
+const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, drop, lastLook, lookAt, png, noStall, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -25,7 +25,6 @@ const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
 const shots = join(__dirname, '..', 'project', 'shots.py');
 const drawer = join(__dirname, '..', 'project', 'draw.py');
-const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
 
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
@@ -91,21 +90,18 @@ function linesOf(text, name) {
   const yaml = () => readFileSync(yamlAt, 'utf8');
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
-  const box = (name) => element(page, name);
-  // Off every box, so the next hover lands on what it's aimed at.
-  const away = () => page.mouse.move(2, 500);
-  const open = async (name) => {
-    await away();
-    await pointAt(page, box(name).locator('.nm'));
-    await box(name).locator('.head [aria-label=Delete]').waitFor();
-    await inView(page, box(name));
+  const box = (name) => boxOf(page, name);
+  // Shut, and off every box.
+  const away = async () => {
+    await closeBox(page);
+    await page.mouse.move(2, 500);
   };
+  const open = (name) => openBox(page, name);
   // Behind its More, opened if it isn't.
   const more = async (name) => {
     await open(name);
     if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
     await box(name).locator('.edit-more').waitFor();
-    await inView(page, box(name));
   };
   await page.evaluate(() => { window.notReloaded = true; });
 
@@ -212,7 +208,7 @@ function linesOf(text, name) {
   await page.waitForTimeout(100);
 
   // At rest a box is its picture or its text and a name, with nothing to press and no state in words.
-  check('at_rest_no_buttons', (await box('source-a').locator('button').count()) === 0, await box('source-a').innerText());
+  check('at_rest_only_its_x', (await box('source-a').locator('button:visible').count()) === 0, await box('source-a').innerText());
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -234,9 +230,10 @@ function linesOf(text, name) {
   check('typing_writes_nothing', yaml() === before2);
 
   // Any element dragged onto the box: its name goes in, where the caret was, and it goes back where it was with no move saved.
+  await away();
   const rowsBefore = await rows();
   const from = await box('source-b').locator('.nm').boundingBox();
-  const to = await sheetText.boundingBox();
+  const to = await box('Sheet').locator('.media').boundingBox();
   await page.mouse.move(from.x + 4, from.y + 4);
   await page.mouse.down();
   await page.mouse.move(from.x + 12, from.y + 4);
@@ -316,7 +313,7 @@ function linesOf(text, name) {
   check('what_it_holds_says_so', ['megapixels 1', 'turbo on', 'style'].every((word) => marked.includes(word)), marked);
   await more('knobs');
   check('its_style_behind_more', (await knobs.locator('.mention-text[data-field=style]').textContent()).includes('wash'));
-  check('a_shape_has_only_its_corner', (await knobs.locator('select').count()) === 0);
+  check('a_shape_is_a_choice', (await knobs.locator('select[aria-label="Shape"]').count()) === 1);
   await knobs.locator('input[aria-label=megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field(/megapixels: (\S+)/), (value) => value === '2');
@@ -330,19 +327,21 @@ function linesOf(text, name) {
   check('a_control_keeps_the_comment', (await field(/(# Stays\.)/)) === '# Stays.' && (await field(/(# how)/)) === '# how', linesOf(yaml(), 'knobs'));
   check('text_stays_block', (linesOf(yaml(), 'knobs') ?? '').includes('summary: |'), linesOf(yaml(), 'knobs'));
 
-  // Reshaping: the corner snaps to what's allowed, says which, writes it. Width is only layout.
-  await open('knobs');
+  // Its shape is a choice in the box, and writes what it makes. Width is only layout, from its corner on the canvas.
+  await more('knobs');
   const widthBefore = (await rows()).knobs.w;
+  await knobs.locator('select[aria-label="Shape"]').selectOption('3:4');
+  await until('the ratio written', () => field(/aspect_ratio: (\S+)/), (value) => value === '"3:4"');
+  check('reshape_writes_the_shape', true);
+  await away();
+  await knobs.locator('.nm').hover();
   const corner = await knobs.locator('.corner').boundingBox();
   await page.mouse.move(corner.x + 6, corner.y + 6);
   await page.mouse.down();
-  await page.mouse.move(corner.x + 6, corner.y + 200, { steps: 6 });
-  await page.waitForTimeout(100);
-  const ratio = await knobs.locator('.ratio-shown').textContent();
+  await page.mouse.move(corner.x + 60, corner.y + 6, { steps: 6 });
   await page.mouse.up();
-  check('corner_says_the_ratio', /^\d+:\d+$/.test(ratio), ratio);
-  await until('the ratio written', () => field(/aspect_ratio: (\S+)/), (value) => value === `"${ratio}"`);
-  check('reshape_is_taller', Number(ratio.split(':')[0]) / Number(ratio.split(':')[1]) < 16 / 9, ratio);
+  await until('the width written', rows, (now) => now.knobs.w && now.knobs.w !== widthBefore);
+  check('corner_is_only_layout', (await field(/aspect_ratio: (\S+)/)) === '"3:4"');
   seen.width_before_reshape = widthBefore;
 
   // Beats: one text and a duration slider each; add, remove, down to the one that always stays; what else a beat holds stays.
@@ -397,11 +396,13 @@ function linesOf(text, name) {
 
   // Right click: rename, delete, and what it's made with.
   await away();
+  await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
-  await box('Sheet').locator('.nm').click({ button: 'right' });
+  await open('Sheet');
+  await box('Sheet').locator('[aria-label="More for this box"]').click();
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu > button').allTextContents();
   check('box_menu', ['Change the tool', 'Change the model', 'Add a LoRA', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
@@ -723,7 +724,7 @@ function linesOf(text, name) {
     await open('Clip');
     const clipFile = linesOf(yaml(), 'Clip');
     await more('Clip');
-    await box('Clip').locator('.from-here input').fill('0.5');
+    await box('Clip').locator('.from-here .keeps').fill('0.5');
     await box('Clip').locator('button:has-text("New take from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).versions.at(-1).files.given.path;

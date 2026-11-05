@@ -82,10 +82,10 @@ function EditSettings({ name }: { name: string }) {
 export function AssetMenu() {
   const store = useCanvasStore()
   const menu = useSignal(store.menu)
-  return menu ? <Menu key={`${menu.name}:${menu.x}:${menu.y}`} name={menu.name} x={menu.x} y={menu.y} /> : null
+  return menu ? <Menu key={`${menu.name}:${menu.x}:${menu.y}`} name={menu.name} x={menu.x} y={menu.y} full={Boolean(menu.full)} /> : null
 }
 
-function Menu({ name, x, y }: { name: string; x: number; y: number }) {
+function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: boolean }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   const view = useElement(name)
@@ -136,8 +136,8 @@ function Menu({ name, x, y }: { name: string; x: number; y: number }) {
     <div ref={shell} className="asset-menu" role="menu" aria-label={`${name}'s menu`} style={{ left, top }}>
       {open === "menu" && (
         <>
-          {edit && <EditSettings name={name} />}
-          {rendered && (
+          {full && edit && <EditSettings name={name} />}
+          {full && rendered && (
             <>
               <button type="button" role="menuitem" onClick={() => setOpen("tool")}>
                 Change the tool

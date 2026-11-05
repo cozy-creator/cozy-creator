@@ -12,7 +12,7 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, noStall, png, until, pointAt } = require('./page');
+const { STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -250,13 +250,12 @@ function linesOf(text, name) {
     write();
     return { at: Date.now() };
   };
-  const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
-  const away = () => page.mouse.move(2, 500);
-  const open = async (name) => {
-    await away();
-    await pointAt(page, box(name).locator('.nm'));
-    await box(name).locator('.head [aria-label=Delete]').waitFor();
+  const box = (name) => boxOf(page, name);
+  const away = async () => {
+    await closeBox(page);
+    await page.mouse.move(2, 500);
   };
+  const open = (name) => openBox(page, name);
   /** A place on screen that's clear, as what lands on a box is moved off it: right of where the page puts what has none. */
   const spot = async () => {
     const boxes = Object.values((await rows()) ?? {});
@@ -438,12 +437,14 @@ function linesOf(text, name) {
   await page.keyboard.type(' FROM-THE-PAGE');
   await page.mouse.click(1700, 1100);
   await readsBack('text', async () => (await held('live_held')).fields?.instructions, (text) => text?.includes('FROM-THE-PAGE'));
+  await open('live_b');
   await box('live_b').locator('.nm').dblclick();
   await page.waitForSelector('.nm-field');
   await page.keyboard.type('live_c');
   await page.keyboard.press('Enter');
   await readsBack('rename', () => held('live_c'), Boolean);
-  await open('live_c');
+  await away();
+  await pointAt(page, box('live_c').locator('.nm'));
   await box('live_c').locator('.head [aria-label=Delete]').click();
   await readsBack('delete', () => held('live_c'), (asset) => !asset);
   await page.locator('.note:has-text("live_c") button:has-text("Undo")').click();

@@ -4,7 +4,7 @@ import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls } from "./controls"
+import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf } from "./controls"
 import { MentionText } from "./MentionText"
 import { faceOf, shownOf } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
@@ -241,7 +241,28 @@ function FileControl({ name, control, view }: { name: string; control: Control; 
   )
 }
 
-/** A shape has no row: the box's corner is its control, and the box says which it is. */
+/** What shape it makes. */
+function ShapeControl({ name, control }: { name: string; control: Control }) {
+  const store = useCanvasStore()
+  const held = store.valueOf(name, control.field) ?? control.default
+  const shapes = shapesOf(control)
+  return (
+    <label className="slide">
+      <span className="ctl-name">{control.label}</span>
+      <select className="field nodrag" aria-label={control.label} value={typeof held === "string" ? held : ""} onChange={(event) => void store.setField(name, control.field, event.target.value)}>
+        <option value="" disabled hidden>
+          Auto
+        </option>
+        {shapes.map((shape) => (
+          <option key={shape} value={shape}>
+            {shape}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function ControlRow({ name, control, view, focus, named }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean }) {
   switch (control.type) {
     case "text":
@@ -252,6 +273,8 @@ function ControlRow({ name, control, view, focus, named }: { name: string; contr
       return <RangeControl name={name} control={control} />
     case "choice":
       return <ChoiceControl name={name} control={control} />
+    case "shape":
+      return <ShapeControl name={name} control={control} />
     case "toggle":
       return <ToggleControl name={name} control={control} />
     case "file":
@@ -316,7 +339,6 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
       aria-label="Render"
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
       onClick={() => {
-        store.editing.set(null)
         store.run(name)
       }}
     >
