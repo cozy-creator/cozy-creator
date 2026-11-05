@@ -1,4 +1,4 @@
-"""Suite `kernels` (./cells.sh): every entry and jit function the inventory declared was launched by a cell. A gate run with
+"""Suite `kernels` (./cells.sh): every entry and jit function the inventory declared for this card was launched by a cell. A gate run with
 --only judges only the kernels it chose: each chosen cell ran, and the rest are noted as not chosen, not failed.
     check(gate) -> (fails, notes)"""
 import json
@@ -52,5 +52,5 @@ def check(gate):
     for module, names in found.get('jits', {}).items():
         missing = sorted(set(names) - jits)
         if missing:
-            notes.append(f'{module}: jit functions no cell launched on this family: {missing}')
+            fails.append(f'{module}: jit functions no cell launched on {found.get("row")}: {missing}')
     return fails, notes
