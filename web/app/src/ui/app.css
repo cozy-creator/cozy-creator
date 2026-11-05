@@ -2477,8 +2477,21 @@ input[type="checkbox"] {
   gap: 4px;
   padding: 0;
 }
-.open-box .card:has(.from-here) .asset-more {
+.open-box .card > .media {
+  grid-column: 1;
+  grid-row: 2;
+}
+.open-box .from-here {
+  grid-row: 3;
+}
+.open-box .asset-more {
+  grid-column: 2;
   grid-row: 2 / span 2;
+}
+.open-box .card:has(.tl) .asset-more,
+.open-box .card > .tl {
+  grid-column: 1;
+  grid-row: auto;
 }
 .from-here .keeps {
   flex: none;
@@ -2515,6 +2528,12 @@ input[type="checkbox"] {
 @media (max-width: 760px) {
   .open-box .card {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .open-box .asset-more,
+  .open-box .card > .media,
+  .open-box .from-here {
+    grid-column: 1;
+    grid-row: auto;
   }
   .open-back {
     padding: var(--top) 8px 8px;

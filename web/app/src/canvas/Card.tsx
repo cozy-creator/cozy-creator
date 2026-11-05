@@ -141,7 +141,7 @@ function FromHere({ view, name }: { view: ElementView; name: string }) {
         <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={at <= 0} onClick={() => go(at - FRAME_S)}>
           ‹
         </button>
-        <span className="tc-inline">{clock(at * 1000)}</span>
+        <span className="tc-inline">{clock(at * 1000)}.{String(Math.round((at % 1) / FRAME_S)).padStart(2, "0")}</span>
         <button type="button" className="iconb nodrag" aria-label="A frame on" title="A frame on" disabled={at >= whole} onClick={() => go(at + FRAME_S)}>
           ›
         </button>
