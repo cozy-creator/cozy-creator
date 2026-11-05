@@ -821,9 +821,9 @@ pub(crate) fn gate(ordinal: i32) -> Result<Gate> {
 /// Short-lived holders finish first. The bound is a last resort: a holder may be this very
 /// thread, with no signal to tell. A refused capture falls back to eager.
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
-    source::stop(device)?;
     let deadline = std::time::Instant::now() + reclaim::RECOVERY_BUDGET;
     loop {
+        source::stop(device)?;
         {
             let gate = gate(device)?;
             let state = gate.device;

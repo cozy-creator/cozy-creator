@@ -201,12 +201,15 @@ impl Order {
     }
 }
 
-/// The Region after `id` in the active phase. Call with no lock held.
+/// The Region after `id` in the active phase, or the next phase's first: what the plan says
+/// comes next. Call with no lock held.
 pub(crate) fn after(ordinal: i32, id: u64) -> Result<Option<Arc<Region>>> {
     let lease = Lease::acquire(ordinal)?;
     let Some((plan, active)) = &lease.active else { return Ok(None) };
     let regions = &plan.phases[*active].regions;
-    Ok(regions.iter().position(|region| region.id() == id).and_then(|at| regions.get(at + 1)).cloned())
+    let Some(at) = regions.iter().position(|region| region.id() == id) else { return Ok(None) };
+    let next = regions.get(at + 1).or_else(|| plan.phases.get(active + 1)?.regions.first());
+    Ok(next.cloned())
 }
 
 /// Call before taking the gate.
