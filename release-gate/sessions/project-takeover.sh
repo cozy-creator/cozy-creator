@@ -64,7 +64,7 @@ fail() {
 }
 # c <cozy args>: as the computer that asks, in the part's project. x <cozy args>: as X, in its copy of it.
 c() { sh "su client -s /bin/sh -c 'cd \$HOME/$TAG 2>/dev/null; /opt/client/cozy $*'"; }
-x() { sh "cd \$(ls -d /root/.cozy/projects/$TAG-* | head -1) && cozy $*"; }
+x() { sh "cd \$(ls -d /root/$TAG-*/ | head -1) && cozy $*"; }
 line() { sh "echo $* > /tmp/link"; }
 client_calcifer() { sh 'pgrep -u client -x calcifer' | tr -dc '0-9\n' | head -1; }
 # gone <pid…>: each `kill -9`'d there, and checked dead.
@@ -141,7 +141,7 @@ once() {
   jq -e --args '[$ARGS.positional[] as $a | [.assets[] | select(.name == $a and .versions == 1)] | length == 1] | all' "$@" <<<"$state" > /dev/null ||
     fail "$TAG: not one version each: $(jq -c '[.assets[] | {name, versions}]' <<<"$state")"
   # Its calls: what a machine fetches ahead for it is a warm run, which renders nothing.
-  runs=$(x "--json --full run ls --limit 200" | jq -c --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and ((.kind // "call") | ascii_downcase) == "call" and (.target | startswith("ahead ") | not)) | .number] | sort')
+  runs=$(x "--json --full run ls --limit 200" | jq -c --arg t "/root/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and ((.kind // "call") | ascii_downcase) == "call" and (.target | startswith("ahead ") | not)) | .number] | sort')
   made=$(jq -c '[.assets[].prefixes[]?.run | select(. != null)] | sort' <<<"$state")
   [ "$runs" = "$made" ] || fail "$TAG: X ran $runs, and its versions came of $made"
   say "$TAG: one version each of $*; X's calls $runs are its versions' runs, none twice"
@@ -266,7 +266,7 @@ YAML
   done
   once shotk
   local plate; plate=$(x "--json --full project status" | jq -r '[.assets[] | select(.name == "plate") | .sha256] | first')
-  [ "sha256:$(sh "sha256sum /root/.cozy/projects/k-*/files/${plate#sha256:}.png" | cut -c1-64)" = "$plate" ] || fail "k: the plate on X is not its hash"
+  [ "sha256:$(sh "sha256sum /root/k-*/files/${plate#sha256:}.png" | cut -c1-64)" = "$plate" ] || fail "k: the plate on X is not its hash"
   x "--json --full project status" > "$OUT/k-x-status.json"
   say "k: shotk made once on X, the plate whole there"
   t=0
@@ -380,7 +380,7 @@ YAML
   until x_made north south east west; do [ $t -lt 900 ] || fail "y: X didn't make all four"; t=$((t + 5)); sleep 5; done
   x "--json --full run ls --limit 50" > "$OUT/y-x-runs.json"
   once north south east west
-  local on_y; on_y=$(jq --arg t "/projects/y-" '[.runs[] | select(((.project // "") | contains($t)) and (.target | startswith("ahead ") | not) and .machine == "ybox")] | length' "$OUT/y-x-runs.json")
+  local on_y; on_y=$(jq --arg t "/root/y-" '[.runs[] | select(((.project // "") | contains($t)) and (.target | startswith("ahead ") | not) and .machine == "ybox")] | length' "$OUT/y-x-runs.json")
   [ "$on_y" -gt 0 ] || fail "y: X sent Y nothing: $(jq -c '[.runs[] | [.number, .machine, .target]]' "$OUT/y-x-runs.json")"
   local xkey; xkey=$(sh 'cozy --json --full machine show local' | jq -r .controller_key)
   line up
@@ -410,7 +410,7 @@ YAML
   sh "su client -s /bin/sh -c 'cd \$HOME/l; nohup /opt/client/cozy project render all --on box --plain > \$HOME/l.out 2>&1 < /dev/null &'" > /dev/null
   local t=0
   until [ "$(handing "$(walk_file)")" = asked ] && x "--json --full project status" 2>/dev/null | jq -e .busy > /dev/null; do [ $t -lt 300 ] || fail "l: X never took it"; t=$((t + 3)); sleep 3; done
-  sh 'p=$(pgrep -u root -x calcifer); python3 -c "import json; f=\"/root/.cozy/calcifer/projects.json\"; i=json.load(open(f)); i[\"projects\"]={k: v for k, v in i[\"projects\"].items() if \"/projects/l-\" not in v[\"path\"]}; json.dump(i, open(f, \"w\"))"; rm -rf /root/.cozy/projects/l-*; kill -9 $p' > /dev/null
+  sh 'p=$(pgrep -u root -x calcifer); python3 -c "import json; f=\"/root/.cozy/calcifer/projects.json\"; i=json.load(open(f)); i[\"projects\"]={k: v for k, v in i[\"projects\"].items() if not v[\"path\"].startswith(\"/root/l-\")}; json.dump(i, open(f, \"w\"))"; rm -rf /root/l-*/; kill -9 $p' > /dev/null
   say "l: X walks it; X's Calcifer killed and its copy wiped"
   t=0
   until sh 'grep -q "gone before" /home/client/l.out' && [ "$(handing "$(walk_file)")" = "nothing held" ]; do

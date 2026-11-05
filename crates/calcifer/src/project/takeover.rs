@@ -58,7 +58,7 @@ const COLLECTING: &str = ".runs/collecting";
 
 // The machine that holds.
 
-/// `POST /v1/projects/take`: the project another computer's Calcifer hands this one, in `<home>/projects/<name>-<its id>`, the same each
+/// `POST /v1/projects/take`: the project another computer's Calcifer hands this one, in `~/<name>-<its id>`, the same each
 /// time. Its text is that computer's, its versions join these, its local code is written where its tools name it, and what stands in it
 /// that isn't here is kept from what was uploaded, or asked for.
 pub(super) async fn take(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<Taken>, Refusal> {
@@ -67,7 +67,8 @@ pub(super) async fn take(State(api): State<Arc<Api>>, body: Result<Bytes, BytesR
     let hex = take.from.strip_prefix("project-").filter(|hex| hex.len() >= 8 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
     let hex = hex.ok_or_else(|| usage(format!("{:?} is no project's id", take.from)))?;
     let name = format::plain_name(&take.name).unwrap_or_else(|| "untitled".to_owned());
-    let dir = api.machines.hubs.home().projects().join(format!("{name}-{}", &hex[..8]));
+    // In the home folder, as a project made by name is, under a name that says whose it is.
+    let dir = api.machines.user_home.join(format!("{name}-{}", &hex[..8]));
     let io = |e: &dyn std::fmt::Display| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())));
     std::fs::create_dir_all(&dir).map_err(|e| io(&e))?;
     let yaml = dir.join(folder::PROJECT);
