@@ -249,7 +249,9 @@ impl Drop for Retire {
                 std::mem::forget(owners);
                 return;
             }
-            if let Some(token) = owners.4.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            // The slot's lock ends here, not across phase_leave's gate.
+            let token = owners.4.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(token) = token {
                 let _ = varena::working::phase_leave(owners.1.device.ordinal(), token, false, None);
                 owners.1.active_observations.fetch_sub(1, Ordering::AcqRel);
             }
