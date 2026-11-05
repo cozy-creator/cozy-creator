@@ -293,16 +293,21 @@ Calcifer speaks to the Hub as this computer's device key (`~/.cozy/keys`); every
 a client branches on it: `account.name_unavailable`). Records are `protocol::hub`.
 
 **Account.** A key is enrolled by a code the Hub emails: the client reads the code from its user and
-sends it back. A code is answered once.
+sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
 - `GET /v1/account`: `Account`, who this computer signs in as, its credit (`billing`,
   `balance_usd_micros`, none where unmetered) and where to buy more; `key_refused` when the Hub no
   longer accepts the key.
-- `POST /v1/account/codes` `{hub, purpose, email}`: `Code {id, email}`. `purpose` is `sign_in`,
-  `export` (a key for another computer, such as CI) or `sign_out_everywhere` (mails the signed-in
-  key's address; `not_logged_in` without one).
+- `POST /v1/account/codes` `{hub, purpose, email}`: `Code {id, email, retry_after_s?}`. `purpose` is
+  `sign_in`, `export` (a key for another computer, such as CI) or `sign_out_everywhere` (mails the
+  signed-in key's address; `not_logged_in` without one). Asked again before the Hub will send another,
+  `id` is the code already out and `retry_after_s` when it will, the wait the Hub stated; with none out
+  it's `503 rate_limited` with the same `retry_after_s`.
 - `POST /v1/account/codes/{id}` `{code}`: `Proven`, tagged by `purpose`: `sign_in` keeps the key and
   answers the `Account` (`account` none until named); `export` answers the key file's text, kept
-  nowhere here; `sign_out_everywhere` revokes every other key, then this one (`SignedOut`).
+  nowhere here; `sign_out_everywhere` revokes every other key, then this one (`SignedOut`). Each email
+  has its own code, so what arrived is tried on `id`'s and then the 2 newest others to that mailbox for
+  that purpose. `400 code_wrong` when none takes it, all still waiting; `404 code_not_found` once they've
+  expired or one was answered.
 - `PUT /v1/account/name` `{hub, name}`: names a new account; ask again on `account.name_unavailable`
   or `account.name_invalid`.
 - `PUT /v1/account/key` `{hub, key}`: an exported key's text becomes this computer's key.
