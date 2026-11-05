@@ -464,6 +464,10 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
             }
         };
         remember(&api);
+        // What landed last is measured here, or no later walk says how long a take lasts, which New take from here needs.
+        if let Err(error) = walk.measure() {
+            warn!("measuring a project's files: {}", error.message);
+        }
         crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
         clock.abort();
