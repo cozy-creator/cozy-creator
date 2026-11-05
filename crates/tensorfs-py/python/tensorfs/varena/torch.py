@@ -184,12 +184,6 @@ def reset_peak(device: DeviceLike = 0) -> None:
     _ext._varena_working_reset_peak(_device(device))
 
 
-def give_back_idle_pools(device: DeviceLike = 0) -> int:
-    """Every idle scratch pool's pages back, as pressure would take them: for a gate cell."""
-    _installed()
-    return _ext._varena_give_back_idle_pools(_device(device))
-
-
 def unit_bytes() -> int:
     """How large a block a whole module may be before its children bind instead."""
     return _ext._varena_unit_bytes()

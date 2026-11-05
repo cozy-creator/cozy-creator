@@ -312,11 +312,6 @@ fn _varena_pool_bytes(peak: usize) -> usize {
 }
 
 #[pyfunction]
-fn _varena_give_back_idle_pools(py: Python<'_>, device: i32) -> PyResult<usize> {
-    py.detach(|| varena::working::give_back_idle_pools(device)).map_err(|e| super::raise(py, e))
-}
-
-#[pyfunction]
 fn _varena_poisoned(py: Python<'_>) -> PyResult<Option<String>> {
     py.detach(varena::working::poisoned).map_err(|e| super::raise(py, e))
 }
@@ -818,7 +813,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_activate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_poisoned, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_give_back_idle_pools, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_unit_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_pool_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;
