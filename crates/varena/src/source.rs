@@ -29,6 +29,10 @@ struct Slot {
     wanted: Option<(Arc<Region>, bool)>,
     running: Option<Arc<Region>>,
     worker: Option<ThreadId>,
+    /// Requests open on this GPU, and whether the last one has ended: then fills follow the
+    /// Plan from its start (`boundary`).
+    open: usize,
+    idle: bool,
 }
 
 /// One GPU's fills ahead of demand, one at a time.
@@ -116,7 +120,9 @@ fn run(device: &'static Device) {
         };
         let filled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill_ahead(&region, free_only)));
         // Past the one Region a use asked for, only into room nothing else needs.
+        let idle = device.ahead.slot().idle;
         let chained = match filled {
+            Ok(Ok(true)) if idle => plan::absent(device.ordinal(), Some(region.id())).unwrap_or(None),
             Ok(Ok(true)) => upcoming(&region).unwrap_or(None),
             Ok(_) => None,
             Err(_) => {
@@ -150,6 +156,23 @@ fn fill_ahead(region: &Arc<Region>, free_only: bool) -> Result<bool> {
         Ok(_) => Ok(true),
         Err(Error::Poisoned(reason)) => Err(Error::Poisoned(reason)),
         Err(_) => Ok(false), // A failed guess costs its read. Demand tries again and reports.
+    }
+}
+
+/// A request begins or ends on this GPU. With none open, the core fills what the Plan uses
+/// first, from its start, into room nothing holds, until the next begins.
+pub(crate) fn boundary(device: &'static Device, begin: bool) -> Result<()> {
+    {
+        let mut slot = device.ahead.slot();
+        slot.open = if begin { slot.open + 1 } else { slot.open.saturating_sub(1) };
+        slot.idle = slot.open == 0 && !begin;
+        if !slot.idle {
+            return Ok(());
+        }
+    }
+    match plan::absent(device.ordinal(), None)? {
+        Some(first) => want(device, first, true),
+        None => Ok(()),
     }
 }
 
