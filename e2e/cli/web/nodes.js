@@ -708,7 +708,8 @@ function linesOf(text, name) {
   await until('gone', () => box('source-b').count(), (n) => n === 0);
   await page.locator('.note:has-text("source-b") button:has-text("Undo")').first().click();
   await box('source-b').waitFor();
-  check('delete_and_undo', Boolean(linesOf(yaml(), 'source-b')), yaml());
+  // The box is back as it's asked for, ahead of the file.
+  check('delete_and_undo', Boolean(await until('back in the file', () => Promise.resolve(linesOf(yaml(), 'source-b')), Boolean)));
 
   check('comments_and_text_kept', yaml().includes('# Mine, and kept.') && yaml().includes('  # A note on what follows.') && yaml().includes('    # Inside it.') && yaml().includes('      by hand.'), yaml());
   const hashes = [...yaml().matchAll(/approved: "?([0-9a-f]{12})/g)].map((m) => m[1]);
