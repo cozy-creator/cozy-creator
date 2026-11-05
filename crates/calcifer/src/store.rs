@@ -472,6 +472,18 @@ impl Store {
         })
     }
 
+    /// Whether an update of `machine` is yet to end: what's sent to it waits for that.
+    pub fn updating(&self, machine: &str) -> Result<bool> {
+        self.read(|conn| {
+            let held = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled')",
+                [machine],
+                |r| r.get(0),
+            )?;
+            Ok(held)
+        })
+    }
+
     /// Unsettled runs no machine was chosen for, oldest first, with where each may go.
     pub fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {

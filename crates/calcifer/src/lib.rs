@@ -691,6 +691,13 @@ impl Calcifer {
                 wake.notified().await;
                 continue;
             };
+            // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
+            // finishes what it has first, and what's held here goes to what it became.
+            if run.state == State::Queued && run.kind != protocol::calcifer::Kind::Update && self.store.updating(&name).unwrap_or_default() {
+                self.waiting(id, format!("getting {name} ready"));
+                pause.wait(wake, None).await;
+                continue;
+            }
             // This computer's machine starts when a run needs it; a run it was never sent fails
             // when it cannot start, saying why.
             // Its start is shown while it lasts: nothing but TensorD's own answer or exit ends it.
