@@ -63,7 +63,12 @@ pub(super) async fn caption(
     let kind = ["image", "video"].into_iter().find(|kind| files.contains_key(*kind)).expect("a picture or a video");
     let given = Given { name: name.clone(), files: files.into_iter().filter(|(field, _)| field.starts_with(kind)).collect(), description: String::new(), asset_type: String::new(), made_by: String::new(), text: String::new() };
     let tool = format!("{}/{CAPTION}", package.name);
-    let call = direct::Call { name: &name, tool: &tool, package: &package.name, callable: &callable, inputs: &Map::new(), own: &Default::default(), reads: std::slice::from_ref(&given), lock: &lock, take: None };
+    // Its own file, by name, to what takes that kind: a caption's only input, and nothing else fills it.
+    let Some(field) = callable.request.fields.iter().find(|field| field.ty.media().is_some_and(|(takes, _)| takes == kind)) else {
+        return Err(Refusal(Error::new(Kind::NotFound, "caption_no_tool", format!("{tool} reads no {kind}"))));
+    };
+    let inputs = Map::from_iter([(field.name.clone(), Value::String(format!("<{name}>")))]);
+    let call = direct::Call { name: &name, tool: &tool, package: &package.name, callable: &callable, inputs: &inputs, own: &Default::default(), reads: std::slice::from_ref(&given), lock: &lock, take: None };
     let (input, warnings) = direct::input(call).map_err(Refusal)?;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map_or_else(new_key, str::to_owned);
     let run = send(&host, &project, &asking, Value::Object(input), &on, &hub, &key).await?;
