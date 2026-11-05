@@ -211,6 +211,7 @@ test = "pr: projects: a queued take dropped; alone or not, what it canceled isn'
 ["project import"]
 test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs"
 "--description" = "pr: web-live: a file lifted out as its own asset, with its words"
+"--into" = "pr: projects: a file joins a box as its next version, and makes no asset of its own"
 
 ["project add"]
 test = "pr: by the CLI: fields, a name, where it sits; web-live: shows on the open canvas within a second"

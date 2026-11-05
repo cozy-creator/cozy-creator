@@ -3347,6 +3347,11 @@ code=0; cozy project -p "$U" import "$U/Kyogre Art (1).png" hero.sheet-one > "$O
 [ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_2 ] || check "import: a picked name doesn't count up"
 [ "$(ls "$U/files" | grep -c "^$(sha "$U/Kyogre Art (1).png")")" = 1 ] || check "import: three elements of one file are not one file: $(ls "$U/files")"
 [ "$(cozy --json project -p "$U" import "$U/Kyogre Art (1).png" | jq -r .already)" = true ] || check "import: a file the project has does not say already"
+still "$U/joins.png" blue
+name=$(cozy project -p "$U" import "$U/joins.png" --into kyogre_art_1 2> "$OUT/import-into.err") || check "import --into: $(tail -c 300 "$OUT/import-into.err")"
+[ "$name" = kyogre_art_1.2 ] || check "import --into: a file did not join kyogre_art_1 as its version 2: $name"
+[ "$(row "$U" kyogre_art_1 .versions)" = 2 ] || check "import --into: status does not count two versions: $(row "$U" kyogre_art_1 .)"
+! grep -q '^  joins' "$U/project.yaml" || check "import --into: it made an asset of its own: $(cat "$U/project.yaml")"
 
 step "a project: import keeps every comment and text of project.yaml, and reads no name twice"
 local Y=$OUT/imported-kept; mkdir -p "$Y"
