@@ -251,6 +251,17 @@ impl Uses {
     }
 }
 
+impl Region {
+    /// One pin fewer; the last one leaves the held bytes.
+    fn unpinned(&self) {
+        let prior = self.uses.pins.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_sub(1));
+        assert!(prior.is_ok(), "native owner count underflow");
+        if prior == Ok(1) {
+            self.gpu.held.fetch_sub(self.rounded, Ordering::AcqRel);
+        }
+    }
+}
+
 fn decrement(counter: &AtomicUsize) {
     assert!(
         counter
@@ -416,6 +427,13 @@ pub struct Device {
     working: AtomicUsize,
     // The most weight bytes held for use at once this request.
     held_peak: AtomicUsize,
+    // Weight bytes held for use now: regions with a pin.
+    held: AtomicUsize,
+    // Moves when the room this process can have shrinks for a reason outside its program: a cap,
+    // foreign use, a refused allocation or a peer's ask. A split's chosen level holds until it does.
+    room: AtomicU64,
+    // Of those moves, the ones growing outside use made at a sample.
+    room_outside: AtomicU64,
     // A region here was ever marked high. Until then the reclaim sequence has no such step.
     any_high: AtomicBool,
     // Actual successful physical releases only. An observation permits a real retry, never a grant.
@@ -451,6 +469,9 @@ impl Device {
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
+            held: AtomicUsize::new(0),
+            room: AtomicU64::new(0),
+            room_outside: AtomicU64::new(0),
             any_high: AtomicBool::new(false),
             released: AtomicU64::new(0),
             clock: AtomicU64::new(0),
@@ -559,8 +580,22 @@ impl Device {
             #[cfg(target_os = "linux")]
             self.reservation.get_or_init(|| cooperative::driver_reservation(self.ordinal, total));
         }
-        self.outside.store(total.saturating_sub(free).saturating_sub(self.owned()), Ordering::Release);
+        let outside = total.saturating_sub(free).saturating_sub(self.owned());
+        if outside > self.outside.swap(outside, Ordering::AcqRel) {
+            self.room_outside.fetch_add(1, Ordering::Relaxed);
+            self.room_shrank();
+        }
         Ok(())
+    }
+
+    /// The room this process can have shrank for a reason outside its program.
+    fn room_shrank(&self) {
+        self.room.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Which room a decision was made against: it changes only when that room shrinks.
+    fn room_epoch(&self) -> u64 {
+        self.room.load(Ordering::Acquire) + self.driver.get().map_or(0, |driver| driver.physical_ooms())
     }
 
     /// Other processes' bytes stand between us and `more`, so asking them can help.
@@ -1224,7 +1259,8 @@ impl Region {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
-            .map_err(|_| Error::Invalid("pin count overflow"))?;
+            .map_err(|_| Error::Invalid("pin count overflow"))
+            .map(|prior| if prior == 0 { self.gpu.held.fetch_add(self.rounded, Ordering::AcqRel); })?;
         entry.prefetched = false;
         Ok(Pin {
             region: Some(Arc::clone(self)),
@@ -1395,7 +1431,7 @@ impl Pin {
         let region = self.region.take().expect("live pin");
         if region.pid == std::process::id() {
             region.mark_unjoined();
-            decrement(&region.uses.pins);
+            region.unpinned();
         }
         region
     }
@@ -1413,7 +1449,7 @@ impl Pin {
     pub unsafe fn into_completed_region(mut self) -> Arc<Region> {
         let region = self.region.take().expect("live pin");
         if region.pid == std::process::id() {
-            decrement(&region.uses.pins);
+            region.unpinned();
         }
         region
     }
@@ -1433,7 +1469,7 @@ impl Pin {
             if region.stamp_consumers(streams).is_err() {
                 region.mark_unjoined();
             }
-            decrement(&region.uses.pins);
+            region.unpinned();
         }
         region
     }
@@ -1460,7 +1496,7 @@ impl Pin {
             return Err((self, error));
         }
         let region = self.region.take().expect("live pin");
-        decrement(&region.uses.pins);
+        region.unpinned();
         Ok(region)
     }
 }
@@ -1471,7 +1507,7 @@ impl Drop for Pin {
             && region.pid == std::process::id()
         {
             region.mark_unjoined();
-            decrement(&region.uses.pins);
+            region.unpinned();
         }
     }
 }
@@ -1532,6 +1568,7 @@ pub fn fail_create_after(device: i32, n: u64, times: u64) -> Result<()> {
 pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
     let state = gpu(device)?;
     state.ceiling.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    state.room_shrank();
     if let Some(driver) = state.driver.get()
         && !is_capturing(device)?
     {
