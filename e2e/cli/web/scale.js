@@ -298,6 +298,11 @@ function calciferMb() {
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   await page.evaluate(() => { window.notReloaded = true; });
 
+  // The 95th percentile of half a second's frames. None in that half second is one longer than all of it: not short yet (macOS, 42022159182).
+  const shortFrames = async () => {
+    const frames = await page.evaluate(() => window.takeFrames(500));
+    return frames.length ? summary(frames).p95_ms : Infinity;
+  };
   /** Frames while the viewport goes 480 px left and back, every box on screen drawn first, and with no pan, each as a person's wheel does it. */
   const panning = (ms) => page.evaluate((length) => new Promise((done) => {
     const pane = document.querySelector('.react-flow__pane');
@@ -377,7 +382,7 @@ function calciferMb() {
   await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
   numbers.open_boxes_s = seconds(Date.now() - opening);
   check('it_opens_quickly', numbers.open_boxes_s <= BARS.open_boxes_s, numbers.open_boxes_s);
-  await until('its frames short', async () => summary(await page.evaluate(() => window.takeFrames(500))).p95_ms, (p95) => p95 < 100, 180_000);
+  await until('its frames short', shortFrames, (p95) => p95 < 100, 180_000);
   numbers.open_settled_s = seconds(Date.now() - opening);
   check('it_settles_quickly', numbers.open_settled_s <= BARS.open_settled_s, numbers.open_settled_s);
   memory.open = calciferMb();
@@ -508,7 +513,7 @@ function calciferMb() {
   // The whole of it fitted, and panned.
   const fitting = Date.now();
   await page.keyboard.press('f');
-  await until('fitted, its frames short', async () => summary(await page.evaluate(() => window.takeFrames(500))).p95_ms, (p95) => p95 < 200, 180_000);
+  await until('fitted, its frames short', shortFrames, (p95) => p95 < 200, 180_000);
   numbers.fit_all_s = seconds(Date.now() - fitting);
   check('the_whole_of_it_fits', numbers.fit_all_s <= BARS.fit_all_s, numbers.fit_all_s);
   numbers.mounted_fitted = await page.locator('.react-flow__node').count();
