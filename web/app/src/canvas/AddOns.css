@@ -21,6 +21,10 @@
   align-items: flex-start;
   gap: calc(4px * var(--text, 1));
 }
+/* Short of the ratio at the right, at any zoom. */
+.react-flow__node:has(.ratio-rest) .add-ons {
+  width: min(72%, calc(100% - 80px * var(--text, 1)));
+}
 /* Below what a waiting box says there. */
 .react-flow__node:has(.rest-waiting) .add-ons {
   top: calc(100% + 30px * var(--text, 1));
