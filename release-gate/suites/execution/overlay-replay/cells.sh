@@ -4,4 +4,5 @@
 # It needs the int8 DiT and its LoRA resident (about 23 GB), as lora-overlay-refill does.
 if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -ge 30 ] 2>/dev/null; then
   cell overlay-replay "$HERE/suites/execution/overlay-replay/gpu" seed:=$((R + 331)) --gpus=1 --lane int8
+  cell overlay-inside "$HERE/suites/execution/overlay-replay/gpu" variant=inside seed:=$((R + 332)) --gpus=1 --lane int8
 fi

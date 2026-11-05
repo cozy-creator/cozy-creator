@@ -2,7 +2,8 @@
 `lora.Hook` on every site), armed before the loop as Qwen-Image's package arms. Three calls in one
 run: unarmed (the first records), unarmed (it replays), armed: the armed overlays are part of the
 kept program's identity, so the armed call never replays the unarmed program, and its latents equal
-the same call run eagerly, byte for byte."""
+the same call run eagerly, byte for byte. `inside` arms in the step instead, which must raise, with
+graphs and without: a replay could not see it."""
 
 from __future__ import annotations
 
@@ -104,7 +105,7 @@ class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
         self.graph = loader.construct(DiTGraph, factory=DiTGraph)
 
     @uses_components("transformer")
-    def denoise(self, seed: int, overlay: nn.Module | None) -> torch.Tensor:
+    def denoise(self, seed: int, overlay: nn.Module | None, inside: bool = False) -> torch.Tensor:
         """`STEPS` Euler steps from seeded noise and text rows as one keyed `denoise_loop`, the
         DiT armed with `overlay` (or none) before it; the step reads its sigma at the step index,
         its rotary table and modulation rows made once for the layout."""
@@ -118,6 +119,8 @@ class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
                     if dit.zero_cond_t else None)
 
         def step(i: torch.Tensor, latents: torch.Tensor, text: torch.Tensor, sigmas: torch.Tensor) -> None:
+            if inside:
+                dit._ci_arming = overlay
             sigma = sigmas.index_select(0, i)
             hidden = dit.img_in(latents)
             timestep = sigma.to(hidden.dtype)
@@ -134,7 +137,7 @@ class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
             velocity = dit.proj_out(dit.norm_out(hidden, temb))
             latents.copy_(latents + (sigmas.index_select(0, i + 1) - sigma).to(latents.dtype) * velocity)
 
-        dit._ci_arming = overlay
+        dit._ci_arming = None if inside else overlay
         try:
             denoise_loop(step, range(STEPS), state=(latents,), inputs=(text, sigmas), key=("ci.overlay-replay/1",))
         finally:
@@ -149,12 +152,14 @@ class Lightning(Model[LoRAGraph]):
         self.graph = loader.construct(LoRAGraph, factory=LoRAGraph)
 
     @uses_components(LORA_COMPONENT)
-    def denoise(self, base: QwenDiT, seed: int) -> torch.Tensor:
-        return base.denoise(seed, self.graph.components[LORA_COMPONENT])
+    def denoise(self, base: QwenDiT, seed: int, inside: bool = False) -> torch.Tensor:
+        return base.denoise(seed, self.graph.components[LORA_COMPONENT], inside)
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 331
+    #: replay: unarmed twice, then armed before the loop; inside: armed in the step, which raises
+    variant: str = "replay"
 
 
 class Report(msgspec.Struct):
@@ -187,6 +192,8 @@ def _bake_kernels(device: torch.device, ctx: Context, tel: Telemetry) -> None:
 )
 def gpu(payload: Probe, model: QwenDiT, turbo_lora: Lightning, ctx: Context, tel: Telemetry) -> Report:
     _bake_kernels(torch.device(str(model.device)), ctx, tel)
+    if payload.variant == "inside":
+        return _inside(payload, model, turbo_lora)
     model.denoise(payload.seed, None)
     model.denoise(payload.seed + 1, None)
     armed = turbo_lora.denoise(model, payload.seed + 2)
@@ -210,4 +217,24 @@ def gpu(payload: Probe, model: QwenDiT, turbo_lora: Lightning, ctx: Context, tel
                         sort_keys=True, default=str)
     if not all(checks.values()):
         raise RuntimeError(f"overlay replay {detail}")
+    return Report(True, detail)
+
+
+def _inside(payload: Probe, model: QwenDiT, turbo_lora: Lightning) -> Report:
+    """An overlay the step arms raises, with graphs and in the eager arm alike."""
+    said = {}
+    eligible = loop._eligible
+    for arm in ("graphs", "eager"):
+        if arm == "eager":
+            loop._eligible = lambda ctx, steps, tensors: ((), "the cell's eager arm")
+        try:
+            turbo_lora.denoise(model, payload.seed, inside=True)
+            said[arm] = "returned"
+        except Exception as error:  # noqa: BLE001 - the cell reads what it raised
+            said[arm] = f"{type(error).__name__}: {error}"[:300]
+        finally:
+            loop._eligible = eligible
+    detail = json.dumps(said, sort_keys=True)
+    if not all("arm overlays before denoise_loop" in why for why in said.values()):
+        raise RuntimeError(f"overlay inside a step {detail}")
     return Report(True, detail)
