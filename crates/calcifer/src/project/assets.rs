@@ -16,7 +16,7 @@ use protocol::{
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{Doc, IMPORT_KEPT_MS, canvas, cancelled, find, folder, format, graph::name_key, listed, assetfile, model, now_ms};
+use super::{Doc, IMPORT_KEPT_MS, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, listed, assetfile, model, now_ms};
 use crate::api::{Api, Refusal, parse};
 
 /// What to call an asset with no name asked: the tool's last word, with no release.
@@ -170,7 +170,6 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     let doc = Doc::load(folder).map_err(Refusal)?;
     let i = doc.find(&name).ok_or_else(|| Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")))?;
     let name = doc.assets[i].name.clone();
-    cancelled(&api, &project, std::slice::from_ref(&name))?;
     let at = canvas::row(folder, &name).map_err(Refusal)?;
     let lines = RefCell::new(String::new());
     (folder.edit_project(|text| {
@@ -179,9 +178,13 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
         Ok(edited)
     }))
     .map_err(Refusal)?;
+    // Refused, nothing stops. Gone from the file, what lands of it lands nothing.
+    cancelled(&api, &project, std::slice::from_ref(&name), &deleted_why)?;
     let held = RefCell::new(None);
     folder.update_lock(|lock| *held.borrow_mut() = lock.assets.remove(&name_key(&name))).map_err(Refusal)?;
     canvas::set(folder, &id, BTreeMap::from([(name.clone(), None)])).map_err(Refusal)?;
+    project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
+    project.asked.notify_one();
     let text = serde_json::to_string(&Deleted { lines: lines.into_inner(), held: held.into_inner() }).expect("what's deleted serializes");
     Ok(Json(AssetDeleted { name, text, at }))
 }
@@ -217,6 +220,7 @@ pub(super) async fn put_back(
     .map_err(Refusal)?;
     if let Some(held) = &back.held {
         folder.update_lock(|lock| drop(lock.assets.insert(name_key(&name), held.clone()))).map_err(Refusal)?;
+        project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
     }
     let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetMade { name, etag }))

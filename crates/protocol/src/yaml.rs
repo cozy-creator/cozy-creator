@@ -75,20 +75,28 @@ pub fn to_json_and_keys(text: &str, path: &[&str], as_written: impl Fn(&[&str]) 
 
 /// The keys of the mapping at `path` in one YAML document, as written, in the order the text writes them. JSON's maps have no order.
 pub fn keys(text: &str, path: &[&str]) -> Vec<String> {
-    let Ok(documents) = documents(text) else { return vec![] };
-    documents.first().map_or_else(Vec::new, |document| keys_of(document, path))
+    keys_at(text, path).unwrap_or_default()
+}
+
+/// The keys of the mapping at `path`, none for one left bare; no answer if the text doesn't read or has nothing there, which a half-made save may not.
+pub fn keys_at(text: &str, path: &[&str]) -> Option<Vec<String>> {
+    keys_in(documents(text).ok()?.first()?, path)
 }
 
 fn keys_of(document: &Yaml<'_>, path: &[&str]) -> Vec<String> {
+    keys_in(document, path).unwrap_or_default()
+}
+
+fn keys_in(document: &Yaml<'_>, path: &[&str]) -> Option<Vec<String>> {
     let mut at = document;
     for part in path {
-        let Yaml::Mapping(map) = at else { return vec![] };
-        let Some(next) = map.iter().find(|(key, _)| written(key) == Some(*part)).map(|(_, value)| value) else { return vec![] };
-        at = next;
+        let Yaml::Mapping(map) = at else { return None };
+        at = map.iter().find(|(key, _)| written(key) == Some(*part)).map(|(_, value)| value)?;
     }
     match at {
-        Yaml::Mapping(map) => map.iter().filter_map(|(key, _)| written(key).map(str::to_owned)).collect(),
-        _ => vec![],
+        Yaml::Mapping(map) => Some(map.iter().filter_map(|(key, _)| written(key).map(str::to_owned)).collect()),
+        Yaml::Representation(text, ..) if matches!(text.as_ref(), "" | "~" | "null") => Some(vec![]),
+        _ => None,
     }
 }
 

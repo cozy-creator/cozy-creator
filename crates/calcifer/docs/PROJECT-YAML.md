@@ -22,7 +22,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | `project.canvas.yaml` | Cozy, for the page | Where each box sits. Nothing else reads it, and nothing in it is an input |
 | `files/` | Cozy only | Every file, by hash |
 | `<edit_name>.mp4`, `.otio` | Cozy | Each edit |
-| `.runs/` | Cozy only | Where a run's outputs land on their way into `files/` |
+| `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, and while a render goes what its walk owes (`walk.json`, `asked/`), of this folder and this Calcifer only: a copy goes on with none of it, and `push` and `pull` don't carry it |
 | `.measured.json` | Cozy only | What was measured of each file. Disposable: it's measured again |
 
 **A machine write changes only its own lines.** Comments, `|` blocks and everything else in the file stay as a hand left them. An unknown key warns when the file is read.
@@ -141,7 +141,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 
 | Command | Does |
 |---|---|
-| `render all [--on <machine>]` | A new version, with a new seed, of every asset with a tool, each reading the new ones before it. Approved assets are skipped, and said |
+| `render all [--on <machine>]` | A new version, with a new seed, of every asset with a tool, each reading the new ones before it. Approved assets are skipped, and said. One of each: `-n` is for an asset you name, and with `all` it warns and makes one |
 | `render <name>`, `-n 4` | A new version of it, or four, and of what it reads only if that has no state. Naming an approved asset makes a version to look at, and what it holds stays |
 | `render <names\|all> --missing` | Only what has no state: continues a render that half failed without paying twice |
 | `render all --outdated` | As `render all`, and each approved asset out of date when its turn comes. What it approved goes when the new version lands, and the version it held stays, to approve again. If it can't be made, it stands |
@@ -169,8 +169,12 @@ Everything the page does has a command, each the same route with the same fields
 
 A project has one walker, and each render adds to it. Without `--queue` a render follows until it ends; Ctrl-C only stops following.
 
-- **A render uses the file as it was when you asked, so keep editing.** Each ask keeps that text in `project.lock` until it's done, so a restart resumes it. What you edit shows out of date until a render makes it, and an asset you delete is still made by a render that had it.
-- **A save that can't be read** refuses a new `render`, and does nothing else.
+- **A render uses the file as it was when you asked, so keep editing.** Each ask keeps that text in `.runs/` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and when you delete an asset, what a render still owes of it stops: queued, it isn't made and its row says so; running, it's canceled so billing stops, and lands nothing. Putting it back brings back the asset, not a canceled render.
+- **A save that can't be read** refuses a new `render`, and does nothing else. `status` says what's wrong, and `cancel` works.
+- **`--on`:** each render's work goes where it said. With several machines, a job goes to the one where the plan has it ending soonest, once that has its GPUs free.
+- **Everything at once, up to 32 jobs per render going:** what doesn't read each other goes side by side, each sent, installed and made on its own. What fails stops what reads it, there and then, and nothing else. How wide a job goes, how many GPUs of its machine, comes from how long things took there: it never changes once a job has started.
+- **Ahead of its turn,** a machine fetches the code and weights of what's queued for it, behind whatever a run is waiting on: its `tool`'s function, and for one that loads nothing itself, what its package's internal functions load, what they share first. It's a guess, so a wrong one costs bytes, and it stops when its last job's run begins. It holds no GPU, doesn't show in `cozy run ls`, and a machine with no room for it stays as it is, saying so in one line. `status` and the render's view show it; `cancel all` stops it.
+- **`--missing`** doesn't make again what another render is making with the same inputs. A plain render makes its own version.
 
 ## An asset's files
 

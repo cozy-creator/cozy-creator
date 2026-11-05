@@ -198,7 +198,7 @@ struct Render {
     /// Ask and return at once: what it queued and what's ahead of each is printed, and `status` shows how it goes.
     #[arg(long)]
     queue: bool,
-    /// How many new takes or versions of each asset named.
+    /// How many new takes or versions of each asset named. `all` makes one of each.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
     /// Only what has no state, rather than a new version.
@@ -577,6 +577,9 @@ fn summary(ctx: &Context, state: &State) {
     if !queued.is_empty() {
         let shown: Vec<&str> = queued.iter().map(|item| item.name.as_str()).collect();
         output::say(ctx, &format!("queued: {}", shown.join(", ")));
+    }
+    for line in state.board.iter().flat_map(|board| &board.ahead).filter_map(render::ahead_line) {
+        output::say(ctx, &line);
     }
     if !state.queue.is_empty() && !state.busy {
         output::say(ctx, "nothing is walking these: any `cozy project render` takes them up again");

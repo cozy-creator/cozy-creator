@@ -146,7 +146,7 @@ pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
 
 /// Whether the list people read shows it: a project adapter's run is `cozy project`'s own (`run show` and `--json` have it).
 pub(crate) fn shown(run: &Run) -> bool {
-    !run.adapter
+    !run.adapter && !run.target.starts_with(protocol::project::AHEAD)
 }
 
 fn row(run: &Run) -> Vec<String> {

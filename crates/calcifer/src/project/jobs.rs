@@ -1,18 +1,24 @@
 //! What a project's render is doing, asset by asset: the `Board` that `/events` and `GET /v1/projects/{id}` give a view to draw. It
 //! decides nothing. `sync` reads what the walk owes, and `told` and `ran` fold what the walk and its runs say.
-use std::{collections::HashSet, path::Path, sync::Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Mutex,
+};
 
 use protocol::{
     calcifer::{Event as RunEvent, Progress, Run, Status},
     ids::RunId,
-    project::{Board, Event, Job, JobState, Preview},
+    project::{Ahead, Board, Event, Job, JobState, Preview},
 };
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 use super::graph::name_key;
 
 /// A version a run is making or about to: what project.lock's pending entry says of it.
 pub struct Going {
+    /// The job it is, as the board knows it.
+    pub job: String,
     pub asset: String,
     pub noun: String,
     pub number: u32,
@@ -22,11 +28,18 @@ pub struct Going {
     pub earlier_ms: u64,
     /// It makes a shot.
     pub shot: bool,
+    /// When it should end, and how many GPUs it is on.
+    pub ends_at_ms: Option<i64>,
+    pub gpus: Option<u32>,
 }
 
 pub struct Jobs {
     held: Mutex<Held>,
+    /// The board. A client hears of it when it begins and ends, and of each job as that one changes.
     board: watch::Sender<Board>,
+    /// The project's id, and its stream.
+    project: String,
+    events: broadcast::Sender<Event>,
 }
 
 #[derive(Default)]
@@ -46,6 +59,10 @@ struct Held {
     shots: Vec<String>,
     /// The warnings its runs' logs gave, by asset.
     warned: HashSet<(String, String)>,
+    /// Each job as last told, by id.
+    told: HashMap<String, Job>,
+    /// What machines are fetching ahead, the run each is, and what it's for as the text names it.
+    ahead: Vec<(RunId, String, Ahead)>,
 }
 
 /// A job with a run.
@@ -59,15 +76,15 @@ struct Live {
     landed: Option<(Preview, (Option<String>, Option<String>))>,
 }
 
-impl Default for Jobs {
-    fn default() -> Self {
-        Self { held: Mutex::default(), board: watch::Sender::new(Board::default()) }
-    }
-}
-
 impl Jobs {
+    pub fn new(project: String, events: broadcast::Sender<Event>) -> Self {
+        Self { held: Mutex::default(), board: watch::Sender::new(Board::default()), project, events }
+    }
+
     pub fn board(&self) -> Board {
-        self.board.borrow().clone()
+        let mut board = self.board.borrow().clone();
+        board.ahead = self.held.lock().expect("jobs lock").ahead.iter().map(|(.., row)| row.clone()).collect();
+        board
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Board> {
@@ -85,10 +102,17 @@ impl Jobs {
     pub fn end(&self, elapsed_ms: u64) {
         let mut held = self.held.lock().expect("jobs lock");
         held.elapsed_ms = Some(elapsed_ms);
+        // What it fetched ahead goes no further: nothing here hears of it now.
+        for (.., row) in held.ahead.iter_mut().filter(|(.., row)| row.stage.is_some()) {
+            row.stage = None;
+        }
         (held.live, held.sending, held.coming) = Default::default();
         for cut in std::mem::take(&mut held.cuts) {
-            if !held.ended.iter().any(|ended| ended.asset == cut.asset) {
-                held.ended.push(cut);
+            match held.ended.iter_mut().find(|ended| ended.asset == cut.asset) {
+                // Its turn found it standing: this is the film that stands.
+                Some(ended) if ended.why.as_deref() == Some(STANDS) => *ended = Job { id: ended.id.clone(), ..cut },
+                Some(_) => {}
+                None => held.ended.push(cut),
             }
         }
         self.publish(&mut held);
@@ -109,7 +133,8 @@ impl Jobs {
         held.live.retain(|live| going.iter().any(|going| Some(going.run) == live.job.run));
         held.sending = going.iter().zip(&shots).filter(|(going, _)| going.run == 0).map(|(going, shot)| Job { shot: *shot, ..sending(going) }).collect();
         for (going, shot) in going.iter().zip(&shots).filter(|(going, _)| going.run > 0) {
-            if held.live.iter().any(|live| live.job.run == Some(going.run)) {
+            if let Some(live) = held.live.iter_mut().find(|live| live.job.run == Some(going.run)) {
+                (live.job.ends_at_ms, live.job.gpus) = (going.ends_at_ms, going.gpus);
                 continue;
             }
             let Some(run) = run(going.run) else { continue };
@@ -127,7 +152,7 @@ impl Jobs {
         match event {
             Event::Landed { name, noun, number, path, execution_ms, .. } => {
                 let mut job = held.take(name, Some(*number), None).unwrap_or_default();
-                job = Job { asset: name.clone(), state: JobState::Done, noun: noun.clone(), number: Some(*number), shot: job.shot, took_ms: *execution_ms, path: Some(path.clone()), run: job.run, machine: job.machine, ..Job::default() };
+                job = Job { id: job.id, asset: name.clone(), state: JobState::Done, noun: noun.clone(), number: Some(*number), shot: job.shot, took_ms: *execution_ms, path: Some(path.clone()), run: job.run, machine: job.machine, ..Job::default() };
                 if let Some(at) = held.cuts.iter().position(|cut| cut.asset == *name) {
                     let cut = held.cuts.remove(at);
                     job = Job { path: cut.path, seconds: cut.seconds, why: cut.why, took_ms: cut.took_ms, ..job };
@@ -138,7 +163,7 @@ impl Jobs {
                 let canceled = run.and_then(|run| held.live.iter().find(|live| live.job.run == Some(run))).is_some_and(|live| live.settled && live.job.why.as_deref() == Some(CANCELED));
                 let job = held.take(name, None, *run).unwrap_or_default();
                 let state = if canceled { JobState::Canceled } else { JobState::Failed };
-                let job = Job { asset: name.clone(), state, noun: job.noun, number: job.number, shot: job.shot, run: job.run, machine: job.machine, took_ms: job.took_ms, error: Some(error.clone()), ..Job::default() };
+                let job = Job { id: job.id, asset: name.clone(), state, noun: job.noun, number: job.number, shot: job.shot, run: job.run, machine: job.machine, took_ms: job.took_ms, error: Some(error.clone()), ..Job::default() };
                 held.ended.push(job);
             }
             Event::Cut { name, cut, frames, fps, retimed, took_s, unchanged, without } => {
@@ -177,8 +202,26 @@ impl Jobs {
         }
         let was = held.take(&job.asset, job.number, None).unwrap_or_default();
         let noun = if job.noun.is_empty() { was.noun } else { job.noun.clone() };
-        held.ended.push(Job { noun, number: job.number.or(was.number), shot: job.shot.or(was.shot), ..job });
+        let id = if job.id.is_empty() { was.id } else { job.id.clone() };
+        held.ended.push(Job { id, noun, number: job.number.or(was.number), shot: job.shot.or(was.shot), ..job });
         self.publish(&mut held);
+    }
+
+    /// Job `id` of `asset` ended with no version: done, if nothing else was said of it.
+    pub fn ended_if_open(&self, id: &str, asset: &str) {
+        let mut held = self.held.lock().expect("jobs lock");
+        if !held.coming.iter().any(|job| job.id == id) {
+            return;
+        }
+        // A cut said what it made, or that it holds what stood: that is what it ended on.
+        if let Some(at) = held.cuts.iter().position(|cut| cut.asset == asset) {
+            let cut = held.cuts.remove(at);
+            held.take(asset, None, None);
+            held.ended.push(Job { id: id.to_owned(), ..cut });
+            return self.publish(&mut held);
+        }
+        drop(held);
+        self.ended(Job { id: id.to_owned(), asset: asset.to_owned(), state: JobState::Done, noun: "version".into(), why: Some("nothing to do".into()), ..Job::default() });
     }
 
     /// Says what came of a version already landed.
@@ -190,14 +233,74 @@ impl Jobs {
         self.publish(&mut held);
     }
 
+    /// The files of a version listed before they landed came, or never will: it's no version then, and its failure says so.
+    pub fn arrived(&self, asset: &str, number: u32, came: bool) {
+        let mut held = self.held.lock().expect("jobs lock");
+        let mine = |job: &Job| job.asset == asset && job.number == Some(number);
+        match came {
+            true => held.ended.iter_mut().filter(|job| mine(job)).for_each(|job| job.why = None),
+            false => held.ended.retain(|job| !mine(job)),
+        }
+        self.publish(&mut held);
+    }
+
     /// Whether `asset` has said `message` already; it has now.
     pub fn warned(&self, asset: &str, message: &str) -> bool {
         !self.held.lock().expect("jobs lock").warned.insert((asset.to_owned(), message.to_owned()))
     }
 
+    /// A machine began fetching ahead, as run `id`.
+    pub fn ahead(&self, id: RunId, with: String, function: String, machine: String, run: u64) {
+        let mut held = self.held.lock().expect("jobs lock");
+        let row = Ahead { function, machine, run, stage: Some("asked".into()), ..Ahead::default() };
+        crate::events::ahead_updated(&self.project, &row);
+        let _ = self.events.send(Event::Ahead { ahead: row.clone() });
+        held.ahead.push((id, with, row));
+        self.publish(&mut held);
+    }
+
+    /// What that did, if `id` is one; `Some` once it ended: why it stopped short, if it did.
+    fn ahead_ran(&self, held: &mut Held, id: &RunId, event: &RunEvent) -> bool {
+        let Some((_, _, row)) = held.ahead.iter_mut().find(|(run, ..)| run == id) else { return false };
+        let was = row.clone();
+        match event {
+            RunEvent::Progress { progress } => {
+                row.stage = (!progress.stage.is_empty()).then(|| words(&progress.stage));
+                (row.done, row.total) = (progress.bytes_done, progress.bytes_total);
+            }
+            RunEvent::Completed { .. } => {
+                row.stage = None;
+                row.ready = true;
+                row.done = row.total;
+            }
+            RunEvent::Failed { run, .. } => {
+                row.stage = None;
+                row.held_back = Some(run.reason.as_ref().map_or_else(|| "it failed".to_owned(), |reason| reason.message.clone()));
+            }
+            // Its job took over, or it was asked to stop.
+            RunEvent::Canceled { .. } => row.stage = None,
+            _ => {}
+        }
+        if *row != was {
+            let row = row.clone();
+            crate::events::ahead_updated(&self.project, &row);
+            let _ = self.events.send(Event::Ahead { ahead: row });
+        }
+        true
+    }
+
+    /// The runs fetching ahead that nothing it names waits for now.
+    pub fn ahead_going(&self) -> Vec<(String, String, RunId)> {
+        let held = self.held.lock().expect("jobs lock");
+        held.ahead.iter().filter(|(.., row)| row.stage.is_some()).map(|(id, with, row)| (with.clone(), row.machine.clone(), id.clone())).collect()
+    }
+
     /// What run `id` did, when it is one of this board's, under `dir`; `Some`: a warning it gave for the first time, and whose it is.
     pub fn ran(&self, id: &RunId, event: &RunEvent, dir: &Path) -> Option<(String, String)> {
         let mut held = self.held.lock().expect("jobs lock");
+        if self.ahead_ran(&mut held, id, event) {
+            return None;
+        }
         let live = held.live.iter_mut().find(|live| live.id == *id)?;
         match event {
             RunEvent::Created { run, .. }
@@ -237,19 +340,44 @@ impl Jobs {
         for job in &mut going {
             job.why = job.why.take().map(|why| of_assets(&why, &names));
         }
-        let jobs: Vec<Job> = held.ended.iter().cloned().chain(going).chain(held.coming.iter().cloned()).collect();
-        let stands = self.board.borrow();
+        let mut jobs: Vec<Job> = held.ended.iter().cloned().chain(going).chain(held.coming.iter().cloned()).collect();
+        for job in &mut jobs {
+            if job.id.is_empty() {
+                job.id = format!("{}#{}", job.asset, job.number.unwrap_or_default());
+            }
+        }
+        let changed: Vec<&Job> = jobs.iter().filter(|job| held.told.get(&job.id) != Some(job)).collect();
+        // What left the board with no end of its own was dropped.
+        let left: Vec<Job> = (held.told.values())
+            .filter(|was| !jobs.iter().any(|job| job.id == was.id))
+            .map(|was| Job { state: JobState::Canceled, ..was.clone() })
+            .collect();
         let shots = held.shots.len() as u32;
-        let same = stands.seq > 0 && stands.jobs == jobs && stands.shots == shots && stands.on == held.on && stands.elapsed_ms == held.elapsed_ms && stands.began_at_ms == held.began_at_ms;
+        let stands = self.board.borrow();
+        let same_head = stands.seq > 0 && stands.shots == shots && stands.on == held.on && stands.elapsed_ms == held.elapsed_ms && stands.began_at_ms == held.began_at_ms;
+        let same = same_head && changed.is_empty() && left.is_empty();
         drop(stands);
         if same {
             return;
         }
         held.seq = (held.seq + 1).max(crate::store::now_ms() as u64);
-        let board = Board { seq: held.seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs };
-        self.board.send_replace(board);
+        let seq = held.seq;
+        for job in changed.iter().copied().chain(&left) {
+            crate::events::job_updated(&self.project, job, seq);
+            let _ = self.events.send(Event::Job { job: job.clone(), seq });
+        }
+        held.told = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
+        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect() };
+        // A client that keeps the board hears only when more than a job changed: its jobs it hears one by one.
+        self.board.send_if_modified(|stands| {
+            *stands = board;
+            !same_head
+        });
     }
 }
+
+/// What a job says that found its state standing at its turn.
+pub const STANDS: &str = "it stands";
 
 /// Why a job canceled reads so in its row until it fails.
 const CANCELED: &str = "canceled";
@@ -329,6 +457,9 @@ impl Live {
 
 fn sending(going: &Going) -> Job {
     Job {
+        id: going.job.clone(),
+        ends_at_ms: going.ends_at_ms,
+        gpus: going.gpus,
         asset: going.asset.clone(),
         noun: going.noun.clone(),
         number: Some(going.number),

@@ -111,6 +111,16 @@ pub fn canvas(id: &str, etag: &str, cards: BTreeMap<String, Option<Card>>) {
     let _ = PROJECTS.said.send(event);
 }
 
+/// Tells every stream what project `id` is fetching ahead moved.
+pub fn ahead_updated(id: &str, ahead: &protocol::project::Ahead) {
+    let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
+}
+
+/// Tells every stream one job of project `id` changed.
+pub fn job_updated(id: &str, job: &protocol::project::Job, seq: u64) {
+    let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
+}
+
 /// Subscribed to everything before this answers, so what changes after a client's first read is on
 /// the stream. Falling behind sends `resync`; the stream ends only when Calcifer stops.
 pub(crate) async fn stream(

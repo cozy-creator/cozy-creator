@@ -168,10 +168,18 @@ impl Machines {
 
     /// Each minute, says once of each run that stopped moving that it has.
     async fn notice_stalled(self: Arc<Self>) {
-        let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+        let mut every = tokio::time::interval(EVERY);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last = crate::store::now_ms();
         loop {
             every.tick().await;
+            let now = crate::store::now_ms();
+            // The clock moved on by more than this timer did: this computer slept.
+            if now - last > 2 * EVERY.as_millis() as i64 {
+                self.calcifer.woke();
+            }
+            last = now;
             self.calcifer.notice_stalled();
         }
     }

@@ -808,6 +808,36 @@ pub struct Board {
     pub shots: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
+    /// What machines are fetching ahead of what's queued, one per function.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<Ahead>,
+}
+
+/// How the target of a run fetching ahead starts.
+pub const AHEAD: &str = "ahead ";
+
+/// One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
+/// bytes, and its job's run fetches what it needs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ahead {
+    /// `org/package/function`.
+    pub function: String,
+    pub machine: String,
+    /// Its run, kept out of the list people read.
+    pub run: u64,
+    /// `installing it`, `downloading its weights`, …; none once it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub done: u64,
+    #[serde(default)]
+    pub total: u64,
+    /// It's all there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ready: bool,
+    /// Why it stopped short: the disk has no room, or it was canceled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<String>,
 }
 
 /// How a job stands.
@@ -829,6 +859,9 @@ pub enum JobState {
 /// One version of one asset being made.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Job {
+    /// The same for as long as the render goes, whatever it does: what `job.updated` names it by.
+    #[serde(default)]
+    pub id: String,
     pub asset: String,
     pub state: JobState,
     /// What its alternatives are called: `take` or `version`.
@@ -839,6 +872,17 @@ pub struct Job {
     /// Which of the render's shots it makes, 1 first, for the whole render: a `kind: video` its package makes. None for a cut or a still.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shot: Option<u32>,
+    /// The assets it waits for, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
+    /// How many GPUs it is planned on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<u32>,
+    /// When it should start and end, as the walker works it out from what has run here: to the nearest 10 s, as a guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at_ms: Option<i64>,
     /// A sentence: what it waits for (`after a, b`, `comes with c`, `waiting for a GPU, held by d`), or what came of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
@@ -894,6 +938,15 @@ pub enum Event {
     /// a slow reader missed.
     Board {
         board: Board,
+    },
+    /// One job as it stands now, whole. What changed since the `board` heard first: `seq` as that board's goes up.
+    Job {
+        job: Job,
+        seq: u64,
+    },
+    /// What a machine is fetching ahead, as it stands now, whole.
+    Ahead {
+        ahead: Ahead,
     },
     /// A run for `name` began: its id and number, which `GET /v1/runs/{id}/events` follows.
     Started {

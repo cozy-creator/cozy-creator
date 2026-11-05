@@ -65,6 +65,43 @@ impl Package {
         }
     }
 
+    /// The function a job of `kind` will most likely call: the one named, else the first public one that makes it.
+    pub fn first_making(&self, kind: &str) -> Option<Renderer> {
+        if let Some(function) = &self.named {
+            return self.function(function).ok();
+        }
+        let interface = self.interface();
+        let makes = |name: &&str| !name.starts_with(ADAPTER) && interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
+        let first = interface.public().into_iter().find(makes)?;
+        self.function(first).ok()
+    }
+
+    /// The widths `function` runs at, smallest first: what it loads declares, one for all; for one that loads nothing itself, the first function
+    /// it can call. Empty: it needs no GPU.
+    pub fn widths(&self, function: &str) -> Vec<u32> {
+        let document = &self.document;
+        let Some(entry) = interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)) else { return vec![] };
+        let entry = match interface::orchestrates(document, entry) {
+            true => interface::entrypoints(document).find(|other| interface::internal(other) && !interface::cpu(other) && !interface::models(other).is_empty()).unwrap_or(entry),
+            false => entry,
+        };
+        if interface::cpu(entry) {
+            return vec![];
+        }
+        let mut common: BTreeSet<u32> = (1..=64).collect();
+        for model in interface::models(entry).iter().filter(|model| model["weights"] != true) {
+            let mut declared = BTreeSet::from([1u32]);
+            for degree in model.pointer("/sequence_parallel/degrees").and_then(Value::as_array).into_iter().flatten() {
+                declared.extend(degree.as_u64().map(|degree| degree as u32));
+            }
+            common = common.intersection(&declared).copied().collect();
+        }
+        if common.len() == 64 {
+            return vec![1];
+        }
+        common.into_iter().collect()
+    }
+
     /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
     pub fn named_kind(&self) -> Option<String> {
         let interface = self.interface();
@@ -165,6 +202,36 @@ impl Renderer {
     }
 }
 
+/// What a run measured.
+#[derive(Clone, Copy, Debug)]
+pub struct Measured {
+    pub busy_s: f64,
+    pub width: u32,
+    pub exchange_share: f64,
+}
+
+impl Measured {
+    /// From what its executors recorded: a stage is time it worked; a `host ·` row inside one is where that went, and one in `parallel` is exchange. A wait counts nowhere.
+    fn of(run: &Run) -> Option<Self> {
+        let (mut busy, mut exchange, mut width) = (0.0, 0.0, 0u32);
+        let calls = run.calls.iter().filter_map(|call| call.measurements.as_ref());
+        for measured in run.measurements.iter().chain(calls) {
+            for (name, stage) in measured.pointer("/attribution/stages").and_then(Value::as_object).into_iter().flatten() {
+                let ms = stage["total_ms"].as_f64().unwrap_or(0.0);
+                match name.strip_prefix("host · ") {
+                    Some(code) if code.contains(".parallel.") => exchange += ms,
+                    Some(_) => {}
+                    None => busy += ms,
+                }
+            }
+            width = width.max(measured.pointer("/execution/degree").and_then(Value::as_u64).unwrap_or(0) as u32);
+        }
+        // What it took is its run's own time: the stages of an orchestrator and of its calls are the same time, counted twice.
+        let wall = run.execution_ms.map(|ms| ms as f64).filter(|ms| *ms > 0.0).unwrap_or(busy);
+        (busy > 0.0).then(|| Self { busy_s: wall / 1000.0, width: width.max(1), exchange_share: (exchange / busy).min(1.0) })
+    }
+}
+
 pub struct Host {
     api: Arc<Api>,
     /// Read once a walk, by Hub, `with` and machine.
@@ -186,6 +253,11 @@ impl Host {
     /// A host for a walk, whose listeners on `events` hear what it does.
     pub fn telling(api: &Arc<Api>, events: broadcast::Sender<Event>) -> Self {
         Self { events: Some(events), ..Self::new(api) }
+    }
+
+    /// What it runs in, for what outlives one of its calls.
+    pub fn api(&self) -> Arc<Api> {
+        self.api.clone()
     }
 
     /// What local code at `path` going `on` a machine is keyed under (`local_code::prepare`).
@@ -254,6 +326,43 @@ impl Host {
         Ok(Package { moved, ..found })
     }
 
+    /// How many GPUs a machine has, as it last said. One that hasn't said is taken as wide: a job's width is a cap, which its machine brings down to what there is.
+    pub fn gpus(&self, on: &On) -> u32 {
+        let On::Machine(name) = on else { return 64 };
+        self.api.machines.frame(name).map_or(64, |frame| (frame.gpus.len() as u32).max(1))
+    }
+
+    /// What run `number` measured: its time on GPUs and in what it did itself, the width it had, and the share of it spent exchanging between GPUs.
+    pub fn measured(&self, number: u64) -> Option<Measured> {
+        let store = self.api.calcifer.store();
+        let row = store.run_by_number(number).ok()??;
+        let run = store.detail(&row).ok()?;
+        (run.status == RunStatus::Completed).then(|| Measured::of(&run)).flatten()
+    }
+
+    /// What the newest finished run of `target` on `machine` measured.
+    /// What the newest finished runs of `target` on `machine` measured, the newest at each width.
+    pub fn last_measured(&self, target: &str, machine: &str) -> Vec<Measured> {
+        let store = self.api.calcifer.store();
+        let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
+        let Ok((rows, ..)) = store.runs(&filter) else { return vec![] };
+        let mut found: Vec<Measured> = vec![];
+        for row in &rows {
+            let Ok(run) = store.detail(row) else { continue };
+            let Some(measured) = Measured::of(&run) else { continue };
+            if found.iter().any(|had| had.width == measured.width) {
+                continue;
+            }
+            found.push(measured);
+        }
+        found
+    }
+
+    /// Stops a run fetching ahead, however far it got. Nothing depends on it.
+    pub fn cancel_ahead(&self, run: &RunId) {
+        let _ = self.api.calcifer.cancel(run);
+    }
+
     /// Sends `run` under `key`: one key is one run, however often it is sent.
     pub async fn submit(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
         Ok(self.api.calcifer.submit(key, run).await.map_err(refused)?.run)
@@ -274,6 +383,15 @@ impl Host {
 
     /// The run once it ended and each output landed here or failed to.
     pub async fn wait(&self, id: &RunId) -> Result<Run, Error> {
+        self.until(id, |run| !run.output.iter().any(OutputItem::owed)).await
+    }
+
+    /// The run once it ended on its machine, whatever of its outputs is still on its way here.
+    pub async fn ended(&self, id: &RunId) -> Result<Run, Error> {
+        self.until(id, |_| true).await
+    }
+
+    async fn until(&self, id: &RunId, and: impl Fn(&Run) -> bool) -> Result<Run, Error> {
         let calcifer = &self.api.calcifer;
         let mut tail = calcifer.subscribe();
         loop {
@@ -281,7 +399,7 @@ impl Host {
             let row =
                 row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
             let run = calcifer.record(&row).map_err(refused)?;
-            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && !run.output.iter().any(OutputItem::owed) {
+            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);
             }
             tokio::select! {
@@ -289,6 +407,16 @@ impl Host {
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             }
         }
+    }
+
+    /// Whether this computer reaches the Hub at all: a connect, no call, so the Hub learns nothing. With no network here, what didn't
+    /// answer says nothing of itself.
+    pub async fn online(&self) -> bool {
+        // A connect gives no other word of a path that swallows it: the one signal-less wait here, and it only delays the next look.
+        const CONNECT: Duration = Duration::from_secs(10);
+        let Ok(hub) = reqwest::Url::parse(self.api.machines.hubs.hub.as_str()) else { return true };
+        let (Some(host), Some(port)) = (hub.host_str(), hub.port_or_known_default()) else { return true };
+        matches!(tokio::time::timeout(CONNECT, tokio::net::TcpStream::connect((host, port))).await, Ok(Ok(_)))
     }
 
     /// The machine among `on` that already holds these bytes for this computer.

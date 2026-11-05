@@ -86,8 +86,16 @@ impl Member {
     }
 }
 
+/// One package's installer.
+#[derive(Default)]
+struct Installing {
+    turn: Mutex<()>,
+    /// The run whose install has the turn: what a second run waits for.
+    holder: Mutex<Option<String>>,
+}
+
 /// The installer's holder, forgotten however its install ends.
-struct Holder<'a>(&'a Mutex<Option<(String, String)>>);
+struct Holder<'a>(&'a Mutex<Option<String>>);
 impl Drop for Holder<'_> {
     fn drop(&mut self) {
         *self.0.lock().unwrap() = None;
@@ -103,9 +111,8 @@ pub struct LocalSources {
     pub cas: Cas,
     /// Each signer's packages: remote `source-<manifest>/{tree,env-*}`, direct paths `env-*`.
     editable: PathBuf,
-    installing: Mutex<()>,
-    /// The run whose install holds `installing`, and its package: what a second run waits for.
-    holder: Mutex<Option<(String, String)>>,
+    /// By package: one package's installs go in turn, and another's go beside them.
+    installing: Mutex<HashMap<String, Arc<Installing>>>,
     /// The generation each run still preparing was handed: no other install of its package takes
     /// it away before the run binds and the journal names it (cl-773).
     preparing: Mutex<HashMap<String, String>>,
@@ -213,8 +220,7 @@ impl LocalSources {
             cas: objects.cas().clone(),
             objects,
             publisher,
-            installing: Mutex::new(()),
-            holder: Mutex::new(None),
+            installing: Mutex::new(HashMap::new()),
             preparing: Mutex::default(),
         }
     }
@@ -440,13 +446,18 @@ impl LocalSources {
         self.preparing.lock().unwrap().values().cloned().collect()
     }
 
+    fn installer(&self, package: &str) -> Arc<Installing> {
+        self.installing.lock().unwrap().entry(package.to_owned()).or_default().clone()
+    }
+
     /// Keep remote source homes while a generation names their environment. Only completed,
     /// recognized source homes leave; partial or unknown homes are preserved for recovery.
     pub fn collect(&self, actor: &str, package: &str) {
         let Ok(home) = self.home(actor, package) else {
             return;
         };
-        let _installing = self.installing.lock().unwrap();
+        let installer = self.installer(package);
+        let _installing = installer.turn.lock().unwrap();
         // An unavailable or partial inventory says nothing about which sources are unused.
         let Ok(generations) = fs::read_dir(&self.generations)
             .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>()) else { return; };
@@ -492,12 +503,14 @@ impl LocalSources {
         let sdk = &self.publisher.sdk;
         let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": self.publisher.torch_pins(None)});
         let alias = format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32]);
-        let _installing = match self.installing.try_lock() {
+        let package = open_manifest(&self.objects, actor, digest).map(|(m, _)| m.package).unwrap_or_default();
+        let installer = self.installer(&package);
+        let _installing = match installer.turn.try_lock() {
             Ok(installing) => installing,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
-                let reason = match self.holder.lock().unwrap().clone() {
-                    Some((holder, package)) => format!("waiting for run {holder} to install {package}"),
+                let reason = match installer.holder.lock().unwrap().clone() {
+                    Some(holder) => format!("waiting for run {holder} to install {package}"),
                     None => "waiting for another run's install".into(),
                 };
                 let tell = |reason| match run.is_empty() {
@@ -505,14 +518,13 @@ impl LocalSources {
                     false => service.engine.waiting(run, reason),
                 };
                 tell(Some(reason))?;
-                let installing = self.installing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let installing = installer.turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 tell(None)?;
                 installing
             }
         };
-        let package = open_manifest(&self.objects, actor, digest).map(|(m, _)| m.package).unwrap_or_default();
-        *self.holder.lock().unwrap() = Some((service.engine.caller_id(run), package));
-        let _held = Holder(&self.holder);
+        *installer.holder.lock().unwrap() = Some(service.engine.caller_id(run));
+        let _held = Holder(&installer.holder);
         if let Some(held) = service.engine.installation(actor, &alias)? {
             if service.catalog.resolve(&held.generation).is_ok() {
                 self.preparing.lock().unwrap().insert(run.to_string(), held.generation.clone());

@@ -142,6 +142,11 @@ path_free
 entities
 orphans
 joining
+walking
+walk_restarted
+[ "$(uname)" != Linux ] || walk_window
+no_double_spend
+render_all_n
 queueing
 every_render
 keeps
@@ -1454,6 +1459,199 @@ wait "$second" || check "joining: the second render: $(tail -c 300 "$OUT/join-se
 }
 
 # Renders queued from one shell, seen, one canceled, and the rest land. A canceled `render all` doesn't send again what it canceled.
+# The walk (cl-770): every job known when asked, each going on its own, a deleted asset's queued job saying so, and nothing of the walk left behind.
+walking() {
+step "a project: what's queued is known at once, a long job holds up nothing it isn't read by, a deleted asset's job stops and lands nothing"
+local W=$OUT/walking stream=$OUT/walking-events.txt id run back
+mkdir -p "$W"
+cat > "$W/project.yaml" <<YAML
+version: 3
+assets:
+  running_gone:
+    tool: $here/project/shots.py/shoot
+    seconds: 900
+  reads_gone:
+    tool: $here/project/draw.py/draw
+    instructions: From <running_gone>, which is deleted as it runs.
+  slow:
+    tool: $here/project/shots.py/shoot
+    seconds: 5
+  beside:
+    tool: $here/project/draw.py/draw
+    instructions: Reads nothing, so it goes now.
+  one:
+    tool: $here/project/draw.py/draw
+    instructions: From <slow>.
+  two:
+    tool: $here/project/draw.py/draw
+    instructions: From <slow>.
+  last:
+    tool: $here/project/draw.py/draw
+    instructions: From <one> and <two>.
+  gone_soon:
+    tool: $here/project/draw.py/draw
+    instructions: Also from <slow>, and deleted while it waits.
+YAML
+id=$(cozy --json project -p "$W" status | jq -r .id)
+api -N --max-time 120 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
+local tail=$!
+cozy project -p "$W" render all --queue --on local > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
+J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
+J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
+for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
+# On one machine they queue there: each went as soon as it could, not after the long job.
+for _ in $(seq 120); do J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" && break; sleep 0.25; done
+J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" || check "walking: what reads nothing waited for the long job: $(status "$W" | jq -c '[.board.jobs[] | {asset, run}]')"
+[ -f "$W/.runs/walk.json" ] || check "walking: what the walk owes isn't in .runs/walk.json"
+! grep -qE '^(walk|pending):' "$W/project.lock" || check "walking: project.lock holds what the walk owes"
+python3 - "$W/project.yaml" <<'PY2'
+import re, sys
+text = open(sys.argv[1]).read()
+open(sys.argv[1], "w").write(re.sub(r"  gone_soon:\n(    .*\n)+", "", text))
+PY2
+for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
+back=$(api -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone")
+for _ in $(seq 60); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
+[ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run show "$run" --once | jq -c '{status, progress}')"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
+kill "$tail" 2> /dev/null
+{ [ "$(made "$W" slow)" = 1 ] && [ "$(made "$W" beside)" = 1 ] && [ "$(made "$W" one)" = 1 ] && [ "$(made "$W" two)" = 1 ] && [ "$(made "$W" last)" = 1 ]; } || check "walking: made $(status "$W" | jq -c '[.assets[] | {(.name): .versions}] | add')"
+for gone in gone_soon running_gone; do
+  [ "$(made "$W" "$gone")" = 0 ] || check "walking: deleted $gone has a version"
+  J --arg gone "$gone" '.board.jobs[] | select(.asset == $gone) | .state == "canceled" and (.why | test("deleted"))' <<< "$(status "$W")" || check "walking: deleted $gone's job says $(status "$W" | jq -c --arg gone "$gone" '.board.jobs[] | select(.asset == $gone)')"
+done
+J '.board.jobs[] | select(.asset == "reads_gone") | .state == "failed" and (.error.message | test("running_gone was deleted"))' <<< "$(status "$W")" || check "walking: what read a deleted asset says $(status "$W" | jq -c '.board.jobs[] | select(.asset == "reads_gone")')"
+# Put back, it is the asset, and not the render it stopped.
+api -X PUT -d "$(jq -c '{text, at}' <<< "$back")" "http://$ADDR/v1/projects/$id/assets/running_gone" > /dev/null || check "walking: PUT didn't take back what DELETE answered"
+{ grep -q '^  running_gone:' "$W/project.yaml" && J '.busy | not' <<< "$(status "$W")" && [ "$(made "$W" running_gone)" = 0 ]; } || check "walking: put back, running_gone went again: $(status "$W" | jq -c '{busy, jobs: [.board.jobs[] | select(.asset == "running_gone")]}')"
+[ ! -e "$W/.runs/walk.json" ] || check "walking: .runs/walk.json outlived the render"
+[ -z "$(find "$W/.runs" -type f 2> /dev/null)" ] || check "walking: left in .runs: $(find "$W/.runs" -type f)"
+grep -q "\"type\":\"job.updated\".*\"project\":\"$id\"\|\"project\":\"$id\".*\"type\":\"job.updated\"" "$stream" || check "walking: /v1/events told no job.updated: $(head -c 300 "$stream")"
+}
+
+walk_restarted() {
+step "a project: Calcifer killed mid-walk, and the walk goes on with no run sent twice"
+local R=$OUT/walk-restarted lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid run
+mkdir -p "$R"
+cat > "$R/project.yaml" <<YAML
+version: 3
+assets:
+  first:
+    tool: $here/project/shots.py/shoot
+    seconds: 12
+  second:
+    tool: $here/project/shots.py/shoot
+    seconds: 3
+  reader:
+    tool: $here/project/draw.py/draw
+    instructions: From <first> and <second>.
+YAML
+cozy project -p "$R" render all --queue --on local > "$OUT/walk-restarted.txt" 2>&1 || check "restarted: render: $(tail -c 300 "$OUT/walk-restarted.txt")"
+for _ in $(seq 240); do run=$(status "$R" | jq -r '.board.jobs[] | select(.asset == "first") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || check "restarted: first isn't running: $(status "$R" | jq -c .board.jobs)"
+# A copy of the folder is a project, and goes on with none of what its render owes.
+local copy=$OUT/walk-restarted-copy
+cp -a "$R" "$copy"
+J '(.busy | not) and ((.board.jobs // []) | length == 0) and ((.queue // []) | length == 0)' <<< "$(status "$copy")" || check "restarted: a copy goes on with its render: $(status "$copy" | jq -c '{busy, queue}')"
+[ ! -e "$copy/.runs/walk.json" ] || check "restarted: a copy kept what the render owes"
+! grep -qE '^(walk|pending):' "$R/project.lock" || check "restarted: project.lock holds what the render owes"
+pid=$(jq -r .pid "$lock")
+kill -9 "$pid"; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
+cozy project ls > /dev/null || check "restarted: cozy doesn't answer after Calcifer was killed"
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+[ "$(jq -r .pid "$lock")" != "$pid" ] || check "restarted: Calcifer is still pid $pid"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$R")" && break; sleep 0.5; done
+{ [ "$(made "$R" first)" = 1 ] && [ "$(made "$R" second)" = 1 ] && [ "$(made "$R" reader)" = 1 ]; } || check "restarted: made $(status "$R" | jq -c '[.assets[] | {(.name): .versions}] | add')"
+local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$R" '[.runs[] | select(.project == $r and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
+J '[.[]] | add == 3' <<< "$sent" || check "restarted: runs sent: $sent"
+[ "$(cozy --json run ls --limit 0 | jq -c --arg r "$copy" '[.runs[] | select(.project == $r)] | length')" = 0 ] || check "restarted: a copy sent a run"
+[ ! -e "$R/.runs/walk.json" ] || check "restarted: .runs/walk.json outlived the render"
+}
+
+walk_window() {
+step "a project: Calcifer killed between a landing's two writes loses no take and runs nothing twice"
+local K=$OUT/window lockf=$HOME/.cozy/calcifer/calcifer.lock.holder pid watcher code=0
+mkdir -p "$K"
+cat > "$K/project.yaml" <<YAML
+version: 3
+assets:
+  held:
+    tool: $here/project/draw.py/draw
+    instructions: A picture held in the window.
+YAML
+status "$K" > /dev/null
+pid=$(jq -r .pid "$lockf")
+python3 -I "$here/project/window.py" lock "$K" "$pid" > "$OUT/window.txt" 2>&1 & watcher=$!
+sleep 0.5
+cozy project -p "$K" render held --queue --on local > "$OUT/window-render.txt" 2>&1 || check "window: render: $(tail -c 300 "$OUT/window-render.txt")"
+wait "$watcher" || code=$?
+[ "$code" = 0 ] || check "window: Calcifer was never stopped in the window: $(cat "$OUT/window.txt")"
+while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
+cozy project ls > /dev/null || check "window: cozy doesn't answer after Calcifer was killed"
+ADDR=$(jq -r .address "$lockf") TOKEN=$(jq -r .token "$lockf")
+for _ in $(seq 120); do J '.busy | not' <<< "$(status "$K")" && break; sleep 0.5; done
+[ "$(made "$K" held)" = 1 ] || check "window: held has $(made "$K" held) versions"
+[ "$(cozy --json run ls --limit 0 | jq --arg r "$K" '[.runs[] | select(.project == $r and .target == "local/draw/draw")] | length')" = 1 ] || check "window: held ran more than once"
+[ -n "$(file_at "$K" "$(status "$K" | jq -r '.assets[] | select(.name == "held") | .files.image.sha256')")" ] || check "window: held's file isn't in files/"
+}
+
+no_double_spend() {
+step "a project: a folder copied mid-render, and an old project.lock put back mid-render, run nothing twice and lose nothing landed"
+local S=$OUT/spend copy=$OUT/spend-copy run
+mkdir -p "$S"
+cat > "$S/project.yaml" <<YAML
+version: 3
+assets:
+  first:
+    tool: $here/project/draw.py/draw
+    instructions: The one before.
+  slow:
+    tool: $here/project/shots.py/shoot
+    seconds: 15
+  reader:
+    tool: $here/project/draw.py/draw
+    instructions: From <slow>.
+YAML
+render "$S" first || check "spend: first: $(tail -c 300 "$OUT/render.txt")"
+cp "$S/project.lock" "$OUT/spend-old.lock"
+cozy project -p "$S" render slow reader --queue --on local > "$OUT/spend-queue.txt" 2>&1 || check "spend: render: $(tail -c 300 "$OUT/spend-queue.txt")"
+for _ in $(seq 240); do run=$(status "$S" | jq -r '.board.jobs[] | select(.asset == "slow") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ -n "$run" ] || check "spend: slow never ran"
+# A copy is a project of its own, and goes on with none of what this one owes.
+cp -a "$S" "$copy"
+J '(.busy | not) and ((.board.jobs // []) | length == 0)' <<< "$(status "$copy")" || check "spend: a copy goes on with its render: $(status "$copy" | jq -c '{busy, board}')"
+# An old project.lock put back while it renders: what's on its way is the walk's, and lands in it.
+cp "$OUT/spend-old.lock" "$S/project.lock"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$S")" && break; sleep 0.5; done
+{ [ "$(made "$S" first)" = 1 ] && [ "$(made "$S" slow)" = 1 ] && [ "$(made "$S" reader)" = 1 ]; } || check "spend: made $(status "$S" | jq -c '[.assets[] | {(.name): .versions}] | add')"
+local ran; ran=$(cozy --json run ls --limit 0 | jq -c --arg s "$S" '[.runs[] | select(.project == $s and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
+J '[.[]] | add == 3' <<< "$ran" || check "spend: runs: $ran"
+[ "$(cozy --json run ls --limit 0 | jq --arg c "$copy" '[.runs[] | select(.project == $c)] | length')" = 0 ] || check "spend: the copy sent a run"
+[ ! -e "$copy/.runs/walk.json" ] || check "spend: the copy kept what its original owes"
+}
+
+render_all_n() {
+step "a project: -n is for an asset you name, and all makes one of each, and says so"
+local A=$OUT/all-n
+mkdir -p "$A"
+cat > "$A/project.yaml" <<YAML
+version: 3
+assets:
+  first:
+    tool: $here/project/draw.py/draw
+    instructions: One.
+  second:
+    tool: $here/project/draw.py/draw
+    instructions: Two.
+YAML
+cozy project -p "$A" render all -n 3 --on local > "$OUT/all-n.txt" 2>&1 || check "all -n: $(tail -c 300 "$OUT/all-n.txt")"
+{ [ "$(made "$A" first)" = 1 ] && [ "$(made "$A" second)" = 1 ]; } || check "all -n: made $(status "$A" | jq -c '[.assets[] | {(.name): .versions}] | add')"
+grep -q 'makes one of each' "$OUT/all-n.txt" || check "all -n: doesn't say so: $(cat "$OUT/all-n.txt")"
+cozy project -p "$A" render first -n 2 --on local > "$OUT/one-n.txt" 2>&1 || check "name -n: $(tail -c 300 "$OUT/one-n.txt")"
+[ "$(made "$A" first)" = 3 ] || check "name -n: made $(made "$A" first) of first"
+}
+
 queueing() {
 step "a project: three renders queued from one shell, one canceled, the rest land"
 local T=$OUT/queueing
@@ -3073,6 +3271,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   parse "$@"
   ALONE=1
   hub_checked() { :; }
+  run_project "$OUT/project" || fail "cozy project new failed"
   projects
   finish project
 fi

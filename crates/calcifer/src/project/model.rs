@@ -41,6 +41,8 @@ pub(super) struct Model {
 pub(super) struct Told {
     model: Arc<Model>,
     rendering: BTreeMap<String, f64>,
+    making: HashMap<String, Vec<u64>>,
+    queue: Vec<protocol::project::Queued>,
     busy: bool,
     moving: bool,
 }
@@ -49,7 +51,8 @@ impl Told {
     pub(super) fn now(project: &Project, model: Arc<Model>) -> Self {
         let rendering = project.rendering.lock().expect("rendering lock").clone();
         let busy = *project.walking.lock().expect("walking lock");
-        Self { model, rendering, busy, moving: project.moving.try_lock().is_err() }
+        let walk = project.folder.walk_now().unwrap_or_default();
+        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy, moving: project.moving.try_lock().is_err() }
     }
 }
 
@@ -86,8 +89,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
     let etags = assetfile::etags(&text);
-    let making = making_now(&lock);
-    let reading = Reading { doc: &doc, folder, lock: &lock, stand: &stand, known: &known, making: &making };
+    let reading = Reading { doc: &doc, folder, lock: &lock, stand: &stand, known: &known };
     let rows: Vec<Row> = (0..doc.assets.len())
         .map(|i| {
             let mut row = row(&reading, i);
@@ -105,11 +107,10 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let orphans = orphans(&doc, folder, &lock);
     let kept = kept_files(&doc, &lock);
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
-    let queued = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
-    let head = ProjectState { id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: queued, missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None };
+    let head = ProjectState { id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None };
     Ok(Model { rev, heard, doc, lock, head, rows, stand })
 }
 
@@ -117,11 +118,20 @@ fn cuts_of(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing]) -> Vec<C
     (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).map(|i| cut_row(doc, folder, lock, stand, i)).collect()
 }
 
-/// A row with what's going this moment on it.
-fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>) {
+/// A row with what's going this moment on it. A render moves in the walk's file, which this is never read again for.
+fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<String, Vec<u64>>) {
     row.rendering = rendering.get(&row.name).copied();
     if row.rendering.is_some() {
         row.standing = RowStanding::Making;
+    }
+    if let Some(runs) = making.get(&name_key(&row.name)) {
+        row.making.clone_from(runs);
+        row.standing = RowStanding::Making;
+        row.failure = None;
+        row.status = match runs.as_slice() {
+            [run] => format!("making (run {run})"),
+            runs => format!("making (runs {})", runs.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")),
+        };
     }
 }
 
@@ -132,12 +142,15 @@ impl Model {
         state.busy = *project.walking.lock().expect("walking lock");
         state.moving = project.moving.try_lock().is_err();
         state.board = board_of(project);
+        let walk = project.folder.walk_now().unwrap_or_default();
+        state.queue = queue(project, &walk);
         // A film at the root is a person's as much as ours, and no revision of the project's files says it moved.
         state.cuts = cuts_of(&self.doc, &project.folder, &self.lock, &self.stand);
         if assets {
             let rendering = project.rendering.lock().expect("rendering lock");
+            let making = making_now(&walk);
             state.assets = self.rows.clone();
-            state.assets.iter_mut().for_each(|row| overlaid(row, &rendering));
+            state.assets.iter_mut().for_each(|row| overlaid(row, &rendering, &making));
         }
         state
     }
@@ -145,7 +158,8 @@ impl Model {
     /// Asset `i` of the doc, as it stands this moment.
     pub(super) fn row(&self, project: &Project, i: usize) -> Row {
         let mut row = self.rows[i].clone();
-        overlaid(&mut row, &project.rendering.lock().expect("rendering lock"));
+        let making = making_now(&project.folder.walk_now().unwrap_or_default());
+        overlaid(&mut row, &project.rendering.lock().expect("rendering lock"), &making);
         row
     }
 }
@@ -170,7 +184,7 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
     let Some(was) = was else { return whole(id, rev) };
     let (assets, gone) = changed(&was, &now);
     let (from, to) = (&was.model.head, &now.model.head);
-    let head = was.busy != now.busy || was.moving != now.moving || (&from.queue, &from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.queue, &to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
+    let head = was.busy != now.busy || was.moving != now.moving || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
     match assets.len() + gone.len() > MOST_TOLD {
         true => whole(id, rev),
         false => StreamEvent::ProjectChanged { id, rev, assets: Some(assets), gone, head },
@@ -188,7 +202,8 @@ pub(crate) fn forget(api: &Arc<Api>, id: &str) {
 fn changed(was: &Told, now: &Told) -> (Vec<String>, Vec<String>) {
     let before: HashMap<&str, &Row> = was.model.rows.iter().map(|row| (row.name.as_str(), row)).collect();
     let after: std::collections::HashSet<&str> = now.model.rows.iter().map(|row| row.name.as_str()).collect();
-    let moved = |row: &&Row| before.get(row.name.as_str()).is_none_or(|old| old != row) || was.rendering.get(&row.name) != now.rendering.get(&row.name);
+    let moved = |row: &&Row| before.get(row.name.as_str()).is_none_or(|old| old != row) || was.rendering.get(&row.name) != now.rendering.get(&row.name)
+        || was.making.get(&name_key(&row.name)) != now.making.get(&name_key(&row.name));
     let assets = now.model.rows.iter().filter(moved).map(|row| row.name.clone()).collect();
     let gone = was.model.rows.iter().filter(|row| !after.contains(row.name.as_str())).map(|row| row.name.clone()).collect();
     (assets, gone)
