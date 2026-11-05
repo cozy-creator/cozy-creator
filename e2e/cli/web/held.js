@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -44,8 +44,9 @@ function check(name, ok, detail) {
     holder.once('exit', () => fail(new Error('nothing held it')));
   });
 
-  await openBox(page, 'goes');
-  await boxOf(page, 'goes').locator('.head [aria-label=Delete]').click();
+  const shut = page.locator('.react-flow__node .card[data-asset="goes"]');
+  await pointAt(page, shut.locator('.nm'));
+  await shut.locator('.head [aria-label=Delete]').click();
   await until('gone from the canvas', () => page.locator('.react-flow__node .card[data-asset="goes"]').count(), (n) => n === 0);
   check('shown_at_once', true);
   const note = page.locator('.note:has-text("project.yaml is open in another program")');

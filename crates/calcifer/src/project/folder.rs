@@ -821,6 +821,8 @@ pub struct Folder {
     pub tools: PathBuf,
     /// project.lock as last read, and how what it was read from stood then, so it is read again only when that changes.
     held: Mutex<Option<(Stamp, Lock)>>,
+    /// Why what's landing can't go in just now. It's owed in the walk's file, and said as a warning until it has.
+    unsaved: Mutex<Option<String>>,
 }
 
 /// How each of project.lock, the measurements and `files/` stood.
@@ -829,7 +831,7 @@ type Stamp = [String; 3];
 impl Folder {
     /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
     pub fn at(dir: &Path) -> Self {
-        Self { dir: dir.to_owned(), tools: PathBuf::new(), held: Mutex::default() }
+        Self { dir: dir.to_owned(), tools: PathBuf::new(), held: Mutex::default(), unsaved: Mutex::default() }
     }
 
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
@@ -842,7 +844,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools(), held: Mutex::default() })
+        Ok(Self { dir: dir.to_owned(), tools: home.tools(), held: Mutex::default(), unsaved: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -902,6 +904,14 @@ impl Folder {
     }
 
     /// What says project.lock was set aside, if one was: its versions aren't read.
+    pub fn unsaved(&self) -> Option<String> {
+        self.unsaved.lock().expect("unsaved lock").clone()
+    }
+
+    pub fn set_unsaved(&self, why: Option<String>) {
+        *self.unsaved.lock().expect("unsaved lock") = why;
+    }
+
     pub fn lock_set_aside(&self) -> bool {
         self.dir.join(BROKEN).exists()
     }

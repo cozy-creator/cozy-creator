@@ -180,7 +180,7 @@ struct Url(String);
 #[async_trait]
 impl Origin for Url {
     async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>> {
-        Ok(objects.iter().map(|_| Location::Url { url: self.0.clone(), headers: vec![], expires: None }).collect())
+        Ok(objects.iter().map(|_| Location::Url { url: self.0.clone(), headers: vec![] }).collect())
     }
 
     fn public(&self) -> bool {

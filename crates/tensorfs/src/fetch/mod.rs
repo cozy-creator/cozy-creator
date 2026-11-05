@@ -2,9 +2,9 @@
 //! distribution protocol's client; [`VolumeOrigin`] for a datacenter volume); the [`Fetcher`]
 //! walks a commit's closure (tree → its repo files and its header → the wanted components'
 //! chunks and assets), reads each object through the tiers local store → volume → origin,
-//! and admits it through the store, which verifies it. One HTTP client ([`Client`]) and one
-//! downloader serve every origin; every other ask of a remote (the Endpoint's documents and
-//! uploads, an import's sources) is asked again by one rule (`ask`).
+//! and admits it through the store, which verifies it. One HTTP client ([`Client`], reqwest) and one
+//! downloader serve every origin; every request, the Endpoint's documents and uploads and an
+//! import's sources too, is asked again by one rule (`ask`).
 
 pub(crate) mod ask;
 pub mod conform;
@@ -21,7 +21,6 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, TryStreamExt};
 
@@ -35,12 +34,13 @@ pub use volume::VolumeOrigin;
 
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{self, Header, ObjectRef, Tree};
-pub use download::{Fetching, Phase, DEAD_PEER};
+pub use ask::ATTEMPTS;
+pub use download::{Fetching, Phase};
 use download::{Shared, Task};
 
 /// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host,
 /// redirects followed. A weather answer or a transport failure is asked again from the byte reached,
-/// and nothing moving for the stall rule ends it `HUB_UNREACHABLE` ([`ask::get`]). `sink` takes each
+/// until the retry rule ends it `HUB_UNREACHABLE` ([`ask::get`]). `sink` takes each
 /// body frame with the byte it starts at (0 again when a server restarts the body). A `from` at or past
 /// the end (416) has nothing left to get: the caller's digest judges what it holds.
 pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
@@ -58,7 +58,7 @@ pub async fn get_link(url: &str, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()>
 
 async fn get_body(policy: SourcePolicy, url: &str, headers: &[(String, String)], from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let range = (from > 0).then_some((from, None));
-    let got = ask::get(&Client::new(policy), url, headers, None, &ask::Patience::default(), range, sink).await;
+    let got = ask::get(&Client::new(policy), url, headers, None, range, sink).await;
     match got.map_err(GetError::refusal)? {
         Ok(_) => Ok(()),
         Err(416) if from > 0 => Ok(()),
@@ -73,43 +73,29 @@ pub trait ObjectStore: Send + Sync + 'static {
     fn has(&self, object: &ObjectRef) -> bool;
     /// A held object's bytes.
     fn open(&self, object: &ObjectRef) -> std::io::Result<File>;
-    /// The one door for `object`: its bytes in order, then `commit`, which hashes them and
-    /// refuses anything but `object` (`OBJECT_ID_MISMATCH`, naming the digest it got).
+    /// The one door for a fetch of `object`: its bytes at their offsets, then `commit`, which hashes them
+    /// and refuses anything but `object` (`OBJECT_ID_MISMATCH`). A fetch may be cut at any moment: what it
+    /// wrote stays for the next fetch of `object` ([`Admission::held`]).
     fn admit(&self, object: &ObjectRef) -> Result<Box<dyn Admission>>;
     /// Claims `object`'s download among everything sharing this store, until the claim drops. None:
     /// another holds it now.
     fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>>;
-    /// [`admit`](Self::admit) for a fetch, which may be cut at any moment: a store that can keeps its
-    /// bytes for the next fetch of `object`, and hands over what an earlier one left ([`Admission::held`]).
-    fn resume(&self, object: &ObjectRef) -> Result<Box<dyn Admission>> {
-        self.admit(object)
-    }
 }
 
 /// One object on its way into a store.
-pub trait Admission: Send {
-    fn write(&mut self, bytes: &[u8]) -> Result<()>;
+pub trait Admission: Send + Sync {
+    /// What an earlier fetch left: sorted, disjoint `[start, end)` stretches. `commit` judges them too.
+    fn held(&self) -> Vec<(u64, u64)>;
+    /// A writer of bytes at their offsets, one per request.
+    fn writer(&self) -> Result<Box<dyn RangeWrite>>;
     fn commit(self: Box<Self>) -> Result<()>;
-    /// Whether what it holds outlives it, and ranges can be kept ([`range`](Self::range)).
-    fn keeps(&self) -> bool {
-        false
-    }
-    /// What an earlier fetch left: bytes in order, which the next `write` follows, and bytes in
-    /// ranges ahead of them. `commit` judges all of them.
-    fn held(&self) -> (u64, u64) {
-        (0, 0)
-    }
-    /// The file for the range of the object starting at byte `at`, to append to, and its length.
-    fn range(&mut self, _at: u64) -> Result<Option<(File, u64)>> {
-        Ok(None)
-    }
-    /// The finished range starting at the first byte it lacks joins the bytes in order. The bytes
-    /// in order now: the same when there is no such range.
-    fn take(&mut self) -> Result<u64> {
-        refuse(Code::IO_FAILED, "this store keeps no ranges")
-    }
     /// Ends it, nothing kept.
-    fn discard(self: Box<Self>) {}
+    fn discard(self: Box<Self>);
+}
+
+/// Bytes of an object at their offsets.
+pub trait RangeWrite: Send {
+    fn write_at(&mut self, at: u64, bytes: &[u8]) -> Result<()>;
 }
 
 /// Where an object came from.
@@ -151,21 +137,14 @@ impl Landed {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// The watch's sampling resolution: every verdict is a multiple of the fetch's own
-    /// measurements, never shorter than a few of these.
-    pub tick: Duration,
-    /// Workers to start with, and the most the pace may reach.
-    pub streams: usize,
-    pub max_streams: usize,
+    /// The most requests in flight at once, across every object; the ramp reaches it while that pays.
+    /// A request moved 7.5-10 MB/s from R2 on a cpu pod (11-04).
+    pub requests: usize,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config {
-            tick: Duration::from_millis(250),
-            streams: 16,
-            max_streams: 128,
-        }
+        Config { requests: 128 }
     }
 }
 
@@ -211,11 +190,13 @@ pub struct Pulled {
     pub landed: Landed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stats {
     pub requests: u64,
+    pub retries: u64,
     pub restarts: u64,
-    pub streams: usize,
+    /// Answers that were not 2xx, by status.
+    pub statuses: std::collections::BTreeMap<u16, u64>,
     pub volume_written: u64,
     pub volume_skipped: u64,
 }
@@ -240,16 +221,9 @@ impl Fetcher {
         volume: Option<VolumeOrigin>,
         config: Config,
     ) -> Fetcher {
-        let shared = Arc::new(Shared::new(
-            store,
-            client,
-            volume,
-            config.tick,
-            config.streams,
-            config.max_streams,
-        ));
+        let shared = Arc::new(Shared::new(store, client, volume, config.requests));
         tokio::spawn(Arc::clone(&shared).dispatch());
-        tokio::spawn(Arc::clone(&shared).watch());
+        tokio::spawn(Arc::clone(&shared).pace());
         Fetcher { shared }
     }
 
@@ -261,8 +235,9 @@ impl Fetcher {
         let counters = &self.shared.stats;
         Stats {
             requests: counters.requests.load(Ordering::Relaxed),
+            retries: counters.retries.load(Ordering::Relaxed),
             restarts: counters.restarts.load(Ordering::Relaxed),
-            streams: self.shared.streams(),
+            statuses: counters.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
             volume_written: counters.volume_written.load(Ordering::Relaxed),
             volume_skipped: counters.volume_skipped.load(Ordering::Relaxed),
         }

@@ -8,26 +8,23 @@
 //!   tree, then records the commit as the model's ([`Endpoint::commit`]).
 //! - **A directory** writes through a store over it: objects verified, temp and rename; its
 //!   records under the store's record lock.
-//! - **Weather** (transport failures, 408/425/429/5xx) is asked again at `Retry-After` or a
-//!   doubling wait, until nothing has moved for the stall rule ([`super::ask`]).
+//! - **Weather** (transport failures, 408/425/429/5xx) is asked again by the one retry rule
+//!   ([`super::ask`]).
 
 use std::fs;
 use std::io::Read as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
-
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use base64::engine::{general_purpose::STANDARD, Engine as _};
-use super::net::Uri;
 use serde_json::Value;
 
-use super::ask::{self, Patience, Tried};
-use super::net::{join, same_origin, Body, Client, GetError, HeaderMap};
+use super::ask::{self, Backoff, ATTEMPTS};
+use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap};
 use super::origin::{Location, Origin};
 use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
@@ -47,7 +44,6 @@ pub struct Endpoint {
     at: At,
     client: Client,
     token: Option<Arc<dyn TokenProvider>>,
-    patience: Patience,
     /// Bytes of file bodies sent, ever: an upload's progress while its objects are on their way.
     sent: Arc<AtomicU64>,
 }
@@ -107,6 +103,8 @@ struct Reply {
     status: u16,
     headers: HeaderMap,
     body: Vec<u8>,
+    /// The headers it was asked with, the provider's included.
+    presented: Vec<(String, String)>,
 }
 
 impl Reply {
@@ -152,7 +150,7 @@ impl Endpoint {
             At::Http(_) => token.or_else(|| default_for(&url)),
             At::Dir(..) => None,
         };
-        Ok(Endpoint { url, at, client: client.clone(), token, patience: Patience::default(), sent: Arc::default() })
+        Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default() })
     }
 
     pub fn url(&self) -> &str {
@@ -289,7 +287,7 @@ impl Endpoint {
                         false => Ok(()),
                     }
                 };
-                let got = ask::get(&self.client, &url, &[], self.token.as_deref(), &self.patience, None, &mut sink).await;
+                let got = ask::get(&self.client, &url, &[], self.token.as_deref(), None, &mut sink).await;
                 match got.map_err(GetError::refusal)? {
                     Ok(_) => body,
                     Err(status @ (404 | 410)) => return refuse(Code::OBJECT_ABSENT, format!("GET {url}: {status}")),
@@ -310,7 +308,7 @@ impl Endpoint {
         let At::Http(base) = &self.at else { return refuse(Code::SOURCE_NOT_ALLOWED, format!("{}: not an HTTP endpoint", self.url)) };
         let url = format!("{base}/{}", object.key());
         let range = (from > 0).then_some((from, None));
-        let got = ask::get(&self.client, &url, &[], self.token.as_deref(), &self.patience, range, sink).await;
+        let got = ask::get(&self.client, &url, &[], self.token.as_deref(), range, sink).await;
         match got.map_err(GetError::refusal)? {
             Ok(_) => Ok(()),
             Err(status @ (404 | 410)) => refuse(Code::OBJECT_ABSENT, format!("GET {url}: {status}")),
@@ -373,10 +371,7 @@ impl Endpoint {
                 _ => return Err(refusal(&reply, if sent.is_empty() { "HEAD" } else { "the confirming HEAD" })),
             }
             // A writer's HEAD of an absent object may say where to PUT it (a presigned URL).
-            let target = match reply.header("location") {
-                Some(at) => join(&url.parse::<Uri>().expect("sent"), at),
-                None => url.clone(),
-            };
+            let target = reply.header("location").and_then(|at| join(&url, at)).unwrap_or_else(|| url.clone());
             let place = target.split('?').next().unwrap_or_default().to_owned();
             if sent.contains(&place) {
                 return Err(refusal(&reply, "the confirming HEAD"));
@@ -429,64 +424,73 @@ impl Endpoint {
         }
     }
 
-    /// One exchange, its answer read whole, asked again by the one rule ([`ask::again`]); the
-    /// provider may ask once more (a nonce, a refresh).
+    /// One exchange, its answer read whole, asked again by the one rule ([`ask`]); the provider
+    /// may ask once more (a nonce, a refresh). Bytes of a body sent are progress.
     async fn exchange(&self, ask: Ask<'_>) -> Result<Reply> {
-        self.exchange_attempt(ask).await.map_err(GetError::refusal)
-    }
-
-    async fn exchange_attempt(&self, ask: Ask<'_>) -> std::result::Result<Reply, GetError> {
-        let (ask, challenged, patience) = (&ask, &AtomicBool::new(false), &self.patience);
-        ask::again(patience, move |watch| async move {
-            let mut headers = ask.headers.clone();
-            if ask.auth {
-                // A provider's failure is the caller's verdict, not failed network traffic.
-                let authorized = ask::watched(patience, &watch, self.authorize(ask.method, ask.url, &ask.headers, ask.payload));
-                headers.extend(authorized.await.map_err(GetError::Caller)?);
-            }
-            let body = match ask.body {
-                Some(make) => Some(match make()? {
-                    Payload::Bytes(bytes) => Body::Bytes(bytes),
-                    Payload::File(file) => {
-                        let length = file.metadata().map_err(|e| crate::err::classify_io(ask.url, e))?.len();
-                        Body::File { file, length, sent: [Arc::clone(&watch.moved), Arc::clone(&self.sent)] }
+        let (mut backoff, mut challenged) = (Backoff::new(), false);
+        loop {
+            let sent = self.sent.load(Ordering::Relaxed);
+            let (why, wait) = match self.attempt(&ask).await {
+                Ok(reply) => {
+                    let presented = Request { method: ask.method, url: ask.url, headers: &reply.presented, payload: ask.payload };
+                    let again = match (ask.auth, &self.token) {
+                        (true, Some(token)) => token.retry(&presented, reply.status, &reply.headers)?,
+                        _ => false,
+                    };
+                    if again && !challenged {
+                        challenged = true;
+                        continue;
                     }
-                    Payload::Part(file, length) => Body::File { file, length, sent: [Arc::clone(&watch.moved), Arc::clone(&self.sent)] },
-                }),
-                None => None,
+                    if !ask::weather(reply.status) {
+                        return Ok(reply);
+                    }
+                    tracing::warn!(method = ask.method, url = %shown(ask.url), status = reply.status, "answer not 2xx");
+                    let wait = reply.header("retry-after").and_then(|s| s.trim().parse().ok()).map(std::time::Duration::from_secs);
+                    (format!("{} {}: {}", ask.method, shown(ask.url), reply.status), wait)
+                }
+                Err(GetError::Exchange(refusal)) if ask::transient(&refusal) => (refusal.detail, None),
+                Err(error) => return Err(error.refusal()),
             };
-            let reply = ask::watched(patience, &watch, self.round_trip(ask.method, ask.url, &headers, body, &watch.moved)).await?;
-            let sent = Request { method: ask.method, url: ask.url, headers: &headers, payload: ask.payload };
-            let again = match (ask.auth, &self.token) {
-                (true, Some(token)) => token.retry(&sent, reply.status, &reply.headers).map_err(GetError::Caller)?,
-                _ => false,
-            };
-            let why = format!("{} {}: {}", ask.method, ask.url, reply.status);
-            Ok(if again && !challenged.swap(true, Ordering::Relaxed) {
-                Tried::Again { why, wait: Some(Duration::ZERO) }
-            } else if ask::weather(reply.status) {
-                let wait = (reply.header("retry-after")).and_then(|s| s.trim().parse().ok()).map(Duration::from_secs);
-                Tried::Again { why, wait }
-            } else {
-                Tried::Done(reply)
-            })
-        })
-        .await
+            match backoff.after(self.sent.load(Ordering::Relaxed) > sent, wait) {
+                Some(pause) => tokio::time::sleep(pause).await,
+                None => return refuse(Code::HUB_UNREACHABLE, format!("{why}; {ATTEMPTS} attempts in a row moved nothing")),
+            }
+        }
     }
 
-    async fn round_trip(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>, moved: &AtomicU64) -> Result<Reply> {
+    async fn attempt(&self, ask: &Ask<'_>) -> std::result::Result<Reply, GetError> {
+        let mut headers = ask.headers.clone();
+        if ask.auth {
+            // A provider's failure is the caller's verdict, not failed network traffic.
+            headers.extend(self.authorize(ask.method, ask.url, &ask.headers, ask.payload).await.map_err(GetError::Caller)?);
+        }
+        let body = match ask.body {
+            Some(make) => Some(match make()? {
+                Payload::Bytes(bytes) => Body::Bytes(bytes),
+                Payload::File(file) => {
+                    let length = file.metadata().map_err(|e| crate::err::classify_io(ask.url, e))?.len();
+                    Body::File { file, length, sent: Arc::clone(&self.sent) }
+                }
+                Payload::Part(file, length) => Body::File { file, length, sent: Arc::clone(&self.sent) },
+            }),
+            None => None,
+        };
+        let mut reply = self.round_trip(ask.method, ask.url, &headers, body).await?;
+        reply.presented = headers;
+        Ok(reply)
+    }
+
+    async fn round_trip(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>) -> Result<Reply> {
         let mut answer = self.client.send(method, url, headers, body).await?;
         let (status, headers) = (answer.status(), answer.response.headers().clone());
-        moved.fetch_add(1, Ordering::Relaxed);
         let mut body = Vec::new();
         while let Some(frame) = answer.frame().await? {
             body.extend_from_slice(&frame);
-            moved.fetch_add(frame.len() as u64, Ordering::Relaxed);
             if body.len() > DOCUMENT_BYTES {
-                return refuse(Code::SIZE_CAP, format!("{method} {url}: an answer over {DOCUMENT_BYTES} B"));
+                return refuse(Code::SIZE_CAP, format!("{method} {}: an answer over {DOCUMENT_BYTES} B", shown(url)));
             }
         }
-        Ok(Reply { url: url.to_owned(), status, headers, body })
+        Ok(Reply { url: url.to_owned(), status, headers, body, presented: vec![] })
     }
 }
 
@@ -501,7 +505,7 @@ impl Origin for Endpoint {
                     let url = format!("{base}/{}", object.key());
                     match &self.token {
                         Some(provider) => Location::Authenticated { url, provider: Arc::clone(provider) },
-                        None => Location::Url { url, headers: vec![], expires: None },
+                        None => Location::Url { url, headers: vec![] },
                     }
                 }
             });
@@ -569,7 +573,7 @@ pub async fn upload_commit(endpoint: &Endpoint, name: &str, tree: &ObjectRef, st
             }
             let done = tokio::select! {
                 done = sending.next() => done,
-                () = tokio::time::sleep(ask::TICK) => {
+                () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
                     moving(verified, landed);
                     continue;
                 }
@@ -737,7 +741,7 @@ fn held(reply: &Reply, object: &ObjectRef) -> Result<()> {
     match reply.header("content-length").and_then(|v| v.parse::<u64>().ok()) {
         Some(length) if length != object.length => refuse(
             Code::LENGTH_MISMATCH,
-            format!("{}: {length} B, not {}", reply.url, object.length),
+            format!("{}: {length} B, not {}", shown(&reply.url), object.length),
         ),
         _ => Ok(()),
     }
@@ -783,5 +787,5 @@ fn refusal(reply: &Reply, what: &str) -> Refusal {
     };
     let named = if named.is_empty() { String::new() } else { format!(" {named}") };
     let detail = if detail.is_null() { String::new() } else { format!(" {detail}") };
-    Refusal { code, detail: format!("{what} {}: {}{named}: {message}{detail}", reply.url, reply.status) }
+    Refusal { code, detail: format!("{what} {}: {}{named}: {message}{detail}", shown(&reply.url), reply.status) }
 }

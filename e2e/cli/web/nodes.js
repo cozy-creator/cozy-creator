@@ -52,7 +52,8 @@ function linesOf(text, name) {
   const errors = [];
   const refused = [];
   seen.refused = refused;
-  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  // WebKit hands the page's error event its spec's own note that a ResizeObserver put a delivery off a frame, which nothing has thrown.
+  page.on('pageerror', (error) => { if (!(process.env.ENGINE === 'webkit' && /^ResizeObserver loop completed with undelivered notifications/.test(error.message))) errors.push(`pageerror: ${error.message}`); });
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
   page.on('response', (answer) => {
     const url = new URL(answer.url());
@@ -97,6 +98,12 @@ function linesOf(text, name) {
     await page.mouse.move(2, 500);
   };
   const open = (name) => openBox(page, name);
+  // The X is a shut box's, under the pointer.
+  const deleteBox = async (name) => {
+    await away();
+    await box(name).locator('.nm').hover();
+    await box(name).locator('.head [aria-label=Delete]').click();
+  };
   // Behind its More, opened if it isn't.
   const more = async (name) => {
     await open(name);
@@ -398,7 +405,6 @@ function linesOf(text, name) {
 
   // Right click: rename, delete, and what it's made with.
   await away();
-  await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
@@ -439,6 +445,7 @@ function linesOf(text, name) {
     };
     await reload();
     const place = async (name) => {
+      await away();
       await page.locator('.tools li.tool', { has: page.locator(`b:text-is("${labelOf(name)}")`) }).click();
       await box(`${name}_1`).waitFor();
       await open(`${name}_1`);
@@ -625,8 +632,7 @@ function linesOf(text, name) {
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const heldFile = (await of('Sheet')).sha256;
     const filesThen = readdirSync(join(folder, 'files')).length;
-    await open('source-a');
-    await box('source-a').locator('.head [aria-label=Delete]').click();
+    await deleteBox('source-a');
     await until('gone at once', () => box('source-a').count(), (n) => n === 0);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
     const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
@@ -687,8 +693,7 @@ function linesOf(text, name) {
     await page.keyboard.type('From <source-b>');
     await page.mouse.click(1500, 1000);
     await until('it reads it', () => of('Other'), (held) => held.reads?.some((read) => read.name === 'source-b'));
-    await open('source-b');
-    await box('source-b').locator('.head [aria-label=Delete]').click();
+    await deleteBox('source-b');
     const warned = await until('a plain note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-b')));
     check('note_when_not_approved', warned.some((line) => line.includes('Other reads this') && line.includes("isn't approved yet")), warned);
     await page.locator('.note:has-text("source-b") button:has-text("Undo")').click();
@@ -753,8 +758,7 @@ function linesOf(text, name) {
   }
 
   // X and Delete work anywhere, and Undo with them, whatever can run.
-  await open('source-b');
-  await box('source-b').locator('.head [aria-label=Delete]').click();
+  await deleteBox('source-b');
   await until('gone', () => box('source-b').count(), (n) => n === 0);
   await page.locator('.note:has-text("source-b") button:has-text("Undo")').first().click();
   await box('source-b').waitFor();

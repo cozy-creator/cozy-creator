@@ -235,6 +235,8 @@ export interface Opened {
   id: string
   path: string
   name?: string
+  /** What opening it did, or found, said once. */
+  said?: string[]
 }
 
 export interface Asked {

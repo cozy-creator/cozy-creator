@@ -2576,3 +2576,11 @@ input[type="checkbox"] {
     width: calc(100vw - 24px);
   }
 }
+
+/* Where a project is, so a person can find it. */
+.project-path {
+  display: block;
+  color: var(--mute);
+  font: 11px var(--mono);
+  overflow-wrap: anywhere;
+}

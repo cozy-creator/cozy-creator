@@ -637,6 +637,10 @@ fn summary(ctx: &Context, state: &State) {
     }
     if ctx.full {
         full_summary(ctx, state);
+    } else {
+        for cut in state.cuts.iter().filter(|cut| !cut.without.is_empty()) {
+            println!("{}{}", cut.cut.trim_end_matches(".mp4"), went_without(&cut.without));
+        }
     }
     output::nexts(ctx, &state.next);
 }
