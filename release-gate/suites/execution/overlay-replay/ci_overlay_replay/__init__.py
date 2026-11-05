@@ -139,7 +139,7 @@ class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
 
         dit._ci_arming = None if inside else overlay
         try:
-            denoise_loop(step, range(STEPS), state=(latents,), inputs=(text, sigmas), key=("ci.overlay-replay/1",))
+            denoise_loop(step, range(STEPS), state=(latents,), inputs=(text, sigmas), key=("ci.overlay-replay/1", inside))
         finally:
             dit._ci_arming = None
         return latents.float().cpu()
