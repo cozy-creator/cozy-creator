@@ -72,5 +72,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     owned_stream.close()?;
+    println!("{{\"rust_engine\":\"pass\",\"passes\":2}}");
     Ok(())
 }

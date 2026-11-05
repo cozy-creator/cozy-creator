@@ -6,6 +6,7 @@ import argparse
 import ctypes as C
 import json
 import threading
+import time
 from pathlib import Path
 
 
@@ -123,7 +124,12 @@ def main() -> None:
             stream.synchronize()
             final = gpu.stats()
             assert final["working_live"] == before["working_live"], (before, final)
-            assert final["working_mapped"] <= before["working_mapped"], (before, final)
+            # Free pages stay mapped until something needs them; asked, they all come back.
+            deadline = time.monotonic() + 10
+            while final["working_mapped"] > before["working_mapped"]:
+                assert time.monotonic() < deadline, (before, final)
+                torch.cuda.empty_cache()
+                final = gpu.stats()
             result.update(
                 scope="gpu",
                 gpu_executed=True,
