@@ -793,6 +793,14 @@ impl Folder {
         self.dir.join(BROKEN).exists()
     }
 
+    /// A lock for a project about to hold a file: `files/` with none reads as a project that lost its own.
+    pub fn start_lock(&self) -> Result<(), Error> {
+        match self.dir.join(LOCK).exists() {
+            true => Ok(()),
+            false => self.update_lock(|_| {}),
+        }
+    }
+
     /// Whether project.lock is gone from a project that has files.
     pub fn lock_gone(&self) -> bool {
         !self.dir.join(LOCK).exists() && std::fs::read_dir(self.dir.join(FILES)).is_ok_and(|mut files| files.next().is_some())

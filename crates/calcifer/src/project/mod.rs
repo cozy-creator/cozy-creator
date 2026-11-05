@@ -1935,6 +1935,7 @@ async fn import(
         }
     }
     let kept = keep_file(&api, folder, &asked.source).await?;
+    folder.start_lock().map_err(Refusal)?;
     let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, key.as_ref())?;
     measure_soon(&api, &project);
     Ok(Json(answer))
