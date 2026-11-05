@@ -214,8 +214,7 @@ test = "pr: projects: gives the file back, restoring an input the pin was over"
 test = "pr: projects: old renamed new, its versions kept, its reader out of date"
 
 ["project reclaim"]
-test = "pr: projects: lists, deletes only what nothing else names, refuses while rendering"
-"--yes" = "pr: projects: reclaim --yes"
+test = "pr: projects: lists, deletes only what nothing else names, refuses while rendering, and with --yes deletes"
 
 ["project push"]
 test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
