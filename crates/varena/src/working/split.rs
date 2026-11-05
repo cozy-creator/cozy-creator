@@ -824,6 +824,19 @@ pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<Sp
         }
         state.splits.pending.push((parent, row.clone()));
     }
+    // A level's first measure counts at once, so a new process's first pass can move on it: what
+    // it held is known when the call ends. A finished pass still proves and replaces it.
+    if row.reason.is_empty() {
+        if let Some(site) = state.splits.sites.get_mut(&row.key) {
+            let sample = site.samples.entry(row.choice_id.clone()).or_default();
+            if !sample.known {
+                sample.known = true;
+                sample.peak = row.peak_bytes;
+                sample.backing = row.backing_peak_bytes;
+                sample.classes = row.classes.clone();
+            }
+        }
+    }
     Ok(row)
 }
 
