@@ -72,7 +72,9 @@ A split (`split_select`, `split_begin`) picks the first level that fits
 `min(max(C − W, C/4), C − live − pinned)`, whatever is free right now. `C` is the card or its cap,
 `W` the phase's weights, `live` the live working bytes and `pinned` the most weights held at once
 this request. A level's size is what it was measured asking for, or its nearest measured sibling's
-ratio at 125%, so the same request picks the same level.
+ratio at 125%. Once a level has measured, one call runs the next coarser one if it never ran and the
+card could hold it, since an estimate can stand well over a level that fits. That is once per site
+and level per process, whatever comes of it; then the same request picks the same level.
 
 ## Graph pools
 

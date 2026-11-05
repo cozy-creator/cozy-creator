@@ -20,6 +20,8 @@ struct Sample {
 struct Site {
     choices: Vec<Choice>,
     samples: BTreeMap<String, Sample>,
+    /// Levels given their one try. For the process: a try that fails or measures worse stays spent.
+    tried: BTreeSet<String>,
 }
 struct Active {
     id: u64,
@@ -151,6 +153,8 @@ pub struct SplitSelection {
     pub budget_bytes: usize,
     pub capacity_bytes: usize,
     pub live_bytes: usize,
+    /// This level's one try: `Menu::trial`.
+    pub trying: bool,
 }
 #[derive(Clone, Debug)]
 pub struct SplitObservation {
@@ -232,6 +236,7 @@ fn register(
             Site {
                 choices,
                 samples: BTreeMap::new(),
+                tried: BTreeSet::new(),
             },
         );
     }
@@ -241,6 +246,7 @@ fn register(
 struct Fit {
     id: String,
     basis: &'static str,
+    tried: bool,
     full: usize,
     measured: Option<usize>,
     missing: usize,
@@ -257,10 +263,13 @@ impl Fit {
     fn fits(&self) -> bool {
         self.missing <= self.after_idle
     }
+    fn measured(&self) -> bool {
+        self.basis == "measured"
+    }
     /// What this level is compared at: its measure, or an estimate that errs toward fitting
     /// (first uses ran 10-15% over theirs).
     fn want(&self) -> usize {
-        if self.basis == "measured" { self.full } else { self.full.saturating_mul(5) / 4 }
+        if self.measured() { self.full } else { self.full.saturating_mul(5) / 4 }
     }
 
     fn preserves_phase(&self) -> bool {
@@ -385,6 +394,7 @@ fn fits(
             );
             Ok(Fit {
                 id: choice.id.clone(),
+                tried: site.tried.contains(&choice.id),
                 basis: if sample.is_some() {
                     "measured"
                 } else {
@@ -440,8 +450,25 @@ impl Menu {
     /// rest of the card. Following free memory instead runs at the finest level whenever weights
     /// fill the card, and makes millions of allocations.
     fn target(&self) -> usize {
+        self.trial().unwrap_or_else(|| self.fitting())
+    }
+
+    fn fitting(&self) -> usize {
         let cap = self.budget();
         self.plans.iter().position(|plan| plan.want() <= cap).unwrap_or(self.plans.len() - 1)
+    }
+
+    /// A level that never ran is only an estimate, which can sit well over what it measures, and
+    /// levels need not shrink in order: H3's Kitchen heads hold 4.6 GiB at level 0, 6.1 at level 1
+    /// and 3.8 at level 2, against a 5.7 GiB budget, and level 2 costs 3.8 s a step. So once a
+    /// level has measured, one call runs the nearest coarser one that never ran, if the card could
+    /// hold it, and that measure decides.
+    fn trial(&self) -> Option<usize> {
+        let at = self.fitting();
+        let room = self.capacity.saturating_sub(self.live);
+        self.plans[at].measured().then(|| {
+            self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room)
+        })?
     }
 
     fn budget(&self) -> usize {
@@ -471,6 +498,7 @@ impl Menu {
             budget_bytes: self.budget(),
             capacity_bytes: self.capacity,
             live_bytes: self.live,
+            trying: self.trial().is_some_and(|at| self.plans[at].id == selected.id),
         }
     }
 }
@@ -500,6 +528,17 @@ fn split_select_inner(
     context(device)?;
     let owner = initialize_owner(device)?;
     register(owner, key, choices)?;
+    let selection = select(device, owner, key, stream)?;
+    if selection.trying {
+        // Spent now, whatever comes of it.
+        if let Some(site) = owner.lock()?.splits.sites.get_mut(key) {
+            site.tried.insert(selection.choice_id.clone());
+        }
+    }
+    Ok(selection)
+}
+
+fn select(device: i32, owner: &'static Device, key: &str, stream: u64) -> Result<SplitSelection> {
     // A split's fit already counts completed working pages; split_begin trims what it needs.
     let keep = Protect { keep_working: true, ..Default::default() };
     // Make room for the target with memory this process can give up by itself.
