@@ -844,6 +844,8 @@ pub struct Pool {
     running: memory::Running,
     /// Each run with an executor on its GPUs, by request: its lane, which a GPU fault fails.
     lanes: Mutex<BTreeMap<String, std::ops::Range<usize>>>,
+    /// Driver faults that failed no run, by GPU: the next run ending there carries them.
+    unreported: Mutex<Vec<(usize, String)>>,
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
@@ -1035,6 +1037,7 @@ impl Pool {
                 memo,
                 running,
                 lanes: Mutex::default(),
+                unreported: Mutex::default(),
             }
         }))
     }
@@ -1268,11 +1271,15 @@ impl Pool {
             return; // not a GPU of this machine
         };
         if !fault.fails_work() {
+            self.unreported.lock().unwrap().push((device, fault.to_string()));
             return tracing::info!("{fault}");
         }
         let runs: Vec<String> = self.lanes.lock().unwrap().iter()
             .filter(|(_, lane)| lane.contains(&device)).map(|(id, _)| id.clone()).collect();
         tracing::warn!("{fault}: failing {} run(s) on it", runs.len());
+        if runs.is_empty() {
+            self.unreported.lock().unwrap().push((device, format!("{fault}, between runs")));
+        }
         let Some(engine) = self.engine.get().and_then(Weak::upgrade) else { return };
         for id in runs {
             engine.fault(&id, Failure::machine("gpu_fault", fault.to_string()));
@@ -2954,10 +2961,28 @@ impl Pool {
         if plan.degree > 0 {
             self.lanes.lock().unwrap().insert(id.into(), start..start + plan.degree as usize);
         }
-        let result = self.run_on(engine, id, held, plan, start, calls, &mut disposition);
-        self.lanes.lock().unwrap().remove(id);
+        let mut result = self.run_on(engine, id, held, plan, start, calls, &mut disposition);
+        let lane = self.lanes.lock().unwrap().remove(id);
+        if let (Ok(Some(post)), Some(lane)) = (&mut result, lane) {
+            self.report_faults(lane, post);
+        }
         self.finish_returned(engine, id, &key, start, &disposition)?;
         result
+    }
+
+    /// A run ending on these GPUs carries what the driver said there that failed no run.
+    fn report_faults(&self, lane: std::ops::Range<usize>, post: &mut Postprocess) {
+        let mut unreported = self.unreported.lock().unwrap();
+        let said: Vec<serde_json::Value> = unreported.extract_if(.., |(device, _)| lane.contains(device))
+            .map(|(_, fault)| serde_json::json!({
+                "field": "gpu", "kind": "warn", "requested": "", "applied": "", "reason": fault, "source": "driver",
+            }))
+            .collect();
+        match &mut post.reply.adjustments {
+            serde_json::Value::Array(rows) => rows.extend(said),
+            other if !said.is_empty() => *other = serde_json::Value::Array(said),
+            _ => {}
+        }
     }
 
     /// One call on the lane from `start` (none, deviceless): an idle executor of its environment
