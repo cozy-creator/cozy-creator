@@ -63,7 +63,7 @@ if [ -z "${WEB_ALONE:-}" ]; then
   TO_HUB=$(web_restart "$lock" @HUB@) web_proof signin "$chrome" "$pw" "$restart"
   jq -c '.seen | {stated_wait}' "$OUT/web-signin.json" 2> /dev/null || true
 fi
-step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured"
+step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured, the project tabs"
 local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
