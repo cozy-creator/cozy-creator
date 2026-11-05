@@ -601,7 +601,10 @@ function linesOf(text, name) {
     // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
     const textRow = page.locator('aside.tools li.tool[data-kind=text]');
     check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
+    await away();
     await textRow.click();
+    await box('text').waitFor();
+    await open('text');
     const wording = box('text');
     await wording.locator('.mention-text[data-field=text]').waitFor();
     await wording.locator('.mention-text[data-field=text]').click();
@@ -683,8 +686,9 @@ function linesOf(text, name) {
 
     // A deleted asset's versions come back with it.
     const takes = await versions('Other');
-    await open('Other');
-    await box('Other').locator('.nm').click();
+    // Only Shift selects: a click opens.
+    await away();
+    await box('Other').locator('.nm').click({ modifiers: ['Shift'] });
     await page.keyboard.press('Delete');
     await until('the Delete key', () => box('Other').count(), (n) => n === 0);
     await until('no versions showing', () => of('Other'), (held) => !held);
@@ -725,6 +729,7 @@ function linesOf(text, name) {
 
     // A new take from here: scrubbed to a time, its words as they were, and the function told to keep up to there.
     // One file dropped asks its name first: Enter takes the one offered.
+    await away();
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
     await page.waitForSelector('.nm-field');
     await page.keyboard.press('Enter');
