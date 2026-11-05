@@ -2991,6 +2991,12 @@ impl Walk {
                         let stand = Arc::new(reading.cone(node, &lock));
                         let standing = &stand[node];
                         match kind {
+                            // Asked for by name with nothing it reads ever made: it fails and says why, or the press does nothing at all.
+                            JobKind::Free { named: true } if standing.inputs.is_none() => {
+                                let message = format!("{asset} cannot render: {}", unread(&doc, &stand, &lock, &ask, node));
+                                let kind = doc.assets[node].kind.clone();
+                                acts.push(Act::Unread { id, ask: ask_id, on: ask.target.on.clone(), key, asset, kind, inputs: None, message });
+                            }
                             JobKind::Free { named } => {
                                 let makes = doc.makes(node) && standing.inputs.is_some() && (named || standing.files.is_none());
                                 match makes {
