@@ -9,7 +9,7 @@
 // Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
-const { existsSync, readFileSync, writeFileSync } = require('fs');
+const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { STEP_MS, lastLook, lookAt, pointAt, until } = require('./page');
 
@@ -170,6 +170,7 @@ async function loseAnswers(page, method, path, times) {
   // Refused: Calcifer holds no such file. The box goes, one line says why, and what's behind it in line goes on.
   const notes = () => page.locator('.notes .note .line').allInnerTexts();
   const boxes = await page.locator('.card[data-asset]').count();
+  const refusing = await hold(page, 'POST', '**/v1/projects/*/imports');
   await page.evaluate(() => {
     const data = new DataTransfer();
     data.setData('application/x-cozy-file', JSON.stringify({ sha256: '0'.repeat(64), field: 'image', name: 'never_held' }));
@@ -177,6 +178,7 @@ async function loseAnswers(page, method, path, times) {
   });
   await box('never_held').waitFor({ timeout: 2000 });
   check('refused_box_shows_first', true);
+  await refusing.release();
   await box('never_held').waitFor({ state: 'detached' });
   check('refused_rolls_back', (await page.locator('.card[data-asset]').count()) === boxes && !hasAsset('never_held'));
   const said = await until('one line', notes, (lines) => lines.some((line) => /Couldn't take out never_held/.test(line)));
@@ -185,6 +187,8 @@ async function loseAnswers(page, method, path, times) {
   // A pending edit and another writer's edit of the same field: the conflict line, and neither lost.
   cozy('project', '-p', folder, 'add', 'text', 'words', 'text=A storm.');
   await page.waitForTimeout(600);
+  // Nothing held open: what's open lies over what's below it.
+  await page.keyboard.press('Escape');
   await page.keyboard.press('f');
   await box('words').waitFor();
   await page.waitForTimeout(400);
@@ -236,6 +240,47 @@ async function loseAnswers(page, method, path, times) {
     const runs = (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
     check('render_key_one', renders.keys.length >= 2 && new Set(renders.keys).size === 1, renders.keys);
     check('render_ran_once', held.versions === 1 && runs.length === 1, { versions: held.versions, runs: runs.length });
+  }
+
+  // Each project a tab, top left: one click, its boxes there at once, its own view kept. One that can't be read says why and what to do, on the canvas, with the tools
+  // still there, and what's dropped on it comes back with one line.
+  const made = async (word) => (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-instant-${word}-${Date.now()}` }), headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${word}-${Date.now()}` } })).body;
+  const [second_project, old] = [await made('tab'), await made('old')];
+  writeFileSync(join(old.path, 'project.lock'), JSON.stringify({ format: 2 }));
+  await page.reload();
+  await page.waitForSelector('.ptabs .ptab.on');
+  await box(name).waitFor();
+  const tab = (project) => page.locator(`.ptab[title="${project.path}"]`);
+  const here = page.locator('.ptab.on');
+  await page.mouse.move(1400, 1000);
+  await page.mouse.down();
+  await page.mouse.move(1340, 960, { steps: 3 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+  const kept = await view();
+  await tab(second_project).click();
+  await page.locator(`.ptab.on[title="${second_project.path}"]`).waitFor();
+  await page.waitForSelector('.react-flow__node');
+  check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
+  await page.locator(`.ptab[title="${folder}"]`).click();
+  await box(name).waitFor({ timeout: 2000 });
+  check('back_shows_its_boxes_at_once', true);
+  await page.waitForTimeout(300);
+  check('each_project_keeps_its_view', (await view()) === kept, { kept, now: await view() });
+  await tab(old).click();
+  const unread = page.locator('.unread');
+  await unread.waitFor();
+  check('what_cant_be_read_says_why', /format 2/.test(await unread.innerText()) && /cozy project upgrade/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
+  await until('the tools still there', () => row('Edit').count(), (n) => n === 1);
+  await row('Edit').dragTo(stage, { targetPosition: { x: 1200, y: 300 } });
+  await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
+  check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
+  await page.locator(`.ptab[title="${folder}"]`).click();
+  await box(name).waitFor();
+  for (const project of [second_project, old]) {
+    await api(`/v1/projects/${project.id}`, { method: 'DELETE' });
+    rmSync(project.path, { recursive: true, force: true });
   }
 
   check('no_page_errors', errors.length === 0, errors);
