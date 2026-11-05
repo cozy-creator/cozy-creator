@@ -270,6 +270,8 @@ function linesOf(text, name) {
   await until('it went back', () => box('source-b').locator('.nm').boundingBox(), (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
   await open('Sheet');
   await until('chips', () => sheetText.locator('.chip').count(), (n) => n === 2);
+  const thumbs = await until('the pictures it mentions, small', () => box('Sheet').locator('.mention-thumb').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
+  check('mentions_shown_small', Array.isArray(thumbs), thumbs);
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
@@ -701,6 +703,11 @@ function linesOf(text, name) {
     if (await box('Sheet').locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
     await box('Sheet').locator('.status.bad:has-text("no longer in the project")').waitFor();
     check('its_next_steps_as_text', (await box('Sheet').locator('.status.bad .next-line').count()) > 0, await box('Sheet').locator('.status.bad').innerText());
+    // The same failure again is said again, naming its box once.
+    await page.locator('.note [aria-label=Dismiss]').evaluateAll((all) => all.forEach((one) => one.click()));
+    await box('Sheet').locator('button[aria-label=Render]').click();
+    const again = await until('it says so again', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render")));
+    check('failed_again_said_again', again.every((line) => !line.includes('Sheet: ')), again);
     check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
     await render('Other', 2);
     check('the_rest_goes_on', true);
