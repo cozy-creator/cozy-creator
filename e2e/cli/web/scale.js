@@ -36,7 +36,9 @@ const BARS = {
   open_settled_s: 10,
   edit_shows_ms: 1500,
   landing_shows_ms: 1500,
-  pan_p95_ms: 50,
+  // A runner draws with no GPU, so a pan is held to the same pan of a project of 36, the same boxes on screen, on the same runner: size adds nothing.
+  pan_times_small: 1.5,
+  pan_slack_ms: 17,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
@@ -48,7 +50,7 @@ const BARS = {
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /** The project: pictures approved as they are, and shots of them, each with two versions, as files. `inputs`, once known, makes them current. */
-function generated(folder, inputs) {
+function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
   mkdirSync(join(folder, 'files'), { recursive: true });
   const base = png(90, 16, 16);
   const seedFile = join(folder, 'seed.png');
@@ -73,15 +75,15 @@ function generated(folder, inputs) {
   };
   const assets = {};
   const words = 'The colossal blue whale rises through a storm, lit from below, the sea torn white around it, and the small boat holds. '.repeat(3);
-  for (let i = 0; i < PICTURES; i++) {
+  for (let i = 0; i < pictures; i++) {
     const hex = hash(`picture ${i}`);
     file(hex);
     lines.push(`  pic_${i}: {approved: "${hex.slice(0, 12)}"}`);
   }
   const tool = 'birefnet/remove_background';
-  for (let i = 0; i < ASSETS - PICTURES; i++) {
+  for (let i = 0; i < assetCount - pictures; i++) {
     const name = `shot_${i}`;
-    lines.push(`  ${name}:`, `    tool: ${tool}`, `    instructions: ${words}<pic_${i % PICTURES}> and <pic_${(i * 7) % PICTURES}>.`, '    aspect_ratio: "16:9"');
+    lines.push(`  ${name}:`, `    tool: ${tool}`, `    instructions: ${words}<pic_${i % pictures}> and <pic_${(i * 7) % pictures}>.`, '    aspect_ratio: "16:9"');
     const versions = [1, 2].map((number) => {
       const hex = hash(`${name} ${number}`);
       file(hex);
@@ -93,11 +95,11 @@ function generated(folder, inputs) {
   replaceFile(join(folder, 'project.yaml'), `${lines.join('\n')}\n`);
   replaceFile(join(folder, 'project.lock'), JSON.stringify({ format: 3, assets, makes: { [tool]: 'image' } }));
   // A grid, each where it'd sit if a person had placed it.
-  const side = Math.ceil(Math.sqrt(ASSETS));
+  const side = Math.ceil(Math.sqrt(assetCount));
   const rows = ['# Where cards sit. Only the page reads this. Nothing here is an input.', 'version: 1', 'cards:'];
   const card = (name, at) => rows.push(`  ${name}: {x: ${(at % side) * 300}, y: ${Math.floor(at / side) * 320}, w: 260}`);
-  for (let i = 0; i < ASSETS - PICTURES; i++) card(`shot_${i}`, i);
-  for (let i = 0; i < PICTURES; i++) card(`pic_${i}`, ASSETS - PICTURES + i);
+  for (let i = 0; i < assetCount - pictures; i++) card(`shot_${i}`, i);
+  for (let i = 0; i < pictures; i++) card(`pic_${i}`, assetCount - pictures + i);
   replaceFile(join(folder, 'project.canvas.yaml'), `${rows.join('\n')}\n`);
   rmSync(seedFile);
 }
@@ -238,12 +240,50 @@ function calciferMb() {
 
   await page.goto(link);
   await page.waitForSelector('.top');
+  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   await page.evaluate(() => { window.notReloaded = true; });
+
+  /** Frames while the viewport goes 480 px left and back, every box on screen drawn first, and with no pan, each as a person's wheel does it. */
+  const panning = (ms) => page.evaluate((length) => new Promise((done) => {
+    const pane = document.querySelector('.react-flow__pane');
+    const frames = [];
+    let [last, sign, count] = [performance.now(), 1, 0];
+    const end = last + length;
+    const step = (now) => {
+      frames.push(now - last);
+      last = now;
+      if (++count % 40 === 0) sign = -sign;
+      pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
+      if (now < end) requestAnimationFrame(step);
+      else done(frames.slice(1));
+    };
+    requestAnimationFrame(step);
+  }), ms);
+  const drawn = () => until('every box on screen drawn', () => page.evaluate(() => {
+    const images = [...document.querySelectorAll('.react-flow__node .media img')];
+    return images.length > 0 && images.every((image) => image.complete);
+  }), Boolean, 120_000);
+  const measuredPan = async () => {
+    await drawn();
+    const still = summary(await page.evaluate(() => window.takeFrames(1000)));
+    const moving = summary(await panning(3000));
+    return { still, moving, mounted: await page.locator('.react-flow__node').count() };
+  };
+
+  // The same pan of a small project, for what this runner draws whatever a project holds.
+  const smallFolder = join(homedir(), '.cozy', 'projects', `web-scale-small-${Date.now()}`);
+  mkdirSync(smallFolder, { recursive: true });
+  generated(smallFolder, null, 36, 8);
+  const small = JSON.parse((await cozy('--json', 'project', '-p', smallFolder, 'status')).stdout);
+  await page.goto(`${base}/#/projects/${small.id}`);
+  await page.waitForSelector('.react-flow__node .nm');
+  numbers.pan_small = await measuredPan();
+  await fetch(`${base}/v1/projects/${small.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
 
   // Opening it: boxes on screen, then the page settled, its frames short.
   const opening = Date.now();
   await page.goto(`${base}/#/projects/${id}`);
-  await page.waitForSelector('.react-flow__node .nm', { timeout: 120_000 });
+  await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
   numbers.open_boxes_s = seconds(Date.now() - opening);
   check('it_opens_quickly', numbers.open_boxes_s <= BARS.open_boxes_s, numbers.open_boxes_s);
   await until('its frames short', async () => summary(await page.evaluate(() => window.takeFrames(500))).p95_ms, (p95) => p95 < 100, 180_000);
@@ -251,6 +291,9 @@ function calciferMb() {
   check('it_settles_quickly', numbers.open_settled_s <= BARS.open_settled_s, numbers.open_settled_s);
   memory.open = calciferMb();
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
+  numbers.pan_big = await measuredPan();
+  const allowed = numbers.pan_small.moving.p95_ms * BARS.pan_times_small + BARS.pan_slack_ms;
+  check('size_adds_nothing_to_a_pan', numbers.pan_big.moving.p95_ms <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');
@@ -320,7 +363,7 @@ function calciferMb() {
   memory.edits = calciferMb();
 
   // A render from the CLI, on the fixture tool, landing on the open canvas.
-  if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${(await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')))).token}` } })).json()).local_usable && !process.env.ALONE) {
+  if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     const rect = await page.evaluate((name) => window.boxOf(name).getBoundingClientRect().toJSON(), onScreen.at(-1));
     const viewport = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).toJSON());
@@ -345,24 +388,7 @@ function calciferMb() {
     memory.renders = calciferMb();
   }
 
-  // Panning where it opened, then the whole of it fitted, then panning that.
-  const panning = (ms) => page.evaluate((length) => new Promise((done) => {
-    const pane = document.querySelector('.react-flow__pane');
-    const frames = [];
-    let [last, sign, count] = [performance.now(), 1, 0];
-    const end = last + length;
-    const step = (now) => {
-      frames.push(now - last);
-      last = now;
-      if (++count % 40 === 0) sign = -sign;
-      pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
-      if (now < end) requestAnimationFrame(step);
-      else done(frames.slice(1));
-    };
-    requestAnimationFrame(step);
-  }), ms);
-  numbers.pan = summary(await panning(3000));
-  check('panning_is_smooth', numbers.pan.p95_ms <= BARS.pan_p95_ms, numbers.pan);
+  // The whole of it fitted, and panned.
   const fitting = Date.now();
   await page.keyboard.press('f');
   await until('fitted, its frames short', async () => summary(await page.evaluate(() => window.takeFrames(500))).p95_ms, (p95) => p95 < 200, 180_000);
@@ -375,6 +401,7 @@ function calciferMb() {
   memory.fitted = calciferMb();
   check('calcifers_memory', memory.edits <= BARS.calcifer_mb, memory);
   check('calcifers_memory_with_asks', memory.fitted <= BARS.calcifer_asks_mb, memory);
+  rmSync(smallFolder, { recursive: true, force: true });
   numbers.page_heap_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   check('the_pages_memory', numbers.page_heap_mb <= BARS.page_heap_mb, numbers.page_heap_mb);
 

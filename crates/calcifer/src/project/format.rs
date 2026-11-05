@@ -16,7 +16,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::{self, Files, Folder, Keeps, Lock, Version},
-    graph::{Graph, as_name, edits, is_name, mentions, mentions_in, name_key},
+    graph::{Graph, as_name, edits, is_name, mentions, mentions_in, mentions_replaced, name_key},
 };
 
 /// The name `cozy project render all` means.
@@ -29,6 +29,8 @@ const MADE: [&str; 2] = ["models", "lora"];
 const KINDS: [&str; 3] = ["image", "video", "audio"];
 const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
+/// What a text asset holds, and what it is.
+pub(super) const TEXT: &str = "text";
 /// What once said an asset's type: its tool does now, and a file with none is what it is.
 const NOT_READ: &str = "kind";
 /// The reserved package Calcifer runs itself.
@@ -60,32 +62,30 @@ pub fn starter() -> String {
 # Change anything. Each asset says what it is; `<name>` in any text reads that asset.
 version: 3
 
-defaults:
-  image:
-    style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
-    aspect_ratio: "16:9"
-  video:
-    style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
-    aspect_ratio: "16:9"
-
 assets:
+  style:
+    text: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
+
   kyogre:
     tool: qwen-image-2/generate
+    aspect_ratio: "16:9"
     instructions: |
-      Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
+      <style> Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
     description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
     asset_type: character
 
   groudon:
     tool: qwen-image-2/generate
+    aspect_ratio: "16:9"
     instructions: |
-      Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
+      <style> Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
     description: Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
     asset_type: character
 
   coast:
     tool: qwen-image-2/generate
-    instructions: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
+    aspect_ratio: "16:9"
+    instructions: <style> A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
     description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
     asset_type: environment
 
@@ -99,8 +99,10 @@ assets:
           - <clash>
 
   awaken:
-    tool: minimax-h3/generate_turbo
+    tool: minimax-h3/generate
+    aspect_ratio: "16:9"
     summary: |
+      <style>
       <kyogre> bursts out of the stormy sea of <coast>.
     soundscape: Howling wind, crashing waves, and rolling thunder.
     beats:
@@ -109,8 +111,10 @@ assets:
           A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins. The camera tilts up at slow speed as heavy rain starts to fall.
 
   erupt:
-    tool: minimax-h3/generate_turbo
+    tool: minimax-h3/generate
+    aspect_ratio: "16:9"
     summary: |
+      <style>
       <groudon> claws its way out of the lava cliffs of <coast> and roars.
     soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
     beats:
@@ -119,8 +123,10 @@ assets:
           A wide shot from the rocks looks up at the lava cliffs of <coast>. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
   clash:
-    tool: minimax-h3/generate_turbo
+    tool: minimax-h3/generate
+    aspect_ratio: "16:9"
     summary: |
+      <style>
       <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
@@ -147,8 +153,14 @@ pub struct Asset {
     pub target: String,
     /// Its `models` and `lora`, after defaults.
     pub made: Map<String, Value>,
-    /// Its inputs, after defaults: what its function is given, and counts in its key.
+    /// Its inputs, after defaults, each mention of a text asset replaced by its words: what its function is given.
     pub inputs: Map<String, Value>,
+    /// Its inputs as the file says them, when that isn't `inputs`: what the page shows, and what its key holds.
+    pub written: Option<Map<String, Value>>,
+    /// The text assets `inputs` took in, those they mention too: each is a part of its key, as a read is.
+    pub inlined: Vec<usize>,
+    /// A text asset's words: what a mention of it says, in place.
+    pub text: Option<String>,
     /// The inputs it wrote itself.
     pub own: BTreeSet<String>,
     /// The words for whatever mentions it.
@@ -280,6 +292,9 @@ impl Doc {
             return Err(invalid("project_format", said).next("cozy project upgrade"));
         }
         let mut warnings = vec![];
+        if folder.lock_set_aside() {
+            warnings.push(Warning::of_file(format!("{0} could not be read and is kept as {0}.broken: its versions, seeds and takes aren't read here, so only what is approved stands. Fix it and put it back, or delete it", folder::LOCK)));
+        }
         if version.is_none() {
             warnings.push(Warning::of_file(format!("{} has no `version: {FORMAT}`, so it reads as version {FORMAT}: add it", folder::PROJECT)));
         }
@@ -303,17 +318,24 @@ impl Doc {
         for name in &listed {
             named(name)?;
         }
+        let mut seen: HashMap<String, &String> = HashMap::new();
+        for name in &listed {
+            if let Some(first) = seen.insert(name_key(name), name) {
+                return Err(one_name_twice(text, first, name));
+            }
+        }
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone() };
         for name in &listed {
             let Some(written) = declared.get(name) else { continue };
             doc.declare(name, written, &defaults, folder, lock);
         }
         for i in 0..doc.assets.len() {
-            if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() {
+            if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() && doc.assets[i].text.is_none() {
                 let (name, said) = (doc.assets[i].name.clone(), doc.nothing_to_make(i));
                 doc.warn(&name, said);
             }
         }
+        doc.inline();
         doc.resolve();
         Ok(doc)
     }
@@ -321,9 +343,6 @@ impl Doc {
     /// An asset of the file, after defaults, what it approved read. A name taken: the first stands.
     fn declare(&mut self, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let key = name_key(name);
-        if self.index.contains_key(&key) {
-            return self.warn(name, format!("two assets are named {name}: the first stands"));
-        }
         if key == ALL {
             self.warn(name, format!("{name} is named `{ALL}`: `cozy project render {ALL}` means everything, and makes it with the rest"));
         }
@@ -342,7 +361,7 @@ impl Doc {
             None | Some(Value::Null) => {}
             Some(value) => match file_named(&text_of(Some(value)), lock) {
                 Ok(sha256) => {
-                    if !lock.files.get(&sha256).is_some_and(|file| folder.path(&file.path).is_file()) {
+                    if !lock.files.get(&sha256).is_some_and(|file| file.here) {
                         self.warn(name, format!("{name}'s approved: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
                     }
                     pin = Some(sha256);
@@ -357,7 +376,8 @@ impl Doc {
         let made = held.and_then(|version| KINDS.iter().copied().find(|kind| version.files.contains_key(*kind)));
         let of_file = pin.as_ref().and_then(|sha256| lock.files.get(sha256)).and_then(folder::File::media);
         let makes = tool.as_ref().and_then(|tool| lock.makes.get(tool)).and_then(|kind| KINDS.iter().copied().find(|known| known == kind));
-        let said = tool.as_deref().and_then(kind_made_here).or(of_file).or(made).or(makes);
+        let text = (tool.is_none() && pin.is_none() && body.contains_key(TEXT)).then(|| text_of(body.get(TEXT)).trim_end().to_owned());
+        let said = tool.as_deref().and_then(kind_made_here).or(of_file).or(made).or(makes).or(text.as_ref().map(|_| TEXT));
         let kind = said.unwrap_or("image").to_owned();
         let mut asset_type = text_of(body.get("asset_type"));
         if !asset_type.is_empty() && !ASSET_TYPES.contains(&asset_type.as_str()) {
@@ -396,7 +416,7 @@ impl Doc {
         for (field, value) in &body {
             match field.as_str() {
                 field if MADE.contains(&field) => drop(made.insert(field.to_owned(), value.clone())),
-                field if PLATFORM.contains(&field) || field == NOT_READ => {}
+                field if PLATFORM.contains(&field) || field == NOT_READ || (field == TEXT && text.is_some()) => {}
                 field => drop(inputs.insert(field.to_owned(), value.clone())),
             }
         }
@@ -408,7 +428,61 @@ impl Doc {
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, tool_makes: makes.is_some(), tool, target, made, inputs, own, description, asset_type, voice, pin, hollow, reads: vec![] });
+        self.assets.push(Asset { name: name.to_owned(), kind, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, asset_type, voice, pin, hollow, reads: vec![] });
+    }
+
+    /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and
+    /// the key all come from this. A mention that closes a cycle stays plain text, and a tag of its package stays that tag.
+    fn inline(&mut self) {
+        let texts: HashMap<String, usize> = self.assets.iter().enumerate().filter(|(_, asset)| asset.text.is_some()).map(|(i, asset)| (name_key(&asset.name), i)).collect();
+        if texts.is_empty() {
+            return;
+        }
+        let mut said = vec![];
+        for i in 0..self.assets.len() {
+            if self.assets[i].tool.as_deref().is_none_or(made_here) {
+                continue;
+            }
+            let tags = self.tags(i).cloned().unwrap_or_default();
+            let (mut inputs, mut took) = (self.assets[i].inputs.clone(), vec![]);
+            inputs.values_mut().for_each(|value| self.inline_in(value, &tags, &texts, &mut took, &mut said));
+            if !took.is_empty() {
+                let asset = &mut self.assets[i];
+                asset.written = Some(std::mem::replace(&mut asset.inputs, inputs));
+                asset.inlined = took;
+            }
+        }
+        self.warnings.extend(said);
+    }
+
+    fn inline_in(&self, value: &mut Value, tags: &[String], texts: &HashMap<String, usize>, took: &mut Vec<usize>, said: &mut Vec<Warning>) {
+        match value {
+            Value::String(text) => *text = self.with_words(text, tags, texts, &mut vec![], took, said),
+            Value::Array(items) => items.iter_mut().for_each(|item| self.inline_in(item, tags, texts, took, said)),
+            Value::Object(fields) => fields.values_mut().for_each(|item| self.inline_in(item, tags, texts, took, said)),
+            _ => {}
+        }
+    }
+
+    fn with_words(&self, text: &str, tags: &[String], texts: &HashMap<String, usize>, inside: &mut Vec<usize>, took: &mut Vec<usize>, said: &mut Vec<Warning>) -> String {
+        mentions_replaced(text, &mut |mention| {
+            let &j = texts.get(&name_key(mention)).filter(|_| !is_tag(tags, mention))?;
+            let name = &self.assets[j].name;
+            if inside.contains(&j) {
+                let line = Warning::of(name, format!("{name} mentions itself, through what it mentions: that mention stays plain text"));
+                if !said.contains(&line) {
+                    said.push(line);
+                }
+                return None;
+            }
+            if !took.contains(&j) {
+                took.push(j);
+            }
+            inside.push(j);
+            let words = self.with_words(self.assets[j].text.as_deref().unwrap_or_default(), tags, texts, inside, took, said);
+            inside.pop();
+            Some(words)
+        })
     }
 
     /// Each asset's reads, and the order. A mention of nothing stays text; one that closes a cycle too.
@@ -417,11 +491,16 @@ impl Doc {
         let (mut upstream, mut said) = (vec![vec![]; n], vec![]);
         let mut reads = vec![vec![]; n];
         let mut unread = vec![];
+        for asset in self.assets.iter().filter(|asset| asset.text.is_some()) {
+            if let Some((tool, _)) = self.reserved.iter().find(|(_, tags)| is_tag(tags, &asset.name)) {
+                said.push(Warning::of(&asset.name, format!("{0} is a tag of {tool}, so a text asset can't go by it: cozy project rename {0} <another name>", asset.name)));
+            }
+        }
         for i in 0..n {
             let asset = &self.assets[i];
             let tags = self.tags(i);
             for tag in tags.into_iter().flatten().filter(|tag| self.find(tag).is_some()) {
-                let line = Warning::of(&asset.name, format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this, so rename it", self.target(i)));
+                let line = Warning::of(&asset.name, format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this: cozy project rename {tag} <another name>", self.target(i)));
                 if !said.contains(&line) {
                     said.push(line);
                 }
@@ -438,6 +517,10 @@ impl Doc {
                     unread.push((i, mention));
                     continue;
                 };
+                // Left by a cycle of text assets.
+                if self.assets[j].text.is_some() {
+                    continue;
+                }
                 if j != i && !upstream[i].contains(&j) {
                     upstream[i].push(j);
                     reads[i].push(j);
@@ -490,8 +573,10 @@ impl Doc {
     /// What asset `i` says, flat, by each control's `field`: its inputs, defaults too, and the platform's words. An edit's tracks are the wire's `timeline`.
     pub fn flat_fields(&self, i: usize) -> Map<String, Value> {
         let asset = &self.assets[i];
-        let mut flat = self.inputs_of(i);
+        let mut flat = asset.written.clone().unwrap_or_else(|| self.inputs_of(i));
+        flat.values_mut().for_each(end_trimmed);
         flat.extend(asset.made.iter().map(|(field, value)| (field.clone(), value.clone())));
+        flat.extend(asset.text.iter().map(|text| (TEXT.to_owned(), json!(text))));
         let words = [("description", asset.description.clone()), ("asset_type", asset.asset_type.clone()), ("voice", asset.voice.as_ref().map_or(String::new(), |voice| format!("<{voice}>")))];
         flat.extend(words.into_iter().filter(|(_, text)| !text.is_empty()).map(|(field, text)| (field.to_owned(), json!(text))));
         if let Some(tracks) = flat.remove("tracks") {
@@ -505,15 +590,17 @@ impl Doc {
     pub fn reads_of(&self, i: usize) -> Vec<Read> {
         let asset = &self.assets[i];
         let mut said = vec![];
-        for (field, value) in &asset.inputs {
+        for (field, value) in asset.inputs.iter().chain(asset.written.iter().flatten()) {
             said_in(value, field.clone(), &mut said);
         }
+        said.sort();
+        said.dedup();
         let read = |&j: &usize| {
             let key = name_key(&self.assets[j].name);
             let at = said.iter().filter(|(mention, _)| name_key(mention) == key).map(|(_, place)| place.clone());
             Read { name: self.assets[j].name.clone(), at: at.collect() }
         };
-        asset.reads.iter().map(read).collect()
+        asset.reads.iter().chain(&asset.inlined).map(read).collect()
     }
 
     /// The tags of the function that makes asset `i`, once it has been read.
@@ -650,7 +737,7 @@ impl Doc {
                 None => stand(State::Pinned { version: None, changed: vec![] }, Some(Files::from([(asset.kind.clone(), sha256.clone())]))),
             };
         }
-        if asset.hollow && !asset.description.is_empty() {
+        if asset.hollow && (!asset.description.is_empty() || asset.text.is_some()) {
             return stand(State::Words, Some(Files::new()));
         }
         let Some(now) = &inputs else { return stand(State::Waits, None) };
@@ -713,21 +800,29 @@ impl Doc {
     /// read gone hides no change in the others.
     fn key(&self, i: usize, reads: &[ReadNow]) -> String {
         let asset = &self.assets[i];
-        let tool = self.tool(i).is_some();
         let mut own = asset.made.clone();
         if let Some(tool) = &asset.tool {
             own.insert("tool".into(), json!(tool));
         }
         // A tool's key holds what it reads of its inputs.
-        let inputs: Map<String, Value> = (asset.inputs.iter())
+        let tool = self.tool(i).is_some();
+        let inputs: Map<String, Value> = (asset.written.as_ref().unwrap_or(&asset.inputs).iter())
             .filter(|(field, _)| !tool || TOOL_INPUTS.contains(&field.as_str()))
             .map(|(field, value)| (field.clone(), value.clone()))
             .collect();
         own.insert("inputs".into(), Value::Object(inputs));
-        let mut sorted: Vec<&ReadNow> = reads.iter().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
-        let reads: String = sorted.into_iter().map(|read| self.read_part(tool, read)).collect();
-        format!("{}{reads}", &digest(&Value::Object(own))[..8])
+        let parts: String = self.parts(i, reads).into_iter().map(|(_, part)| part).collect();
+        format!("{}{parts}", &digest(&Value::Object(own))[..8])
+    }
+
+    /// Each thing asset `i` takes in, by name, as its key holds it: what it reads, and each text asset's words.
+    fn parts(&self, i: usize, reads: &[ReadNow]) -> Vec<(String, String)> {
+        let tool = self.tool(i).is_some();
+        let read = reads.iter().map(|read| (read.name.clone(), self.read_part(tool, read)));
+        let text = self.assets[i].inlined.iter().map(|&j| &self.assets[j]).map(|of| (of.name.clone(), part(&of.name, &json!({"text": of.text}))));
+        let mut parts: Vec<(String, String)> = read.chain(text).collect();
+        parts.sort();
+        parts
     }
 
     /// A read in a key: four hex digits of its name and eight of what reaches a reader, so editing an approved asset's instructions leaves what
@@ -739,11 +834,11 @@ impl Doc {
             true => json!({"files": files}),
             false => json!({"asset_type": of.asset_type, "description": of.description, "files": files}),
         };
-        format!("{}{}", &digest(&json!(name_key(&read.name)))[..4], &digest(&held)[..8])
+        part(&read.name, &held)
     }
 
-    /// What moved since a version was made at key `then`: its inputs, or each read that changed. A read `then` holds that's gone is no change, as
-    /// nothing could make it again.
+    /// What moved since a version was made at key `then`: its inputs, or each thing it takes in that changed. One `then` holds that's gone is no
+    /// change, as nothing could make it again.
     fn moved(&self, i: usize, then: &str, now: &str, reads: &[ReadNow]) -> Vec<String> {
         if then == now {
             return vec![];
@@ -751,9 +846,8 @@ impl Doc {
         if own_part(then) != own_part(now) {
             return vec!["its inputs".to_owned()];
         }
-        let tool = self.tool(i).is_some();
         let held: Vec<&[u8]> = then.as_bytes().get(OWN_PART..).unwrap_or_default().chunks_exact(READ_PART).collect();
-        reads.iter().filter(|read| !held.contains(&self.read_part(tool, read).as_bytes())).map(|read| format!("<{}>", read.name)).collect()
+        self.parts(i, reads).into_iter().filter(|(_, part)| !held.contains(&part.as_bytes())).map(|(name, _)| format!("<{name}>")).collect()
     }
 
     /// The operation asset `i` is, as its adapter takes it: the function its tool names, its inputs, and what it reads with what is known of
@@ -895,6 +989,20 @@ pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
     (2..).map(|n| format!("{wanted}_{n}")).find(|name| !taken(name)).expect("a free name")
 }
 
+/// What a person who typed `name` is told when the project has it.
+pub fn name_taken(doc: &Doc, name: &str) -> Error {
+    let there = doc.find(name).map_or(name, |i| doc.assets[i].name.as_str());
+    Error::new(Kind::Conflict, "asset_exists", format!("{there} is in the project already")).remedy(format!("use another name, or change it: cozy project set {there}"))
+}
+
+/// Whether a text asset can go by `name`: not a tag of a package this project uses.
+pub fn refuse_tag(lock: &Lock, name: &str) -> Result<(), Error> {
+    match lock.reserved.iter().find(|(_, tags)| is_tag(tags, name)) {
+        Some((tool, _)) => Err(Error::new(Kind::Validation, "asset_name_reserved", format!("{name} is a tag of {tool}: <{name}> in a prompt means that")).remedy("call it something else")),
+        None => Ok(()),
+    }
+}
+
 /// `name` as a key of a mapping: quoted where YAML in general would read it as something other than this text.
 pub fn yaml_key(name: &str) -> String {
     match protocol::yaml::to_json(name) {
@@ -924,6 +1032,27 @@ fn digest(value: &Value) -> String {
 /// How much of a key says what makes it and its inputs, and how much says each read.
 const OWN_PART: usize = 8;
 const READ_PART: usize = 12;
+
+/// One thing a key holds: four hex digits of its name and eight of `held`.
+fn part(name: &str, held: &Value) -> String {
+    format!("{}{}", &digest(&json!(name_key(name)))[..4], &digest(held)[..8])
+}
+
+/// `first` and `second` as the file spells them: one name, as names match by `name_key`, with where each is written.
+fn one_name_twice(text: &str, first: &str, second: &str) -> Error {
+    let lines = |name: &str| -> Vec<usize> {
+        let quoted = format!("\"{name}\"");
+        let writes = |line: &str| [name, quoted.as_str()].iter().any(|key| line.trim_start().strip_prefix(*key).is_some_and(|rest| rest.trim_start().starts_with(':')));
+        let at = |line: &str| line.len() - line.trim_start().len();
+        let under = text.lines().skip_while(|line| !line.starts_with("assets:")).skip(1).find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#')).map_or(2, at);
+        text.lines().enumerate().filter(|(_, line)| at(line) == under && writes(line)).map(|(n, _)| n + 1).collect()
+    };
+    let (at, then) = (lines(first), lines(second));
+    let one = at.first().copied().unwrap_or(0);
+    let other = then.iter().copied().find(|line| *line != one).unwrap_or(one);
+    let said = format!("{first}, on line {one}, and {second}, on line {other}, are one name: a name matches in any case, with `_` and `-` alike");
+    invalid("project_name_twice", said).remedy(format!("rename one of them in {}", folder::PROJECT))
+}
 
 fn own_part(key: &str) -> &str {
     key.get(..OWN_PART).unwrap_or(key)

@@ -1,0 +1,28 @@
+name: publish
+description: Uploads a run's output, scrubbed first (scrub.js). The repo is public, so an artifact is published; if the scrub fails, nothing goes up.
+inputs:
+  name:
+    description: The artifact's name
+    required: true
+  path:
+    description: The folder to upload
+    required: true
+  retention-days:
+    description: How long it stays
+    default: '14'
+  if-no-files-found:
+    description: As upload-artifact takes it
+    default: warn
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        OUTPUT: ${{ inputs.path }}
+      run: node "$GITHUB_ACTION_PATH/scrub.js" "$OUTPUT"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}

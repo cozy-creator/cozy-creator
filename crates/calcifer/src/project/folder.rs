@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 use tensorfs::err::{Code, Refusal};
 
+
 use super::graph::name_key;
 
 pub const PROJECT: &str = "project.yaml";
@@ -37,6 +38,11 @@ pub const RUNS: &str = ".runs";
 pub const WALK: &str = ".runs/walk.json";
 /// A cache of what is measured of each file, which a read of the file can always make again.
 pub(super) const MEASURED: &str = ".measured.json";
+/// Where a project.lock that can't be read goes.
+const BROKEN: &str = "project.lock.broken";
+const UNREADABLE: &str = "lock_unreadable";
+/// What marks a row whose name the file has lost: no name can hold it.
+const TOMBSTONE: char = '#';
 /// The lock's format.
 pub(super) const FORMAT: u32 = 3;
 
@@ -110,6 +116,9 @@ pub fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
 /// from a file here (`Folder::fill`): where it stays, and its parts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct File {
+    /// It was in `files/` when this was read, listed once for all of them: a stat each is seconds, on Windows, across a project's thousands.
+    #[serde(skip)]
+    pub here: bool,
     #[serde(skip)]
     pub path: String,
     #[serde(skip)]
@@ -358,7 +367,7 @@ impl Asset {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lock {
     pub format: u32,
     /// Every file, by sha256.
@@ -434,7 +443,7 @@ pub struct Owed {
     /// `rename`s asked while a render went, (from, to): each done as that walk ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(String, String)>,
-    /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project, and one that never lands is free again.
+    /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project. One that failed stays taken in project.lock.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub numbered: BTreeMap<String, u32>,
     /// This walk's runs not over: what they land is their version's. With the version listed whose file is on its way, which a restart follows.
@@ -624,7 +633,37 @@ impl Lock {
         if let Some(files) = value["files"].as_object_mut() {
             files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
         }
-        serde_json::to_string_pretty(&value).expect("a lock serializes") + "\n"
+        protocol::yaml::from_json(&value)
+    }
+
+    /// Each asset whose name the file has lost and with nothing on its way, set aside under a key no name can be, so that a later asset of that
+    /// name starts with no versions. It stays an orphan until `reclaim`, and `cozy project rename` still finds it.
+    pub fn tombstone(&mut self, named: impl Fn(&str) -> bool) {
+        let going: BTreeSet<String> = (self.pending.values().map(|pending| name_key(&pending.asset)))
+            .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
+            .collect();
+        let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
+        for key in lost {
+            let Some(mut held) = self.assets.remove(&key) else { continue };
+            if held.name.is_empty() {
+                held.name.clone_from(&key);
+            }
+            let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
+            self.assets.insert(free, held);
+        }
+    }
+
+    /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that.
+    pub fn untombstone(&mut self, name: &str) {
+        let key = name_key(name);
+        if self.assets.contains_key(&key) {
+            return;
+        }
+        let prefix = format!("{key}{TOMBSTONE}");
+        let latest = self.assets.keys().filter(|at| at.starts_with(&prefix)).max_by_key(|at| at[prefix.len()..].parse::<u32>().unwrap_or(0)).cloned();
+        if let Some(held) = latest.and_then(|at| self.assets.remove(&at)) {
+            self.assets.insert(key, held);
+        }
     }
 
     /// `sha256` is on `machine`, and not here: for good, or with `name`, on its way here as the file that makes.
@@ -657,12 +696,17 @@ pub struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
+    /// project.lock as last read, and how what it was read from stood then, so it is read again only when that changes.
+    held: Mutex<Option<(Stamp, Lock)>>,
 }
+
+/// How each of project.lock, the measurements and `files/` stood.
+type Stamp = [String; 3];
 
 impl Folder {
     /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
     pub fn at(dir: &Path) -> Self {
-        Self { dir: dir.to_owned(), tools: PathBuf::new() }
+        Self { dir: dir.to_owned(), tools: PathBuf::new(), held: Mutex::default() }
     }
 
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
@@ -675,7 +719,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools() })
+        Ok(Self { dir: dir.to_owned(), tools: home.tools(), held: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -688,13 +732,49 @@ impl Folder {
 
     /// The history: this and `update_lock` are the one way to it, whatever holds it.
     pub fn lock(&self) -> Result<Lock, Error> {
-        let path = self.dir.join(LOCK);
-        let mut lock = if path.exists() { parse_lock(&read(&path)?)? } else { Lock::default() };
-        self.fill(&mut lock);
+        let mut lock = self.lock_file()?;
+        // What the walk owes is never held: the walk's file says it, every time, as it does after a crash.
         if let Some(walk) = self.walk_kept()? {
             (lock.pending, lock.walk) = (walk.pending, walk.walk);
         }
         Ok(lock)
+    }
+
+    /// project.lock as the file says, held while it is the same file.
+    fn lock_file(&self) -> Result<Lock, Error> {
+        let stamp = self.stamp();
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, lock)) = held.as_ref().filter(|(at, _)| *at == stamp) {
+            return Ok(lock.clone());
+        }
+        let path = self.dir.join(LOCK);
+        let mut lock = match path.exists() {
+            true => match parse_lock(&read(&path)?) {
+                Err(error) if error.code == UNREADABLE => self.set_aside(&error)?,
+                parsed => parsed?,
+            },
+            false => Lock::default(),
+        };
+        self.fill(&mut lock);
+        *held = Some((stamp, lock.clone()));
+        Ok(lock)
+    }
+
+    fn stamp(&self) -> Stamp {
+        [LOCK, MEASURED, FILES].map(|name| super::stamp(&self.dir.join(name)))
+    }
+
+    /// A project.lock that can't be read is kept, never written over: moved aside, and said by `Doc::read` for as long as it's there.
+    fn set_aside(&self, why: &Error) -> Result<Lock, Error> {
+        let aside = (1..).map(|n| self.dir.join(if n == 1 { BROKEN.to_owned() } else { format!("{BROKEN}-{n}") })).find(|path| !path.exists()).expect("a free name");
+        std::fs::rename(self.dir.join(LOCK), &aside).map_err(|e| io_at(&aside, e))?;
+        warn!("{}: {}: moved to {}", self.dir.display(), why.message, aside.display());
+        Ok(Lock::default())
+    }
+
+    /// What says project.lock was set aside, if one was: its versions aren't read.
+    pub fn lock_set_aside(&self) -> bool {
+        self.dir.join(BROKEN).exists()
     }
 
     /// `lock`'s file table whole, from what needs no record: each file in `files/` names itself, what a version or run names and isn't here has
@@ -712,11 +792,13 @@ impl Folder {
         }
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let hex = name.split('.').next().unwrap_or_default();
-            if hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            let (hex, rest) = name.split_once('.').unwrap_or((&name, ""));
+            // What is named more than its hash and its type is no file of the project's.
+            if hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) && !rest.contains('.') {
                 let file = lock.files.entry(format!("sha256:{hex}")).or_default();
                 file.path = format!("{FILES}/{name}");
                 file.sha256 = format!("sha256:{hex}");
+                file.here = true;
                 // It's here: the machine that kept it keeps it no longer, and the next write says so, with no write of its own.
                 (file.ext, file.machine, file.length) = Default::default();
             }
@@ -803,12 +885,16 @@ impl Folder {
     pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
         let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         let moved = std::cell::RefCell::new(None);
-        self.rewrite_held(&self.dir.join(LOCK), |text| {
-            let mut lock: Lock = match text {
-                "" => Lock::default(),
-                text => parse_lock(text)?,
-            };
-            self.fill(&mut lock);
+        let wrote = std::cell::RefCell::new(None);
+        // What this wrote it needn't read back.
+        let held = || {
+            if let Some(mut lock) = wrote.take() {
+                self.fill(&mut lock);
+                *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.stamp(), lock));
+            }
+        };
+        self.rewrite_held(&self.dir.join(LOCK), |_| {
+            let mut lock = self.lock_file()?;
             let kept = self.walk_kept()?;
             let before = kept.as_ref().map(|walk| (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes")));
             if let Some(walk) = kept {
@@ -819,8 +905,10 @@ impl Folder {
             let after = (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes"));
             // Unchanged, it isn't written.
             *moved.borrow_mut() = (before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty())).then_some(walk);
-            Ok(lock.written())
-        })?;
+            let text = lock.written();
+            *wrote.borrow_mut() = Some(lock);
+            Ok(text)
+        }, held)?;
         // The project first. Killed between, a version is listed and the run that made it is still owed, so it lands again, the same. The
         // other way round, its take would be listed nowhere and its run owed by no one.
         match moved.into_inner() {
@@ -886,9 +974,10 @@ impl Folder {
     }
 
     /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. Listed as
-    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path.
-    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<PathBuf, Error> {
-        let (path, old) = {
+    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path, and why it
+    /// isn't listed: paid-for bytes are kept whatever the project can say of them.
+    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<(PathBuf, Option<Error>), Error> {
+        let (path, old, unlisted) = {
             let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
@@ -909,14 +998,15 @@ impl Folder {
                 }
             };
             // A walk's run lands on its version: nothing of the project moves until then.
-            match self.walk_kept()?.is_some_and(|walk| walk.walk.runs.contains_key(&made.run)) {
-                true => self.update_walk(|walk| listed(&mut walk.walk.landing))?,
-                false => self.update_lock(|lock| listed(&mut lock.runs))?,
-            }
-            (self.path(&path), old.into_inner())
+            let listed = match self.walk_kept() {
+                Ok(walk) if walk.as_ref().is_some_and(|walk| walk.walk.runs.contains_key(&made.run)) => self.update_walk(|walk| listed(&mut walk.walk.landing)),
+                Ok(_) => self.update_lock(|lock| listed(&mut lock.runs)),
+                Err(error) => Err(error),
+            };
+            (self.path(&path), old.into_inner(), listed.err())
         };
         self.drop_unused(&old)?;
-        Ok(path)
+        Ok((path, unlisted))
     }
 
     /// An output its machine keeps, in the lock's table: its hash, which machine, and no file.
@@ -1006,7 +1096,7 @@ impl Folder {
 
     /// Whether a file the lock names should be here and isn't, so a pull is what it needs: what stays on a machine isn't.
     pub fn missing(&self, file: &File) -> bool {
-        !file.stays() && !self.path(&file.path).is_file()
+        !file.stays() && !file.here
     }
 
     /// Whether files wait to be measured with no ffprobe here to do it: a walk fetches one first.
@@ -1113,12 +1203,13 @@ impl Folder {
 
 /// `text` as a lock of this format. A lock of another isn't read, so nothing writes over it.
 fn parse_lock(text: &str) -> Result<Lock, Error> {
-    let lock: Result<Lock, _> = serde_json::from_str(text);
-    match lock {
-        Ok(lock) if lock.format == FORMAT => Ok(lock),
-        Ok(lock) => Err(old_lock(&lock.format.to_string())),
-        Err(e) if e.to_string().contains("missing field `format`") => Err(old_lock("1")),
-        Err(e) => Err(Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {e}"))),
+    let unreadable = |why: String| Error::new(Kind::Validation, UNREADABLE, format!("{LOCK}: {why}"));
+    let value = protocol::yaml::to_json(text).map_err(unreadable)?;
+    match value["format"].as_u64() {
+        Some(format) if format == u64::from(FORMAT) => serde_json::from_value(value).map_err(|e| unreadable(e.to_string())),
+        Some(format) => Err(old_lock(&format.to_string())),
+        None if value.is_object() => Err(old_lock("1")),
+        None => Err(unreadable("it is no mapping".to_owned())),
     }
 }
 
@@ -1195,12 +1286,17 @@ impl Folder {
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
     fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
-        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-        self.rewrite_held(path, change)
+        self.rewrite_then(path, change, || {})
     }
 
-    /// As `rewrite`, with `WRITING` held.
-    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+    /// `rewrite`, and `wrote` once it has replaced the file, before any other write can.
+    fn rewrite_then(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<(), Error> {
+        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        self.rewrite_held(path, change, wrote)
+    }
+
+    /// As `rewrite_then`, with `WRITING` held.
+    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<(), Error> {
         loop {
             let before = match path.exists() {
                 true => read(path)?,
@@ -1216,6 +1312,7 @@ impl Folder {
             };
             if now == before {
                 durable::replace(path, after.as_bytes(), 0o644).map_err(io)?;
+                wrote();
                 crate::events::project_changed(&self.dir);
                 return Ok(());
             }

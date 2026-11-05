@@ -338,17 +338,21 @@ pub(crate) struct Landed<'a> {
 }
 
 /// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
-/// list when it lands them on its version. Answers the file's path.
-pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<PathBuf, String> {
+/// list when it lands them on its version. Answers the file's path, and what to say if its project couldn't list it.
+pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(PathBuf, Option<String>), String> {
     let output = match made.index {
         0 => made.output.to_owned(),
         n => format!("{}-{n}", made.output),
     };
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
-    let kept = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
+    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
-    Ok(kept)
+    let said = unlisted.map(|why| match why.next.first() {
+        Some(next) => format!("{} is in files/, and its project can't list it: {}: {next}", made.output, why.message),
+        None => format!("{} is in files/, and its project can't list it: {}", made.output, why.message),
+    });
+    Ok((kept, said))
 }
 
 /// An output its machine keeps, in its project's lock.
@@ -365,7 +369,12 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
 /// than it was, or a file comes to or goes from `files/`, as a pull's do with no write to either. Read from their stats alone, so a look at it
 /// costs nothing: every write replaces the file, so its inode tells two writes in one clock tick apart.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    format!("{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
+    // A person may write over a film at the root, and status says what it holds.
+    let films: String = (std::fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "mp4"))
+        .map(|entry| stamp(&entry.path()))
+        .collect();
+    format!("{films}.{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
 }
 
 /// What a file's stats say of it: another text whenever it's another file than it was.
@@ -469,7 +478,7 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
             run: pending.run,
             earlier_ms: pending.version.execution_ms,
             shot: job.is_some_and(|job| job.shot),
-            ends_at_ms: walker.placed.get(id).map(|placed| at_ms(placed.end_s)),
+            ends_at_ms: walker.placed.get(id).map(|placed| at_ms(walker.planned_at_ms, placed.end_s)),
             gpus: walker.placed.get(id).map(|placed| placed.width).filter(|width| *width > 0),
         }
     });
@@ -494,8 +503,8 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
                 needs: waits.iter().map(|name| (*name).to_owned()).collect(),
                 why: Some(why),
                 gpus: placed.map(|placed| placed.width).filter(|width| *width > 0),
-                starts_at_ms: placed.map(|placed| at_ms(placed.start_s)),
-                ends_at_ms: placed.map(|placed| at_ms(placed.end_s)),
+                starts_at_ms: placed.map(|placed| at_ms(walker.planned_at_ms, placed.start_s)),
+                ends_at_ms: placed.map(|placed| at_ms(walker.planned_at_ms, placed.end_s)),
                 ..Job::default()
             };
             (row, job.shot)
@@ -508,9 +517,9 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     Ok(())
 }
 
-/// `seconds` from now, to the nearest 10 s: a guess, and one that doesn't tell a client anything new every time it is worked out again.
-fn at_ms(seconds: f64) -> i64 {
-    (now_ms() + (seconds * 1000.0) as i64) / 10_000 * 10_000
+/// `seconds` after the plan was worked out, to the nearest 10 s: a guess, the same each time it is read.
+fn at_ms(planned_at_ms: i64, seconds: f64) -> i64 {
+    (planned_at_ms + (seconds * 1000.0) as i64) / 10_000 * 10_000
 }
 
 /// What a project's walker needn't read again.
@@ -538,6 +547,8 @@ struct Walker {
     /// Where the last plan put each job, by its key, and the machines it counted them on.
     placed: HashMap<String, sim::Placed>,
     plan_machines: Vec<On>,
+    /// When the plan was worked out: its times are from then.
+    planned_at_ms: i64,
     /// When each job went, and how wide: what is left of it.
     sent_at: HashMap<String, (Instant, String, u32)>,
 }
@@ -1074,28 +1085,28 @@ fn noun(doc: &Doc, lock: &Lock, i: usize) -> &'static str {
 }
 
 /// A set of files as the API lists them.
-fn listed(folder: &Folder, lock: &Lock, files: &Files) -> BTreeMap<String, Listing> {
+fn listed(lock: &Lock, files: &Files) -> BTreeMap<String, Listing> {
     (files.iter())
         .filter_map(|(name, sha256)| {
             let file = lock.files.get(sha256)?;
-            let (absent, machine) = whereabouts(folder, file);
+            let (absent, machine) = whereabouts(file);
             Some((name.clone(), Listing { path: file.path.clone(), sha256: sha256.clone(), absent, machine }))
         })
         .collect()
 }
 
 /// Whether a file isn't on this computer, and the machine that keeps it if one does.
-fn whereabouts(folder: &Folder, file: &folder::File) -> (bool, Option<String>) {
-    let absent = !folder.path(&file.path).is_file();
+fn whereabouts(file: &folder::File) -> (bool, Option<String>) {
+    let absent = !file.here;
     (absent, (absent && file.stays()).then(|| file.machine.clone()))
 }
 
 /// The file people mean by `files`, as a version lists it.
-fn main_file(folder: &Folder, lock: &Lock, files: &Files) -> Option<MainFile> {
+fn main_file(lock: &Lock, files: &Files) -> Option<MainFile> {
     let sha256 = folder::main_of(files)?;
     let file = lock.files.get(sha256)?;
     let output = files.iter().find(|(_, held)| *held == sha256)?.0.clone();
-    let (absent, machine) = whereabouts(folder, file);
+    let (absent, machine) = whereabouts(file);
     let measured = |number: u64| (number > 0).then_some(number);
     Some(MainFile {
         output,
@@ -1148,9 +1159,9 @@ fn row(reading: &Reading, i: usize) -> Row {
         .collect();
     let status = match &standing.state {
         _ if !gone.is_empty() => format!("not on this computer: {}: cozy project pull", gone.join(", ")),
-        Stand::Pinned { version: None, .. } => "pinned".into(),
-        Stand::Pinned { version: Some(version), changed } if changed.is_empty() => format!("pinned: {noun} {version}"),
-        Stand::Pinned { version: Some(version), changed } => format!("pinned: {noun} {version}; its inputs changed: {}", changed.join(", ")),
+        Stand::Pinned { version: None, .. } => "approved".into(),
+        Stand::Pinned { version: Some(version), changed } if changed.is_empty() => format!("approved: {noun} {version}"),
+        Stand::Pinned { version: Some(version), changed } => format!("approved: {noun} {version}; its inputs changed: {}", changed.join(", ")),
         Stand::Current(_) => "current".into(),
         Stand::Words => "only words".into(),
         Stand::Waits => "waits for what it reads".into(),
@@ -1161,7 +1172,7 @@ fn row(reading: &Reading, i: usize) -> Row {
     let made = standing.version().and_then(|number| held?.version(number));
     let main = folder::main_of(&files).and_then(|sha256| lock.files.get(sha256));
     let measured = |number: fn(&folder::File) -> u64| main.map(number).filter(|&number| number > 0);
-    let (absent, machine) = main.map_or((false, None), |file| whereabouts(folder, file));
+    let (absent, machine) = main.map_or((false, None), whereabouts);
     let failure = held.and_then(|held| held.failed.as_ref()).filter(|failed| failed.inputs == standing.inputs).map(|failed| failed.error.clone());
     let changed = match &standing.state {
         Stand::Pinned { changed, .. } => changed.clone(),
@@ -1189,7 +1200,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     kept: version.kept,
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
-                    main: main_file(folder, lock, &version.files),
+                    main: main_file(lock, &version.files),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
                     timeline: (!version.clips.is_empty()).then(|| {
@@ -1198,7 +1209,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                             let why = || version.without.iter().find(|left| name_key(&left.piece) == name_key(name)).map_or_else(|| "no longer in the project".to_owned(), |left| left.why.clone());
                             cut.and_then(|clip| Some(Files::from([("file".to_owned(), clip.sha256.clone()?)]))).ok_or_else(why)
                         };
-                        tools::timeline_now(version.clips.clone(), version.fps, files, folder, lock)
+                        tools::timeline_now(version.clips.clone(), version.fps, files, lock)
                     }),
                 })
             })
@@ -1208,7 +1219,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         pinned: asset.pin.is_some(),
         inputs: standing.inputs.clone(),
         path: main_path(lock, &files),
-        files: listed(folder, lock, &files),
+        files: listed(lock, &files),
         sha256: main.map(|file| file.sha256.clone()),
         field: main.map(|file| file.field().to_owned()),
         width: measured(|file| file.width),
@@ -1231,7 +1242,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                 let why = || if doc.find(name).is_some() { "no version yet" } else { "no longer in the project" }.to_owned();
                 read.map(|read| read.files.clone()).ok_or_else(why)
             };
-            tools::timeline_now(tools::clips(&asset.inputs, &standing.reads), Canvas::of(&asset.inputs, &mut vec![]).fps, files, folder, lock)
+            tools::timeline_now(tools::clips(&asset.inputs, &standing.reads), Canvas::of(&asset.inputs, &mut vec![]).fps, files, lock)
         }),
         rendering: None,
     }
@@ -1334,6 +1345,9 @@ async fn rename(
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let mut doc = Doc::load(folder).map_err(Refusal)?;
+    if doc.find(&asked.from).is_some_and(|i| doc.assets[i].text.is_some()) {
+        format::refuse_tag(&folder.lock().map_err(Refusal)?, &asked.to).map_err(Refusal)?;
+    }
     let free = doc.find(&asked.to).is_none() || name_key(&asked.to) == name_key(&asked.from);
     if doc.find(&asked.from).is_some() && free {
         // Its row first: a page that reads the new name knows it's the same box, where it was.
@@ -1349,7 +1363,9 @@ async fn rename(
         let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
         return Err(refuse(Kind::NotFound, "asset_unknown", said));
     };
-    let old = lock.asset(&asked.from).filter(|held| !held.versions.is_empty());
+    let mut back = lock.clone();
+    back.untombstone(&asked.from);
+    let old = back.asset(&asked.from).filter(|held| !held.versions.is_empty());
     let stands = !free && doc.find(&asked.from).is_some();
     if old.is_none() && stands {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
@@ -1381,6 +1397,7 @@ async fn rename(
 
 /// project.lock with asset `from` called `to`: its row, and what is pending or owed of it.
 fn renamed(lock: &mut Lock, from: &str, to: &str) {
+    lock.untombstone(from);
     let key = name_key(from);
     if let Some(mut held) = lock.assets.remove(&key) {
         held.name = to.to_owned();
@@ -1541,7 +1558,7 @@ async fn runs(
         if missing && keeps.is_none() && stand[i].files.is_some() {
             said(&name, match &stand[i].state {
                 Stand::Pinned { changed, .. } if !changed.is_empty() => format!("{name} is pinned, though {} changed: unpin to make it again", changed.join(", ")),
-                Stand::Pinned { .. } => format!("{name} is pinned: without --missing, naming it makes another {noun} to look at"),
+                Stand::Pinned { .. } => format!("{name} is approved: without --missing, naming it makes another {noun} to look at"),
                 Stand::Current(version) => format!("{name} is current, {noun} {version}; without --missing it makes another"),
                 _ => format!("{name} has its state; without --missing it makes another {noun}"),
             });
@@ -1567,8 +1584,10 @@ async fn runs(
         walk.walk.asked.extend(idempotency.iter().cloned());
     }))
     .map_err(Refusal)?;
-    if ask.takes.iter().any(|take| lock.asset(&take.asset).is_some_and(|held| held.failed.is_some())) {
+    // One write of the project per ask: what the file has lost is set aside, and what's asked again fails no more.
+    {
         (project.folder.update_lock(|lock| {
+            lock.tombstone(|key| doc.find(key).is_some());
             for take in &ask.takes {
                 if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
                     held.failed = None;
@@ -1856,6 +1875,12 @@ async fn import(
         return Ok(Json(done));
     }
     let wanted = element_name(asked.name.as_deref(), &asked.source);
+    if asked.exact {
+        let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
+        if format::free_name(&doc, &lock, &wanted) != wanted {
+            return Err(Refusal(format::name_taken(&doc, &wanted)));
+        }
+    }
     let kept = keep_file(&api, folder, &asked.source).await?;
     let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, key.as_ref())?;
     measure_soon(&api, &project);
@@ -1915,7 +1940,7 @@ async fn approve(
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
-    let files = listed(folder, &lock, &files);
+    let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings }))
 }
@@ -2488,8 +2513,9 @@ impl Walk {
         let _ = self.project.events.send(event);
     }
 
-    /// The board as project.lock stands now.
+    /// The board as project.lock stands now, its times worked out again.
     fn sync(&self) {
+        self.plan_now();
         if let Err(error) = sync_jobs(&self.project, |number| self.host.numbered(number)) {
             warn!("the board of {}: {}", self.folder().dir.display(), error.message);
         }
@@ -2662,7 +2688,7 @@ impl Walk {
     fn plan_now(&self) {
         let Ok(walk) = self.folder().walk_now() else { return };
         let mut walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, facts, learned, placed, plan_machines, sent_at, .. } = &mut *walker;
+        let Walker { graph, readings, facts, learned, placed, plan_machines, sent_at, planned_at_ms, .. } = &mut *walker;
         let open = graph.open_jobs();
         let at: HashMap<usize, usize> = open.iter().enumerate().map(|(place, &id)| (id, place)).collect();
         let mut machines: Vec<On> = vec![];
@@ -2707,6 +2733,7 @@ impl Walk {
         let plan = sim::plan(&works, &gpus);
         *placed = open.iter().zip(&plan.placed).map(|(&id, place)| (graph.jobs[id].key.clone(), *place)).collect();
         *plan_machines = machines;
+        *planned_at_ms = now_ms();
     }
 
     /// What `with` calls is known now: how wide this job should go, as the plan stands with that in it. 0: as wide as the machine goes, there being no choice.
@@ -2718,8 +2745,9 @@ impl Walk {
             walker.facts.insert(with.to_owned(), (function.to_owned(), widths));
             if !walker.learned.contains_key(&(name.clone(), function.to_owned())) {
                 let mut learned = sim::Learned::default();
-                if let Some(measured) = self.host.last_measured(function, &name) {
-                    learned.took(measured.width, measured.busy_s, measured.exchange_share);
+                // Oldest first, so the newest run's exchange is what counts.
+                for (measured, length) in self.host.last_measured(function, &name).into_iter().rev() {
+                    learned.took(measured.width, measured.busy_s / length, measured.exchange_share);
                 }
                 walker.learned.insert((name.clone(), function.to_owned()), learned);
             }
@@ -3774,11 +3802,15 @@ impl Walk {
                 return Ok(None);
             }
             self.missed.lock().expect("missed lock").names.insert(name.clone());
-            // Made again with what it asked, its seed too.
-            if let Some(seed) = pending.version.seed {
-                let tried = Tried { inputs: pending.version.inputs.clone(), seed };
-                folder.update_lock(|lock| lock.asset_mut(&name, &pending.kind).tried = Some(tried.clone()))?;
-            }
+            // Made again with what it asked, its seed too; and its number stays taken, so the next try is the next.
+            let tried = pending.version.seed.map(|seed| Tried { inputs: pending.version.inputs.clone(), seed });
+            folder.update_lock(|lock| {
+                let held = lock.asset_mut(&name, &pending.kind);
+                held.numbered = held.numbered.max(pending.version.number);
+                if tried.is_some() {
+                    held.tried.clone_from(&tried);
+                }
+            })?;
             if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
                 self.fault(machine, &reason.code, &reason.message)?;
             }
@@ -4230,7 +4262,7 @@ impl Walk {
         let lock = self.folder().lock()?;
         let path = main_path(&lock, &version.files).unwrap_or_default();
         let execution_ms = (version.execution_ms > 0).then_some(version.execution_ms);
-        self.say(Event::Landed { name: name.into(), noun: noun.into(), number, files: listed(self.folder(), &lock, &version.files), path, execution_ms });
+        self.say(Event::Landed { name: name.into(), noun: noun.into(), number, files: listed(&lock, &version.files), path, execution_ms });
         if let Some(kept) = version.kept {
             self.say(Event::Said { message: kept.said(name, number), name: Some(name.to_owned()) });
             self.project.jobs.why(name, number, format!("keeps take {} to {:.2} s", kept.take, kept.until_s));

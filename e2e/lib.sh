@@ -62,6 +62,8 @@ parse() {
   [ -z "$INSTALLED" ] || [ ! -f "$CAND_COZY" ] || { COZY=$CAND_COZY; CAND_COZY=''; }
   mkdir -p "$OUT"
   OUT=$(cd "$OUT" && pwd)
+  # Made up, and here so each published run shows its scrub ran (e2e/publish): in its log and this file it reads `Bearer [scrubbed]`.
+  echo 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
 }
 
 step() { echo "::endgroup::"; echo "::group::$*"; }

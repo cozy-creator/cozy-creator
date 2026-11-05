@@ -90,10 +90,11 @@ fn fields_of(file: Option<&PathBuf>, terms: &[String]) -> Result<Map<String, Val
   cozy project add qwen-image-2/generate_turbo kyogre instructions='A colossal blue whale.' aspect_ratio=1:1
   cozy project add minimax-h3/generate_turbo fight --input fight.yaml --at 400,120,360
   cozy project add cozy/edit film --input timeline.yaml
+  cozy project add text style text='Soft morning light.'   words that <style> stands for anywhere
 
-A name something has takes _2. Without --at the page puts it somewhere free, right of what it reads.")]
+A name you give that the project has is refused; one cozy picks takes _2. Without --at the page puts it somewhere free, right of what it reads.")]
 pub(super) struct Add {
-    /// A tool's id, from `cozy project tools`. Local code is its path, from the project's folder, and its function.
+    /// A tool's id, from `cozy project tools`, or `text` for a text asset. Local code is its path, from the project's folder, and its function.
     tool: String,
     /// `field=value`, `field:=json`, and one word with no `=` for what to call it. Default: the tool's name.
     #[arg(value_name = "NAME|FIELD=VALUE")]
@@ -112,7 +113,10 @@ pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Resul
     if names.len() > 1 {
         return Err(input_error("field_term", format!("one name, not {}: a field is field=value", names.join(" and "))));
     }
-    let ask = NewAsset { tool: args.tool, at: args.at, name: names.into_iter().next(), fields: fields_of(args.input.as_ref(), &terms)? };
+    let exact = !names.is_empty();
+    // `text`, no tool: a text asset.
+    let tool = if args.tool == "text" { String::new() } else { args.tool };
+    let ask = NewAsset { tool, exact, at: args.at, name: names.into_iter().next(), fields: fields_of(args.input.as_ref(), &terms)? };
     let made: AssetMade = ctx.calcifer().await?.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&made);

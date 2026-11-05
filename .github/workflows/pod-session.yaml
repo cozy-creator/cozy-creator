@@ -70,6 +70,7 @@ jobs:
             release-gate/suites/tensord
             e2e/candidates
             e2e/capabilities
+            e2e/publish
             e2e/cli/project/boxed
           path: creator
       - uses: actions/checkout@v5
@@ -161,7 +162,7 @@ jobs:
           [[ $SCRIPT =~ ^[a-z0-9-]+$ && $SCRIPT != lib && -f $s/$SCRIPT.sh ]] ||
             { echo "::error::no session $SCRIPT: $(ls $s | grep -vx lib.sh | sed 's/\.sh$//' | paste -sd,)"; exit 1; }
           jq -e 'type=="object"' <<<"$PARAMS" >/dev/null || { echo "::error::params is not a JSON object"; exit 1; }
-          bash "$s/$SCRIPT.sh"
+          bash "$s/$SCRIPT.sh" 2>&1 | node creator/e2e/publish/scrub.js
       # The script's trap ends its rentals; a cancelled job can skip it, so end them here too and say so.
       - if: always()
         run: |
@@ -177,7 +178,7 @@ jobs:
           done < "$OUT/rental"
           exit $left
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./creator/e2e/publish
         with:
           name: session-${{ inputs.script }}-${{ github.run_id }}
           path: ${{ env.OUT }}
