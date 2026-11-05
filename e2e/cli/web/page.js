@@ -97,6 +97,8 @@ async function closeBox(page) {
 async function openBox(page, name) {
   if (await page.locator(`.open-box .card[data-asset="${name}"]`).count()) return;
   await closeBox(page);
+  // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
   const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
   await page.mouse.click(x + width / 2, y + height / 2);
   await page.locator(`.open-box .card[data-asset="${name}"]`).waitFor();

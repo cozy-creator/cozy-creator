@@ -59,10 +59,10 @@ const WATCH = () => {
   };
   const box = (name) => [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
   window.boxOf = box;
-  /** What the pointer did and where the page was, for a box that doesn't open. */
+  /** What the pointer did and where the page was, for a box that doesn't open. First at the window, so it hears a click d3-drag then swallows. */
   window.clicks = [];
   for (const type of ['pointerdown', 'pointerup', 'click']) {
-    document.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.hash}`.slice(0, 160)), true);
+    window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.hash}`.slice(0, 160)), true);
   }
   /** All it says: a box open is a dialog of its own, beside its place on the canvas. */
   const wordsOf = (name) => `${box(name)?.textContent ?? ''}${document.querySelector(`.open-box:has(.card[data-asset="${name}"])`)?.textContent ?? ''}`;
