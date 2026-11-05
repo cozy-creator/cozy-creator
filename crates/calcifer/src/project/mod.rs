@@ -1579,7 +1579,9 @@ async fn runs(
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
         return Err(Refusal(error));
     }
-    let joined = *project.walking.lock().expect("walking lock");
+    // Held until the ask is in the walk's file: a walk ending in between would take its text from under it.
+    let walking = project.walking.lock().expect("walking lock");
+    let joined = *walking;
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
     let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
     let added = takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated);
@@ -1592,6 +1594,7 @@ async fn runs(
         walk.walk.asked.extend(idempotency.iter().cloned());
     }))
     .map_err(Refusal)?;
+    drop(walking);
     // One write of the project per ask: what the file has lost is set aside, and what's asked again fails no more.
     (project.folder.update_lock(|lock| {
         lock.tombstone(|key| doc.find(key).is_some());

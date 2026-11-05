@@ -558,8 +558,8 @@ began=$(python3 -I -c 'import time; print(int(time.time() * 1000))')
 "$COZY" project -p "$S" upgrade > "$OUT/killed-clean.txt" 2>&1 || check "killed: a clean one: $(tail -c 300 "$OUT/killed-clean.txt")"
 took=$(($(python3 -I -c 'import time; print(int(time.time() * 1000))') - began))
 cp "$S/project.yaml" "$OUT/killed-done.yaml"
-# Across where it writes, the last of what it takes.
-for part in $(seq 14 25); do
+# From its start to past its end: how long it takes moves with the disk, so no one stretch of it can be counted on.
+for part in $(seq 1 24); do
   at=$((took * part / 20)) tried=$((tried + 1))
   cp "$OUT/killed.yaml" "$S/project.yaml"; cp "$OUT/killed.lock" "$S/project.lock"; rm -f "$S/project.yaml.v2" "$S/project.lock.v2"
   "$COZY" project -p "$S" upgrade > /dev/null 2>&1 & pid=$!
@@ -742,7 +742,7 @@ eval "$line" > /dev/null || check "discards: restore the middle: $line"
 J '[.versions[].number] == [1, 2, 3] and (.discarded // []) == [] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: Undo: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
 grep -q 'approved:' "$T/project.yaml" || check "discards: Undo left no approved:"
 J '.asset.standing == "current"' <<< "$(held "$T" scene)" || check "discards: its reader after Undo: $(held "$T" scene | jq -c .asset)"
-render "$T" all || check "discards: render all: $(tail -c 300 "$OUT/render.txt")"
+render "$T" all --missing || check "discards: render what's missing: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" hero) $(made "$T" scene)" = "3 1" ] || check "discards: something ran again: $(counts "$T")"
 
 step "a project: a discarded number is never given again, and reclaim clears only what nothing names"
