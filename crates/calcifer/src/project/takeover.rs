@@ -202,8 +202,9 @@ pub(super) async fn render(api: &Arc<Api>, project: &Arc<Project>, asked: &Runs,
             let said = format!("{} holds this project's render: ask it of {0}, or here once it ends", held.machine);
             return Err(Refusal(Error::new(Kind::Conflict, "project_held", said).next(status_next(&project.folder)[0].clone())));
         }
-        // A render going here keeps going here, and drives what this one names too.
-        (None, Some(first)) if !*project.walking.lock().expect("walking lock") => first.clone(),
+        // A render going here keeps going here, and drives what this one names too. So does local code from outside the folder, which only this
+        // computer can read: it's installed on the machine as it's called.
+        (None, Some(first)) if !*project.walking.lock().expect("walking lock") && !code_outside(api, project) => first.clone(),
         _ => return Ok(None),
     };
     // A rental still booting takes it: the watcher hands it over once it answers.
@@ -462,21 +463,23 @@ async fn hand(api: &Arc<Api>, project: &Project, link: &Link, machine: &str, eta
     }
 }
 
-/// The local code the project's tools name, each file by its path in the folder. What lies outside the folder can't go, and is said.
+/// Whether a tool names local code outside the project's folder, which a walk on another machine can't reach.
+fn code_outside(api: &Arc<Api>, project: &Project) -> bool {
+    let named = super::local_code_named(api, &project_id(&project.folder.dir)).unwrap_or_default();
+    named.iter().any(|(_, path)| !path.starts_with(&project.folder.dir))
+}
+
+/// The local code the project's tools name, each file by its path in the folder.
 fn code_files(api: &Arc<Api>, project: &Project) -> Vec<(HeldFile, PathBuf)> {
     let Ok(named) = super::local_code_named(api, &project_id(&project.folder.dir)) else { return vec![] };
     let mut files = vec![];
-    for (written, path) in named {
+    for (_, path) in named {
         let listed = match path.is_dir() {
             true => crate::local_code::source_files(&path, &mut vec![]).map(|found| found.into_iter().map(|rel| path.join(rel)).collect()).unwrap_or_default(),
             false => vec![path.clone()],
         };
         for at in listed {
-            let Ok(rel) = at.strip_prefix(&project.folder.dir) else {
-                let said = format!("{written} is outside the project's folder, so the machine that holds its render can't run it");
-                let _ = project.events.send(Event::Warning { message: said, name: None });
-                break;
-            };
+            let Ok(rel) = at.strip_prefix(&project.folder.dir) else { continue };
             if let Ok(sha256) = folder::hash(&at) {
                 files.push((HeldFile { path: rel.to_string_lossy().into_owned(), sha256, ..HeldFile::default() }, at));
             }
