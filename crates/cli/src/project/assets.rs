@@ -197,11 +197,13 @@ pub(super) async fn set(ctx: &Context, at: Option<&PathBuf>, args: Set) -> Resul
         true => None,
         false => Some(calcifer.patch(&path, &AssetPatch { fields, tool }).await?),
     };
-    patched.iter().flat_map(|patched| &patched.warnings).for_each(|warning| output::warn(warning));
     match (ctx.json, &patched) {
         (true, Some(patched)) => output::json(patched),
         (true, None) => output::json(&serde_json::json!({ "name": args.name })),
-        (false, _) => output::say(ctx, &format!("{}: set {names}", args.name)),
+        (false, _) => {
+            println!("{}: set {names}", args.name);
+            patched.iter().flat_map(|patched| &patched.warnings).for_each(|warning| println!("warning: {warning}"));
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -252,7 +254,7 @@ pub(super) async fn delete(ctx: &Context, at: Option<&PathBuf>, names: Vec<Strin
         match ctx.json {
             true => output::json(&Deleted { deleted: &deleted, next: [back] }),
             false => {
-                output::say(ctx, &format!("deleted {}: what it made stays until `cozy project reclaim`, and what's going was canceled", deleted.name));
+                println!("deleted {}: what it made stays until `cozy project reclaim`, and what's going was canceled", deleted.name);
                 anstream::println!("{back}");
             }
         }
@@ -277,16 +279,16 @@ async fn discard(ctx: &Context, at: Option<&PathBuf>, names: Vec<String>, versio
         let (name, noun) = (&moved.name, &moved.noun);
         let approval = if moved.approved { ", and its approval with it" } else { "" };
         let stands = moved.stands.map_or_else(|| format!("it has no {noun} now"), |stands| format!("it's on {noun} {stands} now"));
-        output::say(ctx, &format!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy project reclaim`"));
-        say_stale(ctx, &moved);
+        println!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy project reclaim`");
+        say_stale(&moved);
         anstream::println!("{back}");
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn say_stale(ctx: &Context, moved: &VersionMoved) {
+fn say_stale(moved: &VersionMoved) {
     if !moved.stale.is_empty() {
-        output::say(ctx, &format!("out of date now: {}", moved.stale.join(", ")));
+        println!("out of date now: {}", moved.stale.join(", "));
     }
 }
 
@@ -300,7 +302,7 @@ pub(super) async fn restore(ctx: &Context, at: Option<&PathBuf>, name: String, k
     let made: AssetMade = ctx.calcifer().await?.put(&route(&["v1", "projects", &opened.id, "assets", &name]), &AssetBack { text: kept.text, at: kept.at }).await?;
     match ctx.json {
         true => output::json(&made),
-        false => output::say(ctx, &format!("{} is back", made.name)),
+        false => println!("{} is back", made.name),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -318,8 +320,8 @@ async fn undiscard(ctx: &Context, at: Option<&PathBuf>, name: String, versions: 
             continue;
         }
         let approval = if moved.approved { ", approved" } else { "" };
-        output::say(ctx, &format!("{}'s {} {number} is back{approval}", moved.name, moved.noun));
-        say_stale(ctx, &moved);
+        println!("{}'s {} {number} is back{approval}", moved.name, moved.noun);
+        say_stale(&moved);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -327,9 +329,14 @@ async fn undiscard(ctx: &Context, at: Option<&PathBuf>, name: String, versions: 
 /// `status <name>`: its fields and each take or version.
 pub(super) async fn one(ctx: &Context, at: Option<&PathBuf>, name: String) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
-    let held: AssetVersions = ctx.calcifer().await?.get(&route(&["v1", "projects", &opened.id, "assets", &name])).await?;
+    let mut held: AssetVersions = ctx.calcifer().await?.get(&route(&["v1", "projects", &opened.id, "assets", &name])).await?;
+    // The newest `SHOWN`, unless --full; `asset.versions` counts them all.
+    let all = held.versions.len();
+    if !ctx.full && all > SHOWN {
+        held.versions.drain(..all - SHOWN);
+    }
     if ctx.json {
-        output::json(&held);
+        output::view(ctx, &held, FIELDS);
         return Ok(ExitCode::SUCCESS);
     }
     let asset = &held.asset;
@@ -338,7 +345,7 @@ pub(super) async fn one(ctx: &Context, at: Option<&PathBuf>, name: String) -> Re
         record = record.field("tool", tool);
     }
     for (field, value) in &asset.fields {
-        record = record.field(field, value.as_str().map_or_else(|| value.to_string(), str::to_owned));
+        record = record.field(field, output::cut(ctx, &value.as_str().map_or_else(|| value.to_string(), str::to_owned), false));
     }
     record.print(ctx);
     let table = output::Table::new(ctx, [asset.noun.to_uppercase().as_str(), "APPROVED", "MADE BY", "SEED", "FILE"]);
@@ -347,9 +354,21 @@ pub(super) async fn one(ctx: &Context, at: Option<&PathBuf>, name: String) -> Re
         [version.number.to_string(), if version.approved { "yes" } else { "-" }.to_owned(), version.made_by.clone().unwrap_or_else(|| "-".into()), version.seed.map_or("-".to_owned(), |seed| seed.to_string()), file]
     });
     rows.fold(table, output::Table::row).print();
+    if held.versions.len() < all {
+        println!("{} newest of {all} {}s: --full for all", held.versions.len(), asset.noun);
+    }
     if !held.discarded.is_empty() {
         let numbers: Vec<String> = held.discarded.iter().map(u32::to_string).collect();
-        output::say(ctx, &format!("discarded, until `cozy project reclaim`: {}. To bring one back: cozy project restore {} --version <n>", numbers.join(", "), asset.name));
+        println!("discarded, until `cozy project reclaim`: {}. To bring one back: cozy project restore {} --version <n>", numbers.join(", "), asset.name);
     }
     Ok(ExitCode::SUCCESS)
 }
+
+/// The versions `status <name>` shows, newest last, unless --full.
+const SHOWN: usize = 20;
+/// What `status <name> --json` keeps (`--full`: all of it): the asset as the view says it, and each version but the words it was made from.
+const FIELDS: &[&str] = &[
+    "discarded", "asset.name", "asset.kind", "asset.tool", "asset.status", "asset.standing", "asset.approved", "asset.version",
+    "asset.versions", "asset.fields", "asset.reads", "asset.failure", "versions.number", "versions.approved", "versions.made_by",
+    "versions.seed", "versions.runs", "versions.files", "versions.execution_ms",
+];
