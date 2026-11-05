@@ -212,6 +212,24 @@ pub(crate) fn after(ordinal: i32, id: u64) -> Result<Option<Arc<Region>>> {
     Ok(next.cloned())
 }
 
+/// The first absent Region in the Plan's order, from the active phase, after `id` (from the start
+/// with None), that the worker can fill. Call with no lock held.
+pub(crate) fn absent(ordinal: i32, after: Option<u64>) -> Result<Option<Arc<Region>>> {
+    let lease = Lease::acquire(ordinal)?;
+    let Some((plan, active)) = &lease.active else { return Ok(None) };
+    let mut passed = after.is_none();
+    for ahead in 0..plan.phases.len() {
+        for region in &plan.phases[(active + ahead) % plan.phases.len()].regions {
+            if !passed {
+                passed = Some(region.id()) == after;
+            } else if region.uses.state() == Contents::Cold && !region.uses.unused.load(Ordering::Relaxed) && region.source.ahead() {
+                return Ok(Some(Arc::clone(region)));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Call before taking the gate.
 pub(crate) fn order(ordinal: i32) -> Result<Order> {
     let lease = Lease::acquire(ordinal)?;
