@@ -12,7 +12,7 @@ budget() {
   case $1 in
     home) echo 650 ;; home-out) echo 550 ;; project-status) echo 650 ;; project-empty) echo 100 ;; machine-ls) echo 300 ;; run-ls) echo 600 ;; run-ls-empty) echo 100 ;;
     run-show) echo 300 ;; run-show-failed) echo 1500 ;; json-home) echo 2000 ;; json-project-status) echo 1300 ;; json-machine-ls) echo 500 ;; json-run-ls) echo 3500 ;;
-    json-run-show) echo 700 ;; wait-idle) echo 650 ;; set) echo 100 ;; delete) echo 300 ;; restore) echo 100 ;; status-one) echo 900 ;; json-status-one) echo 2000 ;;
+    json-run-show) echo 700 ;; wait-idle) echo 650 ;; set) echo 100 ;; delete) echo 450 ;; restore) echo 100 ;; status-one) echo 900 ;; json-status-one) echo 2000 ;;
   esac
 }
 
