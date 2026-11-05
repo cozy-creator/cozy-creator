@@ -60,40 +60,50 @@ pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
     OBSERVER.set(observer).map_err(|_| Error::Invalid("working observer already installed"))
 }
 
-/// A coherent per-device inventory of actual backing and live/pending block state.
+/// A coherent per-device inventory of actual backing and live/pending block state, one row per
+/// handle as `mapped` and `retiring` report them: NCCL registers what it reads here, and a later
+/// retirement names that same address. A block across two handles shows on each what it holds.
 /// This visits existing devices only and performs no CUDA initialization or collection.
 pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
     let owners = devices()?;
     let mut out = Vec::new();
     for owner in owners {
         let state = owner.lock()?;
-        for (address, segment) in state.segments.iter().filter(|(_, segment)| segment.backed()) {
-            let end = *address + segment.bytes as u64;
-            let mut cursor = *address;
-            let mut blocks = Vec::new();
-            for (base, block) in state.blocks.range(*address..end) {
-                if cursor < *base {
-                    blocks.push(WorkingBlock { bytes: (*base - cursor) as usize,
+        for (address, segment) in &state.segments {
+            for chunk in segment.chunks.iter().filter(|chunk| chunk.handle.is_some()) {
+                let start = *address + chunk.offset as u64;
+                let end = start + chunk.bytes as u64;
+                let mut cursor = start;
+                let mut blocks = Vec::new();
+                for (base, block) in state.blocks.range(*address..end) {
+                    let (from, to) = ((*base).max(start), (*base + block.capacity as u64).min(end));
+                    if from >= to {
+                        continue;
+                    }
+                    if cursor < from {
+                        blocks.push(WorkingBlock { bytes: (from - cursor) as usize,
+                            requested: 0, allocated: false, active: false });
+                    }
+                    let bytes = (to - from) as usize;
+                    blocks.push(WorkingBlock {
+                        bytes,
+                        requested: block.requested.saturating_sub((from - *base) as usize).min(bytes),
+                        allocated: block.life == Life::Live,
+                        active: block.charge() != 0,
+                    });
+                    cursor = to;
+                }
+                // Eager classes need not divide a backing slab. This is real mapped
+                // but unassigned space, not an allocation slot or a promise of reuse.
+                if cursor < end {
+                    blocks.push(WorkingBlock { bytes: (end - cursor) as usize,
                         requested: 0, allocated: false, active: false });
                 }
-                blocks.push(WorkingBlock {
-                    bytes: block.capacity,
-                    requested: block.requested,
-                    allocated: block.life == Life::Live,
-                    active: block.charge() != 0,
+                out.push(WorkingSnapshot {
+                    segment: WorkingSegment { device: owner.ordinal, address: start, bytes: chunk.bytes,
+                        size_class: segment.size_class, pool: segment.pool }, blocks,
                 });
-                cursor = *base + block.capacity as u64;
             }
-            // Eager classes need not divide a backing slab. This is real mapped
-            // but unassigned space, not an allocation slot or a promise of reuse.
-            if cursor < end {
-                blocks.push(WorkingBlock { bytes: (end - cursor) as usize,
-                    requested: 0, allocated: false, active: false });
-            }
-            out.push(WorkingSnapshot {
-                segment: WorkingSegment { device: owner.ordinal, address: *address,
-                    bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool }, blocks,
-            });
         }
     }
     Ok(out)
