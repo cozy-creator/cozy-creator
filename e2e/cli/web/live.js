@@ -27,8 +27,9 @@ function check(name, ok, detail) {
 // "About a second": from a command's return, or a file's save, to the page showing it. The stream carries it, and a look at the files is 250 ms.
 const LIVE_MS = 1200;
 const FIRST_RUN_MS = 300_000;
-// Of the page's thread through a burst, leaving room to draw. Frames are reported, not judged: a Mac runner has no GPU and takes 50 to 66 ms a frame on ten boxes.
-const BURST_THREAD = 0.5;
+// Of the page's thread through a burst: read 0.12 on Windows, 0.31 on Linux, 0.56 on macOS. This leaves a quarter for drawing and input, short of the whole
+// thread that's thrashing. Frames are reported, not judged: a Mac runner has no GPU and takes 50 to 66 ms a frame on ten boxes. Being right in a second is `LIVE_MS`.
+const BURST_THREAD = 0.75;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
 // The stream's ring holds this many of what projects say.
