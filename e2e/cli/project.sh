@@ -50,7 +50,7 @@ ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json --full
 # status <project> [file]: its status as JSON.
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
 status() {
-  cozy --json project -p "$1" status 2> "$OUT/status.err" && return 0
+  cozy --json --full project -p "$1" status 2> "$OUT/status.err" && return 0
   local code=$?
   echo "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
   grep -q answer_unreadable "$OUT/status.err" && check "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
@@ -2451,7 +2451,7 @@ render "$T" edit || check "edits: second cut: $(tail -c 400 "$OUT/render.txt")"
 two=$(sha "$T/edit.mp4")
 [ "$one" != "$two" ] || check "edits: the second cut is the first"
 cozy project -p "$T" status > "$OUT/edits-status.txt" 2>&1 || check "edits: cozy project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.txt")"
-cozy --json project -p "$T" status > "$OUT/edits-status.json" 2> "$OUT/edits-status.err" || check "edits: cozy --json project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.err")"
+cozy --json --full project -p "$T" status > "$OUT/edits-status.json" 2> "$OUT/edits-status.err" || check "edits: cozy --json project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.err")"
 J '[.assets[] | select(.name == "edit") | .prefixes[].timeline.tracks[0].clips[].sha256] | length == 3 and all(startswith("sha256:"))' "$OUT/edits-status.json" || check "edits: a clip's one hash: $(jq -c '.assets[] | select(.name == "edit") | .prefixes' "$OUT/edits-status.json")"
 J '.assets[] | select(.name == "edit") | (.prefixes | length) == 2 and (.prefixes[0].from == ["a"]) and (.prefixes[1].from == ["a", "b"])' <<< "$(status "$T")" || check "edits: status: $(row "$T" edit .prefixes)"
 ls "$T/files/$one"* > /dev/null 2>&1 || check "edits: the first film is gone from files/"

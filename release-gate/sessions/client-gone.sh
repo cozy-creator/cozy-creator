@@ -210,7 +210,7 @@ YAML
   echo "$lock" > "$OUT/c-$TAG.lock.json"
   jq -e '(.assets.first.versions // []) != [] and (.assets.second.versions // []) != []' <<<"$lock" > /dev/null 2>&1 ||
     { wrong "c: the network back, first and second weren't made: $(c 'project status' | tail -6 | cut -c1-200 | paste -sd'|')"; return; }
-  c "--json project status" > "$OUT/c-$TAG-board.json"
+  c "--json --full project status" > "$OUT/c-$TAG-board.json"
   [ "$(jq '[.board.jobs[]? | select(.state == "failed")] | length' "$OUT/c-$TAG-board.json")" = 0 ] || wrong "c: a job failed: $(jq -c '[.board.jobs[] | select(.state == "failed") | .error.message]' "$OUT/c-$TAG-board.json" | cut -c1-300)"
   say "$TAG c: the network back, both made $t s later, nothing failed"
 }
@@ -244,7 +244,7 @@ YAML
     lock=$(sh "cat /home/client/$TAG/project.lock")
     jq -e '[.assets.clip, .assets.edit, .assets.aframe | (.versions // []) | length > 0] | all' <<<"$lock" > /dev/null 2>&1 && break
     # Its own failure ends the wait: it won't be made.
-    [ "$(c "--json project status" | jq '[.board.jobs[]? | select(.state == "failed")] | length')" = 0 ] || break
+    [ "$(c "--json --full project status" | jq '[.board.jobs[]? | select(.state == "failed")] | length')" = 0 ] || break
     t=$((t + 6)); sleep 3
   done
   line up
@@ -348,7 +348,7 @@ YAML
   local board failed=''
   t=0
   while [ $t -lt 120 ]; do
-    board=$(c "--json project status")
+    board=$(c "--json --full project status")
     failed=$(jq -r '[.board.jobs[]? | select(.asset == "lost" and .state == "failed") | .error.message] | first // ""' <<<"$board")
     [ -n "$failed" ] && break
     t=$((t + 3)); sleep 3

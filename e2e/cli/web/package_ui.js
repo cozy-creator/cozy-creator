@@ -144,7 +144,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const folder = (await state()).path;
   seen.project = { id, folder };
   const yaml = () => readFileSync(join(folder, 'project.yaml'), 'utf8');
-  const status = () => JSON.parse(execFileSync(COZY, ['--json', 'project', '-p', folder, 'status'], quiet).toString());
+  const status = () => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], quiet).toString());
   const held = (name) => status().assets.find((asset) => asset.name === name);
   const box = (name) => element(page, name);
   const away = () => page.mouse.move(2, 500);

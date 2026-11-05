@@ -7,7 +7,7 @@ use clap::ValueEnum;
 use protocol::{
     calcifer::{CalciferStatus, Holder, MachineState},
     error::{Error, Kind},
-    project::{Asset, Open, Opened, Standing, State},
+    project::{Open, Opened, State},
 };
 use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
@@ -29,12 +29,6 @@ pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
 
 #[derive(clap::Args, Debug)]
 pub struct Status {}
-
-/// What `--json` keeps of the project here (`--full`: all of it).
-const PROJECT: &[&str] = &[
-    "id", "path", "busy", "absent", "missing", "stale", "warnings", "next", "assets.name", "assets.tool", "assets.standing",
-    "assets.approved", "assets.pinned", "assets.status",
-];
 
 /// This cozy, Calcifer, the project here, the runs not yet settled, the machines and what they cost:
 /// `cozy` alone too. Never starts Calcifer.
@@ -72,7 +66,7 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
             "calcifer": running(ctx, &holder, &here), "project": project, "machines": list.machines, "rentals": list.rentals,
             "unanswered": list.unanswered, "signed_out": list.signed_out, "runs": runs,
         });
-        let project = PROJECT.iter().map(|path| format!("project.{path}"));
+        let project = crate::project::FIELDS.iter().map(|path| format!("project.{path}"));
         let mut paths: Vec<String> = ["calcifer".into(), "project.error".into()].into_iter().chain(project).collect();
         paths.extend(crate::machine::list::FIELDS.iter().chain(crate::run::list::FIELDS).map(|path| path.to_string()));
         output::view(ctx, &doc, &paths.iter().map(String::as_str).collect::<Vec<_>>());
@@ -92,7 +86,7 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     }
     let next = match &project {
         Some(Ok(state)) => {
-            println!("project: {}: {}", state.path.display(), totals(state));
+            println!("project: {}: {}", state.path.display(), crate::project::totals(state));
             state.warnings.iter().for_each(|warning| println!("warning: {}", warning.message));
             state.next.clone()
         }
@@ -121,27 +115,6 @@ async fn project(client: &Client) -> Option<Result<State, Error>> {
         Ok(opened) => Some(client.get(&format!("/v1/projects/{}", opened.id)).await),
         Err(error) if error.code == "project_not_found" => None,
         Err(error) => Some(Err(error)),
-    }
-}
-
-/// `4 assets: 1 approved, 1 current, 1 out of date, 1 missing`, leaving out what none are.
-fn totals(state: &State) -> String {
-    let standing = |asset: &Asset| match asset.standing {
-        Standing::Making => "rendering",
-        Standing::Missing => "missing",
-        Standing::OutOfDate => "out of date",
-        Standing::Current if asset.approved.is_some() || asset.pinned => "approved",
-        Standing::Current => "current",
-    };
-    let said: Vec<String> = ["approved", "current", "out of date", "rendering", "missing"]
-        .into_iter()
-        .map(|w| (state.assets.iter().filter(|asset| standing(asset) == w).count(), w))
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, w)| format!("{n} {w}"))
-        .collect();
-    match state.assets.len() {
-        0 => "no assets in project.yaml".into(),
-        n => format!("{n} assets: {}", said.join(", ")),
     }
 }
 

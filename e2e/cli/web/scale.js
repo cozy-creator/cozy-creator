@@ -147,7 +147,7 @@ function calciferMb() {
   });
   const project = (...words) => cozy('project', '-p', folder, ...words);
   const status = async () => {
-    const answer = await cozy('--json', 'project', '-p', folder, 'status');
+    const answer = await cozy('--json', '--full', 'project', '-p', folder, 'status');
     return { state: JSON.parse(answer.stdout), ms: answer.ms };
   };
   const seconds = (ms) => +(ms / 1000).toFixed(2);

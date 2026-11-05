@@ -130,6 +130,6 @@ YAML
   [ "$before" = "$(sha256sum "$P/project.yaml")" ] || fail "caption wrote to the file"
   say "caption: $(jq -r .text "$OUT/caption.json" | cut -c1-300)"
 fi
-cozy --json project -p "$P" status > "$OUT/status.json"
+cozy --json --full project -p "$P" status > "$OUT/status.json"
 cp "$P/project.yaml" "$P/project.lock" "$OUT/"
 say "PASS: each tool from drop to accept; judge $OUT/frames"

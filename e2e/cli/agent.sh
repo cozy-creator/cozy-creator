@@ -80,7 +80,7 @@ cat "$A/bytes.tsv"
 # Calcifer's age moves between the two.
 diff <(grep -v '^calcifer:' "$A/home.out") <(grep -v '^calcifer:' "$A/status.out") > "$A/home-status.diff" || check "agent: cozy and cozy status differ: $(head -5 "$A/home-status.diff")"
 grep -q 'runs: none in this project' "$A/run-ls-empty.out" || check "agent: run ls of no runs: $(cat "$A/run-ls-empty.out")"
-grep -q 'no assets' "$A/project-empty.out" || check "agent: status of no assets: $(cat "$A/project-empty.out")"
+grep -q 'assets: none in project.yaml' "$A/project-empty.out" || check "agent: status of no assets: $(cat "$A/project-empty.out")"
 grep -q 'project: none here' "$A/home-out.out" || check "agent: cozy outside a project: $(cat "$A/home-out.out")"
 grep -q '4 assets: 1 approved, 1 current, 1 out of date, 1 missing' "$A/home.out" || check "agent: cozy's totals: $(grep project: "$A/home.out")"
 grep -q 'RuntimeError' "$A/run-show-failed.out" || check "agent: run show of a failure has no traceback: $(cat "$A/run-show-failed.out")"
