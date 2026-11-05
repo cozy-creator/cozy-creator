@@ -287,12 +287,14 @@ impl Tier {
             return Ok(None);
         }
         let mut page = Page::new(len)?;
+        let began = Instant::now();
         while !page.registered() {
             if let Err(error) = page.register_window(self.device) {
                 self.state().off = Some(error.to_string());
                 return Ok(None);
             }
         }
+        varena::derive_probe(10, began);
         Ok(Some(page))
     }
 
@@ -323,7 +325,10 @@ impl Tier {
     /// that went first, or a capture, costs its next fill a bake, never a wrong page: its bytes
     /// never change, and `key` names them.
     fn keep(&self, job: Behind) {
-        let Ok(Some(page)) = self.reserve(&job.key, job.len) else { return };
+        let began = Instant::now();
+        let reserved = self.reserve(&job.key, job.len);
+        varena::derive_probe(9, began);
+        let Ok(Some(page)) = reserved else { return };
         let Some(region) = job.region.upgrade() else { return };
         let Ok(_producer) = varena::enter_producer(self.device) else { return };
         let Ok(Some(pin)) = region.try_pin() else { return };
@@ -334,7 +339,9 @@ impl Tier {
         }).collect();
         // SAFETY: the pin holds the source, ready and never written again; the page is this
         // thread's, registered window by window.
+        let began = Instant::now();
         let copied = unsafe { io::read(&copies, &ReadOpts::default()) };
+        varena::derive_probe(11, began);
         // SAFETY: the read returned, so nothing reads through this pin.
         drop(unsafe { pin.into_completed_region() });
         if copied.is_ok() {

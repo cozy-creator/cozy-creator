@@ -130,7 +130,7 @@ pub struct WorkingStats {
     pub observed_mapped: u64,
     pub observed_retired: u64,
     pub observed_ns: u64,
-    pub derive_probe: [u64; 9],
+    pub derive_probe: [u64; 12],
     pub reclaim_ns: u64,
     pub reclaim_longest_ns: u64,
     pub reclaim_longest_step: u64,

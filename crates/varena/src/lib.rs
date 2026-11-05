@@ -739,7 +739,7 @@ impl Device {
 }
 
 /// SCRATCH, never to land: inside a derive, 0 its whole time, 1 nested uses, 2 their eviction waits.
-pub static DERIVE: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9]; // 3 use, 4 prepare, 5 fill, 6 wait, 7 commit join ns, 8 joins
+pub static DERIVE: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12]; // 3 use, 4 prepare, 5 fill, 6 wait, 7 commit join ns, 8 joins
 thread_local! { pub static DERIVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 pub fn derive_probe(at: usize, began: std::time::Instant) {
     DERIVE[at].fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
