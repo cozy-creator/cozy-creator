@@ -37,7 +37,7 @@ use tracing::warn;
 use super::{
     Entry, Project, assetfile,
     folder::{self, Folder, Handing, Held},
-    format::{self, Doc},
+    format::{self, Doc, Tool},
     graph::name_key,
     indexed, now_ms, project_id, remember, status_next, yaml_etag,
 };
@@ -561,7 +561,33 @@ async fn collect(api: &Api, project: &Project, link: &Link, machine: &str, id: &
         bytes = bytes.saturating_sub(file.length);
         tell(wanted.len() - i - 1, bytes);
     }
+    if !wanted.is_empty() {
+        films(folder)?;
+    }
     Ok(0)
+}
+
+/// Each cut's film and timeline at the folder's root, as its version here says, as the walk puts them where it runs. One a person put
+/// there, no version of the cut's, stays.
+fn films(folder: &Folder) -> Result<(), Error> {
+    let lock = folder.lock()?;
+    let doc = Doc::of(folder, &folder.text()?, &lock)?;
+    let stand = doc.stand(&lock);
+    for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
+        let Some(files) = stand[i].files.as_ref() else { continue };
+        let name = &doc.assets[i].name;
+        let ours = |sha256: &str| lock.asset(name).is_some_and(|held| held.versions.iter().any(|version| version.files.values().any(|made| made == sha256)));
+        let film = folder.dir.join(super::cut_name(name));
+        for (field, at) in [("video", film.with_extension("mp4")), ("timeline", film.with_extension("otio"))] {
+            let Some(file) = files.get(field).and_then(|sha256| lock.files.get(sha256)) else { continue };
+            let from = folder.path(&file.path);
+            let there = tokio::task::block_in_place(|| folder::hash(&at)).ok();
+            if from.is_file() && there.as_deref() != Some(file.sha256.as_str()) && there.as_deref().is_none_or(ours) {
+                super::tools::publish(&from, &at).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `file` from the holder's folder into this one's `files/`, resumed from what came before, and kept only if its bytes are its hash.

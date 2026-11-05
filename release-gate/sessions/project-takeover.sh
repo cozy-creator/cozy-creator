@@ -5,7 +5,7 @@
 #   a. Handed over, then that computer gone for real: the line down and its CLI and Calcifer `kill -9`'d once X walks. X makes a still, a
 #      shot reading it, a clip, a cut of it and a frame of it, each once. The line back at 1 MB/s and Calcifer started: `status` says
 #      what isn't here yet and until when, then everything X made comes down, its bytes its hash.
-#   k. Kills during the hand-off: a 25 MB plate imported there, the line down for the first ask, then at 300 KB/s while that computer's
+#   k. Kills during the hand-off: a 20 MB plate imported there, the line down for the first ask, then at 300 KB/s both ways while that computer's
 #      Calcifer is killed every few seconds wherever the hand-off is (said from its walk file each time) and started again. X makes the shot
 #      that reads the plate once: one run, one version, the plate's bytes its hash on X.
 #   e. Nothing owed and nothing connected, the pod ends itself within 15 minutes of its last job.
@@ -238,7 +238,7 @@ YAML
     kills=$((kills + 1))
     say "k: kill $kills: $where; X holds $(sh 'cat /root/.cozy/calcifer/files/parts/*.held 2>/dev/null | head -c 80' | tr -d '\n') of the plate"
     killed "$(client_calcifer)"
-    [ $kills = 1 ] && line "up 300000"
+    [ $kills = 1 ] && line "up 300000 both"
     c "project status" > /dev/null 2>&1
     sleep 6
   done
