@@ -141,6 +141,12 @@ pub struct WorkingStats {
     pub prefetch_attempts: u64,
     pub prefetch_admissions: u64,
     pub prefetch_declines: u64,
+    /// Split levels chosen by reading the room, and those looked up as already chosen for it.
+    pub split_decisions: u64,
+    pub split_lookups: u64,
+    /// Moves of the room decisions are kept for, and of those, growing outside use's.
+    pub room_moves: u64,
+    pub room_outside_moves: u64,
     /// Owner-controlled cache storage is separate from Torch/phase working demand.
     pub cache_reserved_bytes: usize,
     pub cache_mapped_bytes: usize,
@@ -305,6 +311,8 @@ pub(crate) struct State {
     blocks: BTreeMap<u64, Block>,
     // (pool, size class, originating stream). Cross-stream candidates are promoted by poll.
     free: BTreeMap<(Option<PoolId>, usize, Option<u64>), Vec<u64>>,
+    // The free blocks of eager runs by (capacity, address): a cut's best fit in O(log n).
+    runs: BTreeSet<(usize, u64)>,
     addresses: BTreeMap<u64, usize>,
     pools: BTreeMap<PoolId, Pool>,
     fenced: Vec<u64>,
@@ -323,7 +331,16 @@ pub(crate) struct State {
 }
 
 impl State {
+    /// A free block onto its list, and a run's onto the cut index too. The block is in the table.
+    fn list(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {
+        self.free.entry(key).or_default().push(ptr);
+        if key.0.is_none() && self.blocks.get(&ptr).is_some_and(|block| self.segments[&block.segment].size_class > LARGE) {
+            self.runs.insert((key.1, ptr));
+        }
+    }
+
     fn unlist(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {
+        self.runs.remove(&(key.1, ptr));
         if let Some(slots) = self.free.get_mut(&key) {
             if let Some(index) = slots.iter().rposition(|listed| *listed == ptr) {
                 slots.swap_remove(index);
@@ -370,7 +387,7 @@ impl State {
         if fence {
             self.fenced.push(left);
         }
-        self.free.entry((None, capacity, origin)).or_default().push(left);
+        self.list((None, capacity, origin), left);
     }
 
     fn charged(&self) -> usize {
@@ -418,9 +435,10 @@ impl State {
         tail.fenced = false;
         self.unlist((None, capacity, None), ptr);
         self.blocks.get_mut(&ptr).expect("carved block").capacity = (at - ptr) as usize;
-        self.free.entry((None, (at - ptr) as usize, None)).or_default().push(ptr);
-        self.free.entry((None, tail.capacity, None)).or_default().push(at);
+        let rest = tail.capacity;
         self.blocks.insert(at, tail);
+        self.list((None, (at - ptr) as usize, None), ptr);
+        self.list((None, rest, None), at);
     }
 
     fn phase_changed(
@@ -596,8 +614,8 @@ impl Device {
     }
 
     /// Weights held for use now, kept as this request's high-water mark, which is returned.
-    pub(super) fn note_held(&self, state: &State) -> usize {
-        let held: usize = state.entries.values().filter(|entry| entry.uses.pins() != 0).map(|entry| entry.bytes).sum();
+    pub(super) fn note_held(&self) -> usize {
+        let held = self.held.load(Ordering::Acquire);
         self.held_peak.fetch_max(held, Ordering::AcqRel).max(held)
     }
 
@@ -680,27 +698,26 @@ impl Device {
                 }
             };
             if complete {
+                let charged = (block.charge(), block.phase);
                 block.fenced = false;
                 block.life = Life::Ready;
                 block.reusable_on = None;
                 block.waits.clear();
-                ready.push((ptr, block.capacity, block.segment));
+                ready.push((ptr, block.capacity, block.segment, charged));
             } else {
                 state.fenced.push(ptr);
             }
         }
         drop(fences);
-        for (ptr, bytes, segment) in &ready {
-            state
-                .free
-                .entry((state.segments[segment].pool, *bytes, None))
-                .or_default()
-                .push(*ptr);
+        for &(ptr, bytes, segment, (charge, phase)) in &ready {
+            state.list((state.segments[&segment].pool, bytes, None), ptr);
+            if charge != 0 {
+                state.phase_changed(charge, 0, phase, phase, segment);
+            }
         }
-        for (ptr, _, _) in ready {
+        for (ptr, ..) in ready {
             Self::merge_run(state, ptr);
         }
-        state.refresh_phase();
         Ok(())
     }
 
@@ -726,15 +743,24 @@ impl Device {
     /// the shared sizes keep to their own segments, and a large block's pages stay mapped until
     /// something needs them. Each size holding its own pages cost H3 2.5 times the driver calls.
     fn split_run(state: &mut State, bytes: usize, stream: u64, any: bool) -> Option<()> {
-        let (ptr, class, origin) = state.free.range((None, bytes + 1, None)..)
-            .take_while(|((pool, class, _), _)| pool.is_none() && (any || bytes >= SEGMENT || *class <= SEGMENT))
-            .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
-            .find_map(|((_, class, origin), slots)| {
-                slots.iter().rev()
-                    .find(|ptr| state.blocks.get(ptr).is_some_and(|block| block.capacity == *class && block.reusable_from(*origin)
-                        && (bytes > LARGE || state.segments[&block.segment].size_class > LARGE)))
-                    .map(|ptr| (*ptr, *class, *origin))
-            })?;
+        let most = if any || bytes >= SEGMENT { usize::MAX } else { SEGMENT };
+        let mut stale = Vec::new();
+        let found = state.runs.range((bytes + 1, 0)..=(most, u64::MAX)).find_map(|&(class, ptr)| {
+            match state.blocks.get(&ptr) {
+                Some(block) if block.capacity == class && block.life == Life::Ready => {
+                    let origin = block.reusable_on;
+                    (origin.is_none() || origin == Some(stream)).then_some((ptr, class, origin))
+                }
+                _ => {
+                    stale.push((class, ptr));
+                    None
+                }
+            }
+        });
+        for entry in stale {
+            state.runs.remove(&entry);
+        }
+        let (ptr, class, origin) = found?;
         state.unlist((None, class, origin), ptr);
         let token = state.phases.active.as_ref().map(|active| active.token);
         let block = state.blocks.get_mut(&ptr).expect("listed free run");
@@ -748,9 +774,10 @@ impl Device {
         if tail.charge() != 0 && tail.phase.is_some() && tail.phase == token {
             state.segments.get_mut(&tail.segment).expect("owned segment").phase_blocks += 1;
         }
-        state.free.entry((None, tail.capacity, origin)).or_default().push(at);
-        state.free.entry((None, bytes, origin)).or_default().push(ptr);
+        let rest = tail.capacity;
         state.blocks.insert(at, tail);
+        state.list((None, rest, origin), at);
+        state.list((None, bytes, origin), ptr);
         Some(())
     }
 
@@ -761,8 +788,11 @@ impl Device {
         if checks::on(checks::GUARDS) {
             return None;
         }
-        if class > LARGE || Self::reslab(state, class).is_none() {
-            Self::split_run(state, class, stream, true)?;
+        if Self::split_run(state, class, stream, true).is_none() {
+            if class > LARGE {
+                return None;
+            }
+            Self::reslab(state, class)?;
         }
         Self::take_class(state, class, requested, stream, None)
     }
@@ -788,7 +818,7 @@ impl Device {
         for offset in (0..=bytes - class).step_by(class) {
             let address = base + offset as u64;
             state.blocks.insert(address, Block::free(base, class));
-            state.free.entry((None, class, None)).or_default().push(address);
+            state.list((None, class, None), address);
         }
     }
 
@@ -839,6 +869,7 @@ impl Device {
                         continue;
                     }
                     slots.extend(unguarded.drain(..));  // still free, for any other request
+                    state.runs.remove(&(bytes, ptr));
                     // Phase tokens never repeat, and entry rebuilds segment accounting.
                     // Outside an observation an old tag needs neither reading nor clearing.
                     let observed = phase.map(|token| {
@@ -938,10 +969,10 @@ impl Device {
         }
         if let Some(pool) = pool {
             state.blocks.insert(ptr, Block::free(ptr, bytes));
-            state.free.entry((Some(pool), bytes, None)).or_default().push(ptr);
+            state.list((Some(pool), bytes, None), ptr);
         } else if class > LARGE {
             state.blocks.insert(ptr, Block::free(ptr, bytes));
-            state.free.entry((None, bytes, None)).or_default().push(ptr);
+            state.list((None, bytes, None), ptr);
         } else {
             Self::slab(state, ptr, bytes, class);
         }
@@ -1201,6 +1232,8 @@ impl Device {
             slots.retain(|ptr| state.blocks.contains_key(ptr));
             !slots.is_empty()
         });
+        let blocks = &state.blocks;
+        state.runs.retain(|(_, ptr)| blocks.contains_key(ptr));
         let segments = &state.segments;
         let fences = self.fences();
         state.pools.retain(|id, pool| {
@@ -1444,11 +1477,11 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         let _context = owner.driver().enter()?;
         let result = (|| -> crate::AllocationResult<u64> {
             owner.poll(&mut state)?;
-            owner.note_held(&state);
+            owner.note_held();
             let ptr = match Device::take(&mut state, class, bytes, stream, None) {
                 Some(ptr) => ptr,
                 None => {
-                    owner.sample()?;
+                    // The room as last read: a map reads the driver again, and so does reclaim.
                     match (owner.over(exact) != 0).then(|| Device::reuse(&mut state, class, bytes, stream)).flatten() {
                         Some(ptr) => ptr,
                         None => {
@@ -1468,6 +1501,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     });
     if matches!(result, Err(Error::OutOfMemory { .. })) {
         owner.lock()?.stats.ooms += 1;
+        owner.room_shrank();
     }
     result
 }
@@ -1556,11 +1590,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     let reusable_on = block.reusable_on;
     let observed = measured.then(|| (block.charge(), block.phase, block.segment));
     if reusable {
-        state
-            .free
-            .entry((pool, class, reusable_on))
-            .or_default()
-            .push(ptr);
+        state.list((pool, class, reusable_on), ptr);
     }
     if let Some((charge, phase, segment)) = observed {
         state.phase_changed(class, charge, phase, phase, segment);
@@ -1639,11 +1669,7 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
         state.fenced.push(ptr);
     }
     if completed {
-        state
-            .free
-            .entry((None, capacity, None))
-            .or_default()
-            .push(ptr);
+        state.list((None, capacity, None), ptr);
     }
     state.phase_changed(
         capacity,
@@ -1817,11 +1843,7 @@ fn retire_stream_inner(owner: &Device, device: i32, stream: u64) -> Result<()> {
         .collect();
     for (ptr, bytes, stream, segment) in ready {
         let pool = state.segments[&segment].pool;
-        state
-            .free
-            .entry((pool, bytes, stream))
-            .or_default()
-            .push(ptr);
+        state.list((pool, bytes, stream), ptr);
     }
     state.refresh_phase();
     Ok(())
@@ -2204,6 +2226,8 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     };
     let state = owner.lock()?;
     let mut stats = state.stats;
+    stats.room_moves = owner.room_epoch();
+    stats.room_outside_moves = owner.room_outside.load(Ordering::Relaxed);
     stats.allocated_capacity = state
         .blocks
         .values()

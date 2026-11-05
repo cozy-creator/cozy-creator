@@ -22,6 +22,16 @@ struct Site {
     samples: BTreeMap<String, Sample>,
     /// Levels given their one try. For the process: a try that fails or measures worse stays spent.
     tried: BTreeSet<String>,
+    /// Moves when a measure here changes what a decision would read.
+    measures: u64,
+    /// The level chosen here, kept while its room and measures hold: a loop's every step and
+    /// every later call of the same program meet the same room, so they look it up.
+    decided: Option<Decided>,
+}
+struct Decided {
+    selection: SplitSelection,
+    room: u64,
+    measures: u64,
 }
 struct Active {
     id: u64,
@@ -126,7 +136,7 @@ pub fn room(device: i32) -> Result<Room> {
     Ok(Room {
         capacity: total.min(owner.capacity()),
         working_live: live_working(&state),
-        pinned: state.entries.values().filter(|entry| entry.uses.pins() != 0).map(|entry| entry.bytes).sum(),
+        pinned: owner.held.load(Ordering::Acquire),
         weights_resident: owner.pages.load(Ordering::Acquire),
         free: headroom(owner, free, 0),
     })
@@ -237,6 +247,8 @@ fn register(
                 choices,
                 samples: BTreeMap::new(),
                 tried: BTreeSet::new(),
+                measures: 0,
+                decided: None,
             },
         );
     }
@@ -439,7 +451,7 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     let (free, total) = owner.driver().memory_info()?;
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
     // The most any op has held this request, since this op's own weights may not be held yet.
-    let held = owner.note_held(&state);
+    let held = owner.note_held();
     Ok(Menu { plans, capacity: total.min(owner.capacity()), live: live_working(&state) + held })
 }
 
@@ -528,14 +540,35 @@ fn split_select_inner(
     context(device)?;
     let owner = initialize_owner(device)?;
     register(owner, key, choices)?;
+    let room = owner.room_epoch();
+    {
+        let mut state = owner.lock()?;
+        if let Some(mut selection) = state.splits.sites.get(key).and_then(|site| site.kept(room, stream)) {
+            state.stats.split_lookups += 1;
+            selection.plan_generation = owner.plan_generation.load(Ordering::Acquire);
+            return Ok(selection);
+        }
+    }
     let selection = select(device, owner, key, stream)?;
-    if selection.trying {
-        // Spent now, whatever comes of it.
-        if let Some(site) = owner.lock()?.splits.sites.get_mut(key) {
+    let mut state = owner.lock()?;
+    state.stats.split_decisions += 1;
+    if let Some(site) = state.splits.sites.get_mut(key) {
+        if selection.trying {
+            // Spent now, whatever comes of it; the next step decides again without it.
             site.tried.insert(selection.choice_id.clone());
+        } else {
+            site.decided = Some(Decided { selection: selection.clone(), room, measures: site.measures });
         }
     }
     Ok(selection)
+}
+
+impl Site {
+    fn kept(&self, room: u64, stream: u64) -> Option<SplitSelection> {
+        self.decided.as_ref()
+            .filter(|kept| kept.room == room && kept.measures == self.measures && kept.selection.stream == stream)
+            .map(|kept| kept.selection.clone())
+    }
 }
 
 fn select(device: i32, owner: &'static Device, key: &str, stream: u64) -> Result<SplitSelection> {
@@ -626,6 +659,26 @@ fn split_begin_inner(
                     "split completion owner is not the active eager phase",
                 ));
             }
+        }
+    }
+    {
+        // The level kept for this room: its leaf opens with nothing read again.
+        let room = owner.room_epoch();
+        let gate = crate::gate(device)?;
+        gate.not_capturing()?;
+        let mut state = owner.lock()?;
+        match state.splits.sites.get(key).and_then(|site| site.kept(room, stream)) {
+            Some(kept) if kept.choice_id == choice_id => {
+                selected_generation(plan_generation, owner.plan_generation.load(Ordering::Acquire))?;
+                return open_leaf(&mut state, key, choice_id, completion_owner, stream, gate.epoch());
+            }
+            // Another level than the kept one is a finer retry: the next step decides again.
+            Some(_) => {
+                if let Some(site) = state.splits.sites.get_mut(key) {
+                    site.decided = None;
+                }
+            }
+            None => {}
         }
     }
     let keep = Protect { keep_working: true, ..Default::default() };
@@ -881,11 +934,14 @@ pub(super) fn phase_finished(
         if let Some(site) = state.splits.sites.get_mut(&row.key) {
             let sample = site.samples.entry(row.choice_id.clone()).or_default();
             if row.published {
+                let changed = !sample.known || sample.peak != row.peak_bytes || sample.backing != row.backing_peak_bytes
+                    || sample.classes != row.classes;
                 sample.known = true;
                 sample.peak = row.peak_bytes;
                 sample.backing = row.backing_peak_bytes;
                 sample.classes = row.classes.clone();
                 sample.successful += 1;
+                site.measures += u64::from(changed);
             } else {
                 sample.aborted += 1;
             }
