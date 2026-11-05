@@ -7,7 +7,7 @@ every ask of one sends BURST bytes at full speed, then drips at RATE until the c
 re-asking such an object, however often it was re-asked before, rather than wait out a drip.
 With MIN too, BURST is one 64 KiB and only objects of at least MIN bytes are cold, as R2's coldest are (tfs-141): each ask
 moves little however often it is asked, and TensorFS must read the object as parallel ranges.
-With FAST too, a cold object's asks of a part (TensorFS's 4 MiB range) or less come at full speed: many parts write at
+With FAST too, a cold object's asks of a part (TensorFS's 16 MiB range) or less come at full speed: many parts write at
 once, and writing them must not stand in the way of joining them up (a whole download hung so, tfs-143).
     straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min> [fast]]]"""
 import http.client
@@ -22,7 +22,7 @@ PORT, UPSTREAM, STRAGGLERS, RATE, LOG = int(sys.argv[1]), sys.argv[2], int(sys.a
 BURST = int(sys.argv[6]) if len(sys.argv) > 6 else 0
 MIN = int(sys.argv[7]) if len(sys.argv) > 7 else 4 * BURST
 FAST = len(sys.argv) > 8
-PART = 4 << 20
+PART = 16 << 20
 up = urllib.parse.urlsplit(UPSTREAM)
 lock = threading.Lock()
 slowed, asked = set(), {}

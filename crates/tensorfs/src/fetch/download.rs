@@ -1,5 +1,5 @@
 //! The downloader, as S3's own clients do it (aws-cli, CRT, s5cmd): a queue of objects, each read as
-//! 4 MiB ranges (one request for an object of 4 MiB or less), one limit on requests in flight across
+//! 16 MiB ranges (one request for an object of 16 MiB or less), one limit on requests in flight across
 //! every object, and each request asked again by the one retry rule ([`ask`]) from the byte it reached.
 //! A range is written at its offset in the object's one file, as aws-cli writes parts; nothing is joined.
 //! One far slower than the others (an eighth of the median, after 5 s) is restarted, at most 3 times.
@@ -33,9 +33,9 @@ use super::{Admission, ObjectStore, RangeWrite, Tier};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::ObjectRef;
 
-/// A range (aws-cli's `multipart_chunksize`). 4 MiB, not their 8: a cold R2 range drips at about
-/// 0.3 MB/s (fresh objects, 11-04), so a smaller one ends its object's tail sooner.
-const PART: u64 = 4 << 20;
+/// A range: 16 MiB. A request to R2 for never-read bytes pays a fixed start, so 4 MiB ranges moved
+/// 3-4 MB/s each and 8 MiB about 7.5 (11-04); a far slower one is restarted (`RESTARTS`).
+const PART: u64 = 16 << 20;
 /// Bytes a request gathers before writing them: the most a cut loses per request.
 const WRITE_BYTES: usize = 256 << 10;
 const VOLUME_READS: usize = 8;
