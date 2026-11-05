@@ -1078,8 +1078,11 @@ impl Device {
             if exclude.is_some() && segment.pool == exclude {
                 continue;
             }
+            // Phase tokens only rise: the pages longest out of use go first, not the lowest addresses.
+            let newest = state.blocks.range(*base..(*base + segment.bytes as u64))
+                .filter_map(|(_, block)| block.phase).max();
             if segment.chunks.len() > 1 {
-                large.push(*base);
+                large.push((newest, *base));
                 continue;
             }
             if let Some(id) = segment.pool {
@@ -1097,10 +1100,12 @@ impl Device {
                 .range(*base..(*base + segment.bytes as u64))
                 .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none())
             {
-                candidates.push(*base);
+                candidates.push((newest, *base));
             }
         }
-        for base in candidates {
+        candidates.sort_unstable();
+        large.sort_unstable();
+        for (_, base) in candidates {
             if released >= limit {
                 break;
             }
@@ -1119,7 +1124,7 @@ impl Device {
             state.segments.remove(&base);
             Self::return_address(state, base, bytes);
         }
-        for base in large {
+        for (_, base) in large {
             if released >= limit {
                 break;
             }
