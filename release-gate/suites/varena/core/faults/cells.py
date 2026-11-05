@@ -1057,7 +1057,8 @@ def tool_unmap() -> None:
 
 
 def tool_perturb() -> None:
-    """Freed blocks read as the pattern, in their stream's order, and so does a block reused."""
+    """Freed blocks read as the pattern, in their stream's order, and so does the next block given out,
+    wherever the allocator puts it (a card with room to spare puts it elsewhere: g34, g42)."""
     stream, _ = setup()
     vt.checks(perturb=True)
     block = torch.full((4 * MIB,), 0x11, dtype=torch.uint8, device=device)
@@ -1067,10 +1068,12 @@ def tool_perturb() -> None:
     freed = read(address, 4 * MIB)
     again = torch.empty(4 * MIB, dtype=torch.uint8, device=device)
     stream.synchronize()
-    reused = bytes(again.cpu().numpy()) if again.data_ptr() == address else b""
+    given = bytes(again.cpu().numpy())
     vt.checks()
-    good = freed == b"\xa5" * (4 * MIB) and reused == freed
-    verdict("correct" if good else "corrupt", freed_stale=sum(b != 0xA5 for b in freed), reused_at_address=bool(reused))
+    pattern = b"\xa5" * (4 * MIB)
+    good = freed == pattern and given == pattern
+    verdict("correct" if good else "corrupt", freed_stale=sum(b != 0xA5 for b in freed),
+            given_stale=sum(b != 0xA5 for b in given), reused_at_address=again.data_ptr() == address)
 
 
 def overrun(guards: bool):

@@ -781,9 +781,13 @@ impl Device {
         pool: Option<PoolId>,
     ) -> Option<u64> {
         let phase = state.phases.active.as_ref().map(|active| active.token);
+        // Under guards a large block comes only from a segment of its own: one carved before they
+        // were on has its neighbour right after it (an RTX 5090's and an H100's setup did).
+        let guarded = pool.is_none() && bytes > LARGE && checks::on(checks::GUARDS);
         for origin in [Some(stream), None] {
             let slots = state.free.get_mut(&(pool, bytes, origin));
             if let Some(slots) = slots {
+                let mut unguarded = Vec::new();
                 while let Some(ptr) = slots.pop() {
                     let Some(block) = state.blocks.get_mut(&ptr) else {
                         continue;
@@ -791,6 +795,11 @@ impl Device {
                     if block.capacity != bytes || !block.reusable_from(origin) {
                         continue;
                     }
+                    if guarded && state.segments.get(&block.segment).is_none_or(|s| s.guard == 0 || s.bytes != bytes) {
+                        unguarded.push(ptr);
+                        continue;
+                    }
+                    slots.extend(unguarded.drain(..));  // still free, for any other request
                     // Phase tokens never repeat, and entry rebuilds segment accounting.
                     // Outside an observation an old tag needs neither reading nor clearing.
                     let observed = phase.map(|token| {
@@ -816,6 +825,7 @@ impl Device {
                     }
                     return Some(ptr);
                 }
+                slots.extend(unguarded);
             }
         }
         None
