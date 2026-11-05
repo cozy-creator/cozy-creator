@@ -2717,7 +2717,7 @@ says failures "reader cannot render: no failed in this render"
 stops
 failed_once
 absent_piece
-rename_waits
+rename_goes_on
 renames_read
 step "a project: another package's take is refused, with nothing sent"
 local H=$OUT/refused; mkdir -p "$H"; plate "$H/look.mp4" testsrc2 440 800
@@ -3030,9 +3030,9 @@ cozy project -p "$T" unapprove edit > "$OUT/edits-unpin.txt" 2>&1 || check "edit
 [ "$(made "$T" edit)" = 2 ] || check "edits: choosing made a version: $(made "$T" edit)"
 }
 
-# A rename asked while a render goes happens as it ends: of a file moved by hand, and with the file moved by the one call.
-rename_waits() {
-step "a project: a rename during a render waits for it"
+# A rename asked while a render goes happens at once: of a file moved by hand, and with the file moved by the one call.
+rename_goes_on() {
+step "a project: a rename during a render happens at once"
 local T=$OUT/renaming going n
 mkdir -p "$T"
 cat > "$T/project.yaml" <<YAML
@@ -3056,13 +3056,15 @@ for _ in $(seq 120); do n=$(row "$T" busy .status | sed -n 's/.*making (run \([0
 [ -n "$n" ] || check "rename: the render never showed a run: $(tail -c 300 "$OUT/rename-busy.txt")"
 sed -i 's/^  old:/  new:/' "$T/project.yaml"
 cozy project -p "$T" rename old new > "$OUT/rename.txt" 2>&1 || check "rename: refused during a render: $(tail -c 300 "$OUT/rename.txt")"
-grep -q 'when the render going ends' "$OUT/rename.txt" || check "rename: does not say it waits: $(tail -c 300 "$OUT/rename.txt")"
+[ "$(made "$T" new)" = 1 ] || check "rename: new has $(made "$T" new) versions during the render"
 cozy project -p "$T" rename whole entire > "$OUT/rename.txt" 2>&1 || check "rename: the one call, during a render: $(tail -c 300 "$OUT/rename.txt")"
-grep -q 'when the render going ends' "$OUT/rename.txt" || check "rename: the one call does not say it waits: $(tail -c 300 "$OUT/rename.txt")"
 grep -q '^  entire:$' "$T/project.yaml" || check "rename: the file did not change at once: $(cat "$T/project.yaml")"
+[ "$(made "$T" entire)" = 1 ] || check "rename: entire has $(made "$T" entire) versions during the render"
+cozy project -p "$T" rename busy going > "$OUT/rename.txt" 2>&1 || check "rename: what's rendering: $(tail -c 300 "$OUT/rename.txt")"
 wait "$going" || check "rename: the render: $(tail -c 300 "$OUT/rename-busy.txt")"
 [ "$(made "$T" new)" = 1 ] || check "rename: new has $(made "$T" new) versions after the render ended"
 [ "$(made "$T" entire)" = 1 ] || check "rename: entire has $(made "$T" entire) versions after the render ended"
+[ "$(made "$T" going)" = 1 ] || check "rename: what was rendering has $(made "$T" going) versions under its new name"
 }
 
 # A name is no input: renaming something leaves what reads it as it stood, whatever kind of reader it is.
