@@ -567,14 +567,12 @@ code {
   font-size: calc(22px * var(--text, 1));
   line-height: calc(30px * var(--text, 1));
 }
+/* As many lines as the box holds at this zoom. */
 .words {
   margin: 0;
   align-self: flex-start;
   width: 100%;
   max-height: 100%;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 7;
   overflow: hidden;
   overflow-wrap: anywhere;
 }
