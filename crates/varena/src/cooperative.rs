@@ -212,18 +212,18 @@ impl Donor for Native {
 
     /// Design §4.6: `free < H` gives back up to `2H - free`, wherever a foreign program or this
     /// card's own fill put it, and speculation regrows at a pass boundary only once `2H` is free.
-    fn tick(&mut self, table: &Table, row: Row, idle: u64) {
+    fn tick(&mut self, table: &Table, row: Row, idle: u64) -> bool {
         if std::mem::take(&mut self.asked) {
             table.stop_asking(row);
         }
         if !self.shared || idle == 0 {
-            return;
+            return false;
         }
         let sample = crate::gate(self.device).and_then(|gate| {
             gate.not_capturing()?;
             working::peer::memory_info(self.device)
         });
-        let Ok((free, total)) = sample else { return };
+        let Ok((free, total)) = sample else { return false };
         let (free, total) = (free as u64, total as u64);
         let reserve = (total / 16).max(512 << 20);
         let want = if self.new_foreign_process(table) {
@@ -238,5 +238,6 @@ impl Donor for Native {
             table.ask(row, want);
             self.asked = true;
         }
+        want != 0
     }
 }

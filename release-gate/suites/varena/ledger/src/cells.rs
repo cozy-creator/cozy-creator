@@ -22,7 +22,7 @@ impl Donor for Pretend {
         println!("trimmed {released}");
         released
     }
-    fn tick(&mut self, _: &Table, _: Row, _: u64) {}
+    fn tick(&mut self, _: &Table, _: Row, _: u64) -> bool { false }
 }
 
 /// Idle memory it can't give.
@@ -30,7 +30,7 @@ struct Stuck(u64);
 impl Donor for Stuck {
     fn holdings(&mut self) -> (u64, u64) { (self.0, self.0) }
     fn trim(&mut self, _: u64) -> u64 { 0 }
-    fn tick(&mut self, _: &Table, _: Row, _: u64) {}
+    fn tick(&mut self, _: &Table, _: Row, _: u64) -> bool { false }
 }
 
 /// Child: hold `gib` GiB as a donor. `age` orders it: lower trims first.
