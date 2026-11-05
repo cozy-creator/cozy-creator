@@ -169,6 +169,9 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   await code.pressSequentially(first === '000000' ? '000001' : '000000');
   await page.getByText("That code isn't right").waitFor();
   check('wrong_code_stays_in_the_form', (await page.locator('.gate').count()) === 0 && (await code.count()) === 1);
+  // Shutting the field for an answer takes the cursor with it: it comes back, so no one has to click in to try again.
+  const inTheField = () => until('the cursor in the field', () => page.evaluate(() => document.activeElement?.matches('input[data-input-otp]')), Boolean, 3000).then(() => true, () => false);
+  check('wrong_code_leaves_the_cursor_in_the_field', await inTheField());
   check('wrong_code_names_no_command', !/cozy /.test(await said()), await said());
 
   // Too soon: the code already out is the answer, and no second mail goes.
@@ -192,7 +195,9 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   // The mail can land before the page hears it went, and the field is shut until it does: what's typed then goes nowhere.
   await page.getByText('A new code is on its way').waitFor();
   await until('the field to open', () => code.isEnabled(), Boolean);
-  await code.pressSequentially(first);
+  check('resend_leaves_the_cursor_in_the_field', await inTheField());
+  // The keyboard alone, as a person with the code in hand: nothing here clicks or focuses the field.
+  await page.keyboard.type(first);
 
   // A new account's name, then the account in the page.
   const name = `signin${Date.now() % 100000}`;
