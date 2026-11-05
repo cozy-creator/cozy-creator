@@ -87,7 +87,8 @@ web_engines() {
   local chrome=$1 pw=$2 ENGINE cell
   case ${RUNNER_OS:-} in
     macOS) ENGINE=webkit ;;
-    Linux) ENGINE=firefox ;;
+    # H.264 is the system's libavcodec on Linux: with none, Firefox says "This browser can't play it" (41966978063).
+    Linux) ENGINE=firefox; sudo apt-get install -y -qq libavcodec-extra > "$OUT/web-firefox-codec.log" 2>&1 || check "web-firefox: no H.264: $(tail -c 300 "$OUT/web-firefox-codec.log")" ;;
     *) return 0 ;;
   esac
   step "web-$ENGINE: place, see and nodes, in Playwright's $ENGINE"
