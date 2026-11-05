@@ -106,7 +106,7 @@ const constants = (folder) => {
     none: [...document.querySelectorAll('.media-note')].map((note) => note.textContent),
   })), (now) => now.up === 3 || now.none.includes('No preview'), 5 * STEP_MS);
   check('thumbnails', thumbs.up === 3, thumbs);
-  await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-dropped.png` : undefined });
+  if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-dropped.png` });
 
   // One chosen from the selector, in the tools' button: its field is focused with the stem selected; a name shows as it will be.
   const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('.tools button:has-text("Add file")')]);
@@ -251,7 +251,7 @@ const constants = (folder) => {
   await until('thumbnails back', picturesUp, (now) => JSON.stringify(now) === JSON.stringify(withFiles));
   check('reload_positions', JSON.stringify(await places()) === JSON.stringify(placesBefore), { before: placesBefore, after: await places() });
   check('reload_viewport', (await viewportNow()) === viewportBefore, { before: viewportBefore, after: await viewportNow() });
-  await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-reloaded.png` : undefined });
+  if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-reloaded.png` });
 
   check('comments_and_text_kept', yaml(folder).startsWith(written), yaml(folder));
 
