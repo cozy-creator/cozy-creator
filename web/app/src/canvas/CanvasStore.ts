@@ -4,13 +4,15 @@ import { type Action, Outbox } from "../api/outbox"
 import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
-import { ADD_ON_HEIGHT, ADD_ON_ROOM, addOnsOf } from "./checkpoints"
+import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
 import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, shownOf, widthFor } from "./shown"
 import { clipOf, wire } from "./timeline/model"
+import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
+import { isSelf, mentionFrom, numbersOf, SELF, versionOf } from "./versions"
 
 export type ElementData = { name: string }
 export type ElementNode = Node<ElementData, "element" | "entity">
@@ -95,6 +97,8 @@ export interface ElementView {
   captioning?: boolean
   /** Something is being dragged over it. */
   hot?: boolean
+  /** How many files dropped on it are on their way to being its versions. */
+  joining?: number
   /** It just arrived, and lands. */
   landing?: boolean
   /** The take that just landed, sliding in beside the last. */
@@ -105,6 +109,17 @@ export interface ElementView {
 export interface Keep {
   take?: number
   in_s?: number
+}
+
+/** A take or version carried out of its box. */
+export interface CarriedFile {
+  sha256: string
+  field: string
+  name: string
+  description?: string
+  /** The box it's from, and its number there. */
+  from?: string
+  number?: number
 }
 
 /** A deleted box, for Undo: what it was, and what Calcifer needs to bring it back. */
@@ -619,7 +634,7 @@ export class CanvasStore {
     if (!id || !view || !node) return
     const width = node.width ?? widthFor(view)
     const height = heightFor(view, width)
-    const shape = `${width}:${height}:${this.addOns(key)}`
+    const shape = `${width}:${height}:${this.stacked(key)}`
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
     this.flow?.updateNode(id, { measured: { width, height } })
@@ -628,14 +643,16 @@ export class CanvasStore {
 
   // Keeping clear: no box lies on another
 
-  private addOns(name: string) {
-    return addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length
+  /** How many are in the stack under it: its tool and what's on that. */
+  stacked(name: string): number {
+    const tool = this.get(name)?.asset?.tool
+    return addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
   }
 
-  /** A box and what's beside it, which nothing else lies on. */
+  /** A box and the stack under it, which nothing else lies on. With none it's only the box. */
   private laid(name: string, box: Box): Box {
-    const held = this.addOns(name)
-    return held ? { ...box, w: box.w + ADD_ON_ROOM, h: Math.max(box.h, held * ADD_ON_HEIGHT) } : box
+    const held = this.stacked(name)
+    return held ? { ...box, h: box.h + STACK_GAP + held * ADD_ON_HEIGHT } : box
   }
 
   /** Where a block of boxes goes to lie on nothing: there if it can. */
@@ -858,7 +875,107 @@ export class CanvasStore {
       this.over(key, back, (served, once) => this.client.restoreVersion(this.projectId!, served, number, wasApproved, once), `bring back ${asset.noun} ${number} of`)
     }
     const stands = approved ? ` It was approved: ${name} now shows its newest.` : ""
-    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+    const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
+    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
+    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** Whether a picture dropped here joins it: a box of pictures with no tool. */
+  joins(name: string): boolean {
+    const asset = this.get(name)?.asset
+    return Boolean(asset && !asset.tool && holdsPictures(asset))
+  }
+
+  /** A slot in its row while a file is on its way to it. What it answers says that's over. */
+  joining(name: string): () => void {
+    const count = (by: number) => this.patch(name, { joining: (this.get(name)?.joining ?? 0) + by || undefined })
+    count(1)
+    return () => count(-1)
+  }
+
+  /** A picture is `name`'s next version, there at once, a note offering Undo. `file` needs a path to show before the project holds it. `source` is what Calcifer finds it by. */
+  joinVersion(name: string, file: Pick<MainFile, "sha256" | "field"> & Partial<MainFile>, source: string, what: string) {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    if (!asset) return
+    const had = asset.prefixes ?? []
+    const same = had.find((held) => held.main?.sha256 === file.sha256)
+    if (same || asset.sha256 === file.sha256) return void say(`${name} has that picture already`)
+    const first: VersionPrefix[] = had.length || !asset.sha256 ? had : [{ number: 1, prefix: asset.sha256.slice(0, 12) }]
+    const number = Math.max(0, ...first.map((held) => held.number)) + 1
+    const main = file.path === undefined ? undefined : { output: file.field, path: file.path, ...file }
+    const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
+    const back: Partial<Asset> = { prefixes: asset.prefixes, versions: asset.versions, version: asset.version, approved: asset.approved }
+    const stands = asset.pinned ? (asset.approved ?? 1) : number
+    let joined = 0
+    let note = 0
+    const going = this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(asset.pinned ? { approved: stands } : {}) }, (served, once) => this.client.addVersion(this.projectId!, served, source, once), "add to", {
+      done: (answer) => {
+        joined = answer.number
+        if (answer.already) dismiss(note)
+      },
+      refused: () => dismiss(note),
+    })
+    const undo = () => {
+      if (going && this.outbox.takeBack(going)) return this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...back } })
+      this.over(key, back, (served, once) => this.client.discardVersion(this.projectId!, served, joined, once), "take back from")
+    }
+    note = say(`${what} joined ${name}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** A take let go on a box: one with no tool takes it as a version, anything else with words mentions it. Whether anything did. */
+  takePicture(name: string, file: CarriedFile): boolean {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    if (!asset || asset.timeline || madeHere(asset.tool)) return false
+    const own = file.from !== undefined && nameKey(file.from) === nameKey(key)
+    if (this.joins(key)) {
+      if (!own) this.joinVersion(key, { sha256: file.sha256, field: file.field, path: "" }, file.sha256, file.name)
+      return true
+    }
+    this.takeInto(key, [file.from && file.number ? mentionFrom(key, file.from, file.number) : file.name])
+    return true
+  }
+
+  // What makes a box
+
+  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. */
+  putTool(name: string, tool: Tool) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.asset || view.asset.tool === tool.id) return
+    void this.save(key)
+    const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool)
+    this.retool(key, step, step.lost.length ? `${name} runs ${tool.label} now, which can't take ${step.lost.join(" or ")}` : undefined)
+  }
+
+  /** Its tool's X: only that goes. A box of no pictures is its words, and a note offers Undo for a while. */
+  takeToolOff(name: string) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.asset) return
+    void this.save(key)
+    const word = this.tools.get().get(view.asset.tool ?? "")?.label ?? "Its tool"
+    const words = holdsPictures(view.asset) ? `Its pictures and words stay.` : `It's a text box now.`
+    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
+  }
+
+  private retool(key: string, step: ToolStep, said?: string) {
+    const send = (tool: string, fields: Record<string, unknown>) => (served: string, once: AbortSignal) => this.client.patchAsset(this.projectId!, served, { tool, fields }, undefined, once)
+    const after = (row: Partial<Asset>) => {
+      if (!row.tool) this.patch(key, { hereWords: undefined })
+      this.reshape(key)
+    }
+    let note = 0
+    const going = this.over(key, step.row, send(step.tool, step.fields), "change what makes", { done: (answer) => answer.warnings?.forEach((line) => say(line)), refused: () => dismiss(note) })
+    after(step.row)
+    if (!said) return
+    const undo = () => {
+      if (going && this.outbox.takeBack(going)) this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...step.back.row } })
+      else this.over(key, step.back.row, send(step.back.tool, step.back.fields), "change what makes")
+      after(step.back.row)
+    }
+    note = say(said, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
   }
 
   /** The take or version being looked at in `name`, if one is chosen: what Delete means while it's open. */
@@ -1112,7 +1229,18 @@ export class CanvasStore {
 
   /** Each name a mention could be, for the `<` list: nodes only. */
   namesLike(typed: string, besides: string): string[] {
+    const version = /^(.+)\.(\d*)$/.exec(typed)
+    if (version) {
+      const of = isSelf(version[1]) ? besides : this.nameOf(version[1])
+      const numbers = numbersOf(this.get(of ?? "")?.asset).filter((number) => String(number).startsWith(version[2]))
+      return numbers.reverse().map((number) => `${version[1]}.${number}`)
+    }
     const key = nameKey(typed)
+    const own = key && SELF.startsWith(key) ? numbersOf(this.get(besides)?.asset).slice(-1).map((number) => `${SELF}.${number}`) : []
+    return [...this.boxesLike(key, besides), ...own]
+  }
+
+  private boxesLike(key: string, besides: string): string[] {
     const names = [...this.views.entries()].filter(([name, view]) => name !== besides && !view.placing && !view.entity).map(([name]) => name)
     return names.filter((name) => nameKey(name).startsWith(key)).sort()
   }
@@ -1122,6 +1250,15 @@ export class CanvasStore {
     const key = nameKey(mention)
     for (const [name, view] of this.views) if (!view.placing && nameKey(name) === key) return name
     return null
+  }
+
+  /** What a mention in `asset`'s text names, as far as this page knows: a box, a version of it, and whether that's gone. */
+  mentionOf(mention: string, asset: string): { name: string; number?: number; gone?: boolean } | null {
+    const name = this.nameOf(mention)
+    if (name) return { name }
+    const version = versionOf(mention)
+    const of = version && (this.nameOf(version.name) ?? (isSelf(version.name) ? this.resolveName(asset) : null))
+    return of && version ? { name: of, number: version.number, gone: !numbersOf(this.get(of)?.asset).includes(version.number) } : null
   }
 
   /** A text says where its caret takes a name. The first of a box is what a drop on the box means. */
@@ -1147,6 +1284,11 @@ export class CanvasStore {
         this.setHot(name)
         return part
       }
+      // A box of pictures with no tool takes pictures, as its versions.
+      if (this.joins(name)) {
+        this.setHot(name)
+        return { over: () => {}, drop: (names) => this.joinBoxes(name, names) }
+      }
       // Only a box being made takes anything: what's made, approved or only words is just in the way.
       if (!view || !makes(view) || faceOf(view) !== "edit") break
       this.setHot(name)
@@ -1154,6 +1296,15 @@ export class CanvasStore {
     }
     this.setHot(null)
     return null
+  }
+
+  /** Boxes let go on a box of pictures: what each shows joins it, and they stay as they are. */
+  private joinBoxes(target: string, names: string[]) {
+    for (const name of names) {
+      const shown = this.get(name)
+      const file = shown && shownOf(shown)
+      if (file && this.resolveName(name) !== this.resolveName(target)) this.joinVersion(target, { ...file, path: file.path || "" }, file.sha256, name)
+    }
   }
 
   /** Names into a box that's shut: its first place for one, after what's there. */

@@ -74,6 +74,8 @@ export interface VersionPrefix {
 /** A mention that names something, and the places its text says it: `summary`, `beats.0.description`. */
 export interface Read {
   name: string
+  /** The one version a `<name.2>` fixes. */
+  version?: number
   at?: string[]
 }
 
@@ -194,6 +196,8 @@ export interface AssetVersions {
 export interface ProjectState {
   id: string
   path: string
+  /** What kept its last render from reaching a machine, each once. */
+  unsent?: ErrorBody[]
   name?: string
   assets: Asset[]
   entities?: Entity[]
@@ -277,6 +281,10 @@ export interface VersionMoved {
   /** What the asset stands on now, else its newest. None: it has none left. */
   stands?: number
   stale?: string[]
+  /** What names this version in its text. */
+  read_by?: string[]
+  /** A version held that file already: it's that one. */
+  already?: boolean
 }
 
 export interface Renamed {
@@ -1035,6 +1043,8 @@ export interface Tool {
   takes?: boolean
   /** Where a new take can start, in whole frames of the video: `offset + k * every`, from `first` up. None: any frame. */
   cuts?: { every: number; offset: number; first: number }
+  /** With another tool of its package of the same label this is one box, and a toggle by this word turns it on. */
+  variant?: string
   /** What a checkpoint dropped on its box goes on: the one model its function runs. */
   model?: { slot: string; default?: string; family?: string }
 }

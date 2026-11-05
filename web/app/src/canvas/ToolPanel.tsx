@@ -5,11 +5,13 @@ import { useConnection } from "../app/Connection"
 import type { Tool, Tools } from "../types"
 import { Icon, type IconName } from "../ui/Icon"
 import { say } from "../ui/notes"
+import { carried } from "./checkpoints"
 import { useCanvasStore } from "./context"
 import { TEXT_TOOL } from "./controls"
 import { DRAGGED_TOOL } from "./drag"
 import { ModelBrowse } from "./ModelBrowse"
 import { madeHere } from "./shown"
+import { carryingTool } from "./toolchange"
 import { ToolBrowse } from "./ToolBrowse"
 
 const GROUPS: { id: string; words: string; icon: IconName }[] = [
@@ -28,6 +30,11 @@ function rowsOf(tools: Tool[]): { tool: Tool; quick?: Tool }[] {
   const quick = new Map(tools.map((tool) => [`${tool.package}/${tool.function}`, tool]))
   const taken = new Set<Tool>()
   const rows = tools.map((tool) => {
+    // Two of a label are one box, its toggle starting on: `variantOf` flips it.
+    if (tools.some((other) => other.variant && other !== tool && other.package === tool.package && other.label === tool.label)) {
+      taken.add(tool)
+      return { tool }
+    }
     const fast = quick.get(`${tool.package}/${tool.function}_turbo`)
     if (fast) taken.add(fast)
     return { tool, quick: fast }
@@ -39,6 +46,8 @@ function dragged(event: DragEvent, tool: Tool) {
   event.stopPropagation()
   event.dataTransfer.setData(DRAGGED_TOOL, tool.id)
   event.dataTransfer.effectAllowed = "copy"
+  // Words and what's made here are boxes of their own: nothing takes them.
+  carried.set(tool === TEXT_TOOL || madeHere(tool.id) ? null : carryingTool(tool))
 }
 
 /** Off your list at once. Nothing is deleted, and a box of it goes on as it was. */
@@ -59,8 +68,13 @@ function useRemove() {
 
 function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; place: (tool: Tool) => void; yours: boolean }) {
   const remove = useRemove()
+  const store = useCanvasStore()
+  const landed = () => {
+    carried.set(null)
+    store.setHot(null)
+  }
   return (
-    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.kind} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onClick={() => place(tool)}>
+    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.kind} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onDragEnd={landed} onClick={() => place(tool)}>
       <b>{tool.label}</b>
       {quick && (
         <span
