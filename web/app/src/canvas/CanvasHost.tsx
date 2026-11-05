@@ -66,11 +66,14 @@ function ProjectSync({ id }: { id: string }) {
     if (state) store.applyState(state)
   }, [store, state])
   useEffect(() => {
-    // A tool an asset names that the list didn't hold, asked for by its name, once. Before the list has come, that would be all of them.
-    if (!tools.size) return
-    for (const tool of new Set(state?.assets.flatMap((asset) => asset.tool ?? []))) {
-      if (madeHere(tool) || asked.current.has(tool) || tools.has(tool)) continue
-      asked.current.add(tool)
+    // A tool an asset names that the list didn't hold, asked for by its name, once. Before the list has come, that would be all of them, and a
+    // first read under way can't be asked again. Text is there from the start, so the list has come when there's more.
+    if (tools.size < 2) return
+    for (const { tool, prefixes } of state?.assets ?? []) {
+      // And again with each version it lands: a render can read local code the list couldn't, on a Runtime newer than the one that lists it.
+      const ask = `${tool}@${prefixes?.length ?? 0}`
+      if (!tool || madeHere(tool) || asked.current.has(ask) || tools.has(tool)) continue
+      asked.current.add(ask)
       // Local code is listed only once something names it, so the list is read again. Anything else can be searched for.
       if (/^[./~\\]|^\w:[\\/]/.test(tool)) void queries.invalidateQueries({ queryKey: ["tools"] })
       else client.tools(tool.split("/").slice(0, -1).join(" "), null, id).then(({ tools }) => store.addTools(tools), () => {})

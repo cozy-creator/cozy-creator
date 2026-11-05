@@ -26,6 +26,7 @@ function check(name, ok, detail) {
   if (!ok) failures.push(name);
 }
 const finish = () => {
+  if (heard.length) seen.hub_heard = heard;
   console.log(JSON.stringify({ ok: !failures.length, failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);
 };
@@ -33,6 +34,9 @@ const shell = (command) => new Promise((done, fail) => exec(command, { shell: 'b
 
 const b64 = (bytes) => Buffer.from(bytes).toString('base64url');
 const COOLDOWN_S = 12;
+/** A Hub mails first and answers after: the code can be in hand while the page still waits to hear it went. */
+const ANSWERS_AFTER_MS = 1500;
+const heard = [];
 
 /** What a Hub does for a sign-in, on loopback. It holds Calcifer to its signatures and refuses as AuthKit does: a wrong code is 401, too soon is 429. */
 async function standIn() {
@@ -51,6 +55,7 @@ async function standIn() {
     req.on('end', () => {
       const ask = body ? JSON.parse(body) : {};
       const send = (status, answer, headers = {}) => {
+        heard.push(`${req.method} ${req.url.split('?')[0]} ${status}`);
         res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
         res.end(answer === undefined ? undefined : JSON.stringify(answer));
       };
@@ -64,7 +69,7 @@ async function standIn() {
         const id = b64(randomBytes(32)), challenge = b64(randomBytes(32)), code = String(100000 + mailed.length * 7 + 11);
         enrollments.set(id, { ...ask, challenge, code });
         mailed.push(code);
-        return send(200, { enrollment_id: id, challenge, expires_at: new Date(Date.now() + 600_000).toISOString() });
+        return setTimeout(() => send(200, { enrollment_id: id, challenge, expires_at: new Date(Date.now() + 600_000).toISOString() }), ANSWERS_AFTER_MS);
       }
       if (route === 'POST /v1/auth/v1/device-keys/enroll/finish') {
         const held = enrollments.get(ask.enrollment_id);
@@ -186,7 +191,9 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   await resend.click();
   const second = await until('a second code', () => mailed()[1], Boolean);
   check('two_emails_two_codes', first !== second, mailed());
-  await code.waitFor();
+  // The mail can land before the page hears it went, and the field is shut until it does: what's typed then goes nowhere.
+  await page.getByText('A new code is on its way').waitFor();
+  await until('the field to open', () => code.isEnabled(), Boolean);
   await code.pressSequentially(first);
 
   // A new account's name, then the account in the page.
@@ -196,6 +203,11 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   const record = (text) => page.locator('dd', { hasText: text });
   await record(email).waitFor();
   check('account_shows', (await record(name).count()) === 1);
+  // The wrong code, then the older code on the newest's refusal: past the second mail, a Hub must hear both or this proved nothing.
+  if (hub) {
+    const proofs = heard.filter((line) => line.includes('/enroll/finish')).map((line) => line.split(' ').pop());
+    check('older_code_found_past_the_newest', proofs.join() === '401,401,200', proofs);
+  }
 
   await page.reload();
   await record(email).waitFor();

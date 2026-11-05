@@ -130,12 +130,15 @@ class Bridge {
       this.queries.setQueryData(["run", run.number], run)
       for (const listener of this.runListeners) listener(run)
     }
+    const ended = batch.some((run) => run.status !== "queued" && run.status !== "in_progress")
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
     for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["runs"] })) {
       if (!list) continue
       const after = runsAfter(list, key[1] as RunFilter, batch)
       this.queries.setQueryData<RunList>(key, after.list)
-      if (after.again) void this.queries.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
+      // A read begun before a run ended answers with it still going, and nothing after it says otherwise.
+      const stale = ended && this.queries.isFetching({ queryKey: key, exact: true }) > 0
+      if (after.again || stale) void this.queries.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: stale })
     }
   }
 

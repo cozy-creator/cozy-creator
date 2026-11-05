@@ -42,7 +42,7 @@ drop() {
 }
 # accept <name>: render it on the pod, take its newest version, and say which version that is in its files.
 accept() {
-  step "render-$1" project -p "$P" render "$1" --new --on "$NAME" || fail "$1: $(tail -c 500 "$OUT/render-$1.txt")"
+  step "render-$1" project -p "$P" render "$1" --on "$NAME" || fail "$1: $(tail -c 500 "$OUT/render-$1.txt")"
   local n
   n=$(cozy --json project -p "$P" status "$1" | jq -r '.versions[-1].number')
   step "approve-$1" project -p "$P" approve "$1" "$n" || fail "approve $1: $(tail -c 300 "$OUT/approve-$1.txt")"

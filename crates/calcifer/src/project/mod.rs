@@ -689,11 +689,10 @@ impl Frozen for Now<'_> {
 }
 
 impl Project {
-    /// Each render `lock` holds that the graph doesn't yet: its jobs made, what it left going taken in. Answers the jobs made.
-    fn join(&self, lock: &Lock) -> Vec<usize> {
+    /// Each render `lock` holds that the graph doesn't yet: its jobs made, what it left going taken in.
+    fn join(&self, lock: &Lock) {
         let mut walker = self.walker.lock().expect("walker lock");
         let Walker { graph, readings, joined, greet, unread, .. } = &mut *walker;
-        let mut made = vec![];
         for ask in &lock.walk.asks {
             if !joined.insert(ask.id.clone()) {
                 continue;
@@ -722,9 +721,8 @@ impl Project {
                 tried: ask.sent.clone(),
                 takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve }).collect(),
             };
-            made.extend(graph.add(&ask.id, &mut Now { reading, lock, ask }, &asked));
+            graph.add(&ask.id, &mut Now { reading, lock, ask }, &asked);
         }
-        made
     }
 }
 
@@ -1718,8 +1716,8 @@ async fn runs(
     if let Some((key, digest)) = &idempotency {
         project.folder.keep_key(key, digest, "", None).map_err(Refusal)?;
     }
-    let made = project.join(&project.folder.lock().map_err(Refusal)?);
-    let queued = queued_now(&project, &made);
+    project.join(&project.folder.lock().map_err(Refusal)?);
+    let queued = queued_now(&project, &ask.id);
     walk(&api, &project);
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
     Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder), board: project.jobs.board() })))
@@ -1756,13 +1754,13 @@ fn queue(project: &Project, walk: &folder::WalkFile) -> Vec<Queued> {
 /// How many names a queued job says are ahead of it.
 const AHEAD_SAID: usize = 8;
 
-/// What `made` are, each with the names ahead of it.
-fn queued_now(project: &Project, made: &[usize]) -> Vec<QueuedNow> {
+/// What `ask` queued, each with the names ahead of it. By its ask: the walk, or a read of the queue, may have taken it in before its answer.
+fn queued_now(project: &Project, ask: &str) -> Vec<QueuedNow> {
     let walker = project.walker.lock().expect("walker lock");
     let graph = &walker.graph;
     let open = graph.open_jobs();
     (open.iter().enumerate())
-        .filter(|(_, id)| made.contains(id))
+        .filter(|&(_, &id)| graph.jobs[id].ask == ask)
         .map(|(at, &id)| QueuedNow { name: graph.jobs[id].asset.clone(), ahead: open[..at].iter().take(AHEAD_SAID).map(|&ahead| graph.jobs[ahead].asset.clone()).collect() })
         .collect()
 }

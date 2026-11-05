@@ -79,6 +79,16 @@ function linesOf(text, name) {
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
   seen.ran = local;
 
+  // Answers read as the project opens are kept out until the file below names local code: what they list isn't the last word on it (Firefox, 42002036309).
+  let letGo;
+  const lateList = new Promise((done) => { letGo = done; });
+  const listRead = /\/v1\/tools\?.*project=/;
+  await page.route(listRead, async (route) => {
+    const answer = await route.fetch();
+    await lateList;
+    await route.fulfill({ response: answer }).catch(() => {});
+  });
+
   await page.goto(`${base}/#/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-assets-${Date.now()}`);
   await page.click('form button[type=submit]');
@@ -117,6 +127,8 @@ function linesOf(text, name) {
   // Local code is a tool once something in the project names it. A real render needs no GPU this way.
   writeFileSync(yamlAt, local ? `${head}  named_here:\n    tool: ${drawer}/draw\n` : head);
   await box('kept_words').waitFor();
+  letGo();
+  await page.unroute(listRead);
 
   // The shell: a name, Render all, and a menu holding the rest. No dock, no edges, no path, no zoom, no machine picker.
   check('no_dock', (await page.locator('.dock').count()) === 0);
@@ -427,8 +439,8 @@ function linesOf(text, name) {
   }
 
   // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy project status` reads.
+  const statusOf = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
   if (local) {
-    const status = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
@@ -460,7 +472,7 @@ function linesOf(text, name) {
     await more('still_1');
     await still.locator('input[aria-label=Count]').waitFor();
     await still.locator('select[aria-label=Style]').selectOption({ label: 'noise' });
-    await until('the choice in the status', async () => status('still_1').fields?.style, (style) => style === 'noise');
+    await until('the choice in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'noise');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     await until('marked', () => still.locator('.more-marks').count(), (n) => n === 1);
@@ -475,7 +487,7 @@ function linesOf(text, name) {
     await open('still_1');
     check('open_outlasts_a_reload', (await still.locator('.edit-more').count()) === 1);
     await still.locator('select[aria-label=Style]').selectOption({ label: 'flat' });
-    await until('its default in the status', async () => status('still_1').fields?.style, (style) => style === 'flat');
+    await until('its default in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'flat');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     check('its_default_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
@@ -485,8 +497,8 @@ function linesOf(text, name) {
     await until('a prompt and a beat', () => told.locator('.beat').count(), (n) => n === 1);
     check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text').count()) === 2 && (await told.locator('input[type=range]').count()) === 1 && (await told.locator('.edit-more').count()) === 0, await told.innerText());
     check('fresh_beat_cannot_go', (await told.locator('[aria-label^="Remove beat"]').count()) === 0);
-    await until('its beat in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
-    check('its_beat_has_a_length', status('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), status('told_1').fields);
+    await until('its beat in the status', async () => statusOf('told_1').fields?.beats?.length, (n) => n === 1);
+    check('its_beat_has_a_length', statusOf('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), statusOf('told_1').fields);
     await shot('fresh-beat');
     await told.locator('.add-beat').click();
     await until('two beats', () => told.locator('.beat').count(), (n) => n === 2);
@@ -495,9 +507,9 @@ function linesOf(text, name) {
     await page.keyboard.type('The second.');
     await told.locator('.beat input[type=range]').nth(1).focus();
     await page.keyboard.press('ArrowRight');
-    await until('both in the status', async () => status('told_1').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
+    await until('both in the status', async () => statusOf('told_1').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
     await told.locator('[aria-label="Remove beat 2"]').click();
-    await until('one in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
+    await until('one in the status', async () => statusOf('told_1').fields?.beats?.length, (n) => n === 1);
     check('the_last_beat_stays', (await told.locator('.beat').count()) === 1 && (await told.locator('[aria-label^="Remove beat"]').count()) === 0, await told.innerText());
     for (const name of ['still_1', 'told_1', 'fixture']) {
       await api(`/v1/projects/${id}/assets/${name}`, { method: 'DELETE' });
@@ -512,6 +524,8 @@ function linesOf(text, name) {
     const versions = async (name) => (await of(name))?.prefixes?.length ?? 0;
     const render = async (name, count) => {
       await open(name);
+      // Render is on its controls, and it may be showing what it made.
+      if (await box(name).locator('[aria-label=Edit]').count()) await box(name).locator('[aria-label=Edit]').click();
       await box(name).locator('button[aria-label=Render]').click();
       await until(`${name}'s ${count}`, () => versions(name), (n) => n === count, FIRST_RUN_MS);
     };
@@ -525,8 +539,12 @@ function linesOf(text, name) {
 
     // Scrolled through: looking changes only this page.
     const fileBefore = yaml();
-    await box('Sheet').locator('.take[aria-label="version 1"]').click();
-    await until('looking at 1', () => box('Sheet').locator('.count').textContent(), (text) => text === '1/2');
+    // What just landed can still move the row from under a press (Firefox, 42006624081): a person presses again.
+    await until('looking at 1', async () => {
+      const count = await box('Sheet').locator('.count').textContent();
+      if (count !== '1/2') await box('Sheet').locator('.take[aria-label="version 1"]').click();
+      return count;
+    }, (text) => text === '1/2');
     check('looking_is_only_this_page', yaml() === fileBefore);
 
     // Approve: it becomes that file, and flips back.
@@ -571,11 +589,14 @@ function linesOf(text, name) {
     await shot('versions');
 
     // Something else to go on while one fails.
+    await away();
     await dropBox('Other', 1100, 600);
     await render('Other', 1);
 
     // What a package shows beside its first text: both on the box as it opens, empty reading N/A, and what's typed is the file's, as the CLI reads it. An empty one is written nowhere.
     const shaped = join(__dirname, '..', 'project', 'shaped.py');
+    // Read with this machine's Runtime, as tool.py is above.
+    execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
     await box('sounded').waitFor();
     await open('sounded');
@@ -588,25 +609,28 @@ function linesOf(text, name) {
     await scape.click();
     await page.keyboard.type('Rain on steel.');
     await sounded.locator('.mention-text[data-field=music]').click();
-    await until('the soundscape as the CLI reads it', async () => status('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
-    check('an_empty_one_isnt_written', !('music' in status('sounded').fields), status('sounded').fields);
+    await until('the soundscape as the CLI reads it', async () => statusOf('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
+    check('an_empty_one_isnt_written', !('music' in statusOf('sounded').fields), statusOf('sounded').fields);
     await page.keyboard.type('Low strings.');
     await sounded.locator('.mention-text[data-field=music]').blur();
-    await until('the music as the CLI reads it', async () => status('sounded').fields?.music, (said) => said === 'Low strings.');
+    await until('the music as the CLI reads it', async () => statusOf('sounded').fields?.music, (said) => said === 'Low strings.');
     await shot('sounded');
 
     // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
     const textRow = page.locator('aside.tools li.tool[data-kind=text]');
     check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
+    await away();
     await textRow.click();
+    await box('text').waitFor();
+    await open('text');
     const wording = box('text');
     await wording.locator('.mention-text[data-field=text]').waitFor();
     await wording.locator('.mention-text[data-field=text]').click();
     await page.keyboard.type('Painted by hand.');
     await wording.locator('.mention-text[data-field=text]').blur();
-    await until('its words as the CLI reads them', async () => status('text').fields?.text, (said) => said === 'Painted by hand.');
+    await until('its words as the CLI reads them', async () => statusOf('text').fields?.text, (said) => said === 'Painted by hand.');
     check('text_has_no_render', (await wording.locator('button:text-is("Render"), .takes, button:text-is("Approve")').count()) === 0, await wording.innerText());
-    check('text_has_a_kind', status('text').kind === 'text', status('text'));
+    check('text_has_a_kind', statusOf('text').kind === 'text', statusOf('text'));
 
     // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
     const asker = join(__dirname, '..', 'project', 'tool.py');
@@ -622,6 +646,8 @@ function linesOf(text, name) {
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
     await open('Other');
     const beforeCaption = yaml();
+    // A caption is of what's been made: it's on the version's face, not the one that asks for another.
+    await box('Other').locator('[aria-label="Show its version"]').click();
     await box('Other').locator('button:text-is("Caption")').click();
     const typed = box('Other').locator('.desc-open .mention-text');
     await typed.waitFor({ timeout: FIRST_RUN_MS });
@@ -680,8 +706,9 @@ function linesOf(text, name) {
 
     // A deleted asset's versions come back with it.
     const takes = await versions('Other');
-    await open('Other');
-    await box('Other').locator('.nm').click();
+    // Only Shift selects: a click opens.
+    await away();
+    await box('Other').locator('.nm').click({ modifiers: ['Shift'] });
     await page.keyboard.press('Delete');
     await until('the Delete key', () => box('Other').count(), (n) => n === 0);
     await until('no versions showing', () => of('Other'), (held) => !held);
@@ -696,6 +723,8 @@ function linesOf(text, name) {
     await page.keyboard.type('From <source-b>');
     await page.mouse.click(1500, 1000);
     await until('it reads it', () => of('Other'), (held) => held.reads?.some((read) => read.name === 'source-b'));
+    // The note says what the page has heard, a moment behind the file.
+    await page.waitForTimeout(1000);
     await deleteBox('source-b');
     const warned = await until('a plain note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-b')));
     check('note_when_not_approved', warned.some((line) => line.includes('Other reads this') && line.includes("isn't approved yet")), warned);
@@ -722,13 +751,15 @@ function linesOf(text, name) {
 
     // A new take from here: scrubbed to a time, its words as they were, and the function told to keep up to there.
     // One file dropped asks its name first: Enter takes the one offered.
+    await away();
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
     await page.waitForSelector('.nm-field');
     await page.keyboard.press('Enter');
     await box('look').waitFor();
     await until('look in the file', () => Promise.resolve(linesOf(yaml(), 'look')), Boolean);
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);
-    await box('Clip').waitFor();
+    // By the project: it can land past the edge of the view, and what's off it isn't drawn.
+    await until('Clip in the project', () => of('Clip'), Boolean);
     await render('Clip', 1);
     await until('its length measured', () => of('Clip'), (held) => held.prefixes?.[0]?.main?.duration_ms > 0);
     await open('Clip');
@@ -737,12 +768,13 @@ function linesOf(text, name) {
     await box('Clip').locator('.from-here .keeps').fill('12');
     await box('Clip').locator('button:has-text("New take from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
-    const given = (await api(`/v1/projects/${id}/assets/Clip`)).versions.at(-1).files.given.path;
+    const given = (await api(`/v1/projects/${id}/assets/Clip`)).body.versions.at(-1).files.given.path;
     const told = JSON.parse(readFileSync(join(folder, given), 'utf8'));
     check('kept_up_to_there', told.keep === 0.5, told);
     check('words_as_they_were', linesOf(yaml(), 'Clip') === clipFile, linesOf(yaml(), 'Clip'));
     await open('Clip');
-    check('takes_are_called_takes', (await box('Clip').locator('.take[aria-label="take 2"]').count()) === 1);
+    await box('Clip').locator('.take[aria-label="take 2"]').waitFor();
+    check('takes_are_called_takes', true);
     await shot('takes');
 
     // The terminal sees the same project.

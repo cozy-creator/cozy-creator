@@ -12,11 +12,12 @@ use protocol::{
     error::{Error, Kind},
     project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, CanvasPatch, CanvasPatched, Card, NewAsset, VersionBack, VersionMoved},
 };
+use protocol::tool::{ControlType, Tools};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
 use super::open;
-use crate::{Context, calcifer_client::path as route, output, run::mint_key};
+use crate::{Context, calcifer_client::{Client, path as route}, output, run::mint_key};
 
 /// What `tool=` is: what makes it, not one of its inputs.
 const TOOL: &str = "tool";
@@ -86,6 +87,23 @@ fn fields_of(file: Option<&PathBuf>, terms: &[String]) -> Result<Map<String, Val
     Ok(fields)
 }
 
+/// A list or a record typed as JSON with `=`, where `tool` declares one: `beats='[…]'` is what it looks like, and what's text in a text field stays text.
+async fn as_declared(calcifer: &Client, project: &str, tool: &str, fields: &mut Map<String, Value>) {
+    let looks = |value: &Value| value.as_str().is_some_and(|text| text.starts_with(['[', '{']));
+    if !fields.values().any(looks) {
+        return;
+    }
+    let Ok(listed) = calcifer.get_query::<_, Tools>(&route(&["v1", "tools"]), &[("project", project)]).await else { return };
+    let plain = tool.trim_start_matches("./");
+    let Some(held) = listed.tools.iter().find(|held| held.id == tool || held.id.ends_with(plain)) else { return };
+    for control in held.controls.iter().filter(|control| matches!(control.ty, ControlType::Group | ControlType::Shape)) {
+        let parsed = fields.get(&control.field).filter(|value| looks(value)).and_then(Value::as_str).and_then(|text| serde_json::from_str::<Value>(text).ok());
+        if let Some(parsed) = parsed {
+            fields.insert(control.field.clone(), parsed);
+        }
+    }
+}
+
 /// Make an asset of a tool, as dropping it on the canvas does, and print the name it got.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
@@ -113,8 +131,10 @@ pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Resul
     let mut fields = fields_of(None, &terms)?;
     // `text`, no tool: a text asset.
     let tool = if args.tool == "text" { String::new() } else { args.tool };
+    let calcifer = ctx.calcifer().await?;
+    as_declared(&calcifer, &opened.id, &tool, &mut fields).await;
     let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None };
-    let made: AssetMade = ctx.calcifer().await?.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
+    let made: AssetMade = calcifer.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&made);
     } else {
@@ -161,6 +181,12 @@ pub(super) async fn set(ctx: &Context, at: Option<&PathBuf>, args: Set) -> Resul
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
     let path = route(&["v1", "projects", &opened.id, "assets", &args.name]);
+    if fields.values().any(|value| value.as_str().is_some_and(|text| text.starts_with(['[', '{']))) {
+        let held: AssetVersions = calcifer.get(&path).await?;
+        if let Some(of) = tool.as_deref().or(held.asset.tool.as_deref()) {
+            as_declared(&calcifer, &opened.id, of, &mut fields).await;
+        }
+    }
     if let Some(card) = card {
         // A row only under the name the project has for it: one of nothing would wait for it for ever.
         let held: AssetVersions = calcifer.get(&path).await?;
