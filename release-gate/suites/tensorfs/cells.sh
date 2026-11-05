@@ -112,7 +112,7 @@ tfs_straggler() {
   # A hang is this case's failure, not the gate's: no byte into its store for 3 min ends it.
   seen= since=$SECONDS
   while kill -0 "$tfs" 2>/dev/null; do
-    now=$(du -sb "$T/$1-store" 2>/dev/null | cut -f1)
+    now=$(du -s --block-size=1 "$T/$1-store" 2>/dev/null | cut -f1)  # allocated bytes: a range written in place starts as a sparse file at full length
     [ "$now" = "$seen" ] || { seen=$now since=$SECONDS; }
     if (( SECONDS - since >= 180 )); then echo "no byte into its store for 3 min" >> "$T/$1.err"; kill -9 -- "-$tfs"; break; fi
     sleep 2
