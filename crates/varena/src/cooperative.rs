@@ -124,6 +124,8 @@ struct Native {
     gpu: &'static Device,
     idle: u64,
     asked: bool,
+    /// Ticks in a row the card has been short: each asks twice the last.
+    short: u32,
     nvml: Option<Nvml>,
     uuid: [u8; 16],
     previous: Option<BTreeMap<u32, u64>>,
@@ -138,6 +140,7 @@ impl Native {
             gpu: crate::gpu(device)?,
             idle: 0,
             asked: false,
+            short: 0,
             nvml: if host_pids { Nvml::init().ok() } else { None },
             uuid,
             previous: None,
@@ -229,11 +232,13 @@ impl Donor for Native {
         let want = if self.new_foreign_process(table) {
             total
         } else if free < reserve {
-            2 * reserve - free
+            // A shortage that outlasts a give is met in a few ticks, not one gigabyte a tick.
+            ((2 * reserve - free) << self.short.min(total.leading_zeros())).min(total)
         } else {
             0
         };
         let _ = working::peer::pressure(self.device, want != 0, want == 0 && free >= 2 * reserve);
+        self.short = if want != 0 { self.short + 1 } else { 0 };
         if want != 0 {
             table.ask(row, want);
             self.asked = true;
