@@ -28,7 +28,8 @@ pub(crate) const PHASE_NEXT: u8 = 5;
 pub(crate) enum Wait {
     /// Peer service, owner collection and prefetch: completed memory only.
     No,
-    /// May also wait for GPU work already submitted, never on another thread or process.
+    /// May also wait for GPU work already submitted and, before this process's weights go, an
+    /// idle peer's answer; never on another thread, or on a process in a request.
     Local,
     /// May also wait for owner callbacks and peers.
     Yes,
@@ -184,7 +185,7 @@ impl<'a> Sequence<'a> {
                 Ok(true)
             }
             // Processes in no request hold what nothing is about to use: theirs before our weights.
-            Step::IdlePeers if self.wait == Wait::Yes && physical => Ok(idle_peers_gave(self.device, want)),
+            Step::IdlePeers if waiting && physical => Ok(idle_peers_gave(self.device, want)),
             Step::Join if waiting => {
                 let classes = CONTENTLESS..=PHASE_NEXT;
                 let blocks = working::unjoined(self.device)?;
