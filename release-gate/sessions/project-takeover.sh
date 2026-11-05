@@ -192,17 +192,17 @@ YAML
   x "--json run ls --limit 200" > "$OUT/a-x-runs.json"
   say "a: X made all five in $t s with nobody here; its idle clock at its least had $([ "$least" = 999999999 ] && echo 'never run' || echo "${least} s left")"
   once still shot clip edit aframe
-  line "up 1000000"
-  c "project status" > /dev/null 2>&1
-  sleep 8
-  c "project status" > "$OUT/a-back.txt" 2>&1
-  say "a: this computer back: $(grep -E 'on box|rendering on|all here' "$OUT/a-back.txt" | head -2 | paste -sd'|')"
-  grep -qE 'on box until [0-9]{2}:[0-9]{2}|rendering on box|all here; box ends at' "$OUT/a-back.txt" || fail "a: status says nothing of where its render is"
+  # Back at 200 KB/s: what status says while what X made comes down.
+  line "up 200000"
   t=0
   until collected; do
     [ $t -lt 600 ] || fail "a: not all collected in $t s: $(c 'project status' | tail -4 | paste -sd'|' | cut -c1-300)"
-    t=$((t + 5)); sleep 5
+    c "project status" > "$OUT/a-back.txt" 2>&1
+    grep -E 'on box until|rendering on box|all here' "$OUT/a-back.txt" >> "$OUT/a-held.txt"
+    t=$((t + 5)); sleep 3
   done
+  say "a: this computer back, its status said: $(sort -u "$OUT/a-held.txt" | head -3 | paste -sd'|')"
+  grep -qE 'on box until [0-9]{2}:[0-9]{2}: [0-9]+ files' "$OUT/a-held.txt" || fail "a: status never said what isn't here yet and until when"
   line up
   sleep 6
   c "project status" > "$OUT/a-collected.txt" 2>&1
