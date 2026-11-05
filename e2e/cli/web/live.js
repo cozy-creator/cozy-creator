@@ -239,7 +239,7 @@ function linesOf(text, name) {
   const spot = () => {
     const at = spots++;
     // Left of 1060: an Edit open is 720 wide, its X at its right, and the canvas never scrolls to reach it.
-    return { x: 700 + (at % 2) * 340, y: 90 + Math.floor(at / 2) * 300 };
+    return { x: 700 + (at % 2) * 340, y: 90 + Math.floor(at / 2) * 340 };
   };
   const overlaps = () => page.evaluate(() => {
     const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
