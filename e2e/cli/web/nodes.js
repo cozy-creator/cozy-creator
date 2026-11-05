@@ -279,6 +279,7 @@ function linesOf(text, name) {
   // Nothing has moved the pointer since it opened More. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
   await page.waitForTimeout(300);
   check('a_box_in_use_stays_open', (await knobs.locator('.edit-more').count()) === 1, await boxLog(page));
+  check('the_canvas_cannot_scroll', (await page.locator('.react-flow').evaluate((el) => getComputedStyle(el).overflow)) === 'clip');
   await more('knobs');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field(/turbo: (\S+)/), (value) => value === 'false');
