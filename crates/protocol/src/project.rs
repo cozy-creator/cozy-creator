@@ -787,9 +787,6 @@ pub struct Renamed {
     pub from: String,
     pub to: String,
     pub versions: u32,
-    /// A render is going: it happens as that ends.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub queued: bool,
 }
 
 /// `POST /v1/projects/{id}/reclaim`: lists what it would delete: orphans' versions, and any file nothing else names. With

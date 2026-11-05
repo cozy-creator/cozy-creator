@@ -282,6 +282,22 @@ impl Jobs {
         self.publish(&mut held);
     }
 
+    /// `from` is called `to` now: the board says so, of what's going and what has ended.
+    pub fn renamed(&self, from: &str, to: &str) {
+        let mut held = self.held.lock().expect("jobs lock");
+        let held = &mut *held;
+        let key = name_key(from);
+        let called = |job: &mut Job| {
+            if name_key(&job.asset) == key {
+                to.clone_into(&mut job.asset);
+            }
+        };
+        held.ended.iter_mut().chain(&mut held.sending).chain(&mut held.coming).chain(&mut held.cuts).chain(held.told.values_mut()).for_each(called);
+        held.live.iter_mut().for_each(|live| called(&mut live.job));
+        held.shots.iter_mut().filter(|shot| **shot == key).for_each(|shot| *shot = name_key(to));
+        held.warned = std::mem::take(&mut held.warned).into_iter().map(|(asset, said)| (if name_key(&asset) == key { to.to_owned() } else { asset }, said)).collect();
+    }
+
     /// Whether `asset` has said `message` already; it has now.
     pub fn warned(&self, asset: &str, message: &str) -> bool {
         !self.held.lock().expect("jobs lock").warned.insert((asset.to_owned(), message.to_owned()))

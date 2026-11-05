@@ -498,7 +498,7 @@ pub struct Owed {
     /// The `Idempotency-Key`s this walk was asked under, and each ask's digest: a retry across a restart adds nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub asked: BTreeMap<String, String>,
-    /// `rename`s asked while a render went, (from, to): each done as that walk ends.
+    /// What renders going may still call an asset, (from, to): a run on its way, a job being sent. Its row is under the new name; these find it until the walk ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(String, String)>,
     /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project. One that failed stays taken in project.lock.
@@ -695,12 +695,36 @@ impl Lock {
     }
 
     pub fn asset(&self, name: &str) -> Option<&Asset> {
-        self.assets.get(&name_key(name))
+        self.assets.get(&self.row_of(name))
+    }
+
+    /// Where `name`'s row is: under its name, else what a rename made it.
+    fn row_of(&self, name: &str) -> String {
+        let key = name_key(name);
+        match self.assets.contains_key(&key) {
+            true => key,
+            false => self.walk.renames.iter().find(|(from, _)| name_key(from) == key).map_or(key, |(_, to)| name_key(to)),
+        }
+    }
+
+    /// `from` is called `to` now, and what still says `from` finds it. A name taken again is what took it.
+    pub fn called(&mut self, from: &str, to: &str) {
+        let (key, new) = (name_key(from), name_key(to));
+        if key == new {
+            return;
+        }
+        self.walk.renames.retain(|(was, _)| name_key(was) != new);
+        self.walk.renames.iter_mut().filter(|(_, now)| name_key(now) == key).for_each(|(_, now)| to.clone_into(now));
+        self.walk.renames.push((from.to_owned(), to.to_owned()));
     }
 
     pub fn asset_mut(&mut self, name: &str, kind: &str) -> &mut Asset {
-        let asset = self.assets.entry(name_key(name)).or_default();
-        asset.name = name.to_owned();
+        let key = self.row_of(name);
+        let own = key == name_key(name);
+        let asset = self.assets.entry(key).or_default();
+        if own {
+            asset.name = name.to_owned();
+        }
         if !kind.is_empty() {
             asset.kind = kind.to_owned();
         }

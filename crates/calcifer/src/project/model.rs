@@ -73,8 +73,9 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
 
 fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Result<Model, Error> {
     let folder = &project.folder;
-    let lock = folder.lock()?;
+    // The text first: a rename moves the lock and then the text, and an old name finds its row in the new lock, where a new name wouldn't in the old.
     let text = folder.text()?;
+    let lock = folder.lock()?;
     let doc = Doc::of(folder, &text, &lock)?;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();

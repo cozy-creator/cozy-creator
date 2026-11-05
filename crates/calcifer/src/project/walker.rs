@@ -424,6 +424,20 @@ impl Graph {
         (dropped, going)
     }
 
+    /// Asset `from` is called `to` now: its jobs, what waits for it, and what each render tried of it.
+    pub fn renamed(&mut self, from: &str, to: &str) {
+        let (key, new) = (name_key(from), name_key(to));
+        self.jobs.iter_mut().filter(|job| name_key(&job.asset) == key).for_each(|job| to.clone_into(&mut job.asset));
+        if let Some(open) = self.open.remove(&key) {
+            self.open.entry(new.clone()).or_default().extend(open);
+        }
+        for tried in self.tried.values_mut() {
+            if tried.remove(&key) {
+                tried.insert(new.clone());
+            }
+        }
+    }
+
     /// Whether render `ask` tried `name` already: it isn't tried again.
     pub fn tried(&self, ask: &str, name: &str) -> bool {
         self.tried.get(ask).is_some_and(|tried| tried.contains(&name_key(name)))

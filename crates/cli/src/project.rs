@@ -354,7 +354,6 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             match ctx.json {
                 true => output::json(&renamed),
                 false if renamed.versions == 0 => output::say(ctx, &format!("{} is {} now", renamed.from, renamed.to)),
-                false if renamed.queued => output::say(ctx, &format!("{} becomes {} when the render going ends: its {} kept", renamed.from, renamed.to, renamed.versions)),
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }

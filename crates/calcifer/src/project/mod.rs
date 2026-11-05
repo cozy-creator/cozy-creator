@@ -588,6 +588,16 @@ struct Walker {
     planned_at_ms: i64,
     /// When each job went, and how wide: what is left of it.
     sent_at: HashMap<String, (Instant, String, u32)>,
+    /// What's on its way may still say an old name: what each is called now, by name key.
+    renamed: HashMap<String, String>,
+}
+
+impl Walker {
+    /// A new version of `name`: what stands by it is worked out again, under what it's called now.
+    fn moved(&mut self, name: &str) {
+        let name = self.renamed.get(&name_key(name)).map_or(name, String::as_str);
+        self.readings.values_mut().for_each(|reading| reading.moved(name));
+    }
 }
 
 /// One text a render was asked with, read once, and what stands by it: each asset worked out when asked of, and again once what it reads moved.
@@ -698,6 +708,45 @@ impl Frozen for Now<'_> {
 }
 
 impl Project {
+    /// The renders going say `to` for `from` from now on, as project.lock does: their texts, what they plan on those, and the board. What landed under `from` stands, what lands
+    /// is `to`'s, and what reads it reads on. Each text keeps its place in the walk, under its new digest. The old reading stays for this walk: a turn may be holding its digest.
+    fn rename_walk(&self, from: &str, to: &str) -> Result<(), Error> {
+        let walk = self.folder.walk_now()?;
+        let mut texts: HashMap<String, (String, Doc)> = HashMap::new();
+        for ask in walk.walk.asks.iter().filter(|ask| !ask.digest.is_empty()) {
+            if texts.contains_key(&ask.digest) {
+                continue;
+            }
+            // Asked before the file named it, or with another of the new name since gone: what it plans on goes on finding the row under its old name.
+            let said = self.folder.text_of(ask).and_then(|text| assetfile::renamed(&text, from, to));
+            let Ok((said, doc)) = said.and_then(|said| Ok((Doc::read(&self.folder, &said)?, said))).map(|(doc, said)| (said, doc)) else { continue };
+            let digest = hex::encode(Sha256::digest(said.as_bytes()));
+            self.folder.keep_text(&digest, &said)?;
+            texts.insert(ask.digest.clone(), (digest, doc));
+        }
+        let mut walker = self.walker.lock().expect("walker lock");
+        walker.graph.renamed(from, to);
+        walker.renamed.insert(name_key(from), to.to_owned());
+        let mut digests = HashMap::new();
+        for (was, (digest, doc)) in texts {
+            let reading = AskedText::new(doc);
+            walker.graph.read_again(|job_ask| walk.walk.asks.iter().any(|ask| ask.id == job_ask && ask.digest == was), &reading.nodes);
+            walker.readings.insert(digest.clone(), reading);
+            digests.insert(was, digest);
+        }
+        self.folder.update_walk(|walk| {
+            for ask in &mut walk.walk.asks {
+                if let Some(digest) = digests.get(&ask.digest) {
+                    ask.digest.clone_from(digest);
+                }
+            }
+        })?;
+        drop(walker);
+        self.jobs.renamed(from, to);
+        self.asked.notify_one();
+        Ok(())
+    }
+
     /// Each render `lock` holds that the graph doesn't yet: its jobs made, what it left going taken in.
     fn join(&self, lock: &Lock) {
         let mut walker = self.walker.lock().expect("walker lock");
@@ -1398,42 +1447,40 @@ async fn reclaim(
     Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost }))
 }
 
-/// Renames asset `from` to `to`: in project.yaml its key and every `<from>`, unless the file has moved to `to` already, then what
-/// project.lock keeps of it, its pin and what is pending or owed of it, and its row on the canvas. A name is no input, so what stood on the
-/// text that said `from` stands on the text that says `to`. While the project renders, what it renders still says `from`, so project.lock's
-/// part happens as that walk ends. Nothing on disk moves.
+/// Renames asset `from` to `to`, at once, whatever is going, and nothing else about it changes: project.lock's row and all it keeps, its pin and what is pending or owed of
+/// it, what renders going say of it, its row on the canvas, and in project.yaml its key and every `<from>`, unless the file has moved to `to` already. A name is no input, so
+/// what stood on the text that said `from` stands on the text that says `to`. The lock goes before the text, and the old name finds its row until the text says so: a read
+/// between is never of an empty box. Nothing on disk moves.
 async fn rename(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Renamed>, Refusal> {
-    let asked: Rename = parse(&body?)?;
+    let body = body?;
+    let asked: Rename = parse(&body)?;
     format::named(&asked.to).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(held) = project.folder.walk_now().map_err(Refusal)?.held {
-        let said = format!("{} holds this project's render: rename once it ends", held.machine);
-        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next(status_next(&project.folder)[0].clone())));
-    }
+    // What a machine holds it renames first: what it makes then lands here under the new name.
+    let _: Option<Renamed> = takeover::forward(&api, &project, "rename", &body).await?;
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
-    let mut doc = Doc::load(folder).map_err(Refusal)?;
-    if doc.find(&asked.to).is_none() && name_key(&asked.to) != name_key(&asked.from) {
+    let text = folder.text().map_err(Refusal)?;
+    let lock = folder.lock().map_err(Refusal)?;
+    let was = Doc::of(folder, &text, &lock).map_err(Refusal)?;
+    let same = name_key(&asked.to) == name_key(&asked.from);
+    if was.find(&asked.to).is_none() && !same {
         format::new_name(&asked.to).map_err(Refusal)?;
     }
-    if doc.find(&asked.from).is_some_and(|i| doc.assets[i].text.is_some()) {
-        format::refuse_tag(&folder.lock().map_err(Refusal)?, &asked.to).map_err(Refusal)?;
+    if was.find(&asked.from).is_some_and(|i| was.assets[i].text.is_some()) {
+        format::refuse_tag(&lock, &asked.to).map_err(Refusal)?;
     }
-    let free = doc.find(&asked.to).is_none() || name_key(&asked.to) == name_key(&asked.from);
-    if doc.find(&asked.from).is_some() && free {
-        // Its row first: a page that reads the new name knows it's the same box, where it was.
-        canvas::moved(folder, &id, &asked.from, &asked.to).map_err(Refusal)?;
-        if let Err(error) = folder.edit_project(|text| assetfile::renamed(text, &asked.from, &asked.to)) {
-            canvas::moved(folder, &id, &asked.to, &asked.from).map_err(Refusal)?;
-            return Err(Refusal(error));
-        }
-        doc = Doc::load(folder).map_err(Refusal)?;
-    }
-    let lock = folder.lock().map_err(Refusal)?;
+    let free = was.find(&asked.to).is_none() || same;
+    let writes = was.find(&asked.from).is_some() && free;
+    let said = match writes {
+        true => assetfile::renamed(&text, &asked.from, &asked.to).map_err(Refusal)?,
+        false => text,
+    };
+    let doc = if writes { Doc::of(folder, &said, &lock).map_err(Refusal)? } else { was };
     let Some(i) = doc.find(&asked.to) else {
         let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
         return Err(refuse(Kind::NotFound, "asset_unknown", said));
@@ -1441,8 +1488,7 @@ async fn rename(
     let mut back = lock.clone();
     back.untombstone(&asked.from);
     let old = back.asset(&asked.from).filter(|held| held.on_record().next().is_some());
-    let stands = !free && doc.find(&asked.from).is_some();
-    if old.is_none() && stands {
+    if old.is_none() && !free && doc.find(&asked.from).is_some() {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
     }
     if old.is_none() && !free && canvas::row(folder, &asked.from).map_err(Refusal)?.is_none() {
@@ -1450,31 +1496,40 @@ async fn rename(
         return Err(Refusal(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status")));
     }
     let to = doc.assets[i].name.clone();
-    if old.is_some() && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
+    if old.is_some() && !same && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
     }
     let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
-    let stamps = restamps(folder, &doc, &back, &from, &to);
-    // Under `walking`, as a walk's end is, so that it is done now or that walk does it.
+    let stamps = restamps(folder, &doc, &back, &from, &to, &said);
+    // Its row first: a page that reads the new name knows it's the same box, where it was.
+    canvas::moved(folder, &id, &from, &to).map_err(Refusal)?;
+    // Under `walking`, as a walk's end is: it is over, or it follows this.
     let walking = project.walking.lock().expect("walking lock");
-    let queued = *walking;
-    if queued || old.is_some() || !stamps.is_empty() {
+    // A machine holding it walks it there, and has this already.
+    let follows = *walking && folder.walk_now().map_err(Refusal)?.held.is_none();
+    if follows || old.is_some() || !stamps.is_empty() {
         folder
             .update_lock(|lock| {
-                match queued {
-                    true => lock.walk.renames.push((from.clone(), to.clone())),
-                    false => renamed(lock, &from, &to),
-                }
+                renamed(lock, &from, &to);
+                lock.called(&from, &to);
                 stamps.iter().for_each(|stamp| stamp.written(lock));
             })
             .map_err(Refusal)?;
     }
+    if writes && let Err(error) = folder.edit_project(|text| assetfile::renamed(text, &from, &to)) {
+        folder.update_lock(|lock| renamed(lock, &to, &from)).map_err(Refusal)?;
+        canvas::moved(folder, &id, &to, &from).map_err(Refusal)?;
+        return Err(Refusal(error));
+    }
+    match follows {
+        true => project.rename_walk(&from, &to).map_err(Refusal)?,
+        false => folder.update_lock(|lock| lock.walk.renames.retain(|(was, _)| name_key(was) != name_key(&from))).map_err(Refusal)?,
+    }
     drop(walking);
-    canvas::moved(folder, &id, &from, &to).map_err(Refusal)?;
-    if !queued && doc.tool(i) == Some(Tool::Cut) {
+    if doc.tool(i) == Some(Tool::Cut) {
         film_renamed(folder, &from, &to);
     }
-    Ok(Json(Renamed { from, to, versions, queued }))
+    Ok(Json(Renamed { from, to, versions }))
 }
 
 /// One asset's key moved by a rename, its inputs the same: what stood on `was` stands on `is`.
@@ -1488,16 +1543,19 @@ struct Restamp {
 
 impl Restamp {
     fn written(&self, lock: &mut Lock) {
+        lock.pending.values_mut().filter(|pending| name_key(&pending.asset) == self.key && pending.version.inputs == self.was).for_each(|pending| pending.version.inputs.clone_from(&self.is));
         let Some(held) = lock.assets.get_mut(&self.key) else { return };
+        held.tried.iter_mut().filter(|tried| tried.inputs == self.was).for_each(|tried| tried.inputs.clone_from(&self.is));
+        held.failed.iter_mut().filter(|failed| failed.inputs.as_ref() == Some(&self.was)).for_each(|failed| failed.inputs = Some(self.is.clone()));
         let stood = |version: &Version| version.inputs == self.was || Some(version.number) == self.stood;
         held.versions.iter_mut().chain(&mut held.discarded).filter(|version| stood(version)).for_each(|version| version.inputs.clone_from(&self.is));
     }
 }
 
-/// What renaming `from` to `to` moves of each key, `doc` being the text that says `to` and `lock` what stands of `from`. It's read from that text said
-/// back, the same whether this call changed the file or a hand did. What was out of date stays so.
-fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str) -> Vec<Restamp> {
-    let then = folder.text().and_then(|text| assetfile::renamed(&text, to, from)).and_then(|text| Doc::of(folder, &text, lock));
+/// What renaming `from` to `to` moves of each key, `doc` being `text`, which says `to`, and `lock` what stands of `from`. It's read from that text said
+/// back, the same whether this call changes the file or a hand did. What was out of date stays so.
+fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str, text: &str) -> Vec<Restamp> {
+    let then = assetfile::renamed(text, to, from).and_then(|text| Doc::of(folder, &text, lock));
     let Ok(then) = then else { return vec![] };
     let mut after = lock.clone();
     renamed(&mut after, from, to);
@@ -1552,6 +1610,10 @@ fn renamed(lock: &mut Lock, from: &str, to: &str) {
             ask.sent.insert(name_key(to));
         }
     }
+    if let Some(number) = lock.walk.numbered.remove(&key) {
+        lock.walk.numbered.insert(name_key(to), number);
+    }
+    lock.walk.runs.values_mut().flatten().filter(|coming| name_key(&coming.name) == key).for_each(|coming| to.clone_into(&mut coming.name));
 }
 
 /// Adds what `Runs` asks to the project's walk, answered at once (`202`; `200` when its
@@ -3023,7 +3085,7 @@ impl Walk {
         held.as_ref().map(|(_, names)| names.clone())
     }
 
-    /// Whether `name` is deleted from the file: a rename isn't, and what it makes goes to the new name when the walk ends.
+    /// Whether `name` is deleted from the file: a rename isn't, and what still says it is the new name's.
     fn gone(&self, name: &str) -> bool {
         let key = name_key(name);
         let names = {
@@ -3266,7 +3328,7 @@ impl Walk {
         let ended = |id: usize, how: End, name: &str| {
             let mut walker = self.project.walker.lock().expect("walker lock");
             walker.graph.end(id, how);
-            walker.readings.values_mut().for_each(|reading| reading.moved(name));
+            walker.moved(name);
         };
         match done {
             Done::Ahead => {}
@@ -3317,7 +3379,7 @@ impl Walk {
                 if let Err(error) = result {
                     match &name {
                         Some(name) => {
-                            self.project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(name));
+                            self.project.walker.lock().expect("walker lock").moved(name);
                             self.failed_of(name, "", None, None, error, first);
                         }
                         None => self.failed(error, first),
@@ -3387,14 +3449,11 @@ impl Walk {
         if !*walking && !walk.walk.renames.is_empty() {
             self.folder().update_lock(|lock| {
                 for (from, to) in std::mem::take(&mut lock.walk.renames) {
-                    // A render of it since made versions of its own: nothing overwrites those.
-                    match lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
-                        true => self.say(Event::Warning { message: format!("{from} stays {from}: {to} has versions of its own now"), name: None }),
-                        false => {
-                            renamed(lock, &from, &to);
-                            if lock.asset(&to).is_some_and(|held| held.versions.iter().any(|version| !version.clips.is_empty())) {
-                                film_renamed(self.folder(), &from, &to);
-                            }
+                    // Still under its old name: a rename an older Calcifer left for this moment.
+                    if lock.assets.contains_key(&name_key(&from)) && lock.asset(&to).is_none_or(|held| held.on_record().next().is_none()) {
+                        renamed(lock, &from, &to);
+                        if lock.asset(&to).is_some_and(|held| held.versions.iter().any(|version| !version.clips.is_empty())) {
+                            film_renamed(self.folder(), &from, &to);
                         }
                     }
                 }
@@ -3641,6 +3700,11 @@ impl Walk {
                 None => !mine.sent.contains(&name_key(&name)),
             });
             if !stands {
+                return Ok(());
+            }
+            // Renamed meanwhile: what this read says what was, so its turn comes again.
+            if mine.is_some_and(|mine| mine.digest != ask.digest) {
+                self.project.walker.lock().expect("walker lock").again.insert(key.clone());
                 return Ok(());
             }
             // Its machines stopped while it was on its way.
