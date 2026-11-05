@@ -127,6 +127,10 @@ struct State {
     keeping: bool,
     /// Kept pages not yet registered: `pin_idle` registers them.
     unregistered: Vec<String>,
+    /// Registered pages the tier let go: unregistering waits on the whole device, so `pin_idle` does it.
+    dropped: Vec<Arc<Page>>,
+    /// The keep thread's copy stream: one that orders on no request's work.
+    stream: Option<Arc<tensorfs::io::cuda::Stream>>,
     /// A wanted page read whole when a command arrived: it registers at the next idle.
     filled: Option<(String, String, Page)>,
     refills: HashMap<String, u64>,
@@ -270,7 +274,7 @@ impl Tier {
             });
             (page, gone)
         };
-        drop(gone); // Unregistering waits on the device: never under the lock.
+        self.bury(gone);
         page
     }
 
@@ -288,7 +292,7 @@ impl Tier {
             }
             self.admit(&mut state, key, len as u64)
         };
-        drop(gone);
+        self.bury(gone);
         if !admitted {
             return Ok(None);
         }
@@ -327,9 +331,19 @@ impl Tier {
         let Ok(Some(page)) = self.reserve(&job.key, job.len) else { return };
         let Some(region) = job.region.upgrade() else { return };
         let Ok(_producer) = varena::enter_producer(self.device) else { return };
+        let stream = {
+            let mut state = self.state();
+            if state.stream.is_none() {
+                state.stream = tensorfs::io::cuda::Stream::new(self.device).ok().map(Arc::new);
+            }
+            state.stream.clone()
+        };
+        let Some(stream) = stream else { return };
         let Ok(Some(pin)) = region.try_pin() else { return };
+        // The bake is complete (its commit joined the context), so the copy waits on nothing of the
+        // request's: ordered on stream 0, each 2 MiB piece queued behind its compute (0.24 GB/s).
         let copies: Vec<_> = page.windows().map(|(at, len)| io::Copy {
-            src: Src::Device { device: self.device, ptr: pin.ptr() + at as u64, stream: 0 },
+            src: Src::Device { device: self.device, ptr: pin.ptr() + at as u64, stream: stream.raw() as usize },
             // SAFETY: `at` lies inside the page.
             dst: Dst::Host { ptr: unsafe { page.ptr().add(at) }, len },
         }).collect();
@@ -344,6 +358,15 @@ impl Tier {
         }
     }
 
+    /// Pages out of the tier: a registered one waits for idle, never unregistered beside a request.
+    fn bury(&self, gone: Vec<Kept>) {
+        let (registered, plain): (Vec<_>, Vec<_>) = gone.into_iter().partition(|kept| !kept.page.pins().is_empty());
+        if !registered.is_empty() {
+            self.state().dropped.extend(registered.into_iter().map(|kept| kept.page));
+        }
+        drop(plain);
+    }
+
     pub(super) fn insert(&self, key: &str, set: &str, page: Page) {
         let replaced = {
             let mut state = self.state();
@@ -356,7 +379,7 @@ impl Tier {
             }
             replaced
         };
-        drop(replaced);
+        self.bury(replaced.into_iter().collect());
     }
 
     /// A store read of `key` completed.
@@ -391,7 +414,7 @@ impl Tier {
 
     fn pending(&self) -> bool {
         let state = self.state();
-        state.off.is_none() && (state.filled.is_some() || !state.unregistered.is_empty() || state.wanted.values().any(|wanted| {
+        !state.dropped.is_empty() || state.off.is_none() && (state.filled.is_some() || !state.unregistered.is_empty() || state.wanted.values().any(|wanted| {
             wanted.region.upgrade().is_some_and(|region| !region.holds_contents())
         }))
     }
@@ -423,7 +446,14 @@ impl Tier {
     /// and registered once filled, window by window. The page refilled most per request goes first.
     fn pin_idle(&self, py: Python<'_>, waiting: &Bound<'_, PyAny>) -> PyResult<()> {
         let is_waiting = || -> PyResult<bool> { waiting.call0()?.is_truthy() };
-        while let Some(key) = self.state().unregistered.last().cloned() {
+        while !is_waiting()? {
+            let Some(page) = self.state().dropped.pop() else { break };
+            py.detach(|| drop(page));
+        }
+        loop {
+            // Each lock ends with its statement: the body takes it again.
+            let next = self.state().unregistered.last().cloned();
+            let Some(key) = next else { break };
             let page = self.state().kept.get(&key).map(|kept| kept.page.clone());
             while let Some(page) = page.as_ref().filter(|page| !page.registered()) {
                 if is_waiting()? {
@@ -497,7 +527,7 @@ impl Tier {
             }
             keys.iter().filter_map(|key| state.remove(key)).collect()
         };
-        drop(gone);
+        self.bury(gone);
     }
 }
 
