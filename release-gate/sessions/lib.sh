@@ -90,7 +90,7 @@ quote() {
 order() {
   local o first='' i=${#RIDS[@]} RP sku=${1:-$SKU}
   o=$(date +%s%3N)
-  cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" & RP=$!
+  cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
   while [ -z "$first" ]; do
     first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent$i.err" | cut -d: -f1)
     [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
@@ -104,6 +104,7 @@ order() {
   jq -e --arg s "$sku" --argjson o "$o" '.rental.sku==$s and .rental.rented_at_ms>=$o-60000' "$OUT/show-boot$i.json" >/dev/null ||
     { RID=''; fail "$first is not this order's machine: $(head -c 300 "$OUT/show-boot$i.json")"; }
   RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP RRC_$i=$done"
+  exec 9>&-  # The order is placed: a rent lock a caller took for it ends here, not with this session or its guard.
   say "rental $RID ($first)"
   [ -n "$WD" ] || { ( sleep "$CAP_S"; echo "$(date -u +%T) GUARD: \$$CAP reached, ending $(paste -sd' ' "$OUT/rental")" >> "$R"
     while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done < "$OUT/rental" ) & WD=$!; }
