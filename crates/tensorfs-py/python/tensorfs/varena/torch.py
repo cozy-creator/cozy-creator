@@ -444,11 +444,11 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
             _prime_library(device, each)
         prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
         _ext._varena_working_pool_arm(device, cast(PoolId, tuple(pool)), [each.cuda_stream for each in streams])
-        # Include caller preparation, but never drain unrelated device streams.
-        # Native allocations during capture use this already prepared pool only.
+        # The capture follows the caller's work on the device, and the host does not wait for it:
+        # a recording overlaps the eager work before it. Unrelated device streams are never
+        # drained. Native allocations during capture use this already prepared pool only.
         if stream != caller:
             stream.wait_stream(caller)
-        stream.synchronize()
     except BaseException:
         cancel_preparation(pool, device)
         raise

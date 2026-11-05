@@ -6,7 +6,7 @@
 # session); mps-residency, which needs an Apple GPU (e2e/mps).
 EXEC_DIR=$HERE/suites/execution TFS_DIR=$HERE/suites/tensorfs
 source "$EXEC_DIR/core-cells.sh"
-for part in first-warm-capture capture-refusal lora-overlay-refill child-lora-stacks child-saved-file conditional-body; do
+for part in first-warm-capture capture-refusal lora-overlay-refill overlay-replay child-lora-stacks child-saved-file conditional-body; do
   source "$EXEC_DIR/$part/cells.sh"
 done
 
