@@ -2208,3 +2208,158 @@ input[type="checkbox"] {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* The frame around the canvas, larger by `--ui`: text, rows, icons, buttons and what they take a click on. The boxes on it stay as they are. */
+.top {
+  gap: calc(8px * var(--ui));
+  padding: 0 calc(8px * var(--ui));
+}
+.top .icon,
+.tools .icon {
+  width: calc(14px * var(--ui));
+  height: calc(14px * var(--ui));
+}
+.top .tb,
+.tools .tb {
+  height: calc(28px * var(--ui));
+  padding: 0 calc(10px * var(--ui));
+  gap: calc(5px * var(--ui));
+  font-size: calc(12px * var(--ui));
+  border-radius: calc(var(--round) * var(--ui));
+}
+.top .iconb,
+.tools .iconb {
+  width: calc(22px * var(--ui));
+  height: calc(22px * var(--ui));
+  border-radius: calc(5px * var(--ui));
+  font-size: calc(12px * var(--ui));
+}
+.top .pill {
+  padding: calc(3px * var(--ui)) calc(9px * var(--ui));
+  font-size: calc(11px * var(--ui));
+}
+.top .sum {
+  font-size: calc(12px * var(--ui));
+}
+.top .render-all label {
+  font-size: calc(11px * var(--ui));
+}
+.top .render-all label input {
+  width: calc(13px * var(--ui));
+  height: calc(13px * var(--ui));
+}
+.top .main-menu nav .tb {
+  height: calc(30px * var(--ui));
+}
+.tools {
+  top: var(--top);
+  width: calc(188px * var(--ui));
+  padding: calc(8px * var(--ui));
+  gap: calc(6px * var(--ui));
+  border-radius: calc(var(--round2) * var(--ui));
+}
+.tools.shut {
+  width: auto;
+  padding: calc(3px * var(--ui));
+}
+.tools .field {
+  height: calc(26px * var(--ui));
+  font-size: calc(12px * var(--ui));
+}
+.tools .add {
+  height: calc(30px * var(--ui));
+}
+.tool-groups h4 {
+  margin: calc(10px * var(--ui)) 0 calc(2px * var(--ui));
+  padding: 0 calc(6px * var(--ui));
+  gap: calc(5px * var(--ui));
+  font-size: calc(11px * var(--ui));
+}
+.tool-groups h4 .icon {
+  width: calc(12px * var(--ui));
+  height: calc(12px * var(--ui));
+}
+.tools p {
+  margin: calc(4px * var(--ui)) calc(6px * var(--ui));
+  font-size: calc(11px * var(--ui));
+}
+.tool {
+  gap: calc(4px * var(--ui));
+  padding: calc(4px * var(--ui)) calc(6px * var(--ui));
+  border-radius: calc(6px * var(--ui));
+  font-size: calc(12.5px * var(--ui));
+}
+.tool-off .icon {
+  width: calc(11px * var(--ui));
+  height: calc(11px * var(--ui));
+}
+
+.browse-toggle {
+  font-size: calc(12px * var(--ui));
+}
+
+/* Each project a tab, top left: one click to any, and the rest behind +. */
+.ptabs {
+  display: flex;
+  align-items: stretch;
+  gap: calc(2px * var(--ui));
+  min-width: 0;
+  max-width: 55vw;
+  padding: calc(2px * var(--ui));
+  border-radius: calc(var(--round) * var(--ui));
+  background: var(--float);
+}
+.ptab {
+  display: inline-flex;
+  align-items: center;
+  max-width: calc(150px * var(--ui));
+  padding: calc(4px * var(--ui)) calc(10px * var(--ui));
+  overflow: hidden;
+  border-radius: calc(5px * var(--ui));
+  color: var(--mute);
+  font-size: calc(13px * var(--ui));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ptab:hover {
+  color: var(--ink);
+}
+.ptab.on {
+  background: var(--card2);
+  color: var(--ink);
+  font-weight: 600;
+}
+.ptab.more {
+  flex: none;
+  padding: calc(4px * var(--ui)) calc(8px * var(--ui));
+}
+
+/* What can't be read says so where its boxes would be. */
+.unread {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 4;
+}
+.unread > div {
+  max-width: 560px;
+  padding: 24px 28px;
+  border: 1px solid var(--line2);
+  border-radius: 14px;
+  background: var(--float);
+  pointer-events: auto;
+}
+.unread h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+.unread p {
+  margin: 0 0 10px;
+  color: var(--mute);
+  font-size: 14px;
+  line-height: 1.45;
+}

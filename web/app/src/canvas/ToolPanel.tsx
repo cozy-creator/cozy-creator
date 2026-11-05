@@ -96,7 +96,7 @@ function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; plac
 }
 
 /** What can be dropped on the canvas, by what it makes, and it folds away. The canvas stays where it is under it. */
-export function ToolPanel({ machine, waiting, shut, setShut, place, choose }: { machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; choose: () => void }) {
+export function ToolPanel({ project, machine, waiting, shut, setShut, place, choose }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; choose: () => void }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const [typed, setTyped] = useState("")
@@ -106,7 +106,7 @@ export function ToolPanel({ machine, waiting, shut, setShut, place, choose }: { 
     const timer = setTimeout(() => setQ(typed.trim()), 250)
     return () => clearTimeout(timer)
   }, [typed])
-  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, browsing ? "" : q, machine, store.projectId), enabled: !waiting })
+  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, browsing ? "" : q, machine, project), enabled: !waiting })
   useEffect(() => {
     if (data && !isPlaceholderData) store.addTools(data.tools)
   }, [store, data, isPlaceholderData])

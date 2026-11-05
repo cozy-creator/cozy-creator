@@ -19,6 +19,7 @@ import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/que
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../types"
+import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
@@ -29,10 +30,16 @@ import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { Placer } from "./place"
 import { madeHere } from "./shown"
+import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 
 const nodeTypes = { element: Card, entity: EntityCard }
-const fitOver = (toolsShut: boolean) => ({ maxZoom: 1, padding: { top: "56px", right: "24px", bottom: "24px", left: toolsShut ? "56px" : "220px" } as const })
+/** A fit, clear of what floats over the canvas. */
+const fitOver = () => {
+  const left = (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24
+  const top = (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12
+  return { maxZoom: 1, padding: { top: `${top}px`, right: "24px", bottom: "24px", left: `${left}px` } as const }
+}
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
@@ -71,11 +78,11 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     if (canvas) store.applyCanvas(canvas.cards, canvas.began)
   }, [store, canvas])
-  // A file that doesn't read, said once, and gone when it does: someone's still saving it.
+  // Gone: there's nothing to show. Anything else that stops it being read is said on the canvas (`Unread`), for as long as it holds.
   useEffect(() => {
-    if (!stateError) return
+    if (!(stateError instanceof ApiError && stateError.status === 404)) return
     const note = say("Couldn't read this project", stateError)
-    if (stateError instanceof ApiError && stateError.status === 404) navigate("/", { replace: true })
+    navigate("/", { replace: true })
     return () => dismiss(note)
   }, [stateError, navigate])
   useEffect(() => {
@@ -135,6 +142,23 @@ function RenderAll({ id }: { id: string }) {
   )
 }
 
+/** A project this Calcifer can't read: why, and what to do, where its boxes would be. */
+function Unread({ error }: { error: unknown }) {
+  const body = error instanceof ApiError ? error.body : undefined
+  return (
+    <div className="unread" role="alert">
+      <div>
+        <h2>This project can't be opened yet</h2>
+        <p>{error instanceof Error ? noHash(error.message) : String(error)}</p>
+        {body?.remedy && <p>{noHash(body.remedy)}</p>}
+        {body?.next?.map((line) => (
+          <Copyable key={line} text={line} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** One line, and it does what it says when clicked too. */
 function Empty({ choose }: { choose: () => void }) {
   const empty = useStore((state) => state.nodes.length === 0)
@@ -175,7 +199,10 @@ function Canvas({
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store)
   const machine = machines?.at(-1) ?? null
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, projectId), enabled: machines !== null })
+  // What can't be read says so on the canvas, and everything around it still works.
+  const { error: unread } = useQuery({ ...projectQuery(client, projectId ?? ""), enabled: Boolean(projectId) })
+  const readable = unread ? null : projectId
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
 
   // Something not saved yet, with Calcifer unreachable: the browser's own question is the only one the page ever asks.
   useEffect(() => {
@@ -193,7 +220,7 @@ function Canvas({
     const fitOnce = async () => {
       if (fitted || !store.projectId) return
       fitted = true
-      if (openedOn) await flow.fitView(fitOver(loadToolsShut()))
+      if (openedOn) await flow.fitView(fitOver())
       saveViewport(scope, store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
@@ -208,7 +235,7 @@ function Canvas({
     return () => store.detach()
   }, [store, flow, saved, scope, openedOn, bridge, navigate])
 
-  const fit = useCallback(() => void flow.fitView({ ...fitOver(loadToolsShut()), duration: 150 }), [flow])
+  const fit = useCallback(() => void flow.fitView({ ...fitOver(), duration: 150 }), [flow])
   const choose = useCallback(() => picker.current?.click(), [])
 
   // The middle of what's visible: the canvas between whatever floats over it.
@@ -368,6 +395,7 @@ function Canvas({
   return (
     <CanvasStoreProvider value={store}>
       <ToolPanel
+        project={readable}
         machine={machine}
         waiting={machines === null}
         shut={shut}
@@ -429,7 +457,7 @@ function Canvas({
           onSelectionDragStop={(event, nodes) => dragStop(event, nodes)}
         >
           <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
-          <Empty choose={choose} />
+          {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
         </ReactFlow>
         {veil && <div className="dropveil" />}
       </div>

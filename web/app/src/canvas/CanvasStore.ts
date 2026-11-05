@@ -119,7 +119,7 @@ type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
 const UNDO_MS = 5 * 60_000
-const SHOWS_FROM = { x: 240, y: 72 }
+const CLEAR_OF_FRAME = 24
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
 
@@ -230,6 +230,14 @@ export class CanvasStore {
   attach(flow: Flow) {
     this.flow = flow
     if (this.state && this.rows) this.reconcile()
+    // React Flow forgets what it's told as it mounts, which a project read already has in time for: what's held is told again once it's up.
+    setTimeout(() => {
+      if (this.flow !== flow) return
+      flow.setNodes((nodes) => {
+        const there = new Set(nodes.map((node) => node.id))
+        return [...nodes, ...[...this.ids].filter(([, id]) => !there.has(id)).flatMap(([name, id]) => (this.rows?.has(name) ? [this.node(name, this.rows.get(name)!, this.selected.has(name), id)] : []))]
+      })
+    })
   }
 
   detach() {
@@ -518,7 +526,8 @@ export class CanvasStore {
   private onScreen(): Box | undefined {
     const seen = this.flow?.getViewport()
     if (!seen) return undefined
-    const [left, top] = [SHOWS_FROM.x, SHOWS_FROM.y]
+    const left = (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + CLEAR_OF_FRAME
+    const top = (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + CLEAR_OF_FRAME
     return { x: (left - seen.x) / seen.zoom, y: (top - seen.y) / seen.zoom, w: (innerWidth - left) / seen.zoom, h: (innerHeight - top) / seen.zoom }
   }
 
@@ -536,8 +545,7 @@ export class CanvasStore {
     this.flow?.addNodes(nodes)
   }
 
-  private node(name: string, row: Row, selected = false): ElementNode {
-    const id = `e${++this.nextId}`
+  private node(name: string, row: Row, selected = false, id = `e${++this.nextId}`): ElementNode {
     this.ids.set(name, id)
     this.namesById.set(id, name)
     this.served.set(id, name)
