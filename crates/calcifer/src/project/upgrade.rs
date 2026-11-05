@@ -861,6 +861,11 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         })
         .collect();
     doc.stamped(&mut lock, &current);
+    // What landed while the project couldn't list it is a run's, as any other, and reads as that rather than as nothing.
+    let pins: BTreeSet<&str> = doc.assets.iter().filter_map(|asset| asset.pin.as_deref()).collect();
+    let named: BTreeSet<String> = lock.named(|_| true).into_iter().chain(pins).chain(lock.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect();
+    let unlisted: Vec<String> = lock.files.iter().filter(|(sha256, file)| !named.contains(*sha256) && !file.path.is_empty() && dir.join(&file.path).is_file()).map(|(sha256, _)| sha256.clone()).collect();
+    lock.runs.extend(unlisted.into_iter().map(|sha256| folder::RunFile { run: 0, function: String::new(), output: "kept".to_owned(), sha256 }));
 
     // Old files aside, then the lock, the canvas and last the file, each whole. Until the file is replaced it's format 2, and this starts again
     // from the originals, which are kept at every step.

@@ -152,21 +152,18 @@ An asset that is only a `description`, with no tool and no file, stands as words
 | `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
 | `unapprove <name>` | Takes `approved` away. A dropped file keeps it: it's all it is |
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
-| `import <file\|hash> [name] [--description <words>] [--at x,y[,w]]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
+| `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
 | `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
-| `tools [words] [--on <machine>]` | What can make an asset. `--json` gives each one's fields, their types and limits |
-| `add <tool> [name] [field=value…] [--input <file>] [--at x,y[,w]]` | An asset of that tool, as dropping it on the canvas, and prints its name. With no place the page gives it one, free and on screen |
-| `set <name> field=value… [--input <file>] [--if-match <etag>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, and `tool=` is what makes it. An Edit's tracks and clips are its `timeline`, in a file |
-| `show <name>` | Its fields, the `etag` `--if-match` takes, and each take or version |
+| `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |
+| `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |
+| `status <name>` | One asset: its fields and each take or version |
 | `delete <name>…` | As the X on its box: its work stops and it goes, and this prints the `restore` line that brings it back |
 | `restore <name> <kept>` | That line: back as it was, where it was, with what it made |
-| `canvas [name [x y [w]]] [--input <file>]` | Where boxes sit: prints them, or moves one as a drag does, or several from a file |
-| `caption <name> [--on <machine>]` | Prints what a run says it shows. It writes nothing: `set` it into `description` |
 | `upgrade [--status <file>]` | A format 2 folder to format 3, here, with no Calcifer. See below |
 
-Everything the page does has a command here, each the same route with the same fields, and what either does shows on the other within a second: a hand's save of `project.yaml` too.
+Everything the page does has a command, each the same route with the same fields, and what either does shows on the other within a second: a hand's save of `project.yaml` too. Caption is `cozy run` of a function that reads a picture, then `set <name> description=…`.
 
 ## Queueing
 

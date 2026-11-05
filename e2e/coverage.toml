@@ -192,7 +192,7 @@ test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
 test = "pr: projects: the index, a moved folder missing, a DELETEd one gone"
 
 ["project status"]
-test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes"
+test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes; by the CLI: one asset"
 
 ["project render"]
 test = "pr: projects: only what has no state; reverting runs nothing; cuts; adapters; a world-state series"
@@ -211,38 +211,19 @@ test = "pr: projects: a queued take dropped; alone or not, what it canceled isn'
 ["project import"]
 test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs"
 "--description" = "pr: web-live: a file lifted out as its own asset, with its words"
-"--at" = "pr: by the CLI: where it sits; web-live: on the open canvas"
 
 ["project add"]
-test = "pr: by the CLI: fields, a name; web-live: shows on the open canvas within a second"
-"--input" = "pr: by the CLI: fields from a file, from stdin, a term over them; web-live: an Edit's clips"
-"--at" = "pr: by the CLI: where it sits; web-live: on the open canvas"
+test = "pr: by the CLI: fields, a name, where it sits; web-live: shows on the open canvas within a second"
 
 ["project set"]
-test = "pr: by the CLI: a value, JSON, clearing, what makes it; web-live: on the open canvas, past what's typed"
-"--input" = "pr: by the CLI: fields from a file"
-"--if-match" = "pr: by the CLI and web-live: refused on another etag, naming show, and passes on its own"
+test = "pr: by the CLI: a value, JSON, clearing, what makes it, where it sits; web-live: on the open canvas, past what's typed"
+"--input" = "pr: by the CLI: fields from a file, from stdin, a term over them; web-live: an Edit's clips"
 
 ["project delete"]
 test = "pr: by the CLI: prints what restores it; web-live: gone from the open canvas"
 
 ["project restore"]
 test = "pr: by the CLI: the line delete printed, run as printed, its takes kept; web-live: back where it was"
-
-["project canvas"]
-test = "pr: by the CLI: every row, one row, moved and sized; web-live: on the open canvas and read back of a drag"
-"--input" = "pr: by the CLI: several rows, one gone"
-
-["project caption"]
-test = "pr: by the CLI: refused with no machine, naming the next step; web-live: prints a real run's answer, which set then writes"
-"--on" = "pr: web-live: --on local"
-
-["project tools"]
-test = "pr: by the CLI: the Edit, the local code a project names, words looked for"
-"--on" = "pr: by the CLI: --on local"
-
-["project show"]
-test = "pr: by the CLI: fields and versions; web-live: its etag, which set --if-match takes"
 
 ["project upgrade"]
 test = "pr: projects: format 2 to format 3, nothing out of date and nothing run"

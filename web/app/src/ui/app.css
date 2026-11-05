@@ -230,8 +230,9 @@ code {
 }
 
 /* The canvas never scrolls. What a browser would scroll to reveal something (a focus, say), React Flow scrolls back a moment later, with the pointer left over another box, which opens as this one closes. */
+/* !important: React Flow sets its own inline. */
 .stage .react-flow {
-  overflow: clip;
+  overflow: clip !important;
 }
 
 /* A box at rest: a name, and its picture or its text. There's no card around it, so it weighs nothing. */

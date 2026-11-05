@@ -9,13 +9,13 @@ use std::{
 use protocol::{
     calcifer::StreamEvent,
     error::{Error, Kind},
-    project::{Asset as Row, Standing as RowStanding, State as ProjectState},
+    project::{Asset as Row, Cut, Standing as RowStanding, State as ProjectState},
 };
 
 use super::{
     Project, Reading, Stale, assetfile, board_of, cut_row,
-    folder::Lock,
-    format::{Doc, State as Stand, Tool},
+    folder::{Folder, Lock},
+    format::{Doc, Standing, State as Stand, Tool},
     graph::name_key,
     kept_files, known_packages, making_now, next_steps, orphans, queue, revision, row, unadapted,
 };
@@ -33,6 +33,7 @@ pub(super) struct Model {
     head: ProjectState,
     /// In the doc's order, so an asset's index in it is its index here.
     rows: Vec<Row>,
+    stand: Vec<Standing>,
 }
 
 /// What streams were last told of a project.
@@ -101,7 +102,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
             row
         })
         .collect();
-    let cuts = (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).map(|i| cut_row(&doc, folder, &lock, &stand, i)).collect();
+    let cuts = cuts_of(&doc, folder, &lock, &stand);
     let absent = lock.files.values().filter(|file| folder.missing(file)).count() as u64;
     let orphans = orphans(&doc, folder, &lock);
     let kept = kept_files(&doc, &lock);
@@ -110,7 +111,11 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
     let head = ProjectState { id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None };
-    Ok(Model { rev, heard, doc, lock, head, rows })
+    Ok(Model { rev, heard, doc, lock, head, rows, stand })
+}
+
+fn cuts_of(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing]) -> Vec<Cut> {
+    (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).map(|i| cut_row(doc, folder, lock, stand, i)).collect()
 }
 
 /// A row with what's going this moment on it. A render moves in the walk's file, which this is never read again for.
@@ -139,6 +144,8 @@ impl Model {
         state.board = board_of(project);
         let walk = project.folder.walk_now().unwrap_or_default();
         state.queue = queue(project, &walk);
+        // A film at the root is a person's as much as ours, and no revision of the project's files says it moved.
+        state.cuts = cuts_of(&self.doc, &project.folder, &self.lock, &self.stand);
         if assets {
             let rendering = project.rendering.lock().expect("rendering lock");
             let making = making_now(&walk);
@@ -177,7 +184,7 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
     let Some(was) = was else { return whole(id, rev) };
     let (assets, gone) = changed(&was, &now);
     let (from, to) = (&was.model.head, &now.model.head);
-    let head = was.busy != now.busy || was.moving != now.moving || was.queue != now.queue || (&from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
+    let head = was.busy != now.busy || was.moving != now.moving || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
     match assets.len() + gone.len() > MOST_TOLD {
         true => whole(id, rev),
         false => StreamEvent::ProjectChanged { id, rev, assets: Some(assets), gone, head },

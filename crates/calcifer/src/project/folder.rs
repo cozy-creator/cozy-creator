@@ -1005,7 +1005,9 @@ impl Folder {
             };
             (self.path(&path), old.into_inner(), listed.err())
         };
-        self.drop_unused(&old)?;
+        if unlisted.is_none() {
+            self.drop_unused(&old)?;
+        }
         Ok((path, unlisted))
     }
 

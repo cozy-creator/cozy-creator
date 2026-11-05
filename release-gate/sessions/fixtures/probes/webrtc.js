@@ -110,7 +110,7 @@ function library(cozy) {
       const r = await bulk;
       clearInterval(beat);
       session.close();
-      return { window: window ?? 8 << 20, small: spread(ms), bulk_mb: size / 1e6, bulk_mb_s: round(r.got / 1e3 / r.ms), page_main_thread_worst_lag_ms: round(lag) };
+      return { window: window || 8 << 20, small: spread(ms), bulk_mb: size / 1e6, bulk_mb_s: round(r.got / 1e3 / r.ms), page_main_thread_worst_lag_ms: round(lag) };
     },
     /** cozy/1 has no upload: padded no-op messages are what the channel carries up, unforwarded. The ordered reply says the pod took them all. */
     async uplink(megabytes) {
@@ -133,7 +133,7 @@ function library(cozy) {
     async dropBegin() {
       const { session } = await open();
       const end = await measure(session);
-      Object.assign(dropping, { session, end, at: 0, lost: null, code: null, mark: null, done: null, into: new Uint8Array(end.length) });
+      Object.assign(dropping, { session, end, at: 0, lost: null, code: null, mark: null, done: null, failed: null, into: new Uint8Array(end.length) });
       session.closed.then((reason) => { dropping.lost = now(); dropping.code = reason.code; });
       dropping.read = read(session, 0, end.length, { into: dropping.into, moved: (at) => { dropping.at = at; } })
         .then((r) => { dropping.done = r; }, (error) => { dropping.failed = String(error.message ?? error); });
@@ -194,7 +194,7 @@ async function drop(page, kind) {
   return { how, ...(await page.evaluate('P.dropFinish()')) };
 }
 
-async function shaped(page, rate, megabytes) {
+async function shaped(page, rate, megabytes, window = 0) {
   try {
     net('shape', rate);
   } catch (error) {
@@ -202,7 +202,7 @@ async function shaped(page, rate, megabytes) {
     return { not_measured: `this runner could not shape: ${String(error.message).slice(0, 200)}` };
   }
   try {
-    return { rate, ...(await page.evaluate(`P.underLoad(${megabytes})`)) };
+    return { rate, ...(await page.evaluate(`P.underLoad(${megabytes}, ${window})`)) };
   } finally {
     quiet(() => net('unshape'));
   }
@@ -269,6 +269,9 @@ async function one(name, type) {
     await step('drop_blackhole', () => drop(page, 'blackhole'));
     await step('under_load_20mbit', () => shaped(page, '20mbit', 25));
     await step('under_load_5mbit', () => shaped(page, '5mbit', 6));
+    await step('under_load_20mbit_window_1mib', () => shaped(page, '20mbit', 25, 1 << 20));
+    await step('under_load_20mbit_window_256kib', () => shaped(page, '20mbit', 25, 256 << 10));
+    await step('under_load_5mbit_window_256kib', () => shaped(page, '5mbit', 6, 256 << 10));
     r.refused = await page.evaluate('window.__refused');
   } finally {
     await browser.close().catch(() => {});
