@@ -11,6 +11,7 @@ import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
 import { clock, lineOf, withMentions } from "./text"
+import { isSelf } from "./versions"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
@@ -340,7 +341,7 @@ export function Media({ view, name, cardWidth, open, children }: { view: Element
         <p className="words">
           {withMentions(words).map((part, i) =>
             part.mention ? (
-              <span key={i} className={`chip ${asset?.missing?.includes(part.text.slice(1, -1)) ? "missing" : ""}`}>
+              <span key={i} className={`chip ${asset?.missing?.includes(part.text.slice(1, -1)) || (store.mentionOf(part.text.slice(1, -1), name)?.gone ?? isSelf(part.text.slice(1, -1))) ? "missing" : ""}`}>
                 {part.text.slice(1, -1)}
               </span>
             ) : (
@@ -356,6 +357,7 @@ export function Media({ view, name, cardWidth, open, children }: { view: Element
           <Icon name={glyph} />
         </span>
       )}
+      {(making || view.queued || view.asked !== undefined) && view.viewed === undefined && <div className="media-making" />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {making && <Progress fraction={fraction} says={fraction === undefined ? undefined : leftWords(fraction, view.run?.progress?.eta_s)} />}
       {open && source && field && store.projectId && (
