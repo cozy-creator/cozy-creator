@@ -641,6 +641,9 @@ function linesOf(text, name) {
     // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
     const asker = join(__dirname, '..', 'project', 'tool.py');
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  asker:\n    tool: ${asker}/told\n`);
+    await away();
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box('asker').waitFor();
     // A toggle shows its function's own default, on, with nothing in the file, and off is what's written.
     await more('asker');
