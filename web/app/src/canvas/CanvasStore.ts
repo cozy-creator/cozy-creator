@@ -185,6 +185,8 @@ export class CanvasStore {
   inPlace: { name: string; back: { x: number; y: number; zoom: number } } | null = null
   /** From a box written in where it stands: all of it, over the canvas. */
   openBox: (name: string) => void = () => {}
+  /** Done writing where it stands: the canvas goes back. */
+  leaveHere: () => void = () => {}
   /** The box opened over the canvas, if one is. */
   opened: string | null = null
   /** The name a just-dropped tool will have: its text takes the keys. */
@@ -422,6 +424,8 @@ export class CanvasStore {
       const view = this.views.get(asset.name)
       if (view) {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
+        // What a new take's run warned of is said as it lands: a box's own mark is only seen opened.
+        if (this.hasRead && view.asset && asset.version !== view.asset.version) for (const line of warnings.get(asset.name) ?? []) if (!view.warnings?.includes(line)) say(line)
         // A render that fails says so as it fails, wherever the person is looking. One that failed before this page opened is the box's to show.
         if (asset.failure && this.hasRead && asset.failure.message !== view.asset?.failure?.message) say(`${asset.name} didn't render`, new ApiError(0, asset.failure))
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)

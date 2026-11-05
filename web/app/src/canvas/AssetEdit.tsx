@@ -340,6 +340,7 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
       onClick={() => {
         store.run(name)
+        store.leaveHere()
       }}
     >
       <Icon name="play" />
