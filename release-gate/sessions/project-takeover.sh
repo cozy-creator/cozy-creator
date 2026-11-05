@@ -10,10 +10,14 @@
 #      that reads the plate once: one run, one version, the plate's bytes its hash on X.
 #   e. Nothing owed and nothing connected, the pod ends itself within 15 minutes of its last job.
 #   h. A real H3 shot on X reading a picture the hand-off uploads (a GPU SKU, and `h3`, the function: asked by name).
+#   y. `--on X,Y` on a second rental: Y admits X's key through Y's door, X adds Y under this computer's name for it and sends it work
+#      directly; four stills, this computer gone meanwhile, each made once across both, collected; Y no longer admits X once it's over.
+#   l. X loses the project mid-render (its Calcifer killed and its copy wiped, as a fresh disk would): this computer's hold ends at once
+#      with `holder_lost`, its render says so, and nothing is asked again.
 # params:
 #   cozy        the cozy under test, for `machine update --tensord`: a version, a file or URL#sha256= (default: the session's)
 #   runtime     a Runtime for the pod with `cozy`: a wheel or a version (default: the pod's)
-#   parts       which of a, k, e, h run (default a,k,e)
+#   parts       which of a, k, e, h, y, l run (default a,k,e); y and l rent a second pod
 #   h3          the function h renders its shot with (default minimax-h3/generate, Turbo)
 #   rent_lock   a file to hold while ordering, where several sessions rent from one computer
 #   traffic_gb  GB the provider bills (default 12)
@@ -26,11 +30,13 @@ UNDER=$(param cozy "$(command -v cozy)") LOCK=$(param rent_lock) RUNTIME=$(param
 PARTS=,$(param parts a,k,e),
 has() { [[ $PARTS == *",$1,"* ]]; }
 RENT_ARGS=--ssh
-quote "$(param traffic_gb 12)" "$(param seconds 3600)"
+TWO=''; has y && TWO=1
+quote "$(param traffic_gb 12)" "$(param seconds 3600)" "$SKU" ${TWO:+"$SKU"}
 [ -z "$LOCK" ] || { exec 9>"$LOCK"; flock 9; }
-order
+order; [ -z "$TWO" ] || order
 [ -z "$LOCK" ] || { flock -u 9; exec 9>&-; }
-ready
+[ -z "$TWO" ] || { ready 1; Y=$NAME YRID=$RID; }
+ready 0
 
 # A shell there, asked again when it goes quiet or can't connect (this runner's own network drops for minutes at a time: 02:47Z on
 # 11-05): everything asked this way can be asked twice, and the pod goes on without it.
@@ -324,7 +330,94 @@ YAML
   say "h: the shot came down whole: $(ffprobe -v error -show_entries stream=codec_type,nb_frames -of csv=p=0 "$OUT/h-seashot.mp4" | paste -sd' ')"
 }
 
-for part in a k h e; do
+# On Y, the second rental: its update, and a shell there.
+if [ -n "$TWO" ]; then
+  step update-y machine update "$Y" --tensord "$UNDER" ${RUNTIME:+--runtime "$RUNTIME"} -y || fail "update $Y to $UNDER"
+  cozy machine ssh "$Y" -- 'cozy machine show local --json' < /dev/null > "$OUT/y-local.json" 2>> "$OUT/ssh.err" || fail "cozy machine show local on $Y"
+fi
+ysh() { NAME=$Y sh "$@"; }
+
+part_y() {
+  new_project y
+  say "y: X drives Y ($Y)"
+  local address fingerprint
+  cozy machine show "$Y" --json > "$OUT/y-show.json"
+  address=$(jq -r .address "$OUT/y-show.json") fingerprint=$(jq -r .fingerprint "$OUT/y-show.json")
+  ysh "cozy machine authorize $KEY" > "$OUT/y-authorize.txt" 2>&1 || fail "y: $Y won't admit this computer"
+  c "machine add ybox $address --fingerprint $fingerprint" > "$OUT/y-add.txt" 2>&1 || fail "y: add ybox: $(tail -3 "$OUT/y-add.txt")"
+  write "/home/client/y/project.yaml" <<YAML || fail "y: its project.yaml wasn't written"
+version: 3
+assets:
+  north:
+    tool: ./art.py/make
+    seconds: 40
+    instructions: north $RANDOM
+  south:
+    tool: ./art.py/make
+    seconds: 40
+    instructions: south $RANDOM
+  east:
+    tool: ./art.py/make
+    seconds: 40
+    instructions: east $RANDOM
+  west:
+    tool: ./art.py/make
+    seconds: 40
+    instructions: west $RANDOM
+YAML
+  sh "su client -s /bin/sh -c 'cd \$HOME/y; nohup /opt/client/cozy project render all --on box,ybox --plain > \$HOME/y.out 2>&1 < /dev/null & echo \$! > /tmp/y.pid'" > /dev/null
+  local t=0
+  until [ "$(handing "$(walk_file)")" = asked ]; do [ $t -lt 300 ] || fail "y: X never took it: $(sh 'tail -5 /home/client/y.out' | paste -sd'|')"; t=$((t + 3)); sleep 3; done
+  line down
+  killed "$(sh 'cat /tmp/y.pid' | tr -dc 0-9)" "$(client_calcifer)"
+  say "y: X walks it, this computer gone"
+  t=0
+  until x_made north south east west; do [ $t -lt 900 ] || fail "y: X didn't make all four"; t=$((t + 5)); sleep 5; done
+  x "--json run ls --limit 50" > "$OUT/y-x-runs.json"
+  once north south east west
+  local on_y; on_y=$(jq --arg t "/projects/y-" '[.runs[] | select(((.project // "") | contains($t)) and (.target | startswith("ahead ") | not) and .machine == "ybox")] | length' "$OUT/y-x-runs.json")
+  [ "$on_y" -gt 0 ] || fail "y: X sent Y nothing: $(jq -c '[.runs[] | [.number, .machine, .target]]' "$OUT/y-x-runs.json")"
+  local xkey; xkey=$(sh 'cozy --json machine show local' | jq -r .controller_key)
+  line up
+  t=0
+  until collected && [ "$(handing "$(walk_file)")" = "nothing held" ]; do
+    [ $t -lt 600 ] || fail "y: not collected"
+    c "project status 2>&1" > /dev/null
+    t=$((t + 5)); sleep 5
+  done
+  # Taking it back changes nothing when the hold's end already did.
+  ysh "cozy --json machine authorize --remove $xkey" > "$OUT/y-key.json" 2>&1
+  say "y: four made once, $on_y of their calls on $Y, sent there by X; all collected; X's key still on $Y after: $(jq -r .changed "$OUT/y-key.json")"
+  [ "$(jq -r .changed "$OUT/y-key.json")" = false ] || fail "y: $Y still admitted X once the hold was over: $(head -c 300 "$OUT/y-key.json")"
+}
+
+part_l() {
+  new_project l
+  say "l: X loses the project mid-render"
+  write "/home/client/l/project.yaml" <<YAML || fail "l: its project.yaml wasn't written"
+version: 3
+assets:
+  slow:
+    tool: ./art.py/make
+    seconds: 120
+    instructions: slow $RANDOM
+YAML
+  sh "su client -s /bin/sh -c 'cd \$HOME/l; nohup /opt/client/cozy project render all --on box --plain > \$HOME/l.out 2>&1 < /dev/null &'" > /dev/null
+  local t=0
+  until [ "$(handing "$(walk_file)")" = asked ] && x "--json project status" 2>/dev/null | jq -e .busy > /dev/null; do [ $t -lt 300 ] || fail "l: X never took it"; t=$((t + 3)); sleep 3; done
+  sh 'p=$(pgrep -u root -x calcifer); python3 -c "import json; f=\"/root/.cozy/calcifer/projects.json\"; i=json.load(open(f)); i[\"projects\"]={k: v for k, v in i[\"projects\"].items() if \"/projects/l-\" not in v[\"path\"]}; json.dump(i, open(f, \"w\"))"; rm -rf /root/.cozy/projects/l-*; kill -9 $p' > /dev/null
+  say "l: X walks it; X's Calcifer killed and its copy wiped"
+  t=0
+  until sh 'grep -q "gone before" /home/client/l.out' && [ "$(handing "$(walk_file)")" = "nothing held" ]; do
+    [ $t -lt 300 ] || fail "l: the hold never ended: $(sh 'tail -4 /home/client/l.out' | paste -sd'|')"
+    t=$((t + 5)); sleep 5
+  done
+  sh 'tail -4 /home/client/l.out' > "$OUT/l-out.txt"
+  sh 'cozy machine show local' | grep -E '^(running|queued) ' | paste -sd' ' > "$OUT/l-x-machine.txt"
+  say "l: this computer's render ended $t s later: $(grep -m1 -E 'gone before' "$OUT/l-out.txt" | cut -c1-200); X now: $(cat "$OUT/l-x-machine.txt")"
+}
+
+for part in a k h y l e; do
   ! has "$part" || "part_$part"
 done
 say "done: $PARTS"
