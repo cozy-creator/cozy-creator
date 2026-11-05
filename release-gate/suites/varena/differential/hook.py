@@ -2,7 +2,8 @@
 `execution.loops`, a digest of every component's outputs and each `denoise_loop`'s final tensors,
 read in order after each call. It reads values; it changes none. `PRESS` changes only what memory the second
 loop finds: "refill" fills the card once and lets go, so a kept program's weights left and come back, "hold" keeps it
-filled through the loop, so they can't all come back and the call runs eagerly."""
+filled through the loop, so they can't all come back and the call runs eagerly. "eager" turns graphs off: every loop
+and component root runs as written."""
 
 import hashlib
 from typing import Any
@@ -50,7 +51,7 @@ def _add(name: str, value: Any) -> None:
 def run(self: Any, step: Any, steps: Any, state: Any, carried: Any, inputs: Any, *rest: Any, **named: Any) -> None:
     _loops[0] += 1
     held = None
-    if PRESS and _loops[0] == 2:
+    if PRESS in ("refill", "hold") and _loops[0] == 2:
         device = state[0].device
         held = torch.empty(torch.cuda.mem_get_info(device)[1] - LEFT, dtype=torch.uint8, device=device)
         held.fill_(1)
@@ -69,3 +70,6 @@ def dispatch(owner: Any, module: Any, call: Any, args: Any, kwargs: Any) -> Any:
 
 
 loop.Loops.run, graphs._dispatch = run, dispatch
+if PRESS == "eager":
+    loop._eligible = lambda ctx, steps, tensors: ((), "the gate's eager arm")
+    graphs._region_call = lambda torch, module, recorder, call, args, kwargs: call(module, *args, **kwargs)

@@ -18,7 +18,9 @@ app = App()
 STEPS = 3  # native passes; the eager first step makes STEPS + 1
 MIX = ("memset", "memcpy", "cublas", "cudnn", "sdpa", "triton")
 VARIANTS = ("scalar", "memset", "memset32", "memcpy", "reduce", "parallel", "triton", "triton_pdl",
-            "cublas", "cudnn", "sdpa", "mix")
+            "cublas", "cudnn", "sdpa", "mix", "phases", "legacy")
+#: two runs of equal phases, so two recorded parts
+PHASES = ("a", "a", "b", "b")
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
@@ -49,7 +51,7 @@ def launched(name, stream):
 
 
 def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
-    if name == "scalar":
+    if name in ("scalar", "phases"):
         return
     if name in ("memset", "memset32"):
         scratch = torch.full((768,), 0xAB, dtype=torch.uint8, device=device)
@@ -112,6 +114,18 @@ def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
         ops.append(fork)
         checks.append((name, lambda: bool((p == STEPS + 1).all())))
         SEEN[name] = p
+    elif name == "legacy":  # 28892's shape: a launch that names no stream goes to the legacy stream
+        p = torch.zeros(64, dtype=torch.float32, device=device)
+        legacy = torch.cuda.default_stream(device)
+
+        def stray():
+            with torch.cuda.stream(legacy):
+                launched(name, legacy)
+                p.add_(1)
+
+        ops.append(stray)
+        checks.append((name, lambda: bool((p == STEPS + 1).all())))
+        SEEN[name] = p
     elif name == "reduce":
         big = torch.randn(1 << 22, device=device)
         norm = torch.empty((), device=device)
@@ -142,19 +156,22 @@ def gpu(payload: Probe, ctx: Context) -> Report:
         part(name, device, ops, checks)
     counter = torch.zeros(64, dtype=torch.float32, device=device)
 
-    def step(index, counter):
-        del index
+    def step(index, counter, phase=None):
+        del index, phase
         for op in ops:
             op()
         counter.add_(1)
 
-    denoise_loop(step, range(STEPS + 1), state=(counter,))
+    phases = PHASES if payload.variant == "phases" else None
+    denoise_loop(step, range(STEPS + 1), state=(counter,), phases=phases)
     torch.cuda.synchronize()
     results = {name: bool(check()) for name, check in checks}
     seen = {name: dict(zip(*(v.tolist() for v in SEEN[name].unique(return_counts=True)))) for name in SEEN if not results.get(name, True)}
     results["counter"] = bool(torch.all(counter == STEPS + 1).item())
     row = (loop.ROWS.get(ctx.request_id) or [{}])[-1]
     native = row.get("mode") == "resident" and row.get("native_steps") == STEPS
+    if payload.variant == "legacy":  # its capture must fail, and the call run eagerly to the same values
+        native = row.get("mode") == "eager" and bool(row.get("refusals"))
     detail = {"variant": payload.variant, "gpu": gpus(), "checks": results, "want": STEPS + 1, "seen": seen,
               "launches": {name: sorted(map(list, v)) for name, v in LAUNCHES.items()},
               "loop": {k: row.get(k) for k in ("mode", "native_steps", "refusals")}}
