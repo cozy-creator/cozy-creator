@@ -94,6 +94,8 @@ struct Phases {
     active: Option<ActivePhase>,
     samples: BTreeMap<String, PhaseStats>,
     replay_samples: BTreeMap<String, PhaseStats>,
+    // What the last completed eager pass charged: a capture of it needs that much.
+    last_eager_peak: usize,
 }
 
 impl Phases {
@@ -124,6 +126,7 @@ pub struct WorkingStats {
     pub ooms: u64,
     pub driver_memory_calls: u64,
     pub driver_physical_ooms: u64,
+    pub last_eager_peak: usize,
     pub driver_memory_ns: u64,
     pub driver_memory_longest_ns: u64,
     pub reclaim_ns: u64,
@@ -1969,6 +1972,7 @@ pub fn phase_leave(
         &reason,
     );
     let mut sample = PhaseStats::default();
+    let mut last_eager_peak = None;
     let record = observed.as_ref().filter(|_| qualified).map(|key| {
         let samples = if active.mode == PhaseMode::Replay {
             &mut state.phases.replay_samples
@@ -1979,6 +1983,9 @@ pub fn phase_leave(
     });
     if let Some(record) = record {
         if published {
+            if active.mode == PhaseMode::Eager {
+                last_eager_peak = Some(active.owned_peak);
+            }
             record.known = true;
             record.peak_bytes = active.owned_peak;
             record.total_peak_bytes = active.peak;
@@ -1988,6 +1995,9 @@ pub fn phase_leave(
             record.aborted_passes += 1;
         }
         sample = record.clone();
+    }
+    if let Some(peak) = last_eager_peak {
+        state.phases.last_eager_peak = peak;
     }
     Ok(PhaseObservation {
         split_observations,
@@ -2144,6 +2154,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.event_waits,
     ) = owner.driver().calls();
     stats.driver_physical_ooms = owner.driver().physical_ooms();
+    stats.last_eager_peak = state.phases.last_eager_peak;
     (
         stats.driver_memory_ns,
         stats.driver_memory_longest_ns,

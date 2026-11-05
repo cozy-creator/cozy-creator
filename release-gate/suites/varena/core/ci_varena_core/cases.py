@@ -483,6 +483,30 @@ def fill_keeps_phase_pages():
 
 
 @case
+def pool_follows_its_pass():
+    """A capture's pool comes from the pass it records, not the request's high-water: 7.1 GB for
+    Qwen's 2.5 GB pass kept 3.9 GB of its weights off the card on every warm call (29669)."""
+    large = torch.empty(256 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+    torch.cuda.synchronize()
+    del large
+    token = vt.phase_enter(0, "core/pool")
+    value = torch.empty(16 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+    torch.cuda.synchronize()
+    del value
+    assert vt.phase_leave(0, token, completed=True)["published"]
+    assert vt.stats(0)["last_eager_peak"] == 16 * MIB, vt.stats(0)
+    pool = torch.cuda.graph_pool_handle()
+    graph = torch.cuda.CUDAGraph()
+    with vt.graph(graph, pool=pool):
+        torch.empty(16 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
+    held = vt.stats(0)["pools_bytes"]
+    assert 16 * MIB <= held <= 24 * MIB, vt.stats(0)
+    graph.reset()
+    settle()
+    return {"pool_mib": held // MIB}
+
+
+@case
 def eviction_order():
     """Outside the plan first, then the phase's most recently used; its next use stays."""
     gpu = varena.Device(0)
