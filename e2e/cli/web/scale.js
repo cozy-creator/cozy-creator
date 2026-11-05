@@ -40,14 +40,17 @@ const BARS = {
   open_settled_s: 10,
   edit_shows_ms: 1500,
   // A person's write, flushed to disk and answered, the middle of nine. "Under 100-ms is pretty much fast enough for most operations" (Paul, 11-05).
-  write_ms: 100,
+  // Hosted Windows's 150 is that 2-core runner's disk at 5,000 assets, no rule for the product: a POST does three atomic replaces, and at 19 ms
+  // each that was 57 of its 103 ms, moving with it across runs (post 71 to 121, replace 11 to 19). `write_disk` prints it beside each reading.
+  write_ms: process.env.RUNNER_OS === 'Windows' ? 150 : 100,
   landing_shows_ms: 1500,
   // What a pan costs the page itself, per frame, against the same pan of a project of 36, the same boxes on screen, on the same runner: size adds
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
   pan_work_times_small: 1.5,
   pan_work_slack_ms: 2,
-  // ms of the page's thread each second with nothing happening: a twentieth, until Linux and Windows have said what it is.
-  rest_ms_per_s: 50,
+  // ms of the page's thread each second left alone. Read 0.1 to 0.2 on this project on all three OSes, 11.9 at the most on any: this is twice that,
+  // and under what a loop of frames would spend, 1 to 3 ms sixty times a second.
+  rest_ms_per_s: 25,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.

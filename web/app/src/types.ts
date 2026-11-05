@@ -235,6 +235,8 @@ export interface Opened {
   id: string
   path: string
   name?: string
+  /** What opening it did, or found, said once. */
+  said?: string[]
 }
 
 export interface Asked {
@@ -300,6 +302,7 @@ export interface Import {
   source: string
   name?: string
   at?: Row
+  description?: string
   remove_background?: boolean
   on?: string
 }

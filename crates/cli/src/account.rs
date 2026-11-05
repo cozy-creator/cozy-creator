@@ -89,7 +89,11 @@ async fn prove(
 ) -> Result<Proven, Error> {
     let ask = CodeRequest { hub: Some(hub.to_string()), purpose, email: email.map(str::to_owned) };
     let sent: Code = calcifer.post("/v1/account/codes", &ask, None).await?;
-    let code = ask_line(ctx, &format!("A code was sent to {}. Code: ", sent.email), "code")?;
+    let said = match sent.retry_after_s {
+        Some(wait) => format!("A code already went to {}: use it, or ask again in {wait} s. Code: ", sent.email),
+        None => format!("A code was sent to {}. Code: ", sent.email),
+    };
+    let code = ask_line(ctx, &said, "code")?;
     calcifer.post(&path(&["v1", "account", "codes", &sent.id]), &CodeAnswer { code }, None).await
 }
 

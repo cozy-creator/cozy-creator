@@ -221,9 +221,12 @@ test = "pr: by the CLI: a value, JSON, clearing, what makes it, where it sits; w
 
 ["project delete"]
 test = "pr: by the CLI: prints what restores it; web-live: gone from the open canvas"
+"--version" = "pr: discards: a take off its box at once, one or several, each printing what restores it"
 
 ["project restore"]
 test = "pr: by the CLI: the line delete printed, run as printed, its takes kept; web-live: back where it was"
+"--version" = "pr: discards: a discarded take back in its place, as delete printed it"
+"--approved" = "pr: discards: the approved take back with its approval, as delete printed it"
 
 ["project upgrade"]
 test = "pr: projects: format 2 to format 3, nothing out of date and nothing run"

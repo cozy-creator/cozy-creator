@@ -129,6 +129,45 @@ render "$M" made || code=$?
 { [ "$code" != 0 ] && grep -q "local runs aren't available" "$OUT/render.txt"; } || check "no machine (exit $code): $(tail -c 300 "$OUT/render.txt")"
 }
 
+# A paid take against a lock that won't take a write, as a program holding it on Windows refuses one: it stays owed, says so, and lands
+# once, in order, when it can, with nothing run again. `chattr +i` refuses the same rename, with EPERM for Windows's Access is denied.
+lock_refused() {
+[ "${RUNNER_OS:-}" = Linux ] && [ -z "${ALONE:-}" ] || return 0
+step "a project: a take landing waits out a lock that can't be written, and lands once"
+local T=$OUT/lock-refused rendering run code=0 ended
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 3
+assets:
+  first: {tool: $here/project/draw.py/draw, instructions: Starts the lock.}
+  take:
+    tool: $here/project/shots.py/slow
+    seconds: 3
+YAML
+render "$T" first || check "lock refused: first: $(tail -c 300 "$OUT/render.txt")"
+render "$T" take -n 2 & rendering=$!
+for _ in $(seq 240); do run=$(status "$T" | jq -r '[.board.jobs[]? | select(.asset == "take") | .run // empty][0] // empty'); [ -n "$run" ] && break; sleep 0.25; done
+[ -n "$run" ] || check "lock refused: the take never went"
+sudo chattr +i "$T/project.lock" || check "lock refused: chattr isn't to be had here"
+for _ in $(seq 600); do grep -q 'Not saved yet' "$OUT/render.txt" && break; sleep 0.25; done
+grep -q 'Not saved yet' "$OUT/render.txt" || check "lock refused: nothing says it isn't saved: $(tail -c 300 "$OUT/render.txt")"
+for _ in $(seq 240); do
+  ended=$(cozy --json run ls --limit 0 | jq --arg s "$T" '[.runs[] | select(.project == $s and .status == "completed")] | length')
+  [ "$ended" = 3 ] && break; sleep 0.25
+done
+[ "$ended" = 3 ] || check "lock refused: $ended of 3 runs ended"
+[ "$(made "$T" take)" = 0 ] || check "lock refused: a take landed in a lock that couldn't be written: $(made "$T" take)"
+J '.pending | length >= 1' "$T/.runs/walk.json" || check "lock refused: nothing is owed: $(jq -c '.pending | keys' "$T/.runs/walk.json")"
+J '[.warnings[]?.message] | any(contains("Not saved yet"))' <<< "$(status "$T")" || check "lock refused: status doesn't say so: $(status "$T" | jq -c .warnings)"
+sudo chattr -i "$T/project.lock"
+wait "$rendering" || code=$?
+[ "$code" = 0 ] || check "lock refused: the render (exit $code): $(tail -c 300 "$OUT/render.txt")"
+J '[.versions[].number] == [1, 2] and all(.versions[]; (.runs | length) == 1)' <<< "$(held "$T" take)" || check "lock refused: its versions: $(held "$T" take | jq -c '[.versions[] | {number, runs}]')"
+[ "$(cozy --json run ls --limit 0 | jq --arg s "$T" '[.runs[] | select(.project == $s)] | length')" = 3 ] || check "lock refused: something ran again"
+[ "$(grep -c 'Not saved yet' "$OUT/render.txt")" = 1 ] || check "lock refused: said $(grep -c 'Not saved yet' "$OUT/render.txt") times"
+! J '[.warnings[]?.message] | any(contains("Not saved yet"))' <<< "$(status "$T")" || check "lock refused: it still says so"
+}
+
 # A film's versions, as `discards`, `renames_read` and `lost_lock` hold a take's, with nothing to run.
 free_versions() {
 step "a project: a film's versions discarded and put back, renamed, reclaimed, and its lock lost"
@@ -277,6 +316,7 @@ old_landing
 upgrade_interrupted
 lock_kept
 lost_lock
+lock_refused
 discards
 free_versions
 text_assets
@@ -761,7 +801,12 @@ for part in $(seq 1 24); do
   cp "$OUT/killed.yaml" "$S/project.yaml"; cp "$OUT/killed.lock" "$S/project.lock"; rm -f "$S/project.yaml.v2" "$S/project.lock.v2"
   "$COZY" project -p "$S" upgrade > /dev/null 2>&1 & pid=$!
   sleep "$(printf '%d.%03d' $((at / 1000)) $((at % 1000)))"
-  kill -9 "$pid" 2> /dev/null || true
+  # On Windows by the process's own pid: msys's kill -9 of one that had just gone took the suite's shell with it (exit 2304, 41980879114).
+  if [ "${RUNNER_OS:-}" = Windows ]; then
+    [ ! -r "/proc/$pid/winpid" ] || taskkill //F //T //PID "$(cat "/proc/$pid/winpid")" > /dev/null 2>&1 || true
+  else
+    kill -9 "$pid" 2> /dev/null || true
+  fi
   wait "$pid" 2> /dev/null || true
   if grep -q '^version: 2$' "$S/project.yaml"; then
     stopped=$((stopped + 1))
@@ -3325,9 +3370,13 @@ step "a project: a name makes one, bytes by parts in any order and resumed, an e
 local X P2 len hex mid url held big n
 api -o "$OUT/named.json" -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" > /dev/null
 X=$(jq -r .path "$OUT/named.json") ID=$(jq -r .id "$OUT/named.json")
-{ [ "$X" = "$HOME/.cozy/projects/web_made.it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made.it ] && [ "$(cat "$X/project.yaml")" = 'version: 3' ]; } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
+{ [ "$X" = "$HOME/web_made.it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made.it ] && [ "$(cat "$X/project.yaml")" = 'version: 3' ]; } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
 P2=$(api -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" | jq -r .path)
 [ "$P2" = "$X"_2 ] || check "POST /v1/projects {name}, again: $P2"
+# A folder of anything in the home is left as it is: the next free name, and it says so.
+mkdir -p "$HOME/web_taken" && echo mine > "$HOME/web_taken/keep"
+api -o "$OUT/named-taken.json" -X POST -d '{"name":"web taken"}' "http://$ADDR/v1/projects" > /dev/null
+{ [ "$(jq -r .path "$OUT/named-taken.json")" = "$HOME/web_taken_2" ] && [ "$(ls "$HOME/web_taken")" = keep ] && jq -e '.said | any(contains("is taken"))' "$OUT/named-taken.json" > /dev/null; } || check "POST /v1/projects {name}, a folder there: $(jq -c . "$OUT/named-taken.json")"
 plate "$OUT/parts.mp4" testsrc2 440 800 2
 len=$(stat -c %s "$OUT/parts.mp4") hex=$(sha "$OUT/parts.mp4") mid=$((len / 2))
 url=http://$ADDR/v1/files/sha256:$hex

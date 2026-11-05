@@ -57,7 +57,6 @@ pub(super) async fn create(
     }
     let plain = (!text_asset).then(|| format::plain_tool(&asked.tool, folder));
     let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().kind));
-    // Said, this reads no lock: the whole lock is most of what a POST costs in a big project.
     let unsaid = said.is_none() && !plain.as_ref().is_some_and(|plain| folder.lock().is_ok_and(|lock| lock.makes.contains_key(plain)));
     let read = if plain.is_some() && (unsaid || asked.name.is_none()) {
         match crate::toolbox::read(&api, &asked.tool, &folder.dir).await {
@@ -71,31 +70,38 @@ pub(super) async fn create(
     let (read_kind, read_name) = read.unzip();
     let said = said.or(read_kind);
     let _one = project.importing.lock().expect("importing lock");
-    let lock = folder.lock().map_err(Refusal)?;
     let told = key.as_ref().and_then(|(key, _)| folder.keyed(key));
     if let (Some(told), Some((key, digest))) = (&told, &key)
         && told.digest != *digest
     {
         return Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} asked another asset already"))));
     }
+    // The lock is read where it's held: a copy of it is a good part of what a POST costs in a big project.
     let name = match &told {
         Some(told) => told.name.clone(),
         None => {
             let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
-            if text_asset {
-                format::refuse_tag(&lock, &wanted).map_err(Refusal)?;
-            }
             let text = folder.text().map_err(Refusal)?;
             let names = assetfile::names(&text);
-            let free = format::free_of(|name| names.contains(&name_key(name)), &lock, &wanted);
+            let free = folder.reading_lock(|lock| {
+                if text_asset {
+                    format::refuse_tag(lock, &wanted)?;
+                }
+                Ok(format::free_of(|name| names.contains(&name_key(name)), lock, &wanted))
+            });
+            let free = free.and_then(|free: Result<String, Error>| free).map_err(Refusal)?;
             if asked.exact && free != wanted {
+                let lock = folder.lock().map_err(Refusal)?;
                 return Err(Refusal(format::name_taken(&Doc::of(folder, &text, &lock).map_err(Refusal)?, &wanted)));
             }
             free
         }
     };
     // What it outputs: what `defaults` fill of it before it has a version.
-    let makes = plain.as_ref().and_then(|plain| said.as_ref().filter(|kind| lock.makes.get(plain) != Some(kind)).map(|kind| (plain.clone(), kind.clone())));
+    let makes = match plain.as_ref().zip(said.as_ref()) {
+        Some((plain, kind)) if folder.reading_lock(|lock| lock.makes.get(plain) != Some(kind)).map_err(Refusal)? => Some((plain.clone(), kind.clone())),
+        _ => None,
+    };
     if let Some((key, digest)) = key.as_ref().filter(|_| told.is_none()) {
         folder.keep_key(key, digest, &name, None).map_err(Refusal)?;
     }
@@ -106,12 +112,12 @@ pub(super) async fn create(
     if let Some(card) = asked.at {
         canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
-    (folder.edit_project(|text| match assetfile::etag(text, &name) {
+    let text = (folder.edit_project(|text| match assetfile::etag(text, &name) {
         Some(_) => Ok(text.to_owned()),
         None => assetfile::added(text, &name, &asked.tool, &asked.fields).map(|(edited, _)| edited),
     }))
     .map_err(Refusal)?;
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
+    let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok((StatusCode::CREATED, Json(AssetMade { name, etag })))
 }
 
@@ -158,7 +164,8 @@ pub(super) async fn patch(
     }
     let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok());
     let told = RefCell::new((String::new(), vec![]));
-    (folder.edit_project(|text| {
+    // What it says of itself is what it wrote: the file may hold someone else's by now, and that isn't this write's to claim.
+    let text = (folder.edit_project(|text| {
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
         let (edited, warnings) = assetfile::set(text, &name, &fields)?;
         // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.
@@ -170,7 +177,7 @@ pub(super) async fn patch(
     }))
     .map_err(Refusal)?;
     let (was, warnings) = told.into_inner();
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
+    let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetPatched { name, etag, was, warnings }))
 }
 
@@ -327,7 +334,7 @@ pub(super) async fn put_back(
     if let Some(card) = asked.at {
         canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
-    (folder.edit_project(|text| {
+    let text = (folder.edit_project(|text| {
         if Doc::read(folder, text)?.find(&name).is_some() {
             return Err(taken(&name));
         }
@@ -336,6 +343,6 @@ pub(super) async fn put_back(
     .map_err(Refusal)?;
     folder.update_lock(|lock| lock.untombstone(&name)).map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
+    let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetMade { name, etag }))
 }

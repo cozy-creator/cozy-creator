@@ -82,6 +82,7 @@ pub(crate) fn project_settled(dir: &Path) {
 /// comes next reads it whole.
 pub(crate) fn tell(api: Arc<Api>) {
     tokio::spawn(async move {
+        let mut last: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         loop {
             PROJECTS.wake.notified().await;
             let began = Instant::now();
@@ -91,7 +92,14 @@ pub(crate) fn tell(api: Arc<Api>) {
                     project::model::forget(&api, &id);
                     continue;
                 }
-                let _ = PROJECTS.said.send(project::model::told(&api, id, &dir, settled).await);
+                let event = project::model::told(&api, id.clone(), &dir, settled).await;
+                // A write that came as this read the files is told here and owed again: once is enough.
+                if let StreamEvent::ProjectChanged { rev, .. } = &event
+                    && last.insert(id, rev.clone()).as_ref() == Some(rev)
+                {
+                    continue;
+                }
+                let _ = PROJECTS.said.send(event);
             }
             // As long again before the next: however big a project, telling of it doesn't keep a core busy.
             tokio::time::sleep(began.elapsed()).await;

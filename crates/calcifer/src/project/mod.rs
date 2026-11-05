@@ -21,6 +21,7 @@ mod caption;
 mod direct;
 mod tools;
 mod sim;
+mod takeover;
 mod upgrade;
 mod walker;
 
@@ -30,7 +31,7 @@ use std::{
     path::{Path as FsPath, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -139,6 +140,14 @@ struct Project {
     importing: Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
+    /// When its walk last moved: a run's progress, anything it said, a cut's (unix ms). A rental's walk renews its clock only while this is recent.
+    moved: Arc<AtomicI64>,
+    /// Another machine holds its render (`takeover`): its watcher is going, the holder's end waits here until what it made is, what of it
+    /// isn't here yet (files, bytes), and when the holder last answered.
+    watching: AtomicBool,
+    ended: Mutex<Option<Event>>,
+    collecting: Mutex<(u64, u64)>,
+    heard: AtomicI64,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
 }
@@ -146,6 +155,8 @@ struct Project {
 pub fn routes() -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
+        .route("/v1/projects/take", post(takeover::take))
+        .route("/v1/projects/{id}/taken", get(takeover::taken))
         .route("/v1/projects/{id}", get(state).delete(forget))
         .route("/v1/projects/{id}/imports", post(import))
         .route("/v1/projects/{id}/assets/{name}/caption", post(caption::caption))
@@ -207,12 +218,20 @@ impl Projects {
                     moving: tokio::sync::Mutex::default(),
                     importing: Mutex::default(),
                     keys: Mutex::default(),
+                    moved: Arc::default(),
+                    watching: AtomicBool::new(false),
+                    ended: Mutex::default(),
+                    collecting: Mutex::default(),
+                    heard: AtomicI64::new(0),
                     said: Mutex::default(),
                 })
             })
             .clone();
         project.said.lock().expect("said lock").extend(said);
-        if project.folder.lock()?.owes() {
+        if project.folder.walk_now()?.held.is_some() {
+            *project.walking.lock().expect("walking lock") = true;
+            takeover::watch(api, &project);
+        } else if project.folder.lock()?.owes() {
             walk(api, &project);
         }
         Ok(id)
@@ -429,6 +448,7 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
     project.jobs.begin();
     let walk = Walk::new(api, project);
     let following = following(api, project);
+    let clock = takeover::keep_clock(api, project);
     let api = api.clone();
     tokio::spawn(async move {
         remember(&api);
@@ -440,7 +460,9 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
             }
         };
         remember(&api);
+        crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
+        clock.abort();
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
         walk.say(Event::Ended { error, rendered: walk.rendered() });
     });
@@ -457,6 +479,9 @@ fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return,
             };
+            if project.jobs.has_run(&id) {
+                project.moved.store(now_ms(), Ordering::Relaxed);
+            }
             if let Some((name, message)) = project.jobs.ran(&id, &event, &project.folder.dir) {
                 let _ = project.events.send(Event::Warning { message, name: Some(name) });
             }
@@ -722,20 +747,22 @@ fn status_next(folder: &Folder) -> Vec<String> {
     vec![format!("cozy project -p {} status", folder.dir.display())]
 }
 
-/// By `name`, makes a new empty project under `~/.cozy/projects`. By `path`, opens the project holding it (the nearest folder up from
+/// By `name`, makes a new empty project in this person's home folder. By `path`, opens the project holding it (the nearest folder up from
 /// it with a project.yaml), or makes one there (`create`: the folder and its project.yaml). Either way it is recorded in the index as
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
     let open: Open = parse(&body?)?;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
+    let mut moved_on = None;
     let dir = match (&open.name, &open.path) {
         (Some(name), _) => {
             let made = key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned());
             match made {
                 Some(dir) => dir,
                 None => {
-                    let dir = named_project(&api, name).map_err(Refusal)?;
+                    let (dir, why) = named_project(&api, name).map_err(Refusal)?;
+                    moved_on = why;
                     if let Some(key) = key {
                         api.projects.made.lock().expect("made lock").insert(key.to_owned(), dir.clone());
                     }
@@ -771,7 +798,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     });
     api.projects.open(&api, &dir).map_err(Refusal)?;
     let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
-    let said = api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..).collect();
+    let said = moved_on.into_iter().chain(api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..)).collect();
     Ok(Json(Opened { next, said, ..opened(id, &dir) }))
 }
 
@@ -781,22 +808,23 @@ fn opened(id: String, dir: &FsPath) -> Opened {
     Opened { id, path: dir.to_owned(), name, next: vec![], said: vec![] }
 }
 
-/// A new empty project called `name` under `~/.cozy/projects`, or the next free name: what it could be called, `_2`, `_3`, ….
-fn named_project(api: &Api, name: &str) -> Result<PathBuf, Error> {
-    let home = api.machines.hubs.home().projects();
+/// A new empty project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
+/// there already stays as it is, a folder of anything or another project, and it says so: nothing is made in a folder it didn't make.
+fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Error> {
+    let home = &api.machines.user_home;
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
-    std::fs::create_dir_all(&home).map_err(io)?;
     let wanted = format::plain_name(name).unwrap_or_else(|| "untitled".to_owned());
     let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
     for name in names {
-        let dir = home.join(name);
+        let dir = home.join(&name);
         match std::fs::create_dir(&dir) {
             Ok(()) => {
                 let project = dir.join(folder::PROJECT);
                 platform::durable::replace(&project, format::blank().as_bytes(), 0o644).map_err(|e| io(std::io::Error::other(e)))?;
                 let dir = platform::durable::canonical(&dir).map_err(|e| io(std::io::Error::other(e)))?;
                 crate::events::project_changed(&dir);
-                return Ok(dir);
+                let why = (name != wanted).then(|| format!("{} is taken, so this is {name}", home.join(&wanted).display()));
+                return Ok((dir, why));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(io(e)),
@@ -885,12 +913,13 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project) }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), held: takeover::held_by(&api, &project) }));
         }
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
+    state.held = takeover::held_by(&api, &project);
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
     Ok(Json(state))
 }
@@ -1361,6 +1390,10 @@ async fn rename(
     let asked: Rename = parse(&body?)?;
     format::named(&asked.to).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
+    if let Some(held) = project.folder.walk_now().map_err(Refusal)?.held {
+        let said = format!("{} holds this project's render: rename once it ends", held.machine);
+        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next(status_next(&project.folder)[0].clone())));
+    }
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let mut doc = Doc::load(folder).map_err(Refusal)?;
@@ -1521,6 +1554,9 @@ async fn runs(
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let idempotency = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
+    if let Some(handed) = takeover::render(&api, &project, &asked, idempotency.as_ref()).await? {
+        return Ok(handed);
+    }
     if let Some((key, digest)) = &idempotency {
         // Kept in the walk's file too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
         let held = project.folder.walk_now().map_err(Refusal)?;
@@ -1738,8 +1774,12 @@ async fn cancel(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Cancelled>, Refusal> {
-    let asked: Cancel = parse(&body?)?;
+    let body = body?;
+    let asked: Cancel = parse(&body)?;
     let project = api.projects.get(&api, &id)?;
+    if let Some(answer) = takeover::forward(&api, &project, "cancel", &body).await? {
+        return Ok(Json(answer));
+    }
     Ok(Json(cancelled(&api, &project, &asked.names, &|_| "canceled".to_owned())?))
 }
 
@@ -1970,7 +2010,7 @@ async fn import(
 }
 
 /// `name` holding a file in project.yaml, written over what the file holds this moment.
-fn pin_in_file(folder: &Folder, name: &str, sha256: &str) -> Result<(), Error> {
+fn pin_in_file(folder: &Folder, name: &str, sha256: &str) -> Result<String, Error> {
     folder.edit_project(|text| assetfile::approved(text, name, sha256))
 }
 
@@ -1980,8 +2020,12 @@ async fn approve(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Approved>, Refusal> {
-    let asked: Approve = parse(&body?)?;
+    let body = body?;
+    let asked: Approve = parse(&body)?;
     let project = api.projects.get(&api, &id)?;
+    if let Some(answer) = takeover::forward(&api, &project, "approve", &body).await? {
+        return Ok(Json(answer));
+    }
     let folder = &project.folder;
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &asked.name).map_err(Refusal)?;
@@ -2018,13 +2062,13 @@ async fn approve(
     let version = versions.iter().find(|version| version.main() == Some(&chosen));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    pin_in_file(folder, &name, &chosen).map_err(Refusal)?;
+    let text = pin_in_file(folder, &name, &chosen).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name);
+    let etag = assetfile::etag(&text, &name);
     Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings, etag }))
 }
 
@@ -2035,8 +2079,12 @@ async fn unpin(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Unpinned>, Refusal> {
-    let asked: Unpin = parse(&body?)?;
+    let body = body?;
+    let asked: Unpin = parse(&body)?;
     let project = api.projects.get(&api, &id)?;
+    if let Some(answer) = takeover::forward(&api, &project, "unpin", &body).await? {
+        return Ok(Json(answer));
+    }
     let folder = &project.folder;
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &asked.name).map_err(Refusal)?;
@@ -2045,18 +2093,20 @@ async fn unpin(
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
-    if asset.pin.is_some() {
+    let text = if asset.pin.is_some() {
         if asset.hollow {
             let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it from {}", folder::PROJECT);
             return Err(Refusal(Error::new(Kind::Usage, "project_edit", said)));
         }
-        folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?;
-    }
+        folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?
+    } else {
+        folder.text().map_err(Refusal)?
+    };
     for message in settle(&api, &project).await {
         let _ = project.events.send(Event::Warning { message, name: None });
     }
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name);
+    let etag = assetfile::etag(&text, &name);
     Ok(Json(Unpinned { name, version, stale, etag }))
 }
 
@@ -2295,6 +2345,8 @@ struct Walk {
 
 /// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
 const WINDOW: usize = 32;
+/// How often what's landing tries a project that won't take it.
+const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Something a walker started came to its end.
 enum Done {
@@ -2583,6 +2635,7 @@ impl Walk {
     }
 
     fn say(&self, event: Event) {
+        self.project.moved.store(now_ms(), Ordering::Relaxed);
         self.project.jobs.told(&event);
         if matches!(event, Event::Started { .. }) {
             self.sync();
@@ -2595,6 +2648,10 @@ impl Walk {
         self.plan_now();
         if let Err(error) = sync_jobs(&self.project, |number| self.host.numbered(number)) {
             warn!("the board of {}: {}", self.folder().dir.display(), error.message);
+        }
+        // What's queued is in neither file, so no write says a job left it.
+        if std::mem::take(&mut self.project.walker.lock().expect("walker lock").graph.ended) {
+            crate::events::project_settled(&self.folder().dir);
         }
     }
 
@@ -2620,7 +2677,7 @@ impl Walk {
             }
             let Some(run) = self.host.numbered(number) else { continue };
             let name = coming.as_ref().map(|coming| coming.name.clone());
-            work.push(async move { Done::Arrived { name, result: self.host.wait(&run.id).await.and_then(|run| self.arrived(&run, coming)) } }.boxed());
+            work.push(async move { Done::Arrived { name, result: self.arrived_owed(&run.id, coming).await } }.boxed());
         }
         loop {
             self.deletions()?;
@@ -3247,7 +3304,7 @@ impl Walk {
                 }
                 if let Some((id, version)) = self.landed(landed, followed, first)? {
                     let name = asset.clone();
-                    work.push(async move { Done::Arrived { name, result: self.host.wait(&id).await.and_then(|run| self.arrived(&run, version)) } }.boxed());
+                    work.push(async move { Done::Arrived { name, result: self.arrived_owed(&id, version).await } }.boxed());
                 }
                 // Its next call, if its operation has one, goes on under its own key.
                 let goes_on = self.folder().walk_now()?.pending.iter().any(|(sent, pending)| pending.job_of(sent) == job);
@@ -3762,8 +3819,57 @@ impl Walk {
         Ok(())
     }
 
-    /// Follows the run sent under `key` to its end and lands it, its pending entry gone however it ends (a lock that cannot be
-    /// written ends the walk).
+    /// Whether `error` is the project refusing a write it may take later: a run is paid for and its bytes are here, so what's landing
+    /// stays owed in `.runs/walk.json`, says so, and nothing runs again. A folder that's gone isn't that.
+    fn held_up(&self, error: &Error) -> bool {
+        if !matches!(error.code.as_str(), "file_held" | "project_io") || !self.folder().dir.is_dir() {
+            return false;
+        }
+        if self.folder().unsaved().is_none() {
+            self.say(Event::Warning { message: format!("Not saved yet: {}, and what landed goes in as soon as it can", error.message), name: None });
+            self.folder().set_unsaved(Some(error.message.clone()));
+            crate::events::project_settled(&self.folder().dir);
+        }
+        true
+    }
+
+    /// The project took what was held up.
+    fn taken(&self) {
+        if self.folder().unsaved().is_some() {
+            self.folder().set_unsaved(None);
+            crate::events::project_settled(&self.folder().dir);
+        }
+    }
+
+    /// `land`, however long the project takes to take it.
+    async fn land_owed(&self, key: &str, run: &Run) -> Result<Option<Coming>, Error> {
+        loop {
+            match self.land(key, run).await {
+                Err(error) if self.held_up(&error) => tokio::time::sleep(HELD_UP).await,
+                done => {
+                    self.taken();
+                    return done;
+                }
+            }
+        }
+    }
+
+    /// Run `id`'s files, once they're all here, onto its version, however long the project takes to take that.
+    async fn arrived_owed(&self, id: &RunId, version: Option<Coming>) -> Result<(), Error> {
+        let run = self.host.wait(id).await?;
+        loop {
+            match self.arrived(&run, version.clone()) {
+                Err(error) if self.held_up(&error) => tokio::time::sleep(HELD_UP).await,
+                done => {
+                    self.taken();
+                    return done;
+                }
+            }
+        }
+    }
+
+    /// Follows the run sent under `key` to its end and lands it, its pending entry gone however it ends, and kept while the project
+    /// won't take it (`owed`).
     async fn follow(&self, key: String) -> Followed {
         let owed = self.folder().walk_now().ok().and_then(|walk| walk.pending.get(&key).map(|pending| (pending.asset.clone(), pending.version.inputs.clone(), pending.run)));
         let (name, inputs, run) = match owed {
@@ -3774,7 +3880,7 @@ impl Walk {
             let Some(run) = self.host.sent(&key)? else { return Ok(None) };
             let ended = self.host.ended(&run.id).await?;
             // What reads it goes now, on its machine. The walk isn't over until the bytes are here.
-            Ok(Some((run.id, self.land(&key, &ended).await?)))
+            Ok(Some((run.id, self.land_owed(&key, &ended).await?)))
         };
         let landed = landed.await;
         let landed = match self.folder().update_walk(|walk| drop(walk.pending.remove(&key))) {
@@ -4076,7 +4182,7 @@ impl Walk {
         let cache = self.host.cache().join("cuts");
         let cutting_name = name.clone();
         let fps = canvas.fps;
-        let (rendering, rendered) = (self.project.rendering.clone(), asset.name.clone());
+        let (rendering, rendered, moved) = (self.project.rendering.clone(), asset.name.clone(), self.project.moved.clone());
         rendering.lock().expect("rendering lock").insert(rendered.clone(), 0.0);
         crate::events::project_settled(&folder.dir);
         let cutting_result = tokio::task::spawn_blocking(move || {
@@ -4084,6 +4190,7 @@ impl Walk {
             let dir = project.folder.dir.clone();
             // Each twentieth, so a page shows it moving and reads the project a few times, however long the film.
             let told = move |done: f64| {
+                moved.store(now_ms(), Ordering::Relaxed);
                 let mut now = rendering.lock().expect("rendering lock");
                 if now.get(&rendered).is_none_or(|was| done - was >= 0.05) {
                     now.insert(rendered.clone(), done.min(1.0));

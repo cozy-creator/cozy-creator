@@ -22,7 +22,9 @@ Output reuse and changed fitted/noncalibrated identity refusal. The fixture expl
 grants 64 MiB. The adapter's representative Runtime allowance is 512 MiB, selected as an
 explicit argument to Output preparation; neither is inferred from host RAM. The native
 result reports required workspace and separate source/calibration logical read counts.
-A faer call is not internally interruptible; the cancellation cell records checked join latency.
+A faer call is not internally interruptible; the cancellation cell records checked join latency. Its conversion runs
+in a worker process that the cell stops with SIGSTOP once the first tensor is written and every read of the second is
+done, then tells to cancel: a fit can end before a poll sees it (gates 41911483592, 41939634423), and a hold can't.
 
 The GPU calibration cell retains real Calibration hooks and serializes completed statistics
 through an ordinary temporary TensorFS checkpoint. Public Output conversion uses the native

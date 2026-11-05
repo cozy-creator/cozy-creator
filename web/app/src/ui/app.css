@@ -777,7 +777,6 @@ code {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  pointer-events: none;
 }
 .take.on {
   border-color: var(--ember);
@@ -2575,4 +2574,12 @@ input[type="checkbox"] {
     left: 12px;
     width: calc(100vw - 24px);
   }
+}
+
+/* Where a project is, so a person can find it. */
+.project-path {
+  display: block;
+  color: var(--mute);
+  font: 11px var(--mono);
+  overflow-wrap: anywhere;
 }

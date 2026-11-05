@@ -2,13 +2,14 @@
 // Chrome on a real Calcifer, with the call held by a route that stalls it. A dropped tool's box is on the canvas in the frame it was dropped, with its
 // POST held; what's typed and moved meanwhile lands after it; the box's own echo costs no read of the project and no redraw; an answer lost goes again
 // under its key and makes one asset; another writer's name renames the box; a refused action rolls back with one line; a pending edit and another
-// writer's end in the conflict line; kill -9 of Calcifer mid-queue lands once; and a render whose answer is lost runs once.
+// writer's end in the conflict line; a write's answer never claims another writer's lines; kill -9 of Calcifer mid-queue lands once; and a render whose
+// answer is lost runs once.
 //   node instant.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $RESTART: a shell command that kills this Calcifer with -9 and brings it
 // back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
 // Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { exec, execFileSync } = require('child_process');
+const { exec, execFileSync, spawn } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
@@ -26,6 +27,22 @@ const TOOL = join(__dirname, '..', 'project', 'tool.py');
 const FIRST_RUN_MS = 300_000;
 /** What it made besides its own project: forgotten however it ends, or the next cell's page lands on one that can't be read. */
 let forgetMade = async () => {};
+
+/** Another writer, as fast as a process can be: the moment the file says `argv[2]`, it says `argv[3]` instead. */
+const OUTSIDE = `
+const { readFileSync, renameSync, writeFileSync, writeSync } = require('fs');
+const [, at, written, instead] = process.argv;
+writeSync(1, 'watching');
+for (const end = Date.now() + 10000; Date.now() < end;) {
+  try {
+    const text = readFileSync(at, 'utf8');
+    if (text.includes(written)) {
+      writeFileSync(at + '.outside', text.replace(written, instead));
+      renameSync(at + '.outside', at);
+      break;
+    }
+  } catch {}
+}`;
 
 /** A stand-in for a slow network: each call `match` names waits here until `release`. */
 async function hold(page, method, path) {
@@ -196,7 +213,7 @@ async function loseAnswers(page, method, path, times) {
   await openBox(page, 'words');
   await box('words').locator('.mention-text').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
-  await page.keyboard.press('Control+a');
+  await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('mine');
   await page.mouse.click(1500, 1050);
   await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
@@ -210,6 +227,15 @@ async function loseAnswers(page, method, path, times) {
   await box('words').getByRole('button', { name: 'Keep mine' }).click();
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
   await closeBox(page);
+
+  // Another writer in the moment a write is flushing, its file renamed in and the fsync still going: the answer is for the write's own lines. Told the other's as its own, the page writes over them with no conflict.
+  const outside = spawn(process.execPath, ['-e', OUTSIDE, join(folder, 'project.yaml'), 'text: ours', 'text: outside'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const landed = new Promise((ended) => outside.once('exit', ended));
+  await new Promise((watching) => outside.stdout.once('data', watching));
+  const wrote = await api(`/v1/projects/${id}/assets/words`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: 'ours' } }) });
+  await landed;
+  const nowHeld = (await api(`/v1/projects/${id}`)).body.assets.find((asset) => asset.name === 'words');
+  check('a_write_answers_for_its_own_lines', wrote.status === 200 && wrote.body.etag !== nowHeld.etag && yaml().includes('text: outside'), { wrote, etag: nowHeld.etag });
 
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
@@ -260,7 +286,7 @@ async function loseAnswers(page, method, path, times) {
   await page.reload();
   await page.waitForSelector('.ptabs .ptab.on');
   await box(name).waitFor();
-  const tab = (project) => page.locator(`.ptab[title="${project.path}"]`);
+  const tab = (project) => page.getByTitle(project.path, { exact: true });
   const here = page.locator('.ptab.on');
   await page.mouse.move(1400, 1000);
   await page.mouse.down();
@@ -270,10 +296,10 @@ async function loseAnswers(page, method, path, times) {
   const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const kept = await view();
   await tab(second_project).click();
-  await page.locator(`.ptab.on[title="${second_project.path}"]`).waitFor();
+  await page.locator('.ptab.on').and(page.getByTitle(second_project.path, { exact: true })).waitFor();
   await page.waitForSelector('.empty-canvas');
   check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
-  await page.locator(`.ptab[title="${folder}"]`).click();
+  await page.getByTitle(folder, { exact: true }).click();
   await box(name).waitFor({ timeout: 2000 });
   check('back_shows_its_boxes_at_once', true);
   await page.waitForTimeout(300);
@@ -286,7 +312,7 @@ async function loseAnswers(page, method, path, times) {
   await row('Edit').dragTo(stage, { targetPosition: { x: 1200, y: 300 } });
   await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
   check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
-  await page.locator(`.ptab[title="${folder}"]`).click();
+  await page.getByTitle(folder, { exact: true }).click();
   await box(name).waitFor();
   await forgetMade();
 

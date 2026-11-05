@@ -1,5 +1,5 @@
 import { dismiss, say } from "../ui/notes"
-import { ApiError } from "./client"
+import { ApiError, sessionLost } from "./client"
 
 /** One thing a person did. The page already shows it; this is its way to Calcifer. */
 export interface Action<T = unknown> {
@@ -16,7 +16,7 @@ export interface Action<T = unknown> {
 }
 
 /** What the queue took a try's failure for: Calcifer is the same, the way there isn't. */
-const LOST = new Set([0, 401, 408, 429, 502, 503, 504])
+const LOST = new Set([0, 408, 429, 502, 503, 504])
 const FIRST_PAUSE_MS = 250
 const LONGEST_PAUSE_MS = 5000
 /** Nothing heard for this long is worth one line. */
@@ -25,7 +25,7 @@ const SAYS_AFTER_MS = 8000
 const HELD = "file_held"
 
 function lost(error: unknown): boolean {
-  return (error instanceof ApiError && LOST.has(error.status)) || (error instanceof DOMException && error.name === "AbortError")
+  return (error instanceof ApiError && (LOST.has(error.status) || sessionLost(error))) || (error instanceof DOMException && error.name === "AbortError")
 }
 
 /** Ordered, one at a time: frontend first, then this, then the answer. What can't reach Calcifer waits here, and goes when it can. */

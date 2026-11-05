@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 TIERS = {"pr", "release", "gate", "manual", "none", "pending"}
 # Tiers no run requires: listed and shown, each with its why.
 UNREQUIRED = ("manual", "none", "pending")
-# Shown by every --help, exercised by the walk itself.
+# Shown by every --help, exercised by the walk itself. A `--version <n>` of a command's own is a flag like any other.
 WALKED = {"--help", "--version"}
 
 
@@ -93,7 +93,7 @@ def ids(root: Command) -> set[str]:
         if node.path and node.runnable:
             out.add(name)
         for flag in node.flags:
-            if flag in WALKED:
+            if flag in WALKED and not node.flags[flag]:
                 continue
             out.add(f"cozy {flag}" if flag in global_flags else f"{name} {flag}")
         for child in node.children.values():
@@ -120,7 +120,7 @@ def exercised(root: Command, words: list[str]) -> set[str]:
             takes = node.flags.get(flag, root.flags.get(flag)) or flag in node.short_values
             if flag in root.flags and flag not in WALKED:
                 out.add(f"cozy {flag}")
-            elif flag in node.flags and flag not in WALKED:
+            elif flag in node.flags and (flag not in WALKED or node.flags[flag]):
                 out.add(" ".join(("cozy", *node.path, flag)))
             if takes and not inline:
                 i += 1

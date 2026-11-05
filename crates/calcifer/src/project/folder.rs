@@ -514,6 +514,38 @@ pub struct WalkFile {
     pub pending: BTreeMap<String, Pending>,
     #[serde(default)]
     pub walk: Owed,
+    /// Another machine holds this folder's render, and this Calcifer collects what it makes (`takeover`). The one way a render's state
+    /// leaves the folder: while it's set, nothing walks here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Held>,
+}
+
+/// Who holds a folder's render, and what's on its way to them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Held {
+    /// This computer's name for the machine.
+    pub machine: String,
+    /// The project's id there, once it took it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// project.yaml as both last had it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base: String,
+    /// Renders asked here and not yet answered there, each under its `Idempotency-Key`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asking: Vec<Handing>,
+    /// Each key a render was asked under while it holds, and that ask's digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, String>,
+    /// The other machines it drives, which admit its key until the hold ends.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub drives: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Handing {
+    pub key: String,
+    pub runs: protocol::project::Runs,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -542,7 +574,7 @@ pub fn bind_calcifer(dir: &Path) -> Result<(), Error> {
 
 impl WalkFile {
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.walk.is_empty()
+        self.pending.is_empty() && self.walk.is_empty() && self.held.is_none()
     }
 }
 
@@ -737,6 +769,39 @@ impl Lock {
         }
     }
 
+    /// What `other`, another computer's copy of this project's lock, knows that this one doesn't: each version of an asset `named` names, or
+    /// that this one holds, and each file. `holder`: `other` walked it, so what failed and was tried is its word.
+    pub fn absorb(&mut self, other: &Lock, named: impl Fn(&str) -> bool, holder: bool) {
+        for (key, theirs) in &other.assets {
+            if !named(key) && !self.assets.contains_key(key) {
+                continue;
+            }
+            let mine = self.assets.entry(key.clone()).or_default();
+            if mine.name.is_empty() {
+                (mine.name, mine.kind) = (theirs.name.clone(), theirs.kind.clone());
+            }
+            for version in &theirs.versions {
+                if !mine.versions.iter().any(|held| held.number == version.number) {
+                    mine.versions.push(version.clone());
+                }
+            }
+            mine.versions.sort_by_key(|version| version.number);
+            mine.numbered = mine.numbered.max(theirs.numbered);
+            if holder {
+                (mine.tried, mine.failed) = (theirs.tried.clone(), theirs.failed.clone());
+            }
+        }
+        for (sha256, file) in &other.files {
+            self.files.entry(sha256.clone()).or_insert_with(|| File { machine: String::new(), ..file.clone() });
+        }
+        for (key, tags) in &other.reserved {
+            self.reserved.entry(key.clone()).or_insert_with(|| tags.clone());
+        }
+        for (key, makes) in &other.makes {
+            self.makes.entry(key.clone()).or_insert_with(|| makes.clone());
+        }
+    }
+
     /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
     pub fn named(&self, keep: impl Fn(&str) -> bool) -> BTreeSet<&str> {
         let versions = (self.assets.iter().filter(|(key, _)| keep(key))).flat_map(|(_, asset)| &asset.versions);
@@ -756,6 +821,8 @@ pub struct Folder {
     pub tools: PathBuf,
     /// project.lock as last read, and how what it was read from stood then, so it is read again only when that changes.
     held: Mutex<Option<(Stamp, Lock)>>,
+    /// Why what's landing can't go in just now. It's owed in the walk's file, and said as a warning until it has.
+    unsaved: Mutex<Option<String>>,
 }
 
 /// How each of project.lock, the measurements and `files/` stood.
@@ -764,7 +831,7 @@ type Stamp = [String; 3];
 impl Folder {
     /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
     pub fn at(dir: &Path) -> Self {
-        Self { dir: dir.to_owned(), tools: PathBuf::new(), held: Mutex::default() }
+        Self { dir: dir.to_owned(), tools: PathBuf::new(), held: Mutex::default(), unsaved: Mutex::default() }
     }
 
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
@@ -777,7 +844,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools(), held: Mutex::default() })
+        Ok(Self { dir: dir.to_owned(), tools: home.tools(), held: Mutex::default(), unsaved: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -837,6 +904,14 @@ impl Folder {
     }
 
     /// What says project.lock was set aside, if one was: its versions aren't read.
+    pub fn unsaved(&self) -> Option<String> {
+        self.unsaved.lock().expect("unsaved lock").clone()
+    }
+
+    pub fn set_unsaved(&self, why: Option<String>) {
+        *self.unsaved.lock().expect("unsaved lock") = why;
+    }
+
     pub fn lock_set_aside(&self) -> bool {
         self.dir.join(BROKEN).exists()
     }
@@ -1010,11 +1085,12 @@ impl Folder {
             let mut lock = self.lock_file()?;
             let kept = self.walk_kept()?;
             let before = kept.as_ref().map(|walk| (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes")));
+            let held = kept.as_ref().and_then(|walk| walk.held.clone());
             if let Some(walk) = kept {
                 (lock.pending, lock.walk) = (walk.pending, walk.walk);
             }
             change(&mut lock);
-            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
+            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk), held };
             let after = (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes"));
             // Unchanged, it isn't written.
             *moved.borrow_mut() = (before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty())).then_some(walk);
@@ -1032,7 +1108,7 @@ impl Folder {
 
     /// Writes one change to project.yaml: `change` is given what it holds this moment, and a save that lands first is read again,
     /// so that edit stands. The only write of it but `cozy project new` and `cozy project upgrade`.
-    pub fn edit_project(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+    pub fn edit_project(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
         self.rewrite(&self.project(), change)
     }
 
@@ -1046,7 +1122,7 @@ impl Folder {
 
     /// Writes one change to project.canvas.yaml, as `edit_project` does to project.yaml.
     pub fn edit_canvas(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
-        self.rewrite(&self.dir.join(CANVAS), change)
+        self.rewrite(&self.dir.join(CANVAS), change).map(drop)
     }
 
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
@@ -1261,6 +1337,7 @@ impl Folder {
             }
             Ok(serde_json::to_string(&held).expect("what is measured serializes"))
         })
+        .map(drop)
     }
 
     /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, their bytes, and how many
@@ -1323,7 +1400,7 @@ impl Folder {
 }
 
 /// `text` as a lock of this format. A lock of another isn't read, so nothing writes over it.
-fn parse_lock(text: &str) -> Result<Lock, Error> {
+pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
     let unreadable = |why: String| Error::new(Kind::Validation, UNREADABLE, format!("{LOCK}: {why}"));
     let value = protocol::yaml::to_json(text).map_err(unreadable)?;
     match value["format"].as_u64() {
@@ -1407,18 +1484,18 @@ impl Folder {
     /// Writes `change(what path holds)` over it: compare and swap on its bytes. A write that lands
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
-    fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+    fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
         self.rewrite_then(path, change, || {})
     }
 
     /// `rewrite`, and `wrote` once it has replaced the file, before any other write can.
-    fn rewrite_then(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<(), Error> {
+    fn rewrite_then(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<String, Error> {
         let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         self.rewrite_held(path, change, wrote)
     }
 
     /// As `rewrite_then`, with `WRITING` held.
-    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<(), Error> {
+    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<String, Error> {
         loop {
             let before = match path.exists() {
                 true => read(path)?,
@@ -1426,7 +1503,7 @@ impl Folder {
             };
             let after = change(&before)?;
             if after == before {
-                return Ok(());
+                return Ok(after);
             }
             let now = match path.exists() {
                 true => read(path)?,
@@ -1436,7 +1513,7 @@ impl Folder {
                 durable::replace(path, after.as_bytes(), 0o644).map_err(io)?;
                 wrote();
                 crate::events::project_changed(&self.dir);
-                return Ok(());
+                return Ok(after);
             }
         }
     }

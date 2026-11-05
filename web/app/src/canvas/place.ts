@@ -86,11 +86,8 @@ export class Placer {
       asName(file.name),
       { landed: { sha256: file.sha256, field: file.field } },
       at,
-      async (clear, once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear }, once),
+      async (clear, once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description }, once),
       (error) => say(`Couldn't take out ${file.name}`, error),
-      (name) => {
-        if (description) void this.store.setFields(name, { description })
-      },
     )
   }
 
@@ -164,8 +161,9 @@ export class Placer {
 
   private project(): Promise<string> {
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
-    this.made ??= this.client.newProject("untitled", `project-${crypto.randomUUID()}`).then(({ id }) => {
+    this.made ??= this.client.newProject("untitled", `project-${crypto.randomUUID()}`).then(({ id, said }) => {
       this.store.projectId = id
+      for (const line of said ?? []) say(line)
       this.hooks.adopt(id)
       return id
     })

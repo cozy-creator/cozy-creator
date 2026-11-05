@@ -51,7 +51,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const shown = shownOf(view)
   const versions = asset.prefixes ?? []
   const adds = asset.tool && faceOf(view) !== "edit"
-  if (versions.length < 2 && !adds && !(versions.length && asset.making?.length)) return null
+  if (!adds && versions.length < (asset.tool ? 1 : 2)) return null
   const takeOut = (event: DragEvent, version: (typeof versions)[number]) => {
     const description = store.valueOf(name, "description")
     const file = { sha256: version.main?.sha256, field: version.main?.field, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined }

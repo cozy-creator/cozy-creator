@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>cozy</title>
     <link rel="icon" href="data:," />
+    <!-- auth-ui and input-otp each add a style element unless one's named: the page's CSP refuses those, and their sheets are in its own CSS. -->
+    <meta id="openrails-auth-ui-styles" />
+    <meta id="input-otp-style" />
   </head>
   <body>
     <div id="root"></div>

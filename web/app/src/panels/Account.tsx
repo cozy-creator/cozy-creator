@@ -1,5 +1,7 @@
+import { AuthUiProvider, ContactSignIn } from "@openrails/auth-ui"
+import { AuthProvider } from "@openrails/auth-ui/react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { type FormEvent, useState } from "react"
+import { useState } from "react"
 import { Navigate } from "react-router-dom"
 import { chooseCalcifer, useConnection } from "../app/Connection"
 import { useTo } from "../app/Shell"
@@ -9,6 +11,7 @@ import { say } from "../ui/notes"
 import { Confirm, Failure, KV, Section, useAsk } from "./common"
 import { DrawerFrame } from "./Drawer"
 import { usd } from "./format"
+import { appearance, messages, signInClient } from "./signin"
 
 /** What's emailed goes out, and comes back once. Nothing here stays in the browser. */
 function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: string) => Promise<void>; onAgain: () => void }) {
@@ -35,77 +38,54 @@ function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: strin
           Go on
         </button>
       </div>
-      <Failure error={ask.error} lead="That didn't work" />
+      <Failure error={ask.error} lead="That didn't work" plain />
     </form>
   )
 }
 
-function SignIn({ onSignedIn, keyRefused, needsName }: { onSignedIn: () => void; keyRefused: boolean; needsName: boolean }) {
-  const { client, queries } = useConnection()
-  const send = useAsk()
-  const [email, setEmail] = useState("")
-  const [sent, setSent] = useState<Code | null>(null)
-  const [unnamed, setUnnamed] = useState(needsName)
-  const [name, setName] = useState("")
-  const naming = useAsk()
-
-  if (unnamed) {
-    return (
-      <form
-        className="stack"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void naming.run(async () => {
-            queries.setQueryData(["account"], await client.nameAccount(name.trim()))
-            onSignedIn()
-          })
-        }}
-      >
-        <p className="muted">You're signed in. Your account needs a name, which your packages and models go under.</p>
-        <label>
-          Name
-          <input className="field" autoFocus spellCheck={false} value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <div className="row end">
-          <button type="submit" className="tb primary" disabled={naming.busy || !name.trim()}>
-            Name it
-          </button>
-        </div>
-        <Failure error={naming.error} lead="That name won't do" />
-      </form>
-    )
-  }
-
-  if (sent) {
-    return (
-      <CodeEntry
-        sent={sent}
-        onAgain={() => setSent(null)}
-        onDone={async (code) => {
-          const proven = await client.proveCode(sent.id, code)
-          if (proven.purpose === "sign_in" && !proven.account) setUnnamed(true)
-          else onSignedIn()
-        }}
-      />
-    )
-  }
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault()
-    void send.run(async () => setSent(await client.sendCode("sign_in", email.trim())))
-  }
+/** AuthKit's own form, for signing in and signing up alike: a new email makes the account, which then needs a name. */
+function SignIn({ onSignedIn, keyRefused }: { onSignedIn: () => void; keyRefused: boolean }) {
+  const { client } = useConnection()
+  const [auth] = useState(() => signInClient(client))
   return (
     <>
       {keyRefused && <p className="warn">The Hub no longer accepts this computer's key: it was revoked from another computer.</p>}
-      <p className="muted">Sign in to rent machines and read what's private to you.</p>
-      <form className="row" onSubmit={submit}>
-        <input className="field" type="email" autoComplete="email" aria-label="Your email" placeholder="Your email" spellCheck={false} value={email} onChange={(event) => setEmail(event.target.value)} />
-        <button type="submit" className="tb primary" disabled={send.busy || !email.trim()}>
-          Email me a code
-        </button>
-      </form>
-      <Failure error={send.error} lead="Couldn't send a code" />
+      <AuthProvider client={auth} autoStart={false}>
+        <AuthUiProvider appearance={appearance} messages={messages}>
+          <ContactSignIn hideProviders onSignedIn={onSignedIn} />
+        </AuthUiProvider>
+      </AuthProvider>
     </>
+  )
+}
+
+function NameAccount({ onNamed }: { onNamed: () => void }) {
+  const { client, queries } = useConnection()
+  const naming = useAsk()
+  const [name, setName] = useState("")
+  return (
+    <form
+      className="stack"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void naming.run(async () => {
+          queries.setQueryData(["account"], await client.nameAccount(name.trim()))
+          onNamed()
+        })
+      }}
+    >
+      <p className="muted">You're signed in. Your account needs a name, which your packages and models go under.</p>
+      <label>
+        Name
+        <input className="field" autoFocus spellCheck={false} value={name} onChange={(event) => setName(event.target.value)} />
+      </label>
+      <div className="row end">
+        <button type="submit" className="tb primary" disabled={naming.busy || !name.trim()}>
+          Name it
+        </button>
+      </div>
+      <Failure error={naming.error} lead="That name won't do" plain />
+    </form>
   )
 }
 
@@ -234,7 +214,8 @@ export function Account() {
   return (
     <DrawerFrame title="Account">
       <Failure error={error} lead="The Hub didn't say who this is" />
-      {who && !signedIn && <SignIn keyRefused={Boolean(who.key_refused)} needsName={who.logged_in} onSignedIn={changed} />}
+      {who && !who.logged_in && <SignIn keyRefused={Boolean(who.key_refused)} onSignedIn={changed} />}
+      {who?.logged_in && !who.account && <NameAccount onNamed={changed} />}
       {signedIn && (
         <>
           <KV

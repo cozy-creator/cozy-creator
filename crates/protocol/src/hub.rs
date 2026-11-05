@@ -61,6 +61,9 @@ pub struct CodeRequest {
 pub struct Code {
     pub id: String,
     pub email: String,
+    /// Asked again too soon: `id` is the code already out, and the Hub sends another after this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_s: Option<u64>,
 }
 
 /// `POST /v1/account/codes/{id}`.
