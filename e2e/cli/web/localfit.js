@@ -1,8 +1,8 @@
 // A render on this computer alone, which it would do poorly (Paul, 11-05: "do you want to run locally? rent a GPU"), in a real browser on a real
-// Calcifer. A runner has no GPU, so a tool that loads a model on one asks first: on its box, beside its Render, how it would go here and what a
+// Calcifer. A runner has no GPU, so a tool that loads a model on one asks first: under its box, where Queued shows, how it would go here and what a
 // rented GPU would do. Render here renders, and is kept by Calcifer: the next Render, and one after a reload, don't ask. Rent a GPU opens Rent with
 // the card the Hub places the tool on chosen, and renders nothing. Render all asks once, on its own control. The CLI says the same line once, as
-// a warning, and goes on.
+// a warning, and goes on, with no --on as with --on local. With a rental held nothing asks: release-gate/sessions/render-placement.sh.
 //   node localfit.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as nodes.js; $ALONE: on a shared computer, so it runs nothing. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -96,7 +96,8 @@ const finish = (code) => {
   const said = await asking('heavy').innerText();
   check('asks_on_the_box', /no GPU/.test(said) && /Render here/.test(said) && /Rent a GPU/.test(said), said);
   seen.line = said;
-  check('asks_under_its_render', (await box('heavy').locator('.here-under .status.asking').count()) === 1);
+  // Render leaves the box, as any Render does: what it asks is under it, where Queued would be, and nothing covers the canvas.
+  check('asks_under_the_box', (await box('heavy').locator('.rest-asking .status.asking').count()) === 1 && (await page.locator('dialog[open], [role=dialog]').count()) === 0);
   await page.waitForTimeout(1000);
   check('asking_renders_nothing', (await runsOf('heavy')).length === 0 && (await versions('heavy')) === 0, await runsOf('heavy'));
   await shot('asks');
@@ -159,11 +160,15 @@ const finish = (code) => {
   check('render_all_rent_renders_nothing', (await versions('heavy')) === before && (await runsOf('generate_turbo')).length === 0);
   await page.goBack();
 
-  // 6. The CLI never asks: it says the line once, as a warning, and goes on.
-  const cli = await new Promise((done) => execFile(COZY, ['project', '-p', folder, 'render', 'heavy', '--on', 'local'], { encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
-  const warned = (cli.stderr.match(/warning: This computer has no GPU/g) ?? []).length;
-  check('cli_warns_once', warned === 1 && cli.code === 0, { code: cli.code, stderr: cli.stderr.slice(-600) });
-  check('cli_goes_on', (await versions('heavy')) === before + 1, await versions('heavy'));
+  // 6. The CLI never asks: it says the line once, as a warning, and goes on. With no --on it sends what the page does, here only this computer.
+  const cli = (args) => new Promise((done) => execFile(COZY, ['project', '-p', folder, 'render', 'heavy', ...args], { encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
+  const warnedOf = (said) => (said.stderr.match(/warning: This computer has no GPU/g) ?? []).length;
+  const unnamed = await cli([]);
+  check('cli_unnamed_warns_once', warnedOf(unnamed) === 1 && unnamed.code === 0, { code: unnamed.code, stderr: unnamed.stderr.slice(-600) });
+  check('cli_unnamed_goes_on', (await versions('heavy')) === before + 1 && (await runsOf('heavy')).every((run) => run.machine === 'local'), await versions('heavy'));
+  const named = await cli(['--on', 'local']);
+  check('cli_warns_once', warnedOf(named) === 1 && named.code === 0, { code: named.code, stderr: named.stderr.slice(-600) });
+  check('cli_goes_on', (await versions('heavy')) === before + 2, await versions('heavy'));
 
   check('no_page_errors', errors.length === 0, errors);
   check('ran', true);
