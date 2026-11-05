@@ -260,6 +260,9 @@ code {
 .react-flow__node:has(.card.here) {
   z-index: 1001 !important;
 }
+.react-flow__node:has(.rest-asking) {
+  z-index: 1000 !important;
+}
 /* Picked up, it's only the picture. */
 .react-flow__node.dragging .card {
   transform: scale(1.015);
@@ -676,6 +679,23 @@ code {
   transform-origin: top left;
   white-space: nowrap;
   z-index: 5;
+}
+/* Render leaves the box: what it asks first is where Queued would be. */
+.rest-asking {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: max(100%, 280px);
+  transform: scale(var(--text, 1));
+  transform-origin: top left;
+  z-index: 6;
+}
+.rest-asking .status.asking {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--round);
+  background: var(--card);
+  box-shadow: 0 4px 16px #0002;
 }
 /* All of a box, under it. --here-width and --here-room come with each fit, and --here is how large it's drawn for the screen. */
 .stage {

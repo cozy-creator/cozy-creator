@@ -653,6 +653,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           <Waiting view={view} />
         </div>
       )}
+      {!here && view.asking && (
+        <div className="rest-asking nodrag nopan nowheel">
+          <Asking name={name} fit={view.asking.fit} />
+        </div>
+      )}
       {here && asset && asset.kind !== "text" && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
