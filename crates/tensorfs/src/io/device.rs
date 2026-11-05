@@ -376,10 +376,6 @@ fn registry() -> &'static Mutex<BTreeMap<i32, Arc<Engine>>> {
     ENGINES.get_or_init(Mutex::default)
 }
 
-pub(super) fn prepare(device: i32) -> cuda::Result<()> {
-    Engine::get(device).map(drop)
-}
-
 /// # Safety
 /// As `cuda::pin_region`, whose context this enters.
 pub(super) unsafe fn register(device: i32, ptr: *mut u8, len: usize) -> cuda::Result<cuda::HostPin> {

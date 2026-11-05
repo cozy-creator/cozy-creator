@@ -27,13 +27,6 @@ pub use probe::{ceiling, disk, keep_ceilings_in, Ceiling};
 #[cfg(feature = "store")]
 pub use view::{Span, StoredPart};
 
-/// Allocate this device's bounded staging rings and copy streams before overlapping work.
-/// This performs real preparation even when the eventual read has no bytes yet.
-#[cfg(feature = "cuda")]
-pub fn prepare_device(device: i32) -> cuda::Result<()> {
-    device::prepare(device)
-}
-
 /// `[ptr, ptr + len)` registered with this device's context: a copy from it is one DMA.
 ///
 /// # Safety
@@ -243,7 +236,6 @@ pub struct ReadControl {
 impl ReadControl {
     pub fn cancel(&self) { self.cancel.store(true, std::sync::atomic::Ordering::Release); }
     pub fn canceled(&self) -> bool { self.cancel.load(std::sync::atomic::Ordering::Acquire) }
-    pub fn issued_bytes(&self) -> u64 { self.issued.load(std::sync::atomic::Ordering::Acquire) }
     pub(crate) fn issue(&self, bytes: usize) {
         self.issued.fetch_add(bytes as u64, std::sync::atomic::Ordering::Release);
     }

@@ -146,15 +146,6 @@ impl Source {
         Ok(())
     }
 
-    /// Verify every object is locally present, opening and caching its descriptor exactly as
-    /// a read would. On a local-only source a missing object errors here, before any GPU work,
-    /// so a caller can refuse and fall back to a fetch-capable read. The opened files are
-    /// retained, so a following read through this source reuses these verified descriptors.
-    #[cfg(feature = "store")]
-    pub fn verify_local(&self, objects: &[ObjectRef]) -> Result<()> {
-        self.load(objects)
-    }
-
     fn file(&self, object: &ObjectRef) -> Result<Arc<File>> {
         if let Some(file) = self.files.lock().unwrap().get(&object.sha256).cloned() {
             return Ok(file);
@@ -170,33 +161,6 @@ impl Source {
         self.load(std::slice::from_ref(obj))?;
         let file = self.file(obj)?;
         Ok(platform::durable::cached(&file, 0, obj.length).unwrap_or(false))
-    }
-
-    /// Asks the kernel to read `items`' object bytes into the page cache ahead of their fills
-    /// (`POSIX_FADV_WILLNEED`, Linux; elsewhere nothing): host RAM is the page cache. Best effort.
-    pub fn readahead(&self, items: &[Item]) -> Result<()> {
-        #[cfg(feature = "store")]
-        {
-            let objects: std::collections::BTreeMap<_, _> = items.iter().filter_map(|i| match &i.source {
-                ItemSource::Object(range) => Some((range.obj.sha256.clone(), range.obj.clone())),
-                ItemSource::Inline(_) => None,
-            }).collect();
-            self.load(&objects.into_values().collect::<Vec<_>>())?;
-        }
-        for item in items {
-            if let ItemSource::Object(range) = &item.source {
-                let file = self.file(&range.obj)?;
-                #[cfg(target_os = "linux")]
-                // SAFETY: advice on a descriptor this source holds open.
-                unsafe {
-                    use std::os::fd::AsRawFd;
-                    libc::posix_fadvise(file.as_raw_fd(), range.off as libc::off_t, range.len as libc::off_t, libc::POSIX_FADV_WILLNEED);
-                }
-                #[cfg(not(target_os = "linux"))]
-                let _ = file;
-            }
-        }
-        Ok(())
     }
 
     /// Transfer a placement range. Uncovered padding is zeroed through the same engine.
@@ -434,31 +398,5 @@ impl Source {
             tally.cached_bytes.fetch_add(stats.cached, Relaxed);
         }
         Ok(stats)
-    }
-
-    /// # Safety
-    /// `dst` is exclusively writable for `item.len` bytes.
-    pub unsafe fn read_item(
-        &self,
-        item: &Item,
-        dst: *mut u8,
-        mode: Mode,
-        tally: &IoTally,
-    ) -> Result<()> {
-        // SAFETY: inherited from caller.
-        unsafe {
-            self.read_items(
-                std::slice::from_ref(item),
-                item.offset,
-                Dst::Host {
-                    ptr: dst,
-                    len: item.len as usize,
-                },
-                1,
-                mode,
-                tally,
-            )
-        }
-        .map(|_| ())
     }
 }

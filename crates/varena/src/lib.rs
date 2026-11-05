@@ -984,19 +984,6 @@ impl Region {
         self.gpu.ordinal
     }
 
-    /// Advisory admission check; physical pin acquisition and reclamation remain atomic.
-    /// Native capture detachment uses this only to refuse surviving foreign storage.
-    pub fn has_live_pins(&self) -> Result<bool> {
-        let state = self.gpu.lock()?;
-        Ok(state
-            .entries
-            .get(&self.id)
-            .expect("live region")
-            .uses
-            .pins()
-            != 0)
-    }
-
     pub fn is_resident(&self) -> Result<bool> {
         Ok(self.gpu.lock()?
             .entries
