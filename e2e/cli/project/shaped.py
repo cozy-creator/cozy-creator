@@ -69,11 +69,11 @@ class Shot(msgspec.Struct):
     warnings: list[str] = []
 
 
-def _video(payload: ShotInput) -> VideoFile:
+def _video(payload: ShotInput) -> File:
     found = [payload.plate.video] if payload.plate else []
     found += [ref.video for ref in payload.references if ref.video is not None]
     found += [payload.continue_from.video] if payload.continue_from else []
-    return found[0]
+    return (found or [ref.image for ref in payload.references if ref.image is not None])[0]
 
 
 @app.entrypoint(node=Node(label="Shaped Shot", show=["soundscape", "music"], hide=["steps", "plate"], cuts={"every": 17, "offset": 5, "first": 39}, fill={"continue_from": "take"}, reserved=["d"]))

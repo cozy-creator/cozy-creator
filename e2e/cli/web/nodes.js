@@ -616,6 +616,16 @@ function linesOf(text, name) {
     await until('the music as the CLI reads it', async () => statusOf('sounded').fields?.music, (said) => said === 'Low strings.');
     await shot('sounded');
 
+    // What a box mentions goes to the list of what's mentioned. A function's optional frames are the file's to set: filled from mentions, the first
+    // picture took the canvas over the shot's aspect_ratio, and the second forced how it ends.
+    replaceFile(yamlAt, `${yaml().trimEnd()}\n  mentioning:\n    tool: ${shaped}/shot\n    summary: <source-a> meets <source-b>.\n    aspect_ratio: "16:9"\n`);
+    await box('mentioning').waitFor();
+    execFileSync(COZY, ['project', '-p', folder, 'render', 'mentioning', '--on', 'local', '--plain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+    const madeBy = statusOf('mentioning').versions.at(-1).runs.at(-1);
+    const sent = JSON.parse(execFileSync(COZY, ['--json', '--full', 'run', 'show', String(madeBy), '--once'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).request.input;
+    check('a_mention_is_no_keyframe', !('first_frame' in sent) && !('last_frame' in sent), sent);
+    check('a_mention_is_a_reference', sent.references?.length === 2 && sent.aspect_ratio === '16:9', sent);
+
     // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
     const textRow = page.locator('aside.tools li.tool[data-kind=text]');
     check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
