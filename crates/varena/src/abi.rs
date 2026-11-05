@@ -36,6 +36,7 @@ impl From<Error> for Failure {
     fn from(error: Error) -> Self {
         let (status, requested) = match &error {
             Error::OutOfMemory { requested_bytes }
+            | Error::CaptureMap { requested_bytes }
             | Error::Exhausted {
                 requested_bytes, ..
             } => (EXHAUSTED, *requested_bytes as u64),

@@ -56,6 +56,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("CUDA capacity exhausted allocating {requested_bytes} bytes")]
     OutOfMemory { requested_bytes: usize },
+    /// A capture's allocation outside its pool found no free block, and a capture never maps.
+    #[error("a CUDA capture cannot map {requested_bytes} bytes: no free block outside its pool")]
+    CaptureMap { requested_bytes: usize },
     #[error("CUDA split capacity exhausted: required {requested_bytes} bytes, available {available_bytes} bytes")]
     Exhausted { requested_bytes: usize, available_bytes: usize },
     #[error("CUDA device fault in {operation}: CUresult {code}")]

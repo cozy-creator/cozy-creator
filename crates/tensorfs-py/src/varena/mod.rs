@@ -151,7 +151,9 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
             let _ = error.value(py).setattr("varena_no_retry", true);
             return error;
         },
-        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => "OutOfMemoryError",
+        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } | varena::Error::CaptureMap { .. } => {
+            "OutOfMemoryError"
+        }
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::PhaseOverlap => return PhaseOverlapError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",

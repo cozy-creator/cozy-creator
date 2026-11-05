@@ -18,7 +18,9 @@ struct Failure {
 impl Failure {
     fn from_error(error: &varena::Error) -> Self {
         let (kind, cuda) = match error {
-            varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => (1, 0),
+            varena::Error::OutOfMemory { .. }
+            | varena::Error::Exhausted { .. }
+            | varena::Error::CaptureMap { .. } => (1, 0),
             varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } => {
                 (2, *code)
             }
@@ -508,10 +510,10 @@ fn _varena_working_pool_cancel_preparation(
 }
 
 #[pyfunction]
-fn _varena_working_pool_arm(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+fn _varena_working_pool_arm(py: Python<'_>, device: i32, pool: (u64, u64), primed: Vec<u64>) -> PyResult<()> {
     py.detach(|| {
         check()?;
-        varena::working::pool_arm(device, pool)
+        varena::working::pool_arm(device, pool, &primed)
     })
     .map_err(|e| super::raise(py, e))
 }

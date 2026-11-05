@@ -32,7 +32,6 @@ _lock = threading.Lock()
 _owner = 0
 _library: ctypes.CDLL | None = None
 _workspaces_known: set[int] = set()
-_primed: set[tuple[int, int]] = set()
 _CAPTURE_CAPACITY_PREFIX = "[tensorfs.varena.capture_capacity.v1] "
 
 
@@ -340,8 +339,9 @@ def pool_scratch(pool: PoolId, held: Sequence[Any] = (), device: DeviceLike = 0)
 
 
 def _prime_library(device: int, stream: Stream) -> None:
-    """Torch's cached workspaces for this stream, made before capture: one a capture would
-    have to map refuses that capture. Their kernels stay real work, outside any graph."""
+    """Torch's cached cuBLAS and cuBLASLt workspaces for this thread's handle on this stream, made
+    before a capture: any graph's reset drops its stream's, so every capture primes its own.
+    Their kernels stay real work, outside any graph."""
     import torch
     import torch.nn.functional as functional
 
@@ -349,7 +349,6 @@ def _prime_library(device: int, stream: Stream) -> None:
         value = torch.ones((2, 2), dtype=torch.float32, device=device)
         torch.mm(value, value)
         functional.linear(value, value, value[0])
-    _primed.add((device, stream.cuda_stream))
 
 
 def capture_complete(pool: PoolId, *, stream: Stream, device: DeviceLike = None) -> None:
@@ -376,7 +375,6 @@ def retire_stream(stream: Stream, device: DeviceLike = None) -> None:
     _installed()
     index = _device(stream.device if device is None else device)
     _ext._varena_working_retire_stream(index, stream.cuda_stream)
-    _primed.discard((index, stream.cuda_stream))
 
 
 @contextmanager
@@ -417,8 +415,11 @@ def _graph_stream(device: int) -> Stream:
 
 
 @contextmanager
-def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None) -> Iterator[Any]:
-    """Prepare and finish capture, joining only its explicit stream and the caller.
+def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None,
+          primed: tuple[Stream, ...] = ()) -> Iterator[Any]:
+    """Prepare and finish capture, joining only its explicit stream and the caller. `primed`: other
+    streams the captured work runs on; theirs and the capture stream's workspaces are made first,
+    so nothing allocated there under capture is classed as one by its size.
 
     Other producer streams must already be joined by the caller. Native capture
     admission still refuses unrelated producers; pool preparation may allocate/wait.
@@ -432,10 +433,11 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
     stream = _graph_stream(device) if stream is None else stream
     pool = cast(PoolId, torch.cuda.graph_pool_handle()) if pool is None else pool
     try:
-        if _workspace_cache_enabled() and (device, stream.cuda_stream) not in _primed:
-            _prime_library(device, stream)
+        streams = (stream, *primed) if _workspace_cache_enabled() else ()
+        for each in streams:
+            _prime_library(device, each)
         prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
-        _ext._varena_working_pool_arm(device, cast(PoolId, tuple(pool)))
+        _ext._varena_working_pool_arm(device, cast(PoolId, tuple(pool)), [each.cuda_stream for each in streams])
         # Include caller preparation, but never drain unrelated device streams.
         # Native allocations during capture use this already prepared pool only.
         if stream != caller:

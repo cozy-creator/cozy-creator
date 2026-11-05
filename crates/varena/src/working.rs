@@ -278,6 +278,9 @@ struct Pool {
     routing: bool,
     capture: Option<GlobalCaptureGuard>,
     streams: BTreeSet<u64>,
+    // Streams whose library workspaces Torch already holds for this capture (`pool_arm`): an
+    // allocation there is ordinary whatever its size.
+    primed: BTreeSet<u64>,
     waits: Waits,
 }
 
@@ -633,6 +636,7 @@ impl Device {
             error,
             Error::OutOfMemory { .. }
                 | Error::Exhausted { .. }
+                | Error::CaptureMap { .. }
                 | Error::Invalid(_)
                 | Error::PhaseOverlap
                 | Error::CaptureActive
@@ -1316,7 +1320,7 @@ pub fn alloc_bound(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>)
 fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
     // Another stream's allocation during a capture that would need the driver: no room for it now.
     let result = alloc_inner(device, bytes, stream, pool, bound).map_err(|error| match error {
-        Error::CaptureActive => Error::OutOfMemory { requested_bytes: bytes },
+        Error::CaptureActive => Error::CaptureMap { requested_bytes: bytes },
         error => error,
     });
     if result.is_err() {
@@ -1351,11 +1355,14 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     {
         let mut state = owner.lock()?;
         owner.callback_mutation(&mut state);
-        workspace = state.workspace_sizes.contains(&bytes);
+        // A capture's primed stream holds its workspaces already: nothing it allocates is one.
+        let primed = pool.is_some_and(|id| state.pools.get(&id).is_some_and(|p| p.routing && p.primed.contains(&stream)));
+        workspace = !primed && state.workspace_sizes.contains(&bytes);
         if workspace {
             // Bound into every graph on its stream, and freed by any one graph's reset: it never
             // lives in a pool, and stays reserved while a graph on its stream may name it. An
-            // ordinary allocation of exactly this size shares that treatment, costing only a block.
+            // ordinary allocation of exactly this size shares that treatment, costing only a block
+            // outside capture; under one it needs a free block there (`Error::CaptureMap`).
             pool = None;
         }
         if let Some(pool) = pool {
@@ -2262,15 +2269,18 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
 }
 
 /// The next capture on this pool is this module's own. Torch's lazily created RNG tensors,
-/// on another stream, need a free small block: a capture never maps.
-pub fn pool_arm(device: i32, id: PoolId) -> Result<()> {
+/// on another stream, need a free small block: a capture never maps. `primed`: the streams
+/// whose library workspaces its caller made for this capture.
+pub fn pool_arm(device: i32, id: PoolId, primed: &[u64]) -> Result<()> {
     let owner = owner(device)?;
     reclaim::acquire(device, owner.page(), Wait::Yes, Protect { pool: Some(id), ..Default::default() }, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
         let _context = owner.driver().enter()?;
-        state.pools.entry(id).or_default().armed = true;
+        let session = state.pools.entry(id).or_default();
+        session.armed = true;
+        session.primed = primed.iter().copied().collect();
         if Device::free_block(&state, AUXILIARY_CLASS).is_none() {
             let mapped = owner.map(&mut state, owner.page(), None, AUXILIARY_CLASS);
             mapped.map_err(|failure| owner.fail_allocation(&mut state, failure))?;
