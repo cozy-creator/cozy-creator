@@ -1,8 +1,10 @@
 import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useSignal } from "../ui/signal"
-import { useCanvasStore } from "./context"
-import { withMentions } from "./text"
+import { useCanvasStore, useElement } from "./context"
+import { Thumb } from "./Media"
+import { shownOf } from "./shown"
+import { mentionsIn, withMentions } from "./text"
 
 function chip(name: string, missing: boolean): HTMLElement {
   const el = document.createElement("span")
@@ -79,8 +81,9 @@ export function MentionText({
     if (!el || (document.activeElement === el && read(el).trimEnd() === value.trimEnd())) return
     const nodes = withMentions(value).map((part) => {
       const inner = part.text.slice(1, -1)
-      if (part.mention && missing.includes(inner)) return chip(inner, true)
-      if (part.mention && store.nameOf(inner)) return chip(inner, false)
+      const said = part.mention ? store.mentionOf(inner, asset) : null
+      if (part.mention && (missing.includes(inner) || said?.gone || (isSelf(inner) && !said))) return chip(inner, true)
+      if (said) return chip(inner, false)
       return document.createTextNode(part.text)
     })
     const merged = (held: ChildNode[]) => held.reduce((said, node) => said + (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}\u0000` : node.textContent), "")
@@ -89,7 +92,7 @@ export function MentionText({
     el.replaceChildren(...nodes)
     // What it pointed into is gone: a name dropped now goes at the end.
     caret.current = null
-  }, [value, missing, store, names])
+  }, [value, missing, store, names, asset])
 
   const emit = useCallback(() => {
     if (box.current) onDraft(read(box.current))
@@ -110,7 +113,8 @@ export function MentionText({
     (name: string, at: Range | null) => {
       const el = box.current
       if (!el) return
-      const made = chip(name, false)
+      const said = store.mentionOf(name, asset)
+      const made = chip(name, !said || Boolean(said.gone))
       const after = document.createTextNode(" ")
       if (at && el.contains(at.startContainer)) {
         at.deleteContents()
@@ -158,6 +162,18 @@ export function MentionText({
     return () => document.removeEventListener("selectionchange", remember)
   }, [remember])
 
+  /** A take carried out of a box, let go in this text: that version, where it was let go. */
+  const takeIn = (event: DragEvent) => {
+    const taken = event.dataTransfer.getData(DRAGGED_FILE)
+    if (!taken) return
+    const { from, number } = JSON.parse(taken)
+    if (!from || !number) return
+    event.preventDefault()
+    event.stopPropagation()
+    put(mentionFrom(asset, from, number), document.caretRangeFromPoint?.(event.clientX, event.clientY) ?? caret.current)
+    onSave()
+  }
+
   /** After each keystroke: `<name>` finished by hand is a chip, and a `<` being typed offers names. */
   const look = () => {
     const selection = document.getSelection()
@@ -165,7 +181,8 @@ export function MentionText({
     if (!selection?.isCollapsed || !(at instanceof Text) || !box.current?.contains(at)) return setMenu(null)
     const before = at.data.slice(0, selection.anchorOffset)
     const closed = before.match(/<([^<>\s]+)>$/)
-    if (closed && store.nameOf(closed[1])) {
+    if (closed && isSelf(closed[1]) && !store.nameOf(closed[1])) say(NO_BARE_SELF)
+    if (closed && (store.mentionOf(closed[1], asset) || isSelf(closed[1]))) {
       const range = document.createRange()
       range.setStart(at, selection.anchorOffset - closed[0].length)
       range.setEnd(at, selection.anchorOffset)
@@ -247,6 +264,10 @@ export function MentionText({
         }}
         onKeyDown={keys}
         onPaste={paste}
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes(DRAGGED_FILE)) event.preventDefault()
+        }}
+        onDrop={takeIn}
         onBlur={() => {
           setMenu(null)
           onSave()
@@ -263,6 +284,32 @@ export function MentionText({
           </ul>,
           document.body,
         )}
+      <MentionThumbs text={value} besides={asset} />
     </>
+  )
+}
+
+function MentionThumb({ name }: { name: string }) {
+  const store = useCanvasStore()
+  const view = useElement(store.nameOf(name) ?? name)
+  const shown = view && shownOf(view)
+  if (!shown || shown.absent || shown.field === "audio") return null
+  return (
+    <span className="mention-thumb" title={name}>
+      <Thumb sha256={shown.sha256} cardWidth={120} />
+    </span>
+  )
+}
+
+/** The pictures a text mentions, small, under it. */
+function MentionThumbs({ text, besides }: { text: string; besides: string }) {
+  const mentioned = mentionsIn(text).filter((name) => name !== besides)
+  if (!mentioned.length) return null
+  return (
+    <div className="mention-thumbs">
+      {mentioned.map((name) => (
+        <MentionThumb key={name} name={name} />
+      ))}
+    </div>
   )
 }
