@@ -459,6 +459,7 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
             Ok(first) => first.map(|first| walk.last_word(first)),
             Err(error) => {
                 *walk.project.walking.lock().expect("walking lock") = false;
+                walk.project.unsent.lock().expect("unsent lock").push(error.clone());
                 Some(error)
             }
         };
@@ -3391,6 +3392,7 @@ impl Walk {
     /// What failed, of no one asset: said now; what does not read it goes on.
     fn failed(&self, error: Error, first: &mut Option<Error>) {
         self.missed.lock().expect("missed lock").failed += 1;
+        self.project.unsent.lock().expect("unsent lock").push(error.clone());
         self.say(Event::Failed { error: error.clone(), name: None, run: None });
         first.get_or_insert(error);
     }
