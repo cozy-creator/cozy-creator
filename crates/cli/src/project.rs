@@ -10,7 +10,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, NewVersion, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Fit, FitAsk, Import, Imported, NewVersion, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved},
 };
 
 use crate::{
@@ -481,6 +481,9 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         true => vec![On::from("local".to_owned())],
         false => args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?,
     };
+    if matches!(on.as_slice(), [On::Machine(only)] if only == "local") {
+        poorly_here(&calcifer, &opened.id, &args.names, args.outdated).await;
+    }
     let runs = Runs {
         outdated: args.outdated,
         names: args.names,
@@ -529,6 +532,18 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         return following_json(ctx, events, &status).await;
     }
     render::follow(ctx, render::Rendering::new(opened.path.clone(), asked.board), events, args_plain, &status).await
+}
+
+/// What this computer would render poorly, in the line the page asks with, said once as a warning: this never asks, and goes on. A
+/// Calcifer that can't say says nothing.
+async fn poorly_here(calcifer: &crate::calcifer_client::Client, id: &str, names: &[String], outdated: bool) {
+    let asked = FitAsk { names: names.to_vec(), outdated };
+    let Ok(fit) = calcifer.post::<_, Fit>(&format!("/v1/projects/{id}/fit"), &asked, None).await else { return };
+    if fit.tools.is_empty() {
+        return;
+    }
+    let lines = fit.tools.iter().map(|tool| tool.line.as_str()).chain(fit.rent.as_ref().map(|rent| rent.line.as_str()));
+    output::warn(&lines.collect::<Vec<_>>().join(" "));
 }
 
 /// `--json`: each run's own events, as `cozy run` gives them, and the render's refusal as its envelope.
