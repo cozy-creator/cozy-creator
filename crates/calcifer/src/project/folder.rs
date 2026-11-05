@@ -665,6 +665,29 @@ impl Folder {
         self.dir.join(BROKEN).exists()
     }
 
+    /// Whether project.lock is gone from a project that has files.
+    pub fn lock_gone(&self) -> bool {
+        !self.dir.join(LOCK).exists() && std::fs::read_dir(self.dir.join(FILES)).is_ok_and(|mut files| files.next().is_some())
+    }
+
+    /// Why the files `named` leaves out may be all that's left of this project's takes, not what's done with: project.lock was lost, can't be
+    /// read or lists nothing, so nothing here says what they were. `reclaim --yes` deletes none of them.
+    pub fn history_lost(&self, lock: &Lock, named: &BTreeSet<String>) -> Option<String> {
+        let unnamed = lock.files.values().filter(|file| !named.contains(&file.sha256) && self.path(&file.path).is_file()).count();
+        let said = if unnamed == 0 {
+            return None;
+        } else if self.lock_set_aside() {
+            format!("{LOCK} can't be read and is kept as {BROKEN}")
+        } else if !self.dir.join(LOCK).exists() {
+            format!("{LOCK} is gone")
+        } else if lock.runs.is_empty() && lock.assets.values().all(|held| held.versions.is_empty()) {
+            format!("{LOCK} lists no versions")
+        } else {
+            return None;
+        };
+        Some(format!("{said}, so the {unnamed} files nothing names in {FILES}/ may be all that's left of this project's takes"))
+    }
+
     /// `lock`'s file table whole, from what needs no record: each file in `files/` names itself, what a version or run names and isn't here has
     /// its hash, and what is measured comes from a cache a read of the file can always make again.
     pub(super) fn fill(&self, lock: &mut Lock) {

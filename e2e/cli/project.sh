@@ -133,6 +133,7 @@ hard_cut
 upgrades
 old_landing
 lock_kept
+lost_lock
 text_assets
 memo
 pins
@@ -632,6 +633,40 @@ for label, size in (("3 versions, 6.1 MB", int(6.1 * 2**20)), ("9 versions, 18 M
     print(f"lock write at 5,000 assets, {label}: median {statistics.median(took) * 1000:.0f} ms, worst {max(took) * 1000:.0f} ms")
 PY
 rm -rf "$OUT/lock-write"
+}
+
+# With its lock lost, what's in `files/` may be all that's left of a project's takes: `reclaim --yes` deletes none of it.
+lost_lock() {
+step "a project: with its lock lost, reclaim --yes deletes nothing, and says what happened"
+local L=$OUT/lost-lock count code
+mkdir -p "$L"
+cat > "$L/project.yaml" <<YAML
+version: 3
+assets:
+  made: {tool: $here/project/draw.py/draw, instructions: Paid for.}
+YAML
+render "$L" made -n 2 || check "lost lock: render: $(tail -c 300 "$OUT/render.txt")"
+count=$(ls "$L/files" | wc -l)
+[ "$count" -ge 2 ] || check "lost lock: it made $count files"
+cp "$L/project.lock" "$OUT/lost-lock.lock"
+stays() {
+  J --arg s "$1" '.deleted != true and (.next // []) == [] and (.lost | contains($s)) and .files >= 2' <<< "$(cozy --json project -p "$L" reclaim)" || check "lost lock: a dry reclaim with $1: $(cozy --json project -p "$L" reclaim)"
+  code=0; cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || code=$?
+  { [ "$code" != 0 ] && grep -qF "$1" "$OUT/lost-lock.txt" && grep -q 'put project.lock back' "$OUT/lost-lock.txt"; } || check "lost lock: reclaim --yes with $1 (exit $code): $(tail -c 300 "$OUT/lost-lock.txt")"
+  [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes with $1 deleted: $(ls "$L/files" | wc -l) of $count"
+}
+rm "$L/project.lock"
+stays "project.lock is gone"
+J '[.warnings[].message] | any(contains("project.lock is gone"))' <<< "$(status "$L")" || check "lost lock: status doesn't say so: $(status "$L" | jq -c .warnings)"
+printf 'format: [3\n' > "$L/project.lock"
+status "$L" > /dev/null
+stays "can't be read"
+rm "$L/project.lock.broken" "$L/project.lock"
+printf 'format: 3\nassets: {}\nfiles: {}\n' > "$L/project.lock"
+stays "lists no versions"
+cp "$OUT/lost-lock.lock" "$L/project.lock"
+cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with it back: $(tail -c 300 "$OUT/lost-lock.txt")"
+[ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: with it back, reclaim took what it names"
 }
 
 # The key: a run only when an asset has no state. What doesn't change it, what does, reverting, and what reads what.

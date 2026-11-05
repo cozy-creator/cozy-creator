@@ -749,6 +749,9 @@ pub struct Reclaimed {
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
+    /// Why `yes` would be refused: its lock was lost, so these files may be all that's left of its takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost: Option<String>,
 }
 
 /// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
