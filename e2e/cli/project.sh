@@ -133,6 +133,7 @@ hard_cut
 upgrades
 old_landing
 lock_kept
+lost_lock
 text_assets
 memo
 pins
@@ -264,6 +265,8 @@ printf '{"nodes": {"a": {"kind": "character", "versions": [{"number": 1}]}}}\n' 
 before=$(sha "$O/project.lock")
 code=0; cozy project -p "$O" status > "$OUT/old-lock.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-lock.txt" && [ "$(sha "$O/project.lock")" = "$before" ]; } || check "a format 1 project.lock was read or written (exit $code): $(tail -c 200 "$OUT/old-lock.txt")"
+# What a page opening to the newest project would refuse.
+rm -rf "$O"
 }
 
 # Format 2 to format 3, here, with no Calcifer: nothing goes out of date and nothing runs. A project made for real, its files and versions
@@ -405,6 +408,7 @@ printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    
 cp "$N/project.yaml" "$OUT/upgrade-names.yaml"
 code=0; cozy project -p "$N" upgrade > "$OUT/upgrade-names.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy_one and amy-ONE are one name' "$OUT/upgrade-names.txt" && cmp -s "$N/project.yaml" "$OUT/upgrade-names.yaml"; } || check "upgrade: names that are one (exit $code): $(tail -c 300 "$OUT/upgrade-names.txt")"
+rm -rf "$N"
 }
 
 # A text asset: its words go where it's mentioned, once, in Doc, and the key follows them.
@@ -514,6 +518,7 @@ code=0; cozy project -p "$C" upgrade > "$OUT/old-landing-stuck.txt" 2>&1 || code
 [ "$code" != 0 ] || check "old landing: names that are one converted"
 (cd "$C" && cozy --json run "$here/project/draw.py" prompt=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
 [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
+rm -rf "$C"
 
 step "a project: an upgrade cut short starts again from the originals"
 local K=$OUT/old-landing-cut
@@ -637,6 +642,40 @@ for label, size in (("3 versions, 6.1 MB", int(6.1 * 2**20)), ("9 versions, 18 M
     print(f"lock write at 5,000 assets, {label}: median {statistics.median(took) * 1000:.0f} ms, worst {max(took) * 1000:.0f} ms")
 PY
 rm -rf "$OUT/lock-write"
+}
+
+# With its lock lost, what's in `files/` may be all that's left of a project's takes: `reclaim --yes` deletes none of it.
+lost_lock() {
+step "a project: with its lock lost, reclaim --yes deletes nothing, and says what happened"
+local L=$OUT/lost-lock count code
+mkdir -p "$L"
+cat > "$L/project.yaml" <<YAML
+version: 3
+assets:
+  made: {tool: $here/project/draw.py/draw, instructions: Paid for.}
+YAML
+render "$L" made -n 2 || check "lost lock: render: $(tail -c 300 "$OUT/render.txt")"
+count=$(ls "$L/files" | wc -l)
+[ "$count" -ge 2 ] || check "lost lock: it made $count files"
+cp "$L/project.lock" "$OUT/lost-lock.lock"
+stays() {
+  J --arg s "$1" '.deleted != true and (.next // []) == [] and (.lost | contains($s)) and .files >= 2' <<< "$(cozy --json project -p "$L" reclaim)" || check "lost lock: a dry reclaim with $1: $(cozy --json project -p "$L" reclaim)"
+  code=0; cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || code=$?
+  { [ "$code" != 0 ] && grep -qF "$1" "$OUT/lost-lock.txt" && grep -q 'put project.lock back' "$OUT/lost-lock.txt"; } || check "lost lock: reclaim --yes with $1 (exit $code): $(tail -c 300 "$OUT/lost-lock.txt")"
+  [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes with $1 deleted: $(ls "$L/files" | wc -l) of $count"
+}
+rm "$L/project.lock"
+stays "project.lock is gone"
+J '[.warnings[].message] | any(contains("project.lock is gone"))' <<< "$(status "$L")" || check "lost lock: status doesn't say so: $(status "$L" | jq -c .warnings)"
+printf 'format: [3\n' > "$L/project.lock"
+status "$L" > /dev/null
+stays "can't be read"
+rm "$L/project.lock.broken" "$L/project.lock"
+printf 'format: 3\nassets: {}\nfiles: {}\n' > "$L/project.lock"
+stays "lists no versions"
+cp "$OUT/lost-lock.lock" "$L/project.lock"
+cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with it back: $(tail -c 300 "$OUT/lost-lock.txt")"
+[ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: with it back, reclaim took what it names"
 }
 
 # The key: a run only when an asset has no state. What doesn't change it, what does, reverting, and what reads what.

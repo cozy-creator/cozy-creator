@@ -292,6 +292,9 @@ impl Doc {
             return Err(invalid("project_format", said).next("cozy project upgrade"));
         }
         let mut warnings = vec![];
+        if folder.lock_gone() {
+            warnings.push(Warning::of_file(format!("{0} is gone and files/ holds files: their versions aren't read, so only what is approved stands. Put {0} back from git or a backup", folder::LOCK)));
+        }
         if folder.lock_set_aside() {
             warnings.push(Warning::of_file(format!("{0} could not be read and is kept as {0}.broken: its versions, seeds and takes aren't read here, so only what is approved stands. Fix it and put it back, or delete it", folder::LOCK)));
         }

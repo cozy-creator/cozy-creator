@@ -154,7 +154,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
 | `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
 | `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions |
-| `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names |
+| `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names. With `project.lock` gone, unreadable or listing nothing, those files may be all that's left of its takes, so `--yes` is refused and they stay |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
 | `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |
 | `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |

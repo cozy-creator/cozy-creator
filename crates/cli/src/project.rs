@@ -332,6 +332,9 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 (false, 0) if reclaimed.orphans.is_empty() => output::say(ctx, "nothing to reclaim"),
                 (false, _) => output::say(ctx, &format!("{files} files nothing else names, {bytes}")),
             }
+            if let Some(lost) = &reclaimed.lost {
+                output::say(ctx, &format!("{lost}: --yes is refused"));
+            }
             output::nexts(ctx, &reclaimed.next);
         }
         Verb::Status { name: Some(name) } => return assets::one(ctx, args.path.as_ref(), name).await,

@@ -318,14 +318,18 @@ function calciferMb() {
   const before = { ...reads };
   const shownEdit = outOfDate(edited);
   const edit = await project('set', edited, 'instructions=ONE EDIT FROM THE CLI');
-  numbers.set_command_s = seconds(edit.ms);
-  check('a_command_is_quick', numbers.set_command_s <= BARS.command_s, numbers.set_command_s);
   numbers.edit_shows_ms = (await shownEdit) - edit.at;
   check('one_edit_shows_live', numbers.edit_shows_ms <= BARS.edit_shows_ms, numbers.edit_shows_ms);
   await page.waitForTimeout(600);
   numbers.edit_reads = { whole: reads.whole - before.whole, heads: reads.heads - before.heads, assets: reads.assets - before.assets };
   check('one_edit_reads_only_it', numbers.edit_reads.whole === 0 && numbers.edit_reads.assets >= 1 && numbers.edit_reads.assets <= 3, numbers.edit_reads);
   check('one_edit_read_is_right', readAlone.get(edited)?.words === 'ONE EDIT FROM THE CLI', readAlone.get(edited));
+  // The middle of five: one alone on a Windows runner has taken 2.3 s, in a run whose edits averaged 0.8 s, and the others are what a person gets.
+  const sets = [edit.ms];
+  for (let turn = 1; turn < 5; turn++) sets.push((await project('set', edited, `instructions=EDIT ${turn} FROM THE CLI`)).ms);
+  numbers.set_commands_s = sets.map(seconds);
+  numbers.set_command_s = seconds([...sets].sort((a, b) => a - b)[2]);
+  check('a_command_is_quick', numbers.set_command_s <= BARS.command_s, numbers.set_commands_s);
 
   // A hand's save, the same way.
   const byHand = onScreen[1] ?? edited;
