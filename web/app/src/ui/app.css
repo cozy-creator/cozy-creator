@@ -1618,6 +1618,9 @@ a.tab:hover {
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
+.tool-groups[hidden] {
+  display: none;
+}
 .tool-groups.stale {
   opacity: 0.55;
 }
@@ -1668,6 +1671,56 @@ a.tab:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.tool-off {
+  flex: none;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  visibility: hidden;
+}
+.tool:hover .tool-off,
+.tool-off:focus-visible {
+  visibility: visible;
+}
+.tool-off .icon {
+  width: 11px;
+  height: 11px;
+}
+.browse-toggle {
+  align-self: flex-start;
+}
+.browse {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.browsed {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 6px;
+  padding: 4px 6px;
+  font-size: 12.5px;
+}
+.browsed b {
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browsed span {
+  grid-row: 2;
+  color: var(--faint);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browsed button {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  align-self: center;
 }
 .tool.quick {
   flex: none;

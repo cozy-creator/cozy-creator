@@ -3,6 +3,7 @@ import type {
   Agreed,
   Approved,
   Asked,
+  Browsed,
   Canvas,
   Code,
   Ended,
@@ -50,6 +51,7 @@ import type {
   Status,
   Submitted,
   Target,
+  ToolList,
   ToolUi,
   Tools,
   Unpinned,
@@ -320,6 +322,18 @@ export class Client {
     if (on) asked.set("on", on)
     if (project) asked.set("project", project)
     return this.json(`/v1/tools?${asked}`, { signal })
+  }
+
+  /** A package on your list, or tools off it. Nothing is installed or deleted. */
+  changeToolList(change: { add?: string; remove?: string[] }, once?: AbortSignal): Promise<ToolList> {
+    return this.write("POST", "/v1/tools/list", change, undefined, { once })
+  }
+
+  /** The Hub's packages that make media. */
+  browseTools(q: string, limit: number, signal?: AbortSignal): Promise<Browsed> {
+    const asked = new URLSearchParams({ limit: String(limit) })
+    if (q) asked.set("q", q)
+    return this.json(`/v1/tools/browse?${asked}`, { signal })
   }
 
   /** Where to import a tool's component from. `project`: local code it names can answer. */

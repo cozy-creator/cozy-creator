@@ -163,6 +163,8 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/run-quotes", post(crate::runs::quote))
         .route("/v1/targets", get(crate::runs::describe))
         .route("/v1/tools", get(crate::toolbox::list))
+        .route("/v1/tools/list", post(crate::toolbox::change))
+        .route("/v1/tools/browse", get(crate::toolbox::browse))
         .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
         .route(
             "/v1/files/{name}",

@@ -30,6 +30,41 @@ pub struct Tools {
     pub note: Option<String>,
 }
 
+/// Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolList {
+    pub packages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<String>,
+}
+
+/// `POST /v1/tools/list`: a package on the list, all its functions with it, or these tools off it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolListChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove: Vec<String>,
+}
+
+/// One row of `GET /v1/tools/browse`: a package of the Hub that makes media.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrowsedPackage {
+    pub package: String,
+    /// What it does, in a line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// The `id`s of its tools.
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Browsed {
+    pub packages: Vec<BrowsedPackage>,
+    /// How many more a bigger `limit` reads.
+    pub older: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tool {
     /// What a node names as its `tool`: `qwen-image-2/generate_turbo`, `acme/sketchlab/draw`.

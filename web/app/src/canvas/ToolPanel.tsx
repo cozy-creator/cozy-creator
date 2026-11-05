@@ -2,20 +2,24 @@ import { useQuery } from "@tanstack/react-query"
 import { type DragEvent, useEffect, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import type { Tool } from "../types"
+import type { Tool, Tools } from "../types"
 import { Icon, type IconName } from "../ui/Icon"
+import { say } from "../ui/notes"
 import { useCanvasStore } from "./context"
 import { DRAGGED_TOOL } from "./drag"
+import { madeHere } from "./shown"
+import { ToolBrowse } from "./ToolBrowse"
 
 const GROUPS: { id: string; words: string; icon: IconName }[] = [
   { id: "image", words: "Pictures", icon: "picture" },
   { id: "video", words: "Videos", icon: "video" },
   { id: "audio", words: "Sounds", icon: "sound" },
   { id: "touch", words: "Touch up", icon: "touch" },
+  { id: "local", words: "Editable", icon: "edit" },
 ]
 
 /** What you're after. One that asks for a file and for no words changes what it's given; anything else makes something of its kind. */
-const groupOf = (tool: Tool) => (tool.controls.some((control) => control.type === "file" && control.required) && !tool.controls.some((control) => control.type === "text" || control.type === "beats") ? "touch" : tool.kind)
+const groupOf = (tool: Tool) => tool.local ? "local" : (tool.controls.some((control) => control.type === "file" && control.required) && !tool.controls.some((control) => control.type === "text" || control.type === "beats") ? "touch" : tool.kind)
 
 /** A function and its quick form are one row: `generate` and `generate_turbo` of a package. */
 function rowsOf(tools: Tool[]): { tool: Tool; quick?: Tool }[] {
@@ -35,9 +39,26 @@ function dragged(event: DragEvent, tool: Tool) {
   event.dataTransfer.effectAllowed = "copy"
 }
 
-function ToolRow({ tool, quick, place }: { tool: Tool; quick?: Tool; place: (tool: Tool) => void }) {
+/** Off your list at once. Nothing is deleted, and a box of it goes on as it was. */
+function useRemove() {
+  const { client, queries } = useConnection()
+  const store = useCanvasStore()
+  return (ids: string[]) => {
+    queries.setQueriesData<Tools>({ queryKey: ["tools"] }, (list) => list && { ...list, tools: list.tools.filter((tool) => !ids.includes(tool.id)) })
+    store.outbox.add({
+      send: (once) => client.changeToolList({ remove: ids }, once),
+      refused: (error) => {
+        say("Couldn't take that off your list", error)
+        void queries.invalidateQueries({ queryKey: ["tools"] })
+      },
+    })
+  }
+}
+
+function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; place: (tool: Tool) => void; yours: boolean }) {
+  const remove = useRemove()
   return (
-    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.kind} onDragStart={(event) => dragged(event, tool)} onClick={() => place(tool)}>
+    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.kind} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onClick={() => place(tool)}>
       <b>{tool.label}</b>
       {quick && (
         <span
@@ -56,6 +77,20 @@ function ToolRow({ tool, quick, place }: { tool: Tool; quick?: Tool; place: (too
           <Icon name="bolt" />
         </span>
       )}
+      {yours && !tool.local && !madeHere(tool.id) && (
+        <button
+          type="button"
+          className="tool-off"
+          aria-label={`Take ${tool.label} off your list`}
+          title="Take off your list"
+          onClick={(event) => {
+            event.stopPropagation()
+            remove([tool.id, ...(quick ? [quick.id] : [])])
+          }}
+        >
+          <Icon name="close" />
+        </button>
+      )}
     </li>
   )
 }
@@ -66,11 +101,12 @@ export function ToolPanel({ machine, waiting, shut, setShut, place, choose }: { 
   const store = useCanvasStore()
   const [typed, setTyped] = useState("")
   const [q, setQ] = useState("")
+  const [browsing, setBrowsing] = useState(false)
   useEffect(() => {
     const timer = setTimeout(() => setQ(typed.trim()), 250)
     return () => clearTimeout(timer)
   }, [typed])
-  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, q, machine, store.projectId), enabled: !waiting })
+  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, browsing ? "" : q, machine, store.projectId), enabled: !waiting })
   useEffect(() => {
     if (data && !isPlaceholderData) store.addTools(data.tools)
   }, [store, data, isPlaceholderData])
@@ -96,7 +132,11 @@ export function ToolPanel({ machine, waiting, shut, setShut, place, choose }: { 
         </button>
       </div>
       <input className="field wide" aria-label="Search the tools" placeholder="Search" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
-      <div className={`tool-groups ${isPlaceholderData ? "stale" : ""}`}>
+      <button type="button" className={`act browse-toggle ${browsing ? "on" : ""}`} aria-pressed={browsing} onClick={() => setBrowsing(!browsing)}>
+        {browsing ? "Your tools" : "Browse"}
+      </button>
+      {browsing && <ToolBrowse q={q} listed={tools} />}
+      <div className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={browsing}>
         {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
         {isPending && !error && (
           <ul aria-hidden="true">
@@ -116,7 +156,7 @@ export function ToolPanel({ machine, waiting, shut, setShut, place, choose }: { 
               </h4>
               <ul>
                 {rows.map((row) => (
-                  <ToolRow key={row.tool.id} tool={row.tool} quick={row.quick} place={place} />
+                  <ToolRow key={row.tool.id} tool={row.tool} quick={row.quick} place={place} yours={!q} />
                 ))}
               </ul>
             </section>

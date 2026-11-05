@@ -2259,7 +2259,7 @@ id=$(status "$T" | jq -r .id)
 api --get --data-urlencode "project=$id" "http://$ADDR/v1/tools" > "$OUT/tools.json"
 one() { jq -c --arg f "$1" '.tools[] | select(.local and .function == $f)' "$OUT/tools.json"; }
 J '[.tools[] | select(.local) | .function] | sort == ["clip", "need", "slow", "still", "told"]' "$OUT/tools.json" || check "tools: listed: $(jq -c '[.tools[] | select(.local) | .function]' "$OUT/tools.json")"
-J --arg t "$tool" '.id == ($t + "/still") and .kind == "image" and .local and (.label | endswith("(local)"))' <<< "$(one still)" || check "tools: still: $(one still)"
+J --arg t "$tool" '.id == ($t + "/still") and .kind == "image" and .local and (.label | endswith("(local)") | not)' <<< "$(one still)" || check "tools: still: $(one still)"
 J '.kind == "video"' <<< "$(one clip)" || check "tools: clip's kind: $(one clip)"
 J '.ui == "ui/clip.js" and .kind == "video" and (.controls[0] | .field == "video" and .type == "file" and .accept == "video" and .required)' <<< "$(one need)" || check "tools: need: $(one need)"
 control() { jq -c --arg f "$2" '.controls[] | select(.field == $f)' <<< "$(one "$1")"; }

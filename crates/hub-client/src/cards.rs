@@ -134,6 +134,12 @@ pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card
     read(&document).ok()
 }
 
+/// The releases of `package` whose cards are kept.
+pub fn kept_releases(root: &Path, hub: &str, package: &str) -> Vec<String> {
+    let cards = std::fs::read_dir(dir(root, hub, package)).into_iter().flatten().flatten();
+    cards.filter_map(|card| Some(Path::new(&card.file_name()).file_stem()?.to_str()?.to_owned())).collect()
+}
+
 /// Keeps a release card as the Hub answered it.
 pub fn keep(root: &Path, hub: &str, package: &str, document: &Value) -> Result<Card, Error> {
     let card = read(document)?;

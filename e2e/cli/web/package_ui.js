@@ -56,8 +56,10 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const hub = { lying: false, asked: [], digest, origin: '' };
   const summary = { org: 'e2e', name, created_at: '2026-11-04T00:00:00Z', latest_release: release };
   const bytes = (text) => ({ canonical_bytes: Buffer.from(text).toString('base64') });
+  // More than Browse's first page, so reading on is real.
+  const shelf = [summary, ...Array.from({ length: 60 }, (_, n) => ({ ...summary, name: `shelf-${n}` }))];
   hub.server = http.createServer((request, response) => {
-    const { pathname } = new URL(request.url, 'http://hub');
+    const { pathname, searchParams } = new URL(request.url, 'http://hub');
     hub.asked.push(`${request.method} ${pathname}`);
     const json = (status, body) => {
       response.writeHead(status, { 'Content-Type': 'application/json' });
@@ -67,9 +69,15 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     request.on('end', () => {
       const at = `/v1/packages/e2e/${name}`;
       if (hub.silent && pathname === at) return;
-      if (pathname === '/v1/packages') return json(200, { packages: [summary], search: { total: 1 } });
-      if (pathname === at) return json(200, { package: summary, releases: [{ release }] });
-      if (pathname === `${at}/releases/${release}`) return json(200, { release: { release }, package_interface: describedInterface, summary: '' });
+      if (hub.down) return json(503, { error: { kind: 'unavailable', code: 'down', message: 'this Hub is down' } });
+      if (pathname === '/v1/packages') {
+        const words = (searchParams.get('q') ?? '').split(/\s+/);
+        const found = shelf.filter((row) => words.every((word) => `${row.org}/${row.name}`.includes(word)));
+        return json(200, { packages: found.slice(0, Number(searchParams.get('limit'))), search: { total: found.length } });
+      }
+      // One of the defaults is this package again: a list reads its card and nothing else.
+      if (pathname === at || pathname === '/v1/packages/_/minimax-h3') return json(200, { package: summary, releases: [{ release }] });
+      if (pathname.endsWith(`/releases/${release}`)) return json(200, { release: { release }, package_interface: describedInterface, summary: 'One field, shaded.' });
       if (pathname === `${at}/download`) {
         return json(200, {
           release,
@@ -330,18 +338,65 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       // Not installed: on the Hub's list with its `ui`, and it doesn't load.
       const released = `${package_}/one_field`;
       const listed = await until('the release listed', async () => {
-        const { tools, note } = (await api('/v1/tools?on=local')).body;
+        const { tools, note } = (await api(`/v1/tools?on=local&q=${name}`)).body;
         return { tool: tools.find((tool) => tool.id === released), note };
       }, (now) => now.tool);
       check('release_lists_its_ui', listed.tool.ui === 'ui/shade.js' && !listed.tool.local, listed);
+      // At rest, a default by its card with nothing installed, and the rest only by searching. With no Hub, the card kept here stands, and one never read says why.
+      const resting = (await api('/v1/tools?on=local')).body;
+      const isDefault = (tool) => tool.package === 'minimax-h3';
+      check('a_default_is_listed', resting.tools.some(isDefault), resting.tools.map((tool) => tool.id));
+      check('the_rest_is_found_by_searching', !resting.tools.some((tool) => tool.id === released), resting.tools.map((tool) => tool.id));
+      hub.down = true;
+      const noHub = (await api('/v1/tools?on=local')).body;
+      hub.down = false;
+      check('a_default_outlasts_its_hub', noHub.tools.some(isDefault), noHub.tools.map((tool) => tool.id));
+      check('a_default_never_read_says_why', noHub.note?.startsWith("only what's installed"), noHub);
       await page.reload();
       await page.waitForSelector('.react-flow__node');
       await dropTool('from_the_hub', released);
       await fit();
       const before = await toolUi(released);
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
+      // Browse: a package of the Hub, on your list with nothing installed, there after a reload, and off it again. A box of it goes on.
+      const listRow = page.locator(`.tools [data-tool="${released}"]`);
+      await page.locator('.tools button:has-text("Browse")').click();
+      const found = page.locator('.browse .browsed', { hasText: name });
+      await found.waitFor();
+      check('browse_says_what_it_does', (await found.innerText()).includes('One field, shaded.'), await found.innerText());
+      check('browse_has_a_first_page', (await page.locator('.browse .browsed').count()) === 50);
+      await page.locator('.browse button:has-text("More")').click();
+      await page.locator('.browse .browsed', { hasText: 'shelf-59' }).waitFor();
+      check('browse_reads_on', (await page.locator('.browse .browsed').count()) === 61 && (await page.locator('.browse button:has-text("More")').count()) === 0);
+      await page.locator('.tools input[aria-label="Search the tools"]').fill('shelf-59');
+      await until('browse searched', () => page.locator('.browse .browsed').count(), (rows) => rows === 1);
+      await shot('browse');
+      await page.locator('.tools input[aria-label="Search the tools"]').fill('');
+      await found.waitFor();
+      await found.locator('button:has-text("Add")').click();
+      await page.locator('.tools button:has-text("Your tools")').click();
+      await listRow.waitFor();
+      await page.reload();
+      await listRow.waitFor();
+      check('added_is_there_after_a_reload', true);
+      const unheldStill = await toolUi(released);
+      check('adding_installs_nothing', unheldStill.status === 404 && unheldStill.body.error.code === 'tool_ui_not_installed' && !hub.asked.some((line) => line.includes('/download') || line.includes('/wheels/')), { unheldStill, asked: hub.asked });
+      await shot('your-list');
+      await listRow.hover();
+      await listRow.locator('.tool-off').click();
+      await listRow.waitFor({ state: 'detached' });
+      await until('off the list on the wire', async () => (await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === released), (held) => !held);
+      await page.reload();
+      await page.waitForSelector('.tools .tool');
+      check('removed_stays_off', (await listRow.count()) === 0);
+      const offWire = (await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ remove: ['minimax-h3/one_field'] }) })).body;
+      check('a_default_comes_off', offWire.without?.includes('minimax-h3/one_field'), offWire);
+      check('a_default_is_off', !(await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === 'minimax-h3/one_field'));
+      await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ add: 'minimax-h3' }) });
+      check('a_default_comes_back', (await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === 'minimax-h3/one_field'));
       await more('from_the_hub');
       await page.waitForTimeout(1000);
+      check('a_box_of_a_removed_tool_opens', (await box('from_the_hub').locator('input[type=range]').count()) === 1, await box('from_the_hub').innerText());
       check('not_installed_is_declared_and_quiet', (await box('from_the_hub').locator('[data-boxed]').count()) === 0 && (await box('from_the_hub').locator('.tool-ui-failed').count()) === 0 && (await box('from_the_hub').locator('input[type=range]').count()) === 1, { said: await box('from_the_hub').innerText(), boxes: await boxLog(page) });
       check('not_installed_read_no_wheel', !hub.asked.some((line) => line.includes('/wheels/')), hub.asked);
 

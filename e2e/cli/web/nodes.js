@@ -128,6 +128,8 @@ function linesOf(text, name) {
   // Tools on the left: searchable, folding away with the canvas where it was.
   const listed = await until('tools or why none', async () => ({ tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() }), (now) => now.tools > 0 || now.note.length > 0);
   seen.tools_listed = listed;
+  const resting = (await api(`/v1/tools?project=${id}`)).body;
+  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
   const viewport = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const before = await viewport();
   await page.click('.tools [aria-label="Hide the tools"]');
@@ -165,7 +167,7 @@ function linesOf(text, name) {
   check('list_keeps_comments', yaml().startsWith(head), yaml());
 
   // Local code is listed, and says so: the box Paul's example uses comes from here, dragged like any tool, and called what a person calls it.
-  const fromTheList = page.locator('.tools .tool', { hasText: '(local)' }).first();
+  const fromTheList = page.locator('.tools section:has(h4:has-text("Editable")) .tool').first();
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
@@ -181,7 +183,8 @@ function linesOf(text, name) {
     await fromTheList.waitFor({ timeout: FIRST_RUN_MS });
     const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local);
     tool = wire.id;
-    check('local_tool_says_so', wire.label.endsWith('(local)') && wire.id.startsWith(drawer), wire);
+    check('local_tool_says_so', wire.local && !wire.label.includes('(local)') && wire.id.startsWith(drawer), wire);
+    check('local_tools_are_editable', (await page.locator('.tools section:has(h4:has-text("Editable")) .tool').count()) > 0);
     // A retry of a new asset makes no `_2`, on the wire.
     const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
     const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });

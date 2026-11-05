@@ -1009,6 +1009,16 @@ export interface ToolUi {
   module: string
 }
 
+export interface ToolList {
+  packages: string[]
+  without?: string[]
+}
+
+export interface Browsed {
+  packages: { package: string; summary?: string; tools: string[] }[]
+  older: number
+}
+
 export interface Tools {
   tools: Tool[]
   /** Why it holds only what's installed. */
