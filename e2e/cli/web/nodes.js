@@ -8,7 +8,7 @@
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
+const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
 
@@ -788,6 +788,8 @@ function linesOf(text, name) {
     await box('Clip').locator('button:has-text("New take from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).body.versions.at(-1).files.given.path;
+    // Listed as its run ends, it lands in files/ a moment later (Firefox, 42110239536).
+    await until('what it was given, in files/', () => Promise.resolve(existsSync(join(folder, given))), Boolean);
     const told = JSON.parse(readFileSync(join(folder, given), 'utf8'));
     check('kept_up_to_there', told.keep === 0.5, told);
     check('words_as_they_were', linesOf(yaml(), 'Clip') === clipFile, linesOf(yaml(), 'Clip'));
