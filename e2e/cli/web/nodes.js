@@ -741,7 +741,8 @@ function linesOf(text, name) {
     await page.waitForTimeout(1000);
     await deleteBox('source-b');
     const warned = await until('a plain note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-b')));
-    check('note_when_not_approved', warned.some((line) => line.includes('Other reads this') && line.includes("isn't approved yet")), warned);
+    // `mentioning` reads it too: both are named.
+    check('note_when_not_approved', warned.some((line) => line.includes('Other') && line.includes('mentioning') && line.includes("aren't approved yet")), warned);
     await page.locator('.note:has-text("source-b") button:has-text("Undo")').click();
     await box('source-b').waitFor();
 
