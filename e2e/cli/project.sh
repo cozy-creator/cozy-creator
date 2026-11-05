@@ -485,6 +485,7 @@ J '[.warnings[]?.message] | any(contains("cozy project upgrade"))' <<< "$(cozy -
 
 step "a project: a run in flight over the upgrade lands, and is listed"
 cozy project -p "$T" upgrade > "$OUT/old-landing-upgrade.txt" 2>&1 || check "old landing: upgrade: $(tail -c 300 "$OUT/old-landing-upgrade.txt")"
+J '.run_files == 1' <<< "$(status "$T")" || check "old landing: what its run kept reads as nothing: $(status "$T" | jq -c .run_files)"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
 rm -f "$T/project.yaml.v2" "$T/project.lock.v2"
@@ -518,6 +519,46 @@ cp "$OUT/cut-short.yaml" "$K/project.yaml"
 cozy project -p "$K" upgrade > "$OUT/cut-again.txt" 2>&1 || check "cut short: again: $(tail -c 300 "$OUT/cut-again.txt")"
 cmp -s "$K/project.yaml" "$OUT/cut-done.yaml" || check "cut short: it came out otherwise: $(cat "$K/project.yaml")"
 cmp -s "$K/project.lock.v2" "$OUT/cut-short.lock" && cmp -s "$K/project.yaml.v2" "$OUT/cut-short.yaml" || check "cut short: an original went"
+[ "${RUNNER_OS:-}" != Windows ] || return 0
+
+step "a project: an upgrade killed at any moment loses nothing, and finishes"
+local S=$OUT/old-landing-killed stopped=0 tried=0 at pid began took
+mkdir -p "$S"
+python3 -I - "$S" <<'PY'
+import hashlib, json, sys
+assets, yaml = {}, ["version: 2", "assets:"]
+for n in range(3000):
+    digest = "sha256:" + hashlib.sha256(str(n).encode()).hexdigest()
+    assets[f"a {n}"] = {"name": f"a_{n}", "kind": "image", "numbered": 1, "versions": [{"number": 1, "inputs": "old", "files": {"image": digest}, "made_by": {"with": "local/draw/draw"}}]}
+    yaml += [f"  a_{n}:", "    render: {with: ./draw.py, prompt: One of many.}"]
+open(sys.argv[1] + "/project.yaml", "w").write("\n".join(yaml) + "\n")
+open(sys.argv[1] + "/project.lock", "w").write(json.dumps({"format": 2, "assets": assets, "files": {}}))
+PY
+cp "$S/project.yaml" "$OUT/killed.yaml"; cp "$S/project.lock" "$OUT/killed.lock"
+began=$(python3 -I -c 'import time; print(int(time.time() * 1000))')
+"$COZY" project -p "$S" upgrade > "$OUT/killed-clean.txt" 2>&1 || check "killed: a clean one: $(tail -c 300 "$OUT/killed-clean.txt")"
+took=$(($(python3 -I -c 'import time; print(int(time.time() * 1000))') - began))
+cp "$S/project.yaml" "$OUT/killed-done.yaml"
+# Across where it writes, the last of what it takes.
+for part in $(seq 14 25); do
+  at=$((took * part / 20)) tried=$((tried + 1))
+  cp "$OUT/killed.yaml" "$S/project.yaml"; cp "$OUT/killed.lock" "$S/project.lock"; rm -f "$S/project.yaml.v2" "$S/project.lock.v2"
+  "$COZY" project -p "$S" upgrade > /dev/null 2>&1 & pid=$!
+  sleep "$(printf '%d.%03d' $((at / 1000)) $((at % 1000)))"
+  kill -9 "$pid" 2> /dev/null || true
+  wait "$pid" 2> /dev/null || true
+  if grep -q '^version: 2$' "$S/project.yaml"; then
+    stopped=$((stopped + 1))
+    cmp -s "$S/project.yaml" "$OUT/killed.yaml" || check "killed at ${at} ms: the file isn't the original"
+    [ ! -e "$S/project.yaml.v2" ] || cmp -s "$S/project.yaml.v2" "$OUT/killed.yaml" || check "killed at ${at} ms: project.yaml.v2 isn't the original"
+    [ ! -e "$S/project.lock.v2" ] || cmp -s "$S/project.lock.v2" "$OUT/killed.lock" || check "killed at ${at} ms: project.lock.v2 isn't the original"
+    "$COZY" project -p "$S" upgrade > "$OUT/killed-again.txt" 2>&1 || check "killed at ${at} ms: again: $(tail -c 300 "$OUT/killed-again.txt")"
+  fi
+  cmp -s "$S/project.yaml" "$OUT/killed-done.yaml" || check "killed at ${at} ms: it came out otherwise"
+  cmp -s "$S/project.lock.v2" "$OUT/killed.lock" || check "killed at ${at} ms: the lock's original went"
+done
+echo "killed mid-way $stopped of $tried times, in $took ms"
+[ "$stopped" -gt 0 ] || check "killed: no kill landed before it finished"
 }
 
 # A lock that can't be read is kept, and said. A name the file lost, and a render since, leaves its versions an orphan, and that name starts over.
