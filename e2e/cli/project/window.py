@@ -1,7 +1,7 @@
 """window.py <first: lock|walk> <project dir> <calcifer pid>: the walk's cell for a Calcifer killed mid-landing. It stops Calcifer the
 moment the file it writes first is replaced, and if that is the landing's write with the other not yet written, kills it there. Exits 0
 on a kill in the window, 1 if none came. Linux only: inotify."""
-import ctypes, json, os, signal, struct, sys, time
+import ctypes, json, os, re, signal, struct, sys, time
 
 first, d, pid = sys.argv[1], sys.argv[2], int(sys.argv[3])
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -12,9 +12,10 @@ os.makedirs(runs, exist_ok=True)
 watch = {libc.inotify_add_watch(fd, d.encode(), IN_MOVED_TO): d, libc.inotify_add_watch(fd, runs.encode(), IN_MOVED_TO): runs}
 
 def versions():
+    # project.lock is YAML, and its one asset's versions are what hold a `number:`.
     try:
-        return len(json.load(open(os.path.join(d, "project.lock")))["assets"]["held"]["versions"])
-    except Exception:
+        return len(re.findall(r"^\s*(?:-\s+)?number:\s*\d+\s*$", open(os.path.join(d, "project.lock")).read(), re.M))
+    except OSError:
         return 0
 
 def owed():

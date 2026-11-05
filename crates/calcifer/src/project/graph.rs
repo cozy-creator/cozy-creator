@@ -42,6 +42,28 @@ fn bracketed(text: &str) -> Vec<&str> {
     found
 }
 
+/// `text` with each mention `with` has words for replaced by them, brackets and all. The rest stays as written.
+pub fn mentions_replaced(text: &str, with: &mut dyn FnMut(&str) -> Option<String>) -> String {
+    let (mut said, mut rest) = (String::with_capacity(text.len()), text);
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let inner = after.find(['<', '>', '\n']).filter(|&end| after.as_bytes()[end] == b'>').map(|end| &after[..end]);
+        said.push_str(&rest[..open]);
+        match inner.filter(|inner| is_name(inner)).and_then(|inner| Some((inner, with(inner)?))) {
+            Some((inner, words)) => {
+                said.push_str(&words);
+                rest = &after[inner.len() + 1..];
+            }
+            None => {
+                said.push('<');
+                rest = after;
+            }
+        }
+    }
+    said.push_str(rest);
+    said
+}
+
 /// Every mention in `text`: a `<…>` holding a name.
 pub fn mentions(text: &str) -> Vec<&str> {
     bracketed(text).into_iter().filter(|text| is_name(text)).collect()

@@ -240,6 +240,9 @@ pub struct Import {
     /// The words for whatever mentions it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// A person typed `name`: refused if the project has it, not numbered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exact: bool,
 }
 
 /// What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
@@ -546,7 +549,8 @@ pub struct AssetVersions {
 /// `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NewAsset {
-    /// A tool's `id`, from `GET /v1/tools`.
+    /// A tool's `id`, from `GET /v1/tools`. Empty: a text asset, its words in `fields.text`.
+    #[serde(default)]
     pub tool: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Card>,
@@ -555,6 +559,9 @@ pub struct NewAsset {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub fields: Map<String, Value>,
+    /// A person typed `name`: refused if the project has it, not numbered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exact: bool,
 }
 
 /// What a write of an asset answers: its name, and what `If-Match` names from here on.

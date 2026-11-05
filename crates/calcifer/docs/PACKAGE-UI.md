@@ -1,6 +1,8 @@
 # A package's own UI
 
-A function's box is drawn from what it declares. A package that wants more ships a component: a real ES module in the page, with no sandbox and no prompt. Installing a package is the trust decision, as its code already runs on that machine.
+A package's declared fields are the normal path, and no first-party package uses a component: this is secondary, there to explore.
+
+A package that wants more ships a component: a real ES module in the page, with no sandbox and no prompt. Installing a package is the trust decision, as its code already runs on that machine.
 
 ```python
 @app.entrypoint(ui="ui/box.js")

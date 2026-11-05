@@ -1011,8 +1011,17 @@ impl Store {
 
     /// Adds a warning to an unsettled run, answered as its lifecycle event.
     pub fn warn(&self, id: &str, warning: &Warning) -> Result<Vec<Event>> {
+        self.warning(id, warning, false)
+    }
+
+    /// `warn`, of a run that may have ended: what comes of its outputs lands after it does.
+    pub fn warned(&self, id: &str, warning: &Warning) -> Result<Vec<Event>> {
+        self.warning(id, warning, true)
+    }
+
+    fn warning(&self, id: &str, warning: &Warning, settled_too: bool) -> Result<Vec<Event>> {
         self.write(|tx| {
-            let Some(mut row) = run_in(tx, id)?.filter(|row| row.state != State::Settled) else {
+            let Some(mut row) = run_in(tx, id)?.filter(|row| settled_too || row.state != State::Settled) else {
                 return Ok(vec![]);
             };
             row.warnings.push(warning.clone());

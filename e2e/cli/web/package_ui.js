@@ -9,13 +9,13 @@
 // computer, so no run and no restart; $RESTART, $HUB_RESTART: shell commands that kill this Calcifer and bring it back, the second on the Hub
 // @HUB@ names. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { exec, execFileSync } = require('child_process');
+const { exec, execFile, execFileSync } = require('child_process');
 const { createHash } = require('crypto');
 const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = require('fs');
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, until, pointAt } = require('./page');
+const { STEP_MS, until, pointAt, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -29,6 +29,10 @@ const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
 const shell = (command) => new Promise((done, failed) => exec(command, (error) => (error ? failed(error) : done())));
 const quiet = { stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS };
+// For what asks the stand-in Hub, which is this process: blocked in execFileSync it answers no one, and the install waits on it for good.
+const cozyHere = (args, options) => new Promise((done, fail) => {
+  execFile(COZY, args, options, (error, stdout, stderr) => (error ? fail(Object.assign(error, { said: `${stdout}${stderr}` })) : done(stdout)));
+});
 const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
 
 /** A GET as a browser's script loader sends one: no credential, the path as it's written. */
@@ -61,6 +65,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     request.resume();
     request.on('end', () => {
       const at = `/v1/packages/e2e/${name}`;
+      if (hub.silent && pathname === at) return;
       if (pathname === '/v1/packages') return json(200, { packages: [summary], search: { total: 1 } });
       if (pathname === at) return json(200, { package: summary, releases: [{ release }] });
       if (pathname === `${at}/releases/${release}`) return json(200, { release: { release }, package_interface: describedInterface, summary: '' });
@@ -99,6 +104,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
+  lookAt(page);
+  await watchBoxes(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const uiCalls = [];
@@ -334,11 +341,16 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
       await more('from_the_hub');
       await page.waitForTimeout(1000);
-      check('not_installed_is_declared_and_quiet', (await box('from_the_hub').locator('[data-boxed]').count()) === 0 && (await box('from_the_hub').locator('.tool-ui-failed').count()) === 0 && (await box('from_the_hub').locator('input[type=range]').count()) === 1, await box('from_the_hub').innerText());
+      check('not_installed_is_declared_and_quiet', (await box('from_the_hub').locator('[data-boxed]').count()) === 0 && (await box('from_the_hub').locator('.tool-ui-failed').count()) === 0 && (await box('from_the_hub').locator('input[type=range]').count()) === 1, { said: await box('from_the_hub').innerText(), boxes: await boxLog(page) });
       check('not_installed_read_no_wheel', !hub.asked.some((line) => line.includes('/wheels/')), hub.asked);
 
       // Installed: drawn, from the release, named by the digest of its wheel.
-      execFileSync(COZY, ['--json', 'package', 'install', package_, '--on', 'local'], { ...quiet, env, cwd: folder });
+      // A Hub that takes the request and never answers: the install says so, rather than waiting with nothing in any log.
+      hub.silent = true;
+      const unanswered = await cozyHere(['--json', 'package', 'install', package_, '--on', 'local'], { ...quiet, env, cwd: folder }).then(() => 'it installed', (error) => error.said);
+      hub.silent = false;
+      check('a_silent_hub_says_so', unanswered.includes('hub_slow'), unanswered);
+      await cozyHere(['--json', 'package', 'install', package_, '--on', 'local'], { ...quiet, env, cwd: folder });
       const wire = await until('its component', () => toolUi(released), (answer) => answer.status !== 404, FIRST_RUN_MS);
       check('installed_loads', wire.status === 200 && wire.body.module.includes(`/ui/${hub.digest}/`), { wire, digest: hub.digest });
       await page.reload();
@@ -365,7 +377,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       check('hash_mismatch_is_declared', (await box('lied_about').locator('[data-boxed]').count()) === 0 && (await box('lied_about').locator('input[type=range]').count()) === 1, await box('lied_about').innerText());
       await shot('mismatch');
 
-      execFileSync(COZY, ['--json', 'package', 'remove', package_, '--on', 'local'], { ...quiet, env, cwd: folder });
+      await cozyHere(['--json', 'package', 'remove', package_, '--on', 'local'], { ...quiet, env, cwd: folder });
     } finally {
       await shell(process.env.RESTART).catch(() => {});
       await until('Calcifer back as it was', () => api('/v1/status').catch(() => null), Boolean);
@@ -378,8 +390,9 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(async (error) => {
   console.error(error);
+  await lastLook();
   console.log(JSON.stringify({ failures, seen, during }, null, 2));
   process.exit(2);
 });

@@ -98,7 +98,7 @@ class Bridge {
       ])
       const asked = rows.flatMap((row) => row ?? [])
       const left = [...gone, ...names.filter((_, at) => !rows[at])]
-      this.queries.setQueryData<ProjectState>(key, (state) => state && withAssets(state, asked, left, said && { ...said, assets: state.assets }))
+      if (asked.length || left.length || said) this.queries.setQueryData<ProjectState>(key, (state) => state && withAssets(state, asked, left, said))
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.
       held.whole = true

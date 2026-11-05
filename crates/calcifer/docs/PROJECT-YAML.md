@@ -18,7 +18,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | Path | Written by | Holds |
 |---|---|---|
 | `project.yaml` | The page and the CLI, line by line; or a hand or an LLM | What should exist |
-| `project.lock` | Cozy only | Each asset's versions, and a row for a file only when its file can't say it: where it stays, its parts |
+| `project.lock` | Cozy only | YAML: each asset's versions, and a row for a file only when its file can't say it: where it stays, its parts. Replaced whole, and read again only when it changed. One that can't be read is kept as `project.lock.broken` and said, never written over: what's approved stands |
 | `project.canvas.yaml` | Cozy, for the page | Where each box sits. Nothing else reads it, and nothing in it is an input |
 | `files/` | Cozy only | Every file, by hash |
 | `<edit_name>.mp4`, `.otio` | Cozy | Each edit |
@@ -32,11 +32,11 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 ```yaml
 version: 3
 
-defaults:                    # by what a tool makes: fills inputs an asset doesn't say, never its tool
-  image: {style: "High-quality Unreal Engine graphics, realistic and detailed"}
-  video: {style: "High-quality Unreal Engine graphics, realistic and detailed"}
-
 assets:
+  style:                     # a text asset: its words go wherever it's mentioned
+    text: |
+      High-quality Unreal Engine graphics, realistic and detailed.
+
   kyogre_art:                # a dropped file: a name, a hidden hash, and words for what mentions it
     approved: 65b436d4f9a3
     description: The original art of Kyogre, with its background already removed.
@@ -45,9 +45,8 @@ assets:
 
   kyogre:                    # made, and approved: it holds this file, and can still show out of date
     tool: qwen-image-2/generate_turbo
-    instructions: <kyogre_art> as a realistic creature, front and back on one sheet, with no text.
+    instructions: <style> <kyogre_art> as a realistic creature, front and back on one sheet, with no text, on a transparent background.
     aspect_ratio: "3:2"
-    transparent: true
     approved: 2aee8c40753d
     description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins and glowing red lines.
     asset_type: character
@@ -58,7 +57,7 @@ assets:
   clash:                     # a shot, on Turbo unless `turbo: false`
     tool: minimax-h3/generate
     lora: [{ref: hf://someone/wushu, strength: 0.8}]
-    summary: <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
+    summary: <style> <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
       - duration: 14
@@ -91,19 +90,21 @@ assets:
 
 Every other key is an **input**: it passes through to the function and counts in the key. A function's adapter types them, and that type is its controls. An unknown key warns at render, and an unknown section warns at reading. A `kind` line warns and is ignored: what an asset is comes from its tool, its file or its version, and `GET /v1/projects/{id}` says it.
 
-**Names** hold letters, digits, `_`, `-` and `.`, and match in any case, with `_` and `-` alike. A `.` is a character like any other: `<Amy.original>` is one name, with nothing above it, and a model reads it as `<Amy original>`. Anything else is refused when the file is read, in one line with the fix. `all` is what `render all` means, and warns as a name.
+**Text assets.** `text:` with no `tool` is an asset of words alone. `<name>` of one, in any input, is replaced by its words where it stands, before a package sees it, so a function has no `style` input and nothing is prepended: a style goes only where it's mentioned. Its text may mention others, and what it mentions is read by whatever mentions it. A cycle stays plain text, with a warning. Editing it puts what reaches it out of date, and what's approved stays approved. One deleted is no change to what was made with it. It can't go by a tag of a package the project uses.
+
+**Names** hold letters, digits, `_`, `-` and `.`, and match in any case, with `_` and `-` alike: `<Style>` and `<sTYLE>` are one asset, and it keeps the spelling it was written with. Two names in the file that are one are refused, with both lines. A `.` is a character like any other: `<Amy.original>` is one name, with nothing above it, and a model reads it as `<Amy original>`. Anything else is refused when the file is read, in one line with the fix. `all` is what `render all` means, and warns as a name.
 
 ## Defaults
 
-`defaults` holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
+`defaults` is still read, though `upgrade` writes none. It holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
 
 ## First-party inputs
 
 | Tool | Inputs |
 |---|---|
-| A shot, `minimax-h3/generate`, `generate_turbo` | `summary`, `beats` (each `description`, `duration`), `style`, `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `preset`, `resolution`; on `generate`, `turbo`, on unless it says `false`, and `steps`, only with it off |
+| A shot, `minimax-h3/generate`, `generate_turbo` | `summary`, `beats` (each `description`, `duration`), `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `preset`, `resolution`; on `generate`, `turbo`, on unless it says `false`, and `steps`, only with it off |
 | An upscale, `minimax-h3/upscale` | `video`, `resolution` |
-| A picture, `qwen-image-2/generate_turbo`, `generate` | `instructions`, `style`, `aspect_ratio`, `megapixels`, `transparent`, `preset`; `steps` on `generate` |
+| A picture, `qwen-image-2/generate_turbo`, `generate` | `instructions`, `aspect_ratio`, `megapixels`, `preset`; `steps` on `generate` |
 | An edit or a frame, `cozy/edit`, `cozy/frame` | See below |
 
 **A shot with no `soundscape`** goes to H3 as `N/A`, which it reads as silence. A package chooses its own internals, such as how many context frames H3 keeps.
@@ -130,7 +131,7 @@ Every other key is an **input**: it passes through to the function and counts in
 
 An asset that is only a `description`, with no tool and no file, stands as words: what mentions it reads them.
 
-**The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, so a read gone hides no change in the others. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
+**The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, and twelve for each text asset it takes in, so one gone hides no change in the others. Its inputs are as written, `<style>` and all. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
 **Not in the key:** its own `description`, `asset_type` and `voice`; package, adapter and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
@@ -186,13 +187,13 @@ An asset has one main file; any other files are what the same run left, such as 
 
 ## Import
 
-`cozy project import ./kyogre.png [name]` is one act: the file in `files/`, its name in `project.yaml`, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name the project has gets `_2`, so none is refused. The same file twice is two assets and one file.
+`cozy project import ./kyogre.png [name]` is one act: the file in `files/`, its name in `project.yaml`, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name cozy picks gets `_2` if the project has it. One you typed that the project has is refused, naming what has it. The same file twice is two assets and one file.
 
 **A take lifted out** is the normal way to keep one: `cozy project import 2aee8c40753d amy.smiling --description "Amy, smiling."` is a plain asset, a file and its words, with no `tool` and no link to what made it.
 
 ## Orphans
 
-An asset no longer named in the file keeps its versions and files until `reclaim`. Deleting one from the page takes its versions with it, and Undo puts them back; what it made stands, and its files wait, unnamed, for `reclaim`.
+An asset no longer named in the file keeps its versions and files until `reclaim`. Once a render has seen it gone, its name is free: a later asset of that name starts with no versions, and `cozy project rename` still finds the old ones. Deleting one from the page takes its versions with it, and Undo puts them back; what it made stands, and its files wait, unnamed, for `reclaim`.
 
 ## Storyboards
 
@@ -251,5 +252,7 @@ It runs here with no Calcifer, and the old files stay beside the new as `project
 - Each asset's `render` goes flat, `prompt` as `instructions`, and `with` as `tool`, always a function: H3 is `generate`, with `turbo: false` only where a file said so or where it set `steps`; any other package's `turbo: true` is `generate_turbo`, `turbo: false` `generate`, and with neither what made its newest version. A video with only `video` and `resolution` is `upscale`. `with: cozy` is `cozy/edit`, or `cozy/frame` for a picture. `pieces` become `tracks`, `start` `in` and `end` `out`. A hash in `image`, `video` or `audio` is `approved`, and an input under `# was` is back. `kind` lines go. Comments stay.
 - Each entity folds into its sheet, which takes its name, `description` and `asset_type`. Each form becomes an asset, `<entity>.<form>`, and mentions are rewritten.
 - A description that was in an asset's prompt, and now goes only to what mentions it, is said by name.
+- `defaults` go. A style becomes the text asset `style`, and a second, `video_style`, where the video's differs: `<style>` and the rest of its words, if it extends the first. Each prompt mentions the one it took: in Qwen's `instructions` as `Style: <style>.`, at the front of H3's `summary`, which it starts if there's none, and as `style: <style>` in any other package. A shared `soundscape` becomes a text asset too, mentioned in each shot's. `music: N/A` goes, as an empty field says the same. `aspect_ratio` and the rest go into each asset that took them, and Qwen's `transparent: true` into the words it stood for.
+- Names that fold to one are said, by name, and nothing is written: rename one, and upgrade again.
 - A still a shot wrote, and that something mentions, becomes a file asset. A mention no version wrote and nothing makes is left as it is, and said.
 - **The new key is stamped on each asset's current version**, so nothing goes out of date and nothing runs. Other versions keep their old keys: putting old text back won't find them, and what was out of date stays so.

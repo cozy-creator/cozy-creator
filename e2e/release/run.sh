@@ -38,7 +38,8 @@ cleanup() {
   cozy --json model delete "$model" -y > /dev/null 2>&1
   cozy --json model delete "$model-copy" -y > /dev/null 2>&1
   # Calcifer's log holds each Hub answer about the rental (a boot that failed, why).
-  [ -n "$INSTALLED" ] || (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf "$OUT/cozy-logs.tgz" -T -) > /dev/null 2>&1
+  mkdir -p "$OUT/cozy-logs"
+  [ -n "$INSTALLED" ] || (cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | (cd "$OUT/cozy-logs" && tar -xf -)) > /dev/null 2>&1
 }
 trap cleanup EXIT
 # A runner's cancel or timeout signals the script: it exits, so the trap ends the rental.

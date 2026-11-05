@@ -553,18 +553,29 @@ impl Calcifer {
             let directory_sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0;
             let (id, name, index, rev) = (run.id.as_str(), &item.name, item.index, item.rev);
             let store_began = Instant::now();
+            let mut unlisted = None;
             let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
                 Some(project) => {
                     let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest };
-                    // The file stands where it landed if its project can't take it.
-                    crate::project::landed(project, &made, dest).unwrap_or_else(|why| {
-                        warn!(run = %run.id, output = %name, "not kept in its project: {why}");
-                        dest.to_owned()
-                    })
+                    match crate::project::landed(project, &made, dest) {
+                        Ok((kept, said)) => {
+                            unlisted = said;
+                            kept
+                        }
+                        // The file stands where it landed if `files/` itself can't take it.
+                        Err(why) => {
+                            unlisted = Some(format!("{name} stands in .runs/, and its project can't keep it: {why}"));
+                            dest.to_owned()
+                        }
+                    }
                 }
                 None => dest.to_owned(),
             };
-            let events = self.store.exported(id, name, index, rev, &kept, measured)?;
+            let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
+            if let Some(said) = unlisted {
+                warn!(run = %run.id, output = %name, "{said}");
+                events.extend(self.store.warned(id, &protocol::calcifer::Warning { code: "output_unlisted".to_owned(), message: said })?);
+            }
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
             let publish_began = Instant::now();
             self.publish(&run.id, events);
