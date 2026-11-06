@@ -38,9 +38,10 @@ function World() {
 }
 
 /**
- * The sky, mountains, hills and meadow (`@cozy-creator/paper`), each moved by its own `--rate` of a pan: the farthest slowest. The sky is the
- * paper, with its clouds on it. They stay at the bottom of the window as the canvas goes up and down or zooms, and a zoom moves none of them,
- * so no zoom or far pan can leave a gap or a giant. With reduced motion they hold still. A pan sets four transforms and draws nothing.
+ * The sky, mountains, hills and meadow (`@cozy-creator/paper`), each moved by its own `--rate` of a pan across and `--rate-y` of one up or
+ * down: the farthest slowest. The sky is the paper, with its clouds on it. Up and down they ease to a stop `--reach` from where they began,
+ * and each has more of itself below than the one in front can uncover, so no pan leaves a gap. A zoom moves none of them. With reduced
+ * motion they hold still. A pan sets four transforms and draws nothing.
  */
 function Landscape() {
   const flow = useStoreApi()
@@ -49,31 +50,37 @@ function Landscape() {
     const whole = land.current
     if (!whole) return
     const layers = [...whole.children] as HTMLElement[]
-    const rates = layers.map((layer) => Number(getComputedStyle(layer).getPropertyValue("--rate")))
+    const read = (element: HTMLElement, name: string) => Number(getComputedStyle(element).getPropertyValue(name))
+    const [across, down] = [layers.map((layer) => read(layer, "--rate")), layers.map((layer) => read(layer, "--rate-y"))]
     const at = layers.map(() => 0)
-    let periods: number[] = []
+    let [periods, reach, vertical] = [[] as number[], 0, 0]
     const place = () => {
+      const eased = vertical - vertical ** 3 / (3 * reach * reach)
       layers.forEach((layer, i) => {
         at[i] = ((at[i] % periods[i]) - periods[i]) % periods[i]
-        layer.style.transform = `translate3d(${Math.round(at[i])}px, 0, 0)`
+        layer.style.transform = `translate3d(${Math.round(at[i])}px, ${Math.round(down[i] * eased)}px, 0)`
       })
     }
-    // Each wraps by its own width past the window's, which a taller window makes larger.
+    // Each wraps by its own width past the window's, and goes up and down as far as its fill allows: a taller window makes both larger.
     const width = (element: HTMLElement) => element.getBoundingClientRect().width
     const measure = new ResizeObserver(() => {
       periods = layers.map((layer) => width(layer) - width(whole))
+      reach = read(whole, "--reach") * read(whole, "--landscape-scale")
+      vertical = Math.max(-reach, Math.min(reach, vertical))
       place()
     })
     measure.observe(whole)
     const still = matchMedia("(prefers-reduced-motion: reduce)")
-    let [x, , zoom] = flow.getState().transform
+    let [x, y, zoom] = flow.getState().transform
     const stop = flow.subscribe(({ transform }) => {
-      const moved = transform[2] === zoom && !still.matches && periods.length ? transform[0] - x : 0
-      ;[x, , zoom] = transform
-      if (!moved) return
-      rates.forEach((rate, i) => {
-        at[i] += moved * rate
+      const panned = transform[2] === zoom && !still.matches && periods.length > 0
+      const [dx, dy] = panned ? [transform[0] - x, transform[1] - y] : [0, 0]
+      ;[x, y, zoom] = transform
+      if (!dx && !dy) return
+      across.forEach((rate, i) => {
+        at[i] += dx * rate
       })
+      vertical = Math.max(-reach, Math.min(reach, vertical + dy))
       place()
     })
     return () => {
