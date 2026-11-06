@@ -15,6 +15,7 @@ pub mod provider;
 pub mod pypi;
 pub mod release;
 pub mod receipt;
+pub mod speed;
 pub mod ssh;
 pub mod supervise;
 pub mod toolchain;
