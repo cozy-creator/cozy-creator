@@ -336,6 +336,7 @@ queueing
 every_render
 keeps
 frames
+[ "$(uname)" != Linux ] || no_stall
 direct_inputs
 mentions_filled
 tool_functions
@@ -2316,6 +2317,33 @@ cozy project -p "$T" reclaim > "$OUT/reclaim-stays.txt" 2>&1 || check "stays: re
 # One frame of a video is an asset of its own, made here, free: moved, only it is made again. A shot makes no pictures: `writes:`, on a
 # beat or an asset, is said and ignored and stays out of its key, and a mention of what it named names nothing, which fails only that asset.
 # A name with nothing under it, as a still used to be declared, has nothing to make: no style alone goes to a model.
+# A writer leaves 2 GiB in the page cache and flushes it once at its end, as a download did, while the page edits, reads and asks
+# frames that land through the walk. ext4 commits every file's data with its journal, so a write that waited on the disk under
+# Calcifer's one lock took seconds, and every request queued behind it (43 s for a PATCH on the laptop).
+no_stall() {
+step "a project: no request waits on another program's writes"
+local T=$OUT/no-stall lock=$HOME/.cozy/calcifer/calcifer.lock.holder id look writer i slow
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 6
+printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
+look=$(prefix "$T" "$T/look.mp4")
+{ printf 'version: 3\nassets:\n  look: {approved: %s}\n  note: {description: A note.}\n' "$look"
+  for i in 1 2 3 4 5; do printf '  f%s: {tool: cozy/frame, video: <look>, at: %s}\n' "$i" "$i"; done; } > "$T/project.yaml"
+render "$T" all || check "no stall: render all: $(tail -c 300 "$OUT/render.txt")"
+id=$(api -X POST -d "$(jq -n --arg p "$T" '{path: $p}')" "http://$ADDR/v1/projects" | jq -r .id)
+dd if=/dev/zero of="$T/hog" bs=8M count=256 conv=fdatasync status=none & writer=$!
+: > "$T/took.txt"
+for i in $(seq 1 40); do
+  api -o /dev/null -w '%{time_total} PATCH note\n' -X PATCH -d "{\"fields\": {\"description\": \"Note $i.\"}}" "http://$ADDR/v1/projects/$id/assets/note" >> "$T/took.txt"
+  api -o /dev/null -w '%{time_total} GET project\n' "http://$ADDR/v1/projects/$id" >> "$T/took.txt"
+  api -o /dev/null -w '%{time_total} PATCH frame\n' -X PATCH -d "{\"fields\": {\"at\": $((i % 5)).$((i % 10))}}" "http://$ADDR/v1/projects/$id/assets/f$((i % 5 + 1))" >> "$T/took.txt"
+  api -o /dev/null -w '%{time_total} render ask\n' -X POST -H "Idempotency-Key: stall-$i-$RANDOM" -d "{\"names\": [\"f$((i % 5 + 1))\"], \"on\": [\"local\"]}" "http://$ADDR/v1/projects/$id/runs" >> "$T/took.txt"
+done
+wait "$writer"; rm -f "$T/hog"
+slow=$(awk '$1 > 3' "$T/took.txt")
+[ -z "$slow" ] || check "no stall: requests waited on another program's writes: $(sort -rn "$T/took.txt" | head -5 | tr '\n' ';')"
+}
+
 frames() {
 step "a project: a frame of a shot, moved, re-renders nothing"
 local T=$OUT/frames look made was before
