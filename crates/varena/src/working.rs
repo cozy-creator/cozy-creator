@@ -1472,6 +1472,24 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
             return Ok(Device::activate(&mut state, ptr, bytes));
         }
+        if pool.is_none() {
+            // SCRATCH: why this allocation missed: a block big enough still pending on its own
+            // stream (alone or with others), pending only elsewhere, room in pieces, or no room.
+            let (mut ours, mut multi, mut other, mut free) = (false, false, false, 0usize);
+            for block in state.blocks.values() {
+                if block.life == Life::Live || state.segments[&block.segment].pool.is_some() { continue; }
+                let completed = block.life == Life::Ready && block.reusable_on.is_none();
+                if completed { free += block.capacity; continue; }
+                if block.capacity < class { continue; }
+                if block.streams.contains(&stream) || block.reusable_on == Some(stream) {
+                    ours = true; multi |= block.streams.len() > 1;
+                } else {
+                    other = true;
+                }
+            }
+            let index = if ours && multi { 24 } else if ours { 23 } else if other { 25 } else if free >= class { 26 } else { 27 };
+            crate::diag::count(index, class as u64 >> 20);
+        }
         if let Some(id) = pool {
             if let Some(ptr) = Device::fit_pool(&mut state, id, class, bytes, stream) {
                 return Ok(Device::activate(&mut state, ptr, bytes));
