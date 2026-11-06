@@ -452,6 +452,6 @@ pub mod testing {
             user_home,
             warnings,
         };
-        Ok(Context::new(false, false, loaded, Term::detect()))
+        Ok(Context::new(false, false, false, loaded, Term::detect()))
     }
 }

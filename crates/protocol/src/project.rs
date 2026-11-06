@@ -5,16 +5,20 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::{calcifer::On, error::Error};
 
-/// `POST /v1/projects`: the project holding `path` (the nearest folder up from it with a
-/// project.yaml), or with `create` a new one made at `path`. The same folder is always the same
-/// project, and opening it records it in the index.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `POST /v1/projects`: by `name`, a new empty project under `~/.cozy/projects`, the next free name when that one is taken. By `path`,
+/// the project holding it (the nearest folder up from it with a project.yaml), or with `create` a new one made there. The same folder
+/// is always the same project, and opening it records it in the index.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Open {
-    pub path: PathBuf,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create: bool,
 }
 
@@ -22,6 +26,23 @@ pub struct Open {
 pub struct Opened {
     pub id: String,
     pub path: PathBuf,
+    /// Its folder's name.
+    pub name: String,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
+    /// What opening it did to it, said once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<String>,
+}
+
+/// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Card {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w: Option<f64>,
 }
 
 /// `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
@@ -41,6 +62,9 @@ pub struct Asked {
     /// What it added, each with what is ahead of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued: Vec<QueuedNow>,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
     /// The render as this ask left it: `/events` says each change from here.
     pub board: Board,
 }
@@ -109,9 +133,6 @@ pub struct State {
     pub id: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
-    /// Identity and links, no work: they make nothing and hold no version.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entities: Vec<Entity>,
     /// What is running and what is queued, in the order it goes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Queued>,
@@ -139,16 +160,55 @@ pub struct State {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuts: Vec<Cut>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
+    /// Commands to run next, given what it holds and lacks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
     /// Its render going, or its last since Calcifer started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board: Option<Board>,
+    /// Another machine holds its render, and what of it isn't here yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<HeldBy>,
+    /// What kept its last render from reaching a machine, each once, until another is asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsent: Vec<Error>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stale {
     pub name: String,
     pub why: String,
+}
+
+/// What reading a project said: of the asset or entity `name`, or of the file as a whole.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Warning {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub message: String,
+}
+
+impl Warning {
+    pub fn of(name: &str, message: String) -> Self {
+        Self { name: Some(name.to_owned()), message }
+    }
+
+    pub fn of_file(message: String) -> Self {
+        Self { name: None, message }
+    }
+}
+
+/// A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Read {
+    pub name: String,
+    /// The one version of it the text fixes: `<name.2>`, `<self.2>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// Where its text says so: `summary`, `beats.0.description`, `tracks.0.clips.1`, `style` for what defaults gave it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub at: Vec<String>,
 }
 
 /// An asset project.lock keeps versions of that project.yaml no longer names: the bytes `reclaim`
@@ -171,37 +231,127 @@ pub struct Orphan {
 pub struct File {
     pub path: String,
     pub sha256: String,
+    /// Its bytes aren't on this computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+    /// The machine that keeps them, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
-/// `POST /v1/projects/{id}/imports`: the file at `source` (an absolute path, or an `http(s)` URL) kept in the project.
+/// `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
+/// project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), an absolute path, or an `http(s)` URL.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Import {
     pub source: String,
-    /// Runs `birefnet/remove_background` on it as a run of the project, whose output is the one file kept.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub remove_background: bool,
-    /// The machine that run goes to; absent: this computer if it can run models, else a machine you have up.
+    /// What to call it, through `as_name` with `.` as `_`; a taken name gets `_2`. Absent: the stem of a path or URL, lower-cased, else `file`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<crate::calcifer::On>,
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+    /// The words for whatever mentions it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A person typed `name`: refused if the project has it, not numbered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exact: bool,
 }
 
-/// What an import kept, its hash prefix, and the line to paste into project.yaml.
+/// What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Imported {
-    pub path: String,
+    pub name: String,
     pub sha256: String,
-    pub prefix: String,
-    /// `image: ab12cd34ef56`, or `video:` or `audio:`, by what the file is.
-    pub line: String,
+    pub field: String,
+    pub path: String,
     /// Its bytes were in `files/` already, so nothing was copied.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
-    /// The run removing its background, to follow: its output is the file kept and the line to paste, and the fields above are empty.
+}
+
+/// `GET /v1/projects/{id}/canvas`: each element's row, by name. A name with no row isn't listed, and the page places it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Canvas {
+    pub etag: String,
+    pub cards: BTreeMap<String, Card>,
+}
+
+/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CanvasPatch {
+    pub cards: BTreeMap<String, Option<Card>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CanvasPatched {
+    pub etag: String,
+}
+
+/// An Edit's `fields.timeline`: its tracks, each of clips. One for now, V1; a higher one takes priority, later.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Timeline {
+    #[serde(default)]
+    pub tracks: Vec<Track>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Track {
+    #[serde(default)]
+    pub clips: Vec<Clip>,
+}
+
+/// A clip: an asset, and the part of it. Its place in the list is its place on the track, with no gaps. Points are frames at the Edit's rate.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Clip {
+    /// `<name>`.
+    pub clip: String,
+    /// A video's in point, from 0.
+    #[serde(rename = "in", default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<u64>,
+    /// A video's out point, exclusive. None: its end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<Box<crate::calcifer::Run>>,
-    /// Why its background wasn't removed: a plain copy stands, and `line` is its.
+    pub out: Option<u64>,
+    /// A still's duration. None: 3 s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+    pub frames: Option<u64>,
+    /// On a version's clip: the file it cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// An Edit's clips as they read now, or as they read when a version of it was rendered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimelineNow {
+    pub fps: f64,
+    pub tracks: Vec<TrackNow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackNow {
+    pub clips: Vec<ClipNow>,
+}
+
+/// A clip and what it reads.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClipNow {
+    #[serde(flatten)]
+    pub clip: Clip,
+    pub name: String,
+    /// `video` or `image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// How many frames a video holds at the Edit's rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    /// Why a render goes on without it: it has no file to read here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
 }
 
 /// A version's number and the hash prefix project.yaml can name its file by.
@@ -212,12 +362,50 @@ pub struct VersionPrefix {
     /// What it keeps of another take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
+    /// How long its runs took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_ms: Option<u64>,
+    /// The last run that made it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
+    /// Its main file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main: Option<MainFile>,
     /// A cut's: what it was cut from, `<asset> <version>` each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub from: Vec<String>,
     /// A cut's: what it was cut without, `<piece>: <why>` each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub without: Vec<String>,
+    /// An Edit's: the clips that made this version, which an edit can carry on from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<TimelineNow>,
+}
+
+/// The file people mean by a version, and what is measured of it so far.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MainFile {
+    /// Its output's name in the version, which `GET /v1/runs/{id}/play` takes.
+    pub output: String,
+    pub path: String,
+    pub sha256: String,
+    /// The field that names one of its type: `image`, `video`, `audio`.
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Part of it is fully transparent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alpha: bool,
+    /// Its bytes aren't on this computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+    /// The machine that keeps them, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 /// The start of another take that a take keeps (`render --take --in`): which, and up to where. What follows is new.
@@ -281,18 +469,21 @@ pub struct Asset {
     /// The runs making a version of it now (`GET /v1/runs/{id}` says how far).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub making: Vec<u64>,
-    /// Free text from project.yaml.
+    /// Its file's type: `image`, `video` or `audio`.
     pub kind: String,
     /// What its alternatives are called: `take` (one that holds a video) or `version`.
     pub noun: String,
-    /// The function that makes it, as project.yaml or its defaults name it. None for a file pin.
+    /// The tool that makes it. None for a file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub with: Option<String>,
+    pub tool: Option<String>,
     /// How many it has.
     pub versions: u32,
     /// Each one's hash prefix, to name it in project.yaml.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefixes: Vec<VersionPrefix>,
+    /// The version that is its state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
     /// The number (1 first, never reused) of the version `approve` or `--approve` pinned. Its state until `unpin`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<u32>,
@@ -308,11 +499,56 @@ pub struct Asset {
     /// The file people mean by it, for people who want it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// The hash of that file, the field that names one of its type, and what is measured of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Part of that file is fully transparent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alpha: bool,
+    /// That file's bytes aren't on this computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+    /// The machine that keeps them, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
     /// The function that made its state, `org/package/function@release`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
     /// For people, in its own noun: current, no take yet, out of date and why, making (run N), …
     pub status: String,
+    /// What it reads by a mention, in the order its text says them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<Read>,
+    /// Its inputs, flat, each by a control's `field`: what `PATCH /v1/projects/{id}/assets/{name}` sets, as it applies now.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub fields: Map<String, Value>,
+    /// Names what a write of its fields read: `If-Match` on `PATCH`. An edit of another node doesn't move it. None for what has no lines of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// What stopped its last try: until a version lands, it's tried again, or its inputs change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Error>,
+    /// A pin's: what changed since the version it holds was made. It stands, out of date, until it is run or moved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
+    /// The names its text reads that are nothing in the project, as far as its package's tags are known: it can't run until they are.
+    /// A pin lists them too, for its text: it stands, and only fails if it is run again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    /// An Edit's: its clips as they read now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<TimelineNow>,
+    /// An Edit being rendered here: how far, 0 to 1. It runs on no machine, so it has no run to ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendering: Option<f64>,
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
@@ -320,6 +556,112 @@ pub struct Asset {
 pub struct AssetVersions {
     pub asset: Asset,
     pub versions: Vec<Version>,
+    /// The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded: Vec<u32>,
+}
+
+/// `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewAsset {
+    /// A tool's `id`, from `GET /v1/tools`. Empty: a text asset, its words in `fields.text`.
+    #[serde(default)]
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+    /// What to call it, through `as_name` with `.` as `_`; a taken name gets `_2`. Absent: the tool's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub fields: Map<String, Value>,
+    /// A person typed `name`: refused if the project has it, not numbered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exact: bool,
+    /// What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// What a write of an asset answers: its name, and what `If-Match` names from here on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssetMade {
+    pub name: String,
+    pub etag: String,
+}
+
+/// `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
+/// `tool` changes what makes it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssetPatch {
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub fields: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+}
+
+/// What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssetPatched {
+    pub name: String,
+    pub etag: String,
+    pub was: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// What `DELETE /v1/projects/{id}/assets/{name}` took: `PUT` on the same name with `text` and `at` puts it back, and its versions with it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssetDeleted {
+    pub name: String,
+    /// Opaque to a client.
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+}
+
+/// `PUT /v1/projects/{id}/assets/{name}`: a deleted asset back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssetBack {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+}
+
+/// `DELETE` and `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: a version discarded, or back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VersionMoved {
+    pub name: String,
+    pub number: u32,
+    /// `take` or `version`.
+    pub noun: String,
+    /// It's the approved one: `approved:` went with it, or came back with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
+    /// What the asset stands on now, else its newest. None: it has none left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stands: Option<u32>,
+    /// What is out of date now and wasn't.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<String>,
+    /// What names this version in its text: `<name.2>`. Gone, a render of them fails until it's back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_by: Vec<String>,
+    /// A version held that file already: it's that one, and nothing changed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already: bool,
+}
+
+/// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it. `source` as an import's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewVersion {
+    pub source: String,
+}
+
+/// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` answered.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct VersionBack {
+    #[serde(default)]
+    pub approved: bool,
 }
 
 /// One version (a take, if it holds a video).
@@ -344,11 +686,17 @@ pub struct Version {
     /// What it keeps of another take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
+    /// How long its runs took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_ms: Option<u64>,
+    /// The words it was made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
-/// `POST /v1/projects/{id}/runs`: for each of `names`, or `all`, and what it reads, if it has no state, run its operation.
-/// Nothing else runs. `new`, or `n` over 1, also draws `n` new seeds for those named. It joins the project's walk, which sends
-/// each once what it reads is settled; `on` lists the machines they may go to.
+/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
+/// only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
+/// is settled; `on` lists the machines they may go to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
     #[serde(default)]
@@ -365,6 +713,10 @@ pub struct Runs {
     /// Make only what has no state, rather than a new version.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
+    /// With `all`: also make a new version of each pin that is out of date when its turn comes in reading order, which goes when that
+    /// lands. The version it held stays, to be approved again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outdated: bool,
     /// One asset's new take keeps the start of this take, not the one in use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub take: Option<u32>,
@@ -377,29 +729,12 @@ fn one() -> u32 {
     1
 }
 
-/// An entity, with its links (field to asset) and sub-entities.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Entity {
-    pub name: String,
-    pub kind: String,
-    /// What it is, as the file says; a sub-entity with none has its parent's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub links: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subs: Vec<Entity>,
-}
-
-/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to its version `version` (1 first), or to `file`, a hash prefix
-/// of any file in the project's `files/`.
+/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),
+/// anything else a hash prefix of any file in the project's `files/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approve {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
+    pub version: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -415,6 +750,9 @@ pub struct Approved {
     pub stale: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// What `If-Match` names from here on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so its state follows its inputs again.
@@ -431,6 +769,9 @@ pub struct Unpinned {
     pub version: Option<u32>,
     /// What this put out of date, itself too.
     pub stale: Vec<String>,
+    /// What `If-Match` names from here on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no
@@ -446,9 +787,6 @@ pub struct Renamed {
     pub from: String,
     pub to: String,
     pub versions: u32,
-    /// A render is going: it happens as that ends.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub queued: bool,
 }
 
 /// `POST /v1/projects/{id}/reclaim`: lists what it would delete: orphans' versions, and any file nothing else names. With
@@ -466,9 +804,22 @@ pub struct Reclaimed {
     /// The files nothing but the orphans names, or nothing at all, and their bytes.
     pub files: u64,
     pub bytes: u64,
+    /// Of what nothing names, what nothing has a record of: it may be all that's left of a take, so `yes` leaves it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unrecorded: u64,
     /// Whether they are gone (`yes`), or only listed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
+    /// Why `yes` would be refused: its lock was lost, so these files may be all that's left of its takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost: Option<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
@@ -525,6 +876,39 @@ pub struct Board {
     pub shots: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
+    /// Another machine holds it, and what of it isn't here yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<HeldBy>,
+    /// What machines are fetching ahead of what's queued, one per function.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<Ahead>,
+}
+
+/// How the target of a run fetching ahead starts.
+pub const AHEAD: &str = "ahead ";
+
+/// One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
+/// bytes, and its job's run fetches what it needs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ahead {
+    /// `org/package/function`.
+    pub function: String,
+    pub machine: String,
+    /// Its run, kept out of the list people read.
+    pub run: u64,
+    /// `installing it`, `downloading its weights`, …; none once it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub done: u64,
+    #[serde(default)]
+    pub total: u64,
+    /// It's all there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ready: bool,
+    /// Why it stopped short: the disk has no room, or it was canceled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<String>,
 }
 
 /// How a job stands.
@@ -546,6 +930,9 @@ pub enum JobState {
 /// One version of one asset being made.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Job {
+    /// The same for as long as the render goes, whatever it does: what `job.updated` names it by.
+    #[serde(default)]
+    pub id: String,
     pub asset: String,
     pub state: JobState,
     /// What its alternatives are called: `take` or `version`.
@@ -556,6 +943,17 @@ pub struct Job {
     /// Which of the render's shots it makes, 1 first, for the whole render: a `kind: video` its package makes. None for a cut or a still.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shot: Option<u32>,
+    /// The assets it waits for, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
+    /// How many GPUs it is planned on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<u32>,
+    /// When it should start and end, as the walker works it out from what has run here: to the nearest 10 s, as a guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at_ms: Option<i64>,
     /// A sentence: what it waits for (`after a, b`, `comes with c`, `waiting for a GPU, held by d`), or what came of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
@@ -612,6 +1010,15 @@ pub enum Event {
     Board {
         board: Board,
     },
+    /// One job as it stands now, whole. What changed since the `board` heard first: `seq` as that board's goes up.
+    Job {
+        job: Job,
+        seq: u64,
+    },
+    /// What a machine is fetching ahead, as it stands now, whole.
+    Ahead {
+        ahead: Ahead,
+    },
     /// A run for `name` began: its id and number, which `GET /v1/runs/{id}/events` follows.
     Started {
         name: String,
@@ -642,7 +1049,7 @@ pub enum Event {
         name: Option<String>,
     },
     /// Something asked could not be made, said as it happens; the walk goes on with what does not
-    /// read it. `name`, the asset, and `run`, the run that failed, when it is of one.
+    /// read it. `name`, the asset, and `run`, the run that failed, when it is of one: its row's `failure` holds this for later readers.
     Failed {
         error: Error,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -689,4 +1096,96 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rendered: Option<Rendered>,
     },
+}
+
+/// `POST /v1/projects/{id}/assets/{name}/caption`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CaptionAsked {
+    /// The machine it runs on; absent: as a run with none named goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
+}
+
+/// A node's description as a package would say it. Nothing is written: it's for the page to put in the field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Captioned {
+    pub name: String,
+    pub text: String,
+    /// The run that answered.
+    pub run: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// A render another machine took over (`--on X`): X walks it and keeps what it makes, and this computer's Calcifer collects it. A
+/// machine ends 15 minutes after its last job: what isn't collected by then is lost.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HeldBy {
+    pub machine: String,
+    /// When it ends if nothing more is asked of it; none while it works.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_ms: Option<i64>,
+    /// What it made that isn't here yet.
+    #[serde(default)]
+    pub files: u64,
+    #[serde(default)]
+    pub bytes: u64,
+    /// When it last answered.
+    #[serde(default)]
+    pub heard_at_ms: i64,
+}
+
+/// `POST /v1/projects/take`: a project another computer's Calcifer hands this one, to render here. Its folder here is the same for
+/// the same `from` each time. Its text becomes this one's, and its versions join this one's.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Take {
+    /// Its id where it comes from.
+    pub from: String,
+    pub name: String,
+    /// project.yaml there, whole.
+    pub yaml: String,
+    /// The ETag of the project.yaml here that `yaml` was merged with; none the first time. Another: this one changed since, so it's read again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// project.lock there.
+    pub lock: String,
+    /// The local code its tools name, by path in the folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub code: Vec<HeldFile>,
+}
+
+/// What a take left this machine lacking: each by sha256, which `PUT /v1/files/sha256:<hex>` gives it and the next take keeps.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Taken {
+    pub id: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wants: Vec<String>,
+}
+
+/// `GET /v1/projects/{id}/taken`: what the machine holding a render has of it, for the computer that handed it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Holding {
+    pub yaml: String,
+    pub etag: String,
+    pub lock: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<HeldFile>,
+    /// Its walk owes something.
+    #[serde(default)]
+    pub busy: bool,
+    /// Its render going, or its last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<Board>,
+}
+
+/// A file by its path in a project, and its hash. `machine`: one of its machines keeps it, not its folder.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HeldFile {
+    pub path: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub length: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
 }

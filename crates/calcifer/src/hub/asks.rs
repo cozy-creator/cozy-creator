@@ -61,7 +61,12 @@ pub(super) async fn quote<A: Ask>(
     State(api): State<Arc<Api>>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<RunQuote>, Refusal> {
-    let Prepared { submit, .. } = parse::<A>(&body?)?.prepare(&api).await?;
+    Ok(Json(quoted(&api, parse::<A>(&body?)?).await?))
+}
+
+/// What the run `ask` makes would rent.
+pub(super) async fn quoted<A: Ask>(api: &Arc<Api>, ask: A) -> Result<RunQuote, Refusal> {
+    let Prepared { submit, .. } = ask.prepare(api).await?;
     api.machines.hubs.client(&submit.hub).map_err(Refusal)?;
-    Ok(Json(api.machines.run_quote(&submit).await.map_err(Refusal)?))
+    api.machines.run_quote(&submit).await.map_err(Refusal)
 }

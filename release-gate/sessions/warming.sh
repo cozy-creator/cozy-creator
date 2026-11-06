@@ -297,7 +297,7 @@ runrec() {
   n=$(grep -o '"number":[0-9]*' "$OUT/$label.ndjson" | head -1 | cut -d: -f2)
   [ -n "$n" ] || { say "$label: no run: $(tail -c 300 "$OUT/$label.err")"; return 1; }
   echo "$n" > "$OUT/$label.n"
-  cozy run show "$n" --once --json > "$OUT/$label.json" 2>&1
+  cozy run show "$n" --once --json --full > "$OUT/$label.json" 2>&1
   say "$label: run $n $(jq -r '"\(.status), accepted→settled \(((.settled_at_ms // 0) - (.accepted_at_ms // 0)) / 1000) s"' "$OUT/$label.json")"
 }
 # quiet <label>: no kernel compile child is running (each would import torch beside the trial).
@@ -332,7 +332,7 @@ PROMPTS=("a lighthouse keeper's chart table under a brass lamp, gouache" "a glas
 P=0
 sdxl_input() {  # sdxl_input <file> <steps>: a request with its own prompt and seed
   jq -n --arg p "${PROMPTS[$P]}" --argjson s "$((RANDOM * 7 + P))" --argjson n "$2" \
-    '{megapixels: 1.0, aspect_ratio: "1:1", steps: $n, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$1"
+    '{megapixels: 1.0, aspect_ratio: "1:1", steps: $n, guidance: 7.0, hidiffusion: false, prompt: $p, seed: $s}' > "$1"
   P=$(( (P + 1) % ${#PROMPTS[@]} ))
 }
 gpu_parent() { jq -r '[.[] | select(.kind == "executor" and .nvidia_fds == 0)] | .[0].pid // empty' "$1"; }
@@ -389,7 +389,7 @@ item4() {
   local na='' i
   for i in $(seq 1 120); do
     na=$(grep -o '"number":[0-9]*' "$OUT/i4-a.ndjson" 2>/dev/null | head -1 | cut -d: -f2)
-    [ -n "$na" ] && [ "$(cozy run show "$na" --once --json 2>/dev/null | jq -r .status)" = in_progress ] && break
+    [ -n "$na" ] && [ "$(cozy run show "$na" --once --json --full 2>/dev/null | jq -r .status)" = in_progress ] && break
     sleep 1
   done
   say "i4: A run ${na:-?} in progress"
@@ -477,7 +477,7 @@ queue4b() {
   runrec "$l-a" "$SDXL" --input "$OUT/$l-a.yaml" & local pa=$!
   for i in $(seq 1 240); do
     n=$(grep -o '"number":[0-9]*' "$OUT/$l-a.ndjson" 2>/dev/null | head -1 | cut -d: -f2)
-    [ -n "$n" ] && [ -n "$(cozy run show "$n" --once --json 2>/dev/null | jq -r '.started_at_ms // empty')" ] && break
+    [ -n "$n" ] && [ -n "$(cozy run show "$n" --once --json --full 2>/dev/null | jq -r '.started_at_ms // empty')" ] && break
     sleep 0.5
   done
   say "$l: SDXL run ${n:-?} executing"

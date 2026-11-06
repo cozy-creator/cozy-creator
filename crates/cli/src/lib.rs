@@ -17,6 +17,7 @@ mod daemon;
 mod doctor;
 mod machine;
 mod model;
+mod open;
 mod org;
 pub mod output;
 mod package;
@@ -28,21 +29,36 @@ mod update;
 
 pub use context::Context;
 
+/// `cozy --help`'s last words: what each exit means, the same for every verb.
+const EXITS: &str = "Exit codes:
+  0  done, or nothing to do
+  1  refused, or a run or render failed: it says why and what's next
+  2  a usage error: nothing happened
+  3  a push or pull left files out, or an upgrade put something out of date
+  4  a run stopped moving, as Calcifer says after 10 minutes with no progress: it goes on until you cancel it
+
+`cozy` alone says what's going here. --json prints what a view shows, --full all of it.";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "cozy",
     version,
-    about = "Run models on your machines and rented GPUs"
+    about = "Run models on your machines and rented GPUs",
+    after_help = EXITS
 )]
 struct Cli {
-    /// Print JSON (NDJSON when following) instead of tables.
+    /// Print JSON (NDJSON when following) instead of tables: what the view shows, by the record's own names.
     #[arg(long, global = true)]
     json: bool,
+    /// The whole record where a view shows part of it: every field with --json, every table and line without.
+    #[arg(long, global = true)]
+    full: bool,
     /// Agree without being asked: to a rental's quote, a deletion.
     #[arg(long, short = 'y', global = true)]
     yes: bool,
+    /// None: `cozy` alone, which is `cozy status`.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -57,6 +73,8 @@ enum Command {
     Model(model::Args),
     /// Projects: assets, and the operations that make them.
     Project(project::Args),
+    /// Open the canvas in your browser: the project you're in, else the home.
+    Open(open::Args),
     /// Claim an organization parked under your name.
     Org(org::Args),
     /// Sign in to the Hub with this computer's device key.
@@ -65,7 +83,7 @@ enum Command {
     Logout(account::Logout),
     /// Show the signed-in account, its credit and where to buy more.
     Whoami(account::Whoami),
-    /// Calcifer, machines and runs at a glance.
+    /// This project, the runs going, machines and spend at a glance; `cozy` alone says the same.
     Status(daemon::Status),
     /// Replace this binary with the newest release.
     Update(update::Args),
@@ -77,7 +95,7 @@ enum Command {
 }
 
 /// Parses the command line, loads the config once, runs the verb and renders its refusal. Exit
-/// codes: 0 success, 1 a refusal or a run that did not succeed, 2 a usage error.
+/// codes: `EXITS`.
 pub fn main() -> ExitCode {
     completion::answer(Cli::command);
     let cli = match Cli::try_parse() {
@@ -89,7 +107,7 @@ pub fn main() -> ExitCode {
         Err(error) => return output::refuse(cli.json, &error),
     };
     let warnings = loaded.warnings.clone();
-    let ctx = Context::new(cli.json, cli.yes, loaded, output::Term::detect());
+    let ctx = Context::new(cli.json, cli.full, cli.yes, loaded, output::Term::detect());
     for warning in &warnings {
         output::warn(warning);
     }
@@ -128,13 +146,17 @@ fn usage(error: clap::Error) -> ExitCode {
     output::refuse(true, &Error::new(Kind::Usage, "usage", message))
 }
 
-async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
+async fn dispatch(ctx: &Context, command: Option<Command>) -> Result<ExitCode, Error> {
+    let Some(command) = command else {
+        return daemon::status(ctx, daemon::Status {}).await;
+    };
     match command {
         Command::Run(args) => run::exec(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
         Command::Project(args) => project::exec(ctx, args).await,
+        Command::Open(args) => open::exec(ctx, args).await,
         Command::Org(args) => org::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,

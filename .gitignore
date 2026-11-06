@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 dist/
+node_modules/
 *.egg-info/
 *.exe
 crates/tensorfs/kernels/aot/

@@ -8,7 +8,8 @@ documented=$(awk '/^  [^ ]/ { path = $1 } /^    (get|put|post|patch|delete):/ { 
 source=$(cat "$(dirname "$0")"/../crates/hub-client/src/*.rs | tr '\n' ' ')
 calls=$({ grep -oE '\.at\( *Method::[A-Z]+, *"[^"]*"' <<<"$source" || true; } | sed -E 's/.*Method::([A-Z]+), *"([^"]*)"/\1 \2/')
 [ -n "$documented" ] && [ -n "$calls" ] || { echo "hub-routes: no routes read" >&2; exit 1; }
-# A route not written out where it is called would go unchecked.
+# A route not written out where it is called would go unchecked. Client::authkit_step is the one call
+# that isn't `.at(`: it forwards a step AuthKit named to AuthKit's own mount, which AuthKit's contract holds.
 [ "$(grep -o '\.at(' <<<"$source" | wc -l)" = "$(wc -l <<<"$calls")" ] ||
   { echo "hub-routes: every .at( names its Method and route literally" >&2; exit 1; }
 called=$(shape <<<"$calls")

@@ -11,6 +11,8 @@
 mod access;
 pub mod api;
 mod authorized;
+mod door;
+pub mod events;
 mod files;
 mod hub;
 mod kept;
@@ -21,12 +23,16 @@ pub mod local_code;
 pub mod tools;
 pub mod machines;
 pub mod outputs;
+mod page;
 pub mod play;
 pub mod project;
 mod rentals;
 pub mod runs;
 pub mod serve;
+mod sessions;
 pub mod store;
+mod tool_ui;
+mod toolbox;
 mod update;
 
 use std::{
@@ -380,6 +386,7 @@ impl Calcifer {
     pub fn record(&self, row: &RunRow) -> Result<Run, Error> {
         let mut run = self.store.record(row)?;
         run.project = project::of_landing(&row.out_dir).map(Path::to_path_buf);
+        run.project_id = run.project.as_deref().map(project::project_id);
         if let Some(live) = lock(&self.live).get(&row.id) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
@@ -684,6 +691,13 @@ impl Calcifer {
                 wake.notified().await;
                 continue;
             };
+            // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
+            // finishes what it has first, and what's held here goes to what it became.
+            if run.state == State::Queued && run.kind != protocol::calcifer::Kind::Update && self.store.updating(&name).unwrap_or_default() {
+                self.waiting(id, format!("getting {name} ready"));
+                pause.wait(wake, None).await;
+                continue;
+            }
             // This computer's machine starts when a run needs it; a run it was never sent fails
             // when it cannot start, saying why.
             // Its start is shown while it lasts: nothing but TensorD's own answer or exit ends it.

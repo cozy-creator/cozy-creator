@@ -9,7 +9,7 @@ use std::{
 
 use protocol::{
     error::{Error, Kind},
-    project::{Board, Event, Job, JobState, Rendered},
+    project::{Ahead, Board, Event, HeldBy, Job, JobState, Rendered},
 };
 use ratatui::{
     Frame,
@@ -61,6 +61,27 @@ impl Rendering {
                 self.board = board;
                 Fresh::Board
             }
+            Event::Job { job, seq } if seq >= self.board.seq => {
+                self.board.seq = seq;
+                match self.board.jobs.iter_mut().find(|held| held.id == job.id) {
+                    Some(held) => *held = job,
+                    None => self.board.jobs.push(job),
+                }
+                // What has ended first, in the order it did; then what goes; then what waits.
+                self.board.jobs.sort_by_key(|job| match job.state {
+                    JobState::Running => 1,
+                    JobState::Waiting => 2,
+                    _ => 0,
+                });
+                Fresh::Board
+            }
+            Event::Ahead { ahead } => {
+                match self.board.ahead.iter_mut().find(|held| held.run == ahead.run) {
+                    Some(held) => *held = ahead,
+                    None => self.board.ahead.push(ahead),
+                }
+                Fresh::Board
+            }
             Event::Warning { message, name } => {
                 let line = name.as_ref().map_or_else(|| format!("warning: {message}"), |name| format!("{name}: warning: {message}"));
                 match self.warnings.iter_mut().find(|warned| warned.message == message) {
@@ -107,12 +128,16 @@ impl Rendering {
         }
     }
 
-    /// `lab2 on sekai`.
+    /// `lab2 on sekai`, and where a render another machine holds stands: `lab2 on sekai, until 14:32: 3 files not here yet`.
     fn title(&self) -> String {
         let name = self.dir.file_name().map_or_else(|| self.dir.display().to_string(), |name| name.to_string_lossy().into_owned());
-        match self.board.on.as_slice() {
+        let title = match self.board.on.as_slice() {
             [] => name,
             on => format!("{name} on {}", on.join(", ")),
+        };
+        match &self.board.held {
+            Some(held) => format!("{title}, {}", held_line(held)),
+            None => title,
         }
     }
 
@@ -138,6 +163,19 @@ impl Rendering {
 }
 
 /// What an event newly is for a person to read.
+/// One line for what a machine is fetching ahead of its jobs; none once it is all there.
+pub(super) fn ahead_line(ahead: &Ahead) -> Option<String> {
+    let function = &ahead.function;
+    if let Some(why) = &ahead.held_back {
+        return Some(format!("{function}: not fetched ahead: {why}"));
+    }
+    let stage = ahead.stage.as_deref()?;
+    Some(match ahead.total {
+        0 => format!("{function} on {}, ahead of its turn: {stage}", ahead.machine),
+        total => format!("{function} on {}, ahead of its turn: {stage}: {} of {}", ahead.machine, output::bytes(ahead.done), output::bytes(total)),
+    })
+}
+
 enum Fresh {
     Nothing,
     Board,
@@ -173,6 +211,9 @@ async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>
     output::say(ctx, &format!("{}: following the render: Ctrl-C leaves it queued", rendering.title()));
     let mut said = Lines::default();
     said.board(ctx, &rendering);
+    if let Some(stalled) = stalled(ctx, &rendering) {
+        return Ok(stalled);
+    }
     loop {
         let event = tokio::select! {
             event = events.next() => event,
@@ -185,13 +226,28 @@ async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>
         let Some(event) = event else { return Err(ended_early(status)) };
         match rendering.apply(event) {
             Fresh::Nothing => {}
-            Fresh::Board => said.board(ctx, &rendering),
+            Fresh::Board => {
+                said.board(ctx, &rendering);
+                if let Some(stalled) = stalled(ctx, &rendering) {
+                    return Ok(stalled);
+                }
+            }
             Fresh::Warning(line) => output::warned(&line),
             Fresh::Said(line) => output::say(ctx, &line),
             Fresh::Failed(error) => output::failure(ctx, &error.message, &error.next),
             Fresh::Ended => return rendering.last_line(ctx),
         }
     }
+}
+
+/// Following ends with `STALLED` once a job's run has stopped moving, as its run says (its line says so, `Lines`): the render
+/// goes on until it's canceled.
+fn stalled(ctx: &Context, rendering: &Rendering) -> Option<ExitCode> {
+    let job = rendering.board.jobs.iter().find(|job| job.stalled.is_some() && matches!(job.state, JobState::Running | JobState::Waiting))?;
+    let cancel = format!("cozy project cancel {}", job.asset);
+    let logs = job.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
+    output::next(ctx, &[cancel.as_str()].into_iter().chain(logs.as_deref()).collect::<Vec<_>>());
+    Some(ExitCode::from(output::STALLED))
 }
 
 fn ended_early(status: &str) -> Error {
@@ -355,6 +411,19 @@ fn short(path: &str) -> String {
     }
 }
 
+/// A render another machine holds, said the one way: where it is, and what isn't here yet, lost if not collected before that machine ends.
+pub(crate) fn held_line(held: &HeldBy) -> String {
+    let machine = &held.machine;
+    let until = held.until_ms.and_then(|at| jiff::Timestamp::from_millisecond(at).ok());
+    let until = until.map(|at| at.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string());
+    match (held.files, until) {
+        (0, None) => format!("rendering on {machine}"),
+        (0, Some(until)) => format!("all here; {machine} ends at {until} unless used"),
+        (files, None) => format!("rendering on {machine}: {files} files ({}) not here yet, which come while Calcifer here reaches it", output::bytes(held.bytes)),
+        (files, Some(until)) => format!("on {machine} until {until}: {files} files ({}) not here yet, lost if not collected by then", output::bytes(held.bytes)),
+    }
+}
+
 /// `2m07s`, under a minute `38s`, past an hour `1h02m`.
 fn clock(ms: u64) -> String {
     let s = (ms + 500) / 1000;
@@ -380,6 +449,10 @@ fn finished(rendered: &Rendered) -> String {
 /// What has been said of each job, so each change is said once. A stage's steps are said at each tenth of the way.
 #[derive(Default)]
 struct Lines {
+    /// What it last said of where a held render stands.
+    held: Option<String>,
+    /// What it last said of each thing fetched ahead, by run.
+    ahead: HashMap<u64, String>,
     said: HashSet<(String, Option<u32>, String)>,
     tenths: HashMap<(String, Option<u32>), i64>,
     /// A failure said once, whose it was.
@@ -392,6 +465,24 @@ impl Lines {
     }
 
     fn board(&mut self, ctx: &Context, rendering: &Rendering) {
+        let held = rendering.board.held.as_ref().map(held_line);
+        if held.is_some() && held != self.held {
+            output::say(ctx, held.as_deref().unwrap_or_default());
+            self.held = held;
+        }
+        // What is fetched ahead, as it starts a stage or every quarter of the way.
+        for ahead in &rendering.board.ahead {
+            // Nothing to say until it has bytes to fetch: what weighs nothing is ready as soon as it's asked.
+            if ahead.total == 0 && ahead.held_back.is_none() {
+                continue;
+            }
+            let Some(line) = ahead_line(ahead) else { continue };
+            let quarter = if ahead.total > 0 { ahead.done * 4 / ahead.total } else { 0 };
+            let at = format!("{:?} {quarter} {:?}", ahead.stage, ahead.held_back);
+            if self.ahead.insert(ahead.run, at.clone()).as_ref() != Some(&at) {
+                output::say(ctx, &line);
+            }
+        }
         for job in &rendering.board.jobs {
             let asset = &job.asset;
             let made = numbered(job);
@@ -423,7 +514,8 @@ impl Lines {
                         Some(first) => output::failure(ctx, &format!("{asset}: failed the same way as {first}"), &[]),
                         None => {
                             let line = if error.message.contains(asset.as_str()) { error.message.clone() } else { format!("{asset}: {}", error.message) };
-                            output::failure(ctx, &line, &error.next);
+                            let remedy = error.remedy.as_deref().map(|remedy| format!("\n  {remedy}")).unwrap_or_default();
+                            output::failure(ctx, &format!("{line}{remedy}"), &error.next);
                             self.reasons.insert(reason, asset.clone());
                         }
                     }
@@ -580,6 +672,16 @@ impl View {
                 notes.push(reason.trim_start_matches("failed: ").to_owned());
             }
             notes.extend(job.why.clone());
+            // What the walker works out, for what hasn't ended.
+            if let (Some(gpus), JobState::Waiting | JobState::Running) = (job.gpus.filter(|gpus| *gpus > 1), job.state) {
+                notes.push(format!("{gpus} GPUs"));
+            }
+            if let (Some(ends), JobState::Waiting | JobState::Running) = (job.ends_at_ms, job.state) {
+                let left = (ends - now_ms()).max(0) as u64;
+                if left >= 10_000 {
+                    notes.push(format!("about {}", clock(left)));
+                }
+            }
             if let Some(seconds) = job.seconds {
                 notes.push(format!("{seconds:.1} s"));
             }
@@ -626,7 +728,8 @@ impl View {
             })
             .collect();
         let said = rendering.said.last().filter(|said| said.name.is_none()).map(|said| said.message.clone());
-        let foot = warned.len() as u16 + u16::from(said.is_some()) + 1;
+        let ahead: Vec<String> = rendering.board.ahead.iter().filter_map(ahead_line).collect();
+        let foot = warned.len() as u16 + ahead.len() as u16 + u16::from(said.is_some()) + 1;
         let [top, body, bottom] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(foot)]).areas(frame.area());
 
         let silence = self.events.silence().map(|silence| format!(" · {silence}")).unwrap_or_default();
@@ -647,6 +750,7 @@ impl View {
 
         let dim = Style::new().add_modifier(Modifier::DIM);
         let mut lines: Vec<Line> = warned.into_iter().map(Line::from).collect();
+        lines.extend(ahead.into_iter().map(|line| Line::styled(line, dim)));
         lines.extend(said.map(|said| Line::styled(said, dim)));
         lines.push(Line::styled("↑/↓, Enter opens a run, q leaves it rendering", dim));
         frame.render_widget(Paragraph::new(lines), bottom);

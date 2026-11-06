@@ -10,7 +10,6 @@ use clap_complete::ArgValueCompleter;
 use protocol::{
     calcifer::{FileTerm, On, ReleaseFrom, Run, RunRequest, Target},
     error::{Error, Kind},
-    interface::Interface,
     machine::WarmLevel,
 };
 
@@ -105,9 +104,14 @@ pub struct Placement {
 impl Placement {
     /// Where the run goes; `local` refused where this OS runs no models itself.
     pub fn on(&self) -> Result<On, Error> {
-        let on = self.on.clone().unwrap_or_else(|| "local".to_owned());
-        protocol::calcifer::local_usable(&on)?;
-        Ok(On::from(on))
+        let on = self.named();
+        protocol::calcifer::local_usable(&on.to_string())?;
+        Ok(on)
+    }
+
+    /// Where it would go, for Calcifer to judge.
+    pub fn named(&self) -> On {
+        On::from(self.on.clone().unwrap_or_else(|| "local".to_owned()))
     }
 }
 
@@ -199,7 +203,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 status: state,
                 package,
                 machine: on,
-                project: holding(&within).filter(|_| !all),
+                project: Some(within).filter(|_| !all),
                 before: None,
                 limit,
             };
@@ -245,12 +249,6 @@ async fn run(ctx: &Context, args: RunArgs, within: PathBuf) -> Result<ExitCode, 
     }
 }
 
-/// The project holding `path`: it, or the nearest folder above it with a project.yaml, as git finds its repository.
-fn holding(path: &Path) -> Option<PathBuf> {
-    let start = std::fs::canonicalize(path).ok()?;
-    start.ancestors().find(|dir| dir.join("project.yaml").is_file()).map(Path::to_owned)
-}
-
 /// One line per file a run left in its project, to paste into project.yaml: `image: 65b436d4f9a3`.
 pub(crate) fn paste(ctx: &Context, run: &Run) {
     if ctx.json || run.project.is_none() {
@@ -277,6 +275,7 @@ fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: Pa
         hub: ctx.hub().to_string(),
         input: None,
         input_file: args.input_file.clone(),
+        input_text: None,
         terms: args.inputs.clone(),
         files: args.assets.iter().map(|raw| FileTerm::parse(raw)).collect(),
         fidelities: args.fidelities.clone(),
@@ -313,38 +312,17 @@ async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.
 async fn describe(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
     let target = target(ctx, raw, cwd, on).await?;
-    let interface = parsed(&target)?;
-    let Some(function) = &target.function else {
-        print_functions(ctx, &target, &interface);
-        return Ok(ExitCode::SUCCESS);
-    };
-    let Some(callable) = interface.callables.iter().find(|c| &c.name == function) else {
-        let said = format!("{} has no function {function:?} this cozy reads", target.package);
-        return Err(Error::new(Kind::Unavailable, "callable_unreadable", said).next("cozy update"));
-    };
-    if ctx.json {
-        let mut request = protocol::interface::request(&target.interface, function);
-        if target.release_from != ReleaseFrom::Local {
-            request["release"] = target.release.clone().into();
-            request["release_from"] = target.release_from.to_string().into();
-        }
-        output::json(&request);
-        return Ok(ExitCode::SUCCESS);
+    match (&target.contract, &target.request) {
+        (Some(_), Some(request)) if ctx.json => output::json(request),
+        (Some(contract), _) => anstream::print!("{contract}"),
+        _ => print_functions(ctx, &target),
     }
-    let named = format!("{}/{function}", target.package);
-    let text = protocol::contract::contract(&named, &interface, callable);
-    let text = match target.release_from {
-        ReleaseFrom::Local => text,
-        from => text.replacen('\n', &format!("\n  release: {} ({from})\n", target.release), 1),
-    };
-    anstream::print!("{}", protocol::names::shown(&text));
     Ok(ExitCode::SUCCESS)
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
 async fn functions(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, cwd, on).await?;
-    print_functions(ctx, &target, &parsed(&target)?);
+    print_functions(ctx, &target(ctx, raw, cwd, on).await?);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -355,60 +333,32 @@ async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Resul
     ctx.calcifer().await?.get_query("/v1/targets", &query).await
 }
 
-fn parsed(target: &Target) -> Result<Interface, Error> {
-    Interface::parse(&target.interface).map_err(|why| {
-        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}")).next("cozy update")
-    })
-}
-
-fn print_functions(ctx: &Context, target: &Target, interface: &Interface) {
-    let from = (target.release_from != ReleaseFrom::Local).then(|| target.release_from.to_string());
-    functions_of(ctx, &target.package, (&target.release, &target.summary), from.as_deref(), interface);
-}
-
 /// A package's functions, and what each does. Its recipes are not functions: `cozy model
 /// quantize` runs them.
-pub(crate) fn functions_of(
-    ctx: &Context,
-    package: &str,
-    (release, summary): (&str, &str),
-    from: Option<&str>,
-    interface: &Interface,
-) {
-    // A project adapter is for `cozy project`, not a function to run by hand.
-    let public: Vec<_> = interface.public().into_iter().filter(|name| !name.starts_with("project-adapter-")).collect();
-    let description = |name: &str| {
-        (interface.callables.iter().find(|c| c.name == name)).map_or("", |c| c.description.as_str())
-    };
+fn print_functions(ctx: &Context, target: &Target) {
+    let (package, release) = (&target.package, &target.release);
+    let from = (target.release_from != ReleaseFrom::Local).then(|| target.release_from.to_string());
     if ctx.json {
-        let rows: Vec<_> = (public.iter())
-            .map(|name| serde_json::json!({"function": name, "description": description(name)}))
-            .collect();
         output::json(&serde_json::json!({
-            "package": package, "release": release, "release_from": from, "summary": summary,
-            "functions": rows,
+            "package": package, "release": release, "release_from": from, "summary": target.summary,
+            "functions": target.functions,
         }));
         return;
     }
     let mut table = output::Table::new(ctx, ["FUNCTION", "DESCRIPTION"]);
-    for name in &public {
-        table = table.row([*name, description(name)]);
+    for row in &target.functions {
+        table = table.row([row.function.as_str(), row.description.as_str()]);
     }
-    if public.is_empty() {
+    if target.functions.is_empty() {
         table = table.note(format!("{package} has no functions: its recipes run through cozy model quantize"));
     }
     let from = from.map(|from| format!(" ({from})")).unwrap_or_default();
-    let summary = match summary.is_empty() {
+    let summary = match target.summary.is_empty() {
         true => String::new(),
-        false => format!(": {summary}"),
+        false => format!(": {}", target.summary),
     };
     table.note(format!("{package} {release}{from}{summary}")).print();
-    let next: Vec<String> = public
-        .iter()
-        .take(2)
-        .map(|name| format!("cozy run {package}/{name} --describe"))
-        .collect();
-    output::next(ctx, &next.iter().map(String::as_str).collect::<Vec<_>>());
+    output::next(ctx, &target.next.iter().map(String::as_str).collect::<Vec<_>>());
 }
 
 impl Warm {

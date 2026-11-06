@@ -1,7 +1,10 @@
 //! GC: mark what the roots and the uses keep (`retention.rs`), then sweep unmarked objects and
-//! snapshot folders older than the grace. A collection may first drop uses: those past a TTL, or
-//! least recently used first when they free enough bytes; what only a dropped use kept goes in
-//! that collection. Each drop and each sweep that frees bytes is logged.
+//! snapshot folders older than the grace. A collection may first drop lanes: those past a TTL, or
+//! least recently used first when they free enough bytes; what only a dropped lane kept goes in
+//! that collection. A lane is one checkpoint's uses, named by its header and by each commit or
+//! snapshot that keeps it, dropped whole: a model is never listed without its bytes, nor its bytes
+//! kept unlisted. Each drop and each sweep that frees bytes is logged, and a sweep that removed
+//! an object stamps `uses/.evicted` (`Store::evicted_at`).
 //!
 //! A swept object is first renamed into `tmp/gc/`, then deleted only if it is still old: a put
 //! or reuse that raced the sweep made it young, and it goes back. A GC killed in between leaves
@@ -24,8 +27,83 @@ const MAX_DOCUMENT: u64 = 256 << 20;
 pub struct Collected {
     /// The uses dropped, by name.
     pub uses: Vec<String>,
+    /// The lanes dropped, for people.
+    pub evicted: Vec<Evicted>,
     pub objects: u64,
     pub bytes: u64,
+}
+
+impl Collected {
+    pub(super) fn add(&mut self, other: Collected) {
+        self.uses.extend(other.uses);
+        self.evicted.extend(other.evicted);
+        (self.objects, self.bytes) = (self.objects + other.objects, self.bytes + other.bytes);
+    }
+}
+
+/// One lane a collection dropped: its model as people name it, the bytes only it kept, and how
+/// long it had gone unused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Evicted {
+    pub name: String,
+    pub bytes: u64,
+    pub idle: Duration,
+}
+
+/// One checkpoint's uses together (`lanes`): last used when any of them was, kept by all.
+pub(super) struct Lane<'a> {
+    pub uses: Vec<&'a Use>,
+    pub used: SystemTime,
+    pub digests: BTreeSet<&'a str>,
+}
+
+impl Lane<'_> {
+    /// Whether a root of `digest` holds this lane: it names the lane, or an object no other lane
+    /// keeps (`count`: how many lanes keep each). A reader of another checkpoint holds the objects
+    /// the two share, and those stay, but not this lane: H3's renders held what it shares with
+    /// Qwen-Image, so neither could go (valentino, 11-05).
+    pub fn held_by(&self, digest: &str, count: &HashMap<&str, u32>) -> bool {
+        self.uses.iter().any(|u| u.name == digest) || (self.digests.contains(digest) && count.get(digest) == Some(&1))
+    }
+}
+
+/// How many lanes keep each digest.
+pub(super) fn keepers<'a>(lanes: &[Lane<'a>]) -> HashMap<&'a str, u32> {
+    let mut count: HashMap<&str, u32> = HashMap::new();
+    for digest in lanes.iter().flat_map(|l| l.digests.iter().copied()) {
+        *count.entry(digest).or_default() += 1;
+    }
+    count
+}
+
+/// `uses` as lanes: a use named by a digest another use keeps (a header its commit keeps, a
+/// commit a snapshot keeps) is that one's lane. Least recently used first.
+pub(super) fn lanes(uses: &[Use]) -> Vec<Lane<'_>> {
+    let at: HashMap<&str, usize> = uses.iter().enumerate().map(|(i, u)| (u.name.as_str(), i)).collect();
+    let mut parent: Vec<usize> = (0..uses.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for (i, u) in uses.iter().enumerate() {
+        for j in u.digests.iter().filter_map(|d| at.get(d.as_str()).copied()) {
+            let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+            parent[a] = b;
+        }
+    }
+    let mut lanes: HashMap<usize, Lane> = HashMap::new();
+    for (i, u) in uses.iter().enumerate() {
+        let lane = lanes.entry(root(&mut parent, i)).or_insert_with(|| Lane { uses: vec![], used: u.used, digests: BTreeSet::new() });
+        lane.used = lane.used.max(u.used);
+        lane.digests.extend(u.digests.iter().map(String::as_str));
+        lane.uses.push(u);
+    }
+    let mut lanes: Vec<Lane> = lanes.into_values().collect();
+    lanes.sort_by(|a, b| (a.used, &a.uses[0].name).cmp(&(b.used, &b.uses[0].name)));
+    lanes
 }
 
 enum Document {
@@ -107,7 +185,7 @@ impl Store {
     }
 
     /// Every object under `blobs/`: its length and when it was last written or reused.
-    fn objects(&self) -> Result<HashMap<String, (u64, SystemTime)>> {
+    pub(super) fn objects(&self) -> Result<HashMap<String, (u64, SystemTime)>> {
         let mut objects = HashMap::new();
         for top in list(&self.root.join("blobs"))? {
             for shard in list(&top)? {
@@ -152,14 +230,14 @@ impl Store {
         let mut marked = self.roots()?;
         let mut uses = self.uses(&marked)?;
         let objects = self.objects()?;
-        let (dropped, evicted) = self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff)?;
+        let (dropped, evicted, lanes) = self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff)?;
         for kept in uses {
             marked.extend(kept.digests);
             marked.insert(kept.name);
         }
-        // Unreferenced objects past the grace, and what the dropped uses alone kept, now: what
-        // the grace protects is an object not yet named, never one a dropped use named.
-        let mut collected = Collected { uses: dropped.into_iter().collect(), ..Collected::default() };
+        // Unreferenced objects past the grace, and what the dropped lanes alone kept, now: what
+        // the grace protects is an object not yet named, never one a dropped lane named.
+        let mut collected = Collected { uses: dropped.into_iter().collect(), evicted: lanes, ..Collected::default() };
         for (sha256, (_, modified)) in objects.iter().filter(|(sha, _)| !marked.contains(*sha)) {
             let since = if evicted.contains(sha256) { now } else { cutoff };
             if *modified >= since {
@@ -186,17 +264,21 @@ impl Store {
         self.sweep_tmp(cutoff)?;
         // The trash exists only during a collection (it holds what a killed one left).
         let _ = fs::remove_dir(self.root.join("tmp").join("gc"));
+        if collected.objects > 0 {
+            self.stamp_eviction()?;
+        }
         if collected.bytes > 0 {
-            let evicted = collected.uses.len();
-            tracing::info!("tensorfs: freed {} in {} objects ({evicted} evicted, the rest unreferenced)", size(collected.bytes), collected.objects);
+            let evicted = collected.evicted.len();
+            tracing::info!("tensorfs: freed {} in {} objects ({evicted} models evicted, the rest unreferenced)", size(collected.bytes), collected.objects);
         }
         Ok(collected)
     }
 
-    /// Removes the uses `need` asks for from the store and from `uses`, each logged: their
+    /// Removes the lanes `need` asks for from the store and from `uses`, each logged: their
     /// names, and the objects only they kept, which go now. The least recently used unused for
     /// `older_than` go first, and only when, with the unreferenced objects past the grace, they
-    /// free `need` (`u64::MAX`: every one, the TTL's). A use a root holds any of stays.
+    /// free `need` (`u64::MAX`: every one, the TTL's). A lane a root holds any of stays.
+    #[allow(clippy::type_complexity)]
     fn drop_uses(
         &self,
         uses: &mut Vec<Use>,
@@ -205,58 +287,63 @@ impl Store {
         need: u64,
         older_than: Duration,
         cutoff: SystemTime,
-    ) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
-        let none = (BTreeSet::new(), BTreeSet::new());
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>, Vec<Evicted>)> {
+        let none = (BTreeSet::new(), BTreeSet::new(), vec![]);
         let Some(since) = SystemTime::now().checked_sub(older_than).filter(|_| need > 0) else {
             return Ok(none);
         };
-        uses.sort_by(|a, b| (a.used, &a.name).cmp(&(b.used, &b.name)));
-        let mut count: HashMap<&str, u32> = HashMap::new();
-        for digest in uses.iter().flat_map(|u| &u.digests) {
-            *count.entry(digest).or_default() += 1;
-        }
+        let lanes = lanes(uses);
+        let mut count = keepers(&lanes);
         let length = |sha: &str| objects.get(sha).map_or(0, |(length, _)| *length);
         let old = |sha: &str| objects.get(sha).is_some_and(|(_, modified)| *modified < cutoff);
         let orphan = |sha: &&String| !count.contains_key(sha.as_str()) && !roots.contains(*sha) && old(sha);
         let mut free: u64 = objects.keys().filter(orphan).map(|sha| length(sha)).sum();
         let (mut plan, mut evicted) = (vec![], BTreeSet::new());
-        // A use whose name or any object a root holds is in use (a running or queued call's).
-        let in_use = |u: &Use| roots.contains(&u.name) || u.digests.iter().any(|d| roots.contains(d));
-        for u in uses.iter().filter(|u| u.used <= since && !in_use(u)) {
+        // A lane a root holds is in use (a running or queued call's): what it shares with one that
+        // is held stays either way, as everything a root holds does.
+        let in_use: Vec<bool> = lanes.iter().map(|l| {
+            l.uses.iter().any(|u| roots.contains(&u.name)) || l.digests.iter().any(|d| count[d] == 1 && roots.contains(*d))
+        }).collect();
+        for (lane, _) in lanes.iter().zip(&in_use).filter(|(l, held)| l.used <= since && !**held) {
             if free >= need {
                 break;
             }
             let mut bytes = 0;
-            for digest in &u.digests {
-                let n = count.get_mut(digest.as_str()).expect("a use counts what it keeps");
+            for digest in &lane.digests {
+                let n = count.get_mut(digest).expect("a lane counts what it keeps");
                 *n -= 1;
                 if *n == 0 && length(digest) > 0 {
                     bytes += length(digest);
-                    evicted.insert(digest.clone());
+                    evicted.insert(digest.to_string());
                 }
             }
             free = free.saturating_add(bytes);
-            plan.push((u, bytes));
+            plan.push((lane, bytes));
         }
         if free < need && need != u64::MAX {
             return Ok(none);
         }
         let names = if plan.is_empty() { HashMap::new() } else { self.names() };
-        for (u, bytes) in &plan {
-            self.remove_record(&self.root.join("uses").join(&u.name))?;
-            let name = names.get(&u.name).cloned().unwrap_or_else(|| format!("cache entry {}", &u.name[..12]));
-            let idle = u.used.elapsed().unwrap_or_default().as_secs() / 60;
+        let mut dropped_lanes = vec![];
+        for (lane, bytes) in &plan {
+            for u in &lane.uses {
+                self.remove_record(&self.root.join("uses").join(&u.name))?;
+            }
+            let name = lane.uses.iter().find_map(|u| names.get(&u.name)).cloned()
+                .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12]));
+            let idle = lane.used.elapsed().unwrap_or_default();
             let why = if need == u64::MAX { "past its TTL".into() } else { format!("the disk {} short", size(need)) };
-            tracing::info!("tensorfs: evicted {name}: {}, idle {idle} min, {why}", size(*bytes));
+            tracing::info!("tensorfs: evicted {name}: {}, idle {} min, {why}", size(*bytes), idle.as_secs() / 60);
+            dropped_lanes.push(Evicted { name, bytes: *bytes, idle });
         }
-        let dropped: BTreeSet<String> = plan.into_iter().map(|(u, _)| u.name.clone()).collect();
+        let dropped: BTreeSet<String> = plan.iter().flat_map(|(lane, _)| lane.uses.iter().map(|u| u.name.clone())).collect();
         uses.retain(|u| !dropped.contains(&u.name));
-        Ok((dropped, evicted))
+        Ok((dropped, evicted, dropped_lanes))
     }
 
     /// Each model lane the refs name, `org/name@release lane`, by its commit's digest and its
     /// header's: what a use is, for people.
-    fn names(&self) -> HashMap<String, String> {
+    pub(super) fn names(&self) -> HashMap<String, String> {
         let mut names = HashMap::new();
         for repo in self.refs().unwrap_or_default() {
             let lanes = repo.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, tree)| (format!("{}@{} {lane}", repo.name, r.version), tree)));

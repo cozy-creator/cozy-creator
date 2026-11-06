@@ -246,6 +246,7 @@ async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, file: folde
 async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
+    crate::events::project_settled(&project.folder.dir);
     let (named, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
     let files = named.len() as u64;
     let sending = stream::iter(named)
@@ -315,6 +316,10 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: fo
         let _ = std::fs::remove_file(&part);
         return Err(Failed { code: Code::OBJECT_ID_MISMATCH, detail: format!("{path}: what landed is not its sha256; pull again") });
     }
+    // Project.lock holds no name for it: its bytes say what it is.
+    let mut head = vec![];
+    File::open(&part).and_then(|file| std::io::Read::read_to_end(&mut std::io::Read::take(file, 8192), &mut head)).map_err(named)?;
+    let at = infer::get(&head).map_or_else(|| at.clone(), |kind| at.with_extension(kind.extension()));
     std::fs::rename(&part, &at).map_err(named)?;
     folder::sealed(&at);
     tally.moved.fetch_add(1, Ordering::Relaxed);
@@ -325,6 +330,7 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: fo
 /// Fetches every file project.lock names that `files/` lacks.
 async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let _held = project.moving.lock().await;
+    crate::events::project_settled(&project.folder.dir);
     let (dir, named) = (&project.folder.dir, named(project)?);
     let store = dir.join(folder::FILES);
     std::fs::create_dir_all(&store).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", store.display())))?;
@@ -346,6 +352,7 @@ pub(super) async fn pull_one(api: &Api, project: &Project, hub: &str, file: fold
     };
     let (_, endpoint) = signed(api, &hub).map_err(|e| e.message)?;
     let _held = project.moving.lock().await;
+    crate::events::project_settled(&project.folder.dir);
     let store = project.folder.dir.join(folder::FILES);
     std::fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
     let tally = Tally::default();
@@ -368,6 +375,7 @@ fn ended(project: &Project, done: Result<Transferred, Error>) {
         Err(error) => (None, Some(error)),
     };
     let _ = project.events.send(Event::Transferred { done, error });
+    crate::events::project_settled(&project.folder.dir);
 }
 
 /// `POST /v1/projects/{id}/push`.
@@ -379,7 +387,7 @@ pub(super) async fn pushed(
     let (project, hub, client, endpoint) = asked(&api, &id, body)?;
     let path = project.folder.dir.clone();
     tokio::spawn(async move { ended(&project, push(&project, &hub, &client, &endpoint).await) });
-    Ok((StatusCode::ACCEPTED, Json(Opened { id, path })))
+    Ok((StatusCode::ACCEPTED, Json(super::opened(id, &path))))
 }
 
 /// `POST /v1/projects/{id}/pull`.
@@ -389,7 +397,11 @@ pub(super) async fn pulled(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Opened>), Refusal> {
     let (project, _, _, endpoint) = asked(&api, &id, body)?;
-    let path = project.folder.dir.clone();
-    tokio::spawn(async move { ended(&project, pull(&project, &endpoint).await) });
-    Ok((StatusCode::ACCEPTED, Json(Opened { id, path })))
+    let opened = super::opened(id, &project.folder.dir);
+    tokio::spawn(async move {
+        ended(&project, pull(&project, &endpoint).await);
+        // What came is no one's to measure until a render otherwise.
+        super::measure_soon(&api, &project);
+    });
+    Ok((StatusCode::ACCEPTED, Json(opened)))
 }

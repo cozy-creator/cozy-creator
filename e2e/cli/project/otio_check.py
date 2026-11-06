@@ -1,8 +1,9 @@
 """The project cell's OTIO check (e2e/cli/project.sh, cl-716 A2): read a cut's .otio with OpenTimelineIO's own reader and check it against the edit.
-Usage: otio_check.py <edit.otio> <fps> <name>:<start>:<end>:<asset path>[:<retimed from fps>] ...
+Usage: otio_check.py <edit.otio> <fps> <name>:<start>:<end>:<asset path>[:<retimed from fps>|:still] ...
 Checks: one video and one audio track; on each, one clip per entry in order, its source range
 <start>..<end> at <fps>, referencing <asset path>, whose file (beside the .otio) has that sha256 as
-its name; a retimed clip's metadata names its rate; the timeline is the sum of the entries long."""
+its name; a retimed clip's metadata names its rate; a still says so and is a gap on the audio track;
+the timeline is the sum of the entries long."""
 import hashlib
 import os
 import sys
@@ -28,10 +29,12 @@ check(d.rate == fps and d.value == want, f"timeline {d.value:.0f} frames at {d.r
 check(len(timeline.video_tracks()) == 1 and len(timeline.audio_tracks()) == 1, "one video and one audio track")
 for track in timeline.tracks:
     clips = list(track.find_clips())
-    check(len(clips) == len(specs), f"{track.kind}: {len(clips)} clips, want {len(specs)}")
-    for clip, spec in zip(clips, specs):
+    held = [s for s in specs if track.kind == "Video" or s[4:] != ["still"]]
+    check(len(clips) == len(held), f"{track.kind}: {len(clips)} clips, want {len(held)}")
+    for clip, spec in zip(clips, held):
         name, start, end, asset = spec[0], int(spec[1]), int(spec[2]), spec[3]
-        retimed = float(spec[4]) if len(spec) > 4 else None
+        still = spec[4:] == ["still"]
+        retimed = float(spec[4]) if len(spec) > 4 and not still else None
         r = clip.source_range
         meta = dict(clip.metadata).get("cozy", {})
         url = clip.media_reference.target_url
@@ -44,4 +47,5 @@ for track in timeline.tracks:
         digest = hashlib.sha256(open(file, "rb").read()).hexdigest() if os.path.exists(file) else None
         check(digest is not None and os.path.basename(url).startswith(digest), f"{url} exists, named by its sha256")
         check(meta.get("retimed_from_fps") == retimed, f"{name} retimed_from_fps {meta.get('retimed_from_fps')}, want {retimed}")
+        check(bool(meta.get("still")) == still, f"{name} still {meta.get('still')}, want {still}")
 print("otio", "PASS" if ok else "FAIL")

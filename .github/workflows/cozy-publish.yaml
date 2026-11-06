@@ -113,12 +113,41 @@ jobs:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
 
+  # HAND-EDITED (dist-workspace.toml): the page Calcifer embeds (web/app, crates/calcifer/build.rs), built once: every
+  # target embeds the same bytes, and neither Windows, macOS nor dist's containers need Node. Its artifact is named
+  # outside artifacts-*, which host releases.
+  page:
+    needs:
+      - plan
+    runs-on: "ubuntu-24.04"
+    permissions:
+      "contents": "read"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/setup@v1
+        with:
+          package-json-file: web/app/package.json
+          install: false
+      - run: web/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-page
+          path: web/app/dist
+          if-no-files-found: error
+
   # Build and packages all the platform-specific things
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
+      # HAND-EDITED (dist-workspace.toml): the page each target embeds.
+      - page
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') || inputs.tag == 'dry-run' }}
     strategy:
       fail-fast: false
@@ -150,6 +179,15 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # HAND-EDITED (dist-workspace.toml): a cozy without its page never ships.
+      - name: Fetch the page
+        uses: actions/download-artifact@v8
+        with:
+          name: web-page
+          path: web/app/dist
+      - name: The page is there
+        shell: bash
+        run: test -f web/app/dist/index.html
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -266,12 +304,14 @@ jobs:
   host:
     needs:
       - plan
+      # HAND-EDITED (dist-workspace.toml): a failed page skips the builds, and below a skipped build still releases.
+      - page
       - build-local-artifacts
       - build-global-artifacts
       # The attestation bundles `cozy update` verifies; host releases them.
       - custom-cozy-attestations
     # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-cozy-attestations.result == 'skipped' || needs.custom-cozy-attestations.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.page.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-cozy-attestations.result == 'skipped' || needs.custom-cozy-attestations.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-24.04"

@@ -1,0 +1,106 @@
+/* Both SIL OFL 1.1, the published Latin files unmodified, their licences beside them in fonts/. */
+@font-face {
+  font-family: "M PLUS Rounded 1c";
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/m-plus-rounded-1c-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "M PLUS Rounded 1c";
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/m-plus-rounded-1c-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Averia Serif Libre";
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/averia-serif-libre-latin-400-normal.woff2") format("woff2");
+}
+
+/* Paper, the default. Text passes 4.5:1 on every surface it sits on, and --ember, which is also the focus ring, 3:1. */
+:root {
+  --bg: #ecdfc7;
+  --dot: #cfbfa2;
+  --card: #fdf8ef;
+  --card2: #f1e7d4;
+  --panel: #fbf6ea;
+  --float: #fcf7ed;
+  --field: #fffcf5;
+  --well: #e9dfcc;
+  --line: #cdbc9f;
+  --line2: #8f7a5e;
+  --ink: #3f2f24;
+  --mute: #5f4e3f;
+  --faint: #625141;
+  --ember: #40603d;
+  --ember2: #33502f;
+  --on-ember: #fbf6ea;
+  --cur: #325f2c;
+  --ood: #744f00;
+  --mak: #225a79;
+  --bad: #9e321b;
+  --tint: #4d3b2e12;
+  --tint2: #4d3b2e20;
+  --mark: #5f4e3fa6;
+  --mark2: #5f4e3fe6;
+  --mark3: #5f4e3f80;
+  --shadow: #5c422733;
+  --paper: var(--paper-sky);
+  --box: #f8f1e1;
+  --box-edge: #6f5c43bf;
+  --box-shade: #4a331a38;
+
+  /* Media reads on neutral grey whatever the theme: warm cream around a picture skews it. */
+  --stage: #161616;
+  --veil: #161616c4;
+  --check: #d6d6d6;
+  --check2: #f2f2f2;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: "M PLUS Rounded 1c", "Trebuchet MS", system-ui, sans-serif;
+  --serif: "Averia Serif Libre", Georgia, serif;
+  --round: 7px;
+  --round2: 10px;
+  /* How much larger the frame around the canvas is drawn: the top bar and the tools. Nudge this one number. */
+  --ui: 1.35;
+  --top: calc(44px * var(--ui));
+  --head: 32px;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #141415;
+  --dot: #26272b;
+  --card: #17181b;
+  --card2: #1e2024;
+  --panel: #121316;
+  --float: #15161a;
+  --field: #0f1012;
+  --well: #0a0a0b;
+  --line: #2b2d32;
+  --line2: #3a3d44;
+  --ink: #e8e6e1;
+  --mute: #a3a5ac;
+  --faint: #92949b;
+  --ember: #ff8a3d;
+  --ember2: #ffb37d;
+  --on-ember: #1b1006;
+  --cur: #5fbf7a;
+  --ood: #e6c14b;
+  --mak: #5aa9ff;
+  --bad: #f0625d;
+  --tint: #ffffff0d;
+  --tint2: #ffffff14;
+  --mark: #ffffff38;
+  --mark2: #ffffff70;
+  --mark3: #ffffff26;
+  --shadow: #0009;
+  --paper: var(--paper-ink);
+  --box: #202226;
+  --box-edge: #ffffff40;
+  --box-shade: #0000008c;
+  --check: #2a2c30;
+  --check2: #33353a;
+  color-scheme: dark;
+}

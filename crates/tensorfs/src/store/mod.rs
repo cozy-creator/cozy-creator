@@ -11,8 +11,8 @@
 //!   checked, flushed per [`Durability`] and renamed into `blobs/`. An object is verified there
 //!   once and trusted after; [`Store::verify`] rehashes on demand.
 //! - One retention regime (`retention.rs`): holds, header files and `local/` refs root objects;
-//!   all else is cache, kept for a TTL after its last use and evicted least recently used first
-//!   when the disk runs low. GC marks and sweeps (`gc.rs`) what is older than the grace, so
+//!   all else is cache, kept for a TTL after its last use and evicted least recently used first,
+//!   one checkpoint's lane whole, when the disk runs low. GC marks and sweeps (`gc.rs`) what is older than the grace, so
 //!   whatever newly references an object makes it young first: `put` and `reuse` touch it.
 //! - Processes share a store with no leases, markers or boot-time rehash: a torn write never has
 //!   a name, and an open descriptor outlives an unlink.
@@ -27,7 +27,8 @@ mod records;
 pub(crate) mod retention;
 
 pub use checkpoint::{wanted, Checkpoint};
-pub use gc::Collected;
+pub use gc::{Collected, Evicted};
+pub use retention::{Room, RoomLane};
 pub(crate) use records::is_name;
 pub use retention::TTL;
 
@@ -415,7 +416,7 @@ impl Store {
         tracing::warn!("tensorfs: {} is {length} bytes, not {}: removed, to be replaced", path.display(), object.length);
         match fs::remove_file(&path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(fail("remove", &path)(error)),
-            _ => Ok(false),
+            _ => self.stamp_eviction().map(|()| false),
         }
     }
 

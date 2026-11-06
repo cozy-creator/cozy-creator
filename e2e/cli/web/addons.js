@@ -1,0 +1,391 @@
+// Checkpoints on boxes (Paul, 11-05), in a real browser on a real Calcifer: the explorer in the left panel lists the Hub's fine-tunes and LoRAs and fetches nothing; one
+// carried shows what takes it; dropped where it can't go, a toast says why and nothing changes; dropped where it can, a chip stands under the box at once, follows it, leaves
+// its size alone, keeps other boxes clear of it, and stays near one size at any zoom. An X takes it off, strength is behind More, a hand-written `lora:` or `models:` is a chip, and
+// the file keeps every comment and `|`. It names no model: what it drops comes from `GET /v1/models` and `GET /v1/tools`.
+//   node addons.js <sign-in link from `cozy open --no-open`, or the address of a page that needs none>
+// $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $RENDER: a machine with a GPU, on which a box with a LoRA and a fine-tune
+// really renders, and what its run was asked and applied is read back. Prints what it saw as JSON and exits 1 if anything failed.
+const playwright = require(process.env.PLAYWRIGHT);
+const { readFileSync, writeFileSync } = require('fs');
+const { join } = require('path');
+const { boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, until } = require('./page');
+
+const failures = [];
+const seen = {};
+noStall(seen, died);
+let during = 'the start';
+function check(name, ok, detail) {
+  seen[name] = ok ? true : (detail ?? false);
+  during = name;
+  if (!ok) failures.push(name);
+}
+async function died(why) {
+  failures.push(`${during}: ${why}`);
+  await lastLook();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(1);
+}
+
+(async () => {
+  const link = process.argv[2];
+  const base = new URL(link).origin;
+  const browser = await launch(playwright);
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  const page = await context.newPage();
+  lookAt(page);
+  page.setDefaultTimeout(STEP_MS);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
+  // A console line doesn't say what failed: this does.
+  page.on('response', (answer) => { if (answer.status() >= 500) errors.push(`${answer.status()} ${answer.request().method()} ${new URL(answer.url()).pathname}`); });
+  await page.addInitScript(() => {
+    window.violations = [];
+    document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
+  });
+  const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+
+  await page.goto(link);
+  await page.waitForSelector('.top');
+  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    return { status: answer.status, body: await answer.json().catch(() => null) };
+  }, { path, init, token: held?.token });
+
+  await page.goto(`${base}/#/projects`);
+  await page.fill('input[aria-label="New project\'s name"]', `web-addons-${Date.now()}`);
+  await page.click('form button[type=submit]');
+  await page.waitForURL(/#\/projects\/[^/]+$/);
+  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  const state = async () => (await api(`/v1/projects/${id}`)).body;
+  const folder = (await state()).path;
+  seen.project = { id, folder };
+  const yamlAt = join(folder, 'project.yaml');
+  const yaml = () => readFileSync(yamlAt, 'utf8');
+  const box = (name) => boxOf(page, name);
+
+  const tools = (await api('/v1/tools')).body.tools.filter((tool) => tool.model?.family);
+  const models = (await api('/v1/models?limit=100')).body.models;
+  const loras = (family) => models.filter((model) => model.kind === 'lora' && model.family === family);
+  const fines = (family) => models.filter((model) => model.kind === 'weights' && model.family === family);
+  // A tool with two LoRAs and two fine-tunes, and one of another family.
+  const mine = tools.find((tool) => loras(tool.model.family).length >= 3 && fines(tool.model.family).length >= 2);
+  const other = tools.find((tool) => tool.model.family !== mine?.model.family);
+  seen.mine = mine && { id: mine.id, ...mine.model };
+  seen.other = other && { id: other.id, ...other.model };
+  // A test Hub may hold no LoRAs: that says nothing of the page, and the suite prints it.
+  if (!mine || !other) {
+    seen.skipped = `nothing to drop: ${tools.length} tools with a family, ${models.length} models`;
+    await browser.close();
+    console.log(JSON.stringify({ failures, seen }, null, 2));
+    process.exit(0);
+  }
+  const [loraA, loraB, loraC] = loras(mine.model.family);
+  const [fineA, fineB] = fines(mine.model.family);
+  const word = (model) => model.model.split('/').pop();
+
+  const comments = ['# Mine, and kept.', '  # What other makes.', '    # Its look.', '    instructions: |', '      A small boat,', '      on still water.'];
+  writeFileSync(yamlAt, `# Mine, and kept.
+version: 3
+
+assets:
+  # What other makes.
+  boat:
+    tool: ${other.id}
+    instructions: |
+      A small boat,
+      on still water.
+  shot:
+    tool: ${mine.id}
+    instructions: A wave.
+  hand:
+    tool: ${mine.id}
+    instructions: Written by hand.
+    # Its look.
+    lora:
+      - {ref: ${loraC.model}, strength: 0.7}
+    models:
+      ${mine.model.slot}: {ref: ${fineB.model}}
+  flowed:
+    tool: ${mine.id}
+    instructions: One line.
+    lora: [{ref: hf://someone/wushu, strength: 0.8}]  # As a person writes it.
+  words:
+    text: Words alone.
+`);
+  await box('hand').waitFor();
+  await box('shot').waitFor();
+  const kept = () => comments.filter((line) => !yaml().includes(line));
+  const chips = (name) => box(name).locator('.add-on:not(.tool)');
+  const toast = (words) => until(`the toast ${words}`, () => page.locator('.notes, .note-list, [role=status]').allInnerTexts().then((all) => all.join(' | ')), (all) => all.includes(words)).then(() => true, (why) => String(why));
+
+  // A hand-written one is a chip.
+  await chips('hand').first().waitFor();
+  check('hand_written_chips', (await chips('hand').count()) === 2 && (await box('hand').locator('.add-on.fine-tune').count()) === 1, await chips('hand').allInnerTexts());
+  await chips('flowed').first().waitFor();
+  check('one_line_chip', (await chips('flowed').allInnerTexts()).join() === 'wushu', await chips('flowed').allInnerTexts());
+
+  // The explorer: it reads, and fetches nothing.
+  // Others use this computer: what counts is this project's runs, and what it dropped being held.
+  const madeHere = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id).length;
+  // Asked from here, not the page: where this computer runs no models (macOS, Windows), `local` answers 503, and that's no page's error.
+  const fetched = async (names) => {
+    const answer = await fetch(`${base}/v1/machines/local/models`, { headers: { Authorization: `Bearer ${held?.token}` } });
+    return ((await answer.json().catch(() => null))?.models ?? []).filter((one) => names.includes(one.model));
+  };
+  const written = [];
+  page.on('request', (request) => { if (request.method() !== 'GET' && request.method() !== 'HEAD' && new URL(request.url()).pathname.startsWith('/v1/') && !request.url().endsWith('/session')) written.push(`${request.method()} ${new URL(request.url()).pathname}`); });
+  await page.click('.tools button:has-text("Checkpoints")');
+  const row = (model) => page.locator(`[data-checkpoint="${model.model}"]`);
+  await row(loraA).waitFor();
+  check('explorer_lists', (await page.locator('.checkpoints h4').allInnerTexts()).join().includes('LoRAs') && (await page.locator('.checkpoints h4').allInnerTexts()).join().includes('Fine-tunes'), await page.locator('.checkpoints h4').allInnerTexts());
+  await page.fill('input[aria-label="Search the checkpoints"]', word(loraA));
+  await until('the search', () => page.locator('[data-checkpoint]').count(), (n) => n >= 1 && n < models.length);
+  await row(loraA).waitFor();
+  await page.fill('input[aria-label="Search the checkpoints"]', '');
+  await row(fineA).waitFor();
+  check('what_fits_comes_first', !(await row(loraA).getAttribute('class')).includes('away'));
+  // Where boxes sit is saved as they arrive, and says nothing of what a list did.
+  const wrote = written.filter((line) => !line.endsWith('/canvas'));
+  check('listing_writes_nothing', wrote.length === 0, wrote);
+  await shot('explorer');
+
+  const cardRect = (name) => box(name).locator('.card').boundingBox();
+  const carry = async (model, name) => {
+    await row(model).scrollIntoViewIfNeeded();
+    const from = await row(model).boundingBox();
+    await page.mouse.move(from.x + 20, from.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 40, from.y + 20, { steps: 4 });
+    const at = await cardRect(name);
+    await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2, { steps: 12 });
+  };
+
+  // Carried: only what takes it shows.
+  await carry(loraA, 'boat');
+  const takes = await page.locator('.react-flow__node:has(.box-takes) .card').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
+  check('carried_shows_what_takes_it', takes.sort().join() === 'flowed,hand,shot', takes);
+  await shot('carried');
+  const before = yaml();
+  await page.mouse.up();
+  check('incompatible_says_why', (await toast(`is for ${loraA.family}`)) === true);
+  await shot('refused');
+  check('incompatible_changes_nothing', yaml() === before && (await chips('boat').count()) === 0);
+  await carry(loraA, 'words');
+  await page.mouse.up();
+  check('no_model_says_why', (await toast('No model makes words')) === true);
+  check('no_model_changes_nothing', yaml() === before);
+
+  // The page first: the write is held back, and the chip is there.
+  let release;
+  const gate = new Promise((done) => { release = done; });
+  await page.route(`**/v1/projects/${id}/assets/shot`, async (route) => {
+    if (route.request().method() === 'PATCH') await gate;
+    await route.fallback();
+  });
+  const size = await cardRect('shot');
+  await carry(loraA, 'shot');
+  await page.mouse.up();
+  await chips('shot').first().waitFor({ timeout: 2000 });
+  check('chip_before_the_write', !yaml().includes(loraA.model));
+  release();
+  await page.unroute(`**/v1/projects/${id}/assets/shot`);
+  await until('the LoRA in the file', () => Promise.resolve(yaml()), (text) => text.includes(`ref: ${loraA.model}`));
+  check('default_strength', /strength: 1(\.0)?\n/.test(yaml().split(`ref: ${loraA.model}`)[1]), yaml());
+  const sized = await cardRect('shot');
+  check('chip_leaves_its_size', sized.width === size.width && sized.height === size.height, { size, sized });
+  check('no_more_than_it_said', (await page.locator('.box-takes').count()) === 0);
+
+  await carry(loraB, 'shot');
+  await page.mouse.up();
+  await until('two chips', () => chips('shot').count(), (n) => n === 2);
+  await until('both in the file', () => Promise.resolve(yaml()), (text) => text.includes(`ref: ${loraB.model}`));
+  await carry(loraB, 'shot');
+  await page.mouse.up();
+  check('twice_is_once', (await toast('is already on shot')) === true && (await chips('shot').count()) === 2);
+
+  // A fine-tune replaces, and there's one.
+  await carry(fineA, 'shot');
+  await page.mouse.up();
+  await box('shot').locator('.add-on.fine-tune').waitFor();
+  await until('it in the file', () => Promise.resolve(yaml()), (text) => text.includes(`ref: ${fineA.model}`));
+  await carry(fineB, 'shot');
+  await page.mouse.up();
+  await until('the other in the file', () => Promise.resolve(yaml()), (text) => text.includes(`ref: ${fineB.model}`) && text.split('shot:')[1].split('hand:')[0].indexOf(fineA.model) < 0);
+  check('fine_tune_replaces', (await box('shot').locator('.add-on.fine-tune').count()) === 1 && (await box('shot').locator('.add-on.fine-tune').innerText()).includes(word(fineB)));
+  check('comments_and_blocks_stay', kept().length === 0, kept());
+  await shot('chips');
+
+  // It's what the project reads.
+  const fields = (await state()).assets.find((asset) => asset.name === 'shot').fields;
+  check('project_reads_them', fields.lora?.length === 2 && fields.models?.[mine.model.slot]?.ref === fineB.model, fields);
+  check('no_run_and_no_weights', (await madeHere()) === 0 && (await fetched([loraA.model, loraB.model, fineA.model, fineB.model])).length === 0);
+
+  // Chips follow.
+  const list = (name) => box(name).locator('.add-ons');
+  const moved = await list('shot').boundingBox();
+  const head = await box('shot').locator('.nm').boundingBox();
+  await page.mouse.move(head.x + 10, head.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(head.x + 70, head.y + 140, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const after = await list('shot').boundingBox();
+  const atHead = await box('shot').locator('.nm').boundingBox();
+  check('chips_follow', Math.abs((after.x - moved.x) - (atHead.x - head.x)) < 2 && Math.abs((after.y - moved.y) - (atHead.y - head.y)) < 2, { moved, after });
+
+  // Nothing lies on them: another box let go on the chips goes clear of them.
+  const name = await box('boat').locator('.nm').boundingBox();
+  await page.mouse.move(name.x + 10, name.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(after.x + 10, after.y + 10, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  const boat = await cardRect('boat');
+  const chipsAt = await list('shot').boundingBox();
+  const lies = boat.x < chipsAt.x + chipsAt.width && chipsAt.x < boat.x + boat.width && boat.y < chipsAt.y + chipsAt.height && chipsAt.y < boat.y + boat.height;
+  check('nothing_lies_on_chips', !lies, { boat, chipsAt });
+
+  // An X, at once: the page first again.
+  let again;
+  const held2 = new Promise((done) => { again = done; });
+  await page.route(`**/v1/projects/${id}/assets/shot`, async (route) => {
+    if (route.request().method() === 'PATCH') await held2;
+    await route.fallback();
+  });
+  await list('shot').hover();
+  await box('shot').locator(`[aria-label="Take ${word(loraB)} off shot"]`).click();
+  // Its tool's chip is first in the stack, and no LoRA.
+  await until('one LoRA left', () => box('shot').locator('.add-on:not(.fine-tune):not(.tool)').count(), (n) => n === 1, 2000);
+  check('x_before_the_write', yaml().includes(loraB.model));
+  again();
+  await page.unroute(`**/v1/projects/${id}/assets/shot`);
+  await until('it off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraB.model));
+
+  // Strength is behind More, and not on the chip.
+  await box('shot').locator('.media').first().click({ position: { x: 20, y: 20 } });
+  await page.locator('.card.here[data-asset="shot"]').waitFor();
+  if (!(await box('shot').locator('.edit-more').count())) await box('shot').locator('.more-toggle').click();
+  const slider = box('shot').locator(`input[aria-label="Strength of ${word(loraA)}"]`);
+  await slider.focus();
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
+  await until('its strength in the file', () => Promise.resolve(yaml()), (text) => /strength: 1\.2/.test(text.split(`ref: ${loraA.model}`)[1] ?? ''));
+  await closeBox(page);
+  check('chip_says_no_strength', !/\d\.\d/.test((await chips('shot').first().innerText()).replace(word(fineB), '')) );
+
+  // Hand-written: one off, the rest of it as it was.
+  await list('hand').hover();
+  await box('hand').locator(`[aria-label="Take ${word(loraC)} off hand"]`).click();
+  await until('off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraC.model));
+  check('hand_written_rest_stays', yaml().includes(`${mine.model.slot}: {ref: ${fineB.model}}`) || yaml().split('hand:')[1].includes(fineB.model), yaml());
+  check('comments_outlast_it', kept().filter((line) => line !== '    # Its look.').length === 0, kept());
+
+  await list('flowed').hover();
+  await box('flowed').locator('[aria-label="Take wushu off flowed"]').click();
+  await until('off the one line', () => Promise.resolve(yaml()), (text) => !text.includes('wushu'));
+  check('one_line_goes', (await chips('flowed').count()) === 0 && yaml().includes('instructions: One line.'), yaml());
+
+  // Near one size at any zoom, and never wider than its box.
+  const pane = page.locator('.react-flow__pane');
+  const sizes = [];
+  for (const steps of [0, 3, 3]) {
+    // By the page's own zoom keys, a step the same on every OS: a wheel's step is far larger on macOS, and three of them went from 0.9 to 0.05.
+    for (let i = 0; i < steps; i++) { await pane.hover({ position: { x: 900, y: 500 } }); await page.keyboard.press('Control+-'); await page.waitForTimeout(200); }
+    await page.waitForTimeout(250);
+    const measure = await page.evaluate(() => {
+      const chip = document.querySelector('.add-on');
+      const flow = document.querySelector('.react-flow__viewport');
+      if (!chip || !flow) return null;
+      const zoom = new DOMMatrix(getComputedStyle(flow).transform).a;
+      return { zoom, screen: parseFloat(getComputedStyle(chip).fontSize) * zoom, wide: chip.getBoundingClientRect().width / zoom };
+    });
+    if (measure) sizes.push(measure);
+  }
+  seen.sizes = sizes;
+  const screens = sizes.filter((one) => one.zoom >= 0.25).map((one) => one.screen);
+  check('chip_near_one_size', screens.length > 1 && Math.max(...screens) / Math.min(...screens) < 1.2 && sizes.every((one) => one.wide <= 320), sizes);
+
+  // Its tool changes, and they stay.
+  const held3 = yaml();
+  await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ tool: other.id }) });
+  check('a_new_tool_keeps_them', yaml().includes(loraA.model) && yaml().includes(fineB.model), yaml() === held3);
+
+  // After a reload they're as they were.
+  await page.reload();
+  await chips('shot').first().waitFor();
+  check('reloaded', (await chips('shot').count()) === 2, await chips('shot').allInnerTexts());
+  // Where there's a machine: a render passes both on its function's call, and the machine says what it applied. A shared machine goes first to what's already on it: this
+  // waits for it to be idle, and gives way if anyone else asks for it. It cancels no run but its own.
+  if (process.env.RENDER) {
+    const family = process.env.RENDER_FAMILY;
+    const still = (await api('/v1/tools')).body.tools.find((tool) => tool.kind === 'image' && tool.model?.family && (!family || tool.model.family === family) && loras(tool.model.family).length && fines(tool.model.family).length);
+    const [lora] = loras(still.model.family);
+    const fine = fines(still.model.family).find((model) => !still.model.default?.startsWith(`${model.model}@`));
+    seen.render = { tool: still.id, local: Boolean(still.local), lora: lora.model, fine: fine.model };
+    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  still:\n    tool: ${still.id}\n    instructions: A red boat on still water, ink on paper.\n`);
+    await box('still').waitFor();
+    await page.keyboard.press('f');
+    await page.waitForTimeout(500);
+    if (!(await page.locator('.checkpoints').count())) await page.click('.tools button:has-text("Checkpoints")');
+    await row(lora).waitFor();
+    await carry(lora, 'still');
+    await page.mouse.up();
+    await carry(fine, 'still');
+    await page.mouse.up();
+    await until('both on it', () => Promise.resolve(yaml().split('still:')[1]), (text) => text.includes(lora.model) && text.includes(fine.model));
+    await shot('both-on');
+
+    const runs = async () => (await Promise.all(['in_progress', 'queued'].map((status) => api(`/v1/runs?status=${status}&limit=100`)))).flatMap((answer) => answer.body?.runs ?? []).filter((run) => run.machine === process.env.RENDER || !run.machine);
+    const others = async () => (await runs()).filter((run) => run.kind === 'call' && run.project_id !== id);
+    const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+    const idle = async () => {
+      for (let held = await others(); held.length; held = await others()) {
+        seen.waited_for = [...new Set([...(seen.waited_for ?? []), ...held.map((run) => run.number)])];
+        seen.waiting = `${seen.waiting ?? ''}.`;
+        await pause(20_000);
+      }
+    };
+    let made;
+    for (let tries = 0; !made && tries < 5; tries++) {
+      await idle();
+      const had = (await state()).assets.find((asset) => asset.name === 'still').versions;
+      await page.evaluate((to) => { location.hash = to; }, `/projects/${id}/assets/still`);
+      await page.locator('.card.here[data-asset="still"] button[aria-label=Render]').click();
+      await closeBox(page);
+      seen.asked_at = new Date().toISOString();
+      for (;;) {
+        await pause(5_000);
+        const asset = (await state()).assets.find((held) => held.name === 'still');
+        seen.rendering = `${seen.rendering ?? ''}.`;
+        if (asset.versions > had) { made = asset; break; }
+        if (asset.failure) { made = asset; break; }
+        if ((await others()).length) {
+          const mine = (await runs()).filter((run) => run.project_id === id);
+          for (const run of mine) await api(`/v1/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
+          seen.yielded = [...(seen.yielded ?? []), ...mine.map((run) => run.number)];
+          break;
+        }
+      }
+    }
+    check('render_landed', made?.versions > 0, made?.failure ?? 'it never had a turn');
+    const number = made?.prefixes?.at(-1)?.run;
+    const run = (await api(`/v1/runs/${number}?detail=full`)).body;
+    const asked = run?.request?.input?.models;
+    const applied = run?.measurements?.models;
+    seen.render_run = { number, target: run?.target, machine: run?.machine, asked, applied, warnings: run?.warnings };
+    const slot = asked && Object.entries(asked).find(([, held]) => held.ref === fine.model || held.lora?.length);
+    check('call_was_passed_both', Object.values(asked ?? {}).some((held) => held.ref === fine.model) && Object.values(asked ?? {}).some((held) => held.lora?.some((one) => one.ref === lora.model)), asked ?? slot);
+    const word = (name) => name.split('/').pop();
+    check('machine_applied_both', (applied ?? []).some((model) => model.repository.includes(word(fine.model))) && (applied ?? []).some((model) => model.adapters?.some((one) => one.model.includes(word(lora.model)))), applied);
+    await page.waitForTimeout(1000);
+    await shot('rendered');
+  }
+
+  check('no_node_on_screen', !/\bnode\b/i.test(await page.evaluate(() => document.body.innerText)));
+  check('no_page_errors', errors.length === 0, errors);
+  check('no_csp_violations', (await page.evaluate(() => window.violations)).length === 0);
+  await browser.close();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(failures.length ? 1 : 0);
+})().catch((why) => died(why.stack ?? why));

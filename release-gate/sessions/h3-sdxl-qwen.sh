@@ -8,7 +8,7 @@
 #   traffic_gb  GB the provider bills (default 120)
 . "$(dirname "$0")/lib.sh"
 QWEN=$(param qwen qwen-image-2/generate@0.1.1)
-status() { cozy run show "$(runno "$1")" --once --json > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
+status() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 peak_mib() { jq -r '[.. | objects | select(has("peak_bytes")) | .peak_bytes] | max // 0 | . / 1048576 | floor' "$OUT/$1.json"; }
 [ -f "$REF/seed.jpg" ] || fail "no reference image"
 quote "$(param traffic_gb 120)" 2400
@@ -19,9 +19,9 @@ v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
 say "pod TensorD $v"
 
-REFS="[{\"name\": \"Mara\", \"kind\": \"character\", \"image\": \"$REF/seed.jpg\"}]"
-step h3 run minimax-h3/generate --on "$NAME" references:="$REFS" seed:=$RANDOM duration_s:=15 \
-  prompt="<Mara> walks along a rain-wet pier at dusk, gulls overhead, the camera tracking beside her." || fail "h3"
+REFS="[{\"name\": \"Mara\", \"asset_type\": \"character\", \"image\": \"$REF/seed.jpg\"}]"
+step h3 run minimax-h3/generate --on "$NAME" references:="$REFS" seed:=$RANDOM \
+  beats:='[{"description": "<Mara> walks along a rain-wet pier at dusk, gulls overhead, the camera tracking beside her.", "duration": 15}]' || fail "h3"
 [ "$(status h3)" = completed ] || fail "h3 $(jq -r '.status' "$OUT/h3.json"): $(jq -r '.reason.message // empty' "$OUT/h3.json" | cut -c1-300)"
 step sdxl run sdxl/generate --on "$NAME" prompt="a copper kettle on a stove, morning light, photo" seed:=$RANDOM || fail "sdxl"
 [ "$(status sdxl)" = completed ] || fail "sdxl did not complete"

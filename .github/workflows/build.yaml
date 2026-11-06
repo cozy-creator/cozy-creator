@@ -2,7 +2,8 @@ name: build
 # The PR check (tracker/design/ci-v2.md §1): the workspace compiles, clippy's deny lints pass (warnings are not
 # gates yet: master has 61 in tensorfs), and the routes hold to their API documents: every route hub-client calls is
 # in tensorhub's api/openapi.yaml, and TensorD's router, its client and crates/tensord/api/openapi.yaml name the same
-# routes. Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
+# routes, and every route web/app calls is one Calcifer serves. It also builds the page, so the checks compile it in.
+# Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
 # PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only entry (its diff from
 # the entry ahead) passes without building; ALLGREEN keeps it from vouching for the entries ahead (e2e.yaml).
 # The memory-safety step (scripts/memory-safety.sh) runs only when its inputs change.
@@ -34,7 +35,8 @@ jobs:
         run: |
           changes=$([ -z "$BASE" ] || gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --paginate --jq '.files[] | [.filename, ((.patch // "") | test("allow\\(unsafe_code\\)"))] | @tsv') || changes=
           files=$(cut -f1 <<< "$changes")
-          if [ -n "$files" ] && ! grep -qvE '\.(md|txt|png|jpe?g|svg)$|^docs/|(^|/)LICENSE$' <<< "$files"; then
+          # A picture under web/app is in the page.
+          if [ -n "$files" ] && ! grep -qvE '\.(md|txt|png|jpe?g|svg)$|^docs/|(^|/)LICENSE$' <<< "$files" && ! grep -q '^web/app/' <<< "$files"; then
             echo "docs only"; echo run=false >> "$GITHUB_OUTPUT"
           else
             echo run=true >> "$GITHUB_OUTPUT"
@@ -59,6 +61,19 @@ jobs:
         run: scripts/hub-routes.sh .tensorhub/api/openapi.yaml
       - if: steps.scope.outputs.run == 'true'
         run: scripts/machine-routes.sh
+      - if: steps.scope.outputs.run == 'true'
+        run: scripts/web-routes.sh
+      - if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: steps.scope.outputs.run == 'true'
+        uses: pnpm/setup@v1
+        with:
+          package-json-file: web/app/package.json
+          install: false
+      - if: steps.scope.outputs.run == 'true'
+        run: web/build.sh
       - if: steps.scope.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:

@@ -21,7 +21,7 @@ protocol.workspace = true
 futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true
-jiff = { workspace = true, features = ["serde"] }
+jiff = { workspace = true, features = ["serde", "tz-system"] }
 indicatif.workspace = true
 ratatui.workspace = true
 reqwest.workspace = true

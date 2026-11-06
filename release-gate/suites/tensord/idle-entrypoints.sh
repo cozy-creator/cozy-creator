@@ -24,7 +24,7 @@ canceled() {
   [ -z "$ONLY" ] || [[ $ONLY == *",$name,"* ]] || return 0
   ( for _ in $(seq 1 3600); do
       n=$(cat "$name.number" 2>/dev/null)
-      [ -n "$n" ] && [ "$n" != none ] && "$CLI" --json run show "$n" --once 2>/dev/null |
+      [ -n "$n" ] && [ "$n" != none ] && "$CLI" --json --full run show "$n" --once 2>/dev/null |
         jq -e '[.. | objects | .stage? | strings] | any(test("generat|denois"))' >/dev/null &&
         { "$CLI" run cancel "$n" -y > "$name.cancel" 2>&1; break; }
       sleep 1
@@ -37,18 +37,18 @@ canceled idle-cancel klein idle-cancel "$KA" "$SCENE at dusk, wide shot" 407
 klein idle-after-cancel "$KB" "$OBJECT in $SCENE, macro photo" 408
 # One character picture, as a project sends it: no model but H3's runs.
 ln -sfn "$REF" "idle-ref.${REF##*.}"
-lead="references: [{name: Lead, kind: character, image: ./idle-ref.${REF##*.}}]"
+lead="references: [{name: Lead, asset_type: character, image: ./idle-ref.${REF##*.}}]"
 # The pair's shots are 5 s: what is measured is the executor the second runs on, not the clip (the standard
 # construction's fewest steps, 30, cost a 15 s clip about an hour on a 4090).
 H3=$(pkg minimax-h3 generate)
 h3_shot() {  # h3_shot <file> <prompt> <seed> [yaml lines]
-  printf '%s\nprompt: "<Lead> %s %s"\nduration_s: 5\nseed: %d\n%s' "$lead" "$MOTION" "$2" "$3" "${4:-}" > "$1"
+  printf '%s\nbeats:\n  - description: "<Lead> %s %s"\n    duration: 5\nseed: %d\n%s' "$lead" "$MOTION" "$2" "$3" "${4:-}" > "$1"
 }
 h3_shot idle-h3-standard.yaml "The camera holds, then pans right." $((R + 409)) $'turbo: false\nsteps: 30\n'
 h3_shot idle-h3-turbo.yaml "The camera drifts left." $((R + 404))
 # Two pieces (16 s, planned from its `At` lines), both on idle-h3-t's Turbo Ref2VA construction.
 h3_shot idle-h3-pieces.yaml 'A slow push in, walking toward the camera.\nAt 00:08.000, <Lead> turns to the camera.' $((R + 405))
-sed -i 's/^duration_s: 5$/duration_s: 16/' idle-h3-pieces.yaml
+sed -i 's/^    duration: 5$/    duration: 16/' idle-h3-pieces.yaml
 cell idle-h3-s "$H3" --input idle-h3-standard.yaml --gpus="${GPUS:-1}"
 cell idle-h3-t "$H3" --input idle-h3-turbo.yaml --gpus="${GPUS:-1}"
 cell idle-h3-lf "$H3" --input idle-h3-pieces.yaml --gpus="${GPUS:-1}"

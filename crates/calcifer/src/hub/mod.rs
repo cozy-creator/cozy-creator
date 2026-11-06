@@ -5,6 +5,7 @@ mod account;
 pub(crate) mod after;
 mod asks;
 mod author;
+pub(crate) mod checkpoints;
 mod models;
 mod orgs;
 mod packages;
@@ -23,7 +24,7 @@ use axum::{
 use hub_client::{Client, DeviceKey};
 use protocol::{
     config::Origin,
-    hub::{ModelDownload, ModelUpload, PackageInstall},
+    hub::{ModelDownload, PackageInstall},
 };
 use serde::de::DeserializeOwned;
 
@@ -38,6 +39,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/account", get(account::show).delete(account::sign_out))
         .route("/v1/account/codes", post(account::send_code))
         .route("/v1/account/codes/{id}", post(account::prove))
+        .route("/v1/account/codes/{id}/step", post(account::step))
         .route("/v1/account/name", put(account::name))
         .route("/v1/account/key", put(account::install))
         .route("/v1/orgs/{org}", patch(orgs::edit))
@@ -46,12 +48,11 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/models/{org}/{name}", get(models::info).patch(models::edit).delete(models::delete))
         .route("/v1/models/{org}/{name}/releases", post(models::release))
         .route("/v1/models/{org}/{name}/releases/{version}", delete(models::delete_release))
-        .route("/v1/models/{org}/{name}/commits", post(weights::record))
         .route("/v1/models/{org}/{name}/commits/{commit}", delete(models::delete_commit))
         .route("/v1/model-downloads", post(asks::create::<ModelDownload>))
         .route("/v1/model-download-quotes", post(asks::quote::<ModelDownload>))
         .route("/v1/model-uploads", post(weights::upload))
-        .route("/v1/model-upload-quotes", post(asks::quote::<ModelUpload>))
+        .route("/v1/model-upload-quotes", post(weights::quote))
         .route("/v1/model-quantizations", post(quantize::create))
         .route("/v1/model-quantization-quotes", post(quantize::quote))
         .route("/v1/package-installs", post(asks::create::<PackageInstall>))

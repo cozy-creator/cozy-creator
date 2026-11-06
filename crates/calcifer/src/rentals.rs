@@ -388,7 +388,7 @@ impl Machines {
         let (request, alias, signer) = request(sku, shape);
         let quote = self.quoted(&origin, &request).await?;
         // Dearer than the renter agreed to a moment ago: nothing is rented.
-        let now = quote_of(&quote).agreed();
+        let now = quote_of(&quote).agreed;
         if let Some(agreed) = agreed.filter(|agreed| above(&now, agreed)) {
             return Err(Error::new(
                 Kind::Conflict,
@@ -524,13 +524,13 @@ impl Machines {
                     // An order stopped while this answer was on its way is released as well.
                     let released = match self.withdrawn(ask)? {
                         true => Some(("rental_stopped", STOPPED.to_owned())),
-                        false if above(&locked, &quoted.agreed()) => Some((
+                        false if above(&locked, &quoted.agreed) => Some((
                             "rental_rate_changed",
                             format!(
                                 "rental.rate_changed: {} locked {}, above the {} quoted; it is released",
                                 ask.hub,
                                 rate(&locked),
-                                rate(&quoted.agreed())
+                                rate(&quoted.agreed)
                             ),
                         )),
                         false => None,
@@ -1487,6 +1487,10 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
         expected_hours: expected.hours,
         expected_download_gb: u32::try_from(expected.download_gb).unwrap_or_default(),
         expected_total_usd_micros: expected.total_usd_micros,
+        agreed: Agreed {
+            usd_micros_per_hour: quote.price_usd_micros_per_hour + quote.storage_usd_micros_per_hour,
+            usd_micros_per_gb: quote.bandwidth_usd_micros_per_gb.unwrap_or_default(),
+        },
         warnings: quote.warnings.clone(),
     }
 }
@@ -1745,6 +1749,8 @@ fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey
         provider: shape.provider,
         sku: sku.to_owned(),
         development: shape.ssh_key.map(|ssh_public_key| types::RentalDevelopment { ssh_public_key }),
+        // The Hub holds the order to what was agreed, so a price that rose between here and there rents nothing.
+        max_usd_micros_per_hour: shape.agreed.map(|agreed| agreed.usd_micros_per_hour),
     };
     (request, alias, signer)
 }
@@ -1833,6 +1839,7 @@ fn ms(at: &str) -> Option<i64> {
 /// A live rental of this account that this controller did not rent.
 fn other(origin: &str, rental: &types::Rental, unverified: bool) -> Machine {
     Machine {
+        ssh: None,
         name: hub_name(rental).unwrap_or_else(|| rental.rental_id.clone()),
         kind: MachineKind::Rental,
         state: match rental.state.as_str() {

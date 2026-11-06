@@ -19,7 +19,7 @@ use hub_client::{Bearer, Client, Credential, DeviceKey, Enrollment, UserSession}
 use protocol::{
     config::Origin,
     error::{Error, Kind},
-    hub::{Account, At, Code, CodeAnswer, CodeRequest, ExportedKey, KeyInstall, Naming, Proven, Purpose, SignedOut},
+    hub::{Account, At, Code, CodeAnswer, CodeRequest, CodeStep, ExportedKey, KeyInstall, Naming, Proven, Purpose, SignedOut},
 };
 
 use super::{key, origin, reader, refusal, signed_in};
@@ -28,18 +28,29 @@ use crate::api::{Api, Refusal, parse, refuse};
 /// The label a Hub shows for this computer's key, and for an exported one.
 const LABEL: &str = "cozy";
 const EXPORT_LABEL: &str = "cozy-export";
-/// How long a code waits for what arrived; the Hub's own expire well before.
-const WAITS: Duration = Duration::from_secs(3600);
+/// How long a code waits for what arrived: the Hub's own last this long.
+const WAITS: Duration = Duration::from_secs(600);
+/// How many of a mailbox's codes an answer is tried on. Each miss spends the Hub's budget for guesses.
+const TRIED: usize = 3;
 
 /// The codes sent and not yet answered, by id.
 #[derive(Default)]
-pub(crate) struct Codes(Mutex<HashMap<String, Pending>>);
+pub(crate) struct Codes(Mutex<HashMap<String, Arc<Pending>>>);
 
 struct Pending {
     hub: Origin,
     purpose: Purpose,
     enrollment: Enrollment,
     sent: Instant,
+    /// The code the Hub answered with a step of its own (a refusal carrying `metadata`): the
+    /// enrollment is still live there, and finishes with this code once the step is taken.
+    stepped: Mutex<Option<String>>,
+}
+
+impl Pending {
+    fn to(&self, hub: &Origin, purpose: Purpose, email: &str) -> bool {
+        self.hub == *hub && self.purpose == purpose && self.enrollment.email().eq_ignore_ascii_case(email)
+    }
 }
 
 impl Codes {
@@ -47,12 +58,44 @@ impl Codes {
         let id = format!("code-{}", hex::encode(crate::random()));
         let mut codes = self.0.lock().expect("codes");
         codes.retain(|_, waiting| waiting.sent.elapsed() < WAITS);
-        codes.insert(id.clone(), pending);
+        codes.insert(id.clone(), Arc::new(pending));
         id
     }
 
-    fn take(&self, id: &str) -> Option<Pending> {
-        self.0.lock().expect("codes").remove(id)
+    /// What's live for this mailbox and reason, newest first.
+    fn sent_to(&self, hub: &Origin, purpose: Purpose, email: &str) -> Vec<(String, Arc<Pending>)> {
+        let codes = self.0.lock().expect("codes");
+        let live = codes.iter().filter(|(_, waiting)| waiting.sent.elapsed() < WAITS && waiting.to(hub, purpose, email));
+        let mut found: Vec<_> = live.map(|(id, waiting)| (id.clone(), waiting.clone())).collect();
+        found.sort_by_key(|(_, waiting)| waiting.sent.elapsed());
+        found
+    }
+
+    /// `id`'s code, then the newest others to its mailbox: each email has its own, and someone holding two may type either.
+    fn answers(&self, id: &str) -> Option<Vec<Arc<Pending>>> {
+        let named = self.0.lock().expect("codes").get(id).filter(|waiting| waiting.sent.elapsed() < WAITS)?.clone();
+        let others = self.sent_to(&named.hub, named.purpose, named.enrollment.email());
+        let others = others.into_iter().filter(|(other, _)| other != id).map(|(_, waiting)| waiting);
+        Some(std::iter::once(named).chain(others).take(TRIED).collect())
+    }
+
+    /// `pending`'s code reached a step: `id`, the one the client proved, now names it.
+    fn step(&self, id: &str, pending: &Arc<Pending>, code: &str) {
+        *pending.stepped.lock().expect("stepped") = Some(code.to_owned());
+        self.0.lock().expect("codes").insert(id.to_owned(), pending.clone());
+    }
+
+    /// `id`'s code waiting on a step, and that code.
+    fn stepping(&self, id: &str) -> Option<(Arc<Pending>, String)> {
+        let pending = self.0.lock().expect("codes").get(id).filter(|waiting| waiting.sent.elapsed() < WAITS)?.clone();
+        let code = pending.stepped.lock().expect("stepped").clone()?;
+        Some((pending, code))
+    }
+
+    /// One answered settles every code to that mailbox for that reason.
+    fn answered(&self, pending: &Pending) {
+        let email = pending.enrollment.email();
+        self.0.lock().expect("codes").retain(|_, waiting| !waiting.to(&pending.hub, pending.purpose, email));
     }
 }
 
@@ -123,43 +166,109 @@ pub(super) async fn send_code(
     let hub = origin(&api, ask.hub.as_deref())?;
     let anonymous = reader(&api, &hub)?.anonymous();
     let email = ask.email.as_deref().map(str::trim).filter(|e| !e.is_empty());
-    let enrollment = match (ask.purpose, email) {
-        (Purpose::SignIn, Some(email)) => Enrollment::begin(&anonymous, email, LABEL, None).await,
-        (Purpose::Export, Some(email)) => Enrollment::begin(&anonymous, email, EXPORT_LABEL, None).await,
-        (Purpose::SignIn | Purpose::Export, None) => {
-            return Err(refuse(Kind::Usage, "email_required", "a code is sent to the account's email: name it"));
+    // Proves the mailbox of the key this computer holds.
+    let session = match ask.purpose {
+        Purpose::SignOutEverywhere => {
+            Some(UserSession::open(&hub, api.machines.hubs.home(), || crate::rentals::login(&hub)).map_err(Refusal)?)
         }
-        // Proves the mailbox of the key this computer holds.
-        (Purpose::SignOutEverywhere, _) => {
-            let session = UserSession::open(&hub, api.machines.hubs.home(), || crate::rentals::login(&hub))
-                .map_err(Refusal)?;
-            Enrollment::begin(&anonymous, &session.key().email, LABEL, Some(session.key())).await
+        Purpose::SignIn | Purpose::Export => None,
+    };
+    let email = match (&session, email) {
+        (Some(session), _) => session.key().email.clone(),
+        (None, Some(email)) => email.to_owned(),
+        (None, None) => return Err(refuse(Kind::Usage, "email_required", "a code is sent to the account's email: name it")),
+    };
+    let label = if ask.purpose == Purpose::Export { EXPORT_LABEL } else { LABEL };
+    let enrollment = match Enrollment::begin(&anonymous, &email, label, session.as_ref().map(UserSession::key)).await {
+        Ok(enrollment) => enrollment,
+        Err(e) => {
+            // Asked again too soon: the code already out still works, so that's the answer.
+            let out = matches!(e, hub_client::Error::Hub { status: 429, .. }).then(|| api.codes.sent_to(&hub, ask.purpose, &email));
+            let Some((id, _)) = out.and_then(|mut codes| (!codes.is_empty()).then(|| codes.remove(0))) else {
+                return Err(refusal(&hub, e));
+            };
+            return Ok(Json(Code { id, email, retry_after_s: e.stated_wait().map(|wait| wait.as_secs()) }));
         }
     };
-    let enrollment = enrollment.map_err(|e| refusal(&hub, e))?;
-    let email = enrollment.email().to_owned();
-    let id = api.codes.keep(Pending { hub, purpose: ask.purpose, enrollment, sent: Instant::now() });
-    Ok(Json(Code { id, email }))
+    let id = api.codes.keep(Pending { hub, purpose: ask.purpose, enrollment, sent: Instant::now(), stepped: Mutex::default() });
+    Ok(Json(Code { id, email, retry_after_s: None }))
 }
 
-/// `POST /v1/account/codes/{id}`: what arrived, which does what the code was sent for. A code is
-/// answered once: a wrong one is sent again.
+/// The Hub's word that this isn't the code: 401, which isn't this computer's sign-in failing.
+fn wrong_code(error: &hub_client::Error) -> bool {
+    matches!(error, hub_client::Error::Hub { status: 401, code, .. } if code == "invalid_code" || code == "code_expired")
+}
+
+/// `POST /v1/account/codes/{id}`: what arrived, which does what the code was sent for. Either of
+/// two emails' codes works, and a wrong one leaves them waiting.
 pub(super) async fn prove(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Proven>, Refusal> {
     let CodeAnswer { code } = parse(&body?)?;
-    let Pending { hub, purpose, enrollment, .. } = api.codes.take(&id).ok_or_else(|| {
-        Refusal(Error::not_found("code_not_found", format!("no code {id} is waiting"))
-            .remedy("ask for another: it is answered once"))
+    let waiting = api.codes.answers(&id).ok_or_else(|| {
+        Refusal(Error::not_found("code_not_found", format!("no code {id} is waiting")).remedy("ask for another"))
     })?;
+    let (hub, purpose) = (waiting[0].hub.clone(), waiting[0].purpose);
     let anonymous = reader(&api, &hub)?.anonymous();
-    let (key, bearer) = enrollment.finish(&anonymous, &code).await.map_err(|e| refusal(&hub, e))?;
-    Ok(Json(match purpose {
+    for pending in &waiting {
+        match pending.enrollment.finish(&anonymous, &code).await {
+            Ok((key, bearer)) => {
+                api.codes.answered(pending);
+                return Ok(Json(finished(&api, &hub, purpose, key, bearer).await?));
+            }
+            Err(e) if wrong_code(&e) => {}
+            Err(e) => return Err(stepped(&api, &id, pending, &code, e)),
+        }
+    }
+    Err(Refusal(
+        Error::new(Kind::Validation, "code_wrong", "that code isn't right").remedy("use the code from your latest email, or ask for another"),
+    ))
+}
+
+/// `POST /v1/account/codes/{id}/step`: the step a Hub named, refusing `id`'s code with its details, sent
+/// under AuthKit's mount as asked; then that code again, which finishes as `prove` does.
+pub(super) async fn step(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<Proven>, Refusal> {
+    let CodeStep { path, body } = parse(&body?)?;
+    let plain = |segment: &str| !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    if !path.split('/').all(plain) {
+        return Err(refuse(Kind::Validation, "step_path_invalid", format!("{path:?} isn't a path under AuthKit's mount")));
+    }
+    let (pending, code) = api.codes.stepping(&id).ok_or_else(|| {
+        Refusal(Error::not_found("code_not_found", format!("no code {id} waits on a step")).remedy("ask for another"))
+    })?;
+    let anonymous = reader(&api, &pending.hub)?.anonymous();
+    anonymous.authkit_step(&path, &body).await.map_err(|e| refusal(&pending.hub, e))?;
+    match pending.enrollment.finish(&anonymous, &code).await {
+        Ok((key, bearer)) => {
+            api.codes.answered(&pending);
+            Ok(Json(finished(&api, &pending.hub, pending.purpose, key, bearer).await?))
+        }
+        Err(e) => Err(stepped(&api, &id, &pending, &code, e)),
+    }
+}
+
+/// A refusal of a code that names a step of the Hub's own (one with `metadata`) leaves the
+/// enrollment waiting on it, under `id`.
+fn stepped(api: &Api, id: &str, pending: &Arc<Pending>, code: &str, error: hub_client::Error) -> Refusal {
+    if matches!(&error, hub_client::Error::Hub { metadata: Some(_), .. }) {
+        api.codes.step(id, pending, code);
+    }
+    refusal(&pending.hub, error)
+}
+
+/// What a finished code does: keeps this computer's key, answers an exported one, or signs out
+/// every other key.
+async fn finished(api: &Api, hub: &Origin, purpose: Purpose, key: DeviceKey, bearer: Bearer) -> Result<Proven, Refusal> {
+    Ok(match purpose {
         Purpose::SignIn => {
-            keep(&api, &hub, &key, Some(&bearer))?;
-            Proven::SignIn(enrolled(&api, &hub).await?)
+            keep(api, hub, &key, Some(&bearer))?;
+            Proven::SignIn(enrolled(api, hub).await?)
         }
         Purpose::Export => Proven::Export(ExportedKey {
             email: key.email.clone(),
@@ -167,11 +276,11 @@ pub(super) async fn prove(
             key: String::from_utf8(key.document()).expect("a key is JSON"),
         }),
         Purpose::SignOutEverywhere => {
-            let proven = Client::connect(&hub, reqwest::Client::new(), Credential::Bearer(bearer.token));
-            proven.revoke_other_device_keys().await.map_err(|e| refusal(&hub, e))?;
-            Proven::SignOutEverywhere(erase(&api, &hub, true).await?)
+            let proven = Client::connect(hub, reqwest::Client::new(), Credential::Bearer(bearer.token));
+            proven.revoke_other_device_keys().await.map_err(|e| refusal(hub, e))?;
+            Proven::SignOutEverywhere(erase(api, hub, true).await?)
         }
-    }))
+    })
 }
 
 /// `PUT /v1/account/name`: names the account a new key signs in as.

@@ -13,7 +13,7 @@ use crate::{Context, output};
 
 mod end;
 mod history;
-mod list;
+pub(crate) mod list;
 pub(crate) mod live;
 mod local;
 pub(crate) use end::activate;
@@ -243,27 +243,18 @@ async fn add(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `cozy machine ssh`: `ssh` as root into a rental rented with `--ssh`, trusting its host key
-/// the first time, in a known-hosts file of that rental's own.
+/// `cozy machine ssh`: runs `Machine.ssh`, for a rental rented with `--ssh`.
 async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, Error> {
     let m = machine(ctx, name).await?;
-    let Some((rental, address)) = m.rental_id.as_ref().zip(m.rental.as_ref().and_then(|r| r.ssh.as_deref())) else {
+    let Some(login) = &m.ssh else {
         return Err(match &m.rental {
             Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{} was rented without an SSH key, and a rental can't take one later", m.name))
                 .next(format!("cozy machine rent {} --ssh", rental.sku)),
             None => Error::new(Kind::Usage, "machine_ssh_none", format!("{} is not a rental: SSH there as its owner does", m.name)),
         });
     };
-    let (host, port) = address.rsplit_once(':').ok_or_else(|| {
-        Error::new(Kind::Internal, "machine_ssh_address", format!("{address:?} is not host:port"))
-    })?;
-    let known = ctx.home.root().join("ssh");
-    std::fs::create_dir_all(&known)
-        .map_err(|e| Error::new(Kind::Internal, "machine_ssh_known_hosts", format!("{}: {e}", known.display())))?;
-    let mut ssh = std::process::Command::new("ssh");
-    ssh.args(["-p", port, "-o", "StrictHostKeyChecking=accept-new", "-o"])
-        .arg(format!("UserKnownHostsFile={}", known.join(format!("{rental}.known_hosts")).display()))
-        .arg(format!("root@{}", host.trim_start_matches('[').trim_end_matches(']')));
+    let mut ssh = std::process::Command::new(&login.args[0]);
+    ssh.args(&login.args[1..]);
     if !command.is_empty() {
         ssh.arg("--").args(command);
     }

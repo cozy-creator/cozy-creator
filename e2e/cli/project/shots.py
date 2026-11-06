@@ -2,20 +2,18 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
 # ///
-"""The project cell's shot package: weightless, an adapter per file type, and each function says what it was given. A `video`: its
-video is its plate, `given` the request it got, and `written` a picture per write; the field `bare` calls a function that takes no
-writes, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
-going, `segments` makes a long shot's way, segment by segment, each shown as it ends, `fresh` makes its plate's video new bytes, a file nothing has measured, `noise` a video ffprobe can't read, and `crash` a run that fails saying it. An `image`
-types its operation's fields. An `audio` says its `options`."""
+"""The project cell's shot package: weightless, and each function is a node. `shoot`'s video is its first mention's, or its plate, and
+`given` says what it got. `refuse` is its own no. `bare` is a function of just its video, `scenes` a long shot's way, segment by segment,
+each shown as it ends, `fresh` makes its plate's video new bytes, a file nothing has measured, `noise` a video ffprobe can't read,
+`crash` fails, `slow` waits and has no seed, and `typed` says when a field isn't one."""
 
-import hashlib
 import json
 import os
 import struct
 import time
 
 import msgspec
-from cozy_runtime.author import App, File, ImageFrame, Invocation, Operation, Outputs, Refuse, Telemetry
+from cozy_runtime.author import App, File, InvalidRequest, Node, Outputs, Telemetry, VideoFile
 
 app = App()
 
@@ -30,72 +28,55 @@ class Keeping(msgspec.Struct, kw_only=True):
     at_s: float | None = None
 
 
-class Ask(msgspec.Struct, kw_only=True):
+class Beat(msgspec.Struct, kw_only=True):
+    description: str = ""
+    duration: float = 5
+
+
+class Seen(msgspec.Struct, kw_only=True):
     name: str
-    at_s: float | None = None
+    video: File | None = None
+    image: File | None = None
+    latents: File | None = None
 
 
 class Request(msgspec.Struct, kw_only=True):
-    prompt: str
-    plate: Plate
+    prompt: str = ""
+    summary: str = ""
+    beats: list[Beat] = []
+    plate: Plate | None = None
+    references: list[Seen] = []
     seed: int | None = None
-    writes: list[Ask] = []
     continue_from: Keeping | None = None
+    refuse: str = ""
 
 
 class Take(msgspec.Struct):
     video: File
     latents: File
     given: File
-    written: list[File]
     kept_s: float | None
     warnings: list[str]
 
 
-@app.entrypoint()
+@app.entrypoint(node=Node(reserved=["d", "english"], fill={"continue_from": "take"}))
 def shoot(payload: Request, out: Outputs) -> Take:
+    if payload.refuse:
+        raise InvalidRequest(payload.refuse)
     keeps = payload.continue_from
-    given = {"prompt": payload.prompt, "seed": payload.seed, "writes": [ask.name for ask in payload.writes],
-             "at": [ask.at_s for ask in payload.writes], "keep": keeps.at_s if keeps else None}
-    frames = [out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png") for _ in payload.writes]
-    return Take(out.save_bytes(payload.plate.video.read_bytes(), media_type="video/mp4"), out.save_bytes(os.urandom(32), media_type="application/octet-stream"),
-                out.save_bytes(json.dumps(given).encode(), media_type="application/json"), frames,
+    plate = payload.plate.video if payload.plate else next((seen.video for seen in payload.references if seen.video), None)
+    if plate is None:
+        raise InvalidRequest("this mentions no video to shoot")
+    said = [f"{seen.name}={'video' if seen.video else 'image'}{'+latents' if seen.latents else ''}" for seen in payload.references]
+    given = {"prompt": " | ".join([payload.prompt or payload.summary, *said]), "seed": payload.seed, "keep": keeps.at_s if keeps else None}
+    return Take(out.save_bytes(plate.read_bytes(), media_type="video/mp4"), out.save_bytes(os.urandom(32), media_type="application/octet-stream"),
+                out.save_bytes(json.dumps(given).encode(), media_type="application/json"),
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
 
-@app.project_adapter("video", reserved=["d", "english"])
-def adapt(op: Operation) -> list[Invocation]:
-    """Its own words, nothing the format names. A field says what to do: answer no run, refuse, or call another of its functions."""
-    if op.fields.get("refuse"):
-        raise Refuse(str(op.fields["refuse"]))
-    if op.fields.get("crash"):
-        return [Invocation(function="crash", input={"prompt": str(op.fields["crash"])})]
-    if "seconds" in op.fields:
-        return [Invocation(function="slow", input={"seconds": op.fields.get("seconds", 20)})]
-    if op.fields.get("two_calls"):
-        return [Invocation(function="first_call", input={"prompt": op.asset}), Invocation(function="second_call", input={"of": "$0.first"})]
-    plate = next((read for read in op.reads if "video" in read.files), None)
-    if plate is None or op.fields.get("no_run"):
-        return []
-    if "segments" in op.fields:
-        return [Invocation(function="scenes", input={"plate": plate.files["video"].sha256, "segments": op.fields["segments"], "seconds": op.fields.get("each", 2)})]
-    if op.fields.get("bare"):
-        return [Invocation(function="bare", input={"prompt": str(op.fields.get("summary", "")), "plate": plate.files["video"].sha256})]
-    if op.fields.get("fresh"):
-        return [Invocation(function="fresh", input={"plate": plate.files["video"].sha256})]
-    if op.fields.get("noise"):
-        return [Invocation(function="noise", input={"prompt": op.asset})]
-    said = [f"{read.name}={read.kind}{'+latents' if 'latents' in read.files else ''}" for read in op.reads]
-    told = " | ".join([op.asset, str(op.fields.get("summary", "")), *said])
-    request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}, "writes": [{"name": write.name, "at_s": write.at_s} for write in op.writes]}
-    if op.keep:
-        request["continue_from"] = {"video": op.keep.video.sha256, "at_s": op.keep.at_s} | ({"latents": op.keep.latents.sha256} if op.keep.latents else {})
-    return [Invocation(function="shoot", input=request)]
-
-
 class Bare(msgspec.Struct, kw_only=True):
-    prompt: str
-    plate: File
+    plate: VideoFile
+    summary: str = ""
 
 
 class BareTake(msgspec.Struct):
@@ -103,14 +84,16 @@ class BareTake(msgspec.Struct):
 
 
 class Fresh(msgspec.Struct, kw_only=True):
-    plate: File
+    plate: VideoFile
+    summary: str = ""
     seed: int | None = None
 
 
 class Scenes(msgspec.Struct, kw_only=True):
-    plate: File
+    plate: VideoFile
+    summary: str = ""
     segments: int
-    seconds: float
+    each: float = 2
     seed: int | None = None
 
 
@@ -123,7 +106,7 @@ def scenes(payload: Scenes, out: Outputs, tel: Telemetry) -> BareTake:
         with tel.scope(f"Segment {index + 1} of {count}", overall_range=(index / count, (index + 1) / count)):
             step = tel.step_callback(steps, stage="denoise")
             for at in range(steps):
-                time.sleep(payload.seconds / steps)
+                time.sleep(payload.each / steps)
                 step(at)
         video = out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4")
         out.publish("video", video, label="Video" if index + 1 == count else f"Segment {index + 1} of {count}")
@@ -140,14 +123,8 @@ def fresh(payload: Fresh, out: Outputs) -> BareTake:
     return BareTake(out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4"))
 
 
-
-
 class Words(msgspec.Struct, kw_only=True):
     summary: str = ""
-
-
-class TypedOperation(Operation, kw_only=True):
-    fields: Words
 
 
 class Text(msgspec.Struct, kw_only=True):
@@ -158,24 +135,28 @@ class Saved(msgspec.Struct):
     given: File
 
 
+class Noise(msgspec.Struct, kw_only=True):
+    summary: str = ""
+
+
+class Crash(msgspec.Struct, kw_only=True):
+    crash: str
+    summary: str = ""
+
+
 @app.entrypoint()
-def noise(payload: Text, out: Outputs) -> BareTake:
+def noise(payload: Noise, out: Outputs) -> BareTake:
     return BareTake(out.save_bytes(os.urandom(4096), media_type="video/mp4"))
 
 
 @app.entrypoint()
-def crash(payload: Text, out: Outputs) -> Saved:
-    raise RuntimeError(payload.prompt)
+def crash(payload: Crash, out: Outputs) -> BareTake:
+    raise RuntimeError(payload.crash)
 
 
 @app.entrypoint()
-def typed(payload: Text, out: Outputs) -> Saved:
-    return Saved(out.save_bytes(payload.prompt.encode() + os.urandom(4), media_type="application/json"))
-
-
-@app.project_adapter("image")
-def adapt_typed(op: TypedOperation) -> list[Invocation]:
-    return [Invocation(function="typed", input={"prompt": op.fields.summary})]
+def typed(payload: Words, out: Outputs) -> Saved:
+    return Saved(out.save_bytes(payload.summary.encode() + os.urandom(4), media_type="application/json"))
 
 
 class Untyped(msgspec.Struct):
@@ -187,39 +168,14 @@ def only_untyped(payload: Text, out: Outputs) -> Untyped:
     return Untyped(out.save_bytes(payload.prompt.encode() + os.urandom(4), media_type="application/octet-stream"))
 
 
-class First(msgspec.Struct):
-    first: File
-
-
-class Second(msgspec.Struct):
-    second: File
-
-
-class Earlier(msgspec.Struct, kw_only=True):
-    of: File
+class Echo(msgspec.Struct, kw_only=True):
+    b: str = ""
+    c: int = 0
 
 
 @app.entrypoint()
-def first_call(payload: Text, out: Outputs) -> First:
-    return First(out.save_bytes(payload.prompt.encode() + os.urandom(4), media_type="application/json"))
-
-
-@app.entrypoint()
-def second_call(payload: Earlier, out: Outputs) -> Second:
-    return Second(out.save_bytes(f"sha256:{hashlib.sha256(payload.of.read_bytes()).hexdigest()}".encode(), media_type="text/plain"))
-
-
-
-
-@app.entrypoint()
-def echo(payload: Text, out: Outputs) -> Saved:
-    return Saved(out.save_bytes(payload.prompt.encode(), media_type="application/json"))
-
-
-@app.project_adapter("audio")
-def adapt_told(op: Operation) -> list[Invocation]:
-    """`options` is its own map: what it does with them is its business."""
-    return [Invocation(function="echo", input={"prompt": json.dumps(op.options, sort_keys=True)})]
+def echo(payload: Echo, out: Outputs) -> Saved:
+    return Saved(out.save_bytes(json.dumps(msgspec.to_builtins(payload), sort_keys=True).encode(), media_type="application/json"))
 
 
 class Wait(msgspec.Struct, kw_only=True):
@@ -228,8 +184,6 @@ class Wait(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint()
-def slow(payload: Wait, out: Outputs) -> Saved:
+def slow(payload: Wait, out: Outputs) -> BareTake:
     time.sleep(payload.seconds)
-    return Saved(out.save_bytes(os.urandom(8), media_type="application/json"))
-
-
+    return BareTake(out.save_bytes(os.urandom(8), media_type="video/mp4"))

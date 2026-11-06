@@ -10,6 +10,7 @@
 
 [global]
 "--json" = "pr: every step reads the JSON answer"
+"--full" = "pr: agent, a run's whole record and the live view's columns"
 "--yes" = "pr: candidates (machine update -y)"
 
 [completion]
@@ -117,7 +118,7 @@ test = "pr: models"
 test = "release: throwaway model, family set and cleared"
 "--clear" = "release: throwaway model, family set and cleared"
 ["model upload"]
-test = "release: throwaway model, uploaded from a file and from a run's output"
+test = "release: throwaway model, uploaded from a file, from a held file, from a run's output, and a commit recorded"
 "--on" = "release: throwaway model"
 "--lane" = "release: throwaway model, two lanes"
 "--source-format" = "release: throwaway model, its files kept as-is"
@@ -178,6 +179,10 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --provider" = "pending: dev builds only (cargo feature `dev`), never in a release; release-gate/suites/hub rents cpu once per provider with a dev-build cozy, ended and checked gone; the Hub decides who may"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
+[open]
+test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
+"--no-open" = "pr: web-serves; a project's session: its folder, a folder of none, an older format. Opening a browser: manual, a person on a desktop"
+
 ["project new"]
 test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
 
@@ -185,14 +190,18 @@ test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
 test = "pr: projects: the index, a moved folder missing, a DELETEd one gone"
 
 ["project status"]
-test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes"
+test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes; by the CLI: one asset"
+
+["project wait"]
+test = "pr: agent: nothing going says the project, a render followed to its end, a failure exits 1 (gate: a stall exits 4)"
 
 ["project render"]
-test = "pr: projects: only what has no state; reverting runs nothing; cuts; adapters; a world-state series"
+test = "pr: projects: only what has no state; reverting runs nothing; cuts; a function's inputs; every mention filled; a world-state series"
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
 "--missing" = "pr: projects: only what has no state; reverting runs nothing"
-"--take" = "pr: projects: keeps: the take reaches the adapter as op.keep, one it doesn't have refused"
+"--outdated" = "pr: a pin out of date: skipped by the plain run, re-run at its turn, its pin gone, the version it held kept"
+"--take" = "pr: projects: keeps: the take reaches the function as continue_from, one it doesn't have refused"
 "--in" = "pr: projects: keeps: where it lands, ignored with all"
 "--queue" = "pr: projects: three queued, one canceled, the rest land"
 "--plain" = "pr: projects: by asset, one line per event on a terminal too"
@@ -201,14 +210,34 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; adap
 test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"
 
 ["project import"]
-test = "pr: projects: a path and a URL as real files, a type refused, what it says when it copies nothing"
-"--remove-background" = "pr: a project's imports: already transparent, no machine; model: a real run"
-"--on" = "pr: a project's imports: no such machine"
+test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs"
+"--description" = "pr: web-live: a file lifted out as its own asset, with its words"
+"--into" = "pr: projects: a file joins a box as its next version, and makes no asset of its own"
+
+["project add"]
+test = "pr: by the CLI: fields, a name, where it sits; web-live: shows on the open canvas within a second"
+
+["project set"]
+test = "pr: by the CLI: a value, JSON, clearing, what makes it, where it sits; web-live: on the open canvas, past what's typed"
+"--input" = "pr: by the CLI: fields from a file, from stdin, a term over them; web-live: an Edit's clips"
+
+["project delete"]
+test = "pr: by the CLI: prints what restores it; web-live: gone from the open canvas"
+"--version" = "pr: discards: a take off its box at once, one or several, each printing what restores it"
+
+["project restore"]
+test = "pr: by the CLI: the line delete printed, run as printed, its takes kept; web-live: back where it was"
+"--version" = "pr: discards: a discarded take back in its place, as delete printed it"
+"--approved" = "pr: discards: the approved take back with its approval, as delete printed it"
+
+["project upgrade"]
+test = "pr: projects: format 2 to format 3, nothing out of date and nothing run"
+"--status" = "pr: projects: what the older cozy said, its measurements and fields kept"
 
 ["project approve"]
 test = "pr: projects: one line of project.yaml, comments surviving, an edit just before it surviving"
 
-["project unpin"]
+["project unapprove"]
 test = "pr: projects: gives the file back, restoring an input the pin was over"
 
 ["project rename"]

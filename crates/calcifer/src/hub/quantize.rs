@@ -241,20 +241,19 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
     Ok(Source { spelled: format!("{repo}@{}", commit.id()), repo: repo.clone(), components })
 }
 
-/// `hub`'s distribution endpoint as this computer's signed-in user, trusting the private CA the
-/// Hub names (a test Hub's).
+/// `hub`'s distribution endpoint as this computer's signed-in user.
 async fn endpoint(api: &Api, hub: &Origin) -> Result<Endpoint, Refusal> {
-    let client = signed_in(api, hub)?;
-    let hub_client::Credential::User(session) = client.credential() else {
-        unreachable!("a signed-in client");
-    };
-    let ca = (client.get_execution_environment().await).map_err(|e| refusal(hub, e))?.environment.tensorhub_ca_der_b64url;
-    let token = (session.bearer(&client.anonymous()).await).map_err(|e| refusal(hub, e))?.token;
-    let config = Config {
-        token: Some(tensorfs::bearer(token)),
-        ca_der: ca.and_then(|ca| URL_SAFE_NO_PAD.decode(ca.trim()).ok()),
-        ..Config::from_env()
-    };
+    distribution(&signed_in(api, hub)?, hub).await
+}
+
+/// `hub`'s distribution endpoint as `client`: signed in, trusting the private CA the Hub names (a test Hub's), else what's public.
+pub(super) async fn distribution(client: &hub_client::Client, hub: &Origin) -> Result<Endpoint, Refusal> {
+    let mut config = Config::from_env();
+    if let hub_client::Credential::User(session) = client.credential() {
+        let ca = (client.get_execution_environment().await).map_err(|e| refusal(hub, e))?.environment.tensorhub_ca_der_b64url;
+        let token = (session.bearer(&client.anonymous()).await).map_err(|e| refusal(hub, e))?.token;
+        config = Config { token: Some(tensorfs::bearer(token)), ca_der: ca.and_then(|ca| URL_SAFE_NO_PAD.decode(ca.trim()).ok()), ..config };
+    }
     Endpoint::with_config(hub.as_str(), &config).map_err(|f| Refusal(Error::validation("endpoint_invalid", f.detail)))
 }
 

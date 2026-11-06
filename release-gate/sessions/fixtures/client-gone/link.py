@@ -1,13 +1,13 @@
 """The line between a computer and a machine, on one pod: forwards `listen` to `target`, the machine's bytes at the rate its control
-file says. `up`: forward, as fast as it can. `up <bytes/s>`: forward at that rate. `down`: nothing listens, and what was open is cut,
-as when a laptop loses its network."""
+file says. `up`: forward, as fast as it can. `up <bytes/s>`: forward at that rate. `up <bytes/s> both`: the computer's bytes too, at
+that rate in each direction. `down`: nothing listens, and what was open is cut, as when a laptop loses its network."""
 import asyncio
 import sys
 import time
 
 listen, host, port, control = int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
 writers = set()
-free_at = 0.0
+free_at = {True: 0.0, False: 0.0}
 
 
 def said():
@@ -15,19 +15,20 @@ def said():
         words = open(control).read().split()
     except OSError:
         words = ["up"]
-    return (words[0] if words else "up"), (int(words[1]) if len(words) > 1 else 0)
+    return (words[0] if words else "up"), (int(words[1]) if len(words) > 1 else 0), words[2:] == ["both"]
 
 
 async def carry(reader, writer, paced):
     global free_at
     try:
         while data := await reader.read(1 << 16):
-            rate = said()[1] if paced else 0
+            _, rate, both = said()
+            rate = rate if paced or both else 0
             if rate:
-                # One line, whatever crosses it.
+                # One line each way, whatever crosses it.
                 now = time.monotonic()
-                free_at = max(free_at, now) + len(data) / rate
-                await asyncio.sleep(free_at - now)
+                free_at[paced] = max(free_at[paced], now) + len(data) / rate
+                await asyncio.sleep(free_at[paced] - now)
             writer.write(data)
             await writer.drain()
     except (ConnectionError, OSError, asyncio.CancelledError):

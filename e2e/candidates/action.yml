@@ -101,6 +101,16 @@ runs:
       with:
         workspaces: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }} -> target
         save-if: ${{ github.ref == 'refs/heads/master' }}
+    # The page cozy embeds; build.sh builds it. A ref from before web/app has none.
+    - if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == '' && hashFiles(format('{0}/web/app/package.json', inputs.repo == 'cozy-creator' && '.src' || '.stack')) != ''
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == '' && hashFiles(format('{0}/web/app/package.json', inputs.repo == 'cozy-creator' && '.src' || '.stack')) != ''
+      uses: pnpm/setup@v1
+      with:
+        package-json-file: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }}/web/app/package.json
+        install: false
     - id: cozy
       if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == ''
       shell: bash

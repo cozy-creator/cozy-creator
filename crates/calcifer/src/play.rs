@@ -21,16 +21,51 @@ use crate::{
     store::{State as RunState, now_ms},
 };
 
+/// The static player page (GitHub Pages' build of `web/player`).
+const PLAYER: &str = "https://cozy-creator.github.io/cozy-creator/play/";
+
 #[derive(Deserialize)]
 pub struct Ask {
     /// `name`, or `name/i` for a list's item `i`.
     output: String,
+    /// How long the link works, such as `30m`, `24h` or `7d`.
     #[serde(default = "an_hour")]
-    expires_s: u64,
+    expires: String,
 }
 
-fn an_hour() -> u64 {
-    3600
+fn an_hour() -> String {
+    "1h".into()
+}
+
+/// A lifetime in seconds: a positive count of seconds, minutes, hours or days (`90s`, `30m`, `24h`, `7d`).
+fn lifetime(text: &str) -> Result<u64, Refusal> {
+    let invalid = || Refusal(Error::new(Kind::Usage, "play_expires_invalid", format!("{text:?} is not a duration like 30m, 24h or 7d")));
+    let unit = text.chars().last().ok_or_else(invalid)?;
+    let count: u64 = text[..text.len() - unit.len_utf8()].parse().map_err(|_| invalid())?;
+    let scale = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => return Err(invalid()),
+    };
+    match count {
+        0 => Err(invalid()),
+        count => Ok(count * scale),
+    }
+}
+
+/// The player's link: everything it needs rides the fragment, which never leaves the browser.
+fn link(address: &str, fingerprint: &str, token: &str, run: &RunId, output: &str) -> String {
+    let fragment = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("v", "1")
+        .append_pair("a", address)
+        .append_pair("f", fingerprint)
+        .append_pair("c", token)
+        .append_pair("r", run.as_str())
+        .append_pair("o", output)
+        .finish();
+    format!("{PLAYER}#{fragment}")
 }
 
 pub async fn play(
@@ -39,6 +74,10 @@ pub async fn play(
     query: Result<Query<Ask>, QueryRejection>,
 ) -> Result<Json<Play>, Refusal> {
     let Query(ask) = query?;
+    if ask.output.is_empty() || ask.output.contains(['#', '&', '=', ' ', '\t', '\n']) {
+        return Err(Refusal(Error::new(Kind::Usage, "play_output_invalid", "name one output, or name/index")));
+    }
+    let expires_s = lifetime(&ask.expires)?;
     let row = find(&api, &key)?;
     let refuse = |kind, code: &str, message: String| Refusal(Error::new(kind, code, message));
     // A run still going may yet make the output; an ended one never will.
@@ -87,20 +126,18 @@ pub async fn play(
             let message = format!("cannot read the signing key {}", machine.key.display());
             refuse(Kind::Internal, "machine_key_unreadable", message)
         })?;
+    let url_for = |token: &str| link(address, &webrtc.fingerprint, token, &row.id, &ask.output);
+    let token = token(&signer, endpoint.worker_id, &row.id, ask.output.clone(), expires_s);
     Ok(Json(Play {
+        url: url_for(&token),
         address: address.clone(),
-        fingerprint: webrtc.fingerprint,
-        token: token(
-            &signer,
-            endpoint.worker_id,
-            &row.id,
-            ask.output,
-            ask.expires_s,
-        ),
+        fingerprint: webrtc.fingerprint.clone(),
+        token,
+        expires_s,
     }))
 }
 
-/// A Cozy-Cap for one output of one run on one machine, for `expires_s` (at least 1) from now.
+/// A Cozy-Cap for one output of one run on one machine, for `expires_s` from now.
 fn token(
     signer: &SigningKey,
     machine: String,
@@ -112,7 +149,7 @@ fn token(
         machine,
         run: run.to_string(),
         outputs: vec![output],
-        expires: now_ms() / 1000 + expires_s.max(1) as i64,
+        expires: now_ms() / 1000 + expires_s as i64,
         ..Grant::default()
     };
     capability::mint(signer, grant)

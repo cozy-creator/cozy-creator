@@ -19,6 +19,7 @@ pub mod project;
 pub mod report;
 pub mod stage;
 pub mod target;
+pub mod tool;
 pub mod tree;
 pub mod yaml;
 

@@ -130,6 +130,15 @@ impl Client {
         self.json(request.json(&body)).await
     }
 
+    /// POSTs `body` to `path` under AuthKit's mount: a step AuthKit itself named for a sign-in,
+    /// which only AuthKit's contract holds, so it is the one call `at`'s routes don't list.
+    /// `path` is plain segments (`account/recovery/confirm`); the caller checks it.
+    pub async fn authkit_step(&self, path: &str, body: &serde_json::Value) -> Result<(), Error> {
+        let url = format!("{}/v1/auth/v1/{path}", self.origin);
+        let request = self.http.request(Method::POST, url).header(ACCEPT, "application/json");
+        self.send(request.json(body)).await.map(drop)
+    }
+
     pub(crate) async fn finish_device_key_enrollment(
         &self,
         enrollment_id: &str,

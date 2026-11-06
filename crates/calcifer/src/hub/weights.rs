@@ -11,14 +11,14 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path as UrlPath, State, rejection::BytesRejection},
+    extract::{State, rejection::BytesRejection},
     http::StatusCode,
 };
 use protocol::{
-    calcifer::{Agreed, Kind as RunKind, On, OutputItem, Run, StagedInput, SubmitRun, Warning},
+    calcifer::{Agreed, Kind as RunKind, On, OutputItem, Run, RunQuote, StagedInput, SubmitRun, Warning},
     config::Origin,
     error::{Error, Kind},
-    hub::{Mirrored, ModelCommitAsk, ModelDownload, ModelUpload, ModelUploading, RecordedCommit},
+    hub::{Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit},
     ids::Digest,
     machine::{self as v1, InputFile, ModelChoice},
     model_ref::{self as refs, ModelRef, Repo},
@@ -80,6 +80,28 @@ async fn source(raw: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal
         ..Default::default()
     };
     Ok((choice, Some(staged)))
+}
+
+/// The file `named` holds (`PUT /v1/files`, `sha256:<hex>`) as the model a warm run makes present: one `.safetensors` file by its
+/// bytes, since a held file has no name to read. Its digest is its name.
+fn held(api: &Api, named: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+    let digest: Digest = named.parse().map_err(|why: &str| usage("file_name_invalid", format!("{named:?}: {why}")))?;
+    let Some(path) = crate::runs::files::held(&api.calcifer, &digest) else {
+        let said = format!("Calcifer holds no file {named}");
+        return Err(Refusal(Error::new(Kind::NotFound, "file_not_held", said).remedy(format!("PUT its bytes to /v1/files/{named} first"))));
+    };
+    let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
+    let mut file = std::fs::File::open(&path).map_err(|e| refused(e.to_string()))?;
+    let length = file.metadata().map_err(|e| refused(e.to_string()))?.len();
+    let mut head = [0; 9];
+    file.read_exact(&mut head).map_err(|_| refused(format!("{named} is not a .safetensors file")))?;
+    let header = u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
+    if head[8] != b'{' || header.saturating_add(8) > length {
+        return Err(refused(format!("{named} is not a .safetensors file")));
+    }
+    crate::runs::files::touch(&path);
+    let choice = ModelChoice { parameter: "model".into(), source: format!("object://{digest}/model.safetensors"), ..Default::default() };
+    Ok((choice, Some(StagedInput { path, digest, length })))
 }
 
 /// A local model file, measured once: one regular `.safetensors` file.
@@ -262,12 +284,6 @@ impl Ask for ModelUpload {
         if self.trained_on.is_some() && !converted {
             return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; this source already was"));
         }
-        if commit && self.base.is_none() {
-            let message = format!("{} is at the Hub already: it is recorded, not uploaded", self.source);
-            return Err(Refusal(
-                Error::new(Kind::Usage, "model_commit_recorded", message).remedy(format!("POST /v1/models/{destination}/commits")),
-            ));
-        }
         let display = |offered| After::Display { model: destination.clone(), trigger: self.trigger.clone(), strength: self.strength, offered };
         if let Some(reference) = self.source.strip_prefix("run:") {
             if self.base.is_some() {
@@ -277,6 +293,7 @@ impl Ask for ModelUpload {
             let submit = from_run(api, reference, &destination, &lane)?;
             return Ok(warned(Prepared { submit, after: Some(display(false)) }));
         }
+        protocol::calcifer::local_usable(&self.on.to_string()).map_err(Refusal)?;
         // The machine publishes under this computer's sign-in; refuse before anything is made.
         signed_in(api, &hub)?;
         let mut made: Made = match local(&self.source)?.filter(|path| path.is_dir()) {
@@ -292,6 +309,7 @@ impl Ask for ModelUpload {
                 }
                 folder(api, path.to_owned()).await?
             }
+            None if self.source.starts_with("sha256:") => held(api, &self.source)?.into(),
             None => source(&self.source).await?.into(),
         };
         if let Some(format) = &self.source_format {
@@ -314,8 +332,28 @@ impl Ask for ModelUpload {
     }
 }
 
-/// `POST /v1/model-uploads`: the mirror is recorded once the upload is admitted, before it is
-/// submitted.
+/// The commit `ask` records rather than uploads: a Hub commit on no base is at the Hub already.
+fn at_the_hub(ask: &ModelUpload) -> Option<(Repo, String)> {
+    match ModelRef::parse(&ask.source) {
+        Ok(ModelRef::Commit { repo, commit }) if ask.base.is_none() => Some((repo, commit)),
+        _ => None,
+    }
+}
+
+/// `POST /v1/model-upload-quotes`: what its run would rent; `null` when it records a commit, which rents nothing.
+pub(super) async fn quote(
+    State(api): State<Arc<Api>>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<Option<RunQuote>>, Refusal> {
+    let ask: ModelUpload = parse(&body?)?;
+    match at_the_hub(&ask) {
+        Some(_) => Ok(Json(None)),
+        None => Ok(Json(Some(super::asks::quoted(&api, ask).await?))),
+    }
+}
+
+/// `POST /v1/model-uploads`, any source: a Hub commit on no base is recorded there and nothing runs. Otherwise the mirror is
+/// recorded once the upload is admitted, before it is submitted.
 pub(super) async fn upload(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
@@ -323,6 +361,10 @@ pub(super) async fn upload(
 ) -> Result<(StatusCode, Json<ModelUploading>), Refusal> {
     let ask: ModelUpload = parse(&body?)?;
     let hub = origin(&api, ask.hub.as_deref())?;
+    if let Some((from, commit)) = at_the_hub(&ask) {
+        let (recorded, mirrored) = record(&api, &hub, ask, from, commit).await?;
+        return Ok((StatusCode::OK, Json(ModelUploading { run: None, replay: false, mirrored, recorded: Some(recorded) })));
+    }
     let (page, source, destination) = (ask.mirror.clone(), ask.source.clone(), ask.destination.clone());
     let prepared = ask.prepare(&api).await?;
     let mirrored = match page {
@@ -330,7 +372,7 @@ pub(super) async fn upload(
         None => None,
     };
     let (status, Json(submitted)) = submit(&api, &key, prepared).await?;
-    Ok((status, Json(ModelUploading { run: submitted.run, replay: submitted.replay, mirrored })))
+    Ok((status, Json(ModelUploading { run: Some(submitted.run), replay: submitted.replay, mirrored, recorded: None })))
 }
 
 /// `run:N[#output]`: the run's weights output, a WARM run on the machine that holds it, uploaded
@@ -416,23 +458,14 @@ async fn mirror(api: &Api, hub: &Origin, source: &str, page: &str, repo: &Repo) 
     Ok(Mirrored { model: answer.model, source: answer.source, by, org, added_handle: answer.added_handle })
 }
 
-/// `POST /v1/models/{org}/{name}/commits`: commit `from` of another model on the same Hub,
-/// recorded when this account may read its whole closure: no machine pulls it and no byte
-/// uploads. Its lane is checked first, so a refused record parks and credits nothing.
-pub(super) async fn record(
-    State(api): State<Arc<Api>>,
-    UrlPath((org, name)): UrlPath<(String, String)>,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<Json<RecordedCommit>, Refusal> {
-    let ask: ModelCommitAsk = parse(&body?)?;
-    let hub = origin(&api, ask.hub.as_deref())?;
-    let to = Repo::hub(&format!("{org}/{name}")).map_err(Refusal)?;
+/// Commit `commit` of `from`, another model on the same Hub, recorded as a commit of the destination when this account may read
+/// its whole closure: no machine pulls it and no byte uploads. Its lane is checked first, so a refused record parks and credits
+/// nothing. With the mirror recorded before it.
+async fn record(api: &Api, hub: &Origin, ask: ModelUpload, from: Repo, commit: String) -> Result<(RecordedCommit, Option<Mirrored>), Refusal> {
+    let to = Repo::hub(&ask.destination).map_err(Refusal)?;
     let (strength, said) = strength_within(ask.strength)?;
-    let ModelRef::Commit { repo: from, commit } = ModelRef::parse(&ask.from).map_err(Refusal)? else {
-        return Err(usage("model_commit_source", format!("{}: name the commit, org/name@sha256:<commit>", ask.from)));
-    };
-    let client = signed_in(&api, &hub)?;
-    let card = (client.get_model(&from.org, &from.name).await).map_err(|e| refusal(&hub, e))?;
+    let client = signed_in(api, hub)?;
+    let card = (client.get_model(&from.org, &from.name).await).map_err(|e| refusal(hub, e))?;
     let lanes = card.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, l)| (lane.as_str(), l.commit.as_str(), l.length)));
     let (held, length) = (card.commits.iter().map(|c| (c.lane.as_str(), c.id.as_str(), c.length)))
         .chain(lanes)
@@ -446,21 +479,22 @@ pub(super) async fn record(
         ));
     }
     let mirrored = match &ask.mirror {
-        Some(page) => Some(mirror(&api, &hub, &ask.from, page, &to).await?),
+        Some(page) => Some(mirror(api, hub, &ask.source, page, &to).await?),
         None => None,
     };
-    let made = (client.create_model_commit(&to.org, &to.name, &commit, length).await).map_err(|e| refusal(&hub, e))?;
+    let made = (client.create_model_commit(&to.org, &to.name, &commit, length).await).map_err(|e| refusal(hub, e))?;
     let display = match (ask.trigger, strength) {
         (None, None) => None,
-        (trigger, strength) => Some(display(&api.machines, &hub, to.to_string(), trigger, strength).await),
+        (trigger, strength) => Some(display(&api.machines, hub, to.to_string(), trigger, strength).await),
     };
-    Ok(Json(RecordedCommit {
+    let recorded = RecordedCommit {
+        next: vec![format!("cozy model publish {to} <version> {}", made.id)],
         commit: made.id,
         from: format!("{from}@{commit}"),
         lane: made.lane,
         model: to.to_string(),
-        mirrored,
         display,
         warnings: said.into_iter().collect(),
-    }))
+    };
+    Ok((recorded, mirrored))
 }

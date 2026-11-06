@@ -5,8 +5,9 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use protocol::{
-    calcifer::{Holder, MachineState},
+    calcifer::{CalciferStatus, Holder, MachineState},
     error::{Error, Kind},
+    project::{Open, Opened, State},
 };
 use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
@@ -29,80 +30,89 @@ pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
 #[derive(clap::Args, Debug)]
 pub struct Status {}
 
-/// Calcifer, its machines and the runs not yet settled. Never starts Calcifer.
+/// This cozy, Calcifer, the project here, the runs not yet settled, the machines and what they cost:
+/// `cozy` alone too. Never starts Calcifer.
 pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
+    let exe = std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default();
     let Some(client) = Client::running(ctx).await? else {
         if ctx.json {
             output::json(&json!({ "calcifer": { "running": false } }));
         } else {
-            output::Record::new()
-                .field("calcifer", "not running")
-                .print(ctx);
+            println!("cozy {} {exe}", env!("CARGO_PKG_VERSION"));
+            println!("calcifer: not running; any other cozy command starts it");
             output::next(ctx, &["cozy doctor"]);
         }
         return Ok(ExitCode::SUCCESS);
     };
+    let here: CalciferStatus = client.get("/v1/status").await?;
     let holder = client.holder().expect("a running client has a record");
     // Calcifer's picture: it never waits on a Hub here.
-    let mut machines = client.machines().await?.machines;
-    machines.retain(|m| m.state != MachineState::Ended);
+    let mut list = client.machines().await?;
+    list.machines.retain(|m| m.state != MachineState::Ended);
     let mut runs = vec![];
     for status in ["queued", "in_progress"] {
         runs.extend(client.runs(&[("status", status)]).await?.runs);
     }
+    runs.retain(crate::run::list::shown);
     runs.sort_by_key(|run| run.number);
+    let project = project(&client).await;
     if ctx.json {
-        output::json(&json!({
-            "calcifer": running(ctx, &holder), "machines": machines, "runs": runs,
-        }));
+        let project = match &project {
+            Some(Ok(state)) => json!(state),
+            Some(Err(error)) => json!({ "error": error }),
+            None => serde_json::Value::Null,
+        };
+        let doc = json!({
+            "calcifer": running(ctx, &holder, &here), "project": project, "machines": list.machines, "rentals": list.rentals,
+            "unanswered": list.unanswered, "signed_out": list.signed_out, "runs": runs,
+        });
+        let project = crate::project::FIELDS.iter().map(|path| format!("project.{path}"));
+        let mut paths: Vec<String> = ["calcifer".into(), "project.error".into()].into_iter().chain(project).collect();
+        paths.extend(crate::machine::list::FIELDS.iter().chain(crate::run::list::FIELDS).map(|path| path.to_string()));
+        output::view(ctx, &doc, &paths.iter().map(String::as_str).collect::<Vec<_>>());
         return Ok(ExitCode::SUCCESS);
     }
-    calcifer_record(ctx, &holder).print(ctx);
-    if let Some(note) = crate::machine::local_note() {
-        println!("{note}");
-    }
-    if !machines.is_empty() {
-        println!();
-        let headers = ["MACHINE", "KIND", "STATE", "RUNNING", "QUEUED"];
-        let mut table = output::Table::new(ctx, headers);
-        for m in &machines {
-            let kind = match ctx.other_hub(&m.hub) {
-                Some(hub) => format!("{} at {hub}", word(m.kind)),
-                None => word(m.kind),
-            };
-            table = table.row([
-                m.name.clone(),
-                kind,
-                m.boot.clone().unwrap_or_else(|| word(m.state)),
-                m.running.to_string(),
-                m.queued.to_string(),
-            ]);
+    println!("cozy {} {exe}", env!("CARGO_PKG_VERSION"));
+    match ctx.full {
+        true => calcifer_record(ctx, &holder, &here).print(ctx),
+        false => {
+            // Signed out is said with the machines, by Hub.
+            let version = Some(&here.version).filter(|v| *v != env!("CARGO_PKG_VERSION")).map(|v| format!(" on cozy {v}"));
+            println!("calcifer: up {}{}", output::age(holder.started_at_ms), version.unwrap_or_default());
         }
-        table.print();
     }
+    let next = match &project {
+        Some(Ok(state)) => {
+            println!("project: {}: {}", state.path.display(), crate::project::totals(state));
+            state.warnings.iter().for_each(|warning| println!("warning: {}", warning.message));
+            state.next.clone()
+        }
+        Some(Err(error)) => {
+            println!("project: {} ({})", error.message, error.code);
+            error.next.clone()
+        }
+        None => {
+            println!("project: none here");
+            vec!["cozy project ls".into(), "cozy project new <name>".into()]
+        }
+    };
     if !runs.is_empty() {
-        println!();
-        let mut table = output::Table::new(ctx, ["RUN", "TARGET", "MACHINE", "STATE"]);
-        for run in &runs {
-            let state = run.machine_state.as_deref().or(run.waiting.as_deref());
-            table = table.row([
-                run.number.to_string(),
-                run.target.clone(),
-                run.machine.clone().unwrap_or_default(),
-                state.unwrap_or("queued").to_owned(),
-            ]);
-        }
-        table.print();
+        crate::run::list::table(ctx, &runs.iter().collect::<Vec<_>>(), true).print();
     }
+    crate::machine::list::print(ctx, &list);
+    output::next(ctx, &next.iter().map(String::as_str).collect::<Vec<_>>());
     Ok(ExitCode::SUCCESS)
 }
 
-/// A wire enum as it is spelled on the wire.
-fn word(value: impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
+/// The project holding the folder you are in, as Calcifer reads it: none outside one.
+async fn project(client: &Client) -> Option<Result<State, Error>> {
+    let path = std::env::current_dir().ok()?;
+    let opened: Result<Opened, Error> = client.post("/v1/projects", &Open { path: Some(path), create: false, name: None }, None).await;
+    match opened {
+        Ok(opened) => Some(client.get(&format!("/v1/projects/{}", opened.id)).await),
+        Err(error) if error.code == "project_not_found" => None,
+        Err(error) => Some(Err(error)),
+    }
 }
 
 /// Which of a machine's logs, and how much of it.
@@ -297,18 +307,21 @@ fn print_line(ctx: &Context, line: &str) {
     }
 }
 
-fn running(ctx: &Context, holder: &Holder) -> serde_json::Value {
+fn running(ctx: &Context, holder: &Holder, here: &CalciferStatus) -> serde_json::Value {
     json!({
         "running": true,
         "address": holder.address,
         "pid": holder.pid,
-        "version": holder.version,
+        "version": here.version,
+        "os": here.os,
+        "local_usable": here.local_usable,
+        "signed_in": here.signed_in,
         "started_at_ms": holder.started_at_ms,
         "log": ctx.home.calcifer_log(),
     })
 }
 
-fn calcifer_record(ctx: &Context, holder: &Holder) -> output::Record {
+fn calcifer_record(ctx: &Context, holder: &Holder, here: &CalciferStatus) -> output::Record {
     output::Record::new()
         .field(
             "calcifer",
@@ -316,6 +329,7 @@ fn calcifer_record(ctx: &Context, holder: &Holder) -> output::Record {
         )
         .field("address", holder.address)
         .field("pid", holder.pid)
-        .field("version", &holder.version)
+        .field("version", &here.version)
+        .field("signed in", if here.signed_in { "yes" } else { "no" })
         .field("log", output::link(ctx, &ctx.home.calcifer_log()))
 }

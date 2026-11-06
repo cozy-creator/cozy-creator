@@ -292,8 +292,9 @@ impl Enrollment {
         &self.email
     }
 
-    /// Completes enrollment with the emailed `code`: the key, and its first Bearer.
-    pub async fn finish(self, hub: &Client, code: &str) -> Result<(DeviceKey, Bearer), Error> {
+    /// Completes enrollment with the emailed `code`: the key, and its first Bearer. A wrong code
+    /// leaves it to be finished again.
+    pub async fn finish(&self, hub: &Client, code: &str) -> Result<(DeviceKey, Bearer), Error> {
         let signature = DeviceKey::sign_challenge(&self.key, ENROLL_DOMAIN, &self.challenge)?;
         let started = now();
         let answer = hub
@@ -301,10 +302,10 @@ impl Enrollment {
             .await?;
         let bearer = Bearer::from_answer(&answer, started)?;
         let key = DeviceKey {
-            hub: self.hub,
-            email: self.email,
+            hub: self.hub.clone(),
+            email: self.email.clone(),
             id: bearer.device_key_id.clone(),
-            key: self.key,
+            key: self.key.clone(),
         };
         Ok((key, bearer))
     }

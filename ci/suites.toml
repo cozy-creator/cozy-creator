@@ -30,8 +30,8 @@ release = ["everything", "os:macos", "os:windows", "cli-release"]
 unmapped = ["everything", "build:cozy", "build:tensorfs"]
 rules = [
   { paths = ["**/*.md", "docs/**", "LICENSE", ".gitignore"], select = [] },
-  # The browser player is GitHub Pages' site; pages.yaml deploys it.
-  { paths = ["web/**"], select = [] },
+  # The page cozy embeds; web/app imports web/player, which pages.yaml also deploys.
+  { paths = ["web/**"], select = ["cli", "build:cozy"] },
   # The cli suite's own parts and coverage map: a PR's cells. The imports suite cannot break by them.
   { paths = ["e2e/cli/run.sh"], select = ["cli", "model", "build:cozy"] },
   { paths = ["e2e/cli/**", "e2e/coverage.*"], select = ["cli", "build:cozy"] },
@@ -40,8 +40,8 @@ rules = [
   # Installers and release archives: the cli suite installs them on every OS at release.
   { paths = [".github/workflows/cozy-publish.yaml", ".github/workflows/cozy-attestations.yaml", ".github/workflows/cozy-promote.yaml", "dist-workspace.toml", "scripts/patch-installers.sh"], select = ["cli", "os:macos", "os:windows"] },
   { paths = [".github/**"], select = [] },
-  # build's memory-safety step alone reads these.
-  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
+  # build's memory-safety and route steps alone read these.
+  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh", "scripts/web-routes.sh"], select = [] },
 ]
 
 # The macOS and Windows cli legs (a cold cozy build there is 6 and 13 min) run for what is OS-specific: the

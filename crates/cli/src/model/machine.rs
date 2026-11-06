@@ -5,16 +5,13 @@
 //! Hub: nothing moves.
 use std::process::ExitCode;
 
-use protocol::calcifer::{Run, Status};
+use protocol::calcifer::{MachineModels, Run, Status};
 use protocol::error::Error;
-use protocol::hub::{Displayed, Mirrored, ModelCommitAsk, ModelDownload, ModelUpload, ModelUploading, RecordedCommit};
-use serde::Serialize;
+use protocol::hub::{Displayed, Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit};
 
-use protocol::model_ref::{ModelRef, Repo};
 use super::{Download, Upload};
 use crate::Context;
 use crate::ask::{absolute, start};
-use crate::calcifer_client::path;
 use crate::output::{self, Record, Table};
 
 /// What the machine made (TensorD's `result.models[0]`), after `follow`'s record; `--json`
@@ -73,18 +70,12 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 }
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
-    let destination = Repo::hub(&args.destination)?;
-    // A Hub commit is already at the Hub: the destination records it there, and nothing moves (on
-    // a base it is composed instead).
-    if let (Ok(ModelRef::Commit { .. }), None) = (ModelRef::parse(&args.source), &args.base) {
-        return recorded(ctx, args, &destination).await;
-    }
-    let on = args.placement.on()?;
+    let on = args.placement.named();
     let from_run = args.source.starts_with("run:");
     let mut ask = ModelUpload {
         hub: Some(ctx.hub().to_string()),
         source: absolute(&args.source)?,
-        destination: destination.to_string(),
+        destination: args.destination,
         lane: args.lane,
         source_format: args.format,
         mirror: args.mirror,
@@ -100,7 +91,12 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     if let Some(mirrored) = &uploading.mirrored {
         mirror(ctx, mirrored);
     }
-    let run = crate::run::follow(ctx, uploading.run).await?;
+    if let Some(made) = &uploading.recorded {
+        recorded(ctx, made);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let run = uploading.run.ok_or_else(|| Error::internal("model_upload_answer", "Calcifer answered an upload with neither a run nor a commit"))?;
+    let run = crate::run::follow(ctx, run).await?;
     if !from_run {
         made(ctx, &run);
     }
@@ -133,34 +129,19 @@ fn display(ctx: &Context, shown: &Displayed) {
     output::say(ctx, &format!("{}: {}", shown.model, said.join(", ")));
 }
 
-/// A Hub commit recorded as a commit of `to`: the Hub records it when this account may read its
-/// whole closure, so no machine pulls it and no byte uploads.
-async fn recorded(ctx: &Context, args: Upload, to: &Repo) -> Result<ExitCode, Error> {
-    let ask = ModelCommitAsk {
-        hub: Some(ctx.hub().to_string()),
-        from: args.source,
-        lane: args.lane,
-        mirror: args.mirror,
-        trigger: args.trigger,
-        strength: args.strength,
-    };
-    let at = path(&["v1", "models", &to.org, &to.name, "commits"]);
-    let made: RecordedCommit = ctx.calcifer().await?.post(&at, &ask, None).await?;
+/// A Hub commit recorded as a commit of another model: no machine pulled it and no byte uploaded.
+fn recorded(ctx: &Context, made: &RecordedCommit) {
     made.warnings.iter().for_each(|warning| output::warn(warning));
-    if let Some(mirrored) = &made.mirrored {
-        mirror(ctx, mirrored);
-    }
     if ctx.json {
-        output::json(&made);
-        return Ok(ExitCode::SUCCESS);
+        output::json(made);
+        return;
     }
-    Record::new().field("commit", format!("{to}@{}", made.commit)).field("lane", &made.lane)
+    Record::new().field("commit", format!("{}@{}", made.model, made.commit)).field("lane", &made.lane)
         .field("from", &made.from).note("recorded at the Hub: nothing uploaded").print(ctx);
-    output::next(ctx, &[&format!("cozy model publish {to} <version> {}", made.commit)]);
+    output::nexts(ctx, &made.next);
     if let Some(shown) = &made.display {
         display(ctx, shown);
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 /// The destination as a mirror of its author's model, recorded before anything uploaded.
@@ -172,59 +153,20 @@ fn mirror(ctx: &Context, mirrored: &Mirrored) {
     }
 }
 
-/// One checkpoint a machine holds, and its repository's bytes there.
-#[derive(Serialize)]
-struct Held {
-    machine: String,
-    model: String,
-    release: String,
-    lane: String,
-    /// Its header's precision lane (`int8`, …).
-    precision: String,
-    checkpoint: String,
-    bytes: u64,
-    /// The repository's bytes other held models share.
-    shared_bytes: u64,
-}
-
-/// What every machine holds (or the one `--on` names), from its latest Status through Calcifer.
-/// The models machines hold: `on` one, else every machine.
+/// The models machines hold: `on` one, read from it now (`GET /v1/machines/{name}/models`), else every machine as Calcifer last saw it.
 pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) -> Result<ExitCode, Error> {
-    let on = match &on {
-        Some(on) => Some(crate::machine::machine(ctx, on).await?.name),
-        None => None,
+    let calcifer = ctx.calcifer().await?;
+    let machines: Vec<MachineModels> = match &on {
+        Some(on) => vec![calcifer.get(&format!("{}/models", crate::machine::route(&on.to_ascii_lowercase())?)).await?],
+        None => calcifer.machines().await?.machines.iter().map(|machine| machine.models()).collect(),
     };
-    let machines = ctx.calcifer().await?.machines().await?.machines;
-    let (mut rows, mut stores, mut silent) = (vec![], vec![], vec![]);
-    for machine in machines.iter().filter(|m| on.as_ref().is_none_or(|on| *on == m.name)) {
-        let Some(status) = &machine.status else {
-            silent.push(machine.name.as_str());
-            continue;
-        };
-        stores.push(format!("{}: {} in {} models", machine.name, output::bytes(status.models_bytes), status.models.len()));
-        for model in status.models.iter().filter(|model| output::names(&model.repository, words)) {
-            let held = |release: &str, lane: (&str, &str), checkpoint: &str| Held {
-                machine: machine.name.clone(),
-                model: model.repository.clone(),
-                release: release.into(),
-                lane: lane.0.into(),
-                precision: lane.1.into(),
-                checkpoint: checkpoint.into(),
-                bytes: model.total_bytes,
-                shared_bytes: model.total_bytes.saturating_sub(model.unique_bytes),
-            };
-            if model.checkpoints.is_empty() {
-                rows.push(held("", ("", ""), ""));
-            }
-            rows.extend(model.checkpoints.iter().map(|c| held(&c.release, (&c.lane, &c.precision), &c.manifest)));
-        }
-    }
+    let rows = machines.iter().flat_map(|machine| &machine.models).filter(|row| output::names(&row.model, words));
     if ctx.json {
-        output::json(&serde_json::json!({ "models": rows }));
+        output::json(&serde_json::json!({ "models": rows.collect::<Vec<_>>() }));
         return Ok(ExitCode::SUCCESS);
     }
     let mut table = Table::new(ctx, ["machine", "model", "release", "lane", "size", "shared"]);
-    for row in &rows {
+    for row in rows {
         let lane = match row.precision.is_empty() {
             true => row.lane.clone(),
             false => format!("{} ({})", row.lane, row.precision),
@@ -233,9 +175,16 @@ pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) ->
         table = table.row([row.machine.as_str(), &row.model, &row.release, &lane, &size, &shared]);
     }
     // A store's total counts shared content once.
-    for store in stores {
-        table = table.note(store);
+    for machine in machines.iter().filter(|machine| !machine.silent) {
+        // What its store holds besides them, once it is a hundredth of the store or more.
+        let other = machine.stored_bytes.saturating_sub(machine.bytes);
+        let other = match other > 0 && other >= machine.stored_bytes / 100 {
+            true => format!(", and {} no model names (cut downloads, evicted objects still open), freed when the disk needs it", output::bytes(other)),
+            false => String::new(),
+        };
+        table = table.note(format!("{}: {} in {} models{other}", machine.machine, output::bytes(machine.bytes), machine.repositories));
     }
+    let silent: Vec<&str> = machines.iter().filter(|machine| machine.silent).map(|machine| machine.machine.as_str()).collect();
     if !silent.is_empty() {
         table = table.note(format!("no Status yet from {}", silent.join(", ")));
     }

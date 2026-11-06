@@ -275,7 +275,7 @@ request() {
     python3 -u -c 'import sys,time; t0=float(sys.argv[1]); [print(f"{time.time()-t0:.3f} {l}", end="", flush=True) for l in sys.stdin]' "$t0" > "$OUT/$label.ndjson"
   local n; n=$(grep -o '"number":[0-9]*' "$OUT/$label.ndjson" | head -1 | cut -d: -f2)
   [ -n "$n" ] || { say "$label: no run"; return 1; }
-  cozy run show "$n" --once --json > "$OUT/$label.json" 2>&1
+  cozy run show "$n" --once --json --full > "$OUT/$label.json" 2>&1
   say "$label: run $n $(jq -r .status "$OUT/$label.json"), landed $(grep output_item.landed "$OUT/$label.ndjson" | tail -1 | cut -d' ' -f1) s; legs $(jq -c '.measurements.execution.executor.legs_ms' "$OUT/$label.json")"
 }
 declare -A FN=([sdxl]=$SDXL [anima]=$ANIMA [qwen]=$QWEN) PKG=([sdxl]=sdxl [anima]=anima [qwen]=qwen-image-2)
@@ -359,11 +359,11 @@ for i in "${!names[@]}"; do
     for w in $(seq 0 "$warm"); do
       k=$(( (k + 1) % ${#PROMPTS[@]} ))
       if [ "$m" = sdxl ]; then
-        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
       elif [ "$m" = qwen ]; then
-        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
       else
-        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m-$w.yaml"
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m-$w.yaml"
       fi
       label="$a-$m-cold"; [ "$w" = 0 ] || label="$a-$m-warm$w"
       [ "$w" != 0 ] || settled "$label"

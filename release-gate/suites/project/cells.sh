@@ -1,17 +1,16 @@
 # Suite `project` (xs-151, cl-758): `cozy project render` on fixture projects, format 2, the walk in this computer's Calcifer (the
 # candidate cozy), the runs on $M. Each cell is a project folder under $OUT, judged from its project.lock and files:
-# - project-split: a 10 s shot whose later beat reads a world state an earlier beat writes: one run, one take, the written frame
-#   kept, no seam of ours; project-upscale: its upscale from those latents, at 1080p and the shot's aspect, and edit.mp4 at the
+# - project-split: a 10 s shot of two beats: one run, one take, its latents kept, no seam of ours; project-upscale: its upscale from those latents, at 1080p and the shot's aspect, and edit.mp4 at the
 #   1920x1080 canvas.
-# - project-segments: a shot two segments make, a write at their join, carrying 22 and 56 frames: both segments ran, no cut at the join.
+# - project-segments: a shot two segments make, carrying 22 and 56 frames: both segments ran, no cut at the join.
 # - project-in: a new take that keeps take 1 up to `--in` and renders the rest from edited text: one run, the kept frames as
 #   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: an entity with a `voice:` link speaks; the voice goes with the request and the video has sound.
 # - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's picture at 16:9.
-# - project-local: an asset `with: ./still.py`, local code made ready by Calcifer.
+# - project-local: an asset `tool: ./still.py/draw`, local code made ready by Calcifer.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
-# A checkout's ./pkg names the gate's folder; a project reads `with:` from its own. `with:` names a package, never a function.
+# A checkout's ./pkg names the gate's folder; a project reads `tool:` from its own. `tool:` names a package, never a function.
 abs() { [[ $1 == ./* ]] && echo "$OUT/${1#./}" || echo "$1"; }
 package() { local at; at=$(abs "$(pkg "$1" x)"); case $at in *@*) echo "${at%/x@*}@${at##*@}" ;; *) echo "${at%/x}" ;; esac; }
 H3=$(package minimax-h3) STILL=$(package qwen-image-2)
@@ -26,17 +25,15 @@ project() {
 imported() {
   local P=$1 f h; shift
   for f in "$@"; do
-    h=$("$CLI" project -p "$P" import "$P/$f" | tail -1 | sed 's/^[a-z]*: //')
+    h=$("$CLI" --json project -p "$P" import "$P/$f" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]')
     sed -i "s#: $f\b#: $h#" "$P/project.yaml"
   done
 }
 render() { local c=$1 P=$2; shift 2; "$CLI" project -p "$P" render "$@" --on "$M" > "$c.log" 2>&1; }
-# lockq <folder> <python expression of lock>
-lockq() { python3 -c "import json, sys; lock = json.load(open(sys.argv[1] + '/project.lock')); print($2)" "$1" 2>/dev/null; }
 # approved <folder> <asset>: the record of its newest version, as JSON.
-approved() { lockq "$1" "json.dumps((lock['assets'].get('$2', {}).get('versions') or [{}])[-1])"; }
+approved() { "$CLI" --json --full project -p "$1" status "$2" | jq -c '(.versions[-1] // {}) | . + {files: (.files | map_values(.sha256)), run: (.runs[-1] // null)}'; }
 # file <folder> <version record's sha256>: its path.
-file_of() { [ -n "$2" ] && lockq "$1" "lock['files']['$2']['path']"; }
+file_of() { [ -n "$2" ] && (cd "$1" && ls "files/${2#sha256:}"* | head -1); }
 # made <folder> <asset>: the path of the file people mean by its newest version.
 made() { file_of "$1" "$(approved "$1" "$2" | jq -r '.files.video // .files.image // empty')"; }
 aspect() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1" | awk -F, '{ printf "%.4f", $1 / $2 }'; }
@@ -45,59 +42,46 @@ SEAMBAR='if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] 
 
 if want project-split || want project-upscale; then
   P=$(project project-split <<YAML
-version: 2
+version: 3
 defaults:
   video:
-    with: $H3
-    style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
-entities:
-  hero:
-    kind: character
-    description: "$CHAR"
-    image: <hero_sheet>
 assets:
+  look_style:
+    text: Naturalistic photo, warm late-afternoon light, handheld camera.
   mural:
-    kind: video
-    render:
-      seed: $((R + 300))
+    tool: $H3/generate
+    seed: $((R + 300))
     summary: |
-      <hero> paints a sign on the long wall of <yard>.
+      <look_style> <hero_sheet> paints a sign on the long wall of <yard>.
     beats:
       - duration: 6
         description: |
-          <hero> rolls bright orange paint across the wall in big letters that read OPEN.
-        writes:
-          - image: wall.1
-            at: 5
+          <hero_sheet> rolls bright orange paint across the wall in big letters that read OPEN.
       - duration: 4
         description: |
-          <hero> steps back from <wall.1>, where the orange letters read OPEN, and says "Done."
+          <hero_sheet> steps back from the wall of <yard>, where the orange letters read OPEN, and says "Done."
   hero_art:
-    kind: image
-    image: hero.png
+    approved: hero.png
   hero_sheet:
-    render: {with: ./still.py}
-    keep: true
-    description: From <hero_art>.
+    tool: ./still.py/keep
+    image: <hero_art>
+    description: "$CHAR"
+    asset_type: character
   yard:
-    kind: image
-    image: place.png
+    approved: place.png
     description: "$SCENE"
-  wall.1:
-    kind: image
-    description: a stepladder against the wall, and fresh paint
   mural_upscale:
-    kind: video
+    tool: $H3/upscale
     video: <mural>
     resolution: 1080p
   edit:
-    kind: video
-    render: {with: cozy}
+    tool: cozy/edit
     aspect_ratio: "16:9"
     resolution: 1080p
-    pieces:
-      - <mural_upscale>
+    tracks:
+      - clips:
+          - <mural_upscale>
 YAML
 )
   imported "$P" hero.png place.png
@@ -107,10 +91,10 @@ YAML
   f=$(made "$P" mural)
   if [ -z "$f" ]; then expect project-split FAIL "no version of mural: $(tail -c 300 project-split.log)"
   else
-    expect project-split "$(jq -r 'if (.runs | length) == 1 and .files.latents != null and .writes["wall.1"].image != null then "PASS" else "FAIL" end' <<< "$v")" \
-      "runs $(jq -c .runs <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v"), wall.1 $(jq -r '.writes["wall.1"].image // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
-    expect project-split-text "$(jq -r 'if ([.warnings[]? | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
-    # The gate's hero is a character whose sheet its package made, with a background: H3's adapter says it goes into the shot
+    expect project-split "$(jq -r 'if .run != null and .files.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
+      "run $(jq -c .run <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v")"
+    expect project-split-text "$(jq -r 'if ([.warnings[]?.message | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
+    # The gate's hero is a character whose sheet its package made, with a background: H3 says it goes into the shot
     # (se-104). A warning, no failed run. An imported picture is left alone, since it may be opaque on purpose.
     expect project-opaque "$(grep -q "picture is opaque" project-split.log && echo PASS || echo FAIL)" "$(grep -m1 opaque project-split.log | cut -c1-160)"
   fi
@@ -122,7 +106,7 @@ YAML
       h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$P/$u")
       expect project-upscale "$([ "$h" = 1080 ] && [ "$(near "$(aspect "$P/$u")" "$(aspect "$P/$f")")" = PASS ] && echo PASS || echo FAIL)" \
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
-      lockq "$P" "lock['assets']['mural upscale']['versions'][-1]['invocations'][-1]['input'].get('latents', '')" | grep -q sha256 \
+      "$CLI" --json --full run show "$("$CLI" --json project -p "$P" status mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"
@@ -134,70 +118,57 @@ if want project-segments; then
   # A shot two segments make, with a write at their join, as a long shot is: the later one carries the earlier's frames.
   for cf in 22 56; do
     P=$(project project-segments-$cf <<YAML
-version: 2
+version: 3
 defaults:
   video:
-    with: $H3
-    style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
-entities:
-  hero:
-    kind: character
-    description: "$CHAR"
-    image: <hero_art>
-  yard:
-    kind: environment
-    description: "$SCENE"
-    image: <yard_art>
 assets:
+  look_style:
+    text: Naturalistic photo, warm late-afternoon light, handheld camera.
   hero_art:
-    image: hero.png
+    approved: hero.png
+    description: "$CHAR"
+    asset_type: character
   yard_art:
-    image: place.png
+    approved: place.png
+    description: "$SCENE"
+    asset_type: environment
   walk:
-    kind: video
-    render:
-      seed: $((R + 330 + cf))
-      context_frames: $cf
+    tool: $H3/generate
+    seed: $((R + 330 + cf))
+    context_frames: $cf
     summary: |
-      <hero> walks the length of <yard> in one continuous shot with no cuts.
+      <look_style> <hero_art> walks the length of <yard_art> in one continuous shot with no cuts.
     beats:
       - duration: 10
         description: |
-          <hero> sets off across <yard>, the camera following alongside.
-        writes:
-          - image: yard.1
-            at: 10
+          <hero_art> sets off across <yard_art>, the camera following alongside.
       - duration: 10
-        description: |
-          <hero> keeps walking across <yard.1> and stops at the far side.
+        description: <hero_art> keeps walking across <yard_art> and stops at the far side.
 YAML
 )
     imported "$P" hero.png place.png
     render project-segments-$cf "$P" walk || expect project-segments-$cf FAIL "render: $(tail -c 300 project-segments-$cf.log)"
-    v=$(approved "$P" walk); f=$(made "$P" walk); n=$(jq -r '.runs[0] // empty' <<< "$v")
+    v=$(approved "$P" walk); f=$(made "$P" walk); n=$(jq -r '.run // empty' <<< "$v")
     if [ -z "$f" ] || [ -z "$n" ]; then expect project-segments-$cf FAIL "no version of walk: $(tail -c 300 project-segments-$cf.log)"; continue; fi
-    labels=$("$CLI" --json run show "$n" 2>/dev/null | jq -c '[.calls[]? | {label, status}]')
-    given=$(jq -c '[.invocations[]?.input.context_frames]' <<< "$v")
+    labels=$("$CLI" --json --full run show "$n" | jq -c '[.calls[]? | {label, status}]')
+    given=$("$CLI" --json --full run show "$(jq -r .run <<< "$v")" --once | jq -c '[.request.input.context_frames]')
     expect project-segments-$cf "$(jq -r 'if ([.[] | select(.status == "succeeded")] | length) == 2 and (.[1].label == "Segment 2 of 2") then "PASS" else "FAIL" end' <<< "$labels" 2>/dev/null || echo FAIL)" "calls $labels, context_frames $given, want $cf"
     r=$("${FR[@]}" seams "$P/$f" --at "$(awk 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), 10 + i / 8 }')" 2>&1 | tail -1)
     expect project-segments-$cf-seam "$(jq -r 'if ([.boundaries[].ratio] | max) < 3 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "no cut within half a second of the join at 10 s: $r"
-    expect project-segments-$cf-write "$(jq -r 'if .writes["yard.1"].image != null then "PASS" else "FAIL" end' <<< "$v" 2>/dev/null || echo FAIL)" "yard.1: $(jq -r '.writes["yard.1"].image // "none"' <<< "$v")"
   done
 fi
 
 if want project-in; then
   P=$(project project-in <<YAML
-version: 2
+version: 3
 defaults:
   video:
-    with: $H3
     aspect_ratio: "16:9"
 assets:
   look:
-    kind: video
-    render:
-      seed: $((R + 305))
+    tool: $H3/generate
+    seed: $((R + 305))
     summary: |
       A slow look around <yard>.
     soundscape: A quiet street, distant traffic and birds.
@@ -209,8 +180,7 @@ assets:
         description: |
           The camera keeps drifting right, past the far wall.
   yard:
-    kind: image
-    image: place.png
+    approved: place.png
     description: "$SCENE"
 YAML
 )
@@ -220,8 +190,8 @@ YAML
   sed -i 's/past the far wall/and tilts up toward the sky/' "$P/project.yaml"
   render project-in "$P" look --take 1 --in 6 || expect project-in FAIL "--in: $(tail -c 300 project-in.log)"
   v=$(approved "$P" look); f=$(made "$P" look); until_s=$(jq -r '.kept.until_s // empty' <<< "$v")
-  expect project-in "$(jq -r 'if .number == 2 and .kept.take == 1 and (.kept.until_s - 6 | fabs) <= 0.36 and (.runs | length) == 1 and .files.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
-    "take $(jq -r .number <<< "$v"), kept $(jq -c .kept <<< "$v"), runs $(jq -c .runs <<< "$v"): $(grep -o 'look: take 2 is .*' project-in.log | head -1)"
+  expect project-in "$(jq -r 'if .number == 2 and .kept.take == 1 and (.kept.until_s - 6 | fabs) <= 0.36 and (.run != null) and .files.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
+    "take $(jq -r .number <<< "$v"), kept $(jq -c .kept <<< "$v"), run $(jq -c .run <<< "$v"): $(grep -o 'look: take 2 is .*' project-in.log | head -1)"
   if [ -n "$until_s" ] && [ -n "$f" ]; then
     r=$("${FR[@]}" seams "$P/$f" --at "$until_s" 2>&1 | tail -1)
     expect project-in-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at $until_s s: $r"
@@ -229,34 +199,31 @@ YAML
     s=$(nice -n 19 ffmpeg -nostdin -v info -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$old" -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$f" -lavfi ssim -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)
     expect project-in-kept "$(awk -v s="${s:-0}" 'BEGIN { print s >= 0.95 ? "PASS" : "FAIL" }')" "SSIM of the kept part to take 1: ${s:-none}"
   fi
-  # H3's adapter refuses: a failed run on purpose, so this suite only ever runs on a gate machine, never a person's history.
+  # H3 refuses: a failed run on purpose, so this suite only ever runs on a gate machine, never a person's history.
   render project-in-end "$P" look --take 2; code=$?
   expect project-in-end "$([ "$code" != 0 ] && grep -q "already reaches the shot's end" project-in-end.log && echo PASS || echo FAIL)" "exit $code: $(tail -c 200 project-in-end.log)"
 fi
 
 if want project-plate; then
   P=$(project project-plate <<YAML
-version: 2
+version: 3
 defaults:
   video:
-    with: $H3
     aspect_ratio: "16:9"
 assets:
   follow:
-    kind: video
-    render:
-      seed: $((R + 301))
+    tool: $H3/generate
+    seed: $((R + 301))
     summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."
     beats:
       - duration: 5
     plate:
       video: <take_one>
   pattern:
-    kind: image
-    image: plate.png
+    approved: plate.png
     description: a synthetic broadcast test pattern
   take_one:
-    video: plate.mp4
+    approved: plate.mp4
 YAML
 )
   nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=5 -c:v libx264 -pix_fmt yuv420p "$P/plate.mp4"
@@ -271,34 +238,26 @@ fi
 
 if want project-voice; then
   P=$(project project-voice <<YAML
-version: 2
+version: 3
 defaults:
   video:
-    with: $H3
     aspect_ratio: "16:9"
-entities:
-  host:
-    kind: character
-    description: "$CHAR"
-    image: <host_sheet>
-    voice: <host_voice>
 assets:
   hello:
-    kind: video
-    render:
-      seed: $((R + 302))
-    summary: <host> stands in <yard>, looks into the camera and says "Welcome to the yard."
+    tool: $H3/generate
+    seed: $((R + 302))
+    summary: <host_sheet> stands in <yard>, looks into the camera and says "Welcome to the yard."
     beats:
       - duration: 5
   host_sheet:
-    kind: image
-    image: hero.png
+    approved: hero.png
+    description: "$CHAR"
+    asset_type: character
+    voice: <host_voice>
   host_voice:
-    kind: audio
-    audio: voice.wav
+    approved: voice.wav
   yard:
-    kind: image
-    image: place.png
+    approved: place.png
     description: "$SCENE"
 YAML
 )
@@ -310,33 +269,30 @@ YAML
   render project-voice "$P" hello
   v=$(approved "$P" hello); f=$(made "$P" hello)
   # Sent: a piece's logged references name the character's voice (H3 attaches it as "<name>'s voice").
-  sent=$([ -n "$f" ] && "$CLI" run show "$(jq -r '.runs[-1]' <<< "$v")" --once 2>/dev/null | grep -o "references=\"[^\"]*host's voice[^\"]*\"" | head -1)
+  sent=$([ -n "$f" ] && "$CLI" run show --full "$(jq -r .run <<< "$v")" --once 2>/dev/null | grep -o "references=\"[^\"]*host's voice[^\"]*\"" | head -1)
   a=$([ -n "$f" ] && ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "$P/$f")
   expect project-voice "$([ -n "$sent" ] && [ -n "$a" ] && echo PASS || echo FAIL)" \
-    "voice ${sent:-not sent}, sound ${a:-none} s${f:+ (run $(jq -r '.runs[-1]' <<< "$v"))}"
+    "voice ${sent:-not sent}, sound ${a:-none} s${f:+ (run $(jq -r .run <<< "$v"))}"
 fi
 
 if want project-stills; then
   P=$(project project-stills <<YAML
-version: 2
+version: 3
 defaults:
   image:
-    with: $STILL
     aspect_ratio: "16:9"
 assets:
   cook:
-    kind: image
-    description: "$CHAR"
-    render:
-      seed: $((R + 303))
+    tool: $STILL/generate
+    instructions: "$CHAR"
+    seed: $((R + 303))
   kitchen:
-    kind: image
-    description: "$SCENE"
-    render:
-      seed: $((R + 304))
+    tool: $STILL/generate
+    instructions: "$SCENE"
+    seed: $((R + 304))
   kitchen_door:
-    kind: image
-    render: "<kitchen> wide from the door: the nearest objects large on the left, the window small on the right"
+    tool: $STILL/generate
+    instructions: "<kitchen> wide from the door: the nearest objects large on the left, the window small on the right"
 YAML
 )
   render project-stills "$P" all
@@ -352,18 +308,17 @@ fi
 
 if want project-local; then
   P=$(project project-local <<YAML
-version: 2
+version: 3
 assets:
   lot:
-    render: {with: ./still.py}
-    kind: image
+    tool: ./still.py/draw
+    instructions: "$SCENE"
     aspect_ratio: "16:9"
-    description: "$SCENE"
 YAML
 )
   cp "$HERE/suites/project/still.py" "$P/still.py"
   render project-local "$P" lot
   v=$(approved "$P" lot); f=$(made "$P" lot)
-  expect project-local "$([ -n "$f" ] && [[ $(jq -r .made_by.with <<< "$v") == local/still/draw* ]] && [ "$(near "$(aspect "$P/$f")" 1.7778)" = PASS ] && echo PASS || echo FAIL)" \
-    "made by $(jq -r '.made_by.with // "nothing"' <<< "$v")${f:+, aspect $(aspect "$P/$f")}: $(tail -c 200 project-local.log)"
+  expect project-local "$([ -n "$f" ] && [ "$(jq -r '.run // ""' <<< "$v")" != "" ] && [ "$(near "$(aspect "$P/$f")" 1.7778)" = PASS ] && echo PASS || echo FAIL)" \
+    "run $(jq -r '.run // "none"' <<< "$v")${f:+, aspect $(aspect "$P/$f")}: $(tail -c 200 project-local.log)"
 fi

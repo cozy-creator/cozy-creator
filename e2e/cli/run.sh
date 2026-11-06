@@ -5,17 +5,19 @@
 # BiRefNet removal on the CPU from a YAML request, run ls/show, a second executor (the machine restarted)
 # with an --file input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
 # runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
-# rest of that list but the machine.
+# rest of that list but the machine. On every OS, the page Calcifer serves (web.sh).
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow] [--tensord F|V] [--tensorfs F|V]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web] [--tensord F|V] [--tensorfs F|V]
 #                  [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/project.sh"
+. "$(dirname "$0")/web.sh"
+. "$(dirname "$0")/agent.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
@@ -24,6 +26,8 @@ step status; cozy --json status | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 [ "$SHARD" != commands ] || version_skew
 step candidates; candidates
+# What `install`'s release made, for what reads it from here on.
+! grep -q '^version: 2' "$OUT/project/project.yaml" || cozy project -p "$OUT/project" upgrade > "$OUT/upgrade.txt" 2>&1 || check "a release's project didn't upgrade: $(tail -c 300 "$OUT/upgrade.txt")"
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
 
@@ -106,6 +110,11 @@ for r in 16:1 1:16 32000:2000 17:1 1:17 32768:32; do
     echo "$name: canvas ${w}x${h}"
   fi
 done
+# What a function doesn't take is said, and the run goes on: these are no input of `ImageRequest`.
+if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry guidance:=3 prompt_upsampling:=true; then
+  grep -q 'ignored unknown fields .*guidance.*negative_prompt.*prompt_upsampling' "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
+    || check "ratio-unknown: what it doesn't take isn't said"
+fi
 }
 
 # Describe reads a checkout's editable install statically (direct_url.json and .pth paths, never their code).
@@ -194,7 +203,8 @@ cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err"
 
 update() { step update; update_to_newest; }
 # Every log cozy wrote (Calcifer, TensorD, executors), before removal erases ~/.cozy: what a failed step left behind.
-logs() { step logs; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf - -T - > "$OUT/cozy-logs.tgz") || true; }
+# As files, which e2e/publish can scrub.
+logs() { step logs; mkdir -p "$OUT/cozy-logs"; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | (cd "$OUT/cozy-logs" && tar -xf -)) || true; }
 remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Local code of one name at two paths, each saying which it is, run in turn: each runs its own, not the first's install (cl-733: a
@@ -246,14 +256,16 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs agent web_serves machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="second_executor lifetime update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects bound_runs logs" ;;
+  commands) parts="catalog basics yaml_requests run_filters projects bound_runs agent logs" ;;
+  # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
+  web) parts="web_serves logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || parts="catalog refusals completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
 
 start
 for part in $parts; do $part; done

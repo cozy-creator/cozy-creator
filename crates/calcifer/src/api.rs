@@ -1,8 +1,8 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
-//! browser. Every request passes the guard chain in order: a loopback peer, an allowed `Host`, no
-//! foreign `Origin`, then (on the routes Calcifer serves) the bearer, from the `Authorization`
-//! header or the `cozy_session` cookie `POST /v1/session` sets, and the admission gate a stopping
-//! Calcifer closes. Refusals are `protocol::error::Envelope`s. No CORS header is ever sent.
+//! browser. Every request passes the guard chain in order: a loopback peer, a loopback `Host`, an
+//! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer or a browser
+//! session (`sessions.rs`), and the admission gate a stopping Calcifer closes. Refusals are
+//! `protocol::error::Envelope`s. No CORS header is ever sent.
 use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
@@ -17,10 +17,10 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, Sse},
     },
-    routing::{get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use protocol::{
-    calcifer::{Down, Event, Run, RunList, RunsEvent, Status},
+    calcifer::{CalciferStatus, Down, Event, Run, RunList, Status},
     error::{Envelope, Error, Kind},
     ids::RunId,
 };
@@ -59,8 +59,9 @@ pub struct Api {
     pub(crate) codes: crate::hub::Codes,
     /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
     pub(crate) works: crate::hub::Works,
-    /// The three spellings of this server's own `host:port`.
-    hosts: [String; 3],
+    pub(crate) sessions: crate::sessions::Sessions,
+    /// The components packages ship, as read for the page.
+    pub(crate) tool_uis: crate::tool_ui::Held,
     bearer: [u8; 32],
     /// Shut once Calcifer is stopping: a mutation holds it open while it runs, so the exit can
     /// never land between a submission's check and its commit.
@@ -72,21 +73,17 @@ impl Api {
     pub fn new(
         calcifer: Arc<Calcifer>,
         machines: Arc<Machines>,
-        port: u16,
         token: &str,
     ) -> Arc<Self> {
         Arc::new(Self {
+            sessions: crate::sessions::Sessions::open(calcifer.home().join("sessions.json")),
             calcifer,
             machines,
             projects: Default::default(),
             releases: Default::default(),
             codes: Default::default(),
             works: Default::default(),
-            hosts: [
-                format!("127.0.0.1:{port}"),
-                format!("localhost:{port}"),
-                format!("[::1]:{port}"),
-            ],
+            tool_uis: Default::default(),
             bearer: Sha256::digest(token).into(),
             stopping: RwLock::new(false),
             stop: watch::channel(false).0,
@@ -123,7 +120,7 @@ impl Api {
     }
 
     /// The bearer, compared by digest so the time taken says nothing about the token.
-    fn admits(&self, presented: &str) -> bool {
+    pub(crate) fn admits(&self, presented: &str) -> bool {
         let presented: [u8; 32] = Sha256::digest(presented).into();
         presented
             .iter()
@@ -135,22 +132,25 @@ impl Api {
 
 pub fn router(api: Arc<Api>) -> Router {
     Router::new()
+        .route("/v1/events", get(crate::events::stream))
         .route("/v1/runs", post(crate::runs::submit).get(list))
-        .route("/v1/runs/events", get(runs_events))
         .route("/v1/runs/{id}", get(show))
         .route("/v1/runs/{id}/cancel", post(cancel))
         .route("/v1/runs/{id}/events", get(events))
         .route("/v1/runs/{id}/outputs/{name}", get(crate::outputs::serve))
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
+        .route("/v1/status", get(status))
         .route("/v1/machines", get(machines::list).post(machines::create))
-        .route("/v1/machines/events", get(machines::events))
         .route(
             "/v1/machines/{name}",
             get(machines::show).delete(machines::end),
         )
         .route("/v1/machines/{name}/keepalive", post(machines::keepalive))
+        .route("/v1/machines/{name}/calcifer/{*path}", any(crate::door::forward))
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
+        .route("/v1/machines/{name}/packages", get(machines::packages))
+        .route("/v1/machines/{name}/models", get(machines::models))
         .route("/v1/machines/{name}/update", post(crate::update::update))
         .route("/v1/machines/{name}/authorized-keys", get(crate::authorized::list))
         .route(
@@ -162,20 +162,28 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/rental-quotes", post(machines::quote))
         .route("/v1/run-quotes", post(crate::runs::quote))
         .route("/v1/targets", get(crate::runs::describe))
+        .route("/v1/tools", get(crate::toolbox::list))
+        .route("/v1/tools/list", post(crate::toolbox::change))
+        .route("/v1/tools/browse", get(crate::toolbox::browse))
+        .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
         .route(
             "/v1/files/{name}",
             axum::routing::put(crate::runs::files::put)
                 .head(crate::runs::files::head)
                 .layer(DefaultBodyLimit::disable()),
         )
-        .route("/v1/session", post(session).delete(end_session))
+        .route("/v1/session-codes", post(crate::sessions::code))
+        .route("/v1/session", delete(crate::sessions::end))
         .merge(crate::project::routes())
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
+        .route("/v1/session", post(crate::sessions::start))
+        .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
+        .merge(crate::page::routes())
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)
-        .layer(middleware::from_fn_with_state(api.clone(), guard))
+        .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(api)
 }
@@ -256,12 +264,11 @@ impl From<BytesRejection> for Refusal {
 /// Loopback peer, `Host`, then `Origin`, on every request. A rebinding page is turned away before
 /// anything asks whether it holds a credential.
 async fn guard(
-    State(api): State<Arc<Api>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
     next: Next,
 ) -> Response {
-    let refused = refusal(&api, &peer, &request);
+    let refused = refusal(&peer, &request);
     let mut response = match refused {
         Some(refusal) => {
             warn!(
@@ -283,7 +290,7 @@ async fn guard(
         }
     };
     let headers = response.headers_mut();
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -291,7 +298,16 @@ async fn guard(
     response
 }
 
-fn refusal(api: &Api, peer: &SocketAddr, request: &Request) -> Option<Refusal> {
+/// A loopback name on any port: an SSH `-L` chooses its own. A rebinding page's `Host` is its own name.
+fn on_loopback(host: &str) -> bool {
+    ["127.0.0.1", "localhost", "[::1]"].iter().any(|name| {
+        host.strip_prefix(name).is_some_and(|rest| {
+            rest.is_empty() || rest.strip_prefix(':').is_some_and(|port| port.parse::<u16>().is_ok())
+        })
+    })
+}
+
+fn refusal(peer: &SocketAddr, request: &Request) -> Option<Refusal> {
     let header = |name| {
         request
             .headers()
@@ -304,21 +320,18 @@ fn refusal(api: &Api, peer: &SocketAddr, request: &Request) -> Option<Refusal> {
             "not_loopback",
             "Calcifer serves the loopback interface only",
         ))
-    } else if !header(header::HOST).is_some_and(|host| api.hosts.contains(&host)) {
+    } else if !header(header::HOST).is_some_and(|host| on_loopback(&host)) {
         Some(
             refuse(
                 Kind::Forbidden,
                 "host_not_allowed",
                 format!("Host {:?} is not this Calcifer", header(header::HOST)),
             )
-            .remedy("reach it as 127.0.0.1, localhost or [::1] on its own port"),
+            .remedy("reach it as 127.0.0.1, localhost or [::1]"),
         )
     // Checked on every request, mutations and stream opens included; an absent Origin passes.
     } else if let Some(origin) = header(header::ORIGIN)
-        && !api
-            .hosts
-            .iter()
-            .any(|host| origin == format!("http://{host}"))
+        && origin.strip_prefix("http://") != header(header::HOST).as_deref()
     {
         Some(refuse(
             Kind::Forbidden,
@@ -330,53 +343,42 @@ fn refusal(api: &Api, peer: &SocketAddr, request: &Request) -> Option<Refusal> {
     }
 }
 
-/// The browser session's cookie: the bearer itself, for what cannot send a header (`<video>`,
-/// `EventSource`). Scoped to the API, never readable by a page's script.
-const SESSION: &str = "cozy_session";
+/// The secret of `Authorization: Bearer`.
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
+}
 
-/// The bearer, from `Authorization` or the session cookie, then the admission gate for every
-/// mutation but `down`, held while it runs. The cookie rides along on any request a browser makes,
-/// so a cookie-borne request must also prove it is Calcifer's own page: an unsafe method carries
-/// Calcifer's own `Origin` (the guard already refused a foreign one), and a read is never
-/// `Sec-Fetch-Site: cross-site`.
+/// The `?media=` secret of a read of a file: what `<img>` and `<video>` can't put in a header, so it
+/// opens nothing else.
+fn media_secret(request: &Request) -> Option<&str> {
+    let reads = matches!(*request.method(), Method::GET | Method::HEAD);
+    let path: Vec<&str> = request.uri().path().split('/').collect();
+    // The same reads of another machine's Calcifer, through its door.
+    let asked = match path[..] {
+        ["", "v1", "machines", _, "calcifer", ref rest @ ..] => rest,
+        ref whole => &whole[1..],
+    };
+    let file = matches!(asked, ["v1", "runs", _, "outputs", _] | ["v1", "projects", _, "files" | "cuts" | "thumbs", _]);
+    if !reads || !file {
+        return None;
+    }
+    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix("media="))
+}
+
+/// The bearer or a session, then the admission gate for every mutation but `down`, held while it runs.
 async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
-    let headers = request.headers();
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let cookie = (headers.get_all(header::COOKIE).iter())
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .find_map(|pair| pair.trim().strip_prefix(SESSION)?.strip_prefix('='));
-    let admitted = match (bearer, cookie) {
-        (Some(token), _) => api.admits(token),
-        (None, Some(token)) if api.admits(token) => {
-            let safe = matches!(*request.method(), Method::GET | Method::HEAD);
-            let origin = headers.get(header::ORIGIN).is_some();
-            let cross = headers.get("sec-fetch-site").is_some_and(|site| site == "cross-site");
-            if cross || (!safe && !origin) {
-                return refuse(
-                    Kind::Forbidden,
-                    "session_cross_site",
-                    "the session cookie serves Calcifer's own pages only",
-                )
-                .into_response();
-            }
-            true
-        }
-        _ => false,
+    let admitted = match bearer(request.headers()) {
+        Some(token) => api.admits(token) || api.sessions.admits_token(token),
+        None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(media)),
     };
     if !admitted {
-        return refuse(
-            Kind::Credential,
-            "unauthenticated",
-            "Calcifer's API needs the bearer from its lock record",
-        )
-        .remedy("a browser page posts it once to /v1/session")
-        .into_response();
+        let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
+        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
+        return Refusal(error).into_response();
     }
-    if request.method() == Method::GET || request.uri().path() == "/v1/down" {
+    // Through the door a mutation commits nothing here, and a long upload must not hold up a stop.
+    let path = request.uri().path();
+    if request.method() == Method::GET || path == "/v1/down" || crate::door::is_door(path) {
         return next.run(request).await;
     }
     let stopping = api.stopping.read().await;
@@ -460,7 +462,7 @@ struct Listing {
     package: Option<String>,
     /// A machine's name, former name or rental id, as a run's `--on` names it.
     machine: Option<String>,
-    /// A folder: the runs of the project holding it; in none, all of them.
+    /// A project's id, or a folder: the runs of the project holding it; in none, all of them.
     project: Option<std::path::PathBuf>,
     before: Option<u64>,
     limit: Option<u64>,
@@ -486,7 +488,10 @@ async fn list(
         status: listing.status,
         target: listing.package,
         machine: machine.clone(),
-        out_dir: listing.project.as_deref().and_then(crate::project::landing_within),
+        out_dir: match listing.project.as_deref() {
+            Some(named) => crate::project::named(&api, named).map_err(Refusal)?.as_deref().map(crate::project::landed_in),
+            None => None,
+        },
         before: listing.before,
         limit: listing.limit.unwrap_or(50).clamp(1, 1000),
     })?;
@@ -526,6 +531,8 @@ async fn show(
     let mut run = api.calcifer.store().detail(&row)?;
     let record = api.calcifer.record(&row)?;
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
+    (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
+    run.request = crate::runs::asked(&row);
     run.report = crate::runs::report::of(&run);
     Ok(Json(run))
 }
@@ -555,22 +562,15 @@ async fn down(State(api): State<Arc<Api>>) -> Json<Down> {
     })
 }
 
-/// `POST /v1/session`: the bearer a page presented in `Authorization` (from its URL's fragment,
-/// which no server or log sees), as the session cookie; `admit` already checked it. It lasts while
-/// this Calcifer runs: the next one mints another bearer.
-async fn session(headers: axum::http::HeaderMap) -> Result<Response, Refusal> {
-    let bearer = (headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()))
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(|| refuse(Kind::Credential, "session_needs_bearer", "a session starts from the bearer itself"))?;
-    let cookie = format!("{SESSION}={bearer}; HttpOnly; SameSite=Strict; Path=/v1");
-    let value = HeaderValue::from_str(&cookie).map_err(|_| refuse(Kind::Usage, "bearer_invalid", "not a bearer"))?;
-    Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, value)]).into_response())
-}
-
-/// `DELETE /v1/session`: the cookie gone from this browser.
-async fn end_session() -> Response {
-    let gone = format!("{SESSION}=; HttpOnly; SameSite=Strict; Path=/v1; Max-Age=0");
-    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, HeaderValue::from_str(&gone).expect("a cookie"))]).into_response()
+async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
+    let hub = crate::hub::origin(&api, None)?;
+    Ok(Json(CalciferStatus {
+        version: env!("CARGO_PKG_VERSION").into(),
+        os: std::env::consts::OS.into(),
+        local_usable: platform::Os::CURRENT.local_inference(),
+        signed_in: hub.device_key(api.machines.hubs.home()).exists(),
+        rental: api.machines.rental_here(),
+    }))
 }
 
 async fn unknown_route(method: Method, uri: Uri) -> Refusal {
@@ -620,84 +620,6 @@ async fn events(
     };
     let stream = futures_util::stream::unfold(follow, Follow::next);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
-}
-
-/// Every run's changes as `run.updated`, each run whole: its lifecycle, outputs and live progress or
-/// wait. No backlog: a client subscribes, then lists. Changes that arrive together are sent once
-/// per run. A subscriber that falls behind is ended, never skipped past: it lists again.
-async fn runs_events(
-    State(api): State<Arc<Api>>,
-) -> Sse<impl Stream<Item = Result<sse::Event, Infallible>>> {
-    let watch = RunsWatch {
-        tail: api.calcifer.subscribe(),
-        stop: api.stop_signal(),
-        calcifer: api.calcifer.clone(),
-        pending: VecDeque::new(),
-    };
-    Sse::new(futures_util::stream::unfold(watch, RunsWatch::next)).keep_alive(KeepAlive::default())
-}
-
-/// One `runs_events` subscriber: the runs it owes an update, in the order they changed.
-struct RunsWatch {
-    tail: broadcast::Receiver<(RunId, Event)>,
-    stop: watch::Receiver<bool>,
-    calcifer: Arc<Calcifer>,
-    pending: VecDeque<RunId>,
-}
-
-impl RunsWatch {
-    async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
-        loop {
-            // Whatever else already arrived joins the batch: a run is sent once, as it is now.
-            loop {
-                match self.tail.try_recv() {
-                    Ok((id, event)) => self.owe(id, &event),
-                    Err(broadcast::error::TryRecvError::Empty) => break,
-                    Err(_) => return None,
-                }
-            }
-            if let Some(id) = self.pending.pop_front() {
-                let run = match self.calcifer.store().run(id.as_str()) {
-                    Ok(Some(row)) => self.calcifer.record(&row),
-                    Ok(None) => continue,
-                    Err(e) => Err(crate::Error::Store(e)),
-                };
-                let run = match run {
-                    Ok(run) => run,
-                    Err(e) => {
-                        warn!(run = %id, "the runs stream cannot read the run: {e}");
-                        return None;
-                    }
-                };
-                let data = serde_json::to_string(&RunsEvent::Updated { run })
-                    .expect("an event serializes");
-                return Some((Ok(sse::Event::default().data(data)), self));
-            }
-            let received = tokio::select! {
-                received = self.tail.recv() => received.ok(),
-                _ = self.stop.wait_for(|stop| *stop) => None,
-            };
-            match received {
-                Some((id, event)) => self.owe(id, &event),
-                None => return None,
-            }
-        }
-    }
-
-    /// Owes `id` an update unless `event` is a log line or byte growth, or it is owed one already.
-    fn owe(&mut self, id: RunId, event: &Event) {
-        let shown = !matches!(
-            event,
-            Event::Log { .. }
-                | Event::OutputDelta {
-                    checkpoint: None,
-                    ..
-                }
-        );
-        if shown && !self.pending.contains(&id) {
-            self.pending.push_back(id);
-        }
-    }
 }
 
 /// One SSE subscriber's place in its run's stream.

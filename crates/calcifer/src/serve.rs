@@ -5,6 +5,7 @@
 //! login service keeps it up. Machines keep running what they accepted either way. Each startup
 //! step is logged with its time, so a slow start names itself.
 use std::{
+    io::ErrorKind,
     net::{Ipv4Addr, SocketAddr},
     process::ExitCode,
     sync::Arc,
@@ -93,7 +94,23 @@ fn refuse(home: &Home, error: Error) -> Error {
     error
 }
 
-/// Serves `loaded.home` on `127.0.0.1:<calcifer.port>` (0: any free port) until `POST /v1/down`.
+/// Where Calcifer listens unless `calcifer.port` says: the same port each start, so a page's origin,
+/// and what it keeps there, outlive a restart.
+const PORT: u16 = 7317;
+
+/// The port asked for and no other; none asked for, [`PORT`] or the next free one.
+async fn listen(asked: Option<u16>) -> std::io::Result<TcpListener> {
+    let mut port = asked.unwrap_or(PORT);
+    loop {
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+            // Windows answers a reserved port with permission denied.
+            Err(e) if asked.is_none() && port < u16::MAX && matches!(e.kind(), ErrorKind::AddrInUse | ErrorKind::PermissionDenied) => port += 1,
+            bound => return bound,
+        }
+    }
+}
+
+/// Serves `loaded.home` on `127.0.0.1`, at [`listen`]'s port, until `POST /v1/down`.
 pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let (home, port) = (&loaded.home, loaded.config.calcifer.port);
     let (began, mut steps) = (Instant::now(), Steps(Instant::now()));
@@ -108,6 +125,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         info!("another Calcifer holds this home");
         return Ok(Stopped::AnotherHolds);
     };
+    crate::project::bind_calcifer(&home.calcifer()).map_err(failed)?;
     // Only the holder announces: its birth is what `Services::stop` must end.
     Services::new(home, &loaded.user_home)
         .announce("calcifer")
@@ -126,7 +144,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let calcifer = Calcifer::open(&home.calcifer(), &home.outputs())
         .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_store", e.to_string())))?;
     steps.done("store");
-    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+    let listener = match listen(port).await {
         Ok(listener) => listener,
         Err(e) => {
             calcifer.close();
@@ -134,9 +152,9 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
                 Error::new(
                     Kind::Unavailable,
                     "calcifer_port",
-                    format!("Calcifer cannot listen on 127.0.0.1:{port}: {e}"),
+                    format!("Calcifer cannot listen on 127.0.0.1:{}: {e}", port.unwrap_or(PORT)),
                 )
-                .remedy("free the port, or set calcifer.port in config.toml (0 takes any)"),
+                .remedy("free the port, or take calcifer.port out of config.toml to use the next free one"),
             ));
         }
     };
@@ -150,7 +168,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let machines = Machines::start(calcifer.clone(), home.clone(), &loaded.user_home, &loaded.config);
     steps.done("machines");
     tokio::spawn(drop_old_measurements(calcifer.clone()));
-    let api = Api::new(calcifer.clone(), machines.clone(), address.port(), &token);
+    let api = Api::new(calcifer.clone(), machines.clone(), &token);
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
     #[cfg(unix)]
     if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
@@ -195,6 +213,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
+    crate::events::tell(api.clone());
     crate::project::resume(&api);
 
     api.stopped().await;

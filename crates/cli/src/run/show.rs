@@ -1,5 +1,5 @@
-//! `cozy run show`: one run whole, with what its machine measured of it and of each call it
-//! made: where its execution time went (executor start, construction, each stage and its steps,
+//! `cozy run show`: one run: what it ran, how it ended, its outputs and its result. With `--full`, all
+//! its machine measured of it and of each call it made: where its execution time went (executor start, construction, each stage and its steps,
 //! and what no measurement covers), the models it ran as resolved (release and lane), each
 //! component's attention and GEMM kernels, every GPU's attention kernels (the one that served,
 //! the others and why not), each GPU's memory (bytes moved by source, per step, and what make
@@ -16,18 +16,19 @@ use super::follow;
 use crate::{Context, output};
 
 /// A run not yet settled is followed to its end in every mode (Ctrl-C stops following, never the
-/// run): with `--json`, Calcifer's events as NDJSON, then the run's whole record as the last line.
+/// run): with `--json`, Calcifer's events as NDJSON, then the run's record as the last line.
 /// `once`: a snapshot instead. The exit code is the run's: 1 when it failed or was canceled.
 pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
-    let full = format!("/v1/runs/{id}");
-    let mut run: Run = calcifer.get_query(&full, &[("detail", "full")]).await?;
+    // `--full`: what it measured, its calls and what it was asked; a person's view and `--json` hold the rest.
+    let detail: &[(&str, &str)] = if ctx.full { &[("detail", "full")] } else { &[] };
+    let mut run: Run = calcifer.get_query(&format!("/v1/runs/{id}"), detail).await?;
     if !once && !follow::settled(&run) {
         let ended = follow::follow(ctx, run).await?;
         if !ctx.json {
             return Ok(follow::exit_code(&ended));
         }
-        run = calcifer.get_query(&format!("/v1/runs/{}", ended.id), &[("detail", "full")]).await?;
+        run = calcifer.get_query(&format!("/v1/runs/{}", ended.id), detail).await?;
         output::ndjson(&run);
         return Ok(follow::exit_code(&run));
     }
@@ -41,6 +42,13 @@ pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error
         fields = fields.field("attention kernel", report.attention_pins.join(", "));
     }
     fields.print(ctx);
+    if !ctx.full {
+        if !follow::settled(&run) {
+            follow::next(ctx, &run);
+        }
+        println!("its stages, memory, calls and log: cozy run show {} --full", run.number);
+        return Ok(follow::exit_code(&run));
+    }
     grid(&["STAGE", "TIME", "DETAIL"], measured, stage_rows).print(ctx, "stages");
     grid(&["SLOT", "MODEL", "LANE"], measured, model_rows).print(ctx, "models");
     grid(&["COMPONENT", "ATTENTION", "GEMM"], measured, component_rows).print(ctx, "components");

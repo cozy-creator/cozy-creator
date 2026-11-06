@@ -28,6 +28,9 @@ pub enum Error {
         /// The answer's `Retry-After`, in seconds.
         #[serde(default)]
         retry_after_s: Option<u64>,
+        /// The envelope's `metadata`: the refusal's details, verbatim.
+        #[serde(default)]
+        metadata: Option<Value>,
     },
     #[error("Tensorhub: {0}")]
     Call(String),
@@ -82,8 +85,9 @@ impl Error {
                 message,
                 remedy,
                 retry_after_s,
+                metadata,
             } => (
-                Refusal { retry_after_s, ..Refusal::new(Kind::of_http(status), code.clone(), message).cause(code) },
+                Refusal { retry_after_s, metadata, ..Refusal::new(Kind::of_http(status), code.clone(), message).cause(code) },
                 remedy,
             ),
             Self::Call(message) => {
@@ -161,6 +165,7 @@ impl Error {
             message: message.unwrap_or_else(|| status.to_string()),
             remedy: remedy.unwrap_or_default(),
             retry_after_s,
+            metadata: Some(said["error"]["metadata"].clone()).filter(|m| m.is_object()),
         }
     }
 }

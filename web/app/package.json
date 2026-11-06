@@ -1,0 +1,30 @@
+{
+  "name": "cozy-web",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@11.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit -p . && vite build",
+    "dev": "vite",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@cozy-creator/paper": "github:cozy-creator/ghibli-component-library#fe4f6ec6abcb22d7f695deabb8e7957c7fb98b60&path:/packages/paper",
+    "@openrails/auth-ui": "1.47.0",
+    "@tanstack/react-query": "^5.104.2",
+    "@xyflow/react": "^12.12.1",
+    "hash-wasm": "^4.12.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-router-dom": "7.18.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6",
+    "typescript": "~6",
+    "vite": "^8"
+  }
+}

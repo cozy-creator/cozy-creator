@@ -12,9 +12,11 @@ use protocol::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::{Digest, RunId},
-    interface::{self, Slot},
+    interface::{self, Interface, Slot},
     model_ref::ModelRef,
+    names::shown,
     project::Event,
+    tool,
 };
 use serde_json::Value;
 
@@ -38,30 +40,74 @@ pub struct Package {
     pub local: Option<PathBuf>,
     /// A yanked release this walk moved off, said once.
     pub moved: Option<String>,
+    /// The function its tool names; none: the package alone.
+    pub named: Option<String>,
     document: Value,
 }
 
-/// A project adapter's function is named this and the kind it adapts (`App.project_adapter`).
-pub const ADAPTER: &str = "project-adapter-";
-/// The project format its record is.
-const FORMAT: u64 = 2;
-
 impl Package {
-    /// The function of its package that turns an operation of `kind` into calls, if it reads this format. With none, this package can't make that kind.
-    pub fn adapter(&self, kind: &str) -> Option<Renderer> {
-        let name = format!("{ADAPTER}{kind}");
-        let entry = interface::entrypoints(&self.document).find(|entry| interface::name(entry) == Some(name.as_str()))?;
-        let version = entry["request"]["fields"].as_array()?.iter().find(|field| field["name"] == "version")?;
-        let reads = version["type"]["literal"].as_array()?.iter().any(|value| value.as_u64() == Some(FORMAT));
-        reads.then(|| self.function(&name)).and_then(Result::ok)
+    /// The function its tool names, as a run of it is sent. None: it names none.
+    pub fn maker(&self) -> Result<Option<Renderer>, Error> {
+        self.named.as_deref().map(|function| self.function(function)).transpose()
     }
 
-    /// The tags its adapters declare as their own (`App.project_adapter(reserved=)`): in a text they are text.
+    /// The function a job of `kind` will most likely call: the one named, else the first public one that makes it.
+    pub fn first_making(&self, kind: &str) -> Option<Renderer> {
+        if let Some(function) = &self.named {
+            return self.function(function).ok();
+        }
+        let interface = self.interface();
+        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
+        let first = interface.public().into_iter().find(makes)?;
+        self.function(first).ok()
+    }
+
+    /// The widths `function` runs at, smallest first: what it loads declares, one for all; for one that loads nothing itself, the first function
+    /// it can call. Empty: it needs no GPU.
+    pub fn widths(&self, function: &str) -> Vec<u32> {
+        let document = &self.document;
+        let Some(entry) = interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)) else { return vec![] };
+        let entry = match interface::orchestrates(document, entry) {
+            true => interface::entrypoints(document).find(|other| interface::internal(other) && !interface::cpu(other) && !interface::models(other).is_empty()).unwrap_or(entry),
+            false => entry,
+        };
+        if interface::cpu(entry) {
+            return vec![];
+        }
+        let mut common: BTreeSet<u32> = (1..=64).collect();
+        for model in interface::models(entry).iter().filter(|model| model["weights"] != true) {
+            let mut declared = BTreeSet::from([1u32]);
+            for degree in model.pointer("/sequence_parallel/degrees").and_then(Value::as_array).into_iter().flatten() {
+                declared.extend(degree.as_u64().map(|degree| degree as u32));
+            }
+            common = common.intersection(&declared).copied().collect();
+        }
+        if common.len() == 64 {
+            return vec![1];
+        }
+        common.into_iter().collect()
+    }
+
+    /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
+    pub fn named_kind(&self) -> Option<String> {
+        let interface = self.interface();
+        let callable = interface.callables.iter().find(|callable| Some(&callable.name) == self.named.as_ref())?;
+        tool::output_kind(callable).map(str::to_owned)
+    }
+
+    /// The typed inputs of `function`.
+    pub fn callable(&self, function: &str) -> Option<protocol::interface::Callable> {
+        self.interface().callables.into_iter().find(|callable| callable.name == function)
+    }
+
+    fn interface(&self) -> Interface {
+        Interface::parse(&self.document).unwrap_or_default()
+    }
+
+    /// The tags of the function its tool names (`Node.reserved`): in a text they are text.
     pub fn reserved(&self) -> Vec<String> {
-        let adapters = interface::entrypoints(&self.document).filter(|entry| interface::name(entry).is_some_and(|name| name.starts_with(ADAPTER)));
-        let mut tags: Vec<String> = adapters.flat_map(|entry| entry["reserved"].as_array().into_iter().flatten()).filter_map(|tag| Some(tag.as_str()?.to_owned())).collect();
+        let mut tags = self.named.as_deref().and_then(|function| self.callable(function)?.node).map(|node| node.reserved).unwrap_or_default();
         tags.sort_unstable();
-        tags.dedup();
         tags
     }
 
@@ -82,8 +128,6 @@ pub struct Renderer {
     pub local: Option<PathBuf>,
     /// What its request takes, read from its schema.
     pub accepts: BTreeSet<String>,
-    /// An adapter's typed `fields`, if it types them: a field the asset wrote that isn't one is warned of.
-    pub signature: Option<BTreeSet<String>>,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
     pub calls: Vec<Slot>,
@@ -100,7 +144,7 @@ impl Renderer {
     ) -> Result<Self, Error> {
         let unknown = || format!("{package}@{release} has no function {function}");
         let entry = (interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)))
-            .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()))?;
+            .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()).next(format!("cozy package update {}", shown(package))))?;
         let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
         let fields = entry["request"]["fields"].as_array();
         // A list with no room for anything is not taken.
@@ -108,15 +152,12 @@ impl Renderer {
             .filter(|field| field["constraints"]["max_length"].as_u64() != Some(0))
             .filter_map(|field| field["name"].as_str().map(str::to_owned))
             .collect();
-        let typed = fields.and_then(|fields| fields.iter().find(|field| field["name"] == "fields"));
-        let signature = typed.and_then(|field| Some(field["type"]["fields"].as_array()?.iter().filter_map(|field| field["name"].as_str().map(str::to_owned)).collect()));
         Ok(Self {
             package: package.into(),
             function: function.into(),
             release,
             local,
             accepts,
-            signature,
             slots: read(interface::models(entry).iter().collect()),
             calls: read(interface::call_slots(document, entry)),
         })
@@ -128,6 +169,36 @@ impl Renderer {
             None => format!("{}/{}@{}", self.package, self.function, self.release),
             Some(_) => format!("{}/{}", self.package, self.function),
         }
+    }
+}
+
+/// What a run measured.
+#[derive(Clone, Copy, Debug)]
+pub struct Measured {
+    pub busy_s: f64,
+    pub width: u32,
+    pub exchange_share: f64,
+}
+
+impl Measured {
+    /// From what its executors recorded: a stage is time it worked; a `host ·` row inside one is where that went, and one in `parallel` is exchange. A wait counts nowhere.
+    fn of(run: &Run) -> Option<Self> {
+        let (mut busy, mut exchange, mut width) = (0.0, 0.0, 0u32);
+        let calls = run.calls.iter().filter_map(|call| call.measurements.as_ref());
+        for measured in run.measurements.iter().chain(calls) {
+            for (name, stage) in measured.pointer("/attribution/stages").and_then(Value::as_object).into_iter().flatten() {
+                let ms = stage["total_ms"].as_f64().unwrap_or(0.0);
+                match name.strip_prefix("host · ") {
+                    Some(code) if code.contains(".parallel.") => exchange += ms,
+                    Some(_) => {}
+                    None => busy += ms,
+                }
+            }
+            width = width.max(measured.pointer("/execution/degree").and_then(Value::as_u64).unwrap_or(0) as u32);
+        }
+        // What it took is its run's own time: the stages of an orchestrator and of its calls are the same time, counted twice.
+        let wall = run.execution_ms.map(|ms| ms as f64).filter(|ms| *ms > 0.0).unwrap_or(busy);
+        (busy > 0.0).then(|| Self { busy_s: wall / 1000.0, width: width.max(1), exchange_share: (exchange / busy).min(1.0) })
     }
 }
 
@@ -193,7 +264,7 @@ impl Host {
     pub async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
         if let Some(found) = local_code::target(with, folder, &home) {
-            let (path, _) = found?;
+            let (path, named) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
             let prepared = self.ready(&path, &on, hub).await?;
             let Some(document) = prepared.interface else {
@@ -201,7 +272,7 @@ impl Host {
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Ok(Package { name: prepared.package, release, local: Some(path), moved: None, document });
+            return Ok(Package { name: prepared.package, release, local: Some(path), moved: None, named, document });
         }
         let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
         self.published(hub, with, Some(&first)).await
@@ -217,12 +288,49 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, card, moved, .. } = target::published(&self.api, &hub, with, on).await? else {
+        let Resolved::Release { package, function, card, moved, .. } = target::published(&self.api, &hub, with, on).await? else {
             unreachable!("a published target resolves to a release");
         };
-        let found = Package { name: package, release: card.release.clone(), local: None, moved: None, document: card.interface_document().clone() };
+        let found = Package { name: package, release: card.release.clone(), local: None, moved: None, named: function, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
+    }
+
+    /// How many GPUs a machine has, as it last said. One that hasn't said is taken as wide: a job's width is a cap, which its machine brings down to what there is.
+    pub fn gpus(&self, on: &On) -> u32 {
+        let On::Machine(name) = on else { return 64 };
+        self.api.machines.frame(name).map_or(64, |frame| (frame.gpus.len() as u32).max(1))
+    }
+
+    /// What run `number` measured: its time on GPUs and in what it did itself, the width it had, and the share of it spent exchanging between GPUs.
+    pub fn measured(&self, number: u64) -> Option<Measured> {
+        let store = self.api.calcifer.store();
+        let row = store.run_by_number(number).ok()??;
+        let run = store.detail(&row).ok()?;
+        (run.status == RunStatus::Completed).then(|| Measured::of(&run)).flatten()
+    }
+
+    /// What the newest finished run of `target` on `machine` measured.
+    /// What the newest finished runs of `target` on `machine` measured, the newest at each width.
+    pub fn last_measured(&self, target: &str, machine: &str) -> Vec<Measured> {
+        let store = self.api.calcifer.store();
+        let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
+        let Ok((rows, ..)) = store.runs(&filter) else { return vec![] };
+        let mut found: Vec<Measured> = vec![];
+        for row in &rows {
+            let Ok(run) = store.detail(row) else { continue };
+            let Some(measured) = Measured::of(&run) else { continue };
+            if found.iter().any(|had| had.width == measured.width) {
+                continue;
+            }
+            found.push(measured);
+        }
+        found
+    }
+
+    /// Stops a run fetching ahead, however far it got. Nothing depends on it.
+    pub fn cancel_ahead(&self, run: &RunId) {
+        let _ = self.api.calcifer.cancel(run);
     }
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.

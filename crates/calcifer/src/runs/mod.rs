@@ -130,6 +130,7 @@ fn local(api: &Api, ask: &RunRequest) -> Option<Result<(PathBuf, Option<String>)
 /// Records `ask` under `key` and starts it; the same key again answers the recorded run without
 /// binding anything again, and another ask under it is a conflict. Local code not yet made ready
 /// answers the run that makes it ready (`preparing`): its client follows that, then asks again.
+/// The files it's given join its project, so asking it again still finds them once what held them is gone.
 pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
     let digest = digest(&ask);
     let calcifer = &api.calcifer;
@@ -145,11 +146,57 @@ pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submi
             let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
             Ok(Submitted { run, replay: false, notes, preparing: true })
         }
-        Prepared::Run { submit, notes } => {
+        Prepared::Run { submit, mut notes } => {
+            let given = given(&submit);
+            let project = submit.out.as_deref().and_then(crate::project::of_landing).map(Path::to_owned);
             let submitted = calcifer.submit_under(key, &digest, submit).await.map_err(refused)?;
+            if let Some(project) = project.filter(|_| !submitted.replay) {
+                let uploads = files::dir(calcifer);
+                let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
+                let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))?;
+                notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+            }
             Ok(Submitted { notes, ..submitted })
         }
     }
+}
+
+/// The files a submission's call is given, with their hashes: not a folder's manifest or its members, nor local code's own.
+fn given(submit: &SubmitRun) -> Vec<(PathBuf, String)> {
+    let staged = |digest: &str| submit.inputs.iter().find(|input| input.digest.to_string() == digest).map(|input| input.path.clone());
+    let files = submit.spec.inputs.iter().filter(|input| input.media_type != protocol::tree::MEDIA);
+    files.filter_map(|input| Some((staged(&input.digest)?, input.digest.clone()))).collect()
+}
+
+/// What a run was asked, from the spec it was sent: its payload, the models and LoRAs it chose as `input`'s `models` takes them,
+/// and its seed. None for what no one asked with a payload.
+pub(crate) fn asked(row: &crate::store::RunRow) -> Option<protocol::calcifer::RunAsked> {
+    let mut input: serde_json::Map<String, serde_json::Value> = serde_json::from_str(row.spec.payload.as_ref()?.get()).ok()?;
+    let seed = input.get("seed").and_then(serde_json::Value::as_i64);
+    let reference = |source: &str, repository: &str, manifest: &str, release: &str| match (source, manifest, release) {
+        (source, ..) if !source.is_empty() => source.to_owned(),
+        (_, manifest, _) if !manifest.is_empty() => format!("{repository}@{manifest}"),
+        (_, _, release) if !release.is_empty() => format!("{repository}@{release}"),
+        _ => repository.to_owned(),
+    };
+    let models = row.spec.models.iter().map(|choice| {
+        let lora: Vec<_> = (choice.adapters.iter())
+            .map(|a| serde_json::json!({"ref": reference(&a.source, &a.model, &a.manifest, &a.release), "strength": a.scale.parse::<f64>().unwrap_or(1.0)}))
+            .collect();
+        let mut chosen = serde_json::json!({});
+        if !lora.is_empty() {
+            chosen["lora"] = lora.into();
+        }
+        if !choice.repository.is_empty() || !choice.source.is_empty() {
+            chosen["ref"] = reference(&choice.source, &choice.repository, &choice.manifest, &choice.release).into();
+        }
+        (choice.parameter.clone(), chosen)
+    });
+    let models: serde_json::Map<_, _> = models.collect();
+    if !models.is_empty() {
+        input.insert("models".into(), models.into());
+    }
+    Some(protocol::calcifer::RunAsked { target: row.target.clone(), input, seed })
 }
 
 /// The ask's identity: what it asks, whatever price it was quoted since.
@@ -173,9 +220,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     if local(api, ask).is_some() {
         protocol::calcifer::local_usable(&on.to_string())?;
         // Refused before that install, not after it.
-        if outside_a_project(ask) {
-            return Err(crate::project::not_in_one());
-        }
+        project_of(api, ask)?;
     }
     let hub = hub(api, &ask.hub);
     let cwd = ask.cwd.as_deref();
@@ -215,7 +260,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
         }
     };
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
-    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || !ask.files.is_empty() || ask.warm.is_some();
+    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
     let Some(function) = function.or(target::only_function(code.interface).filter(|_| given)) else {
         let release = match &resolved {
             Resolved::Release { release: Some(release), .. } => Some(release.as_str()),
@@ -244,7 +289,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
 
 /// Where a run that names no machine goes: this computer's, on an OS that runs models itself; on
 /// another, a machine this computer has when it has one, else `local`, refused with the way forward.
-fn default_on(api: &Api) -> On {
+pub(crate) fn default_on(api: &Api) -> On {
     let local = On::Machine("local".into());
     if platform::Os::CURRENT.local_inference() {
         return local;
@@ -277,9 +322,16 @@ struct Code<'a> {
     on: On,
 }
 
-/// Whether `ask` is a person's run with no project to belong to.
-fn outside_a_project(ask: &RunRequest) -> bool {
-    ask.warm.is_none() && !ask.recipes && ask.project.as_deref().and_then(crate::project::holding_folder).is_none()
+/// The project `ask` belongs to. A person's run has one, as a commit has a repository; keeping a function warm and `cozy model quantize` are no one's run.
+fn project_of(api: &Api, ask: &RunRequest) -> Result<Option<PathBuf>, Error> {
+    let project = match ask.project.as_deref() {
+        Some(named) => crate::project::named(api, named)?,
+        None => None,
+    };
+    if project.is_none() && ask.warm.is_none() && !ask.recipes {
+        return Err(crate::project::not_in_one());
+    }
+    Ok(project)
 }
 
 /// Binds the ask's terms to `callable` of `code` (a warm run, its model choices only) into the
@@ -300,21 +352,13 @@ async fn call(
     }
     let home = api.machines.hubs.home().root().to_path_buf();
     let mut notes = vec![];
-    // A person's run belongs to a project, as a commit to a repository. Keeping a function warm and `cozy model quantize` are no one's run.
-    let project = ask.project.as_deref().and_then(crate::project::holding_folder);
-    if outside_a_project(ask) {
-        return Err(crate::project::not_in_one());
-    }
-    // `--file image=65b436d4f9a3` names a file of the project's by its hash.
-    let mut files = vec![];
-    for term in &ask.files {
-        files.push(crate::project::file_term(&api.calcifer, project.as_deref(), term).await?);
-    }
+    let project = project_of(api, ask)?;
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),
         input_file: ask.input_file.clone(),
-        assets: files,
+        input_text: ask.input_text.clone(),
+        assets: ask.files.clone(),
         fidelities: ask.fidelities.clone(),
         loras: ask.loras.clone(),
         key: key.to_owned(),
@@ -324,6 +368,7 @@ async fn call(
         manifests: Some(home.join("cache").join("trees")),
         clips: clip::Clips { dir: home.join("cache").join("clips"), home: api.machines.hubs.home().clone() },
         uploads: files::dir(&api.calcifer),
+        project: project.clone().map(|dir| crate::project::Holding::new(api.calcifer.clone(), dir)),
     };
     for term in &terms.fidelities {
         protocol::calcifer::fidelity(term).map_err(|why| Error::new(Kind::Usage, "file_fidelity_invalid", why))?;
@@ -404,7 +449,8 @@ pub(crate) fn callable<'a>(package: &str, interface: &'a Interface, asked: &str)
                     "callable_unreadable",
                     format!("{package}/{name} is not readable by this cozy: {why}"),
                 )
-                .remedy("update cozy, or call another function of the package"));
+                .remedy("update cozy, or call another function of the package")
+                .next("cozy update"));
             }
             let public = interface.public();
             let mut error =

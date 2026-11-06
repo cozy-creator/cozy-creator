@@ -1,6 +1,7 @@
 //! The models this machine's store holds, for Status: each local model (`local/<name>`) and
 //! each Hub checkpoint it pulled (cached Hub refs), with what it weighs. A listing is read
-//! again only when the set of models changed, not when one was merely used.
+//! again only when the set of models changed or the disk moved by a hundredth, not when one was
+//! merely used: a model whose header landed first is read again as its chunks land.
 use crate::api::v1;
 use crate::storage::{self, Store};
 use std::{
@@ -80,7 +81,12 @@ fn entries(repo: &Repo) -> impl Iterator<Item = (&str, Option<&str>, &ObjectRef)
 /// Each model's rows: repository, release, lane, header.
 type Seen = Vec<(String, String, String, ObjectRef)>;
 
-static LAST: Mutex<Option<(PathBuf, Seen, Listing)>> = Mutex::new(None);
+static LAST: Mutex<Option<(PathBuf, Seen, u64, Listing)>> = Mutex::new(None);
+
+/// Where the disk under `root` stands, in hundredths of it free.
+fn moved(root: &Path) -> u64 {
+    platform::durable::space(root).map_or(0, |space| space.free / (space.total / 100).max(1))
+}
 
 /// The store at `root`'s held models; none while it cannot be read.
 pub fn listing(root: &Path) -> Listing {
@@ -95,9 +101,10 @@ pub fn listing(root: &Path) -> Listing {
             return Listing::default();
         }
     };
+    let free = moved(root);
     let mut last = LAST.lock().unwrap();
-    if let Some((at, was, listing)) = last.as_ref() {
-        if at == root && *was == seen {
+    if let Some((at, was, then, listing)) = last.as_ref() {
+        if at == root && *was == seen && *then == free {
             return listing.clone();
         }
     }
@@ -105,7 +112,7 @@ pub fn listing(root: &Path) -> Listing {
         tracing::warn!("held models unreadable: {error}");
         Listing::default()
     });
-    *last = Some((root.into(), seen, listing.clone()));
+    *last = Some((root.into(), seen, free, listing.clone()));
     listing
 }
 

@@ -1,0 +1,616 @@
+import type {
+  Account,
+  Agreed,
+  Approved,
+  Asked,
+  Browsed,
+  Canvas,
+  Code,
+  Ended,
+  ErrorBody,
+  Held,
+  Import,
+  Imported,
+  Keepalive,
+  Machine,
+  MachineList,
+  MachineLogName,
+  MachineModels,
+  MachinePackages,
+  MachineUpdate,
+  ModelDetail,
+  ModelReleased,
+  ModelSearch,
+  ModelUploading,
+  AssetDeleted,
+  AssetMade,
+  AssetPatched,
+  Captioned,
+  Opened,
+  OrgClaim,
+  PackageDetail,
+  PackageRemovals,
+  PackageSearch,
+  ProjectList,
+  ProjectState,
+  AssetVersions,
+  Renamed,
+  Row,
+  Play,
+  Proven,
+  Quote,
+  Rent,
+  Rented,
+  RentalSku,
+  Run,
+  RunList,
+  RunQuote,
+  RunRequest,
+  Session,
+  SignedOutAnswer,
+  Status,
+  Submitted,
+  Target,
+  ToolList,
+  ToolUi,
+  Tools,
+  Unpinned,
+  Updating,
+  VersionMoved,
+} from "../types"
+import type { Transport } from "./transport"
+
+export const TRIES = 5
+
+export class ApiError extends Error {
+  readonly body: ErrorBody
+  readonly status: number
+
+  constructor(status: number, body: ErrorBody) {
+    super(body.message)
+    this.status = status
+    this.body = body
+  }
+}
+
+const unreachable = () =>
+  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
+
+/** The page's own session is gone. Any other 401 is a Hub's word on a code or a key, which belongs where it happened. */
+export const sessionLost = (error: ApiError) => error.status === 401 && error.body.code === "unauthenticated"
+
+async function refusal(response: Response): Promise<ApiError> {
+  const body = await response.json().catch(() => null)
+  const error = body?.error
+  if (typeof error?.message === "string") return new ApiError(response.status, error)
+  return new ApiError(response.status, { kind: "internal", code: `http_${response.status}`, message: `Calcifer answered ${response.status}` })
+}
+
+const aborted = (error: unknown) => error instanceof DOMException && error.name === "AbortError"
+
+export function pause(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((done, fail) => {
+    signal?.throwIfAborted()
+    const timer = setTimeout(done, ms)
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer)
+      fail(signal.reason)
+    })
+  })
+}
+
+export interface Options {
+  /** Answers other than 2xx that are still answers. */
+  accept?: number[]
+  /** Said for each try after the first; 0 when it is over. */
+  onAttempt?: (attempt: number) => void
+  /** One try, which this ends: its retries are the outbox's. */
+  once?: AbortSignal
+}
+
+export interface Hooks {
+  signedOut(): void
+  attempt(attempt: number): void
+}
+
+const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
+const run = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
+const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
+// `org/name` on the wire; a first-party name has no owner, and its org is `_`.
+const orgOf = (name: string) => encodeURIComponent(name.includes("/") ? name.slice(0, name.indexOf("/")) : "_")
+const baseOf = (name: string) => encodeURIComponent(name.slice(name.indexOf("/") + 1))
+const pkg = (name: string) => `/v1/packages/${orgOf(name)}/${baseOf(name)}`
+const model = (name: string) => `/v1/models/${orgOf(name)}/${baseOf(name)}`
+
+export interface RunFilter {
+  project?: string
+  status?: string
+  machine?: string
+}
+
+export class Client {
+  readonly transport: Transport
+  private hooks: Hooks
+
+  constructor(transport: Transport, hooks: Hooks) {
+    this.transport = transport
+    this.hooks = hooks
+  }
+
+  /** Calcifer refused the page itself. Whether that signs anyone out is the connection's to judge: through a door, it's the pod's word. */
+  unauthorized() {
+    this.hooks.signedOut()
+  }
+
+  /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
+  private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
+    const safe = init.method !== "POST" || new Headers(init.headers).has("Idempotency-Key")
+    const say = (attempt: number) => {
+      this.hooks.attempt(attempt)
+      options.onAttempt?.(attempt)
+    }
+    for (let attempt = 1; ; attempt++) {
+      let failure: ApiError
+      try {
+        const response = await this.transport.fetch(path, options.once ? { ...init, signal: options.once } : init)
+        if (response.ok || options.accept?.includes(response.status)) {
+          if (attempt > 1) say(0)
+          return response
+        }
+        failure = await refusal(response)
+        if (sessionLost(failure)) this.unauthorized()
+        if (response.status !== 503 || options.once) {
+          if (attempt > 1) say(0)
+          throw failure
+        }
+      } catch (error) {
+        if (!(error instanceof TypeError)) {
+          if (attempt > 1 && aborted(error)) say(0)
+          throw error
+        }
+        failure = unreachable()
+      }
+      if (!safe || options.once || attempt >= TRIES) {
+        if (attempt > 1) say(0)
+        throw failure
+      }
+      say(attempt + 1)
+      await pause(500 * 2 ** (attempt - 1), init.signal)
+    }
+  }
+
+  private async json<T>(path: string, init?: RequestInit, options?: Options): Promise<T> {
+    return (await this.send(path, init, options)).json()
+  }
+
+  /** A stream, opened once: its reader does its own reconnecting. */
+  private async opened(path: string, signal: AbortSignal): Promise<Response> {
+    const response = await this.transport.fetch(path, { signal, headers: { Accept: "text/event-stream" } })
+    if (response.ok) return response
+    const failure = await refusal(response)
+    if (sessionLost(failure)) this.unauthorized()
+    throw failure
+  }
+
+  private write<T>(method: string, path: string, body: unknown, key?: string, options?: Options): Promise<T> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (key) headers["Idempotency-Key"] = key
+    return this.json(path, { method, headers, body: JSON.stringify(body) }, options)
+  }
+
+  // Session
+
+  redeem(code: string): Promise<Session> {
+    return this.write("POST", "/v1/session", { code })
+  }
+
+  async endSession(): Promise<void> {
+    await this.send("/v1/session", { method: "DELETE" })
+  }
+
+  status(): Promise<Status> {
+    return this.json("/v1/status")
+  }
+
+  /** The one stream, opened once: `EventStream` does its own reconnecting. */
+  events(signal: AbortSignal): Promise<Response> {
+    return this.transport.fetch("/v1/events", { signal, headers: { Accept: "text/event-stream" } })
+  }
+
+  // Files
+
+  /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */
+  async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void): Promise<true | [number, number][]> {
+    const response = await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
+    if (response.ok) return true
+    // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
+    const ranges: [number, number][] = []
+    for (const part of (response.headers.get("Cozy-Held") ?? "").split(",")) {
+      const [first, last] = part.split("-").map(Number)
+      if (Number.isSafeInteger(first) && Number.isSafeInteger(last) && first >= 0 && last >= first) ranges.push([first, last])
+    }
+    return ranges
+  }
+
+  /** One part of a file: the file's `Held` once it is whole, else null. */
+  async put(
+    digest: string,
+    part: Blob,
+    start: number,
+    total: number,
+    signal: AbortSignal,
+    onAttempt?: (attempt: number) => void,
+  ): Promise<Held | null> {
+    const headers: Record<string, string> = { "Content-Type": "application/octet-stream" }
+    if (total > 0) headers["Content-Range"] = `bytes ${start}-${start + part.size - 1}/${total}`
+    const response = await this.send(`/v1/files/${digest}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
+    return response.status === 204 ? null : response.json()
+  }
+
+  // Projects
+
+  projects(limit = 200): Promise<ProjectList> {
+    return this.json(`/v1/projects?limit=${limit}`)
+  }
+
+  newProject(name: string, key: string): Promise<Opened> {
+    return this.write("POST", "/v1/projects", { name }, key)
+  }
+
+  project(id: string, signal?: AbortSignal): Promise<ProjectState> {
+    return this.json(project(id), { signal })
+  }
+
+  /** One asset as it is now: what a change of it costs, whatever else the project holds. */
+  asset(id: string, name: string): Promise<AssetVersions> {
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`)
+  }
+
+  /** What's said of the project besides its assets. */
+  projectHead(id: string): Promise<ProjectState> {
+    return this.json(`${project(id)}?assets=false`)
+  }
+
+  async yaml(id: string, signal?: AbortSignal): Promise<string> {
+    return (await this.send(`${project(id)}/yaml`, { signal })).text()
+  }
+
+  import(id: string, key: string, body: Import, once?: AbortSignal): Promise<Imported> {
+    return this.write("POST", `${project(id)}/imports`, body, key, { once })
+  }
+
+  /** Pins `name` to `version`: a short run of digits is its version, anything else a hash prefix of a file of the project. */
+  approve(id: string, name: string, version: string, once?: AbortSignal): Promise<Approved> {
+    return this.write("POST", `${project(id)}/approve`, { name, version }, undefined, { once })
+  }
+
+  /** Its pin's line gone, so its state follows its inputs again. */
+  unpin(id: string, name: string, once?: AbortSignal): Promise<Unpinned> {
+    return this.write("POST", `${project(id)}/unpin`, { name }, undefined, { once })
+  }
+
+  /** A new version of each of `names`, on these machines. `take` and `in_s` keep one video's start; `outdated`, with `all`, re-runs pins that are. */
+  render(id: string, names: string[], on: string[], key: string, also: { take?: number; in_s?: number; outdated?: boolean } = {}, once?: AbortSignal): Promise<Asked> {
+    return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
+  }
+
+  /** A tool dropped on the canvas. */
+  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown>; kind?: string }, once?: AbortSignal): Promise<AssetMade> {
+    return this.write("POST", `${project(id)}/assets`, body, key, { once })
+  }
+
+  /** These inputs set. With `read`, only if its own lines are still what that read. */
+  patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string, once?: AbortSignal): Promise<AssetPatched> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (read) headers["If-Match"] = read
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) }, { once })
+  }
+
+  deleteAsset(id: string, name: string, once?: AbortSignal): Promise<AssetDeleted> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {}, undefined, { once })
+  }
+
+  /** Its description as a package would say it, from what it shows: a run on a machine that's up. Nothing is written. */
+  caption(id: string, name: string, on: string | undefined, key: string, once?: AbortSignal): Promise<Captioned> {
+    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/caption`, on ? { on } : {}, key, { once })
+  }
+
+  /** What deleting it answered, back under its name. */
+  putAssetBack(id: string, name: string, text: string, at?: Row, once?: AbortSignal): Promise<AssetMade> {
+    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at }, undefined, { once })
+  }
+
+  /** A file joins a box as its next version. */
+  addVersion(id: string, name: string, source: string, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/versions`, { source }, undefined, { once })
+  }
+
+  /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
+  discardVersion(id: string, name: string, number: number, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, { once })
+  }
+
+  /** What discarding it answered, and it's back. */
+  restoreVersion(id: string, name: string, number: number, approved: boolean, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { approved }, undefined, { once })
+  }
+
+  /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */
+  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal): Promise<Tools> {
+    const asked = new URLSearchParams()
+    if (q) asked.set("q", q)
+    if (on) asked.set("on", on)
+    if (project) asked.set("project", project)
+    return this.json(`/v1/tools?${asked}`, { signal })
+  }
+
+  /** A package on your list, or tools off it. Nothing is installed or deleted. */
+  changeToolList(change: { add?: string; remove?: string[] }, once?: AbortSignal): Promise<ToolList> {
+    return this.write("POST", "/v1/tools/list", change, undefined, { once })
+  }
+
+  /** The Hub's packages that make media. */
+  browseTools(q: string, limit: number, signal?: AbortSignal): Promise<Browsed> {
+    const asked = new URLSearchParams({ limit: String(limit) })
+    if (q) asked.set("q", q)
+    return this.json(`/v1/tools/browse?${asked}`, { signal })
+  }
+
+  /** Where to import a tool's component from. `project`: local code it names can answer. */
+  toolUi(id: string, project: string | null): Promise<ToolUi> {
+    const asked = project ? `?${new URLSearchParams({ project })}` : ""
+    return this.json(`/v1/tools/${encodeURIComponent(id)}/ui${asked}`)
+  }
+
+  /** These assets' queued work dropped and their runs canceled. */
+  cancelRender(id: string, names: string[], once?: AbortSignal): Promise<unknown> {
+    return this.write("POST", `${project(id)}/cancel`, { names }, undefined, { once })
+  }
+
+  /** Every file `files/` lacks, from the Hub; a project's `moving` says it's going. */
+  pull(id: string): Promise<Opened> {
+    return this.write("POST", `${project(id)}/pull`, {})
+  }
+
+  rename(id: string, from: string, to: string, once?: AbortSignal): Promise<Renamed> {
+    return this.write("POST", `${project(id)}/rename`, { from, to }, undefined, { once })
+  }
+
+  canvas(id: string, signal?: AbortSignal): Promise<Canvas> {
+    return this.json(`${project(id)}/canvas`, { signal })
+  }
+
+  moveCards(id: string, cards: Record<string, Row | null>, once?: AbortSignal): Promise<{ etag: string }> {
+    return this.write("PATCH", `${project(id)}/canvas`, { cards }, undefined, { once })
+  }
+
+  /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */
+  thumb(id: string, sha256: string, w: number, strip?: number): string {
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}`
+  }
+
+  file(id: string, file: string): string {
+    return `${project(id)}/${file.split("/").map(encodeURIComponent).join("/")}`
+  }
+
+  // Runs
+
+  runs(filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
+    const query = new URLSearchParams({ limit: String(limit) })
+    for (const [name, value] of Object.entries(filter)) if (value) query.set(name, value)
+    return this.json(`/v1/runs?${query}`, { signal })
+  }
+
+  run(id: string | number, signal?: AbortSignal): Promise<Run> {
+    return this.json(run(id), { signal })
+  }
+
+  /** With its measurements, calls, report and what it was asked. */
+  runFull(id: string | number, signal?: AbortSignal): Promise<Run> {
+    return this.json(`${run(id)}?detail=full`, { signal })
+  }
+
+  cancelRun(id: string): Promise<Run> {
+    return this.write("POST", `${run(id)}/cancel`, {})
+  }
+
+  /** A run's log and events after a place in them, opened once: its reader resumes it. */
+  runEvents(id: string, after: number, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${run(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
+  }
+
+  /** Where an output's bytes are served, once they landed here. */
+  output(id: string, name: string, index: number): string {
+    return `${run(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
+  }
+
+  /** How to play an output straight from its machine. */
+  play(id: string, name: string, index: number): Promise<Play> {
+    const output = encodeURIComponent(index ? `${name}/${index}` : name)
+    return this.json(`${run(id)}/play?output=${output}`)
+  }
+
+  /** What a run of `target` would call: a package's functions, and a named function's request. Runs nothing. */
+  target(target: string, signal?: AbortSignal): Promise<Target> {
+    return this.json(`/v1/targets?target=${encodeURIComponent(target)}`, { signal })
+  }
+
+  runQuote(request: RunRequest): Promise<RunQuote> {
+    return this.write("POST", "/v1/run-quotes", request)
+  }
+
+  submit(request: RunRequest, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/runs", request, key)
+  }
+
+  // Machines
+
+  /** `refresh` lists every Hub again first, which takes as long as they do. */
+  machines(refresh = false): Promise<MachineList> {
+    return this.json(`/v1/machines${refresh ? "?refresh=true" : ""}`)
+  }
+
+  machine(name: string, signal?: AbortSignal): Promise<Machine> {
+    return this.json(machine(name), { signal })
+  }
+
+  addMachine(name: string, address: string, fingerprint: string): Promise<Machine> {
+    return this.write("POST", "/v1/machines", { kind: "add", name, address, fingerprint })
+  }
+
+  endMachine(name: string, force: boolean): Promise<Ended> {
+    return this.json(`${machine(name)}${force ? "?force=true" : ""}`, { method: "DELETE" })
+  }
+
+  keepAlive(name: string): Promise<Keepalive> {
+    return this.write("POST", `${machine(name)}/keepalive`, {})
+  }
+
+  updateMachine(name: string, update: MachineUpdate, key: string): Promise<Updating> {
+    return this.write("POST", `${machine(name)}/update`, update, key)
+  }
+
+  machineLogEvents(name: string, log: MachineLogName, lines: number, after: string | null, signal: AbortSignal): Promise<Response> {
+    const place = after ? `&after=${encodeURIComponent(after)}` : ""
+    return this.opened(`${machine(name)}/logs/${log}?lines=${lines}${place}`, signal)
+  }
+
+  machinePackages(name: string, signal?: AbortSignal): Promise<MachinePackages> {
+    return this.json(`${machine(name)}/packages`, { signal })
+  }
+
+  machineModels(name: string, signal?: AbortSignal): Promise<MachineModels> {
+    return this.json(`${machine(name)}/models`, { signal })
+  }
+
+  // Packages
+
+  packages(q: string, limit: number, signal?: AbortSignal): Promise<PackageSearch> {
+    return this.json(`/v1/packages?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`, { signal })
+  }
+
+  package(name: string, signal?: AbortSignal): Promise<PackageDetail> {
+    return this.json(pkg(name), { signal })
+  }
+
+  packageInstallQuote<T>(ask: T): Promise<RunQuote> {
+    return this.write("POST", "/v1/package-install-quotes", ask)
+  }
+
+  packageInstall<T>(ask: T, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/package-installs", ask, key)
+  }
+
+  packageRemove(name: string, on: string, key: string): Promise<PackageRemovals> {
+    return this.write("POST", "/v1/package-removals", { packages: [name], machine: on }, key)
+  }
+
+  yank(name: string, release: string): Promise<unknown> {
+    return this.write("POST", `${pkg(name)}/releases/${encodeURIComponent(release)}/yank`, {})
+  }
+
+  unyank(name: string, release: string): Promise<unknown> {
+    return this.json(`${pkg(name)}/releases/${encodeURIComponent(release)}/yank`, { method: "DELETE" })
+  }
+
+  deletePackage(name: string): Promise<unknown> {
+    return this.json(pkg(name), { method: "DELETE" })
+  }
+
+  // Models
+
+  models(q: string, limit: number, signal?: AbortSignal): Promise<ModelSearch> {
+    return this.json(`/v1/models?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`, { signal })
+  }
+
+  model(name: string, signal?: AbortSignal): Promise<ModelDetail> {
+    return this.json(model(name), { signal })
+  }
+
+  modelDownloadQuote<T>(ask: T): Promise<RunQuote> {
+    return this.write("POST", "/v1/model-download-quotes", ask)
+  }
+
+  modelDownload<T>(ask: T, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/model-downloads", ask, key)
+  }
+
+  /** `null` when nothing would rent: a Hub commit is only recorded. */
+  modelUploadQuote<T>(ask: T): Promise<RunQuote | null> {
+    return this.write("POST", "/v1/model-upload-quotes", ask)
+  }
+
+  modelUpload<T>(ask: T, key: string): Promise<ModelUploading> {
+    return this.write("POST", "/v1/model-uploads", ask, key)
+  }
+
+  modelQuantizeQuote<T>(ask: T): Promise<RunQuote> {
+    return this.write("POST", "/v1/model-quantization-quotes", ask)
+  }
+
+  modelQuantize<T>(ask: T, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/model-quantizations", ask, key)
+  }
+
+  /** The Hub never reuses a version, so asking again is safe and takes no key. */
+  modelPublish(name: string, version: string, commits: string[]): Promise<ModelReleased> {
+    return this.write("POST", `${model(name)}/releases`, { version, commits })
+  }
+
+  deleteModel(name: string): Promise<unknown> {
+    return this.json(model(name), { method: "DELETE" })
+  }
+
+  deleteModelRelease(name: string, version: string): Promise<unknown> {
+    return this.json(`${model(name)}/releases/${encodeURIComponent(version)}`, { method: "DELETE" })
+  }
+
+  deleteModelCommit(name: string, commit: string): Promise<unknown> {
+    return this.json(`${model(name)}/commits/${encodeURIComponent(commit)}`, { method: "DELETE" })
+  }
+
+  // Account
+
+  account(signal?: AbortSignal): Promise<Account> {
+    return this.json("/v1/account", { signal })
+  }
+
+  sendCode(purpose: "sign_in" | "sign_out_everywhere", email?: string): Promise<Code> {
+    return this.write("POST", "/v1/account/codes", { purpose, ...(email ? { email } : {}) })
+  }
+
+  proveCode(id: string, code: string): Promise<Proven> {
+    return this.write("POST", `/v1/account/codes/${encodeURIComponent(id)}`, { code })
+  }
+
+  /** The step the Hub's AuthKit named, refusing `id`'s code: `path` under its mount, with `body`. */
+  stepCode(id: string, path: string, body: unknown): Promise<Proven> {
+    return this.write("POST", `/v1/account/codes/${encodeURIComponent(id)}/step`, { path, body })
+  }
+
+  nameAccount(name: string): Promise<Account> {
+    return this.write("PUT", "/v1/account/name", { name })
+  }
+
+  signOut(): Promise<SignedOutAnswer> {
+    return this.json("/v1/account", { method: "DELETE" })
+  }
+
+  claimOrg(org: string): Promise<OrgClaim> {
+    return this.write("POST", `/v1/orgs/${encodeURIComponent(org)}/claim`, {})
+  }
+
+  // Rentals: nothing here rents but `rent`, under a key that names one order forever.
+
+  async rentalSkus(signal?: AbortSignal): Promise<RentalSku[]> {
+    return (await this.json<{ rental_skus: RentalSku[] }>("/v1/rental-skus", { signal })).rental_skus
+  }
+
+  rentalQuote(order: Rent): Promise<Quote> {
+    return this.write("POST", "/v1/rental-quotes", { kind: "rent", ...order })
+  }
+
+  rent(order: Rent, agreed: Agreed, key: string): Promise<Rented> {
+    return this.write("POST", "/v1/machines", { kind: "rent", ...order, agreed }, key)
+  }
+}

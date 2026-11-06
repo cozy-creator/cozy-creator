@@ -20,7 +20,7 @@ use platform::{
     tools,
 };
 use protocol::{
-    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList},
+    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent},
     error::{Envelope, Error, Kind},
     machine::LogLines,
 };
@@ -410,9 +410,13 @@ impl Client {
         }
     }
 
-    /// A list-level stream (`/v1/runs/events`, `/v1/machines/events`), subscribed once this
-    /// answers: it carries no backlog, so a caller lists after it. It ends when its connection
-    /// closes; the caller subscribes and lists again.
+    /// `GET /v1/events`, subscribed once this answers: it carries no backlog, so a caller reads what
+    /// it holds after it, and reads it with [`Watch::change`].
+    pub async fn changes(&self) -> Result<Watch<StreamEvent>, Error> {
+        self.watch("/v1/events").await
+    }
+
+    /// A stream with no place to resume from, subscribed once this answers.
     pub async fn watch<T: DeserializeOwned>(&self, path: &str) -> Result<Watch<T>, Error> {
         let answer = self.opened(|c, base| {
             c.get(format!("{base}{path}"))
@@ -424,6 +428,7 @@ impl Client {
             sse: Sse::default(),
             heard: Instant::now(),
             quiet: false,
+            behind: false,
             of: std::marker::PhantomData,
         })
     }
@@ -855,6 +860,8 @@ pub struct Watch<T> {
     heard: Instant,
     /// A live view's: it shows `silence` in its title instead of saying it.
     pub(crate) quiet: bool,
+    /// It said `resync`.
+    behind: bool,
     of: std::marker::PhantomData<T>,
 }
 
@@ -893,6 +900,20 @@ impl<T: DeserializeOwned> Watch<T> {
     pub fn silence(&self) -> Option<String> {
         let waited = self.heard.elapsed();
         (waited >= 2 * KEEPALIVE).then(|| unanswered(self.client.pid(), waited))
+    }
+}
+
+impl Watch<StreamEvent> {
+    /// The next change; `None` once the stream closed or fell behind, and from then on: either way
+    /// something may have been missed, so the caller subscribes and reads again. Cancel-safe: a
+    /// `resync` read just before a call was dropped still counts.
+    pub async fn change(&mut self) -> Option<StreamEvent> {
+        if self.behind {
+            return None;
+        }
+        let event = self.next().await;
+        self.behind = matches!(event, Some(StreamEvent::Resync));
+        event.filter(|_| !self.behind)
     }
 }
 

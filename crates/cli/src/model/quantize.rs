@@ -36,7 +36,7 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
         if !crate::machine::agree(ctx, &quoted)? {
             return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
         }
-        ask.agreed = Some(quoted.quote.agreed());
+        ask.agreed = Some(quoted.quote.agreed);
     }
     // Local code not yet ready on its machine is installed first, then asked again.
     let key = mint_key();

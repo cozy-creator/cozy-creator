@@ -1,7 +1,8 @@
 //! Rendering every verb shares. With `--json` stdout carries one JSON document (NDJSON while
-//! following); otherwise tables and `key  value` records for a person, root names without `_/`. Warnings and prompts go to
-//! stderr. Nothing is truncated when stdout is not a terminal; colors go through anstream, which
-//! drops them for pipes and `NO_COLOR`.
+//! following), compact unless stdout is a terminal, holding what the view shows under the record's own
+//! names (`--full`: all of it). Otherwise tables and `key  value` records, root names without `_/`: a view
+//! is one short block on stdout, warnings included, its long text cut and said so (`--full`: whole).
+//! Progress and prompts go to stderr. Colors go through anstream, which drops them for pipes and `NO_COLOR`.
 use std::{
     fmt::Display,
     io::{IsTerminal, Write as _},
@@ -16,6 +17,9 @@ use protocol::names::shown;
 use serde::Serialize;
 
 use crate::Context;
+
+/// The exit of a follower that heard its run stop moving (Calcifer's word, after 10 minutes with no progress): the run goes on.
+pub const STALLED: u8 = 4;
 
 const KEY: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
@@ -48,10 +52,66 @@ impl Term {
     }
 }
 
-/// Prints one JSON document on stdout.
+/// Prints one JSON document on stdout: indented for a terminal, one line for anything else.
 pub fn json<T: Serialize + ?Sized>(document: &T) {
-    let text = serde_json::to_string_pretty(document).expect("a document serializes");
-    anstream::println!("{text}");
+    let text = match std::io::stdout().is_terminal() {
+        true => serde_json::to_string_pretty(document),
+        false => serde_json::to_string(document),
+    };
+    anstream::println!("{}", text.expect("a document serializes"));
+}
+
+/// Prints `document` as `--json` does for a view: only the fields `paths` name, or all with `--full`.
+pub fn view<T: Serialize + ?Sized>(ctx: &Context, document: &T, paths: &[&str]) {
+    match ctx.full {
+        true => json(document),
+        false => json(&pick(serde_json::to_value(document).expect("a document serializes"), paths)),
+    }
+}
+
+/// `value` holding only what `paths` name (`machines.rental.sku`): a list is walked through, and a
+/// path that ends at a field keeps it whole.
+fn pick(value: serde_json::Value, paths: &[&str]) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Array(items) => items.into_iter().map(|item| pick(item, paths)).collect(),
+        Value::Object(fields) => fields
+            .into_iter()
+            .filter_map(|(key, field)| {
+                let under: Vec<&str> = paths
+                    .iter()
+                    .filter_map(|path| path.strip_prefix(key.as_str()))
+                    .filter_map(|rest| match rest {
+                        "" => Some(""),
+                        rest => rest.strip_prefix('.'),
+                    })
+                    .collect();
+                match under.as_slice() {
+                    [] => None,
+                    _ if under.contains(&"") => Some((key, field)),
+                    _ => Some((key, pick(field, &under))),
+                }
+            })
+            .collect(),
+        other => other,
+    }
+}
+
+/// The most of a text a view shows; `--full` shows it whole.
+const TEXT: usize = 800;
+
+/// `text` as a view shows it: past a quarter more than `TEXT` characters, its first `TEXT`, or its last
+/// when `tail` (a traceback ends with what failed), saying how long it is.
+pub fn cut(ctx: &Context, text: &str, tail: bool) -> String {
+    let count = text.chars().count();
+    if ctx.full || count <= TEXT + TEXT / 4 {
+        return text.to_owned();
+    }
+    let said = format!("(cut, {count} chars: --full)");
+    match tail {
+        true => format!("{said} ...{}", text.chars().skip(count - TEXT).collect::<String>()),
+        false => format!("{}... {said}", text.chars().take(TEXT).collect::<String>()),
+    }
 }
 
 /// Prints one NDJSON line on stdout, flushed: a follower's reader sees it at once.
@@ -90,6 +150,15 @@ pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
 }
 
 /// A failure in one line and where to read more; `--json` has the record.
+pub fn failure_of(ctx: &Context, error: &Error) {
+    if !ctx.json
+        && let Some(remedy) = &error.remedy
+    {
+        return failure(ctx, &format!("{}\n  {}", error.message, remedy), &error.next);
+    }
+    failure(ctx, &error.message, &error.next);
+}
+
 pub fn failure(ctx: &Context, message: &str, next: &[String]) {
     if ctx.json {
         return;
@@ -139,6 +208,13 @@ pub fn next(ctx: &Context, commands: &[&str]) {
     }
     for command in commands.iter().take(2) {
         anstream::println!("{DIM}next:{DIM:#} {}", shown(command));
+    }
+}
+
+/// The commands Calcifer's answer names, every one.
+pub fn nexts(ctx: &Context, commands: &[String]) {
+    for command in commands {
+        next(ctx, &[command]);
     }
 }
 

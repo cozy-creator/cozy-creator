@@ -62,8 +62,10 @@ pub struct Config {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct CalciferConfig {
-    /// Calcifer's loopback port; 0 takes any free one (its lock record says which).
-    pub port: u16,
+    /// Calcifer's loopback port, and only that one. Absent: 7317, else the next free one; its lock
+    /// record says which.
+    #[serde(deserialize_with = "port")]
+    pub port: Option<u16>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A

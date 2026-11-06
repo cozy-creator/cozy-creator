@@ -12,7 +12,7 @@
 //! a landed item as `output_item.landed`, the whole item. The terminal events `run.completed`,
 //! `run.failed` and `run.canceled` end the run; its stream ends after the terminal once each of
 //! its outputs has landed or carries an `export_error`, but for what stays on its machine.
-use std::{fmt, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, fmt, net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -141,6 +141,10 @@ pub struct RunRequest {
     /// The payload from a JSON or YAML file on this computer; the files it names are relative to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_file: Option<PathBuf>,
+    /// The payload as JSON or YAML text, read as that file is; the files it names are `sha256:<hex>`, a hash prefix of a file of
+    /// its project's, or relative to `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_text: Option<String>,
     /// `key=value` (typed as the field is declared), `key:=<json>`, `model.<slot>=<ref>`, one
     /// positional value, and input files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -170,7 +174,7 @@ pub struct RunRequest {
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
-    /// The project it belongs to: a folder in it, whose nearest with a project.yaml up from it is the project. A run needs one.
+    /// The project it belongs to: its id, or a folder in it, whose nearest with a project.yaml up from it is the project. A run needs one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<PathBuf>,
     /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
@@ -229,6 +233,26 @@ pub struct Target {
     pub summary: String,
     /// The package's interface document (`cozy.package.interface/1`).
     pub interface: serde_json::Value,
+    /// What a person runs of it, in the order offered: no internal function or recipe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<TargetFunction>,
+    /// The named function's contract as people read it (`cozy run … --describe`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<String>,
+    /// The named function's request schema (`--describe --json`), with the release and why when it is a published one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<serde_json::Value>,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
+}
+
+/// One function a person runs of a package, and what it does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetFunction {
+    pub function: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// Why a run binds and runs the release it does.
@@ -308,6 +332,9 @@ pub struct Run {
     /// The project folder its outputs land in; none for what is no person's run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<PathBuf>,
+    /// That project's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub status: Status,
     #[serde(default)]
     pub cancel_requested: bool,
@@ -362,6 +389,20 @@ pub struct Run {
     /// With `?detail=full`: its measurements and its calls', worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::report::Report>,
+    /// With `?detail=full`: what was asked of it, to show and to ask again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<RunAsked>,
+}
+
+/// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunAsked {
+    pub target: String,
+    /// Its payload, each file by its `sha256:`, and `models` for the models and LoRAs it chose: what `input` takes.
+    pub input: serde_json::Map<String, serde_json::Value>,
+    /// Its integer seed, given or derived from its key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
 }
 
 /// One request field a run's executor served other than as sent (`Outcome.adjustments`).
@@ -434,6 +475,17 @@ pub struct OutputItem {
     /// The file on this computer that holds this revision's bytes, once they landed there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// Where Calcifer serves those bytes: an API path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// A picture's or video's size, measured as this revision landed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// A video's or sound's length: measured as this revision landed, else its machine's word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     /// Why this revision's bytes will not land (its machine ended, or holds them no more).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_error: Option<String>,
@@ -657,13 +709,48 @@ pub struct RunList {
     pub unreadable: Vec<String>,
 }
 
-/// `GET /v1/runs/events`: every run's changes, each run whole as `GET /v1/runs/{id}` answers it. No
-/// backlog: a client subscribes, then lists. A stream that falls behind ends; its client lists again.
+/// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
+/// answers it. No backlog: a client subscribes, then reads what it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum RunsEvent {
+pub enum StreamEvent {
+    /// First on every stream.
+    #[serde(rename = "hello")]
+    Hello { version: String },
     #[serde(rename = "run.updated")]
-    Updated { run: Run },
+    RunUpdated { run: Box<Run> },
+    #[serde(rename = "machine.updated")]
+    MachineUpdated { machine: Box<Machine> },
+    /// It left the list.
+    #[serde(rename = "machine.removed")]
+    MachineRemoved { name: String },
+    /// `rev` is opaque, and changes whenever project.yaml or project.lock does.
+    #[serde(rename = "project.changed")]
+    ProjectChanged {
+        id: String,
+        rev: String,
+        /// The assets whose row is another now, each to read by `GET /v1/projects/{id}/assets/{name}`. Absent: read the whole project.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assets: Option<Vec<String>>,
+        /// Those gone from it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        gone: Vec<String>,
+        /// What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        head: bool,
+    },
+    /// The rows of a project's canvas that changed; none is a row gone.
+    #[serde(rename = "canvas")]
+    Canvas { id: String, etag: String, cards: BTreeMap<String, Option<crate::project::Card>> },
+    /// One job of a project's render as it stands now, whole; `GET /v1/projects/{id}` has them all under `board`.
+    #[serde(rename = "job.updated")]
+    JobUpdated { project: String, job: Box<crate::project::Job>, seq: u64 },
+    /// What a machine is fetching ahead of a project's queued jobs, as it stands now.
+    #[serde(rename = "ahead.updated")]
+    AheadUpdated { project: String, ahead: Box<crate::project::Ahead> },
+    /// This stream fell behind: read again what you hold.
+    #[serde(rename = "resync")]
+    Resync,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -721,6 +808,9 @@ pub struct Machine {
     /// The Hub's word, for a rental.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rental: Option<Rental>,
+    /// How to log in, for a rental rented with an SSH key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<Ssh>,
     /// The machine's own latest Status, once it answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<MachineStatus>,
@@ -961,6 +1051,123 @@ pub struct Checkpoint {
 }
 
 /// A package environment the machine holds for this controller.
+/// `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ssh {
+    /// The command and its arguments, for what runs it.
+    pub args: Vec<String>,
+    /// The same as one line to paste.
+    pub line: String,
+}
+
+/// `GET /v1/machines/{name}/packages`: what a machine holds installed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachinePackages {
+    pub machine: String,
+    pub packages: Vec<HeldPackage>,
+}
+
+/// One package a machine holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldPackage {
+    pub machine: String,
+    pub package: String,
+    pub release: String,
+    /// The cozy-runtime in its environment.
+    pub runtime: String,
+    pub level: String,
+    pub hub: String,
+    /// `local`, `hub`, or another Hub's URL.
+    pub source: String,
+    /// Why the environment does not run the machine's own Runtime; empty when it does.
+    pub warning: String,
+}
+
+/// `GET /v1/machines/{name}/models`: the models a machine holds. Its store's total counts shared content once.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineModels {
+    pub machine: String,
+    pub models: Vec<HeldModel>,
+    /// It has reported no Status yet, so nothing is known of what it holds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub silent: bool,
+    /// The repositories in its store, and their bytes.
+    #[serde(default)]
+    pub repositories: u64,
+    #[serde(default)]
+    pub bytes: u64,
+    /// Everything its store takes on the disk, models or not (cut downloads, objects no model
+    /// names any more); 0 from a machine that does not measure it.
+    #[serde(default)]
+    pub stored_bytes: u64,
+}
+
+/// One checkpoint a machine holds, and its repository's bytes there.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldModel {
+    pub machine: String,
+    pub model: String,
+    pub release: String,
+    pub lane: String,
+    /// Its header's precision lane (`int8`, …).
+    pub precision: String,
+    pub checkpoint: String,
+    pub bytes: u64,
+    /// The repository's bytes other held models share.
+    pub shared_bytes: u64,
+}
+
+/// Where an installation came from, for a client of `hub`: `local` code, the Hub, or another Hub by its URL.
+pub fn package_source(installed_from: &str, hub: &str) -> String {
+    let other = |origin: &str| crate::config::Origin::parse(origin).is_ok_and(|origin| origin.to_string() != hub);
+    match installed_from {
+        "" => "local".into(),
+        other_hub if other(other_hub) => other_hub.into(),
+        _ => "hub".into(),
+    }
+}
+
+impl Machine {
+    /// The packages it holds, read by a client of `hub`.
+    pub fn packages(&self, hub: &str) -> MachinePackages {
+        let held = |env: &Environment| HeldPackage {
+            machine: self.name.clone(),
+            package: env.package.clone(),
+            release: env.release.clone(),
+            runtime: env.runtime.clone(),
+            level: env.level.clone(),
+            hub: env.hub.clone(),
+            source: package_source(&env.hub, hub),
+            warning: env.warning.clone(),
+        };
+        MachinePackages { machine: self.name.clone(), packages: self.status.iter().flat_map(|s| &s.environments).map(held).collect() }
+    }
+
+    /// The models it holds.
+    pub fn models(&self) -> MachineModels {
+        let mut held = MachineModels { machine: self.name.clone(), silent: self.status.is_none(), ..Default::default() };
+        let Some(status) = &self.status else { return held };
+        (held.repositories, held.bytes, held.stored_bytes) = (status.models.len() as u64, status.models_bytes, status.disk_models_bytes);
+        for model in &status.models {
+            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str| HeldModel {
+                machine: self.name.clone(),
+                model: model.repository.clone(),
+                release: release.into(),
+                lane: lane.into(),
+                precision: precision.into(),
+                checkpoint: checkpoint.into(),
+                bytes: model.total_bytes,
+                shared_bytes: model.total_bytes.saturating_sub(model.unique_bytes),
+            };
+            if model.checkpoints.is_empty() {
+                held.models.push(row("", "", "", ""));
+            }
+            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest)));
+        }
+        held
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {
     pub installation: String,
@@ -1064,17 +1271,6 @@ pub fn weakest(held: &str, next: &str, settled: &str) -> String {
     if rank(next) > rank(held) { next } else { held }.to_owned()
 }
 
-/// `GET /v1/machines/events`: a machine as `GET /v1/machines` lists it, each time its row changes,
-/// and the name of one that left the list. No backlog: a client subscribes, then lists.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum MachinesEvent {
-    #[serde(rename = "machine.updated")]
-    Updated { machine: Box<Machine> },
-    #[serde(rename = "machine.removed")]
-    Removed { name: String },
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubListing {
     pub hub: String,
@@ -1109,20 +1305,12 @@ pub struct Quote {
     pub expected_hours: f64,
     pub expected_download_gb: u32,
     pub expected_total_usd_micros: i64,
+    /// The order's terms the Hub holds it to, which a renter sends back as it came. A user is shown
+    /// only the GPU's price (`gpu_usd_micros_per_hour`): that is what we charge.
+    pub agreed: Agreed,
     /// What the Hub changed of the ask to quote it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-}
-
-impl Quote {
-    /// The order's terms the Hub holds it to: the machine and its disk an hour, and traffic. A
-    /// user is shown only the GPU's price (`gpu_usd_micros_per_hour`): that is what we charge.
-    pub fn agreed(&self) -> Agreed {
-        Agreed {
-            usd_micros_per_hour: self.gpu_usd_micros_per_hour + self.storage_usd_micros_per_hour,
-            usd_micros_per_gb: self.bandwidth_usd_micros_per_gb.unwrap_or_default(),
-        }
-    }
 }
 
 /// The most a renter agreed to pay: the machine and its disk an hour, and traffic a GB.
@@ -1154,6 +1342,10 @@ pub struct Play {
     pub fingerprint: String,
     /// A Cozy-Cap for that run output alone.
     pub token: String,
+    /// The hosted player's link, with all of the above in its fragment.
+    pub url: String,
+    /// How long `token` and `url` work, from now.
+    pub expires_s: u64,
 }
 
 /// `POST /v1/machines/{name}/keepalive`, once the machine acknowledged it.
@@ -1172,6 +1364,8 @@ pub struct Keepalive {
 pub enum NewMachine {
     Rent {
         sku: String,
+        /// Empty: Calcifer's configured Hub.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         hub: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gpus: Option<u32>,
@@ -1439,6 +1633,52 @@ pub struct Down {
     pub stopping: bool,
     /// What Calcifer still owes, which the next Calcifer resumes.
     pub owed: Vec<String>,
+}
+
+/// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalciferStatus {
+    pub version: String,
+    /// `linux`, `macos` or `windows`.
+    pub os: String,
+    /// Whether this computer runs models itself ([`local_usable`]).
+    pub local_usable: bool,
+    /// Whether this computer holds a device key for its Hub. `GET /v1/account` asks the Hub whether it still counts.
+    pub signed_in: bool,
+    /// This computer is a rental: which, and when it releases itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rental: Option<StatusRental>,
+}
+
+/// `GET /v1/status` on a rental: a pod has no rental id of its own, so its Hub's worker id names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusRental {
+    pub machine_id: String,
+    /// None while a job is queued or running there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_deadline_ms: Option<i64>,
+}
+
+/// `POST /v1/session-codes`: a code a browser trades once for a session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCode {
+    pub code: String,
+    /// Calcifer's page, the code in its fragment.
+    pub url: String,
+    pub expires_ms: i64,
+}
+
+/// `POST /v1/session`'s body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedeemCode {
+    pub code: String,
+}
+
+/// `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserSession {
+    pub token: String,
+    pub media: String,
 }
 
 /// The file in Calcifer's directory (`~/.cozy/calcifer`) that says, as an `error::Envelope`, why

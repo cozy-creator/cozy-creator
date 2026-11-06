@@ -1,4 +1,6 @@
 //! What reads what, over any assets: names, `<mentions>`, and topological order.
+use std::{cmp::Reverse, collections::BinaryHeap};
+
 use serde_json::Value;
 
 /// How a name matches a mention: any case, with `_` and `-` alike. Space folds with them, so a lock from before names lost theirs
@@ -14,6 +16,33 @@ fn in_a_name(c: char) -> bool {
 /// Whether `text` can be a name: only letters, digits, `_`, `-` and `.`.
 pub fn is_name(text: &str) -> bool {
     !text.is_empty() && text.chars().all(in_a_name)
+}
+
+/// What a box calls itself in its own text: `<self.2>`, a version of it.
+pub const SELF: &str = "self";
+
+/// `abr.2` as the name it's a version of, and that number.
+pub fn version_of(mention: &str) -> Option<(&str, u32)> {
+    let (name, number) = mention.rsplit_once('.')?;
+    let digits = !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+    if name.is_empty() || !digits {
+        return None;
+    }
+    Some((name, number.parse().ok()?))
+}
+
+/// Whether something new can go by `name`: `x.2` says version 2 of x, and `self` the box a text is in.
+pub fn can_take(name: &str) -> bool {
+    version_of(name).is_none() && name_key(name) != SELF
+}
+
+/// `mention` once `from` is called `to`, its version number with it: `<from>`, `<from.2>`. None: it doesn't say `from`.
+pub fn mention_moved(mention: &str, from: &str, to: &str) -> Option<String> {
+    if name_key(mention) == name_key(from) {
+        return Some(to.to_owned());
+    }
+    let (name, _) = version_of(mention)?;
+    (name_key(name) == name_key(from)).then(|| format!("{to}{}", &mention[name.len()..]))
 }
 
 /// `text` as it could be a name: what a name can't hold becomes `_`.
@@ -38,6 +67,28 @@ fn bracketed(text: &str) -> Vec<&str> {
         }
     }
     found
+}
+
+/// `text` with each mention `with` has words for replaced by them, brackets and all. The rest stays as written.
+pub fn mentions_replaced(text: &str, with: &mut dyn FnMut(&str) -> Option<String>) -> String {
+    let (mut said, mut rest) = (String::with_capacity(text.len()), text);
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let inner = after.find(['<', '>', '\n']).filter(|&end| after.as_bytes()[end] == b'>').map(|end| &after[..end]);
+        said.push_str(&rest[..open]);
+        match inner.filter(|inner| is_name(inner)).and_then(|inner| Some((inner, with(inner)?))) {
+            Some((inner, words)) => {
+                said.push_str(&words);
+                rest = &after[inner.len() + 1..];
+            }
+            None => {
+                said.push('<');
+                rest = after;
+            }
+        }
+    }
+    said.push_str(rest);
+    said
 }
 
 /// Every mention in `text`: a `<…>` holding a name.
@@ -81,7 +132,7 @@ pub struct Graph {
 
 impl Graph {
     /// Each asset's reads ordered; a mention that closes a cycle is left out, the text staying as written (`closing`), and
-    /// `fixed` (a revision's edge to its writer) goes last.
+    /// `fixed` (an entity's edge to what it links) goes last.
     pub fn new(mut upstream: Vec<Vec<usize>>, fixed: &[Vec<usize>]) -> Self {
         let mut closing = vec![];
         let order = loop {
@@ -104,9 +155,23 @@ impl Graph {
 fn topological(upstream: &[Vec<usize>]) -> Result<Vec<usize>, Vec<usize>> {
     let mut placed = vec![false; upstream.len()];
     let mut order = vec![];
-    while let Some(i) = (0..upstream.len()).find(|&i| !placed[i] && upstream[i].iter().all(|&edge| placed[edge])) {
+    let mut readers = vec![vec![]; upstream.len()];
+    let mut waits: Vec<usize> = upstream.iter().map(Vec::len).collect();
+    for (i, reads) in upstream.iter().enumerate() {
+        for &read in reads {
+            readers[read].push(i);
+        }
+    }
+    let mut ready: BinaryHeap<Reverse<usize>> = (0..upstream.len()).filter(|&i| waits[i] == 0).map(Reverse).collect();
+    while let Some(Reverse(i)) = ready.pop() {
         placed[i] = true;
         order.push(i);
+        for &reader in &readers[i] {
+            waits[reader] -= 1;
+            if waits[reader] == 0 {
+                ready.push(Reverse(reader));
+            }
+        }
     }
     let Some(start) = (0..upstream.len()).find(|&i| !placed[i]) else {
         return Ok(order);

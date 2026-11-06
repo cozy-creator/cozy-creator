@@ -1,0 +1,81 @@
+/* Paper's drawn edges. Each is one image the browser nine-slices, so a frame adds no element, no measuring and no script. Dark keeps plain borders. */
+:root:not([data-theme="dark"]) {
+  --frame-panel: url("./frames/frame-panel.svg");
+  --frame-sheet: url("./frames/frame-sheet.svg");
+  --frame-control: url("./frames/frame-control.svg");
+  --frame-field: url("./frames/frame-field.svg");
+  --frame-chosen: url("./frames/frame-chosen.svg");
+  --frame-primary: url("./frames/frame-primary.svg");
+
+  .ptabs,
+  .tools,
+  .main-menu nav,
+  .asset-menu {
+    background: none;
+    border-color: transparent;
+    border-image: var(--frame-panel) 18 fill / 18px / 7px round;
+  }
+  .here-under,
+  .drawer {
+    background: none;
+    border-color: transparent;
+    border-image: var(--frame-sheet) 18 fill / 18px / 7px round;
+  }
+  .tb,
+  .mtabs,
+  .render-all label {
+    background: none;
+    border-color: transparent;
+    border-image: var(--frame-control) 12 fill / 12px / 4px round;
+  }
+  .tb.primary {
+    border-image: var(--frame-primary) 12 fill / 12px / 4px round;
+  }
+  .main-menu nav .tb {
+    border-image: none;
+  }
+  .ptab.on {
+    background: none;
+    border-image: var(--frame-chosen) 12 fill / 12px / 3px round;
+  }
+}
+
+/* A box stands off the sheet, in either theme: an edge, and a shadow it sits on. One with nothing in it is a lighter sheet, not a hole. */
+.react-flow__node .media {
+  box-shadow: 0 0 0 1px var(--box-edge), 0 1px 2px var(--box-shade), 0 6px 14px var(--box-shade);
+}
+/* Far out a shadow can't be seen, and thousands of blurs are what drawing them costs. */
+.stage[data-lod="2"] .react-flow__node .media {
+  box-shadow: 0 0 0 1px var(--box-edge);
+}
+.react-flow__node .media.blank {
+  background-color: var(--box);
+}
+
+/* Warm cream around a picture skews how it reads, so a box being worked on shows it on neutral grey. */
+.card.here > .media:not(.blank) {
+  background-color: var(--stage);
+}
+.output video,
+.stillframe {
+  background: var(--stage);
+}
+
+.drawer-head b {
+  font-family: var(--serif);
+  font-weight: 400;
+}
+
+/* Where the keyboard is. */
+:where(a, button, summary, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
+
+/* The sheet, and in dark no clouds on it. */
+.paper-world {
+  background: var(--paper);
+}
+:root[data-theme="dark"] .paper-world::after {
+  content: none;
+}

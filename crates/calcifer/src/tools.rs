@@ -31,6 +31,9 @@ pub fn path() -> Vec<PathBuf> {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
 }
 
+/// Held by this process's one fetch of ffmpeg.
+static FETCHING_FFMPEG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// An ffmpeg that encodes libx264 here, the pinned build first.
 fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
     let (found, ffprobe) = tools::ffmpeg(&home.tools(), &path())?;
@@ -43,9 +46,8 @@ pub async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     if let Some(found) = usable_ffmpeg(home) {
         return Ok(found);
     }
-    // One fetch here at a time: a cut that needs it now waits for the one a walk began behind it.
-    static FETCHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _one = FETCHING.lock().await;
+    // Several things want it first at once: one fetches, and the rest find what it fetched.
+    let _one = FETCHING_FFMPEG.lock().await;
     if let Some(found) = usable_ffmpeg(home) {
         return Ok(found);
     }

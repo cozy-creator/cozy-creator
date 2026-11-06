@@ -549,6 +549,9 @@ pub struct RentalRequest {
     /// SSH into the machine as root with this key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub development: Option<RentalDevelopment>,
+    /// The price an hour agreed to: an order dearer than it rents nothing, and the refusal says the new price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_usd_micros_per_hour: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

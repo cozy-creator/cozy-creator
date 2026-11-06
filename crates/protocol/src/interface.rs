@@ -3,7 +3,7 @@
 //! another shape reads as absent, so no reader refuses a member it does not use.
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 /// The member that lists the entrypoints, for a reader that rewrites the document.
@@ -184,7 +184,6 @@ pub struct Interface {
 
 /// The entrypoint a package with recipes runs them through (`cozy model quantize`).
 pub const RECIPES: &str = "quantize";
-
 /// One declared recipe: the lane it writes and the model it reads.
 #[derive(Debug, Deserialize)]
 pub struct Recipe {
@@ -233,6 +232,9 @@ pub struct Callable {
     pub accelerator: Option<bool>,
     #[serde(default, deserialize_with = "or_default")]
     pub invocable: Invocable,
+    /// What its box says that its types can't. None: it declares nothing, which draws it only in a package where nothing declares.
+    #[serde(default, deserialize_with = "or_default")]
+    pub node: Option<Node>,
     /// A CPU function that loads no model and calls its package's GPU functions
     /// (`orchestrates`).
     #[serde(skip)]
@@ -241,6 +243,49 @@ pub struct Callable {
     #[serde(skip)]
     pub calls: Vec<Slot>,
 }
+
+/// `author.Node`: all a function says of its box beyond its types.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct Node {
+    /// What a box of it is called, numbered: `shot` makes `shot_1`, `shot_2`. Empty: its package.
+    #[serde(default, deserialize_with = "or_default")]
+    pub name: String,
+    /// Its name in the tool list, in place of one from its package and function.
+    #[serde(default, deserialize_with = "or_default")]
+    pub label: String,
+    /// Inputs on its default face beside its first text and what's required.
+    #[serde(default, deserialize_with = "or_default")]
+    pub show: Vec<String>,
+    /// Inputs a box never draws, which a file or a run can still set.
+    #[serde(default, deserialize_with = "or_default")]
+    pub hide: Vec<String>,
+    /// Input to [`TAKE`], or to `<input>.<member>`: the platform fills it from what that input mentions.
+    #[serde(default, deserialize_with = "or_default")]
+    pub fill: BTreeMap<String, String>,
+    /// The model's own tags in a text: never mentions.
+    #[serde(default, deserialize_with = "or_default")]
+    pub reserved: Vec<String>,
+    /// The path in its package of a component that draws its box.
+    #[serde(default, deserialize_with = "or_default")]
+    pub ui: Option<String>,
+    /// The frames a kept take can end on, if it can't end on any.
+    #[serde(default, deserialize_with = "or_default")]
+    pub cuts: Option<Cuts>,
+    /// This function's word beside another of its package of the same label: one box, and a toggle by this word that flips to it.
+    #[serde(default, deserialize_with = "or_default")]
+    pub variant: String,
+}
+
+/// `offset + k * every`, from frame `first`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cuts {
+    pub every: u32,
+    pub offset: u32,
+    pub first: u32,
+}
+
+/// What `fill` calls the take a new one keeps the start of.
+pub const TAKE: &str = "take";
 
 #[derive(Debug, Deserialize)]
 pub struct WeightsOutput {
@@ -268,6 +313,9 @@ pub struct AssetsKind {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Invocable {
+    /// The module that declares it, dotted, from its package's root.
+    #[serde(default, deserialize_with = "or_default")]
+    pub module: String,
     /// `request/<field>` → the author's default, for people.
     #[serde(default, deserialize_with = "or_default")]
     pub defaults: BTreeMap<String, Value>,
@@ -300,6 +348,9 @@ pub struct Field {
     pub constraints: Constraints,
     #[serde(default, deserialize_with = "or_default")]
     pub asset_bound: AssetBound,
+    /// What the author added for readers: `msgspec.Meta(extra=...)`.
+    #[serde(default, deserialize_with = "or_default")]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -406,6 +457,15 @@ impl Interface {
 }
 
 impl Interface {
+    /// What a publish says of a `Node` naming an input its function hasn't got.
+    pub fn node_slips(&self) -> Vec<String> {
+        let named = |callable: &Callable, node: &Node| -> Vec<String> {
+            let written = node.show.iter().chain(&node.hide).chain(node.fill.keys());
+            written.filter(|input| callable.field(input).is_none()).map(|input| format!("{}'s node names {input}, which isn't one of its inputs", callable.name)).collect()
+        };
+        self.callables.iter().filter_map(|callable| Some(named(callable, callable.node.as_ref()?))).flatten().collect()
+    }
+
     /// Whether `callable` is the `quantize` that runs this package's recipes.
     pub fn runs_recipes(&self, callable: &Callable) -> bool {
         callable.name == RECIPES && !self.recipes.is_empty()
@@ -460,6 +520,13 @@ impl Callable {
     /// Whether `field` is the declared Assets collection.
     pub fn is_assets(&self, field: &str) -> bool {
         self.assets.as_ref().is_some_and(|a| a.parameter == field)
+    }
+}
+
+impl Struct {
+    /// Whether a list of these is filled from mentions, each by its `name`, rather than written row by row.
+    pub fn is_mention(&self) -> bool {
+        self.fields.iter().any(|field| field.name == "name" && field.ty == Type::Str)
     }
 }
 

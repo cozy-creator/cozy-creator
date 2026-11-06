@@ -7,7 +7,7 @@
 //! ends it. Unpinned runs are placed here: `any` on a rental of this controller that fits,
 //! `new:<sku>` on one rented for the run (`rentals`).
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -25,11 +25,15 @@ use axum::{
     },
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use platform::{durable, paths::Home};
+use platform::{
+    durable,
+    paths::Home,
+    tail::{Log, Start},
+};
 use protocol::{
     calcifer::{
         self as wire, Ended, Event, Keepalive, LogEvent, Machine, MachineKind, MachineList,
-        MachineLog, MachineState, MachineStatus, MachinesEvent, NewMachine, On, SubmitRun,
+        MachineLog, MachineState, MachineStatus, NewMachine, On, SubmitRun,
     },
     config,
     error::{Error, Kind},
@@ -40,11 +44,11 @@ use ed25519_dalek::{
     SigningKey,
     pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _},
 };
-use futures_util::{Stream, StreamExt as _};
+use futures_util::StreamExt as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tokio::{
-    sync::{Notify, broadcast, broadcast::error::RecvError, watch},
+    sync::{Notify, broadcast::error::RecvError},
     task::{AbortHandle, JoinSet},
 };
 use tracing::warn;
@@ -225,7 +229,10 @@ impl Machines {
         }
         let orders = self.orders()?;
         let (hubs, unanswered, signed_out, others) = self.hubs.listing(&rows, &orders);
-        machines.extend(others);
+        machines.extend(others.into_iter().map(|mut other| {
+            other.ssh = self.ssh(&other);
+            other
+        }));
         machines.extend(orders);
         let live = machines.iter().filter(|m| m.state != MachineState::Ended);
         let rentals = wire::LiveRentals::of(live.filter_map(|m| m.rental.as_ref()));
@@ -246,7 +253,10 @@ impl Machines {
         }
         let row = match self.named_now(text).await {
             Ok(Named::Here(row)) => row,
-            Ok(Named::Other(machine)) => return Ok(*machine),
+            Ok(Named::Other(mut machine)) => {
+                machine.ssh = self.ssh(&machine);
+                return Ok(*machine);
+            }
             // To read, a name only ended machines had is the newest of them.
             Err(e) if e.code == "machine_name_ended" => match self.store().machines_named(text).map_err(internal)?.into_iter().next() {
                 Some(row) => row,
@@ -538,10 +548,11 @@ impl Machines {
     /// Ends a rental at its Hub (`ending` until the Hub affirms it), or removes an added machine
     /// from this controller, once the outputs of its runs have landed here: the end is recorded
     /// at once and carried out then (`end_here`). `force` ends it now and names the outputs given
-    /// up. `local` is never ended.
+    /// up. `local` is this computer's and never ended, unless this computer is a rental: then it
+    /// asks its own machine to release itself (`release_here`).
     pub async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
         if text.eq_ignore_ascii_case("local") {
-            return Err(local_refusal());
+            return self.release_here().await;
         }
         if let Some(order) = self.order_named(text)? {
             return self.stop_order(order);
@@ -551,7 +562,7 @@ impl Machines {
             Named::Other(machine) => return self.end_other(*machine),
         };
         if row.kind == MachineKind::Local {
-            return Err(local_refusal());
+            return self.release_here().await;
         }
         if row.state == MachineState::Ended {
             return Ok(Ended {
@@ -561,6 +572,27 @@ impl Machines {
             });
         }
         self.end_here(row, force)
+    }
+
+    /// What `GET /v1/status` says of this computer when it is a rental, as its machine last said.
+    pub(crate) fn rental_here(&self) -> Option<protocol::calcifer::StatusRental> {
+        let frame = self.frame("local")?;
+        let hub = frame.hubs.first()?;
+        Some(protocol::calcifer::StatusRental { machine_id: hub.machine_id.clone(), idle_deadline_ms: deadline(&frame) })
+    }
+
+    /// `local`, on a rental: what reached this Calcifer through its machine's door can't reach the
+    /// machine's own API, so this relays. The machine refuses while it works and tells its Hub
+    /// within a second. Nothing here reads the Hub, so `ending` is as far as this can say.
+    async fn release_here(&self) -> Result<Ended, Error> {
+        let (row, link) = self.linked("local").map_err(|_| local_refusal())?;
+        if !link.status().await.is_ok_and(|frame| !frame.hubs.is_empty()) {
+            return Err(local_refusal());
+        }
+        link.release().await.map_err(|e| refusal(&row.name, e))?;
+        let mut machine = self.picture(&row)?;
+        machine.state = MachineState::Ending;
+        Ok(Ended { machine, changed: true, abandoned: vec![] })
     }
 
     /// Starts a rental's 15-minute idle clock over, once the machine acknowledges it.
@@ -695,7 +727,32 @@ impl Machines {
             _ => None,
         };
         self.hubs.describe(&mut machine, asked.as_ref());
+        machine.ssh = self.ssh(&machine);
         Ok(machine)
+    }
+
+    /// The `ssh` that logs in to a rental rented with a key: its known-hosts file is its own, under this computer's home.
+    fn ssh(&self, machine: &Machine) -> Option<wire::Ssh> {
+        let (rental, address) = machine.rental_id.as_ref().zip(machine.rental.as_ref()?.ssh.as_deref())?;
+        let (host, port) = address.rsplit_once(':')?;
+        let known = self.hubs.home().root().join("ssh");
+        let _ = std::fs::create_dir_all(&known);
+        let args = vec![
+            "ssh".to_owned(),
+            "-p".to_owned(),
+            port.to_owned(),
+            "-o".to_owned(),
+            "StrictHostKeyChecking=accept-new".to_owned(),
+            "-o".to_owned(),
+            format!("UserKnownHostsFile={}", known.join(format!("{rental}.known_hosts")).display()),
+            format!("root@{}", host.trim_start_matches('[').trim_end_matches(']')),
+        ];
+        let word = |arg: &String| match arg.chars().any(|c| c.is_whitespace() || "'\"\\$`".contains(c)) {
+            true => format!("'{}'", arg.replace('\'', r"'\''")),
+            false => arg.clone(),
+        };
+        let line = args.iter().map(word).collect::<Vec<_>>().join(" ");
+        Some(wire::Ssh { args, line })
     }
 
     /// A run the machine holds for this controller, with this controller's record of it.
@@ -1136,107 +1193,12 @@ pub(crate) async fn list(
     ))
 }
 
-/// A machine as `GET /v1/machines` lists it, each time its row changes (its state, Status, boot,
-/// Hub listing, or the runs on it), and the name of one that left the list. No backlog: a client
-/// subscribes, then lists.
-pub(crate) async fn events(
-    State(api): State<Arc<Api>>,
-) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, Refusal> {
-    let mut changed = api.calcifer.machines_changed();
-    changed.mark_unchanged();
-    let runs = api.calcifer.subscribe();
-    let watch = MachinesWatch {
-        shown: listed(&api.machines).await.map_err(Refusal)?,
-        changed,
-        runs,
-        stop: api.stop_signal(),
-        machines: api.machines.clone(),
-        pending: VecDeque::new(),
-    };
-    let stream = futures_util::stream::unfold(watch, MachinesWatch::next);
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
-}
-
-/// One `events` subscriber: the list as it last told it, and what it owes.
-struct MachinesWatch {
-    shown: HashMap<String, Machine>,
-    changed: watch::Receiver<()>,
-    runs: broadcast::Receiver<(RunId, Event)>,
-    stop: watch::Receiver<bool>,
-    machines: Arc<Machines>,
-    pending: VecDeque<MachinesEvent>,
-}
-
-impl MachinesWatch {
-    async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
-        loop {
-            if let Some(event) = self.pending.pop_front() {
-                let data = serde_json::to_string(&event).expect("an event serializes");
-                return Some((Ok(sse::Event::default().data(data)), self));
-            }
-            tokio::select! {
-                changed = self.changed.changed() => if changed.is_err() { return None },
-                received = self.runs.recv() => match received {
-                    // A run's lifecycle moves its machine's running and queued counts.
-                    Ok((_, event)) if lifecycle(&event) => {}
-                    Ok(_) => continue,
-                    // Falling behind loses nothing here: the whole list is read again below.
-                    Err(RecvError::Lagged(_)) => {}
-                    Err(RecvError::Closed) => return None,
-                },
-                _ = self.stop.wait_for(|stop| *stop) => return None,
-            }
-            let now = match listed(&self.machines).await {
-                Ok(now) => now,
-                Err(e) => {
-                    warn!(
-                        "the machines stream cannot list the machines: {}",
-                        e.message
-                    );
-                    return None;
-                }
-            };
-            for (name, machine) in &now {
-                if self.shown.get(name) != Some(machine) {
-                    let machine = Box::new(machine.clone());
-                    self.pending.push_back(MachinesEvent::Updated { machine });
-                }
-            }
-            for name in self.shown.keys().filter(|name| !now.contains_key(*name)) {
-                let name = name.clone();
-                self.pending.push_back(MachinesEvent::Removed { name });
-            }
-            self.shown = now;
-        }
-    }
-}
-
-/// The machines a list shows now, by name, from what Calcifer holds (no Hub is asked).
-async fn listed(machines: &Arc<Machines>) -> Result<HashMap<String, Machine>, Error> {
-    let list = machines.list(false).await?;
-    Ok(list
-        .machines
-        .into_iter()
-        .map(|m| (m.name.clone(), m))
-        .collect())
-}
-
-fn lifecycle(event: &Event) -> bool {
-    matches!(
-        event,
-        Event::Created { .. }
-            | Event::Queued { .. }
-            | Event::InProgress { .. }
-            | Event::Completed { .. }
-            | Event::Failed { .. }
-            | Event::Canceled { .. }
-    )
-}
-
 #[derive(Deserialize)]
 pub(crate) struct Fresh {
     #[serde(default)]
     fresh: bool,
+    /// The Hub whose client reads it.
+    hub: Option<String>,
 }
 
 /// The machine; `?fresh=true` answers a Status it read now, or refuses.
@@ -1245,12 +1207,38 @@ pub(crate) async fn show(
     UrlPath(name): UrlPath<String>,
     query: Result<Query<Fresh>, QueryRejection>,
 ) -> Result<Json<Machine>, Refusal> {
+    Ok(Json(asked(&api, &name, query).await?.0))
+}
+
+/// The machine `GET /v1/machines/{name}` answers.
+async fn asked(api: &Arc<Api>, name: &str, query: Result<Query<Fresh>, QueryRejection>) -> Result<(Machine, Option<String>), Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     let machine = match query.fresh {
-        true => fresh(&api.machines, &name).await,
-        false => api.machines.show(&name).await,
+        true => fresh(&api.machines, name).await,
+        false => api.machines.show(name).await,
     };
-    Ok(Json(machine.map_err(Refusal)?))
+    Ok((machine.map_err(Refusal)?, query.hub))
+}
+
+/// `GET /v1/machines/{name}/packages`: what it holds installed, each with where it came from for a client of `?hub=`, else this
+/// computer's Hub.
+pub(crate) async fn packages(
+    State(api): State<Arc<Api>>,
+    UrlPath(name): UrlPath<String>,
+    query: Result<Query<Fresh>, QueryRejection>,
+) -> Result<Json<wire::MachinePackages>, Refusal> {
+    let (machine, hub) = asked(&api, &name, query).await?;
+    let hub = crate::hub::origin(&api, hub.as_deref())?;
+    Ok(Json(machine.packages(&hub.to_string())))
+}
+
+/// `GET /v1/machines/{name}/models`: the models it holds.
+pub(crate) async fn models(
+    State(api): State<Arc<Api>>,
+    UrlPath(name): UrlPath<String>,
+    query: Result<Query<Fresh>, QueryRejection>,
+) -> Result<Json<wire::MachineModels>, Refusal> {
+    Ok(Json(asked(&api, &name, query).await?.0.models()))
 }
 
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:
@@ -1309,6 +1297,7 @@ pub(crate) async fn quote(
             "only a rent has a price",
         )));
     };
+    let hub = crate::hub::origin(&api, Some(&hub))?.to_string();
     // The product asked for is honoured or refused, never widened to another.
     let sku = api.machines.spelled_sku(&hub, &sku).await;
     api.machines.admit_sku(&hub, &sku, gpus.unwrap_or(1)).await.map_err(Refusal)?;
@@ -1389,6 +1378,7 @@ pub(crate) async fn create(
                         .remedy("one key names one rental forever; retrying under it is safe"),
                     )
                 })?;
+            let hub = crate::hub::origin(&api, Some(&hub))?.to_string();
             let shape = Shape {
                 gpus,
                 disk_gb,
@@ -1460,6 +1450,55 @@ pub(crate) struct LogQuery {
     after: Option<String>,
 }
 
+/// Calcifer's own log, `calcifer` on `local`, as a machine's: its whole lines, or followed as it is written, across a rotation.
+async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &HeaderMap) -> Result<Response, Refusal> {
+    if !name.eq_ignore_ascii_case("local") {
+        let said = format!("{name} keeps no Calcifer log: Calcifer is this computer's");
+        return Err(Refusal(Error::new(Kind::Usage, "log_not_kept", said).next("cozy machine logs local calcifer")));
+    }
+    let home = api.machines.hubs.home();
+    let log = Log::rotated(home.calcifer(), "calcifer.log");
+    let unreadable = |e: &dyn std::fmt::Display| Refusal(Error::new(Kind::Internal, "log_unreadable", format!("{}: {e}", home.calcifer_log().display())));
+    let mut since = Since(query.since_ms);
+    if !follows(headers) {
+        let read = tokio::task::spawn_blocking({
+            let (log, lines) = (log, query.lines);
+            move || log.read(Start::Last(lines))
+        });
+        let text = read.await.map_err(|e| unreadable(&e))?.map_err(|e| unreadable(&e))?;
+        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], since.keep(&text)).into_response());
+    }
+    let start = match after(query.after, headers) {
+        Some(place) => Start::After(place.parse().map_err(|why: String| Refusal(usage(why)))?),
+        None => Start::Last(query.lines),
+    };
+    let follow = log.follow(start).map_err(|e| match e.is_unsupported() {
+        true => Refusal(Error::new(Kind::Unavailable, "log_follow_unsupported", e.to_string())),
+        false => unreadable(&e),
+    })?;
+    let (sender, batches) = tokio::sync::mpsc::channel(16);
+    tokio::task::spawn_blocking(move || follow.run(|batch| sender.blocking_send(batch).is_ok(), || !sender.is_closed()));
+    let events = futures_util::stream::unfold(batches, |mut batches| async move { batches.recv().await.map(|batch| (batch, batches)) })
+        .map(move |batch| {
+            let after = batch.after.to_string();
+            let lines = LogEvent::Lines { text: since.keep(&batch.text), after: after.clone() };
+            let data = serde_json::to_string(&lines).expect("an event serializes");
+            Ok::<_, Infallible>(sse::Event::default().id(after).data(data))
+        })
+        .take_until(api.stopped());
+    Ok(Sse::new(events).keep_alive(KeepAlive::default()).into_response())
+}
+
+/// Whether a log's reader asked to follow it.
+fn follows(headers: &HeaderMap) -> bool {
+    (headers.get(header::ACCEPT).and_then(|v| v.to_str().ok())).is_some_and(|v| v.contains("text/event-stream"))
+}
+
+/// The place a log's follower goes on from: `?after=`, else `Last-Event-ID`.
+fn after(asked: Option<String>, headers: &HeaderMap) -> Option<String> {
+    asked.or_else(|| headers.get("last-event-id").and_then(|v| v.to_str().ok()).map(str::to_owned))
+}
+
 /// A machine's log: its whole lines, or with `Accept: text/event-stream` those and then each
 /// batch as the machine appends it, as `lines` events whose id (`after`) resumes the follow.
 pub(crate) async fn logs(
@@ -1470,6 +1509,7 @@ pub(crate) async fn logs(
 ) -> Result<Response, Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     let log = match log.as_str() {
+        "calcifer" => return calcifer_log(&api, &name, query, &headers).await,
         "tensord" => MachineLog::Tensord,
         "tensorfs" => MachineLog::Tensorfs,
         "memory" => MachineLog::Memory,
@@ -1477,14 +1517,12 @@ pub(crate) async fn logs(
             return Err(Refusal(Error::new(
                 Kind::NotFound,
                 "machine_log_unknown",
-                format!("machines keep no log {other:?}: tensord, tensorfs or memory"),
+                format!("machines keep no log {other:?}: tensord, tensorfs or memory, and local calcifer"),
             )));
         }
     };
-    let follows = (headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()))
-        .is_some_and(|v| v.contains("text/event-stream"));
     let mut since = Since(query.since_ms);
-    if !follows {
+    if !follows(&headers) {
         let bytes = api
             .machines
             .logs(&name, log, query.lines)
@@ -1493,8 +1531,7 @@ pub(crate) async fn logs(
         let text = since.keep(&String::from_utf8_lossy(&bytes));
         return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response());
     }
-    let resumed = headers.get("last-event-id").and_then(|v| v.to_str().ok());
-    let after = query.after.or_else(|| resumed.map(str::to_owned));
+    let after = after(query.after, &headers);
     let lines = api
         .machines
         .follow_logs(&name, log, query.lines, after.as_deref())
@@ -1799,7 +1836,7 @@ fn log_refusal(name: &str, log: MachineLog, e: LinkError) -> Error {
 }
 
 /// A machine's refusal, as the API answers it.
-fn refusal(name: &str, e: LinkError) -> Error {
+pub(crate) fn refusal(name: &str, e: LinkError) -> Error {
     match e {
         LinkError::Refused { code, message, remedy, next } => {
             let named = |text: String| text.replace("<machine>", name);

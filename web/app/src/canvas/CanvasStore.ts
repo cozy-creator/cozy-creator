@@ -1,0 +1,1781 @@
+import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
+import { ApiError, type Client } from "../api/client"
+import { type Action, Outbox } from "../api/outbox"
+import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
+import { dismiss, say } from "../ui/notes"
+import { signal } from "../ui/signal"
+import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
+import { clearSpot, Field, GLIDE_MS } from "./clear"
+import { type Box, homesFor, readsOf, warningsOf } from "./graph"
+import { controlsOf, fullRows } from "./controls"
+import { asName, freeName, nameKey } from "./names"
+import { faceOf, heightFor, madeHere, makes, shownOf, widthFor } from "./shown"
+import { clipOf, wire } from "./timeline/model"
+import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
+import { isSelf, mentionFrom, numbersOf, SELF, versionOf } from "./versions"
+
+export type ElementData = { name: string }
+export type ElementNode = Node<ElementData, "element" | "entity">
+
+/** A box that takes elements dragged onto it, at a point: a text at its caret, a slot. A tool can register one of its own. */
+export interface DropTarget {
+  over(names: string[], x: number, y: number): void
+  drop(names: string[], x: number, y: number): void
+}
+
+export type MediaKind = "image" | "video" | "audio" | "file"
+export type Stage = "waiting" | "reading" | "sending" | "adding"
+
+/** An import under way: from the drop until the project holds it. */
+export interface Placing {
+  media: MediaKind
+  stage: Stage
+  /** How far this stage is, 0 to 1. */
+  done: number
+  /** Which try of the current call, when it isn't the first. */
+  attempt?: number
+  /** The name with nothing typed. */
+  stem: string
+  abort: AbortController
+}
+
+/** Everything a card shows that isn't a position. Culling unmounts cards, so a card holds none of it. */
+export interface ElementView {
+  name: string
+  asset?: Asset
+  entity?: Entity
+  /** An entity's: how the assets it links stand, the worst of them. */
+  linked?: Standing | "failed"
+  /** The version being looked at, which changes only this page, until it's pinned. */
+  viewed?: number
+  /** Its turn hasn't come: nothing is making it yet. */
+  queued?: boolean
+  /** What reading the project said of it. */
+  warnings?: string[]
+  /** A piece of a cut was clicked: where to play from. `at` is seconds, `ask` tells one click from the next. */
+  seek?: { at: number; ask: number }
+  /** Known from the import's answer until the project is read again. */
+  landed?: { sha256: string; field: string }
+  /** The project doesn't hold it, as far as reads say. Until when: a read begun after that says. Forever until Calcifer answers. */
+  pending?: number
+  /** A render is on its way, until when, as `pending`: it says Queued from the click on. */
+  asked?: number
+  /** What was asked of its row and not read back yet, until when, as `pending`. */
+  over?: { row: Partial<Asset>; until: number }
+  /** How many writes of its fields are on their way. */
+  writing?: number
+  placing?: Placing
+  /** A blob URL, until the thumbnail is up. */
+  preview?: string
+  /** The name field's text, while it's open. */
+  draft?: string
+  aspect?: number
+  /** Being worked on where it stands, the canvas drawn in on it and all it can do around it. */
+  here?: boolean
+  /** Worked on where it stands, and showing its words, not a take. */
+  hereWords?: boolean
+  run?: Run
+  /** What's typed and not saved, by field. A card culled away keeps it here. */
+  drafts?: Record<string, unknown>
+  /** What was written and not read back yet, by field. */
+  sent?: Record<string, unknown>
+  /** The `etag` the drafts began from, moved along by writes of its own. */
+  base?: string
+  /** The `etag` its own last write left, until a read catches up: what a new draft begins from. */
+  known?: string
+  /** The file moved under the drafts. */
+  conflict?: boolean
+  /** Its render waits for a machine, and what it keeps. */
+  waiting?: Keep
+  /** Seconds into a video, scrubbed to. */
+  scrub?: number
+  /** Its ratio while it's being reshaped. */
+  shape?: string
+  /** Its warnings are open under it. */
+  warned?: boolean
+  /** A caption is being asked for. */
+  captioning?: boolean
+  /** Something is being dragged over it. */
+  hot?: boolean
+  /** How many files dropped on it are on their way to being its versions. */
+  joining?: number
+  /** It just arrived, and lands. */
+  landing?: boolean
+  /** The take that just landed, sliding in beside the last. */
+  slid?: number
+}
+
+/** What a new take keeps of an old one. */
+export interface Keep {
+  take?: number
+  in_s?: number
+}
+
+/** A take or version carried out of its box. */
+export interface CarriedFile {
+  sha256: string
+  field: string
+  name: string
+  description?: string
+  /** The box it's from, and its number there. */
+  from?: string
+  number?: number
+}
+
+/** A deleted box, for Undo: what it was, and what Calcifer needs to bring it back. */
+interface Gone {
+  name: string
+  served: () => string
+  view: ElementView
+  row: Row
+  /** What `DELETE` answered. */
+  text?: string
+  going?: Action<AssetDeleted>
+}
+
+export const CARD_WIDTH = 240
+
+type Flow = ReactFlowInstance<ElementNode, Edge>
+const NOT_THERE = Symbol("the box went before its turn came")
+const NOT_YET = Number.POSITIVE_INFINITY
+export const UNDO_MS = 10_000
+const TYPING_PAUSE_MS = 800
+const CLEAR_OF_FRAME = 24
+
+const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
+
+export function toRow(node: ElementNode): Row {
+  return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: node.width ?? CARD_WIDTH }
+}
+
+/** What the state says of one element: an asset, or an entity. */
+type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "warnings">
+
+const viewOf = (element: Placed): ElementView => ({ ...element })
+
+function linksOf(entity: Entity): string[] {
+  return [...Object.values(entity.links ?? {}), ...(entity.subs ?? []).flatMap(linksOf)]
+}
+
+const WORST = ["making", "failed", "out_of_date", "missing", "current"] as const
+
+/** How an entity stands: the worst of what it links. */
+const worst = (standings: (Standing | "failed" | undefined)[]) => WORST.find((standing) => standings.includes(standing)) ?? "current"
+
+/**
+ * What the canvas knows beyond React Flow's positions, viewport and selection: a plain store with per-name subscribers. `node.data` is
+ * `{name}` and a node's id never changes, so state changes never touch React Flow, and an import or a rename stays the same node.
+ */
+export class CanvasStore {
+  projectId: string | null
+  private client: Client
+  private flow: Flow | null = null
+  private views = new Map<string, ElementView>()
+  private aliases = new Map<string, string>()
+  private subscribers = new Map<string, Set<() => void>>()
+  private shapes = new Map<string, string>()
+  /** Each view's stack, by the view: a change is a new view. */
+  private stacks = new WeakMap<ElementView, number>()
+  private pauses = new Map<string, ReturnType<typeof setTimeout>>()
+  private asked = new Set<number>()
+  /** What's been said of a render that never reached a machine. */
+  private unsentSaid = new Set<string>()
+  private runs = new Map<number, Run>()
+  /** What a person did, in order, on its way to Calcifer. */
+  readonly outbox = new Outbox()
+  /** A push or pull is going. */
+  readonly transferring = signal(false)
+  /** The tools known so far, by id. */
+  readonly tools = signal<Map<string, Tool>>(new Map())
+  /** Names came or went: a text shows a name as a chip or as words by it. */
+  readonly names = signal(0)
+  /** The menu open, and where. `full`: from an opened box, with what's asked of it. */
+  readonly menu = signal<{ name: string; x: number; y: number; full?: boolean } | null>(null)
+  /** The box whose file is being looked at large, over everything. */
+  readonly viewing = signal<string | null>(null)
+  /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */
+  readonly far = signal(false)
+  /** What takes a drop, by its element: a box marks itself `data-drop-target`. */
+  readonly dropTargets = new Map<Element, DropTarget>()
+  /** Each open text's way to take a name at its caret, by `<node>:<place>`. */
+  private carets = new Map<string, (name: string) => void>()
+  /** Has these assets, and what's said of the project, read. */
+  readAgain: (names: string[]) => void = () => {}
+  /** Asks for a machine, for a render with none up. */
+  askMachine: () => void = () => {}
+  /** The box being worked on where it stands: the view to go back to, the one fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
+  inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
+  /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
+  leaveHere: () => void = () => {}
+  /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
+  fitHere: (only?: boolean) => void = () => {}
+  /** The box being worked on has another name now. */
+  hereRenamed: (name: string) => void = () => {}
+  /** The name a just-dropped tool will have: its text takes the keys. */
+  focusing: string | null = null
+  /** The machines a render may go to, a rental before this computer: the walk places it on whichever is free. */
+  machines: () => string[] = () => []
+  private ids = new Map<string, string>()
+  /** Each box by its node's id, the same whatever it's called: an action waits for its turn by this. */
+  private namesById = new Map<string, string>()
+  /** What Calcifer calls each, by id: a rename on its way shows here first. */
+  private served = new Map<string, string>()
+  private nextId = 0
+  private state: ProjectState | null = null
+  private began = 0
+  private rows: Map<string, Row> | null = null
+  private owners = new Map<number, string>()
+  private dragging = new Set<string>()
+  /** Where what's being dragged started, for a drop that isn't a move. */
+  private dragFrom = new Map<string, { x: number; y: number }>()
+  /** On its way out: a read from before that doesn't bring it back. */
+  private deleting = new Set<string>()
+  /** The etags an asset's own writes left, since a read last caught up. */
+  private own = new Map<string, Set<string>>()
+  /** Names about to land: what was dropped here, and nothing a read found. */
+  private landings = new Set<string>()
+  /** A position of ours that the stream hasn't echoed: it wins until then. */
+  private masks = new Map<string, Row>()
+  private gliding = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Boxes to clear of what they lie on, as soon as this turn's changes are in. */
+  private unsettled = new Set<string>()
+  /** When each of this page's moves was answered, by name. */
+  private movedAt = new Map<string, number>()
+  /** Rows to write, by node id. */
+  private moving = new Map<string, Row>()
+  private movesOwed = false
+  private renames = new Map<string, string>()
+  private adding = 0
+  private seen = false
+  private selected: Set<string>
+  /** The boxes with More open. */
+  private moreOpen: Set<string>
+  private named = new Set<() => void>()
+  /** The project was read for the first time; whether it held anything. */
+  onFirstRead?: (held: boolean) => void
+  /** Elements with no row were just placed. */
+  onPlaced?: () => void
+  /** More was opened or shut. */
+  onMore?: (names: string[]) => void
+
+  constructor(client: Client, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
+    this.client = client
+    this.projectId = projectId
+    this.selected = new Set(selected)
+    this.moreOpen = new Set(moreOpen)
+  }
+
+  /** The project has been read, so what isn't here isn't in it. */
+  get hasRead() {
+    return this.seen
+  }
+
+  attach(flow: Flow) {
+    this.flow = flow
+    if (this.state && this.rows) this.reconcile()
+    // React Flow forgets what it's told as it mounts, which a project read already has in time for: what's held is told again once it's up.
+    setTimeout(() => {
+      if (this.flow !== flow) return
+      flow.setNodes((nodes) => {
+        const there = new Set(nodes.map((node) => node.id))
+        return [...nodes, ...[...this.ids].filter(([, id]) => !there.has(id)).flatMap(([name, id]) => (this.rows?.has(name) ? [this.node(name, this.rows.get(name)!, this.selected.has(name), id)] : []))]
+      })
+    })
+  }
+
+  detach() {
+    this.flow = null
+  }
+
+  // Reading, by name
+
+  resolveName(name: string): string {
+    return this.aliases.get(name) ?? name
+  }
+
+  get = (name: string): ElementView | undefined => this.views.get(this.resolveName(name))
+
+  subscribe(name: string, listener: () => void): () => void {
+    let listeners = this.subscribers.get(name)
+    if (!listeners) this.subscribers.set(name, (listeners = new Set()))
+    listeners.add(listener)
+    return () => listeners.delete(listener)
+  }
+
+  private notify(name: string) {
+    this.subscribers.get(name)?.forEach((listener) => listener())
+    for (const [alias, target] of this.aliases) {
+      if (target === name) this.subscribers.get(alias)?.forEach((listener) => listener())
+    }
+  }
+
+  patch(name: string, change: Partial<ElementView>) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view) return
+    this.views.set(key, { ...view, ...change })
+    this.notify(key)
+  }
+
+  patchPlacing(key: string, change: Partial<Placing>) {
+    const view = this.views.get(key)
+    if (view?.placing) this.patch(key, { placing: { ...view.placing, ...change } })
+  }
+
+  /** The names an element can't take. */
+  takenBesides(name: string): string[] {
+    return [...this.views].filter(([key, view]) => key !== name && !view.placing).map(([key]) => key)
+  }
+
+  /** Its node's id, the same whatever it's called. */
+  idOf(name: string): string | undefined {
+    return this.ids.get(this.resolveName(name))
+  }
+
+  position(name: string): Row | null {
+    const id = this.ids.get(this.resolveName(name))
+    const node = id ? this.flow?.getNode(id) : undefined
+    return node ? toRow(node) : null
+  }
+
+  // From Calcifer
+
+  applyState(state: ProjectState) {
+    this.state = state
+    this.began = state.began ?? 0
+    this.transferring.set(Boolean(state.moving))
+    if (this.rows && this.flow) this.reconcile()
+  }
+
+  /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
+  applyCanvas(cards: Record<string, Row>, began = 0) {
+    const first = !this.rows
+    const rows = new Map(Object.entries(cards))
+    for (const [name, at] of this.movedAt) {
+      const mine = this.rows?.get(name)
+      if (at >= began && mine) rows.set(name, mine)
+    }
+    this.rows = rows
+    if (first) {
+      if (this.state && this.flow) this.reconcile()
+      return
+    }
+    for (const [name, row] of this.rows) this.applyRow(name, row)
+  }
+
+  /** A `canvas` event: the rows that changed. Stream order is the truth. */
+  applyRows(cards: Record<string, Row | null>) {
+    if (!this.rows) return
+    for (const [name, row] of Object.entries(cards)) {
+      if (row) {
+        this.rows.set(name, row)
+        this.applyRow(name, row)
+        if (!this.masks.has(name)) this.unsettle(name)
+      } else {
+        this.rows.delete(name)
+      }
+    }
+  }
+
+  private applyRow(name: string, row: Row) {
+    if (this.dragging.has(name)) return
+    const mask = this.masks.get(name)
+    if (mask) {
+      if (samePlace(mask, row)) this.masks.delete(name)
+      return
+    }
+    const id = this.ids.get(name)
+    if (id) this.flow?.updateNode(id, { position: { x: row.x, y: row.y }, ...(row.w ? { width: row.w } : {}) })
+    if (row.w) this.reshape(name)
+  }
+
+  /** Fell behind: what the stream would have told us is about to be read again, and what a run says now is asked again. */
+  fellBehind() {
+    const owed = new Set([...this.moving.keys()].map((id) => this.namesById.get(id)))
+    for (const name of this.masks.keys()) if (!owed.has(name)) this.masks.delete(name)
+    this.asked.clear()
+  }
+
+  /** Tools the list didn't have, as they're found. */
+  addTools(tools: Tool[]) {
+    const known = this.tools.get()
+    const fresh = tools.filter((tool) => JSON.stringify(known.get(tool.id)) !== JSON.stringify(tool))
+    if (fresh.length) this.tools.set(new Map([...known, ...fresh.map((tool): [string, Tool] => [tool.id, tool])]))
+  }
+
+  /** What a run says of the asset it's making: the lowest going, when there are several. */
+  applyRun(run: Run) {
+    this.runs.set(run.number, run)
+    const owner = this.owners.get(run.number)
+    if (!owner) return
+    const making = this.get(owner)?.asset?.making ?? []
+    if (run.number === Math.min(...making)) this.patch(owner, { run })
+  }
+
+  private reconcile() {
+    const state = this.state!
+    const rows = this.rows!
+    const entities = state.entities ?? []
+    const present = new Set([...state.assets, ...entities].map((element) => element.name))
+    for (const name of this.deleting) if (!present.has(name)) this.deleting.delete(name)
+    for (const name of this.deleting) present.delete(name)
+    for (const [from, to] of this.renames) if (present.has(to)) this.renames.delete(from)
+    const becoming = new Set(this.renames.values())
+    const fresh: Placed[] = []
+    // A row written first, as a rename's is: the same box under a new name, where it was, with whatever's typed in it.
+    for (const { name } of state.assets) {
+      const row = rows.get(name)
+      if (this.views.has(name) || !row) continue
+      const was = [...this.views.keys()].find((held) => !present.has(held) && !this.views.get(held)?.placing && !becoming.has(held) && samePlace(this.position(held) ?? { x: NaN, y: NaN }, row))
+      if (was) this.moveName(was, name)
+    }
+    if (!state.unsent?.length) this.unsentSaid.clear()
+    for (const failure of state.unsent ?? []) {
+      if (this.unsentSaid.has(failure.message)) continue
+      this.unsentSaid.add(failure.message)
+      say(failure.message, new ApiError(0, failure))
+    }
+    const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
+    const warnings = warningsOf(state).byElement
+    this.owners.clear()
+    const said = (view: ElementView, name: string) => {
+      const now = warnings.get(name)
+      return (view.warnings ?? []).join("\n") === (now ?? []).join("\n") ? {} : { warnings: now }
+    }
+    for (const asset of state.assets) {
+      for (const number of asset.making ?? []) {
+        this.owners.set(number, asset.name)
+        this.askRun(number)
+      }
+      if (this.renames.has(asset.name) || this.deleting.has(asset.name)) continue
+      const view = this.views.get(asset.name)
+      if (view) {
+        const change: Partial<ElementView> = { ...said(view, asset.name) }
+        // What a new take's run warned of is said as it lands: a box's own mark is only seen opened.
+        if (this.hasRead && view.asset && asset.version !== view.asset.version) for (const line of warnings.get(asset.name) ?? []) if (!view.warnings?.includes(line)) say(line)
+        // A render that fails says so as it fails, wherever the person is looking. One that failed before this page opened is the box's to show.
+        if (asset.failure && this.hasRead && asset.failure.message !== view.asset?.failure?.message) say(`${asset.name} didn't render`, new ApiError(0, asset.failure))
+        if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
+        if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
+        if (view.asked !== undefined && view.asked < this.began) change.asked = undefined
+        const over = view.over && view.over.until >= this.began ? view.over : undefined
+        if (view.over && !over) change.over = undefined
+        if (view.asset !== asset || view.landed) {
+          Object.assign(change, { asset: over ? { ...asset, ...over.row } : asset, landed: undefined })
+          if (!asset.making?.length) change.run = undefined
+          const newest = asset.prefixes?.at(-1)?.number
+          if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
+          // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
+          const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
+          if (asset.etag !== view.asset?.etag && !between) {
+            // A box this page made has no one else's words under it yet: what's typed begins from this.
+            Object.assign(change, { sent: view.writing ? view.sent : undefined, known: undefined, ...(view.pending !== undefined ? { base: view.drafts ? asset.etag : undefined } : this.typedUnder(view, asset)) })
+            this.own.delete(asset.name)
+          }
+          // Pinned where it was being looked: there's nothing left to look at.
+          if (view.viewed !== undefined && (view.viewed === asset.version || !asset.prefixes?.some((held) => held.number === view.viewed))) change.viewed = undefined
+        }
+        if (Object.keys(change).length) {
+          this.patch(asset.name, change)
+          this.reshape(asset.name)
+        }
+      } else if (this.adding === 0) {
+        // While an import is being asked, a new name may be that import's: its answer says, then this runs again.
+        fresh.push({ name: asset.name, asset, queued: queued.has(asset.name), warnings: warnings.get(asset.name) })
+      }
+    }
+    const standing = new Map(state.assets.map((asset) => [asset.name, asset.failure ? ("failed" as const) : asset.standing]))
+    for (const entity of entities) {
+      const linked = worst(linksOf(entity).map((name) => standing.get(name)))
+      const view = this.views.get(entity.name)
+      if (view) {
+        if (view.entity !== entity || view.linked !== linked || Object.keys(said(view, entity.name)).length) {
+          this.patch(entity.name, { entity, linked, ...said(view, entity.name) })
+          this.reshape(entity.name)
+        }
+      } else if (this.adding === 0) {
+        fresh.push({ name: entity.name, entity, linked, warnings: warnings.get(entity.name) })
+      }
+    }
+    for (const [name, view] of this.views) {
+      if (!present.has(name) && !view.placing && !view.landed && !(this.began <= (view.pending ?? -1)) && !becoming.has(name)) this.removeNode(name)
+    }
+    // What comes after the first read arrived while this was open, from a dropped tool, a command or a hand.
+    for (const element of this.seen ? fresh : []) this.landings.add(element.name)
+    this.addNodes(fresh.filter((element) => rows.has(element.name)).map((element) => ({ element, row: rows.get(element.name)! })))
+    const homeless = fresh.filter((element) => !rows.has(element.name))
+    if (homeless.length) void this.findHomes(homeless)
+    this.names.set(this.names.get() + 1)
+    if (!this.seen) {
+      this.seen = true
+      this.onFirstRead?.(present.size > 0)
+      this.separate()
+    } else {
+      for (const { name } of fresh) this.unsettle(name)
+    }
+  }
+
+  /** Someone wrote this asset, and what that means for what's typed in it: a field typed in is now a conflict, any other only moves what it began from. */
+  private typedUnder(view: ElementView, asset: Asset): Partial<ElementView> {
+    if (!view.drafts && !view.writing) return { base: undefined }
+    if (asset.etag === view.base) return {}
+    const same = (field: string) => JSON.stringify(asset.fields?.[field]) === JSON.stringify(view.asset?.fields?.[field])
+    // What's on its way is met by `If-Match`: Calcifer refuses it, and that's this conflict too. It only needs its base to stay, unless no field of it moved.
+    const typed = Object.keys({ ...(view.writing ? view.sent : {}), ...view.drafts })
+    if (typed.every(same)) return { base: asset.etag }
+    return view.drafts ? { conflict: true } : {}
+  }
+
+  /** A run this page hasn't heard of: its progress comes on the stream, but what it says now has to be read. */
+  private askRun(number: number) {
+    if (this.asked.has(number)) return
+    this.asked.add(number)
+    this.client.run(number).then((run) => this.applyRun(run), () => {})
+  }
+
+  /** A name with no row may just be ahead of its row on the stream, so ask once. Still none: place it, once, and write the row. */
+  private async findHomes(elements: Placed[]) {
+    if (!this.projectId) return
+    let cards: Record<string, Row> = {}
+    try {
+      cards = (await this.client.canvas(this.projectId)).cards
+    } catch (error) {
+      say("Couldn't read where things sit", error)
+    }
+    const rows = this.rows!
+    const state = this.state!
+    const named = new Set([...state.assets, ...(state.entities ?? [])].map((element) => element.name))
+    const wanted = elements.filter(({ name }) => !this.views.has(name) && named.has(name))
+    const found = wanted.filter(({ name }) => cards[name])
+    for (const { name } of found) rows.set(name, cards[name])
+    this.addNodes(found.map((element) => ({ element, row: cards[element.name] })))
+    const left = wanted.filter(({ name }) => !cards[name])
+    if (!left.length) return
+    // Opened here for the first time, with nothing placed yet: its whole new layout is what to look at. Anything after that arrives where someone's looking.
+    const nothingYet = !this.ids.size
+    const homes = this.homes(left)
+    for (const [name, row] of homes) rows.set(name, row)
+    this.addNodes(left.map((element) => ({ element, row: homes.get(element.name)! })))
+    for (const [name, row] of homes) this.move(name, row)
+    if (nothingYet) this.onPlaced?.()
+  }
+
+  private homes(left: Placed[]): Map<string, Row> {
+    const boxes = new Map<string, Box>()
+    for (const [name, id] of this.ids) {
+      // A node just added isn't in the flow until it next draws; its row is.
+      const node = this.flow?.getNode(id)
+      const row = this.rows?.get(name)
+      const view = this.views.get(name)
+      if ((!node && !row) || !view) continue
+      const w = node?.width ?? row?.w ?? widthFor(view)
+      boxes.set(name, { x: node?.position.x ?? row!.x, y: node?.position.y ?? row!.y, w, h: node?.measured?.height ?? heightFor(view, w) })
+    }
+    const sizes = new Map(left.map((element) => {
+      const view = viewOf(element)
+      const w = widthFor(view)
+      return [element.name, { w, h: heightFor(view, w) }]
+    }))
+    const names = left.map((element) => element.name)
+    return homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
+  }
+
+  /** The canvas as far as it shows, clear of the top bar and the tools. */
+  private onScreen(): Box | undefined {
+    const seen = this.flow?.getViewport()
+    if (!seen) return undefined
+    const left = (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + CLEAR_OF_FRAME
+    const top = (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + CLEAR_OF_FRAME
+    return { x: (left - seen.x) / seen.zoom, y: (top - seen.y) / seen.zoom, w: (innerWidth - left) / seen.zoom, h: (innerHeight - top) / seen.zoom }
+  }
+
+  private addNodes(items: { element: Placed; row: Row }[]) {
+    if (!items.length) return
+    const nodes = items.map(({ element, row }) => {
+      const making = element.asset?.making ?? []
+      // A name a box had before it was renamed, now another's.
+      this.aliases.delete(element.name)
+      // Its card may be placed after what its run said came back.
+      this.views.set(element.name, { ...viewOf(element), landing: this.landings.delete(element.name) || undefined, run: making.length ? this.runs.get(Math.min(...making)) : undefined })
+      for (const number of making) this.owners.set(number, element.name)
+      return this.node(element.name, row, this.selected.has(element.name))
+    })
+    this.flow?.addNodes(nodes)
+  }
+
+  private node(name: string, row: Row, selected = false, id = `e${++this.nextId}`): ElementNode {
+    this.ids.set(name, id)
+    this.namesById.set(id, name)
+    this.served.set(id, name)
+    const view = this.views.get(name)!
+    const width = row.w ?? widthFor(view)
+    const height = heightFor(view, width)
+    this.shapes.set(name, this.shapeOf(name, width, height))
+    return {
+      id,
+      type: view.entity ? "entity" : "element",
+      position: { x: row.x, y: row.y },
+      data: { name },
+      width,
+      // Its size from the row and the lock: a culled node never gets measured, and React Flow's fit leaves out what isn't.
+      measured: { width, height },
+      selected,
+    }
+  }
+
+  /** What's on it changed, in one write: the room it takes changes with it. */
+  putOn(name: string, fields: Record<string, unknown>) {
+    void this.setFields(name, fields)
+    this.reshape(name)
+  }
+
+  /** Its size, unmeasured, for a fit and for culling: the node hears only when it moved. */
+  private reshape(name: string) {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    const view = this.views.get(key)
+    const node = id ? this.flow?.getNode(id) : undefined
+    if (!id || !view || !node) return
+    const width = node.width ?? widthFor(view)
+    const height = heightFor(view, width)
+    const shape = this.shapeOf(key, width, height)
+    if (this.shapes.get(key) === shape) return
+    this.shapes.set(key, shape)
+    this.flow?.updateNode(id, { measured: { width, height } })
+    this.unsettle(key)
+  }
+
+  // Keeping clear: no box lies on another
+
+  /** What a box takes on the canvas, as one key: the same from its first node on, so only a real change moves anything. */
+  private shapeOf(name: string, width: number, height: number) {
+    return `${width}:${height}:${this.stacked(name)}`
+  }
+
+  /** How many are in the stack under it: its tool and what's on that. Read once per view, as every box's is read wherever one moves. */
+  stacked(name: string): number {
+    const view = this.get(name)
+    if (!view) return 0
+    let held = this.stacks.get(view)
+    if (held === undefined) {
+      const tool = view.asset?.tool
+      held = addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
+      this.stacks.set(view, held)
+    }
+    return held
+  }
+
+  /** A box and the stack under it, which nothing else lies on. With none it's only the box. */
+  private laid(name: string, box: Box): Box {
+    const held = this.stacked(name)
+    return held ? { ...box, h: box.h + STACK_GAP + held * ADD_ON_HEIGHT } : box
+  }
+
+  /** Where a block of boxes goes to lie on nothing: there if it can. */
+  clearFor(box: Box): { x: number; y: number } {
+    return clearSpot(box, this.field())
+  }
+
+  /** Its place and size, from what every tab holds alike. */
+  boxOf(name: string): Box | null {
+    const id = this.ids.get(name)
+    const view = this.views.get(name)
+    const node = id ? this.flow?.getNode(id) : undefined
+    const row = this.rows?.get(name)
+    if ((!node && !row) || !view) return null
+    // A row is what the page last said of it, and a node may not have heard yet.
+    const w = row?.w ?? node?.width ?? widthFor(view)
+    return this.laid(name, { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) })
+  }
+
+  private field(besides?: Set<string>): Field {
+    const field = new Field()
+    for (const name of this.ids.keys()) {
+      const box = besides?.has(name) ? null : this.boxOf(name)
+      if (box) field.add(name, box)
+    }
+    return field
+  }
+
+  /** Slides there, briefly. */
+  private glide(name: string, at: { x: number; y: number }) {
+    const id = this.ids.get(name)
+    if (!id) return
+    clearTimeout(this.gliding.get(id))
+    this.flow?.updateNode(id, { position: at, className: "glide" })
+    this.gliding.set(id, setTimeout(() => this.flow?.updateNode(id, { className: undefined }), GLIDE_MS))
+  }
+
+  private toClear(name: string, field: Field, box: Box) {
+    const spot = clearSpot(box, field)
+    if (spot.x === box.x && spot.y === box.y) return box
+    this.glide(name, spot)
+    const row = { x: Math.round(spot.x), y: Math.round(spot.y), w: this.rows?.get(name)?.w ?? box.w }
+    if (!this.views.get(name)?.placing) this.move(name, row)
+    return { ...box, ...spot }
+  }
+
+  private unsettle(name: string) {
+    if (!this.seen) return
+    if (!this.unsettled.size) queueMicrotask(() => this.settle())
+    this.unsettled.add(name)
+  }
+
+  /** What arrived or changed its size lying on something goes to the nearest clear place, by name order, so every tab does the same. What's held in a drag waits for its drop. */
+  private settle() {
+    const names = [...this.unsettled].filter((name) => this.ids.has(name) && !this.dragging.has(name)).sort()
+    this.unsettled.clear()
+    if (!names.length) return
+    const field = this.field(new Set(names))
+    for (const name of names) {
+      const box = this.boxOf(name)
+      if (box) field.add(name, this.toClear(name, field, box))
+    }
+  }
+
+  /** Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes, so nothing goes out of date. */
+  private separate() {
+    const field = this.field()
+    for (const name of [...this.ids.keys()].sort()) {
+      const box = this.boxOf(name)
+      if (!box) continue
+      field.remove(name, box)
+      if ([...field.under(box).keys()].some((other) => other < name)) field.add(name, this.toClear(name, field, box))
+      else field.add(name, box)
+    }
+  }
+
+  /** What's selected now. */
+  select(names: string[]) {
+    this.selected = new Set(names)
+  }
+
+  // Looking at versions, and asking for them
+
+  /** Looks at version `number`, or with none its state again. Nothing leaves this page. */
+  view(name: string, number?: number) {
+    this.patch(name, { viewed: number })
+    this.reshape(name)
+  }
+
+  seek(name: string, at: number) {
+    const held = this.get(name)
+    if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
+  }
+
+  /**
+   * A new take or version: the box says Queued now, and anything typed goes first. What Calcifer runs itself needs no machine; with none up for the rest, it asks
+   * for one and goes when one is. Its key is made here, once, so however often this is tried it asks one render.
+   */
+  run(name: string, keep?: Keep) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    const asset = view?.asset
+    if (!asset || view.conflict) return
+    const on = madeHere(asset.tool) ? ["local"] : this.machines()
+    const saved = this.save(key)
+    if (!on.length) {
+      this.patch(key, { waiting: keep ?? {} })
+      this.askMachine()
+      return
+    }
+    this.patch(key, { waiting: undefined, scrub: undefined, asked: NOT_YET })
+    const id = this.ids.get(key)
+    const settle = (asked?: number) => this.patchId(id, { asked })
+    const once = `take-${crypto.randomUUID()}`
+    this.act(key, {
+      send: async (served, signal) => ((await saved) ? this.client.render(this.projectId!, [served], on, once, keep, signal) : null),
+      done: (answer) => {
+        settle(answer ? performance.now() : undefined)
+        this.readAfter([id])
+      },
+      refused: (error) => {
+        settle()
+        say(`Couldn't render ${name}`, error)
+      },
+    })
+  }
+
+  /** A machine came up: each render that waited for one goes. */
+  machineUp() {
+    for (const [name, view] of this.views) if (view.waiting) this.run(name, view.waiting)
+  }
+
+  /** Render all. What's approved stays, and with `outdated`, what's out of date when its turn comes goes too. */
+  runAll(outdated: boolean) {
+    const on = this.machines()
+    const id = this.projectId
+    if (!id) return
+    if (!on.length) return this.askMachine()
+    const saved = [...this.views.keys()].map((name) => this.save(name))
+    const going = [...this.views].filter(([, view]) => view.asset?.tool && !madeHere(view.asset.tool) && !view.asset.pinned).map(([name]) => this.ids.get(name))
+    for (const box of going) this.patchId(box, { asked: NOT_YET })
+    const settle = (asked?: number) => going.forEach((box) => this.patchId(box, { asked }))
+    const once = `all-${crypto.randomUUID()}`
+    this.outbox.add({
+      send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, outdated ? { outdated } : {}, signal) : null),
+      done: (answer) => {
+        settle(answer ? performance.now() : undefined)
+        this.readAfter(going)
+      },
+      refused: (error) => {
+        settle()
+        say("Couldn't render them", error)
+      },
+    })
+  }
+
+  /**
+   * What holds a box's look until a read begun after the answer has to get that read: the write's own event can reach a read that began first, and then there's no
+   * other. One read of these, whatever else is said.
+   */
+  private readAfter(boxes: (string | undefined)[]) {
+    const names = boxes.flatMap((id) => this.served.get(id ?? "") ?? [])
+    if (names.length) this.readAgain(names)
+  }
+
+  private patchId(id: string | undefined, change: Partial<ElementView>) {
+    const name = id && this.namesById.get(id)
+    if (name) this.patch(name, change)
+  }
+
+  /** `row` over what its row says, now, until a read begun after the answer says for itself. Refused, it goes back. */
+  private over<T extends { stale?: string[]; etag?: string }>(name: string, row: Partial<Asset>, send: (served: string, once: AbortSignal) => Promise<T>, what: string, then?: { done?(answer: T): void; refused?(): void }) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.asset) return
+    const was = view.asset
+    const over = { row, until: NOT_YET }
+    const id = this.ids.get(key)
+    const mine = () => this.get(this.namesById.get(id ?? "") ?? "")?.over === over
+    this.patch(key, { over, asset: { ...was, ...row } })
+    return this.act(key, {
+      send,
+      done: (answer) => {
+        if (mine()) this.patchId(id, { over: { row, until: performance.now() } })
+        this.readAfter([id])
+        // A write of its own: what a typed field began from moves with it, so it's no conflict.
+        const held = this.views.get(this.namesById.get(id ?? "") ?? "")
+        if (held && answer.etag) this.patchId(id, { known: answer.etag, ...(held.base === was.etag ? { base: held.drafts || held.writing ? answer.etag : undefined } : {}) })
+        if (answer.stale?.length) say(`That puts ${answer.stale.join(", ")} out of date`)
+        then?.done?.(answer)
+      },
+      refused: (error) => {
+        if (mine()) this.patchId(id, { over: undefined, asset: was })
+        say(`Couldn't ${what} ${name}`, error)
+        then?.refused?.()
+      },
+    })
+  }
+
+  /** One take or version off its box, at once, with no dialog: the strip closes up, an approved one's box stands on the newest, and a note offers Undo for a while. */
+  discardTake(name: string, number: number) {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    const left = asset?.prefixes?.filter((held) => held.number !== number)
+    if (!asset || !left) return
+    const approved = asset.approved === number
+    const back: Partial<Asset> = { prefixes: asset.prefixes, versions: asset.versions, version: asset.version, approved: asset.approved, pinned: asset.pinned }
+    const gone: Partial<Asset> = { prefixes: left, versions: left.length, version: asset.version === number ? left.at(-1)?.number : asset.version, ...(approved ? { approved: undefined, pinned: false } : {}) }
+    this.patch(key, { viewed: this.views.get(key)?.viewed === number ? undefined : this.views.get(key)?.viewed })
+    let wasApproved = approved
+    let note = 0
+    const going = this.over(key, gone, (served, once) => this.client.discardVersion(this.projectId!, served, number, once), `discard ${asset.noun} ${number} of`, {
+      done: (answer) => {
+        wasApproved = Boolean(answer.approved)
+      },
+      refused: () => dismiss(note),
+    })
+    const undo = () => {
+      if (going && this.outbox.takeBack(going)) return this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...back } })
+      this.over(key, back, (served, once) => this.client.restoreVersion(this.projectId!, served, number, wasApproved, once), `bring back ${asset.noun} ${number} of`)
+    }
+    const stands = approved ? ` It was approved: ${name} now shows its newest.` : ""
+    const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
+    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
+    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** Whether a picture dropped here joins it: a box of pictures with no tool. */
+  joins(name: string): boolean {
+    const asset = this.get(name)?.asset
+    return Boolean(asset && !asset.tool && holdsPictures(asset))
+  }
+
+  /** A slot in its row while a file is on its way to it. What it answers says that's over. */
+  joining(name: string): () => void {
+    const count = (by: number) => this.patch(name, { joining: (this.get(name)?.joining ?? 0) + by || undefined })
+    count(1)
+    return () => count(-1)
+  }
+
+  /** A picture is `name`'s next version, there at once, a note offering Undo. `file` needs a path to show before the project holds it. `source` is what Calcifer finds it by. */
+  joinVersion(name: string, file: Pick<MainFile, "sha256" | "field"> & Partial<MainFile>, source: string, what: string) {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    if (!asset) return
+    const had = asset.prefixes ?? []
+    const same = had.find((held) => held.main?.sha256 === file.sha256)
+    if (same || asset.sha256 === file.sha256) return void say(`${name} has that picture already`)
+    const first: VersionPrefix[] = had.length || !asset.sha256 ? had : [{ number: 1, prefix: asset.sha256.slice(0, 12) }]
+    const number = Math.max(0, ...first.map((held) => held.number)) + 1
+    const main = file.path === undefined ? undefined : { output: file.field, path: file.path, ...file }
+    const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
+    const back: Partial<Asset> = { prefixes: asset.prefixes, versions: asset.versions, version: asset.version, approved: asset.approved }
+    const stands = asset.pinned ? (asset.approved ?? 1) : number
+    let joined = 0
+    let note = 0
+    const going = this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(asset.pinned ? { approved: stands } : {}) }, (served, once) => this.client.addVersion(this.projectId!, served, source, once), "add to", {
+      done: (answer) => {
+        joined = answer.number
+        if (answer.already) dismiss(note)
+      },
+      refused: () => dismiss(note),
+    })
+    const undo = () => {
+      if (going && this.outbox.takeBack(going)) return this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...back } })
+      this.over(key, back, (served, once) => this.client.discardVersion(this.projectId!, served, joined, once), "take back from")
+    }
+    note = say(`${what} joined ${name}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** A take let go on a box: one with no tool takes it as a version, anything else with words mentions it. Whether anything did. */
+  takePicture(name: string, file: CarriedFile): boolean {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    if (!asset || asset.timeline || madeHere(asset.tool)) return false
+    const own = file.from !== undefined && nameKey(file.from) === nameKey(key)
+    if (this.joins(key)) {
+      if (!own) this.joinVersion(key, { sha256: file.sha256, field: file.field, path: "" }, file.sha256, file.name)
+      return true
+    }
+    this.takeInto(key, [file.from && file.number ? mentionFrom(key, file.from, file.number) : file.name])
+    return true
+  }
+
+  // What makes a box
+
+  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. */
+  putTool(name: string, tool: Tool) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.asset || view.asset.tool === tool.id) return
+    void this.save(key)
+    const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool)
+    this.retool(key, step, step.lost.length ? `${name} runs ${tool.label} now, which can't take ${step.lost.join(" or ")}` : undefined)
+  }
+
+  /** Its tool's X: only that goes. A box of no pictures is its words, and a note offers Undo for a while. */
+  takeToolOff(name: string) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.asset) return
+    void this.save(key)
+    const word = this.tools.get().get(view.asset.tool ?? "")?.label ?? "Its tool"
+    const words = holdsPictures(view.asset) ? `Its pictures and words stay.` : `It's a text box now.`
+    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
+  }
+
+  private retool(key: string, step: ToolStep, said?: string) {
+    const send = (tool: string, fields: Record<string, unknown>) => (served: string, once: AbortSignal) => this.client.patchAsset(this.projectId!, served, { tool, fields }, undefined, once)
+    const after = (row: Partial<Asset>) => {
+      if (!row.tool) this.patch(key, { hereWords: undefined })
+      this.reshape(key)
+    }
+    let note = 0
+    const going = this.over(key, step.row, send(step.tool, step.fields), "change what makes", { done: (answer) => answer.warnings?.forEach((line) => say(line)), refused: () => dismiss(note) })
+    after(step.row)
+    if (!said) return
+    const undo = () => {
+      if (going && this.outbox.takeBack(going)) this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...step.back.row } })
+      else this.over(key, step.back.row, send(step.back.tool, step.back.fields), "change what makes")
+      after(step.back.row)
+    }
+    note = say(said, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** The take or version being looked at in `name`, if one is chosen: what Delete means while it's open. */
+  lookingAt(name: string): number | undefined {
+    return this.get(name)?.viewed
+  }
+
+  /** Approves it: this version is what `name` is, until it's unapproved. It turns into that file now, and can flip back. */
+  pin(name: string, number: number) {
+    this.patch(name, { hereWords: undefined, viewed: undefined })
+    this.over(name, { pinned: true, approved: number, version: number }, (served, once) => this.client.approve(this.projectId!, served, String(number), once), "approve")
+  }
+
+  unpin(name: string) {
+    this.over(name, { pinned: false, approved: undefined }, (served, once) => this.client.unpin(this.projectId!, served, once), "unapprove")
+  }
+
+  cancelRender(name: string) {
+    this.patch(name, { asked: undefined })
+    this.act(name, {
+      send: (served, once) => this.client.cancelRender(this.projectId!, [served], once),
+      refused: (error) => say(`Couldn't cancel ${name}`, error),
+    })
+  }
+
+  async pull() {
+    if (!this.projectId) return
+    try {
+      await this.client.pull(this.projectId)
+    } catch (error) {
+      say("Couldn't pull this project's files", error)
+    }
+  }
+
+  private removeNode(name: string) {
+    const id = this.ids.get(name)
+    this.unsettled.delete(name)
+    this.views.delete(name)
+    this.ids.delete(name)
+    if (id) {
+      this.namesById.delete(id)
+      this.moving.delete(id)
+    }
+    this.masks.delete(name)
+    this.shapes.delete(name)
+    if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
+    this.notify(name)
+    if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
+  }
+
+  /** The same node and view under a new name. `ours`: Calcifer doesn't know yet. */
+  private moveName(from: string, to: string, ours = false) {
+    const view = this.views.get(from)
+    const id = this.ids.get(from)
+    if (!view || !id) return
+    if (!ours) this.served.set(id, to)
+    this.views.delete(from)
+    this.ids.delete(from)
+    if (this.dragging.delete(from)) this.dragging.add(to)
+    this.views.set(to, { ...view, name: to })
+    this.ids.set(to, id)
+    this.namesById.set(id, to)
+    const mask = this.masks.get(from)
+    this.masks.delete(from)
+    if (mask) this.masks.set(to, mask)
+    this.aliases.set(from, to)
+    this.aliases.delete(to)
+    const shape = this.shapes.get(from)
+    this.shapes.delete(from)
+    if (shape) this.shapes.set(to, shape)
+    if (this.moreOpen.delete(from)) {
+      this.moreOpen.add(to)
+      this.onMore?.([...this.moreOpen])
+    }
+    const row = this.rows?.get(from)
+    if (row) {
+      this.rows!.delete(from)
+      this.rows!.set(to, row)
+    }
+    if (this.inPlace?.name === from) {
+      this.inPlace.name = to
+      this.hereRenamed(to)
+    }
+    this.notify(to)
+    this.flow?.updateNodeData(id, { name: to })
+  }
+
+  // A node's inputs
+
+  /** Whether its More is open: as it was left, box by box. */
+  showsMore(name: string): boolean {
+    return this.moreOpen.has(this.resolveName(name))
+  }
+
+  setMore(name: string, open: boolean) {
+    const key = this.resolveName(name)
+    if (open) this.moreOpen.add(key)
+    else this.moreOpen.delete(key)
+    this.patch(key, {})
+    this.onMore?.([...this.moreOpen])
+  }
+
+  /** What a control shows: what's typed, else what was sent, else what it holds. */
+  valueOf(name: string, field: string): unknown {
+    const view = this.get(name)
+    if (view?.drafts && field in view.drafts) return view.drafts[field]
+    if (view?.sent && field in view.sent) return view.sent[field]
+    return view?.asset?.fields?.[field]
+  }
+
+  /** What's typed shows at once and writes itself at the first pause, on leaving the text, or as its box shuts. */
+  setDraft(name: string, field: string, value: unknown) {
+    const view = this.get(name)
+    if (!view) return
+    this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.known ?? view.asset?.etag })
+    clearTimeout(this.pauses.get(name))
+    this.pauses.set(name, setTimeout(() => void this.save(name), TYPING_PAUSE_MS))
+  }
+
+  /** Writes what's typed. Whether it stands: a refusal leaves it typed. */
+  save(name: string): Promise<boolean> {
+    clearTimeout(this.pauses.get(name))
+    this.pauses.delete(name)
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.drafts) return Promise.resolve(true)
+    // The person says which: leaving the text doesn't.
+    if (view.conflict) return Promise.resolve(false)
+    return this.write(key, view.drafts, `save ${view.name}`)
+  }
+
+  /** `fields`, shown as written now, go in their turn, over what they began from. Whether they stand: refused, they're typed again, and a file that moved under them is a conflict. */
+  private write(key: string, fields: Record<string, unknown>, what: string, force = false): Promise<boolean> {
+    const view = this.views.get(key)
+    const id = this.ids.get(key)
+    if (!view?.asset || !id) return Promise.resolve(true)
+    const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
+    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, conflict: undefined, base: view.base ?? view.known ?? view.asset.etag, writing: (view.writing ?? 0) + 1 })
+    const now = () => this.views.get(this.namesById.get(id) ?? "")
+    return new Promise((settled) => {
+      this.act(key, {
+        send: (served, once) => this.client.patchAsset(this.projectId!, served, { fields }, force ? undefined : now()?.base, once),
+        done: (answer) => {
+          const held = now()
+          if (held) {
+            this.wrote(held.name, answer)
+            const writing = (now()?.writing ?? 1) - 1
+            this.patch(held.name, { writing: writing || undefined, base: now()?.drafts || writing ? now()?.base : undefined })
+          }
+          settled(true)
+        },
+        refused: (error) => {
+          const held = now()
+          if (held) {
+            const sent = Object.fromEntries(Object.entries(held.sent ?? {}).filter(([field]) => !(field in fields)))
+            const changed = error instanceof ApiError && error.body.code === "asset_changed"
+            this.patch(held.name, { drafts: { ...fields, ...held.drafts }, sent, writing: (held.writing ?? 1) - 1 || undefined, conflict: changed || held.conflict })
+            if (!changed) say(`Couldn't ${what}`, error)
+          }
+          settled(false)
+        },
+      })
+    })
+  }
+
+  /** A write of its own moves what the drafts began from; anyone else's doesn't, so that still conflicts. */
+  private wrote(key: string, answer: AssetPatched) {
+    const view = this.views.get(key)
+    if (view) this.patch(key, { known: answer.etag, ...(view.base === answer.was ? { base: answer.etag } : {}) })
+    this.own.set(key, (this.own.get(key) ?? new Set()).add(answer.etag))
+    for (const warning of answer.warnings ?? []) say(warning)
+  }
+
+  /** The file changed under what's typed: this is written over it. */
+  keepMine(name: string) {
+    const key = this.resolveName(name)
+    return this.write(key, this.views.get(key)?.drafts ?? {}, `save ${name}`, true)
+  }
+
+  /** The file changed under what's typed: what's typed goes. */
+  takeTheFiles(name: string) {
+    this.patch(name, { drafts: undefined, base: undefined, conflict: undefined })
+  }
+
+  /** A slider let go, a choice made: one field, whatever else is typed. */
+  setField(name: string, field: string, value: unknown) {
+    return this.setFields(name, { [field]: value })
+  }
+
+  /** A write by what keeps its own `etag`, in its turn like any other. */
+  patchInTurn(name: string, fields: Record<string, unknown>, read?: string): Promise<AssetPatched> {
+    return new Promise((done, refused) => this.act(name, { send: (served, once) => this.client.patchAsset(this.projectId!, served, { fields }, read, once), done, refused }))
+  }
+
+  /** What belongs together, in one write. */
+  setFields(name: string, fields: Record<string, unknown>) {
+    return this.write(this.resolveName(name), fields, `set ${name}'s ${Object.keys(fields).join(", ")}`)
+  }
+
+  /** What's typed in one field goes, and what it holds shows again. */
+  discard(name: string, field: string) {
+    const view = this.get(name)
+    if (!view?.drafts) return
+    const { [field]: _, ...drafts } = view.drafts
+    this.patch(name, { drafts: Object.keys(drafts).length ? drafts : undefined })
+  }
+
+  /** Its description, as a package would say it: an edit in the field, not saved. It runs on a machine that's up, so with none it asks for one. */
+  caption(name: string) {
+    const key = this.resolveName(name)
+    if (!this.views.get(key)?.asset) return
+    const [on] = this.machines()
+    if (!on) {
+      say("Caption runs on a machine that's up")
+      return this.askMachine()
+    }
+    this.patch(key, { captioning: true })
+    const id = this.ids.get(key)
+    const once = `caption-${crypto.randomUUID()}`
+    this.act(key, {
+      long: true,
+      send: (served, signal) => this.client.caption(this.projectId!, served, on, once, signal),
+      done: (answer) => {
+        this.patchId(id, { captioning: undefined })
+        this.setDraft(this.namesById.get(id ?? "") ?? name, "description", answer.text)
+        for (const warning of answer.warnings ?? []) say(warning)
+      },
+      refused: (error) => {
+        this.patchId(id, { captioning: undefined })
+        say(`Couldn't caption ${name}`, error)
+      },
+    })
+  }
+
+  /** What makes it, among those of its kind. */
+  setTool(name: string, tool: string) {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    if (!this.views.get(key)?.asset) return
+    this.act(key, {
+      send: (served, once) => this.client.patchAsset(this.projectId!, served, { tool }, undefined, once),
+      done: (answer) => {
+        const now = this.namesById.get(id ?? "")
+        if (now) this.wrote(now, answer)
+      },
+      refused: (error) => say(`Couldn't change what makes ${name}`, error),
+    })
+  }
+
+  // Names in a text
+
+  /** Each name a mention could be, for the `<` list: nodes only. */
+  namesLike(typed: string, besides: string): string[] {
+    const version = /^(.+)\.(\d*)$/.exec(typed)
+    if (version) {
+      const of = isSelf(version[1]) ? besides : this.nameOf(version[1])
+      const numbers = numbersOf(this.get(of ?? "")?.asset).filter((number) => String(number).startsWith(version[2]))
+      return numbers.reverse().map((number) => `${version[1]}.${number}`)
+    }
+    const key = nameKey(typed)
+    const own = key && SELF.startsWith(key) ? numbersOf(this.get(besides)?.asset).slice(-1).map((number) => `${SELF}.${number}`) : []
+    return [...this.boxesLike(key, besides), ...own]
+  }
+
+  private boxesLike(key: string, besides: string): string[] {
+    const names = [...this.views.entries()].filter(([name, view]) => name !== besides && !view.placing && !view.entity).map(([name]) => name)
+    return names.filter((name) => nameKey(name).startsWith(key)).sort()
+  }
+
+  /** The name a mention is, in any case, with `_` and `-` alike. */
+  nameOf(mention: string): string | null {
+    const key = nameKey(mention)
+    for (const [name, view] of this.views) if (!view.placing && nameKey(name) === key) return name
+    return null
+  }
+
+  /** What a mention in `asset`'s text names, as far as this page knows: a box, a version of it, and whether that's gone. */
+  mentionOf(mention: string, asset: string): { name: string; number?: number; gone?: boolean } | null {
+    const name = this.nameOf(mention)
+    if (name) return { name }
+    const version = versionOf(mention)
+    const of = version && (this.nameOf(version.name) ?? (isSelf(version.name) ? this.resolveName(asset) : null))
+    return of && version ? { name: of, number: version.number, gone: !numbersOf(this.get(of)?.asset).includes(version.number) } : null
+  }
+
+  /** A text says where its caret takes a name. The first of a box is what a drop on the box means. */
+  openCaret(node: string, place: string, insert: (name: string) => void): () => void {
+    const key = `${node}:${place}`
+    this.carets.set(key, insert)
+    return () => void this.carets.delete(key)
+  }
+
+  // A drag
+
+  /** Whatever box is under the pointer, with `dragged` taken away. One being worked on takes a drop in the part it's let go on. */
+  dropTargetAt(x: number, y: number, dragged: Element[]): DropTarget | null {
+    for (const el of document.elementsFromPoint(x, y)) {
+      if (dragged.some((held) => held.contains(el))) continue
+      const card = el.closest<HTMLElement>(".card[data-asset]")
+      if (!card) continue
+      const name = this.resolveName(card.dataset.asset ?? "")
+      const view = this.views.get(name)
+      const at = view?.here && el.closest("[data-drop-target]")
+      const part = at && this.dropTargets.get(at)
+      if (part) {
+        this.setHot(name)
+        return part
+      }
+      // A box of pictures with no tool takes pictures, as its versions.
+      if (this.joins(name)) {
+        this.setHot(name)
+        return { over: () => {}, drop: (names) => this.joinBoxes(name, names) }
+      }
+      // Only a box being made takes anything: what's made, approved or only words is just in the way.
+      if (!view || !makes(view) || faceOf(view) !== "edit") break
+      this.setHot(name)
+      return { over: () => {}, drop: (names) => this.takeInto(name, names) }
+    }
+    this.setHot(null)
+    return null
+  }
+
+  /** Boxes let go on a box of pictures: what each shows joins it, and they stay as they are. */
+  private joinBoxes(target: string, names: string[]) {
+    for (const name of names) {
+      const shown = this.get(name)
+      const file = shown && shownOf(shown)
+      if (file && this.resolveName(name) !== this.resolveName(target)) this.joinVersion(target, { ...file, path: file.path || "" }, file.sha256, name)
+    }
+  }
+
+  /** Names into a box that's shut: its first place for one, after what's there. */
+  takeInto(target: string, names: string[]) {
+    const key = this.resolveName(target)
+    const asset = this.views.get(key)?.asset
+    const given = names.map((name) => this.resolveName(name)).filter((name) => name !== key)
+    if (!asset || !given.length) return
+    const tags = given.map((name) => `<${name}>`)
+    const asText = (held: unknown) => [typeof held === "string" ? held.trimEnd() : "", ...tags].filter(Boolean).join(" ")
+    const controls = controlsOf(asset, this.tools.get())
+    if (asset.timeline) {
+      const clips = asset.timeline.tracks[0]?.clips ?? []
+      const taken = given.flatMap((name) => clipOf(this, name, asset.timeline?.fps ?? 24) ?? [])
+      if (taken.length < given.length) say("Only video and stills go in an Edit for now")
+      if (taken.length) void this.setFields(key, { timeline: wire([...clips, ...taken]) })
+      return
+    }
+    const control = controls.find((held) => held.type === "text" || held.type === "file" || (held.type === "group" && held.members?.some((member) => member.type === "text")))
+    if (!control) return
+    const value = this.valueOf(key, control.field)
+    if (control.type === "text") return void this.setFields(key, { [control.field]: asText(value) })
+    if (control.type === "file") return void this.setFields(key, { [control.field]: control.multiple ? [...(Array.isArray(value) ? value : []), ...tags] : tags.at(-1) })
+    const words = control.members!.find((member) => member.type === "text")!
+    const rows = fullRows(control, Array.isArray(value) ? value : [])
+    void this.setFields(key, { [control.field]: rows.map((row, i) => (i ? row : { ...row, [words.field]: asText(row[words.field]) })) })
+  }
+
+  private hot: string | null = null
+
+  setHot(name: string | null) {
+    if (this.hot === name) return
+    if (this.hot) this.patch(this.hot, { hot: undefined })
+    if (name) this.patch(name, { hot: true })
+    this.hot = name
+  }
+
+  // Deleting
+
+  /** Gone at once, with no dialog. Files stay: a note offers Undo for a while, and says if something still needs what went. */
+  remove(names: string[]) {
+    // One taken out or pasted a moment ago may have no row read yet: its delete waits behind its import.
+    const going = names.map((name) => this.resolveName(name)).filter((name) => (this.views.get(name)?.asset || this.views.get(name)?.landed) && !this.views.get(name)?.placing)
+    if (!going.length) return
+    const readers = this.readers(going)
+    const gone = going.map((name) => {
+      const id = this.ids.get(name)!
+      const box: Gone = { name, served: () => this.served.get(id) ?? name, view: this.views.get(name)!, row: this.position(name) ?? this.rows?.get(name) ?? { x: 0, y: 0 } }
+      this.deleting.add(name)
+      this.rows?.delete(name)
+      this.removeNode(name)
+      return box
+    })
+    let note = 0
+    for (const box of gone) {
+      box.going = {
+        send: (once) => this.client.deleteAsset(this.projectId!, box.served(), once),
+        done: (answer) => {
+          box.text = answer.text
+          box.row = answer.at ?? box.row
+        },
+        // Its answer was lost, and with it what puts it back: it stays deleted.
+        landed: (error) => (error.status === 404 ? { name: box.name, text: "" } : undefined),
+        refused: (error) => {
+          this.deleting.delete(box.name)
+          this.bringBack(box)
+          dismiss(note)
+          say(`Couldn't delete ${box.name}`, error)
+        },
+      }
+      this.outbox.add(box.going)
+    }
+    const what = gone.length === 1 ? gone[0].name : `${gone.length} assets`
+    const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} this and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
+    note = say(`Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: () => gone.forEach((box) => this.undo(box)) }, ms: UNDO_MS })
+  }
+
+  /** A box again, as it was, where it was. */
+  private bringBack(box: Gone, pending?: number) {
+    const { view, name, row } = box
+    this.deleting.delete(name)
+    this.rows?.set(name, row)
+    this.views.set(name, { ...view, pending })
+    this.flow?.addNodes(this.node(name, row))
+  }
+
+  /** What reads these and has nothing of its own held: it can't run again without them. */
+  private readers(names: string[]): string[] {
+    const gone = names.map(nameKey)
+    const reads = (mention: string) => gone.some((key) => nameKey(mention) === key || nameKey(mention).startsWith(`${key}.`))
+    const after = (this.state?.assets ?? []).filter((asset) => !names.includes(asset.name) && !asset.pinned && asset.reads?.some((read) => reads(read.name)))
+    return after.map((asset) => asset.name)
+  }
+
+  /** Not sent yet, nothing was ever deleted. Otherwise it's asked back, in its turn. */
+  private undo(box: Gone) {
+    if (box.going && this.outbox.takeBack(box.going)) return this.bringBack(box)
+    this.bringBack(box, NOT_YET)
+    const id = this.ids.get(box.name)
+    this.outbox.add<AssetMade>({
+      send: (once) => this.client.putAssetBack(this.projectId!, box.name, box.text ?? "", box.row, once),
+      done: (answer) => {
+        this.patchId(id, { known: answer.etag, pending: performance.now() })
+        this.readAfter([id])
+      },
+      landed: (error) => (error.body.code === "asset_exists" ? { name: box.name, etag: "" } : undefined),
+      refused: (error) => {
+        const name = this.namesById.get(id ?? "")
+        if (name) {
+          this.rows?.delete(name)
+          this.removeNode(name)
+        }
+        say(`Couldn't put ${box.name} back`, error)
+      },
+    })
+  }
+
+  // An import
+
+  /** This project has that file, as far as the page has read. */
+  holdsFile(sha256: string): boolean {
+    for (const view of this.views.values()) if (view.landed?.sha256 === sha256) return true
+    return Boolean(
+      this.state?.assets.some((asset) => asset.sha256 === sha256 || Object.values(asset.files ?? {}).some((file) => file.sha256 === sha256)),
+    )
+  }
+
+  addPlacing(key: string, name: string, placing: Placing, at: Row, opts: { naming: boolean; preview?: string }) {
+    this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview, landing: true })
+    this.flow?.addNodes(this.node(key, this.clearOf(key, at)))
+  }
+
+  /** `at`, or the nearest place to it that's clear, for a box not on the canvas yet. Asked for, it stays where it can be seen. */
+  private clearOf(key: string, at: Row, inside?: Box): Row {
+    const view = this.views.get(key)
+    if (!view) return at
+    const w = at.w ?? widthFor(view)
+    return { ...at, ...clearSpot({ x: at.x, y: at.y, w, h: heightFor(view, w) }, this.field(), inside) }
+  }
+
+  /** The name it will get, as far as this page can tell: placing elements take theirs in the order they were dropped. */
+  shownName(key: string): string {
+    const taken: string[] = []
+    for (const [other, view] of this.views) {
+      if (!view.placing) taken.push(other)
+    }
+    for (const [other, view] of this.views) {
+      if (!view.placing) continue
+      const name = freeName(asName(other === key ? (view.draft ?? view.name) : view.name), taken)
+      if (other === key) return name
+      taken.push(name)
+    }
+    return key
+  }
+
+  /** What the open name field would come to, when that isn't what it says: a taken name gets `_2`. */
+  nameWillBe(name: string): string | null {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (view?.draft === undefined) return null
+    const typed = asName(view.draft)
+    const will = view.placing ? this.shownName(key) : freeName(typed, this.takenBesides(key))
+    return typed && will !== typed ? will : null
+  }
+
+  /** Resolves once its name field is shut. */
+  async whenNamed(key: string, signal: AbortSignal) {
+    while (this.views.get(key)?.draft !== undefined) {
+      signal.throwIfAborted()
+      await new Promise<void>((done, fail) => {
+        const woke = () => {
+          this.named.delete(woke)
+          signal.removeEventListener("abort", stop)
+          done()
+        }
+        const stop = () => {
+          this.named.delete(woke)
+          fail(signal.reason)
+        }
+        this.named.add(woke)
+        signal.addEventListener("abort", stop, { once: true })
+      })
+    }
+  }
+
+  /** Asking Calcifer to import: until the answer, a name it adds may be this. */
+  beginAdding() {
+    this.adding += 1
+  }
+
+  endAdding() {
+    this.adding -= 1
+    if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
+  }
+
+  /** The project holds it now. If it moved while being asked, its row moves too. */
+  land(key: string, answer: Imported, at: Row) {
+    this.patch(key, { placing: undefined, draft: undefined, landed: { sha256: answer.sha256, field: answer.field } })
+    this.moveName(key, answer.name)
+    this.rows?.set(answer.name, at)
+    const now = this.position(answer.name)
+    if (now && !samePlace(now, at)) this.move(answer.name, now)
+  }
+
+  cancel(key: string) {
+    const view = this.views.get(key)
+    view?.placing?.abort.abort()
+    if (view?.preview) URL.revokeObjectURL(view.preview)
+    this.removeNode(key)
+  }
+
+  /** A picture says its shape before it's measured. */
+  setAspect(name: string, aspect: number) {
+    const view = this.get(name)
+    if (!view || view.aspect === aspect) return
+    this.patch(name, { aspect })
+    this.reshape(name)
+  }
+
+  /** Its thumbnail is up. */
+  showThumb(name: string) {
+    const view = this.get(name)
+    if (!view?.preview) return
+    URL.revokeObjectURL(view.preview)
+    this.patch(name, { preview: undefined })
+  }
+
+  // Moving
+
+  dragStarted(nodes: ElementNode[]) {
+    for (const node of nodes) {
+      this.dragging.add(node.data.name)
+      this.dragFrom.set(node.data.name, { ...node.position })
+    }
+  }
+
+  /** Let go: each lands where it was let go, or if that's on another box, at the nearest clear place, and the other doesn't move. */
+  dragStopped(nodes: ElementNode[]) {
+    const names = nodes.map((node) => node.data.name)
+    const field = this.field(new Set(names))
+    for (const node of [...nodes].sort((a, b) => (a.data.name < b.data.name ? -1 : 1))) {
+      const name = node.data.name
+      this.dragging.delete(name)
+      this.dragFrom.delete(name)
+      const view = this.views.get(name)
+      if (!view) continue
+      const row = toRow(node)
+      const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
+      if (!view.placing) this.move(name, row)
+      field.add(name, this.toClear(name, field, box))
+    }
+  }
+
+  /** They were dropped into a box: each goes back where it started, and no move is saved. */
+  dragDropped(nodes: ElementNode[]) {
+    for (const node of nodes) {
+      const name = node.data.name
+      const from = this.dragFrom.get(name)
+      const id = this.ids.get(name)
+      this.dragging.delete(name)
+      this.dragFrom.delete(name)
+      if (from && id) this.glide(name, from)
+    }
+  }
+
+  /** A new width, and when it's let go, the row. */
+  setWidth(name: string, width: number, keep = true) {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    const node = id ? this.flow?.getNode(id) : undefined
+    if (!id || !node) return
+    this.flow?.updateNode(id, { width })
+    if (!keep) return
+    this.move(key, { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) })
+    this.reshape(key)
+    this.unsettle(key)
+  }
+
+  /** Its shape under the pointer: drawn, and nothing kept yet. */
+  drawShape(name: string, width: number, height: number) {
+    this.patch(name, { shape: `${width}:${height}` })
+    this.setWidth(name, width, false)
+    this.reshape(name)
+  }
+
+  /** Where a pulled corner lands: what its tool makes, at the width it was pulled to. */
+  setShape(name: string, field: string, width: number, shape: string) {
+    if (this.valueOf(name, field) !== shape) void this.setField(name, field, shape)
+    this.patch(name, { shape: undefined })
+    this.setWidth(name, width)
+  }
+
+  /** Whatever's done to `name`, in its turn, under what it's called by then. Gone by then, there's nothing to do. */
+  private act<T>(name: string, action: Omit<Action<T>, "send"> & { send(name: string, once: AbortSignal): Promise<T> }): Action<T | typeof NOT_THERE> {
+    const id = this.ids.get(this.resolveName(name))
+    const inTurn = {
+      ...action,
+      send: async (once: AbortSignal) => {
+        const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
+        return served ? action.send(served, once) : NOT_THERE
+      },
+      done: (answer: T | typeof NOT_THERE) => {
+        if (answer !== NOT_THERE) action.done?.(answer as T)
+      },
+    } as Action<T | typeof NOT_THERE>
+    this.outbox.add(inTurn)
+    return inTurn
+  }
+
+  /** The name a new box takes now, as Calcifer would give it: what's on the canvas, what's being placed, and what waits to be brought back is taken. */
+  private nameFor(wanted: string): string {
+    const taken = [...this.views].map(([key, view]) => (view.placing ? view.name : key))
+    return freeName(wanted, [...taken, ...(this.state?.orphans ?? []).map((orphan) => orphan.name)])
+  }
+
+  /**
+   * A box, now, whatever the network is doing. `view` is all that's known of it; `ask` makes it in the project, in its turn. The name is the page's until
+   * the answer: another writer may have taken it, and then the box takes the one it got. Refused, it goes and `refused` says why.
+   */
+  place<T extends { name: string; etag?: string }>(wanted: string, view: Omit<ElementView, "name">, dropped: Row, ask: (at: Row, once: AbortSignal) => Promise<T>, refused: (error: unknown) => void, done?: (name: string, answer: T) => void): string {
+    const name = this.nameFor(wanted)
+    const asset = view.asset && { ...view.asset, name }
+    this.adding += 1
+    this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
+    const at = this.clearOf(name, dropped)
+    this.rows?.set(name, at)
+    const node = this.node(name, at)
+    this.flow?.addNodes(node)
+    const left = () => {
+      this.adding -= 1
+      if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
+    }
+    this.outbox.add<T>({
+      send: (once) => ask(at, once),
+      done: (answer) => {
+        this.served.set(node.id, answer.name)
+        // Another writer took the name, unless a rename has moved it on since.
+        if (answer.name !== name && this.namesById.get(node.id) === name) this.moveName(name, answer.name)
+        const now = this.namesById.get(node.id)
+        if (now) {
+          const row = this.views.get(now)?.asset
+          this.patch(now, { ...(answer.etag ? { known: answer.etag, asset: row && { ...row, etag: answer.etag } } : {}), pending: performance.now() })
+          done?.(now, answer)
+        }
+        this.readAfter([node.id])
+        left()
+        this.sendMoves()
+      },
+      refused: (error) => {
+        const now = this.namesById.get(node.id)
+        if (now) {
+          this.rows?.delete(now)
+          this.removeNode(now)
+        }
+        left()
+        refused(error)
+      },
+    })
+    return name
+  }
+
+  /** The newest position of each box, in one write when its turn comes, and only those Calcifer has answered for: the rest go after. */
+  private move(name: string, row: Row) {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    if (!id) return
+    this.masks.set(key, row)
+    this.rows?.set(key, row)
+    this.moving.set(id, row)
+    this.movedAt.set(key, NOT_YET)
+    this.sendMoves()
+  }
+
+  private sendMoves() {
+    if (this.movesOwed || !this.moving.size) return
+    this.movesOwed = true
+    const answered = (id: string) => this.views.get(this.namesById.get(id) ?? "")?.pending !== NOT_YET
+    let sent = new Map<string, Row>()
+    this.outbox.add({
+      send: (once) => {
+        sent = new Map([...this.moving].filter(([id]) => answered(id)))
+        const cards = [...sent].flatMap(([id, row]): [string, Row][] => {
+          const name = this.served.get(id)
+          return name && this.namesById.has(id) ? [[name, row]] : []
+        })
+        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards), once) : Promise.resolve(null)
+      },
+      done: () => {
+        this.movesOwed = false
+        const at = performance.now()
+        for (const [id, row] of sent) {
+          const name = this.namesById.get(id) ?? ""
+          if (this.moving.get(id) === row) {
+            this.moving.delete(id)
+            this.movedAt.set(name, at)
+          }
+        }
+        if ([...this.moving.keys()].some(answered)) this.sendMoves()
+      },
+      refused: (error) => {
+        this.movesOwed = false
+        say("A move didn't save", error)
+        for (const id of sent.keys()) {
+          this.moving.delete(id)
+          this.masks.delete(this.namesById.get(id) ?? "")
+          this.movedAt.delete(this.namesById.get(id) ?? "")
+        }
+        if (this.projectId) void this.client.canvas(this.projectId).then(({ cards }) => this.applyCanvas(cards), () => {})
+      },
+    })
+  }
+
+  // Naming
+
+  openName(name: string) {
+    const view = this.get(name)
+    if (view && view.placing?.stage !== "adding") this.patch(name, { draft: view.draft ?? view.name })
+  }
+
+  draft(name: string, draft: string) {
+    this.patch(name, { draft })
+  }
+
+  /** The name field shuts with `text`: an import goes on, anything else is renamed. */
+  acceptName(name: string, text: string) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view || view.draft === undefined) return
+    const chosen = asName(text)
+    if (view.placing) {
+      this.patch(key, { name: chosen || view.placing.stem, draft: undefined })
+      for (const wake of [...this.named]) wake()
+    } else {
+      this.patch(key, { draft: undefined })
+      void this.rename(key, chosen)
+    }
+  }
+
+  /** The page shows the new name at once; a refusal puts the old one back and says why. */
+  private rename(from: string, to: string) {
+    const free = to ? freeName(to, this.takenBesides(from)) : from
+    const id = this.ids.get(from)
+    if (free === from || !id) return
+    this.renames.set(from, free)
+    this.moveName(from, free, true)
+    this.act(free, {
+      send: (served, once) => this.client.rename(this.projectId!, served, free, once),
+      done: () => this.served.set(id, free),
+      // A try whose answer was lost: its first did it.
+      landed: (error) => (error.status === 404 ? { from, to: free, versions: 0 } : undefined),
+      refused: (error) => {
+        say(`Couldn't rename ${from}`, error)
+        this.renames.delete(from)
+        this.moveName(this.namesById.get(id) ?? free, from, true)
+      },
+    })
+  }
+}

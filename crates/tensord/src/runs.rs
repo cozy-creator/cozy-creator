@@ -160,6 +160,28 @@ fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> 
         .collect())
 }
 
+/// What the checkpoints and components of `each` all share. No components names a whole checkpoint.
+fn shared_of(each: &[Vec<(String, Vec<String>)>]) -> Vec<(String, Vec<String>)> {
+    let holds = |list: &[(String, Vec<String>)], header: &str, component: Option<&str>| {
+        list.iter().any(|(held, components)| held == header && (components.is_empty() || component.is_none_or(|component| components.iter().any(|c| c == component))))
+    };
+    let mut shared: Vec<(String, Vec<String>)> = vec![];
+    for (header, components) in each.first().into_iter().flatten() {
+        let names: Vec<Option<&str>> = match components.is_empty() {
+            true => vec![None],
+            false => components.iter().map(|component| Some(component.as_str())).collect(),
+        };
+        for component in names.into_iter().filter(|component| each.iter().all(|list| holds(list, header, *component))) {
+            match (shared.iter_mut().find(|(held, _)| held == header), component) {
+                (Some((_, components)), Some(component)) => components.push(component.to_owned()),
+                (Some((_, components)), None) => components.clear(),
+                (None, _) => shared.push((header.clone(), component.map(str::to_owned).into_iter().collect())),
+            }
+        }
+    }
+    shared
+}
+
 /// Whether `installation` declares a public entrypoint `name` for a warm set.
 fn declares(installation: &Installation, name: &str) -> Result<bool, Refused> {
     let interface: Value = serde_json::from_slice(&installation.interface)
@@ -743,7 +765,8 @@ impl Runs {
             ahead = plan.as_ref().map(|plan| {
                 let order = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
-                match fetch.ahead(&plan.upfront(), &plan.on_demand(), !pool.loaded(plan), &self.service.engine) {
+                let room = |missing| self.service.room_for(id, missing);
+                match fetch.ahead(&plan.upfront(), &plan.on_demand(), !pool.loaded(plan), &self.service.engine, &room) {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
                     Err(error) => tracing::warn!("run {id}: its weights' early fetch: {error}"),
                 }
@@ -818,13 +841,44 @@ impl Runs {
                 true => self.warm_models(actor, id, &spec, &*observe, stoppable)?,
                 false => vec![],
             };
+            // A function that loads no model itself runs on what it calls, and which of its package's internal functions
+            // that is, only it knows: H3's shot takes one transformer with references and another without. So what they all
+            // load, and that only.
+            let plans: Vec<_> = match plan {
+                None if !install_only => {
+                    let mut plans = vec![];
+                    for callee in internal_models(&installation)? {
+                        let own: Vec<_> = spec.models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
+                        let report = observe.clone();
+                        let resolved = self.resolve(actor, id, Some(installation.clone()), None, hub.clone(), &spec, &callee, &own, None, &spec.lane,
+                            Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))), Some(&stoppable.stop));
+                        match resolved {
+                            Ok((_, plan, ..)) => plans.extend(plan),
+                            Err(error) if plans.is_empty() => tracing::warn!("run {id}: {callee}'s weights aren't fetched ahead: {}", error.message),
+                            Err(_) => {}
+                        }
+                    }
+                    plans
+                }
+                plan => plan.into_iter().collect(),
+            };
             // A function's warm run ends holding what its constructions read (`downloaded`), its
-            // on-demand models' too.
+            // on-demand models' too: only if that fits. It is a guess, so it never makes room.
             let mut moved = tensorfs::fetch::Landed::default();
-            if let Some(plan) = &plan {
+            if !plans.is_empty() {
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
+                let each: Vec<_> = plans.iter().map(|plan| [plan.upfront(), plan.on_demand()].concat()).collect();
+                // Only what they all share: that's sure to be read. The rest comes when its run begins, which on a slow link costs no
+                // more time than fetching it now, as fetching ahead is canceled then, and on a fast one costs seconds, while bytes for a
+                // function that isn't called are paid for wherever downloads are billed.
+                let selected = shared_of(&each);
+                let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
+                let absent = fetch.absent(&selected)?;
+                if absent > free {
+                    return Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free")));
+                }
                 let report = |done, total| observe("downloading its weights", done, total);
-                moved = fetch.download(&[plan.upfront(), plan.on_demand()].concat(), &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
+                moved = fetch.download(&selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
                     true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
                     false => {
                         let text = e.to_string();

@@ -10,7 +10,7 @@
 //! keeps them and `snapshots/<name>/` for [`TTL`]; a use a live hold names is in use now. On a low
 //! disk the least recently used go first. Nothing is pinned, by hand or forever.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use super::gc::Collected;
 use super::{fail, invalid, is_digest, platform, Result, Store};
 use crate::format::{Header, ObjectRef, Repo};
 
@@ -189,11 +190,22 @@ impl Store {
 
     /// What the roots keep, each digest once; reaps dead holds and files that let go.
     pub(super) fn roots(&self) -> Result<BTreeSet<String>> {
-        let mut roots = BTreeSet::new();
+        Ok(self.holders()?.into_keys().collect())
+    }
+
+    /// What the roots keep, with the processes whose live holds keep each: 0 for a header file
+    /// or a `local/` ref, which no process ending lets go. Reaps dead holds and files that let go.
+    pub(super) fn holders(&self) -> Result<HashMap<String, BTreeSet<u32>>> {
+        let mut roots: HashMap<String, BTreeSet<u32>> = HashMap::new();
+        let mut root = |digest: String, pid: u32| {
+            roots.entry(digest).or_default().insert(pid);
+        };
         for path in list(&self.root.join("holds"))? {
-            if path.file_name().is_some_and(|n| n == "gc.lock") {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).filter(|n| *n != "gc.lock") else {
                 continue;
-            }
+            };
+            // `<pid>-<n>` (`Hold::new`).
+            let pid = name.split('-').next().and_then(|p| p.parse().ok()).unwrap_or(0);
             let file = match File::open(&path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -201,20 +213,20 @@ impl Store {
             };
             match file.try_lock() {
                 Ok(()) => drop(fs::remove_file(&path)),
-                Err(TryLockError::WouldBlock) => roots.extend(lines(&path)?.unwrap_or_default()),
+                Err(TryLockError::WouldBlock) => lines(&path)?.unwrap_or_default().into_iter().for_each(|d| root(d, pid)),
                 Err(TryLockError::Error(e)) => return Err(fail("lock", &path)(e)),
             }
         }
         for record in list(&self.root.join("files"))? {
             let bytes = fs::read(&record).map_err(fail("read", &record))?;
-            let root: FileRoot = serde_json::from_slice(&bytes).map_err(|e| invalid(&record, e))?;
-            match file_header(&root) {
+            let file: FileRoot = serde_json::from_slice(&bytes).map_err(|e| invalid(&record, e))?;
+            match file_header(&file) {
                 Some(header) => {
-                    roots.extend(header.iter().flat_map(Header::objects).map(|o| o.sha256.clone()));
-                    roots.insert(root.header.sha256);
+                    header.iter().flat_map(Header::objects).for_each(|o| root(o.sha256.clone(), 0));
+                    root(file.header.sha256.clone(), 0);
                     // A header file inside a snapshot keeps its folder.
-                    if let Ok(inside) = root.path.strip_prefix(self.root.join("snapshots")) {
-                        roots.extend(inside.iter().next().and_then(|n| n.to_str()).map(str::to_owned));
+                    if let Ok(inside) = file.path.strip_prefix(self.root.join("snapshots")) {
+                        inside.iter().next().and_then(|n| n.to_str()).into_iter().for_each(|n| root(n.to_owned(), 0));
                     }
                 }
                 None => drop(self.remove_record(&record)?),
@@ -222,7 +234,7 @@ impl Store {
         }
         for repo in self.refs()?.iter().filter(|r| local(r)) {
             for tree in repo.roots() {
-                roots.extend(self.closure(tree)?.into_iter().map(|o| o.sha256));
+                self.closure(tree)?.into_iter().for_each(|o| root(o.sha256, 0));
             }
         }
         Ok(roots)
@@ -284,6 +296,83 @@ impl Store {
         Ok(short()? == 0)
     }
 
+    /// Frees room for `incoming` bytes now, as an admit that finds the disk short would: what cut
+    /// fetches kept, then the least recently used lanes nothing holds, until it fits. What it
+    /// dropped, for people. Never from inside `on_short`'s reclaim, which a collection runs.
+    pub fn make_room(&self, incoming: u64) -> Result<Collected> {
+        if !self.cache {
+            return Ok(Collected::default());
+        }
+        let short = || shortfall(&self.root, incoming);
+        let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
+        // Waits out readers that are taking holds, so what they hold is judged.
+        let fence = fence_file(self)?;
+        fence.lock().map_err(fail("lock", &self.root))?;
+        let mut all = Collected::default();
+        if short()? > 0 {
+            self.drop_partials()?;
+        }
+        loop {
+            let need = short()?;
+            if need == 0 {
+                break;
+            }
+            let collected = self.collect_locked(need, Duration::ZERO)?;
+            let done = collected.uses.is_empty();
+            all.add(collected);
+            if done {
+                break;
+            }
+        }
+        *collections += 1;
+        Ok(all)
+    }
+
+    /// What the cache could give up now (`Room`): each lane, what it keeps and who holds it, and
+    /// what nothing keeps (unreferenced objects past the grace, cut fetches no fetch holds).
+    pub fn room(&self) -> Result<Room> {
+        let _fence = acquire(self)?;
+        let holders = self.holders()?;
+        let roots: BTreeSet<String> = holders.keys().cloned().collect();
+        let uses = self.uses(&roots)?;
+        let objects = self.objects()?;
+        let names = self.names();
+        let cutoff = SystemTime::now().checked_sub(self.grace).unwrap_or(SystemTime::UNIX_EPOCH);
+        let lanes = super::gc::lanes(&uses);
+        let count = super::gc::keepers(&lanes);
+        let kept: BTreeSet<&str> = count.keys().copied().collect();
+        let mut spare: u64 = objects.iter()
+            .filter(|(sha, (_, modified))| *modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha))
+            .map(|(_, (length, _))| length).sum();
+        for entry in list(&self.root.join("tmp"))? {
+            if entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partial-")) {
+                let unheld = File::open(&entry).is_ok_and(|f| f.try_lock().is_ok());
+                spare += unheld.then(|| fs::metadata(&entry).map(|m| platform::durable::allocated(&m)).unwrap_or(0)).unwrap_or(0);
+            }
+        }
+        let lanes = lanes.iter().map(|lane| RoomLane {
+            name: lane.uses.iter().find_map(|u| names.get(&u.name)).cloned()
+                .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12])),
+            used: lane.used,
+            holders: holders.iter().filter(|(digest, _)| lane.held_by(digest, &count)).flat_map(|(_, pids)| pids.iter().copied()).collect(),
+            digests: lane.digests.iter().map(|d| d.to_string()).collect(),
+        }).collect();
+        let lengths = objects.into_iter().map(|(sha, (length, _))| (sha, length)).collect();
+        Ok(Room { lanes, spare, lengths })
+    }
+
+    /// When a collection last removed an object (`stamp_eviction`), in any process: what was
+    /// known to be here may not be since.
+    pub fn evicted_at(&self) -> Option<SystemTime> {
+        fs::metadata(self.root.join("uses").join(".evicted")).and_then(|m| m.modified()).ok()
+    }
+
+    pub(super) fn stamp_eviction(&self) -> Result<()> {
+        let path = self.root.join("uses").join(".evicted");
+        let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(fail("create", &path))?;
+        file.set_modified(SystemTime::now()).map_err(fail("touch", &path))
+    }
+
     fn upkeep(&self, due: bool, stamp: &Path, short: &dyn Fn() -> Result<u64>) -> Result<()> {
         if due {
             let created = File::create(stamp).and_then(|f| f.set_modified(SystemTime::now()));
@@ -301,6 +390,34 @@ impl Store {
                 return Ok(());
             }
         }
+    }
+}
+
+/// What a store could give up for bytes coming in (`Store::room`).
+pub struct Room {
+    /// Each lane, least recently used first.
+    pub lanes: Vec<RoomLane>,
+    /// What nothing keeps, freed by any collection.
+    pub spare: u64,
+    lengths: HashMap<String, u64>,
+}
+
+/// One lane of a `Room`: its model as people name it, its last use, and the processes whose live
+/// holds keep it (0: a root no process ending lets go).
+pub struct RoomLane {
+    pub name: String,
+    pub used: SystemTime,
+    pub holders: BTreeSet<u32>,
+    digests: BTreeSet<String>,
+}
+
+impl Room {
+    /// The bytes dropping every lane `may` takes would free, with what nothing keeps: an object
+    /// goes only once no other lane keeps it.
+    pub fn freed(&self, may: impl Fn(&RoomLane) -> bool) -> u64 {
+        let kept: BTreeSet<&str> = self.lanes.iter().filter(|l| !may(l)).flat_map(|l| l.digests.iter().map(String::as_str)).collect();
+        let gone: BTreeSet<&str> = self.lanes.iter().filter(|l| may(l)).flat_map(|l| l.digests.iter().map(String::as_str)).filter(|d| !kept.contains(d)).collect();
+        self.spare + gone.iter().map(|d| self.lengths.get(*d).copied().unwrap_or(0)).sum::<u64>()
     }
 }
 

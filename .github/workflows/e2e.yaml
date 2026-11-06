@@ -176,13 +176,14 @@ jobs:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
+          DISPATCHED: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || '' }}
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
-          # A cut across repos lands as `rc/<x>` in each: a change on or into one runs against its siblings' `rc/<x>`
-          # where they have one, else master. A merge group's head names the PR, not the PR's branch.
+          # A cut across repos lands as `rc/<x>` in each: a change on or into one, or a dispatch from one, runs against its
+          # siblings' `rc/<x>` where they have one, else master. A merge group's head names the PR, not the PR's branch.
           rc=
-          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}"; do [[ $b == rc/* ]] && { rc=$b; break; }; done
+          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do [[ $b == rc/* ]] && { rc=$b; break; }; done
           if [ -z "$rc" ] && [[ ${HEAD_REF#refs/heads/} =~ ^gh-readonly-queue/.+/pr-([0-9]+)- ]]; then
             b=$(gh api "repos/cozy-creator/${REPO/#tensorhub/tensorhub-v2}/pulls/${BASH_REMATCH[1]}" -q .head.ref 2>/dev/null) || b=
             [[ $b != rc/* ]] || rc=$b
@@ -306,6 +307,16 @@ jobs:
           key: ${{ matrix.what }}
           # A merge group's cache is its own ref's, which nothing restores.
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The page cozy embeds; build.sh builds it. A ref from before web/app has none.
+      - if: matrix.what == 'cozy' && matrix.take == '' && steps.reuse.outputs.name == '' && hashFiles('.build/web/app/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: matrix.what == 'cozy' && matrix.take == '' && steps.reuse.outputs.name == '' && hashFiles('.build/web/app/package.json') != ''
+        uses: pnpm/setup@v1
+        with:
+          package-json-file: .build/web/app/package.json
+          install: false
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
@@ -327,7 +338,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [runs, executors, commands, follow]
+        shard: [runs, executors, commands, follow, web]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -355,7 +366,7 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands'
+      - if: matrix.shard == 'commands' || matrix.shard == 'web'
         uses: AnimMouse/setup-ffmpeg@v1
       - name: cli suite
         env:
@@ -363,9 +374,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MODEL: ${{ contains(fromJSON(needs.affected.outputs.selection).suites, 'model') && '--model' || '' }}
         # BiRefNet: a pin, the change's packages, or packages master (the set's own).
-        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac)
+        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.creator/e2e/publish
         with:
           name: e2e-cli-linux-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e
@@ -412,9 +423,9 @@ jobs:
         env:
           PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
-        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac)
+        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.creator/e2e/publish
         with:
           name: e2e-cli-${{ matrix.runner }}
           path: ${{ runner.temp }}/e2e
@@ -468,10 +479,10 @@ jobs:
         run: |
           [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY (release-gate/README.md)"; exit 1; }
           umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
-          code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" ${SKU:+--sku "$SKU"} ${QUOTE:+--quote} $CANDIDATES || code=$?
+          code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" ${SKU:+--sku "$SKU"} ${QUOTE:+--quote} $CANDIDATES 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
           rm -f "$RUNNER_TEMP/key.json"; exit $code
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.creator/e2e/publish
         with:
           name: e2e-cli-release-${{ matrix.runner }}
           path: ${{ runner.temp }}/e2e
@@ -518,9 +529,9 @@ jobs:
           PINS: ${{ inputs.pins }}
           PUBLISHED: ${{ inputs.published && '1' || '' }}
         # The packages: the change's checkout, packages master, or (a release's dispatch) the published ones.
-        run: bash .creator/e2e/imports/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }}/${{ strategy.job-total }} $CANDIDATES ${PINS:+--pins "$PINS"} ${PUBLISHED:+--published} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac)
+        run: bash .creator/e2e/imports/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }}/${{ strategy.job-total }} $CANDIDATES ${PINS:+--pins "$PINS"} ${PUBLISHED:+--published} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.creator/e2e/publish
         with:
           name: e2e-imports-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e
@@ -559,7 +570,7 @@ jobs:
       - name: mps suite
         run: bash .creator/e2e/mps/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.creator/e2e/publish
         with:
           name: e2e-mps
           path: ${{ runner.temp }}/e2e

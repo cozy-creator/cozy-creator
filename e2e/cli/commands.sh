@@ -22,7 +22,7 @@ step hub
 # A run made at that other Hub (local code reads none), then the variable unset: Calcifer still lists and shows it.
 if [ -n "$LOCAL" ] && (cd "$here" && COZY_HUB_URL=http://127.0.0.1:9 cell other-hub ./weightless/reverse "text=hub$RANDOM"); then
   n=$(cat "$OUT/other-hub.number")
-  cozy --json run ls --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
+  cozy --json --full run ls --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
     || check "run ls: run $n, made at another Hub, is not listed"
   cozy --json run show "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run show $n: not its record at the other Hub"
 fi
@@ -375,12 +375,15 @@ command -v fish > /dev/null && shells+=(fish)
 command -v pwsh > /dev/null && shells+=(powershell)
 for sh in "${shells[@]}"; do cozy completion "$sh" > "$OUT/completion.$sh" && [ -s "$OUT/completion.$sh" ] || check "completion $sh: no script"; done
 [ ! -s "$OUT/completion.powershell" ] || cp "$OUT/completion.powershell" "$OUT/completion.ps1"  # pwsh dot-sources .ps1 only
+# As pwsh reads a path: $OUT is this shell's form, /d/a/… on Windows.
+ps1=$OUT/completion.ps1
+[ "$RUNNER_OS" != Windows ] || ps1=$(cygpath -m "$ps1")
 bash -c ". '$OUT/completion.bash'; complete -p cozy" > /dev/null || check "completion bash: does not complete cozy"
 [ ! -s "$OUT/completion.zsh" ] || zsh -c "autoload -U compinit; compinit -u; . '$OUT/completion.zsh'; (( \$+functions[_cozy] ))" \
   || check "completion zsh: no _cozy"
 [ ! -s "$OUT/completion.fish" ] || fish -c "source '$OUT/completion.fish'; complete -C 'cozy mach'" | grep -q machine \
   || check "completion fish: cozy mach does not complete to machine"
-[ ! -s "$OUT/completion.powershell" ] || PATH="$(dirname "$COZY"):$PATH" pwsh -NoProfile -c ". '$(cygpath -w "$OUT/completion.ps1" 2>/dev/null || echo "$OUT/completion.ps1")'; (TabExpansion2 'cozy mach' 9).CompletionMatches.CompletionText" | grep -q machine \
+[ ! -s "$OUT/completion.powershell" ] || PATH="$(dirname "$COZY"):$PATH" pwsh -NoProfile -c ". '$ps1'; (TabExpansion2 'cozy mach' 9).CompletionMatches.CompletionText" | grep -q machine \
   || check "completion powershell: cozy mach does not complete to machine"
 echo "completion: ${shells[*]}"
 }
