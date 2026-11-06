@@ -31,7 +31,7 @@ function cozy(...args) {
     throw error;
   }
 }
-const mine = () => JSON.parse(cozy('--json', 'machine', 'ls')).machines.filter((machine) => machine.kind === 'rental' && machine.recorded && machine.state !== 'ended');
+const mine = () => JSON.parse(cozy('--json', 'machine', 'ls')).machines.filter((machine) => machine.kind === 'rental' && machine.ordered && machine.state !== 'ended');
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 async function until(what, read, wanted, ms = STEP_MS) {
