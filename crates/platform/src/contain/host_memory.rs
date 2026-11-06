@@ -25,6 +25,10 @@ pub struct HostMemory {
     pub mem_available: i64,
     /// The limit `available` is measured against: the tightest cgroup's, else physical memory.
     pub bound: i64,
+    /// Clean active page cache charged where that limit is, left out of `available`: the kernel
+    /// takes it back under pressure once it has aged it. A cache holding the bytes that page cache
+    /// holds (TensorFS's host tier) counts it as room. 0 where `available` is the host's own.
+    pub active: i64,
 }
 
 /// Physical memory; -1 when unreadable.

@@ -34,10 +34,11 @@ pub(crate) fn number(path: &Path) -> Option<u64> {
     text.parse::<u64>().ok().filter(|&n| n > 0 && n < (1 << 60))
 }
 
-/// (reclaimable, `shmem`) from a cgroup's `memory.stat`: the page cache the kernel gives back
-/// before it OOM-kills is its inactive file pages less those still dirty or under writeback (active
-/// ones may not go in time, dirty ones wait on the disk); v1 states its subtree's under `total_`.
-fn stat(cgroup: &Path) -> Option<(u64, u64)> {
+/// (reclaimable, active, `shmem`) from a cgroup's `memory.stat`: the page cache the kernel gives
+/// back before it OOM-kills is its inactive file pages less those still dirty or under writeback
+/// (active ones may not go in time, dirty ones wait on the disk); active is the clean active file
+/// pages beside it; v1 states its subtree's under `total_`.
+fn stat(cgroup: &Path) -> Option<(u64, u64, u64)> {
     let text = fs::read_to_string(cgroup.join("memory.stat")).ok()?;
     let row = |names: &[&str]| -> u64 {
         let find = |key: &str| {
@@ -50,7 +51,9 @@ fn stat(cgroup: &Path) -> Option<(u64, u64)> {
         names.iter().find_map(|name| find(&format!("total_{name}")).or_else(|| find(name))).unwrap_or(0)
     };
     let unwritten = row(&["file_dirty", "dirty"]) + row(&["file_writeback", "writeback"]);
-    Some((row(&["inactive_file"]).saturating_sub(unwritten), row(&["shmem"])))
+    let inactive = row(&["inactive_file"]);
+    let active = row(&["active_file"]).saturating_sub(unwritten.saturating_sub(inactive));
+    Some((inactive.saturating_sub(unwritten), active, row(&["shmem"])))
 }
 
 /// A process's memory cgroup and every parent up to the controller root, innermost first, with
@@ -134,6 +137,7 @@ pub(super) fn read() -> HostMemory {
         shmem: meminfo("Shmem").max(0),
         mem_available,
         bound: total(),
+        active: 0,
     };
     let Some((path, limits, usage)) = cgroups() else {
         return best;
@@ -143,7 +147,7 @@ pub(super) fn read() -> HostMemory {
             continue;
         };
         let used = number(&cgroup.join(usage)).unwrap_or(0);
-        let (cache, shmem) = stat(&cgroup).unwrap_or((0, 0));
+        let (cache, active, shmem) = stat(&cgroup).unwrap_or((0, 0, 0));
         let room = bound.saturating_sub(used.saturating_sub(cache)) as i64;
         if best.available < 0 || room < best.available {
             best = HostMemory {
@@ -151,6 +155,7 @@ pub(super) fn read() -> HostMemory {
                 shmem: shmem as i64,
                 mem_available,
                 bound: bound as i64,
+                active: active as i64,
             };
         }
     }
