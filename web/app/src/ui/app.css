@@ -821,6 +821,20 @@ video.preview.on {
   color: var(--mute);
   font-size: 34px;
 }
+.here-side .take.add {
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1;
+}
+.take-new {
+  font-size: 12px;
+  font-family: var(--sans);
+  color: var(--mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 92%;
+}
 .here-side .take.add.on {
   border-color: var(--ember);
   color: var(--ember);

@@ -689,7 +689,7 @@ function linesOf(text, name) {
     check('a_default_isnt_written', !(linesOf(yaml(), 'asker') ?? '').includes('bright'), linesOf(yaml(), 'asker'));
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
-    // A box with takes opens on its take, only its description under it. Its + puts its words in the frame, and under it its tool, Render, a rule and its description.
+    // A box with takes opens on its take, only its description under it. Its + puts its words in the frame, and under it only its tool and Render.
     await open('Other');
     const otherDescribed = box('Other').locator('.desc-field');
     await otherDescribed.waitFor();
@@ -699,7 +699,7 @@ function linesOf(text, name) {
     await renderOf(page, 'Other');
     await box('Other').locator('.in-frame .mention-text[data-field=instructions]').waitFor();
     const order = await reads();
-    check('open_box_reads_tool_words_render_description', order.join() === 'tool,Render,rule,Description', order);
+    check('writing_reads_tool_and_render', order.join() === 'tool,Render', order);
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 

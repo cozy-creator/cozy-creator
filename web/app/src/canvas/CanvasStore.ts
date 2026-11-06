@@ -9,7 +9,7 @@ import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, paints, ratioOf, refusal, reshapes, sentShape, shownOf, valueIn, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, paints, ratioOf, refusal, reshapes, sentShape, shownOf, valueIn, watched, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -100,6 +100,8 @@ export interface ElementView {
   hot?: boolean
   /** What's dragged over it can't go in, and why. */
   refused?: string
+  /** Rendered from its words: the newest take asked after this run is the one looked at (`watched`). */
+  watchFrom?: number
   /** How many files dropped on it are on their way to being its versions. */
   joining?: number
   /** It just arrived, and lands. */
@@ -408,8 +410,8 @@ export class CanvasStore {
     return [...new Set(files)]
   }
 
-  /** Writing its next take in its frame. Words that hold nothing but a take of its own begin from the one looked at, as `<self.N>`; `lead`: whatever they
-   * hold, that take is the first they mention. */
+  /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. Words that hold nothing but a take of its
+   * own begin from the one looked at, as `<self.N>`; `lead`: whatever they hold, that take is the first they mention. */
   writeNext(name: string, lead = false) {
     const view = this.get(name)
     const asset = view?.asset
@@ -593,6 +595,9 @@ export class CanvasStore {
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
+          // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
+          const seen = watched({ ...view, asset })
+          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, viewed: seen.number === asset.version ? undefined : seen.number })
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
@@ -917,6 +922,11 @@ export class CanvasStore {
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset || view.conflict) return
+    // From an image tool's words, the box looks at the take being made, and its + goes back to them.
+    if (view.here && view.hereWords && paints(view, this.tools.get())) {
+      const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
+      this.patch(key, { hereWords: undefined, viewed: undefined, watchFrom: Math.max(0, ...runs) })
+    }
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
