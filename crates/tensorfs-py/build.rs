@@ -80,5 +80,7 @@ fn main() {
     }
     if os == "macos" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path/.native");
+        // The extension takes Python's symbols from the interpreter that loads it, also under plain cargo.
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-undefined,dynamic_lookup");
     }
 }

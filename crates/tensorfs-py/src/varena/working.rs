@@ -820,15 +820,18 @@ fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool
         .map_err(|e| super::raise(py, e))
 }
 
-unsafe extern "C" {
-    // Not in pyo3's limited API bindings; every CPython this wheel loads into exports it.
-    fn PyGILState_Check() -> std::ffi::c_int;
-}
+static GIL_CHECK: OnceLock<unsafe extern "C" fn() -> std::ffi::c_int> = OnceLock::new();
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Owner callbacks need the GIL, so an allocation holding it must not wait for them.
-    // SAFETY: callable from any thread; it only reads this thread's state.
-    varena::set_host_lock_probe(|| unsafe { PyGILState_Check() != 0 });
+    // PyGILState_Check is outside the limited API (Windows' python3.dll lacks it), so it is
+    // this interpreter's own, found through ctypes.
+    let ctypes = module.py().import("ctypes")?;
+    let check = ctypes.getattr("pythonapi")?.getattr("PyGILState_Check")?;
+    let address: usize = ctypes.call_method1("cast", (check, ctypes.getattr("c_void_p")?))?.getattr("value")?.extract()?;
+    // SAFETY: CPython's `int PyGILState_Check(void)`, callable from any thread; it only reads this thread's state.
+    let _ = GIL_CHECK.set(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn() -> std::ffi::c_int>(address) });
+    varena::set_host_lock_probe(|| GIL_CHECK.get().is_some_and(|check| unsafe { check() } != 0));
     module.add_function(wrap_pyfunction!(_varena_process_guard_status, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
