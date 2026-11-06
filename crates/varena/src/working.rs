@@ -1873,6 +1873,15 @@ pub(crate) fn release_completed(device: i32, want: usize, maximum: usize, keep: 
     result.map_err(|error| owner.fail(&mut state, error))
 }
 
+/// The pages of pools `release_idle_pools` could take now.
+pub(crate) fn idle_pool_bytes(device: i32) -> Result<usize> {
+    let Some(owner) = existing(device)? else { return Ok(0) };
+    let state = owner.lock()?;
+    Ok(state.pools.iter().filter(|(id, pool)| owner.pool_reclaimable(&state, **id, pool))
+        .map(|(id, _)| state.segments.values().filter(|segment| segment.pool == Some(*id)).map(|segment| segment.bytes).sum::<usize>())
+        .sum())
+}
+
 /// Idle pools' pages: nothing to read back and no wait, the cheapest memory after free pages.
 pub(crate) fn release_idle_pools(device: i32, want: usize, maximum: usize, keep: Option<PoolId>) -> Result<usize> {
     let Some(owner) = existing(device)? else {
@@ -2149,8 +2158,9 @@ pub fn phase_forget(device: i32, key: &str) -> Result<bool> {
 
 /// What the rest of this phase still needs of working memory, per its last pass, and the
 /// completed free pages already mapped for it. With no measure it says a quarter of the card, the
-/// same floor a split has, and whether it knew. None declines: capture, or pressure.
-pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, bool)>> {
+/// same floor a split has, and whether it knew; `idle`, between requests, nothing. None declines:
+/// capture, or pressure.
+pub(crate) fn prefetch_gap(device: i32, idle: bool) -> Result<Option<(usize, usize, bool)>> {
     let Some(owner) = existing(device)? else {
         return Ok(None);
     };
@@ -2161,7 +2171,7 @@ pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, bool)>> 
             return None;
         }
         let reusable = state.reusable_eager_pages();
-        let unknown = Some((owner.capacity() / 4, reusable, false));
+        let unknown = Some((if idle { 0 } else { owner.capacity() / 4 }, reusable, false));
         let Some(active) = state.phases.active.as_ref().filter(|active| active.invalid.is_none()) else {
             return unknown;
         };
