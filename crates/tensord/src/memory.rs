@@ -330,8 +330,8 @@ impl Host {
         let (looked, signal, notes) = (looks.clone(), short.clone(), log.clone());
         let watching = std::thread::Builder::new().name("host-pressure".into()).spawn(move || {
             let mut keep = Keep::default();
-            // The budget when short was last signalled: the next signal needs more than it.
-            let mut signalled: Option<u64> = None;
+            // The room when short was last signalled: the next signal needs more than it.
+            let mut signalled: Option<i64> = None;
             // The processes and peaks the last note named: a note when they change.
             let mut noted: Vec<(u32, Option<u64>)> = vec![];
             // The contained machine's limit the last note named.
@@ -340,7 +340,8 @@ impl Host {
                 looked.0.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
                 // A contained machine's limit follows the computer's other programs first: the
                 // budget read below is then the kernel's.
-                match platform::contain::follow(host_memory::reserve()) {
+                let reserve = host_memory::reserve();
+                match platform::contain::follow(reserve) {
                     Some(Ok(budget)) if limit != Some(budget.max) => {
                         notes.note(serde_json::json!({"event": "host_limit", "budget": budget}));
                         limit = Some(budget.max);
@@ -357,13 +358,20 @@ impl Host {
                     notes.note(serde_json::json!({"event": "host_calls", "calls": calls}));
                     noted = named;
                 }
-                let need = keep.look(calls);
-                let budget = u64::try_from(host_memory::read().available).unwrap_or(u64::MAX);
-                if budget >= need {
+                let need = i64::try_from(keep.look(calls)).unwrap_or(i64::MAX);
+                let available = host_memory::read().available;
+                let mut room = if available < 0 { i64::MAX } else { available.saturating_sub(need) };
+                // A person's computer keeps its reserve for its own programs with no call running
+                // too: an idle executor's pinned pages are what gives it back.
+                let outside = host_memory::available_outside();
+                if mode == HostMode::Shared && outside >= 0 {
+                    room = room.min(outside - i64::try_from(reserve).unwrap_or(i64::MAX));
+                }
+                if room >= 0 {
                     signalled = None;
-                } else if signalled.is_none_or(|was| budget > was) {
+                } else if signalled.is_none_or(|was| room > was) {
                     signal.set();
-                    signalled = Some(budget);
+                    signalled = Some(room);
                 }
                 looked.0.lock().unwrap_or_else(|e| e.into_inner()).1 += 1;
                 looked.1.notify_all();

@@ -11,7 +11,7 @@ use std::io;
 mod sys;
 
 #[cfg(target_os = "linux")]
-pub(crate) use sys::{available_outside, cgroups, events, number};
+pub(crate) use sys::{cgroups, events, number};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HostMemory {
@@ -43,6 +43,15 @@ pub fn computer() -> Option<u64> {
     return sys::computer();
     #[cfg(not(target_os = "linux"))]
     u64::try_from(total()).ok().filter(|&n| n > 0)
+}
+
+/// What the computer has available outside the machine's own cgroups: `MemAvailable`, or less
+/// where a limit above them has less room (Linux); elsewhere the live budget. -1 when unreadable.
+pub fn available_outside() -> i64 {
+    #[cfg(target_os = "linux")]
+    return sys::available_outside();
+    #[cfg(not(target_os = "linux"))]
+    read().available
 }
 
 /// What a person's computer keeps for its own programs beside a shared machine: a quarter of it
