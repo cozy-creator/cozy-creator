@@ -151,7 +151,7 @@ refused() {
   json "$label" "$@"
   { [ "$(cat "$C/$label.exit")" = "$exit" ] && J --arg c "$code" '.error.code == $c and (.error.next | length > 0)' "$C/$label.out"; } \
     || check "contract: cozy --json $*: exit $(cat "$C/$label.exit"), not $exit with $code and a next: $(head -c 300 "$C/$label.out")"
-  jq -r '.error.next[]?' "$C/$label.out" >> "$C/next.txt"
+  jq -r '.error.next[]?' "$C/$label.out" >> "$C/next.txt" 2> /dev/null || true
   said "$label-plain" "$@"
   { [ "$(cat "$C/$label-plain.exit")" = "$exit" ] && grep -q "($code)\$" "$C/$label-plain.out" && grep -q '^ *next: cozy' "$C/$label-plain.out"; } \
     || check "contract: cozy $*: exit $(cat "$C/$label-plain.exit"), not its refusal and next on stdout: $(head -c 300 "$C/$label-plain.out")"
@@ -191,9 +191,10 @@ verbs > "$C/verbs.txt"
 [ "$(wc -l < "$C/verbs.txt")" -gt 50 ] || check "contract: only $(wc -l < "$C/verbs.txt") verbs found"
 while read -r path; do
   read -ra words <<< "$path"
-  "$COZY" "${words[@]}" --help > "$C/verb.txt"
+  "$COZY" ${words[@]+"${words[@]}"} --help > "$C/verb.txt"
   grep -q '^Examples\?:' "$C/verb.txt" || check "contract: cozy $path --help has no example"
-  sed -n '/^Examples\?:/,/^$/p' "$C/verb.txt" | grep -oE '^ +cozy .*' | sed -E 's/^ +//; s/ {2,}.*//; s/ (>|&&).*//' | while IFS= read -r line; do
+  # An example that starts elsewhere (`cd x && cozy …`) is a person's to read.
+  sed -n '/^Examples\?:/,/^$/p' "$C/verb.txt" | { grep -oE '^ +cozy .*' || true; } | sed -E 's/^ +//; s/ {2,}.*//; s/ (>|&&).*//' | while IFS= read -r line; do
     parses "$line" || check "contract: cozy $path's example does not parse: $line"
   done
 done < "$C/verbs.txt"
