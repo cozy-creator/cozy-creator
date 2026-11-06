@@ -1,0 +1,1 @@
+A recorded program's pool takes the place of completed free working pages before it maps new ones, so a recording no longer adds its pool to the eager cache beside it (SDXL uncapped on an RTX 4090: 11.7 GiB peak against v1's 9.75; with the Runtime's 0.42.1 recording fixes, 9.6).
