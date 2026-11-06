@@ -411,6 +411,7 @@ pub fn request_boundary(device: i32, begin: bool) {
             device.held_peak.store(0, Ordering::Release);
             if device.requests.fetch_add(1, Ordering::AcqRel) == 0 && let Ok(mut state) = device.lock() {
                 state.phase_boundary = Some(device.clock.load(Ordering::Relaxed));
+                device.yielded.store(false, Ordering::Release);
             }
         }
     }
@@ -418,6 +419,13 @@ pub fn request_boundary(device: i32, begin: bool) {
     cooperative::request_boundary(device, begin);
     #[cfg(not(target_os = "linux"))]
     let _ = (device, begin);
+    if let Ok(gpu) = gpu(device) {
+        match begin {
+            true => gpu.yield_room(gpu.need.load(Ordering::Acquire)),
+            false if gpu.requests.load(Ordering::Acquire) == 0 => gpu.need.store(gpu.owned(), Ordering::Release),
+            false => {}
+        }
+    }
 }
 
 /// The active plan phase. One that ran through last time with no region coming back is a single
@@ -487,6 +495,10 @@ pub struct Device {
     held_peak: AtomicUsize,
     // Requests running here: the first to begin is a phase boundary.
     requests: AtomicUsize,
+    // What this process owned as its last request ended: the next one's learned need.
+    need: AtomicUsize,
+    // This request has asked idle peers for its room (`yield_room`).
+    yielded: AtomicBool,
     // Weight bytes held for use now: regions with a pin.
     held: AtomicUsize,
     // Moves when the room this process can have shrinks for a reason outside its program: a cap,
@@ -530,6 +542,8 @@ impl Device {
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
+            need: AtomicUsize::new(0),
+            yielded: AtomicBool::new(true),
             held: AtomicUsize::new(0),
             room: AtomicU64::new(0),
             room_outside: AtomicU64::new(0),
@@ -625,6 +639,21 @@ impl Device {
 
     fn headroom(&self) -> usize {
         self.capacity().saturating_sub(self.owned())
+    }
+
+    /// The request needs `need` bytes here, once a request: what it owns and the room left lack of
+    /// it, idle peers give back now (`cooperative::yield_for`).
+    fn yield_room(&self, need: usize) {
+        if need == 0 || self.yielded.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(driver) = self.driver.get() && let Ok(_context) = driver.enter() && self.sample().is_ok()
+            && let Ok((free, _)) = driver.memory_info()
+        {
+            let room = free.min(self.headroom());
+            cooperative::yield_for(self.ordinal, need.min(self.capacity()).saturating_sub(self.owned().saturating_add(room)));
+        }
     }
 
     /// Bytes `more` would put over the limit.

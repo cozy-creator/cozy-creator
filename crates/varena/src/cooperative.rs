@@ -14,6 +14,8 @@ use varena_ledger::{Donor, Recovery, Row, Table};
 const BRING_UP_BYTES: usize = 3 << 30;
 /// How long an ask waits on peers that have stopped answering.
 const PEER_WAIT: Duration = Duration::from_secs(2);
+/// Less is not worth every peer's round trip: demand asks for it.
+const SMALLEST_YIELD: u64 = 512 << 20;
 /// How long a donor waits on its own cache owners, which may need a GIL someone holds.
 const OWNER_WAIT: Duration = Duration::from_secs(1);
 /// A foreign process crossing this is a program starting: all idle memory goes back to it.
@@ -24,6 +26,9 @@ const PID_NS_INIT_INO: u64 = 0xefff_fffc;
 struct Service {
     table: Table,
     row: Row,
+    uuid: [u8; 16],
+    /// A second view of the ledger, for asks no allocator here waits on (`yield_for`).
+    asking: Mutex<Option<Table>>,
 }
 
 static SERVICES: Mutex<BTreeMap<i32, Arc<Service>>> = Mutex::new(BTreeMap::new());
@@ -43,7 +48,7 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
     }
     // The row comes first: coming up can itself be refused for memory, and then we ask.
     let uuid = cuda::device_uuid(device)?;
-    let service = match Table::open(&uuid).map(|table| table.claim().map(|row| Service { table, row })) {
+    let service = match Table::open(&uuid).map(|table| table.claim().map(|row| Service { table, row, uuid, asking: Mutex::new(None) })) {
         Ok(Some(service)) => Some(Arc::new(service)),
         Ok(None) => { eprintln!("varena: GPU {device}'s ledger is full; this process shares no memory"); None }
         Err(error) => { eprintln!("varena: GPU {device} has no ledger: {error}"); None }
@@ -97,6 +102,30 @@ pub(crate) fn peers_idle(device: i32) -> bool {
 
 pub(crate) fn ask_idle_peers(device: i32, bytes: usize) -> bool {
     service(device).is_some_and(|service| service.table.ask_idle_peers(service.row, bytes as u64, Instant::now() + PEER_WAIT))
+}
+
+/// A request begins needing `short` more than this process owns and the card has free: idle peers
+/// give it back now, on a thread of its own while the request prepares its inputs, not on its first
+/// refusal (an idle SDXL's 5.3 GiB cost Qwen at 6 GiB 1-1.7 s of step 1). Never more than idle peers
+/// hold, so this process's own idle bytes, its next call's weights, stay.
+pub(crate) fn yield_for(device: i32, short: usize) {
+    let Some(service) = service(device) else { return };
+    let bytes = (short as u64).min(service.table.idle_beside(service.row));
+    if bytes < SMALLEST_YIELD {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name(format!("varena-yield-{device}")).spawn(move || {
+        let mut asking = service.asking.lock().unwrap_or_else(|error| error.into_inner());
+        if asking.is_none() {
+            *asking = Table::open(&service.uuid).ok();
+        }
+        if let Some(table) = asking.as_ref() {
+            table.ask_idle(bytes, Instant::now() + PEER_WAIT);
+        }
+    });
+    if let Err(error) = spawned {
+        eprintln!("varena: GPU {device}'s peers give back on demand only: {error}");
+    }
 }
 
 pub(crate) fn request_boundary(device: i32, begin: bool) {

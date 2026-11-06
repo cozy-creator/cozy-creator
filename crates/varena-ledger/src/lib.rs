@@ -391,6 +391,35 @@ impl Table {
         }
     }
 
+    /// What the rows beside `row` that are in no request hold idle.
+    pub fn idle_beside(&self, row: Row) -> u64 {
+        self.page.rows.iter().enumerate()
+            .filter(|(index, words)| *index != row.0 && words.pid.load(Acquire) != 0 && words.running.load(Acquire) == 0)
+            .map(|(_, words)| words.idle.load(Acquire)).sum()
+    }
+
+    /// An ask from a row borrowed for it, which no allocator of this process waits on: every donor
+    /// gives back its share of `bytes`. Returns once each has answered or at `deadline`, with the
+    /// bytes given back; None with no free row. Needs a `Table` of its own: a claim takes the one
+    /// row a table's `reap` spares.
+    pub fn ask_idle(&self, bytes: u64, deadline: Instant) -> Option<u64> {
+        let row = self.claim()?;
+        let before = self.page.released.load(Acquire);
+        let generation = self.ask(row, bytes);
+        loop {
+            let seen = self.page.answers.load(Acquire);
+            self.reap();
+            self.page.rows[row.0].answered.store(self.page.generation.load(Acquire), Release);
+            let now = Instant::now();
+            let waiting = self.page.rows.iter().any(|words| words.pid.load(Acquire) != 0 && words.answered.load(Acquire) < generation);
+            if !waiting || now >= deadline { break; }
+            wait(&self.page.answers, seen, TICK.min(deadline - now));
+        }
+        let given = self.page.released.load(Acquire) - before;
+        self.leave(row);
+        Some(given)
+    }
+
     /// Another process holds idle memory and is in no request: nothing is about to use it.
     pub fn peers_idle(&self, row: Row) -> bool {
         self.page.rows.iter().enumerate().any(|(index, words)| index != row.0 && words.pid.load(Acquire) != 0
