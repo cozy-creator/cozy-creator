@@ -11,7 +11,7 @@ use std::io;
 mod sys;
 
 #[cfg(target_os = "linux")]
-pub(crate) use sys::{available_above, cgroups, events, meminfo, number};
+pub(crate) use sys::{available_outside, cgroups, events, number};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HostMemory {
@@ -36,13 +36,21 @@ pub fn total() -> i64 {
     sys::total()
 }
 
-/// What a person's computer keeps for its own programs beside a shared machine: a quarter of its
-/// memory, from 4 to 16 GiB, plus what its free swap is short of a quarter of its swap (a full swap
-/// takes nothing those programs push out). Live: swap moves.
+/// The computer the machine runs on: physical memory, or less where a limit above the machine's
+/// own cgroups is (a container's, a unit's `MemoryMax`); never the limit the machine sets itself.
+pub fn computer() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    return sys::computer();
+    #[cfg(not(target_os = "linux"))]
+    u64::try_from(total()).ok().filter(|&n| n > 0)
+}
+
+/// What a person's computer keeps for its own programs beside a shared machine: a quarter of it
+/// ([`computer`]), from 4 to 16 GiB, plus what its free swap is short of a quarter of its swap (a
+/// full swap takes nothing those programs push out). Live: swap moves.
 pub fn reserve() -> u64 {
-    let total = u64::try_from(total()).unwrap_or(0);
     let (swap, free) = sys::swap();
-    (total / 4).clamp(4 << 30, 16 << 30) + (swap / 4).saturating_sub(free)
+    (computer().unwrap_or(0) / 4).clamp(4 << 30, 16 << 30) + (swap / 4).saturating_sub(free)
 }
 
 /// The host stalling on memory now: PSI's `some avg10` above this (a tenth of the last 10 s with a

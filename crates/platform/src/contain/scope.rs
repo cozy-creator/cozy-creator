@@ -6,7 +6,7 @@
 //! A shared machine is also contained ([`contain`]): it and its executors in one cgroup with a
 //! memory limit the kernel enforces, so a run that outgrows the computer is killed inside it.
 use super::{Stuck, TOKEN_ENV};
-use super::host_memory::{available_above, events, meminfo, number};
+use super::host_memory::{available_outside, computer, events, number};
 use crate::process::{Birth, Exact, State, gone, in_kernel};
 use rustix::{
     event::{PollFd, PollFlags, Timespec},
@@ -179,18 +179,17 @@ pub fn contain(namespace: &str) -> std::result::Result<PathBuf, String> {
     Ok(root)
 }
 
-/// Follows a contained machine's budget: what it holds that the kernel cannot take back, plus the
-/// host's available memory outside it (a limit above it counted), less `reserve`. Never more than physical memory less `reserve`, and
-/// never less than the machine's own processes use plus [`MACHINE_ROOM`]: a call that outgrows
-/// the computer is killed, the machine stays. When the computer's other programs grow into the
+/// Follows a contained machine's budget: what it holds that the kernel cannot take back, plus what
+/// the computer has available outside it, less `reserve`. Never more than the computer less
+/// `reserve`, and never less than the machine's own processes use plus [`MACHINE_ROOM`]: a call
+/// that outgrows the computer is killed, the machine stays. When the computer's other programs grow into the
 /// reserve the budget falls below what the executors hold: the kernel takes their page cache back,
 /// then kills one. Written once it moved [`MOVED`]. None when not contained.
 pub fn follow(reserve: u64) -> Option<io::Result<Budget>> {
     let contained = CONTAINED.get()?;
     let read = || -> io::Result<Budget> {
         let root = &contained.root;
-        let (available, total) = (available_above(root), meminfo("MemTotal"));
-        let (Ok(available), Ok(total)) = (u64::try_from(available), u64::try_from(total)) else {
+        let (Ok(available), Some(total)) = (u64::try_from(available_outside()), computer()) else {
             return Err(io::Error::other("/proc/meminfo is unreadable"));
         };
         let used = number(&root.join("memory.current")).unwrap_or(0);

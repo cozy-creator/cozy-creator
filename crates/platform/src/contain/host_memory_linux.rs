@@ -198,14 +198,35 @@ pub(super) fn read() -> HostMemory {
     best
 }
 
-/// What the host has available outside `root`: `MemAvailable`, or less where a limited cgroup
-/// above `root` (a container, a unit's `MemoryMax`) has less room. -1 when unreadable.
-pub(crate) fn available_above(root: &Path) -> i64 {
+/// A cgroup of a machine's own containment (`cozy-<namespace>`, `cozy-executor-…`) or below one:
+/// its limits are the machine's, never the computer's.
+fn ours(cgroup: &Path) -> bool {
+    cgroup.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        name.starts_with("cozy-executor-")
+            || name.strip_prefix("cozy-").is_some_and(|ns| ns.len() == 16 && ns.bytes().all(|b| b.is_ascii_hexdigit()))
+    })
+}
+
+/// The computer this machine runs on: physical memory, or less where a limit above the machine's
+/// own cgroups is (a container, a unit's `MemoryMax`). None when unreadable.
+pub(crate) fn computer() -> Option<u64> {
+    let physical = u64::try_from(total()).ok().filter(|&n| n > 0);
+    let limits = cgroups().and_then(|(path, limits, _)| {
+        let theirs: Vec<PathBuf> = path.into_iter().filter(|cgroup| !ours(cgroup)).collect();
+        tightest(&theirs, limits)
+    });
+    physical.into_iter().chain(limits).min()
+}
+
+/// What the computer has available outside this machine's own cgroups: `MemAvailable`, or less
+/// where a limit above them has less room. -1 when unreadable.
+pub(crate) fn available_outside() -> i64 {
     let mut available = meminfo("MemAvailable");
     let Some((path, limits, usage)) = cgroups() else {
         return available;
     };
-    for cgroup in path.iter().filter(|cgroup| !cgroup.starts_with(root)) {
+    for cgroup in path.iter().filter(|cgroup| !ours(cgroup)) {
         let Some(bound) = tightest(std::slice::from_ref(cgroup), limits) else {
             continue;
         };
