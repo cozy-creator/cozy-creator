@@ -197,6 +197,8 @@ pub(crate) struct Order {
     later: BTreeMap<u64, (u64, u64)>,
     // Phase names, from the active one.
     names: Vec<String>,
+    // The phases this request still runs after the active one.
+    rest: u64,
 }
 
 impl Order {
@@ -213,6 +215,14 @@ impl Order {
     /// The phase `ahead` of the active one.
     pub(crate) fn name(&self, ahead: u64) -> Option<&str> {
         self.names.get(ahead as usize).map(String::as_str)
+    }
+    /// A region this request will not use again before its active phase ends: a done phase's, one no
+    /// phase names, or the active phase's own only in a later request.
+    pub(crate) fn spent(&self, id: u64) -> bool {
+        self.next_use(id).is_none_or(|(ahead, _)| ahead > self.rest)
+    }
+    pub(crate) fn rest(&self) -> u64 {
+        self.rest
     }
 }
 
@@ -232,6 +242,7 @@ pub(crate) fn order(ordinal: i32) -> Result<Order> {
     let lease = Lease::acquire(ordinal)?;
     let mut order = Order::default();
     if let Some((plan, active)) = &lease.active {
+        order.rest = (plan.phases.len() - 1 - active) as u64;
         for ahead in 0..plan.phases.len() {
             let phase = &plan.phases[(active + ahead) % plan.phases.len()];
             order.names.push(phase.name.clone());

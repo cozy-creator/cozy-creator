@@ -50,6 +50,9 @@ pub(crate) struct Protect<'a> {
     pub(crate) keep_phase: bool,
     /// A guess must not take another guess.
     pub(crate) speculative: bool,
+    /// A guess with its phase's working need unmeasured takes only what this request will not use
+    /// again before its phase ends (`spent`).
+    pub(crate) spent_only: bool,
     /// The caller's retry takes free working pages in place: what a wait completes is tried
     /// once before any working page goes.
     pub(crate) reuse_working: bool,
@@ -263,7 +266,7 @@ impl<'a> Sequence<'a> {
         let mut candidates: Vec<_> = state.entries.iter()
             .filter(|(id, entry)| entry.idle() && !self.protect.regions.is_some_and(|ids| ids.contains(id)))
             .map(|(id, entry)| (state.rank(*id, entry, &order), *id, entry.bytes))
-            .filter(|(rank, ..)| classes.contains(&rank.0))
+            .filter(|(rank, id, _)| classes.contains(&rank.0) && (!self.protect.spent_only || spent(rank.0, &order, *id)))
             .collect();
         candidates.sort_unstable();
         let start = self.released;
@@ -301,6 +304,12 @@ impl<'a> Sequence<'a> {
         }
         Ok(pass)
     }
+}
+
+/// A region whose next use, if any, comes after its request's active phase ends: unplanned, or a
+/// done phase's. Never one a phase this request still runs will read again.
+fn spent(class: u8, order: &plan::Order, id: u64) -> bool {
+    class == UNPLANNED || (class == LATER_PHASE && order.spent(id))
 }
 
 fn idle_peers_gave(device: i32, bytes: usize) -> bool {
@@ -406,8 +415,8 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
     let needed = bytes + gap.saturating_sub(reusable);
     let gpu = crate::gpu(device)?;
     let into = group.first().copied();
-    let protect = Protect { regions: Some(group), speculative: true, keep_working: true, into, ..Default::default() };
-    let (room, idle) = {
+    let protect = Protect { regions: Some(group), speculative: true, spent_only: !known, keep_working: true, into, ..Default::default() };
+    let (room, idle, spent_idle) = {
         let order = plan::order(device)?;
         let gate = crate::gate(device)?;
         if gate.not_capturing().is_err() {
@@ -416,21 +425,26 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
         let _context = gpu.driver().enter()?;
         let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
         let state = gpu.lock()?;
-        let idle = state.entries.iter()
-            .filter(|(id, entry)| {
-                let class = state.rank(**id, entry, &order).0;
-                entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
-                    && gpu.completion(&state, **id) == Completion::Done
-            })
-            .map(|(_, entry)| entry.bytes)
-            .sum::<usize>();
-        (room, idle)
+        let (mut idle, mut spent_idle) = (0, 0);
+        for (id, entry) in &state.entries {
+            let class = state.rank(*id, entry, &order).0;
+            if entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
+                && gpu.completion(&state, *id) == Completion::Done
+            {
+                idle += entry.bytes;
+                spent_idle += if spent(class, &order, *id) { entry.bytes } else { 0 };
+            }
+        }
+        (room, idle, spent_idle)
     };
     if needed <= room {
         return Ok(true);
     }
+    // Unmeasured, a first pass's guess keeps the quarter-card floor and takes only what this request
+    // is done with: under a cap the text encoder held the room, and Qwen 4 MP at 6 GiB read its whole
+    // first transformer pass on demand (33 fills, step 1 2.4 s against v1's 1.2).
     let short = needed - room;
-    if !known || free_only || short > idle + excess {
+    if free_only || short > if known { idle } else { spent_idle } + excess {
         return Ok(false);
     }
     let trimmed = working::release_beyond_phase(device, short.min(excess), usize::MAX, None)?;

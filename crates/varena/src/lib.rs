@@ -377,11 +377,13 @@ impl State {
         }
     }
 
-    /// Another phase's region, furthest first, and a loop's after every single pass's: a single pass
+    /// Another phase's region, furthest first: a done phase's before one this request still runs,
+    /// which would refill before it ends, and a loop's after every single pass's: a single pass
     /// reads what doesn't fit once a cycle whatever goes, while a loop that stays never reads again.
     fn later(&self, order: &plan::Order, (phases, position): (u64, u64)) -> (u8, u64) {
         let single = order.name(phases).is_some_and(|name| self.passes.get(name) == Some(&false));
-        (reclaim::LATER_PHASE, u64::from(!single) << 63 | ((u64::MAX >> 1) - (phases << 32 | position)))
+        let to_come = phases <= order.rest();
+        (reclaim::LATER_PHASE, u64::from(to_come) << 63 | u64::from(!single) << 62 | ((u64::MAX >> 2) - (phases << 32 | position)))
     }
 }
 
