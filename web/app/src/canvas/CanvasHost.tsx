@@ -36,6 +36,7 @@ import { madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
+import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
 
 const nodeTypes = { element: Card, entity: EntityCard }
 /** The room left on the canvas by what floats over it. */
@@ -46,6 +47,7 @@ const fitOver = () => {
   return { maxZoom: 1, padding: { top: `${top}px`, right: `${right}px`, bottom: `${bottom}px`, left: `${left}px` } as const }
 }
 
+const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 /** How far a box being worked on is drawn in, past which its words stop shrinking to match (`textScale`). */
 const MOST_HERE = 2.5
 /** Of the height there is, what a box keeps however much is under it, which then scrolls. */
@@ -231,6 +233,12 @@ function Addressed({ name, enter, leave }: { name: string; enter: (name: string)
   return null
 }
 
+/** The zoom control, drawn again only as the zoom changes: a pan changes nothing here. */
+function Zoom({ zoomBy, items }: { zoomBy: (by: 1 | -1) => void; items: () => ZoomItem[] }) {
+  const zoom = useStore((state) => state.transform[2])
+  return <ZoomControl zoom={zoom} zoomIn={() => zoomBy(1)} zoomOut={() => zoomBy(-1)} items={items} />
+}
+
 /** One line, and it does what it says when clicked too. */
 function Empty({ choose }: { choose: () => void }) {
   const empty = useStore((state) => state.nodes.length === 0)
@@ -386,7 +394,55 @@ function Canvas({
     return () => store.detach()
   }, [store, flow, saved, scope, openedOn, bridge, navigate])
 
-  const fit = useCallback(() => void flow.fitView({ ...fitOver(), duration: 150 }), [flow])
+  /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
+  const aim = useRef<{ view: Viewport; until: number } | null>(null)
+  const aimed = useCallback(() => (aim.current && performance.now() < aim.current.until ? aim.current.view : flow.getViewport()), [flow])
+  /** Zoom to `zoom` about the middle of what's visible, as a fit moves. Worked on where it stands, a box then stays where this puts it. */
+  const zoomTo = useCallback(
+    (zoom: number) => {
+      const pane = stage.current?.querySelector(".react-flow")?.getBoundingClientRect()
+      if (!pane) return
+      const from = aimed()
+      const to = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom))
+      const left = document.querySelector(".tools")?.getBoundingClientRect().right ?? pane.left
+      const right = document.querySelector(".drawer")?.getBoundingClientRect().left ?? pane.right
+      const [x, y] = [(left + right) / 2 - pane.left, pane.height / 2]
+      const view = { x: x - ((x - from.x) * to) / from.zoom, y: y - ((y - from.y) * to) / from.zoom, zoom: to }
+      aim.current = { view, until: performance.now() + HERE_MS }
+      if (store.inPlace) store.inPlace.moved = true
+      void flow.setViewport(view, { duration: HERE_MS })
+    },
+    [flow, store, aimed],
+  )
+  const zoomBy = useCallback((by: 1 | -1) => zoomTo(stepZoom(aimed().zoom, by)), [aimed, zoomTo])
+  /** Everything; a box worked on, it and what's under it as they were drawn in. */
+  const fit = useCallback(() => {
+    aim.current = null
+    if (!store.inPlace) return void flow.fitView({ ...fitOver(), duration: HERE_MS })
+    store.inPlace.moved = false
+    fitHere()
+  }, [flow, store, fitHere])
+  /** What's selected, else the box worked on. */
+  const fitSelected = useCallback(() => {
+    const nodes = flow.getNodes().filter((node) => node.selected)
+    if (!nodes.length) return fit()
+    aim.current = null
+    if (store.inPlace) store.inPlace.moved = true
+    void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
+  }, [flow, store, fit])
+  const zoomItems = useCallback(
+    (): ZoomItem[] => [
+      { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
+      { label: "Zoom out", keys: keys("Mod", "−"), run: () => zoomBy(-1) },
+      { label: "Zoom to fit", keys: keys("Shift", "1"), run: fit },
+      { label: "Zoom to selection", keys: keys("Shift", "2"), run: fitSelected, disabled: !store.inPlace && !flow.getNodes().some((node) => node.selected) },
+      "rule",
+      { label: "Zoom to 50%", run: () => zoomTo(0.5) },
+      { label: "Zoom to 100%", keys: keys("Shift", "0"), run: () => zoomTo(1) },
+      { label: "Zoom to 200%", run: () => zoomTo(2) },
+    ],
+    [flow, store, zoomBy, zoomTo, fit, fitSelected],
+  )
   const choose = useCallback(() => picker.current?.click(), [])
 
   // The middle of what's visible: the canvas between whatever floats over it.
@@ -563,22 +619,24 @@ function Canvas({
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
         flow.setNodes((nodes) => nodes.map((node) => ({ ...node, selected: true })))
-      } else if (command && event.key === "0") {
+      } else if ((command && event.key === "0") || (!command && event.shiftKey && event.code === "Digit0")) {
         event.preventDefault()
-        void flow.zoomTo(1, { duration: 150 })
-      } else if (command && (event.key === "=" || event.key === "+")) {
+        zoomTo(1)
+      } else if (event.key === "=" || event.key === "+") {
         event.preventDefault()
-        void flow.zoomIn({ duration: 150 })
-      } else if (command && event.key === "-") {
+        zoomBy(1)
+      } else if (event.key === "-" || event.key === "_") {
         event.preventDefault()
-        void flow.zoomOut({ duration: 150 })
-      } else if (!command && (event.key === "f" || event.key === "!")) {
+        zoomBy(-1)
+      } else if (!command && (event.key === "f" || (event.shiftKey && event.code === "Digit1"))) {
         fit()
+      } else if (!command && event.shiftKey && event.code === "Digit2") {
+        fitSelected()
       }
     }
     window.addEventListener("keydown", key)
     return () => window.removeEventListener("keydown", key)
-  }, [flow, store, fit, leaveHere, stepTakes])
+  }, [flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
 
   // A text copies and pastes its own, and so does any selection of words on the page.
   useEffect(() => {
@@ -743,15 +801,15 @@ function Canvas({
           selectionMode={SelectionMode.Partial}
           selectNodesOnDrag={false}
           zoomOnDoubleClick={false}
-          minZoom={0.05}
-          maxZoom={4}
+          minZoom={MIN_ZOOM}
+          maxZoom={MAX_ZOOM}
           multiSelectionKeyCode={MULTI}
           deleteKeyCode={null}
           disableKeyboardA11y
           nodesConnectable={false}
           onlyRenderVisibleElements
           colorMode="dark"
-          attributionPosition="bottom-right"
+          attributionPosition="bottom-left"
           onMoveStart={moveStarted}
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
@@ -768,6 +826,7 @@ function Canvas({
           <Dots />
           {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
         </ReactFlow>
+        <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}
       </div>
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}

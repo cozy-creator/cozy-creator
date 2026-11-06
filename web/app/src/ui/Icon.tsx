@@ -3,6 +3,7 @@ const STROKES = {
   menu: "M3 6h14M3 10h14M3 14h14",
   close: "M5.5 5.5l9 9M14.5 5.5l-9 9",
   plus: "M10 4.5v11M4.5 10h11",
+  minus: "M4.5 10h11",
   back: "M12 4.5L6.5 10l5.5 5.5",
   forward: "M8 4.5l5.5 5.5L8 15.5",
   edit: "M12.8 4.2l3 3L7.2 15.8l-3.7.7.7-3.7z",

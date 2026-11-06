@@ -10,6 +10,7 @@
   .ptabs,
   .tools,
   .main-menu nav,
+  .zoom-menu,
   .asset-menu {
     background: none;
     border-color: transparent;
@@ -23,6 +24,7 @@
   }
   .tb,
   .mtabs,
+  .zoom,
   .render-all label {
     background: none;
     border-color: transparent;
