@@ -58,7 +58,7 @@ web_proof instant "$chrome" "$pw" "$restart"
 jq -c '{drop: .seen.drop, reads: .seen.reads_after_a_drop}' "$OUT/web-instant.json" 2> /dev/null || true
 if [ -n "$restart" ]; then
   step "web-offline: Calcifer stopped: Turbo, a prompt twice, approve, two moves, a rename, a delete and a drop, each shown at once and counted in the top bar; started again, all in project.yaml in its order"
-  STOP=$(web_stop "$lock") START=$(web_start "$lock") web_proof offline "$chrome" "$pw" "$restart"
+  STOP=$(web_halt "$lock") START=$(web_start) web_proof offline "$chrome" "$pw" "$restart"
   jq -c '{said: .seen.said_offline, after: .seen.after}' "$OUT/web-offline.json" 2> /dev/null || true
 fi
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
@@ -135,15 +135,24 @@ web_engines() {
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
 # reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer. It comes back on the Hub $2, else on this
 # suite's: config.toml's, since a service hears nothing of a caller's environment, and it starts before that verb asks.
-web_restart() { echo "$(web_stop "$1"); sleep 1; $(web_start "$1" "${2:-}")"; }
-# Its two halves: what's done between them is done with Calcifer away.
+# The Hub goes in config.toml before the kill: a service manager starts a Calcifer killed so at once, reading it then.
+web_restart() { echo "$(web_hub "${2:-}")$(web_stop "$1"); sleep 1; $(web_start "${2:-}")"; }
+# config.toml names the Hub $1, else this suite's, for the next Calcifer to start.
+web_hub() {
+  local config=$HOME/.cozy/config.toml hub=${1:-${COZY_HUB_URL:-}}
+  [ -z "$hub" ] || echo "{ grep -v '^hub_url' '$config'; echo 'hub_url = \"$hub\"'; } > '$config.next'; mv '$config.next' '$config'; "
+}
 web_stop() {
   if [ "${RUNNER_OS:-}" = Windows ]; then echo "taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"; else echo "kill -9 \$(jq -r .pid < '$1')"; fi
 }
+# Stopped until started again, as a service manager stops it: SIGTERM is a clean exit, which neither systemd's on-failure nor launchd's
+# KeepAlive restarts, where a kill -9 is back at once. Windows has no service manager to restart it.
+web_halt() {
+  if [ "${RUNNER_OS:-}" = Windows ]; then web_stop "$1"; else echo "kill -TERM \$(jq -r .pid < '$1')"; fi
+}
 web_start() {
-  local config=$HOME/.cozy/config.toml hub=${2:-${COZY_HUB_URL:-}} point=''
-  [ -z "$hub" ] || point="{ grep -v '^hub_url' '$config'; echo 'hub_url = \"$hub\"'; } > '$config.next'; mv '$config.next' '$config'; "
-  echo "$point${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
+  local hub=${1:-${COZY_HUB_URL:-}}
+  echo "${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
 }
 
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, signed in by its own
