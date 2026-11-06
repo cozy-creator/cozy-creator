@@ -49,7 +49,7 @@ class Start(_Wire):
     memo: MemoSettings | None
     gpu_memory_limit: int | None
     shared: bool
-    display_reserve: list[int]
+    display_limit: list[int]
 
 class Adapter(_Wire):
     model_id: str

@@ -769,10 +769,12 @@ fn parent_app(held: &HeldGeneration) -> App {
     (held.record.identity.clone(), held.record.application.clone())
 }
 
-/// What a GPU that drives a display keeps free at the driver beside a run: the outside-varena
-/// growth measured after a context's first sample (lazy kernel modules, library workspaces) and
-/// the display server's own growth. Its standing use is outside bytes varena samples already.
-pub const DISPLAY_RESERVE: u64 = 1 << 30;
+/// What a GPU that drives a display keeps free at the driver beside a run, past what varena
+/// samples (the display's standing use, the run's context): an executor's outside bytes grew
+/// about 50 MiB past a fresh process's 464 MiB on a 4090 (runs 40835-40850), and the display
+/// server may double its own (Xorg held 155 MiB on Paul's laptop) and add a triple-buffered 4K
+/// framebuffer (95 MiB). varena keeps its 128 MiB slack on top.
+pub const DISPLAY_RESERVE: u64 = 384 << 20;
 
 /// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
@@ -1355,19 +1357,20 @@ impl Pool {
             self.end_idle_parents(|key| !members.contains(key));
         }
     }
-    /// [`DISPLAY_RESERVE`] for each GPU of `lane` that drives a display now, in its order; empty
-    /// when none does (a pod).
-    fn display_reserve(&self, lane: &str) -> Vec<u64> {
-        let reserve: Vec<u64> = lane.split(',').map(|entry| {
-            let display = memory::row(entry.trim(), &self.config.inventory)
-                .and_then(|gpu| platform::gpu::Device::open(&gpu.device_uuid).and_then(|device| device.display_active()).ok())
-                .unwrap_or(false);
-            if display {
-                tracing::info!("GPU {entry} drives a display: its runs keep {} MiB free at the driver for it", DISPLAY_RESERVE >> 20);
+    /// The limit of each GPU of `lane` that drives a display now, in its order: its total less
+    /// [`DISPLAY_RESERVE`]; empty when none does (a pod).
+    fn display_limit(&self, lane: &str) -> Vec<u64> {
+        let limits: Vec<u64> = lane.split(',').map(|entry| {
+            let Some(gpu) = memory::row(entry.trim(), &self.config.inventory) else { return 0 };
+            let display = platform::gpu::Device::open(&gpu.device_uuid).and_then(|device| device.display_active()).unwrap_or(false);
+            if !display {
+                return 0;
             }
-            if display { DISPLAY_RESERVE } else { 0 }
+            let limit = gpu.memory_bytes.saturating_sub(DISPLAY_RESERVE);
+            tracing::info!("GPU {entry} drives a display: its runs use at most {} of its {} MiB", limit >> 20, gpu.memory_bytes >> 20);
+            limit
         }).collect();
-        if reserve.iter().all(|&bytes| bytes == 0) { vec![] } else { reserve }
+        if limits.iter().all(|&bytes| bytes == 0) { vec![] } else { limits }
     }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
@@ -2923,7 +2926,7 @@ impl Pool {
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
                     shared: false,
-                    display_reserve: vec![],
+                    display_limit: vec![],
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3356,7 +3359,7 @@ impl Pool {
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
                     shared: self.config.host.mode == HostMode::Shared,
-                    display_reserve: self.display_reserve(&lane),
+                    display_limit: self.display_limit(&lane),
                 }),
                 &mut callbacks,
             )?)?;

@@ -174,7 +174,11 @@ pub fn contain(namespace: &str) -> std::result::Result<PathBuf, String> {
         }
     }
     write(&root.join("cgroup.subtree_control"), "+memory").map_err(|e| failed("enable memory under", &root, e))?;
-    write(&root.join("memory.swap.max"), "0").map_err(|e| failed("write memory.swap.max of", &root, e))?;
+    // No swap accounting (a kernel built or booted without it): nothing of its swaps to bound.
+    match write(&root.join("memory.swap.max"), "0") {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(failed("write memory.swap.max of", &root, error)),
+        _ => (),
+    }
     let _ = CONTAINED.set(Contained { root: root.clone(), written: Mutex::new(None) });
     Ok(root)
 }
@@ -207,7 +211,7 @@ pub fn follow(reserve: u64) -> Option<io::Result<Budget>> {
     Some(read().and_then(|budget| {
         let mut written = contained.written.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(was) = *written {
-            if was.max.abs_diff(budget.max) < MOVED && was.reserve == budget.reserve {
+            if was.max.abs_diff(budget.max) < MOVED {
                 return Ok(Budget { used: budget.used, ..was });
             }
         }
