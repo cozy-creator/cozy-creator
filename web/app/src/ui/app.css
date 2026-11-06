@@ -409,7 +409,7 @@ code {
 .media {
   position: relative;
   overflow: hidden;
-  border-radius: var(--round2);
+  border-radius: 0;
   background: var(--well);
   display: flex;
   align-items: center;
@@ -1022,7 +1022,7 @@ video.preview.on {
   width: 44px;
   height: 30px;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--well);
 }
 .mention-thumb img {
@@ -1181,8 +1181,10 @@ video.preview.on {
   height: 30px;
   overflow: hidden;
   border: 1px solid var(--line2);
-  border-radius: 5px;
-  background: #000c;
+  border-radius: 0;
+  background-color: var(--check);
+  background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
+  background-size: 8px 8px;
   color: var(--mute);
   font-size: 11px;
   display: flex;
@@ -1306,7 +1308,7 @@ video.preview.on {
   position: relative;
   height: 46px;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--well);
   color: var(--faint);
   font-size: 13px;
