@@ -1097,9 +1097,10 @@ pub fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>)
     Ok((said.trim_end().to_owned(), document))
 }
 
-/// What each local package last read as, by its path and the Runtime that read it, with the stats it read at. One read at a time of each: any other
-/// waits and takes it. Kept for as long as Calcifer runs: a file that changes is another stamp, and it's read again.
-type Described = Arc<tokio::sync::Mutex<Option<(String, (String, Value))>>>;
+/// What each local package last read as, by its path and the Runtime that read it, with the stats it read at, and whether it's its machine's own
+/// reading. One read at a time of each: any other waits and takes it. Kept for as long as Calcifer runs: a file that changes is another stamp,
+/// and it's read again; a static describer's reading stands only until the machine's own is kept.
+type Described = Arc<tokio::sync::Mutex<Option<(String, (String, Value), bool)>>>;
 static DESCRIBED: LazyLock<Mutex<HashMap<(PathBuf, Option<String>), Described>>> = LazyLock::new(Mutex::default);
 
 /// Each file a read of the local code at `path` depends on, by name, size and time: a stat each, so asking again reads no file's bytes.
@@ -1144,27 +1145,41 @@ pub async fn describe(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result
     let held = DESCRIBED.lock().expect("described lock").entry((path.to_owned(), runtime.clone())).or_default().clone();
     let mut held = held.lock().await;
     let stamp = stamp_of(path)?;
-    if let Some((_, known)) = held.as_ref().filter(|(read, _)| *read == stamp) {
-        return Ok(known.clone());
+    if let Some((_, known, own)) = held.as_ref().filter(|(read, ..)| *read == stamp) {
+        if *own {
+            return Ok(known.clone());
+        }
+        // Read by the static describer: the machine's own reading, once an install keeps one, takes its place.
+        let known = known.clone();
+        if let Some(found) = own_reading(api, path, on, hub, runtime.as_deref()).await {
+            *held = Some((stamp, found.clone(), true));
+            return Ok(found);
+        }
+        return Ok(known);
     }
-    let known = read_interface(api, path, on, hub, runtime).await?;
-    *held = Some((stamp, known.clone()));
+    if let Some(found) = own_reading(api, path, on, hub, runtime.as_deref()).await {
+        *held = Some((stamp, found.clone(), true));
+        return Ok(found);
+    }
+    let known = read_interface(api, path, on, runtime).await?;
+    *held = Some((stamp, known.clone(), false));
     Ok(known)
 }
 
-async fn read_interface(api: &Arc<Api>, path: &Path, on: &On, hub: &str, runtime: Option<String>) -> Result<(String, Value), Error> {
+/// What the machine's Runtime said installing this very source, if it's kept here.
+async fn own_reading(api: &Arc<Api>, path: &Path, on: &On, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
     let hubs = &api.machines.hubs;
     let home = hubs.home();
+    let origin = Origin::parse(hub).ok()?;
+    let reader = hubs.reader(origin.as_str()).ok()?;
+    let code = source(home, path, on, (&reader, &origin)).await.ok()?;
+    Some((code.package.clone(), kept(home, &code, runtime?)?))
+}
+
+/// Runtime's static describer's reading, on the Python and Runtime release its project names, or PyPI's newest.
+async fn read_interface(api: &Arc<Api>, path: &Path, on: &On, runtime: Option<String>) -> Result<(String, Value), Error> {
+    let home = api.machines.hubs.home();
     let project = Project::read(project(home, path)?)?;
-    let read = async {
-        let origin = Origin::parse(hub).ok()?;
-        let reader = hubs.reader(origin.as_str()).ok()?;
-        let code = source(home, path, on, (&reader, &origin)).await.ok()?;
-        Some((code.package.clone(), kept(home, &code, runtime.as_deref()?)?))
-    };
-    if let Some(known) = read.await {
-        return Ok(known);
-    }
     let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
     let python = python(&project, &uv)?;
     let locked = locked_runtime(&project.root);
