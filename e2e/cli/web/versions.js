@@ -214,7 +214,7 @@ async function died(why) {
   const coasted = await scrolled();
   const looks = await side.evaluate((el) => ({ bar: el.offsetWidth - el.clientWidth, mask: getComputedStyle(el).maskImage || getComputedStyle(el).webkitMaskImage, top: el.style.getPropertyValue('--fade-top'), bottom: el.style.getPropertyValue('--fade-bottom') }));
   check('the_column_drags_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { byMouse, coasted, looks });
-  // Under the take shown, how words name it: approved, the box's own name leads.
+  // Under the take shown, how words name it: its one name, approved or not.
   const namedFirst = await page.locator('.card.here[data-asset="many"] .take-name .chip').allInnerTexts();
   const pickedBefore = await side.locator('.take.on').getAttribute('data-take');
   const another = side.locator(`.take[data-take]:not([data-take="${pickedBefore}"])`).first();
@@ -224,7 +224,7 @@ async function died(why) {
   const takeName = page.locator('.card.here[data-asset="many"] .take-name .chip');
   const namedThen = await takeName.allInnerTexts();
   await takeName.last().click();
-  check('the_take_shown_is_named_to_mention', namedFirst.join() === `<Many>,<Many.${pickedBefore}>` && namedThen.join() === `<Many.${anotherNumber}>` && (await toast(`<many.${anotherNumber}>`)) === true, { namedFirst, namedThen });
+  check('the_take_shown_is_named_to_mention', namedFirst.join() === `<Many.${pickedBefore}>` && namedThen.join() === `<Many.${anotherNumber}>` && (await toast(`<many.${anotherNumber}>`)) === true, { namedFirst, namedThen });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
   const beforeFinger = await scrolled();

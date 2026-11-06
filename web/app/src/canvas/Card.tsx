@@ -128,29 +128,24 @@ function Pictures({ name }: { name: string }) {
   )
 }
 
-/** The take shown, as words mention it: `<Kyogre_3.2>`, led by `<Kyogre_3>` while that's what the name alone reads (approved, else its state).
- *  A click copies it; dragged onto a box or into a prompt it's a mention, as a box dragged is. */
+/** The take shown, as words mention it: `<Kyogre_3.2>`, its one name. A click copies it; dragged onto a box or into a prompt it's a mention,
+ *  as a box dragged is. */
 function TakeName({ view }: { view: ElementView }) {
-  const asset = view.asset
   const number = shownOf(view)?.number
-  if (!asset || number === undefined) return null
-  const plain = ((asset.pinned ? asset.approved : asset.version) ?? asset.prefixes?.at(-1)?.number) === number
-  const names = [...(plain ? [view.name] : []), `${view.name}.${number}`]
+  if (!view.asset || number === undefined) return null
+  const name = `${view.name}.${number}`
   return (
     <div className="take-name">
-      {names.map((one) => (
-        <button
-          key={one}
-          type="button"
-          className="chip nodrag"
-          title={`Copy <${one}>`}
-          draggable
-          onDragStart={(event) => event.dataTransfer.setData(DRAGGED_NAME, one)}
-          onClick={() => void navigator.clipboard?.writeText(`<${one}>`).then(() => say(`Copied <${one}>`), () => say(`<${one}>`))}
-        >
-          {chipWords(one)}
-        </button>
-      ))}
+      <button
+        type="button"
+        className="chip nodrag"
+        title={`Copy <${name}>`}
+        draggable
+        onDragStart={(event) => event.dataTransfer.setData(DRAGGED_NAME, name)}
+        onClick={() => void navigator.clipboard?.writeText(`<${name}>`).then(() => say(`Copied <${name}>`), () => say(`<${name}>`))}
+      >
+        {chipWords(name)}
+      </button>
     </div>
   )
 }
