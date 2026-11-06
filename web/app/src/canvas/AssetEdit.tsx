@@ -302,8 +302,8 @@ export function whyNotIn(store: CanvasStore, accept: Media | undefined, mention:
   return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "words" : (WANTED[kind as Media] ?? "a file")}`
 }
 
-/** A slot's file: its thumbnail, and on a video its in and out. */
-function Held({ name, mention, label, onRange, onOff }: { name: string; mention: string; label: string; onRange(next: string): void; onOff(): void }) {
+/** A slot's file: its thumbnail, and on a video its in and out. One of another kind, written by hand, is marked: a render ignores it (decision 8). */
+function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; mention: string; label: string; wrong: string | null; onRange(next: string): void; onOff(): void }) {
   const store = useCanvasStore()
   const said = store.mentionOf(mention, name)
   useElement(said?.name ?? "")
@@ -314,7 +314,7 @@ function Held({ name, mention, label, onRange, onOff }: { name: string; mention:
   const frames = framesIn(file?.duration_ms, fps)
   return (
     <div className={`slot-held ${missing ? "missing" : ""}`}>
-      <span className="chip" title={mention} data-mention={mention}>
+      <span className={`chip ${wrong && !missing ? "refused" : ""}`} title={wrong && !missing ? `${wrong}: a render leaves it out` : mention} data-mention={mention}>
         {baseOf(mention)}
         {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
         <button type="button" className="nodrag" aria-label={`Take ${baseOf(mention)} out of ${label}`} onClick={onOff}>
@@ -391,7 +391,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
       <span className="ctl-name">{field.label}</span>
       {why && <span className="refusal">{why}</span>}
       {held.map((one, i) => (
-        <Held key={`${i}:${baseOf(one)}`} name={name} mention={one} label={field.label} onOff={() => write(held.filter((other) => other !== one))} onRange={(next) => write(held.map((other) => (other === one ? next : other)))} />
+        <Held key={`${i}:${baseOf(one)}`} name={name} mention={one} label={field.label} wrong={refusal(one)} onOff={() => write(held.filter((other) => other !== one))} onRange={(next) => write(held.map((other) => (other === one ? next : other)))} />
       ))}
       {(!held.length || field.multiple) && (
         <input

@@ -233,6 +233,13 @@ function linesOf(text, name) {
   check('wrong_kind_said_as_carried', whileCarried.refuses && whileCarried.why.includes('takes a picture'), whileCarried);
   await noted('takes a picture').waitFor();
   check('wrong_kind_refused_at_the_drop', !('first_frame' in (await fieldsOf('shot'))), await fieldsOf('shot'));
+  // Written by hand, it's marked: a render warns and leaves it out (decision 8).
+  await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { first_frame: '<walk>' } }) });
+  const marked = await until('a wrong kind marked', () => shotBox.locator('.slot-control[data-field=first_frame] .chip.refused').getAttribute('title').catch(() => null), Boolean);
+  check('wrong_kind_by_hand_is_marked', marked.includes('leaves it out'), marked);
+  await shotBox.locator('[aria-label="Take walk out of First frame"]').click();
+  await until('first frame unset', () => fieldsOf('shot'), (fields) => !('first_frame' in fields));
+  await more('shot');
   await carry('coast', field('shot', 'first_frame'));
   await until('coast on first frame', () => fieldsOf('shot'), (fields) => fields.first_frame === '<coast>');
   check('a_filled_slot_is_on_the_face', (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame]').count()) === 1);
