@@ -48,6 +48,8 @@ export interface ElementView {
   linked?: Standing | "failed"
   /** The version being looked at, which changes only this page, until it's pinned. */
   viewed?: number
+  /** The take last picked while the box was open: leaving the box makes it the one kept (Paul, 11-06). */
+  chosen?: number
   /** Its turn hasn't come: nothing is making it yet. */
   queued?: boolean
   /** What reading the project said of it. */
@@ -802,8 +804,8 @@ export class CanvasStore {
     for (const [name, view] of this.views) if (view.waiting) this.run(name, view.waiting)
   }
 
-  /** Render all. What's approved stays, and with `outdated`, what's out of date when its turn comes goes too. */
-  runAll(outdated: boolean) {
+  /** Render all. What's approved stays. */
+  runAll() {
     const on = this.machines()
     const id = this.projectId
     if (!id) return
@@ -814,7 +816,7 @@ export class CanvasStore {
     const settle = (asked?: number) => going.forEach((box) => this.patchId(box, { asked }))
     const once = `all-${crypto.randomUUID()}`
     this.outbox.add({
-      send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, outdated ? { outdated } : {}, signal) : null),
+      send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, {}, signal) : null),
       done: (answer) => {
         settle(answer ? performance.now() : undefined)
         this.readAfter(going)
@@ -966,14 +968,14 @@ export class CanvasStore {
     this.retool(key, step, step.lost.length ? `${name} runs ${tool.label} now, which can't take ${step.lost.join(" or ")}` : undefined)
   }
 
-  /** Its tool's X: only that goes. A box of no pictures is its words, and a note offers Undo for a while. */
+  /** Its tool's X: the tool and its fields go. A box of no pictures is its words, and a note offers Undo for a while. */
   takeToolOff(name: string) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
     void this.save(key)
     const word = this.tools.get().get(view.asset.tool ?? "")?.label ?? "Its tool"
-    const words = holdsPictures(view.asset) ? `Its pictures and words stay.` : `It's a text box now.`
+    const words = holdsPictures(view.asset) ? `Its pictures stay.` : `It's a text box now.`
     this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
   }
 

@@ -73,7 +73,10 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
   const wide = room.width - left - right
   const tall = room.height - top - bottom
   const under = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-under`)
+  const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side`)
   const scale = (zoom: number) => textScale(zoom) * zoom * Number(getComputedStyle(stage).getPropertyValue("--here"))
+  /** The takes beside it, in the canvas's own units at `zoom`, with their gap. */
+  const beside = (zoom: number) => (side ? ((side.offsetWidth + 8) * scale(zoom)) / zoom : 0)
   const most = tall * (1 - LEAST_BOX) - UNDER_GAP
   const across = (zoom: number) => Math.min(wide, Math.max(w * zoom, LEAST_UNDER * scale(zoom)))
   /** What's under it as it would be at `zoom`: as tall as what it holds, up to what it may have. */
@@ -82,18 +85,18 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
     under.style.setProperty("--here-width", `${across(zoom) / scale(zoom)}px`)
     return Math.min(most, ((under.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0) * scale(zoom))
   }
-  const zoomFor = (below: number) => Math.min(MOST_HERE, wide / w, (tall - below - (below && UNDER_GAP)) / h)
+  const zoomFor = (below: number, across: number) => Math.min(MOST_HERE, wide / (w + across), (tall - below - (below && UNDER_GAP)) / h)
   // How tall it is depends on how wide, which goes with the zoom, which depends on how tall: twice round settles it.
-  let zoom = zoomFor(most / 2)
-  zoom = zoomFor(height(zoom))
-  zoom = zoomFor(height(zoom))
+  let zoom = zoomFor(most / 2, 0)
+  zoom = zoomFor(height(zoom), beside(zoom))
+  zoom = zoomFor(height(zoom), beside(zoom))
   const below = height(zoom)
   under?.style.setProperty("--here-room", `${most / scale(zoom)}px`)
   const high = h * zoom + (below && below + UNDER_GAP)
   return {
     below,
     view: {
-      x: left + wide / 2 - (node.position.x + w / 2) * zoom,
+      x: left + wide / 2 - (node.position.x + (w + beside(zoom)) / 2) * zoom,
       y: top + Math.max(0, tall - high) / 2 - node.position.y * zoom,
       zoom,
     },
@@ -187,28 +190,18 @@ function useMachines(store: CanvasStore): string[] | null {
   return isPending ? null : names
 }
 
-/** Render all, and how many that is. Approved assets stay unless it's said. */
+/** Render all, and how many that is. Approved assets stay. */
 function RenderAll({ id }: { id: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { data } = useQuery(projectQuery(client, id))
-  const [outdated, setOutdated] = useState(false)
-  const assets = data?.assets ?? []
-  const fresh = assets.filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
-  const late = assets.filter((asset) => asset.pinned && asset.tool && asset.standing === "out_of_date").length
-  const also = outdated && late > 0
-  if (!fresh && !late) return null
+  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
+  if (!fresh) return null
   return (
     <span className="render-all">
-      <button type="button" className="tb primary" onClick={() => store.runAll(also)}>
-        Render all {fresh + (also ? late : 0)}
+      <button type="button" className="tb primary" onClick={() => store.runAll()}>
+        Render all {fresh}
       </button>
-      {late > 0 && (
-        <label>
-          <input type="checkbox" checked={outdated} onChange={(event) => setOutdated(event.target.checked)} />
-          Also re-render {late} out of date
-        </label>
-      )}
     </span>
   )
 }
@@ -332,7 +325,11 @@ function Canvas({
     if (!held) return
     store.inPlace = null
     void store.save(held.name)
-    store.patch(held.name, { here: undefined, hereWords: undefined })
+    // The take left showing is the one kept: the last one picked, if any was.
+    const view = store.get(held.name)
+    const chosen = view?.chosen
+    if (chosen !== undefined && !(view?.asset?.pinned && view.asset.approved === chosen)) store.pin(held.name, chosen)
+    store.patch(held.name, { here: undefined, hereWords: undefined, chosen: undefined })
     store.view(held.name)
     returning.current = { view: held.back, until: performance.now() + HERE_MS }
     if (folded.current) {
@@ -529,12 +526,14 @@ function Canvas({
       if (at < 0) return false
       event.preventDefault()
       if (event.key === "Enter") {
-        store.pin(name, row[at].number)
+        store.patch(name, { chosen: row[at].number })
+        store.leaveHere?.()
         return true
       }
       const next = row[at + (event.key === "ArrowLeft" ? -1 : 1)]
       if (next) {
         store.view(name, next.number === asset.version ? undefined : next.number)
+        store.patch(name, { chosen: next.number })
         requestAnimationFrame(() => document.querySelector(".card.here .take.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }))
       }
       return true

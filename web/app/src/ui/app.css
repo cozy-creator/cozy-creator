@@ -710,6 +710,65 @@ code {
 .here-under > * {
   --text: 1;
 }
+/* A box worked on: its takes in a column beside the picture, the newest on top. */
+.here-side {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 8px * var(--text, 1));
+  width: var(--side-width, 132px);
+  height: calc(100% / (var(--text, 1) * var(--here)));
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  transform: scale(calc(var(--text, 1) * var(--here)));
+  transform-origin: top left;
+  z-index: 5;
+  animation: fade-in 120ms ease-out;
+}
+.here-side > * {
+  --text: 1;
+}
+.here-side .takes {
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px;
+  overflow: visible;
+}
+.here-side .take {
+  flex: none;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+}
+.here-side .take.on {
+  outline: 4px solid var(--ember);
+  outline-offset: 2px;
+}
+.here-side .take.making {
+  background: var(--card);
+  border: 1px solid var(--ember);
+  color: var(--ink);
+  font-size: 22px;
+}
+/* What a box is, in its own words: a field of its own, under its label. */
+.desc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.desc-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mute);
+}
+.desc-field .mention-text {
+  min-height: 4.5em;
+  padding: 8px 10px;
+  border: 1px solid var(--line2);
+  border-radius: var(--round);
+  background: var(--card);
+  font-size: 18px;
+  line-height: 1.4;
+}
 .here-all {
   display: flex;
   flex-direction: column;
@@ -803,7 +862,8 @@ code {
 .here-under .take.add.on {
   border-color: var(--ember);
 }
-.here-under .take-off {
+.here-under .take-off,
+.here-side .take-off {
   display: inline-flex;
   top: 3px;
   right: 3px;
@@ -811,7 +871,8 @@ code {
   height: 20px;
   color: #fff;
 }
-.here-under .take-off .icon {
+.here-under .take-off .icon,
+.here-side .take-off .icon {
   width: 12px;
   height: 12px;
 }
@@ -2135,13 +2196,6 @@ a.tab:hover {
 .more-toggle:hover {
   color: var(--ink);
 }
-.more-marks {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--mute);
-}
 .more-word {
   flex: none;
 }
@@ -2183,7 +2237,7 @@ a.tab:hover {
   border-radius: 4px;
   background: color-mix(in srgb, var(--ember) 13%, transparent);
   color: var(--ember2);
-  font: 1.08em var(--mono);
+  font: 600 1.08em var(--mono);
   white-space: nowrap;
 }
 .chip.missing {

@@ -69,13 +69,6 @@ export const startingFields = (tool: Tool) => Object.fromEntries(tool.controls.f
 
 const empty = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)
 
-/** How a control behind More says it holds other than its default, or null. A shape needs no words: it's the box's own. */
-export function markOf(control: Control, value: unknown): string | null {
-  if (control.type === "shape" || empty(value) || JSON.stringify(value) === JSON.stringify(control.default)) return null
-  if (control.type === "toggle") return `${control.label} ${value ? "on" : "off"}`
-  return control.type === "range" || control.type === "choice" ? `${control.label} ${String(value)}` : control.label
-}
-
 /** A field no control names, in words. */
 export const fieldWords = (field: string) => field[0].toUpperCase() + field.slice(1).replaceAll("_", " ")
 

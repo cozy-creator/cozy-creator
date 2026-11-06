@@ -14,7 +14,8 @@ function chip(name: string, missing: boolean): HTMLElement {
   el.className = missing ? "chip missing" : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
-  el.textContent = name
+  // Shown as it's written, in its brackets, first letter up: <Self.2>. The file keeps the name as typed (names ignore case).
+  el.textContent = `<${name.charAt(0).toUpperCase()}${name.slice(1)}>`
   el.title = !missing ? name : isSelf(name) ? NO_BARE_SELF : `${name} is no longer here`
   return el
 }

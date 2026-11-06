@@ -6,7 +6,7 @@ import { AddOnRows } from "./AddOns"
 import { addOnsOf } from "./checkpoints"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
+import { controlsOf, fieldWords, fullRows, heldBeyond, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
 import { MentionText } from "./MentionText"
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
@@ -401,7 +401,7 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 const set = (control: Control) => control.type === "toggle" || control.type === "range" || control.type === "choice"
 
 /** What a box asks and holds, under it. On its words: what a render can't go without and Render, each drawn from its tool's controls or by its package. On a take: what's done with that. Everything else is under More, if there's anything. */
-export function AssetEdit({ name, view, editing, actions, children }: { name: string; view: ElementView; editing: boolean; actions: ReactNode; children: ReactNode }) {
+export function AssetEdit({ name, view, editing, actions, children }: { name: string; view: ElementView; editing: boolean; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
@@ -413,12 +413,6 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
   const asked = editing ? shownControls(controls) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, controls)
   const folded = rest.filter((control) => !asked.includes(control))
-  const described = store.valueOf(name, "description")
-  const marksOf = (drawn: boolean) => [
-    ...(drawn ? folded.flatMap((control) => markOf(control, store.valueOf(name, control.field)) ?? []) : []),
-    ...beyond.map(([field]) => fieldWords(field)),
-    ...(typeof described === "string" && described ? ["Description"] : []),
-  ]
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
   // A caption is typed into its field, and shows until it's kept or dropped.
@@ -435,8 +429,6 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
         row={(control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={store.focusing === name && control === first} named={folded.includes(control)} />}
       >
         {(lines, more) => {
-          // A package's whole face holds what would be behind More, so nothing's hidden there.
-          const marks = marksOf(more !== null)
           const behind = (more !== null && folded.length > 0) || addOns || beyond.length > 0
           return (
             <>
@@ -445,8 +437,7 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
                 {actions}
                 {more !== null && shown.filter(set).map((control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={false} named={false} />)}
                 {behind && (
-                  <button type="button" className="more-toggle nodrag" aria-expanded={open} title={marks.join(", ") || undefined} onClick={() => store.setMore(name, !open)}>
-                    {!open && marks.length > 0 && <span className="more-marks">{marks.join(", ")}</span>}
+                  <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}>
                     <span className="more-word">{open ? "Less" : "More"}</span>
                   </button>
                 )}
