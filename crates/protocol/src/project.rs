@@ -206,6 +206,10 @@ pub struct Read {
     /// Where its text says so: `summary`, `beats.0.description`, `tracks.0.clips.1`, `style` for what defaults gave it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at: Vec<String>,
+    /// What it sends now, as twelve hex digits: its version's files and its box's description, or a text box's words. It moves as what's read
+    /// does, and only then. None while it has no state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// An asset project.lock keeps versions of that project.yaml no longer names: the bytes `reclaim`

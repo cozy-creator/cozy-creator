@@ -621,8 +621,8 @@ impl Doc {
         flat
     }
 
-    /// What asset `i` reads by a mention, each with the places its text says so.
-    pub fn reads_of(&self, i: usize) -> Vec<Read> {
+    /// What asset `i` reads by a mention, each with the places its text says so and what it sends now (`now`, as `stamped` read it).
+    pub fn reads_of(&self, i: usize, now: &[ReadNow]) -> Vec<Read> {
         let asset = &self.assets[i];
         let mut said = vec![];
         for (field, value) in asset.inputs.iter().chain(asset.written.iter().flatten()) {
@@ -631,11 +631,21 @@ impl Doc {
         said.sort();
         said.dedup();
         let at = |key: &str| said.iter().filter(|(mention, _)| name_key(mention) == key).map(|(_, place)| place.clone()).collect();
+        let tool = self.tool(i).is_some();
+        let sent = |read: &Reading| {
+            let held = now.iter().find(|held| held.asset == read.asset && held.number == read.number)?;
+            let files: Vec<_> = held.files.values().collect();
+            let sends = if tool || read.asset == i { json!({"files": files}) } else { json!({"description": self.assets[read.asset].description, "files": files}) };
+            Some(digest(&sends)[..READ_PART].to_owned())
+        };
         let read = |read: &Reading| {
             let key = name_key(if read.number.is_some() { &read.said } else { &self.assets[read.asset].name });
-            Read { name: self.assets[read.asset].name.clone(), version: read.number, at: at(&key) }
+            Read { name: self.assets[read.asset].name.clone(), version: read.number, at: at(&key), key: sent(read) }
         };
-        let words = asset.inlined.iter().map(|&j| Read { name: self.assets[j].name.clone(), version: None, at: at(&name_key(&self.assets[j].name)) });
+        let words = asset.inlined.iter().map(|&j| {
+            let key = Some(digest(&json!({"text": self.assets[j].text}))[..READ_PART].to_owned());
+            Read { name: self.assets[j].name.clone(), version: None, at: at(&name_key(&self.assets[j].name)), key }
+        });
         asset.reads.iter().map(read).chain(words).collect()
     }
 

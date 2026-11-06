@@ -132,11 +132,14 @@ async function died(why) {
   check('no_cycle_of_versions', !(await state()).warnings?.some((line) => /made from it/.test(line.message)), (await state()).warnings);
   check('bare_self_warns_with_the_fix', (await state()).warnings?.some((line) => line.name === 'bare' && line.message.includes('<self.1>')), (await state()).warnings);
   check('a_name_like_a_version_stays_a_name', (await asset('says')).fields.instructions.includes('<foo.2>') && !(await asset('says')).missing?.includes('foo.2'));
-  const was = (await asset('fixed')).inputs;
+  const was = await asset('fixed');
   await post(`${at}/approve`, { name: 'Abr', version: '3' });
-  const moved = await until('what reads it moves', () => asset('fixed'), (row) => row.inputs !== was);
-  const part = (key) => key.slice(8).match(/.{12}/g);
-  check('only_the_moving_read_moved', part(was).filter((held) => part(moved.inputs).includes(held)).length === 2, [was, moved.inputs]);
+  const moved = await until('what reads it moves', () => asset('fixed'), (row) => row.inputs !== was.inputs);
+  // Each read says what it sends: only `<Abr>`, which moves with what's approved, sends another.
+  const keyOf = (row, version) => row.reads.find((read) => read.name === 'Abr' && read.version === version)?.key;
+  const sentBefore = [undefined, 1, 2].map((version) => keyOf(was, version));
+  const sentAfter = [undefined, 1, 2].map((version) => keyOf(moved, version));
+  check('only_the_moving_read_moved', sentBefore.every(Boolean) && sentAfter.every(Boolean) && sentBefore[0] !== sentAfter[0] && sentBefore[1] === sentAfter[1] && sentBefore[2] === sentAfter[2], { sentBefore, sentAfter });
 
   // Names.
   for (const [to, code] of [['abr.3', 'project_name'], ['self', 'project_name']]) {

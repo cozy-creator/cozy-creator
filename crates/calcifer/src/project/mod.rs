@@ -1393,7 +1393,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         machine,
         made_by: made.map(|made| made.tool.clone().unwrap_or_else(|| doc.target(i))).filter(|made_by| !made_by.is_empty()),
         status,
-        reads: doc.reads_of(i),
+        reads: doc.reads_of(i, &standing.reads),
         fields: doc.flat_fields(i),
         etag: None,
         failure,
