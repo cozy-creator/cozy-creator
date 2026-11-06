@@ -14,7 +14,7 @@ import type { ProjectRow } from "../types"
 import { Icon } from "../ui/Icon"
 import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
-import { setTheme, theme } from "../ui/theme"
+import { landscape, setLandscape, setTheme, theme } from "../ui/theme"
 import { useConnection } from "./Connection"
 
 export function useProjectId(): string | null {
@@ -174,10 +174,18 @@ function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null
 
 function ThemeSwitch() {
   const now = useSignal(theme)
+  const shown = useSignal(landscape)
   return (
-    <button type="button" className="tb" onClick={() => setTheme(now === "dark" ? "paper" : "dark")}>
-      {now === "dark" ? "Paper" : "Dark"}
-    </button>
+    <>
+      <button type="button" className="tb" onClick={() => setTheme(now === "dark" ? "paper" : "dark")}>
+        {now === "dark" ? "Paper" : "Dark"}
+      </button>
+      {now === "paper" && (
+        <button type="button" className="tb" onClick={() => setLandscape(!shown)}>
+          {shown ? "Hide landscape" : "Show landscape"}
+        </button>
+      )}
+    </>
   )
 }
 
