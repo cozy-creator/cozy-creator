@@ -162,7 +162,7 @@ pub(super) fn read() -> HostMemory {
     best
 }
 
-/// `/proc/<pid>/status`: `RssAnon`, `RssFile`, `RssShmem` and `VmHWM`.
+/// `/proc/<pid>/status`'s `RssAnon`.
 pub(super) fn resident(pid: u32) -> io::Result<super::Resident> {
     let text = fs::read_to_string(format!("/proc/{pid}/status"))?;
     let field = |name: &str| {
@@ -171,13 +171,7 @@ pub(super) fn resident(pid: u32) -> io::Result<super::Resident> {
             .map(|kib| kib * 1024)
             .ok_or_else(|| io::Error::other(format!("no {name} in /proc/{pid}/status")))
     };
-    let (anon, file, shmem) = (field("RssAnon")?, field("RssFile")?, field("RssShmem")?);
-    Ok(super::Resident { anon, file, shmem, peak: field("VmHWM")?.max(anon + file + shmem) })
-}
-
-/// `clear_refs` 5: the resident high-water becomes the process's use now.
-pub(super) fn reset_peak(pid: u32) -> io::Result<()> {
-    fs::write(format!("/proc/{pid}/clear_refs"), b"5")
+    Ok(super::Resident { anon: field("RssAnon")? })
 }
 
 pub(super) fn process(pid: u32) -> io::Result<ProcessMemory> {

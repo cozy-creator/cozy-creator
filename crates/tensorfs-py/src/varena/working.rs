@@ -45,18 +45,6 @@ pub(super) fn installed() -> bool {
     OWNER.load(Ordering::Acquire) != 0
 }
 
-#[pyfunction]
-fn _varena_process_guard_status() -> String {
-    let status = varena::process_guard_status();
-    serde_json::json!({
-        "schema": "varena.process_guard/1", "contract": "one_process/1", "backend": status.backend,
-        "marker": status.marker, "thread_authenticated": status.thread_authenticated,
-        "page_bytes": status.page_bytes, "failure_stage": status.failure_stage,
-        "failure_errno": status.failure_errno,
-        "shared_vm_child_use": "unsupported; inherited calls are not guaranteed to reject",
-    }).to_string()
-}
-
 fn check() -> varena::Result<()> {
     if !installed() {
         return Err(varena::Error::Invalid(
@@ -354,13 +342,6 @@ fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool) {
 }
 
 #[pyfunction]
-fn _varena_working_check(py: Python<'_>) -> PyResult<()> {
-    varena::working::bind_process()
-        .and_then(|()| check())
-        .map_err(|e| super::raise(py, e))
-}
-
-#[pyfunction]
 fn _varena_working_stats(
     py: Python<'_>,
     device: i32,
@@ -569,18 +550,6 @@ fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -
     .map_err(|e| super::raise(py, e))
 }
 
-fn split_error(py: Python<'_>, error: varena::Error) -> PyErr {
-    let capacity = matches!(
-        error,
-        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. }
-    );
-    let result = super::raise(py, error);
-    if capacity {
-        let _ = result.value(py).setattr("varena_no_retry", true);
-    }
-    result
-}
-
 #[pyfunction]
 fn _varena_split_context<'py>(py: Python<'py>, device: i32) -> PyResult<Bound<'py, PyDict>> {
     let context = py
@@ -609,7 +578,7 @@ fn _varena_split_select<'py>(
             check()?;
             varena::working::split_select(device, key, choices, stream)
         })
-        .map_err(|error| split_error(py, error))?;
+        .map_err(|error| super::raise(py, error))?;
     selection(py, &selected)
 }
 
@@ -622,11 +591,6 @@ fn selection<'py>(
         "allocation_backing_bytes",
         selected.allocation_backing_bytes,
     )?;
-    row.set_item(
-        "measured_backing_peak_bytes",
-        selected.measured_backing_peak_bytes,
-    )?;
-    row.set_item("reused_capacity_bytes", selected.reused_capacity_bytes)?;
     row.set_item("choice_id", &selected.choice_id)?;
     row.set_item("eligible", &selected.eligible)?;
     row.set_item("required_bytes", selected.required_bytes)?;
@@ -656,7 +620,7 @@ fn _varena_split_begin(
         check()?;
         varena::working::split_begin(device, key, choice_id, completion_owner, stream, plan_generation)
     })
-    .map_err(|error| split_error(py, error))
+    .map_err(|error| super::raise(py, error))
 }
 
 #[pyfunction]
@@ -793,28 +757,6 @@ fn _varena_phase_invalidate(py: Python<'_>, device: i32, token: u64, reason: &st
 }
 
 #[pyfunction]
-fn _varena_phase_stats<'py>(
-    py: Python<'py>,
-    device: i32,
-    key: &str,
-) -> PyResult<Bound<'py, PyDict>> {
-    let sample = py
-        .detach(|| {
-            check()?;
-            varena::working::phase_stats(device, key)
-        })
-        .map_err(|e| super::raise(py, e))?;
-    let row = PyDict::new(py);
-    row.set_item("known", sample.known)?;
-    row.set_item("peak_bytes", sample.peak_bytes)?;
-    row.set_item("total_peak_bytes", sample.total_peak_bytes)?;
-    row.set_item("backing_peak_bytes", sample.backing_peak_bytes)?;
-    row.set_item("successful_passes", sample.successful_passes)?;
-    row.set_item("aborted_passes", sample.aborted_passes)?;
-    Ok(row)
-}
-
-#[pyfunction]
 fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool> {
     py.detach(|| varena::working::phase_forget(device, key))
         .map_err(|e| super::raise(py, e))
@@ -832,7 +774,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // SAFETY: CPython's `int PyGILState_Check(void)`, callable from any thread; it only reads this thread's state.
     let _ = GIL_CHECK.set(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn() -> std::ffi::c_int>(address) });
     varena::set_host_lock_probe(|| GIL_CHECK.get().is_some_and(|check| unsafe { check() } != 0));
-    module.add_function(wrap_pyfunction!(_varena_process_guard_status, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
@@ -841,7 +782,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_phase_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_fail_create_after, module)?)?;
@@ -862,7 +802,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_pool_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_reserve, module)?)?;

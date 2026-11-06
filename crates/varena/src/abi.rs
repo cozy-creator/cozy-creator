@@ -7,7 +7,7 @@ mod host_parts;
 mod sizing;
 mod tensor_export;
 #[doc(hidden)]
-pub use tensor_export::{TensorExport, export_use, gpu_event_counts};
+pub use tensor_export::{TensorExport, export_use};
 pub use source::{Job as SourceJob, Provider as SourceProvider};
 
 use crate::retirement;

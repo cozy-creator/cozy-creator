@@ -285,12 +285,6 @@ def phase_invalidate(device: DeviceLike, token: int, reason: str = "execution_re
     _ext._varena_phase_invalidate(_device(device), token, reason)
 
 
-def phase_stats(device: DeviceLike, key: str) -> dict[str, Any]:
-    """Owned block/backing peaks and total-process telemetry, with separate aborted counts."""
-    _installed()
-    return _ext._varena_phase_stats(_device(device), key)
-
-
 def phase_forget(device: DeviceLike, key: str) -> bool:
     """Retire a dead model/plan's measurement after its final execution owner releases it."""
     _installed()

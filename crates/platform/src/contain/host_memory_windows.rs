@@ -45,10 +45,6 @@ pub(super) fn resident(_: u32) -> io::Result<super::Resident> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
-pub(super) fn reset_peak(_: u32) -> io::Result<()> {
-    Err(io::ErrorKind::Unsupported.into())
-}
-
 pub(super) fn process(pid: u32) -> io::Result<ProcessMemory> {
     // SAFETY: a query-only handle, closed below.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };

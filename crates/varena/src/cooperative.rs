@@ -220,7 +220,7 @@ impl Donor for Native {
         let _ = crate::reclaim_completed(self.device, wanted);
         if released() - since < bytes && cache_owner::requestable(self.device).is_ok_and(|owners| owners != 0) {
             // Only its owners can shrink a cache. Their worker runs them, so a GIL never blocks this thread.
-            let key = cache_owner::next_generation().map(|generation| cache_owner::RequestKey { cause: cache_owner::Cause::Allocation, generation });
+            let key = cache_owner::next_generation().map(|generation| cache_owner::RequestKey { generation });
             if let Ok(Ok(Some(request))) = key.map(|key| cache_owner::request_shrink(self.device, key, wanted)) {
                 let _ = request.wait_release(since, Instant::now() + OWNER_WAIT);
             }

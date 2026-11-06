@@ -66,33 +66,12 @@ pub fn process(pid: u32) -> io::Result<ProcessMemory> {
     sys::process(pid)
 }
 
-/// One process's resident bytes now, anonymous, file and shmem (a sealed layout it maps), and
-/// its resident high-water since it started or [`reset_peak`]. Linux keeps no anonymous
-/// high-water; varena's request window bounds one from these. Linux only; elsewhere
-/// `Unsupported`.
+/// One process's resident anonymous bytes now. Linux only; elsewhere `Unsupported`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resident {
     pub anon: u64,
-    pub file: u64,
-    pub shmem: u64,
-    pub peak: u64,
 }
 
 pub fn resident(pid: u32) -> io::Result<Resident> {
     sys::resident(pid)
-}
-
-/// Starts `pid`'s high-water over from its use now.
-pub fn reset_peak(pid: u32) -> io::Result<()> {
-    sys::reset_peak(pid)
-}
-
-/// Private bytes (PSS less shared pages) of `pid` and every process descended from it: what a
-/// process tree holds that no one else counts.
-pub fn tree_private(pid: u32) -> u64 {
-    std::iter::once(pid)
-        .chain(crate::process::descendants(pid))
-        .filter_map(|pid| process(pid).ok())
-        .map(|m| m.pss.saturating_sub(m.pss_shmem))
-        .sum()
 }
