@@ -2,7 +2,7 @@
 // on the left, each dragged out to make a box. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; a fresh box as its prompt, or its prompt
 // and one beat, with all else behind More; controls from what it holds; reshaping; beats; conflicts; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
-// Undo brings it back. Takes side by side, one dragged out, a new take from here, Render all.
+// Undo brings it back. Takes side by side, one dragged out, Pick up from here, Render all.
 //   node nodes.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
@@ -324,20 +324,20 @@ function linesOf(text, name) {
   check('description_on_the_wire', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
-  // Controls from what it holds: its words and its beats shown, whatever the alphabet says of `style` and `summary`, and what else it holds behind More, saying so. Each writes one field and moves nothing else.
+  // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, its beats shown, and what else it holds behind More, saying so. Each writes one field and moves nothing else.
   replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    style: wash\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
   await box('knobs').waitFor();
   await open('knobs');
   const knobs = box('knobs');
   const field = async (re) => (linesOf(yaml(), 'knobs') ?? '').match(re)?.[1];
   check('summary_is_its_prompt', (await knobs.locator('.in-frame .mention-text').getAttribute('data-field')) === 'summary');
-  check('words_and_beats_shown', (await knobs.locator('.mention-text').count()) === 2 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=megapixels]').count()) === 0, await knobs.innerText());
+  check('words_and_beats_shown', (await knobs.locator('.mention-text').count()) === 2 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
   const marked = await knobs.locator('.more-marks').textContent();
-  check('what_it_holds_says_so', ['megapixels 1', 'turbo on', 'style'].every((word) => marked.includes(word)), marked);
+  check('what_it_holds_says_so', ['Megapixels 1', 'Turbo on', 'Style'].every((word) => marked.includes(word)), marked);
   await more('knobs');
   check('its_style_behind_more', (await knobs.locator('.mention-text[data-field=style]').textContent()).includes('wash'));
-  check('a_shape_is_a_choice', (await knobs.locator('select[aria-label="Shape"]').count()) === 1);
-  await knobs.locator('input[aria-label=megapixels]').focus();
+  check('a_shape_is_the_box_own', (await knobs.locator('.edit-more .slide:has(.ctl-name:text-is("Shape")) .num').textContent()) === '3:2' && (await knobs.locator('select[aria-label="Shape"]').count()) === 0);
+  await knobs.locator('input[aria-label=Megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field(/megapixels: (\S+)/), (value) => value === '2');
   // Nothing has moved the pointer since it opened More. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
@@ -350,12 +350,12 @@ function linesOf(text, name) {
   check('a_control_keeps_the_comment', (await field(/(# Stays\.)/)) === '# Stays.' && (await field(/(# how)/)) === '# how', linesOf(yaml(), 'knobs'));
   check('text_stays_block', (linesOf(yaml(), 'knobs') ?? '').includes('summary: |'), linesOf(yaml(), 'knobs'));
 
-  // Its shape is a choice in the box, and writes what it makes. Width is only layout, from its corner on the canvas.
+  // Its shape is the box's own: its corner writes what it makes, and Auto unsets it. Width is only layout.
   await more('knobs');
   const widthBefore = (await rows()).knobs.w;
-  await knobs.locator('select[aria-label="Shape"]').selectOption('3:4');
-  await until('the ratio written', () => field(/aspect_ratio: (\S+)/), (value) => value === '"3:4"');
-  check('reshape_writes_the_shape', true);
+  await knobs.locator('[aria-label="Shape: Auto"]').click();
+  await until('the ratio unset', () => field(/(aspect_ratio):/), (value) => value === undefined);
+  check('auto_unsets_the_shape', (await knobs.locator('.edit-more .slide:has(.ctl-name:text-is("Shape")) .num').textContent()) === 'Auto');
   await away();
   await knobs.locator('.nm').hover();
   const corner = await knobs.locator('.corner').boundingBox();
@@ -365,7 +365,7 @@ function linesOf(text, name) {
   await page.mouse.up();
   await until('the width written', rows, (now) => now.knobs.w && now.knobs.w !== widthBefore);
   // Pulled wider, it takes the nearest shape its tool makes (2a50453b1), and its width with it.
-  check('corner_takes_its_shape', (await field(/aspect_ratio: (\S+)/)) !== '"3:4"', await field(/aspect_ratio: (\S+)/));
+  check('corner_takes_its_shape', /^"\d+(\.\d+)?:\d+"$/.test((await field(/aspect_ratio: (\S+)/)) ?? ''), await field(/aspect_ratio: (\S+)/));
   seen.width_before_reshape = widthBefore;
 
   // Beats: one text and a duration slider each; add, remove, down to the one that always stays; what else a beat holds stays.
@@ -462,7 +462,7 @@ function linesOf(text, name) {
     await shot('fresh-prompt');
     await more('still_1');
     await still.locator('input[aria-label=Count]').waitFor();
-    await still.locator('select[aria-label=Style]').selectOption({ label: 'noise' });
+    await still.locator('[role=radiogroup][aria-label=Style] [role=radio]:text-is("noise")').click();
     await until('the choice in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'noise');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
@@ -477,7 +477,7 @@ function linesOf(text, name) {
     await reload();
     await open('still_1');
     check('open_outlasts_a_reload', (await still.locator('.edit-more').count()) === 1);
-    await still.locator('select[aria-label=Style]').selectOption({ label: 'flat' });
+    await still.locator('[role=radiogroup][aria-label=Style] [role=radio]:text-is("flat")').click();
     await until('its default in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'flat');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
@@ -768,7 +768,7 @@ function linesOf(text, name) {
     await until('Other made again', () => versions('Other'), (n) => n === otherTakes + 1, FIRST_RUN_MS);
     check('render_all_leaves_approved', (await versions('Sheet')) === sheetTakes);
 
-    // A new take from here: scrubbed to a time, its words as they were, and the function told to keep up to there.
+    // Pick up from here: scrubbed to a frame, its words as they were, and the function told to keep up to there, for that render alone.
     // One file dropped asks its name first: Enter takes the one offered.
     await away();
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
@@ -785,14 +785,14 @@ function linesOf(text, name) {
     const clipFile = linesOf(yaml(), 'Clip');
     await more('Clip');
     await box('Clip').locator('.from-here .keeps').fill('12');
-    await box('Clip').locator('button:has-text("New take from here")').click();
+    await box('Clip').locator('button:text-is("Pick up from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).body.versions.at(-1).files.given.path;
     // Listed as its run ends, it lands in files/ a moment later (Firefox, 42110239536).
     await until('what it was given, in files/', () => Promise.resolve(existsSync(join(folder, given))), Boolean);
     const told = JSON.parse(readFileSync(join(folder, given), 'utf8'));
-    check('kept_up_to_there', told.keep === 0.5, told);
-    check('words_as_they_were', linesOf(yaml(), 'Clip') === clipFile, linesOf(yaml(), 'Clip'));
+    check('kept_up_to_there', told.pickup?.out_frame === 12, told);
+    check('words_as_they_were', linesOf(yaml(), 'Clip') === clipFile && !yaml().includes('pickup'), linesOf(yaml(), 'Clip'));
     await open('Clip');
     await box('Clip').locator('.take[aria-label="take 2"]').waitFor();
     check('takes_are_called_takes', true);

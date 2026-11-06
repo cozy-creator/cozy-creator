@@ -259,11 +259,12 @@ async function died(why) {
     await box('other').locator(`button[aria-label^="Take"]`).first().click();
     await until('the tool gone', () => Promise.resolve(lines('other')), (text) => !text.includes('tool:'));
     const off = await asset('other');
-    check('x_on_pictures_changes_only_that', off.versions === 1 && off.approved === 1 && off.fields.instructions === '<self.1>' && off.standing === 'current' && !off.tool, off);
-    check('x_says_with_undo', (await toast('Its pictures and words stay')) === true);
-    await undoIn('Its pictures and words stay').click();
+    // Its fields go with it (Paul, 11-06), and its pictures, takes and description stay.
+    check('x_takes_its_fields', off.versions === 1 && off.approved === 1 && !('instructions' in (off.fields ?? {})) && off.standing === 'current' && !off.tool, off);
+    check('x_says_with_undo', (await toast('Its pictures stay')) === true);
+    await undoIn('Its pictures stay').click();
     await until('the tool back', () => Promise.resolve(lines('other')), (text) => text.includes(`tool: ${tool.id}`));
-    check('undo_puts_it_back', (await asset('other')).versions === 1);
+    check('undo_puts_it_back', (await asset('other')).versions === 1 && (await asset('other')).fields?.instructions === '<self.1>', await asset('other'));
     await box('other').locator(`button[aria-label^="Take"]`).first().click();
     await until('the tool gone', () => Promise.resolve(lines('other')), (text) => !text.includes('tool:'));
     await box('other').locator('.card').waitFor();
@@ -286,7 +287,7 @@ async function died(why) {
 
     // A swap across families: what it can't take goes, in words, with Undo. Two tools of different families, where the list has them.
     const onPanel = await page.locator('.tools li.tool').evaluateAll((rows) => rows.map((held) => held.dataset.tool));
-    const families = (await api(`/v1/tools?project=${id}`)).body.tools.filter((one) => one.model?.family && one.kind === 'image' && onPanel.includes(one.id));
+    const families = (await api(`/v1/tools?project=${id}`)).body.tools.filter((one) => one.model?.family && one.makes === 'image' && onPanel.includes(one.id));
     const first = families[0];
     const otherFamily = families.find((one) => one.model.family !== first?.model.family);
     seen.swapping = [first?.id, otherFamily?.id];

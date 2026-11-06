@@ -208,11 +208,9 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   hero:
     approved: "${prefix}"
     description: A hero of few words.
-    asset_type: character
   older:
     approved: "${olderPrefix}"
     description: The same hero, older.
-    asset_type: villain
 `);
   const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
 
@@ -236,7 +234,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_fields_no_platform_field', !('tool' in (of('shot').fields ?? {})) && !('kind' in (of('shot').fields ?? {})), of('shot').fields);
   // `hollow_thing` is its words since 27c5db3f5: a box with no tool, which warns of nothing.
   check('wire_warning_named', read.warnings?.some((said) => said.name === 'odd' && said.message.includes('kind')) && !read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
-  check('wire_asset_type', of('hero').fields?.asset_type === 'character' && of('hero').fields?.description?.includes('few words'), of('hero').fields);
+  check('wire_description', of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
   // Elements of every kind, each by what it is.
   const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', picture: 'frame', edit: 'edit' };
@@ -248,7 +246,6 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
   await open(page, 'odd');
   check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
-  check('wire_warning_of_an_asset_type', read.warnings?.some((said) => said.name === 'older' && said.message.includes('asset_type')), read.warnings);
   // Drawn in on one box, the canvas holds only what's near it: the rest is read at rest.
   await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);

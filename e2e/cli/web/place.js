@@ -79,7 +79,7 @@ const constants = (folder) => {
   const folder = state.path;
   seen.project = { id, folder };
   // A file a person wrote: every comment and `|` of it must outlast the page.
-  const written = '# Mine, and kept.\nassets:\n  coast:\n    # Kept too.\n    asset_type: environment\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
+  const written = '# Mine, and kept.\nassets:\n  coast:\n    # Kept too.\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
   writeFileSync(join(folder, 'project.yaml'), written);
 
   // A PNG, an MP4 and a WAV dropped together: each there at once under its stem, nothing focused.

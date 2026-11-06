@@ -319,7 +319,7 @@ assets:
   // waits for it to be idle, and gives way if anyone else asks for it. It cancels no run but its own.
   if (process.env.RENDER) {
     const family = process.env.RENDER_FAMILY;
-    const still = (await api('/v1/tools')).body.tools.find((tool) => tool.kind === 'image' && tool.model?.family && (!family || tool.model.family === family) && loras(tool.model.family).length && fines(tool.model.family).length);
+    const still = (await api('/v1/tools')).body.tools.find((tool) => tool.makes === 'image' && tool.model?.family && (!family || tool.model.family === family) && loras(tool.model.family).length && fines(tool.model.family).length);
     const [lora] = loras(still.model.family);
     const fine = fines(still.model.family).find((model) => !still.model.default?.startsWith(`${model.model}@`));
     seen.render = { tool: still.id, local: Boolean(still.local), lora: lora.model, fine: fine.model };

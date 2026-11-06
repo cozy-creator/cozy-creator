@@ -89,7 +89,7 @@ function plate(path, color, seconds, hz) {
   // The Edit is the first tool, and dropping it makes a box a clip can go in.
   const tools = (await call('GET', '/v1/tools')).body.tools;
   const tool = tools.find((held) => held.id === 'cozy/edit');
-  check('edit_is_a_tool', tool?.label === 'Edit' && tool.kind === 'video' && tool.controls[0]?.type === 'timeline', tool);
+  check('edit_is_a_tool', tool?.label === 'Edit' && tool.makes === 'video' && tool.fields[0]?.type === 'timeline', tool);
   await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1208, y: 144 } });
   const card = (name) => boxOf(page, name);
   await card('Edit').waitFor();
