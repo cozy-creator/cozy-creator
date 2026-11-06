@@ -8,7 +8,6 @@ and component root runs as written."""
 import hashlib
 from typing import Any
 
-import tensorfs.varena.torch as vt
 import torch
 from cozy_runtime import graphs
 from cozy_runtime.internal import loop
@@ -16,11 +15,17 @@ from cozy_runtime.internal.execution import catch
 from cozy_runtime.internal.residency import _REQUEST
 from torch.utils._pytree import tree_leaves
 
+try:
+    import tensorfs.varena.torch as vt
+except ImportError:  # a v1 TensorFS has no checks: its base, cap, press and eager arms still digest
+    vt = None
+
 ARM: dict[str, bool] = {}  # cell.sh writes this arm's checks here
 PRESS = ""  # and this arm's press
 LEFT = 4 << 30  # less than SDXL's UNet: its weights can't all be here, and a block still fits
 
-vt.checks(**ARM)
+if vt is not None:
+    vt.checks(**ARM)
 _sums: dict[str, dict[str, Any]] = {}
 _traces: dict[str, dict[str, list[list[Any]]]] = {}
 _loops = [0]
@@ -47,7 +52,7 @@ def _add(name: str, value: Any) -> None:
         if isinstance(leaf, torch.Tensor):
             digest.update(_bytes(leaf))
     row["digests"][name] = digest.hexdigest()
-    row["checks"] = vt.check_counts()
+    row["checks"] = vt.check_counts() if vt is not None else {}
 
 
 def run(self: Any, step: Any, steps: Any, state: Any, carried: Any, inputs: Any, *rest: Any, **named: Any) -> None:
