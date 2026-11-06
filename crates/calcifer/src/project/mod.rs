@@ -4686,9 +4686,9 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     }
 }
 
-/// Where a file stands in its list: its path's last part, when that's an index.
+/// Where a file stands in its list: its place in the innermost list holding it, as Runtime orders it (`references.1.file` is 1).
 pub(crate) fn order_of(field: &str) -> u32 {
-    field.rsplit('.').next().and_then(|last| last.parse().ok()).unwrap_or(0)
+    field.rsplit('.').find_map(|part| part.parse().ok()).unwrap_or(0)
 }
 
 fn media_type(path: &FsPath) -> &'static str {
