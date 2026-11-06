@@ -62,7 +62,16 @@ pub fn trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io
 /// tells it ([`interpreter_environment`]).
 #[cfg(windows)]
 pub fn trampoline(python: &Path, _scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
+    interpreter(python)
+}
+
+/// `python` with no seal, for the machine's own work in an environment (its bytecode), which a
+/// PyTorch base with no Runtime does too. On Windows, the interpreter `trampoline` starts.
+pub fn interpreter(python: &Path) -> io::Result<Command> {
+    #[cfg(windows)]
     let mut command = Command::new(venv_home(python)?.map_or_else(|| python.into(), |home| home.join("python.exe")));
+    #[cfg(unix)]
+    let mut command = Command::new(python);
     platform::process::inherit_nothing(&mut command);
     Ok(command)
 }

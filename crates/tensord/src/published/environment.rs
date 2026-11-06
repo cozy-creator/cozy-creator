@@ -774,21 +774,34 @@ pub(crate) fn hold(dir: &Path) -> Result<(), Failure> {
 /// compiles each module it reaches on one core (SDXL's: 17-19 s, 6.5-8.5 s compiled), and again
 /// in every executor that may not write the environment. uv's `--compile-bytecode` compiles only
 /// what its own step installs. A failure is a warning.
+/// Its own process tree with no parent-death signal: it outlives the thread that asked (a run's
+/// preparation, whose end killed it half done), and a PyTorch base, which has no Runtime's
+/// trampoline, compiles too. compileall's forkserver and workers outlive a killed leader, so the
+/// tree is killed once the leader exits.
 pub(crate) fn compile_bytecode(python: &Path) {
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     let script = format!(
         "import compileall, os, sysconfig\ngetattr(os, 'nice', lambda _: 0)(19)\n\
          compileall.compile_dir(sysconfig.get_paths()['purelib'], quiet=2, workers={workers})"
     );
-    let started = crate::launch_identity::trampoline(python, None).and_then(|mut command| {
+    let started = || -> io::Result<_> {
+        let mut command = crate::launch_identity::interpreter(python)?;
         command.envs(crate::launch_identity::interpreter_environment(python)?).args(["-I", "-c", &script]);
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        command.spawn()
-    });
-    let reaped = started.and_then(|mut child| {
-        std::thread::Builder::new().name("bytecode".into()).spawn(move || match child.wait() {
-            Ok(status) if !status.success() => tracing::warn!("environment bytecode: compileall exited {status}"),
-            _ => {}
+        let tree = platform::process::spawn(command)?;
+        let leader = platform::process::Exact::open(&platform::process::Birth::of(tree.pid())?)?;
+        Ok((tree, leader))
+    };
+    let reaped = started().and_then(|(mut tree, leader)| {
+        std::thread::Builder::new().name("bytecode".into()).spawn(move || {
+            // Unreaped, the leader's zombie keeps its group's number for the kill.
+            let _ = leader.map(|leader| leader.wait());
+            let _ = tree.kill();
+            match tree.wait() {
+                Ok(status) if !status.success() => tracing::warn!("environment bytecode: compileall exited {status}"),
+                Err(error) => tracing::warn!("environment bytecode: {error}"),
+                Ok(_) => {}
+            }
         })
     });
     if let Err(error) = reaped {
