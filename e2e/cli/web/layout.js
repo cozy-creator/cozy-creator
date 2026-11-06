@@ -552,6 +552,7 @@ ${local ? `  card:
     const look = async (state, keep) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
       await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
+      seen.looks = (seen.looks ?? 0) + 1;
       const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted: !/^zoom-.*-in$/.test(state) });
       // The pointer where nothing's drawn, around a box worked on or all over.
       if (state === 'rest' || /^(open|writing|zoom)-/.test(state)) {
@@ -788,6 +789,7 @@ ${local ? `  card:
         same = now === last ? same + 1 : 0;
         last = now;
       }
+      seen.looks = (seen.looks ?? 0) + 1;
       const said = await drawnEdges(page, decoder);
       for (const finding of said) findings.push({ size: `${size.name} drawn`, state, ...finding });
       if (process.env.SHOT && said.length) {

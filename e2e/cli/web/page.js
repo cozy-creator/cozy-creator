@@ -241,7 +241,8 @@ async function lastLook() {
 function noStall(seen, died) {
   let [held, since] = [-1, Date.now()];
   const watch = setInterval(() => {
-    const now = Object.keys(seen).length;
+    // What it's seen, and how many looks a cell that counts them (seen.looks) has taken.
+    const now = Object.keys(seen).length + (seen.looks ?? 0);
     if (now !== held) [held, since] = [now, Date.now()];
     else if (Date.now() - since > STALL_MS) {
       clearInterval(watch);
