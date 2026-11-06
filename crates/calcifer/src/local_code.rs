@@ -785,6 +785,7 @@ pub fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> SubmitRun
     };
     SubmitRun {
         agreed: None,
+        stays: vec![],
         on,
         hub: hub.to_owned(),
         kind: RunKind::Warm,

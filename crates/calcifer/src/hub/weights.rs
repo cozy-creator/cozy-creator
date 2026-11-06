@@ -207,6 +207,7 @@ fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made
     };
     SubmitRun {
         agreed,
+        stays: vec![],
         on,
         hub: hub.to_string(),
         kind: RunKind::Warm,
@@ -405,6 +406,7 @@ fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result
     };
     Ok(SubmitRun {
         agreed: None,
+        stays: vec![],
         on: On::Machine(machine),
         hub: run.hub.clone(),
         kind: RunKind::Warm,

@@ -2966,7 +2966,7 @@ impl Walk {
         let spec = v1::RunSpec { kind: v1::RunKind::Warm, source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
         let target = format!("{}{called}", protocol::project::AHEAD);
         let shown = package.name.clone() + "/" + &renderer.function;
-        let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None };
+        let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
         let key = format!("project-ahead-{}", new_key());
         let run = self.send_run(&key, submit).await?;
         self.project.jobs.ahead(run.id.clone(), with, shown, placed.to_string(), run.number);
@@ -3978,6 +3978,7 @@ impl Walk {
             out: Some(landing(&self.folder().dir)),
             warnings,
             agreed: None,
+            stays: package.callable(&renderer.function).map(|callable| protocol::tool::stays(&callable)).unwrap_or_default(),
         };
         let _on_the_way = OnTheWay::new(&self.on_the_way, key);
         self.folder().update_walk(|walk| {

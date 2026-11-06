@@ -244,6 +244,7 @@ impl Ask for PackageInstall {
 pub(crate) fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<protocol::calcifer::Agreed>) -> SubmitRun {
     SubmitRun {
         agreed,
+        stays: vec![],
         on,
         hub: hub.to_owned(),
         kind: RunKind::Warm,
@@ -290,6 +291,7 @@ pub(super) async fn remove(
         let from = if from.is_empty() { hub.to_string() } else { from };
         let submit = SubmitRun {
             agreed: None,
+            stays: vec![],
             on: On::Machine(held.name.clone()),
             hub: from,
             kind: RunKind::Remove,

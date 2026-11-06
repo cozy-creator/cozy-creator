@@ -160,6 +160,7 @@ async fn retire(
     for env in older {
         let submit = SubmitRun {
             agreed: None,
+            stays: vec![],
             on: On::Machine(machine.to_owned()),
             hub: hub.clone(),
             kind: wire::Kind::Remove,

@@ -62,7 +62,7 @@ pub struct Bound {
 
 /// A box a mention names, as a function is sent it.
 struct Named {
-    /// The mention as its box spells it: `Amy.2`, `walk@48-120`.
+    /// The mention as its box spells it: `Amy.2`, `walk:48-120`.
     key: String,
     /// What its file is: `image`, `video`, `audio`, or another role's name.
     kind: String,

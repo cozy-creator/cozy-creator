@@ -130,7 +130,7 @@ async fn send(host: &Host, project: &Project, renderer: &Renderer, payload: Valu
         inputs,
         ..Default::default()
     };
-    let submit = SubmitRun { on: on.clone(), hub: hub.to_owned(), kind: RunKind::Call, target: renderer.target(), spec, inputs: staged, held: vec![], out: Some(landing(&folder.dir)), warnings: vec![], agreed: None };
+    let submit = SubmitRun { on: on.clone(), hub: hub.to_owned(), kind: RunKind::Call, target: renderer.target(), spec, inputs: staged, held: vec![], out: Some(landing(&folder.dir)), warnings: vec![], agreed: None, stays: vec![] };
     let run = host.submit(key, submit).await.map_err(Refusal)?;
     let run = host.wait(&run.id).await.map_err(Refusal)?;
     if run.status != RunStatus::Completed {

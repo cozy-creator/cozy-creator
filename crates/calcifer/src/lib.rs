@@ -338,6 +338,7 @@ impl Calcifer {
             inputs: vec![],
             wants,
             agreed: submit.agreed,
+            stays: submit.stays,
         };
         let (me, key, given, held, digest) = (self.clone(), key.to_owned(), submit.inputs, submit.held, digest.to_owned());
         let (row, fresh) = tokio::task::spawn_blocking(move || {

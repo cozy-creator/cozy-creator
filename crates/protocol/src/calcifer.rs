@@ -66,6 +66,9 @@ pub struct SubmitRun {
     /// run without one, and a dearer rental rents nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agreed: Option<Agreed>,
+    /// Its outputs that stay on its machine, by name: the result's `Latents` fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stays: Vec<String>,
 }
 
 /// `POST /v1/run-quotes`: what a `new` run would rent, and its price; when the Hub placed it, why,

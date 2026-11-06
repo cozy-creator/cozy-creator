@@ -246,6 +246,7 @@ impl Machines {
         let target = named.join(", ");
         let submit = SubmitRun {
             agreed: None,
+            stays: vec![],
             on: On::Machine(m.name.clone()),
             hub,
             kind: wire::Kind::Update,

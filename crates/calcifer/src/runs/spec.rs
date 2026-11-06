@@ -149,6 +149,7 @@ impl Call<'_> {
         let warnings = ignored.into_iter().chain(cuts).chain(limits).collect();
         SubmitRun {
             agreed: None,
+            stays: protocol::tool::stays(self.callable),
             on,
             hub: hub.to_owned(),
             kind,

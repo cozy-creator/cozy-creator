@@ -239,6 +239,11 @@ pub fn output_kind(callable: &Callable) -> Option<&str> {
     callable.result.fields.iter().find_map(of)
 }
 
+/// What of `callable`'s result stays on its machine: its `Latents` fields, by name.
+pub fn stays(callable: &Callable) -> Vec<String> {
+    callable.result.fields.iter().filter(|field| matches!(field.ty.plain(), Type::Asset(kind) if kind == "latents")).map(|field| field.name.clone()).collect()
+}
+
 /// What `callable` answered in words: its output's first text, or a list of texts' first. `warnings` is no answer.
 pub fn output_text(callable: &Callable, result: &Value) -> Option<String> {
     let said = |field: &Field| match (field.ty.plain(), &result[field.name.as_str()]) {

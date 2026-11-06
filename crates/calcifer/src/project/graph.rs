@@ -13,7 +13,7 @@ fn in_a_name(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '-')
 }
 
-/// Whether `text` can be a name: only letters, digits, `_` and `-`. A `.` selects inside a box, and `@` a range of it.
+/// Whether `text` can be a name: only letters, digits, `_` and `-`. A `.` selects inside a box, and `:` a range of its frames.
 pub fn is_name(text: &str) -> bool {
     !text.is_empty() && text.chars().all(in_a_name)
 }
@@ -21,7 +21,7 @@ pub fn is_name(text: &str) -> bool {
 /// What a box calls itself in its own text: `<self.2>`, a version of it.
 pub const SELF: &str = "self";
 
-/// A mention, `<name.2.cleaned@48-120>`: a box, a version of it, an extra of that version, and a range of its frames.
+/// A mention, `<name.2.cleaned:48-120>`: a box, a version of it, an extra of that version, and a range of its frames.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mention<'a> {
     pub name: &'a str,
@@ -43,7 +43,7 @@ impl Mention<'_> {
             out.push_str(&format!(".{part}"));
         }
         if let Some((from, to)) = self.range {
-            out.push_str(&format!("@{from}-{}", to.map_or_else(String::new, |to| to.to_string())));
+            out.push_str(&format!(":{from}-{}", to.map_or_else(String::new, |to| to.to_string())));
         }
         out
     }
@@ -51,7 +51,7 @@ impl Mention<'_> {
 
 /// `inner` as a mention, if it is one.
 pub fn mention(inner: &str) -> Option<Mention<'_>> {
-    let (head, range) = match inner.split_once('@') {
+    let (head, range) = match inner.split_once(':') {
         None => (inner, None),
         Some((head, range)) => {
             let (from, to) = range.split_once('-')?;
@@ -84,7 +84,7 @@ pub fn can_take(name: &str) -> bool {
     is_name(name) && name_key(name) != SELF
 }
 
-/// `mention` once `from` is called `to`, what follows its name with it: `<from>`, `<from.2>`, `<from@4-9>`. None: it doesn't say `from`.
+/// `mention` once `from` is called `to`, what follows its name with it: `<from>`, `<from.2>`, `<from:4-9>`. None: it doesn't say `from`.
 pub fn mention_moved(mention: &str, from: &str, to: &str) -> Option<String> {
     let read = self::mention(mention)?;
     (name_key(read.name) == name_key(from)).then(|| format!("{to}{}", &mention[read.name.len()..]))

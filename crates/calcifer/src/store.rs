@@ -69,7 +69,8 @@ const SCHEMA: &str = "
         inputs TEXT NOT NULL DEFAULT '[]',
         wants TEXT,
         agreed TEXT,
-        started_at INTEGER
+        started_at INTEGER,
+        stays TEXT NOT NULL DEFAULT '[]'
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (
@@ -116,6 +117,15 @@ const SCHEMA: &str = "
         kind TEXT NOT NULL DEFAULT 'rent' CHECK (kind IN ('rent', 'end')),
         run TEXT REFERENCES runs (id)
     ) STRICT;";
+
+/// A store made before a run said what of it stays gains that column, empty: what it made comes here.
+fn stays_column(writer: &mut Connection) -> Result<()> {
+    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'stays')", [], |r| r.get(0))?;
+    if !has {
+        writer.execute_batch("ALTER TABLE runs ADD COLUMN stays TEXT NOT NULL DEFAULT '[]'")?;
+    }
+    Ok(())
+}
 
 /// A store made before outputs were measured gains their columns. Its version stands: every statement names its columns, so a
 /// Calcifer that predates them goes on reading it.
@@ -236,6 +246,8 @@ pub struct NewRun {
     pub wants: Option<String>,
     /// The quote a `new` run's renter agreed to.
     pub agreed: Option<Agreed>,
+    /// Its outputs that stay on its machine, by name.
+    pub stays: Vec<String>,
 }
 
 /// How to reach a machine: the id its caps name, its address and its TLS leaf's sha256.
@@ -346,7 +358,10 @@ impl Store {
                 tx.pragma_update(None, "user_version", VERSION)?;
                 tx.commit()?;
             }
-            VERSION => measured_columns(&mut writer)?,
+            VERSION => {
+                measured_columns(&mut writer)?;
+                stays_column(&mut writer)?;
+            }
             other => return Err(StoreError::Version(other)),
         }
         let reader = Connection::open(path)?;
@@ -668,9 +683,9 @@ impl Store {
             };
             tx.execute(
                 "INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec,
-                     out_dir, state, created_at, warnings, inputs, wants, agreed)
+                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays)
                  VALUES (?1, (SELECT COALESCE(MAX(number), 0) + 1 FROM runs), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                     ?10, 'queued', ?11, ?12, ?13, ?14, ?15)",
+                     ?10, 'queued', ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     new.id.as_str(),
                     key,
@@ -687,6 +702,7 @@ impl Store {
                     serde_json::to_string(&new.inputs).expect("serializes"),
                     new.wants,
                     new.agreed.map(|agreed| serde_json::to_string(&agreed).expect("serializes")),
+                    serde_json::to_string(&new.stays).expect("serializes"),
                 ],
             )?;
             Ok((new.id.to_string(), true))
@@ -1355,17 +1371,12 @@ fn export_settled(
     }])
 }
 
-/// Whether an output stays on its machine (`OutputItem::stays`): untyped bytes, such as a model's latents, of a run that made
-/// something else. A run whose only output is untyped brings that here.
-const STAYS: &str = "(outputs.media_type LIKE 'application/octet-stream%'
-    AND EXISTS (SELECT 1 FROM outputs made WHERE made.run = outputs.run AND made.media_type NOT LIKE 'application/octet-stream%'))";
+/// Whether an output stays on its machine (`OutputItem::stays`): its run's result declares it `Latents`, by its name.
+const STAYS: &str = "EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
-/// An output owed to this computer: its newest revision neither landed nor given up, and no checkpoint. Untyped bytes wait for
-/// their run's end, when `STAYS` is known, and are owed then only if they don't stay.
+/// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays.
 const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
-    AND (outputs.media_type NOT LIKE 'application/octet-stream%'
-        OR ((SELECT state FROM runs WHERE runs.id = outputs.run) = 'settled'
-            AND NOT EXISTS (SELECT 1 FROM outputs made WHERE made.run = outputs.run AND made.media_type NOT LIKE 'application/octet-stream%')))";
+    AND NOT EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
 const OUTPUT_COLUMNS: &str = "name, idx, rev, length, digest, media_type, done, path, exported_rev,
     CASE WHEN failed_rev = rev THEN export_error END, checkpoint";
