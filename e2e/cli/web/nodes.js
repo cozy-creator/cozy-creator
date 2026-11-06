@@ -238,8 +238,10 @@ function linesOf(text, name) {
   await away();
   await page.waitForTimeout(100);
 
-  // At rest a box is its picture or its text and a name, with nothing to press and no state in words.
-  check('at_rest_only_its_x', (await box('source-a').locator('button:visible').count()) === 0, await box('source-a').innerText());
+  // At rest a box is its picture or its text and a name, with no state in words; the one thing to press is its ×, always shown
+  // and big enough to hit (Paul, 11-06: "the X ... should be larger and always visible").
+  const atRest = box('source-a').locator('button:visible');
+  check('at_rest_only_its_x', (await atRest.count()) === 1 && (await atRest.getAttribute('aria-label')) === 'Delete' && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
