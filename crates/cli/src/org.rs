@@ -20,9 +20,13 @@ pub struct Args {
 enum Verb {
     /// Claim an org parked under your name: the first run gives a code and where to post it on a
     /// handle the org lists; once posted, run it again and the org is yours.
+    #[command(after_help = "Example:
+  cozy org claim black-forest-labs          a code to post on a handle it lists; run it again once posted")]
     Claim(Claim),
     /// Set an org's display name, links or claim handles (platform admins); each one given replaces
     /// what it has. An org that does not exist yet is parked under the handles given.
+    #[command(after_help = "Example:
+  cozy org edit stabilityai --name 'Stability AI' --link https://stability.ai --handle hf:stabilityai")]
     Edit(Edit),
 }
 
@@ -90,7 +94,7 @@ async fn claim(ctx: &Context, args: Claim) -> Result<ExitCode, Error> {
             record = record.field("proven by", by);
         }
         record.print(ctx);
-        output::next(ctx, &[&format!("cozy model search {}", answer.org)]);
+        output::next(ctx, &[&format!("cozy model ls {}", answer.org)]);
         return Ok(ExitCode::SUCCESS);
     }
     let mut record = Record::new().field("org", &answer.org).field("code", answer.code.as_deref().unwrap_or("-"));

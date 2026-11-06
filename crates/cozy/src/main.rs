@@ -7,10 +7,13 @@ fn main() -> std::process::ExitCode {
         [role] if *role == "calcifer" => calcifer::serve::main(),
         // It takes nothing, so `--help` or a typo starts no daemon.
         [role, rest @ ..] if *role == "calcifer" => {
-            println!("cozy calcifer is this computer's daemon, which cozy starts when it needs it. It takes no arguments: `cozy status` shows it, and `cozy doctor` restarts a stuck one.");
+            const SAID: &str = "cozy calcifer is this computer's daemon, which cozy starts when it needs it. It takes no arguments: `cozy status` shows it, and `cozy doctor` restarts a stuck one.";
             match rest.iter().all(|arg| *arg == "--help" || *arg == "-h") {
-                true => std::process::ExitCode::SUCCESS,
-                false => std::process::ExitCode::FAILURE,
+                true => {
+                    println!("{SAID}");
+                    std::process::ExitCode::SUCCESS
+                }
+                false => cli::output::usage("calcifer_takes_nothing", SAID, "cozy status"),
             }
         }
         [noun, role, rest @ ..] if *noun == "machine" && *role == "serve" => {

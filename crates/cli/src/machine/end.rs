@@ -402,7 +402,7 @@ fn updated(ctx: &Context, name: &str, s: &MachineStatus) {
         output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
     } else {
         let build = if s.dev { " (dev build)" } else { "" };
-        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}", s.version, s.runtime, s.tensorfs));
+        output::answer(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}", s.version, s.runtime, s.tensorfs));
     }
 }
 
@@ -410,7 +410,7 @@ fn up_to_date(ctx: &Context, m: &Machine, s: &MachineStatus) -> Result<ExitCode,
     if ctx.json {
         output::json(&serde_json::json!({"machine": m.name, "changed": false, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
     } else {
-        output::say(ctx, &format!(
+        output::answer(ctx, &format!(
             "{} runs TensorD (cozy) {}, Runtime {}, TensorFS {}: the Hub's target, nothing to update",
             m.name, s.version, s.runtime, s.tensorfs
         ));

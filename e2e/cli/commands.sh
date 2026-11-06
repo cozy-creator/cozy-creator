@@ -103,8 +103,98 @@ open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32
 PY
 }
 
+# What a script or an agent relies on (README "Scripts and agents"), signed out, every call off a terminal with stdin closed: no
+# prompt, pager or spinner, so nothing waits; --json is JSON (NDJSON when following) with no prose on stdout and no escape codes
+# anywhere; a refusal is its code and a `next:` that parses, on stdout, with the exit `cozy --help` gives its kind; every verb's
+# --help has examples, each of which parses; and `project new` twice is the same project.
+contract() {
+step "the contract with scripts and agents"
+local C=$OUT/contract line words path
+rm -rf "$C"; mkdir -p "$C"
+# said <label> <cozy args…>: one call, off a terminal; its exit in <label>.exit.
+said() {
+  local label=$1 code=0; shift
+  timeout 120 "$COZY" "$@" < /dev/null > "$C/$label.out" 2> "$C/$label.err" || code=$?
+  printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"
+  echo "$code" > "$C/$label.exit"
+  [ "$code" != 124 ] || check "contract: cozy $* waited off a terminal: $(tail -c 200 "$C/$label.err")"
+  ! grep -q $'\e' "$C/$label.out" "$C/$label.err" || check "contract: cozy $* wrote escape codes off a terminal"
+}
+# json <label> <cozy args…>: --json, and stdout is JSON documents only.
+json() {
+  local label=$1; shift
+  said "$label" --json "$@"
+  [ -s "$C/$label.out" ] && jq -e . "$C/$label.out" > /dev/null 2>&1 || check "contract: cozy --json $* is not JSON: $(head -c 200 "$C/$label.out")"
+}
+json status status
+json machines machine ls
+json catalog machine rent
+json packages package ls birefnet --limit 1
+json package package info birefnet
+json models model ls --limit 1
+json model model info zhengpeng7/birefnet
+json projects project ls
+json runs run ls
+json whoami whoami
+json logout logout
+json completion completion bash
+J '.shell == "bash" and (.script | length > 0)' "$C/completion.out" || check "contract: completion --json: $(head -c 200 "$C/completion.out")"
+J '.cozy.version | length > 0' "$C/status.out" || check "contract: status --json names no cozy version"
+json new project new "$C/film"
+json new-again project new "$C/film"
+{ [ "$(cat "$C/new-again.exit")" = 0 ] && J '.made == false' "$C/new-again.out" && J --arg p "$(jq -r .path "$C/new.out")" '.path == $p' "$C/new-again.out"; } \
+  || check "contract: project new twice is not the same project, exit 0: $(cat "$C/new-again.out")"
+
+# refused <label> <exit> <code> <cozy args…>: the envelope with --json, then the same line and its next: plain.
+refused() {
+  local label=$1 exit=$2 code=$3; shift 3
+  json "$label" "$@"
+  { [ "$(cat "$C/$label.exit")" = "$exit" ] && J --arg c "$code" '.error.code == $c and (.error.next | length > 0)' "$C/$label.out"; } \
+    || check "contract: cozy --json $*: exit $(cat "$C/$label.exit"), not $exit with $code and a next: $(head -c 300 "$C/$label.out")"
+  jq -r '.error.next[]?' "$C/$label.out" >> "$C/next.txt"
+  said "$label-plain" "$@"
+  { [ "$(cat "$C/$label-plain.exit")" = "$exit" ] && grep -q "($code)\$" "$C/$label-plain.out" && grep -q '^ *next: cozy' "$C/$label-plain.out"; } \
+    || check "contract: cozy $*: exit $(cat "$C/$label-plain.exit"), not its refusal and next on stdout: $(head -c 300 "$C/$label-plain.out")"
+}
+refused run-gone 6 run_not_found run show 999999
+refused machine-gone 6 machine_not_found machine show e2e-no-such-machine
+refused package-gone 6 package_not_found package info e2e-no-such-package
+refused flag 2 argument_unknown machine ls --e2e-no-such-flag
+refused verb 2 verb_unknown machine e2e-no-such-verb
+refused unconfirmed 2 package_delete_unconfirmed package delete e2e-no-such-package
+J '.error.next[0] | endswith("package delete e2e-no-such-package --yes")' "$C/unconfirmed.out" || check "contract: delete without --yes does not name itself with --yes: $(cat "$C/unconfirmed.out")"
+refused login 5 login_needs_terminal login e2e@example.com
+json no-verb machine
+{ [ "$(cat "$C/no-verb.exit")" = 2 ] && J '.error.code == "verb_missing"' "$C/no-verb.out"; } || check "contract: cozy --json machine: $(head -c 200 "$C/no-verb.out")"
+# parses <line>: its verbs and flags, quotes as a shell reads them, then --help.
+parses() {
+  local word words=()
+  while IFS= read -r word; do words+=("$word"); done < <(xargs -n1 <<< "$1" 2> /dev/null)
+  "$COZY" "${words[@]:1}" --help > /dev/null 2>&1
+}
+sort -u "$C/next.txt" | while IFS= read -r line; do parses "$line" || check "contract: next: $line does not parse"; done
+
+step "every verb's help: examples that parse, and the exits"
+"$COZY" --help > "$C/help.txt"
+for exit in 0 1 2 3 4 5 6; do grep -qE "^  $exit  " "$C/help.txt" || check "contract: cozy --help does not say what exit $exit means"; done
+verbs() {  # verbs <words…>: each path under it, depth first
+  echo "$*"
+  "$COZY" "$@" --help | awk '/^Commands:/{on=1;next} on&&/^$/{exit} on&&$1!="help"{print $1}' | while read -r verb; do verbs "$@" "$verb"; done
+}
+verbs > "$C/verbs.txt"
+[ "$(wc -l < "$C/verbs.txt")" -gt 50 ] || check "contract: only $(wc -l < "$C/verbs.txt") verbs found"
+while read -r path; do
+  read -ra words <<< "$path"
+  "$COZY" "${words[@]}" --help > "$C/verb.txt"
+  grep -q '^Examples\?:' "$C/verb.txt" || check "contract: cozy $path --help has no example"
+  sed -n '/^Examples\?:/,/^$/p' "$C/verb.txt" | grep -oE '^ +cozy .*' | sed -E 's/^ +//; s/ {2,}.*//; s/ (>|&&).*//' | while IFS= read -r line; do
+    parses "$line" || check "contract: cozy $path's example does not parse: $line"
+  done
+done < "$C/verbs.txt"
+}
+
 # Where this OS runs no models itself (macOS, Windows): every verb that would use this computer's machine refuses
-# `local_unavailable` (exit 1) with the rental to use instead, before anything is staged or started; nothing ever
+# `local_unavailable` (exit 5) with the rental to use instead, before anything is staged or started; nothing ever
 # starts a machine here or makes its root; `machine ls` and `status` say so in one line; doctor is healthy.
 refusals() {
 step "local runs refused"
@@ -114,7 +204,7 @@ tiny "$OUT/refused.safetensors"
 refused() {  # refused <name> <cozy args...>
   local name=$1 code=0; shift
   cozy --json "$@" > "$OUT/refused-$name.json" 2> "$OUT/refused-$name.err" || code=$?
-  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
+  [ "$code" = 5 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
     || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
 }
 refused run run -p "$RUN_PROJECT" birefnet/remove_background --file "image=$dog"
@@ -339,7 +429,7 @@ step "this computer's machine, by its address and key"
 # Another computer adds it (release-gate session multi-machine): here, by its own address, it is refused.
 addr=$(jq -r .address "$OUT/local.json") || true; fp=$(jq -r .fingerprint "$OUT/local.json") || true
 code=0; cozy --json machine add e2e-self "$addr" --fingerprint "$fp" > "$OUT/added.json" 2> "$OUT/added.err" || code=$?
-[ "$code" = 1 ] && J '.error.code == "machine_is_local"' "$OUT/added.json" || check "machine add of this computer's own machine: exit $code, not refused: $(head -c 300 "$OUT/added.json")"
+[ "$code" = 5 ] && J '.error.code == "machine_is_local"' "$OUT/added.json" || check "machine add of this computer's own machine: exit $code, not refused: $(head -c 300 "$OUT/added.json")"
 ! cozy --json machine ls | J '.machines | any(.name == "e2e-self")' || check "machine add: this computer's own machine is listed again as e2e-self"
 J '.controller_key | test("^[A-Za-z0-9_-]{43}$")' "$OUT/local.json" || check "machine show local: no controller key: $(head -c 300 "$OUT/local.json")"
 code=0; cozy --json machine ssh local > "$OUT/ssh-local.json" 2> "$OUT/ssh-local.err" || code=$?
@@ -360,7 +450,7 @@ cozy --json machine authorize "$key" | J '.changed == false' || check "machine a
 cozy --json machine authorize "$key" --remove > "$OUT/unauthorize.json" && J '.changed == true' "$OUT/unauthorize.json" || check "machine authorize --remove: the key was not removed"
 ! grep -qx -- "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize --remove: the key is still in keys/authorized"
 code=0; cozy --json machine end local > "$OUT/end-local.json" 2> "$OUT/end-local.err" || code=$?
-[ "$code" = 1 ] && J '.error.code == "machine_local"' "$OUT/end-local.json" || check "machine end local: exit $code, not refused: $(head -c 300 "$OUT/end-local.json")"
+[ "$code" = 5 ] && J '.error.code == "machine_local"' "$OUT/end-local.json" || check "machine end local: exit $code, not refused: $(head -c 300 "$OUT/end-local.json")"
 
 step "doctor --on"
 cozy --json doctor --on local > "$OUT/doctor-local.json" || check "cozy doctor --on local found a problem"

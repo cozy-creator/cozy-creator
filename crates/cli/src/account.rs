@@ -2,7 +2,7 @@
 //! (CALCIFER-API.md "Account"). Login enrolls a key by an emailed code; every later call signs in
 //! with it silently. Codes and names are read from stdin, never from argv. `--export` enrolls a
 //! key for another computer (CI) into a file, which that computer installs with `--key`.
-use std::{io::Write as _, path::PathBuf, process::ExitCode};
+use std::{io::{IsTerminal as _, Write as _}, path::PathBuf, process::ExitCode};
 
 use protocol::{
     config::Origin,
@@ -87,6 +87,7 @@ async fn prove(
     purpose: Purpose,
     email: Option<&str>,
 ) -> Result<Proven, Error> {
+    terminal()?;
     let ask = CodeRequest { hub: Some(hub.to_string()), purpose, email: email.map(str::to_owned) };
     let sent: Code = calcifer.post("/v1/account/codes", &ask, None).await?;
     let said = match sent.retry_after_s {
@@ -219,8 +220,19 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Refused off a terminal: what is asked (an emailed code, a name) is a person's to type, and nothing is sent first.
+fn terminal() -> Result<(), Error> {
+    if std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    Err(Error::credential("login_needs_terminal", "signing in asks for the code the Hub emails, which a person types: stdin is not a terminal")
+        .remedy("run `cozy login <email>` in a terminal, or sign in with a key: `cozy login <email> --export <file>` where one is, then this")
+        .next("cozy login --key <file>"))
+}
+
 /// One line from stdin after a prompt on stderr.
 fn ask_line(_ctx: &Context, prompt: &str, what: &str) -> Result<String, Error> {
+    terminal()?;
     anstream::eprint!("{prompt}");
     let _ = anstream::stderr().flush();
     let mut line = String::new();

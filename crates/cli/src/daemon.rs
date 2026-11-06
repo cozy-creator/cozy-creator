@@ -36,7 +36,7 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     let exe = std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default();
     let Some(client) = Client::running(ctx).await? else {
         if ctx.json {
-            output::json(&json!({ "calcifer": { "running": false } }));
+            output::json(&json!({ "cozy": { "version": env!("CARGO_PKG_VERSION"), "path": exe }, "calcifer": { "running": false }, "next": ["cozy doctor"] }));
         } else {
             println!("cozy {} {exe}", env!("CARGO_PKG_VERSION"));
             println!("calcifer: not running; any other cozy command starts it");
@@ -63,11 +63,12 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
             None => serde_json::Value::Null,
         };
         let doc = json!({
+            "cozy": { "version": env!("CARGO_PKG_VERSION"), "path": exe },
             "calcifer": running(ctx, &holder, &here), "project": project, "machines": list.machines, "rentals": list.rentals,
             "unanswered": list.unanswered, "signed_out": list.signed_out, "runs": runs,
         });
         let project = crate::project::FIELDS.iter().map(|path| format!("project.{path}"));
-        let mut paths: Vec<String> = ["calcifer".into(), "project.error".into()].into_iter().chain(project).collect();
+        let mut paths: Vec<String> = ["cozy".into(), "calcifer".into(), "project.error".into()].into_iter().chain(project).collect();
         paths.extend(crate::machine::list::FIELDS.iter().chain(crate::run::list::FIELDS).map(|path| path.to_string()));
         output::view(ctx, &doc, &paths.iter().map(String::as_str).collect::<Vec<_>>());
         return Ok(ExitCode::SUCCESS);

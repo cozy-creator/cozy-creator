@@ -8,6 +8,7 @@ use std::{
     io::{IsTerminal, Write as _},
     path::Path,
     process::ExitCode,
+    sync::OnceLock,
 };
 
 use anstyle::{AnsiColor, Style};
@@ -17,6 +18,9 @@ use protocol::names::shown;
 use serde::Serialize;
 
 use crate::Context;
+
+/// The verbs this command named (`machine end`), read once at the entry: what a refusal naming no command says next.
+pub(crate) static VERB: OnceLock<String> = OnceLock::new();
 
 /// The exit of a follower that heard its run stop moving (Calcifer's word, after 10 minutes with no progress): the run goes on.
 pub const STALLED: u8 = 4;
@@ -126,13 +130,25 @@ pub fn refusal(ctx: &Context, error: &Error) -> ExitCode {
     refuse(ctx.json, error)
 }
 
-/// A verb this platform does not have, refused as `unsupported` (the envelope with `--json`).
-pub fn unsupported(message: &str) -> ExitCode {
+/// A usage refusal before any verb runs (the envelope with `--json`), exit 2.
+pub fn usage(code: &str, message: &str, next: &str) -> ExitCode {
     let json = std::env::args_os().any(|arg| arg == "--json");
-    refuse(json, &Error::new(Kind::Usage, "unsupported", message))
+    refuse(json, &Error::new(Kind::Usage, code, message).next(next))
 }
 
 pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
+    let error = &with_next(error);
+    say_refusal(json, error);
+    ExitCode::from(error.exit_code() as u8)
+}
+
+/// Work that ran and failed, said as a refusal is (the envelope with `--json`): exit 1.
+pub fn failed(ctx: &Context, error: &Error) -> ExitCode {
+    say_refusal(ctx.json, &with_next(error));
+    ExitCode::FAILURE
+}
+
+fn say_refusal(json: bool, error: &Error) {
     if json {
         self::json(&Envelope {
             error: error.clone(),
@@ -146,7 +162,32 @@ pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
             anstream::println!("  {DIM}next:{DIM:#} {}", shown(next));
         }
     }
-    ExitCode::from(error.exit_code() as u8)
+}
+
+/// `error`, naming a command to run next when it names none: signing in for a credential, `cozy doctor` for this computer's
+/// cozy failing, the same command for what did not answer, else the verb's `--help`.
+fn with_next(error: &Error) -> Error {
+    if !error.next.is_empty() {
+        return error.clone();
+    }
+    let next = match error.kind {
+        Kind::Credential => "cozy login <email>".to_owned(),
+        Kind::Internal => "cozy doctor".to_owned(),
+        Kind::Unavailable => again_with(""),
+        _ => format!("cozy {} --help", VERB.get().map_or("", String::as_str)).replace("  ", " "),
+    };
+    error.clone().next(next)
+}
+
+/// This command again as a shell line, with `flag` added (none: `""`): what a refusal waiting on `--yes` names next.
+pub fn again_with(flag: &str) -> String {
+    let words = std::env::args_os().skip(1).map(|word| word.to_string_lossy().into_owned()).filter(|word| word != flag && !(flag == "--yes" && word == "-y"));
+    let quoted = words.map(|word| match word.chars().all(|c| c.is_ascii_alphanumeric() || "_./:=@,+-%".contains(c)) && !word.is_empty() {
+        true => word,
+        false => format!("'{}'", word.replace('\'', "'\\''")),
+    });
+    let flag = Some(flag.to_owned()).filter(|flag| !flag.is_empty());
+    std::iter::once("cozy".to_owned()).chain(quoted).chain(flag).collect::<Vec<_>>().join(" ")
 }
 
 /// A failure in one line and where to read more; `--json` has the record.
@@ -166,6 +207,13 @@ pub fn failure(ctx: &Context, message: &str, next: &[String]) {
     anstream::println!("{}", shown(message));
     for next in next {
         anstream::println!("  {DIM}next:{DIM:#} {}", shown(next));
+    }
+}
+
+/// What a command did, on stdout with the rest of its answer; silent with `--json`, whose document says it.
+pub fn answer(ctx: &Context, message: &str) {
+    if !ctx.json {
+        anstream::println!("{}", shown(message));
     }
 }
 

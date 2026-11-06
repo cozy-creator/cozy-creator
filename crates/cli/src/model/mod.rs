@@ -22,25 +22,49 @@ enum Verb {
     /// The Hub's models you can see, one row each with its newest release: public ones, and your
     /// own and your orgs' while private (no release yet). Words search; `--on` lists what machines
     /// hold instead.
-    #[command(alias = "list")]
+    #[command(alias = "list", after_help = "Examples:
+  cozy model ls
+  cozy model ls flux --limit 5
+  cozy model ls --family sdxl
+  cozy model ls --on all                    what every machine holds")]
     Ls(Ls),
     /// A model's releases and their lanes; to its org's members, every commit too.
+    #[command(after_help = "Examples:
+  cozy model info zhengpeng7/birefnet
+  cozy --json model info zhengpeng7/birefnet")]
     Info(Info),
     /// Set or clear a model's discovery family.
+    #[command(after_help = "Examples:
+  cozy model family myorg/my-lora sdxl
+  cozy model family myorg/my-lora --clear")]
     Family(Family),
     /// Make a model present in a machine's store. Follows it to its end; Ctrl-C stops following, never the work.
+    #[command(after_help = "Examples:
+  cozy model download zhengpeng7/birefnet --on corteo
+  cozy model download zhengpeng7/birefnet --lane bf16
+  cozy model download hf://myorg/my-model local/mine")]
     Download(Download),
     /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a new
     /// private commit in a lane: its id. `--base` makes it another model with the source's
     /// components in place of its own. Follows it to its end; Ctrl-C stops following, never the work.
+    #[command(after_help = "Examples:
+  cozy model upload ./lora.safetensors myorg/my-lora --lane bf16
+  cozy model upload run:42 myorg/my-model --lane bf16   a run's weights output, from its machine")]
     Upload(Upload),
     /// Write a new commit in a lane from a commit or release, by the recipe a named package
     /// declares for that lane. Follows it to its end; Ctrl-C stops following, never the work.
+    #[command(after_help = "Example:
+  cozy model quantize circlestone-labs/anima --lane int8 --package anima --on corteo")]
     Quantize(Quantize),
     /// Release commits as a version, public until you delete it: one commit per lane, the version
     /// higher than every earlier one, deleted or not.
+    #[command(after_help = "Example:
+  cozy model publish myorg/my-lora 1.0 sha256:<commit>   one commit per lane, as `cozy model upload` printed")]
     Publish(Publish),
     /// Delete a release (its version is never reused), a commit no release names, or the whole model.
+    #[command(after_help = "Examples:
+  cozy model delete myorg/my-lora@1.0 --yes
+  cozy model delete myorg/my-lora --yes     the whole model: without --yes nothing is sent")]
     Delete(Delete),
 }
 

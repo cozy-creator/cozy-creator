@@ -126,7 +126,7 @@ fn display(ctx: &Context, shown: &Displayed) {
     if let Some(strength) = shown.strength {
         said.push(format!("recommended strength {strength}"));
     }
-    output::say(ctx, &format!("{}: {}", shown.model, said.join(", ")));
+    output::answer(ctx, &format!("{}: {}", shown.model, said.join(", ")));
 }
 
 /// A Hub commit recorded as a commit of another model: no machine pulled it and no byte uploaded.
@@ -147,9 +147,9 @@ fn recorded(ctx: &Context, made: &RecordedCommit) {
 /// The destination as a mirror of its author's model, recorded before anything uploaded.
 fn mirror(ctx: &Context, mirrored: &Mirrored) {
     let by = mirrored.by.as_ref().map(|b| format!(". {b}")).unwrap_or_default();
-    output::say(ctx, &format!("{} mirrors {}{by}", mirrored.model, mirrored.source));
+    output::answer(ctx, &format!("{} mirrors {}{by}", mirrored.model, mirrored.source));
     if let Some(handle) = &mirrored.added_handle {
-        output::say(ctx, &format!("added {handle} to {}'s claim handles", mirrored.org));
+        output::answer(ctx, &format!("added {handle} to {}'s claim handles", mirrored.org));
     }
 }
 

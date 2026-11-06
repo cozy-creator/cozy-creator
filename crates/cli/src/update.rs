@@ -64,7 +64,10 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let release = Release::read(&dir, &manifest, wanted).map_err(refused)?;
     let version = release.version.clone();
     if wanted.is_none() && !newer(&version, current) {
-        println!("cozy {current} is the newest release");
+        match ctx.json {
+            true => crate::output::json(&serde_json::json!({ "from": current, "newest": version, "updated": false })),
+            false => println!("cozy {current} is the newest release"),
+        }
         return Ok(ExitCode::SUCCESS);
     }
     let url = match &ctx.config.download_url {

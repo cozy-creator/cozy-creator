@@ -237,9 +237,20 @@ fn seconds(text: &str) -> Result<f64, String> {
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::New { path } => {
-            let opened = open(ctx, Some(&path), true).await?;
+            // Made again, it is the one there: a retry is safe.
+            let (opened, made) = match open(ctx, Some(&path), true).await {
+                Err(error) if error.code == "project_exists" => (open(ctx, Some(&path), false).await?, false),
+                opened => (opened?, true),
+            };
+            if ctx.json {
+                output::json(&serde_json::json!({ "id": opened.id, "path": opened.path, "name": opened.name, "made": made, "next": opened.next }));
+                return Ok(ExitCode::SUCCESS);
+            }
             let folder = output::link(ctx, &opened.path);
-            output::say(ctx, &format!("made {folder}: a short film, ready to render or change in its project.yaml"));
+            match made {
+                true => println!("made {folder}: a short film, ready to render or change in its project.yaml"),
+                false => println!("{folder} is a project already"),
+            }
             output::nexts(ctx, &opened.next);
         }
         Verb::Ls => {
@@ -260,7 +271,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             });
             rows.fold(table, output::Table::row).print();
             if listed.older > 0 {
-                output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
+                output::answer(ctx, &format!("{} more, used earlier", listed.older));
             }
         }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
@@ -281,11 +292,11 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 let (name, noun, number) = (&approved.name, &approved.noun, approved.number);
                 let path = output::link(ctx, &opened.path.join(&approved.path));
                 match number {
-                    0 => output::say(ctx, &format!("{name}: approved in project.yaml ({path})")),
-                    number => output::say(ctx, &format!("{name}: {noun} {number} approved in project.yaml ({path})")),
+                    0 => output::answer(ctx, &format!("{name}: approved in project.yaml ({path})")),
+                    number => output::answer(ctx, &format!("{name}: {noun} {number} approved in project.yaml ({path})")),
                 }
                 if !approved.stale.is_empty() {
-                    output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
+                    output::answer(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
                 }
             }
         }
@@ -297,11 +308,11 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&unpinned);
             } else {
                 match unpinned.version {
-                    Some(version) => output::say(ctx, &format!("{}: no longer approved at {version}", unpinned.name)),
-                    None => output::say(ctx, &format!("{}: no longer approved", unpinned.name)),
+                    Some(version) => output::answer(ctx, &format!("{}: no longer approved at {version}", unpinned.name)),
+                    None => output::answer(ctx, &format!("{}: no longer approved", unpinned.name)),
                 }
                 if !unpinned.stale.is_empty() {
-                    output::say(ctx, &format!("out of date now: {}", unpinned.stale.join(", ")));
+                    output::answer(ctx, &format!("out of date now: {}", unpinned.stale.join(", ")));
                 }
             }
         }
@@ -313,10 +324,10 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&cancelled);
                 return Ok(ExitCode::SUCCESS);
             }
-            cancelled.dropped.iter().for_each(|name| output::say(ctx, &format!("dropped {name} from the queue")));
-            cancelled.canceled.iter().for_each(|run| output::say(ctx, &format!("canceled run {run}")));
+            cancelled.dropped.iter().for_each(|name| output::answer(ctx, &format!("dropped {name} from the queue")));
+            cancelled.canceled.iter().for_each(|run| output::answer(ctx, &format!("canceled run {run}")));
             if cancelled.dropped.is_empty() && cancelled.canceled.is_empty() {
-                output::say(ctx, "nothing of that was queued or running");
+                output::answer(ctx, "nothing of that was queued or running");
             }
         }
         Verb::Reclaim { yes } => {
@@ -328,19 +339,19 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 return Ok(ExitCode::SUCCESS);
             }
             for orphan in &reclaimed.orphans {
-                output::say(ctx, &format!("{}: {} made, {} only it names, which project.yaml no longer names", orphan.name, orphan.versions, output::bytes(orphan.bytes)));
+                output::answer(ctx, &format!("{}: {} made, {} only it names, which project.yaml no longer names", orphan.name, orphan.versions, output::bytes(orphan.bytes)));
             }
             let (files, bytes) = (reclaimed.files, output::bytes(reclaimed.bytes));
             match (reclaimed.deleted, files) {
-                (true, _) => output::say(ctx, &format!("deleted {files} files, {bytes}")),
-                (false, 0) if reclaimed.orphans.is_empty() => output::say(ctx, "nothing to reclaim"),
-                (false, _) => output::say(ctx, &format!("{files} files nothing else names, {bytes}")),
+                (true, _) => output::answer(ctx, &format!("deleted {files} files, {bytes}")),
+                (false, 0) if reclaimed.orphans.is_empty() => output::answer(ctx, "nothing to reclaim"),
+                (false, _) => output::answer(ctx, &format!("{files} files nothing else names, {bytes}")),
             }
             if reclaimed.unrecorded > 0 {
-                output::say(ctx, &format!("{} with no record here, which --yes leaves: they may be all that's left of a take", reclaimed.unrecorded));
+                output::answer(ctx, &format!("{} with no record here, which --yes leaves: they may be all that's left of a take", reclaimed.unrecorded));
             }
             if let Some(lost) = &reclaimed.lost {
-                output::say(ctx, &format!("{lost}: --yes is refused"));
+                output::answer(ctx, &format!("{lost}: --yes is refused"));
             }
             output::nexts(ctx, &reclaimed.next);
         }
@@ -353,21 +364,21 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
             match ctx.json {
                 true => output::json(&renamed),
-                false if renamed.versions == 0 => output::say(ctx, &format!("{} is {} now", renamed.from, renamed.to)),
-                false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
+                false if renamed.versions == 0 => output::answer(ctx, &format!("{} is {} now", renamed.from, renamed.to)),
+                false => output::answer(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }
         Verb::Push => {
             let done = transfer(ctx, args.path.as_ref(), "push", "sent").await?;
             let at = done.kept_in.as_deref().unwrap_or("the Hub");
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
-            output::say(ctx, &format!("{} files at {at}: {moved} sent ({bytes}), {rest} there already", done.files));
+            output::answer(ctx, &format!("{} files at {at}: {moved} sent ({bytes}), {rest} there already", done.files));
             return Ok(skipped(&done));
         }
         Verb::Pull => {
             let done = transfer(ctx, args.path.as_ref(), "pull", "fetched").await?;
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
-            output::say(ctx, &format!("{} files: {moved} fetched ({bytes}), {rest} here already", done.files));
+            output::answer(ctx, &format!("{} files: {moved} fetched ({bytes}), {rest} here already", done.files));
             return Ok(skipped(&done));
         }
     }

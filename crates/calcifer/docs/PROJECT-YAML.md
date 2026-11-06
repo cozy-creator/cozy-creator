@@ -148,6 +148,9 @@ Putting a tool on a text asset moves its `text` to `instructions`. On a picture,
 
 | Command | Does |
 |---|---|
+| `new <path>` | Makes a project folder; run again, it says the one there |
+| `ls` | Your projects, last used first |
+| `wait` | Follows the render going to its end, free: exits 0 done, 1 something failed, 4 a run stopped moving. With none going, `status` |
 | `render all [--on <machine>]` | A new version, with a new seed, of every asset with a tool, each reading the new ones before it. Approved assets are skipped, and said. One of each: `-n` is for an asset you name, and with `all` it warns and makes one |
 | `render <name>`, `-n 4` | A new version of it, or four, and of what it reads only if that has no state. Naming an approved asset makes a version to look at, and what it holds stays |
 | `render <names\|all> --missing` | Only what has no state: continues a render that half failed without paying twice |

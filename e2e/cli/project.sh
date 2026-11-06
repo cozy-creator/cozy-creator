@@ -289,7 +289,7 @@ local P=$OUT/garden code ID calcifer
 calcifer=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
 [ "$(cozy calcifer --help | grep -c 'takes no arguments')" = 1 ] || check "cozy calcifer --help doesn't say what it is"
 code=0; cozy calcifer no-such-word > /dev/null 2>&1 || code=$?
-[ "$code" = 1 ] || check "cozy calcifer no-such-word exited $code, not 1"
+[ "$code" = 2 ] || check "cozy calcifer no-such-word exited $code, not 2"
 [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$calcifer" ] || check "cozy calcifer --help moved Calcifer from $calcifer to $(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")"
 cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null)" = project.yaml ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.yaml"

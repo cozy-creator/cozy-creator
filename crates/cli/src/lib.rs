@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use protocol::{
     config,
     error::{Error, Kind},
@@ -29,14 +29,24 @@ mod update;
 
 pub use context::Context;
 
-/// `cozy --help`'s last words: what each exit means, the same for every verb.
-const EXITS: &str = "Exit codes:
-  0  done, or nothing to do
-  1  refused, or a run or render failed: it says why and what's next
-  2  a usage error: nothing happened
-  3  a push or pull left files out, or an upgrade put something out of date
-  4  a run stopped moving, as Calcifer says after 10 minutes with no progress: it goes on until you cancel it
+/// `cozy --help`'s last words: examples, then what each exit means, the same for every verb.
+const EXITS: &str = "Examples:
+  cozy                                      what's going here: the project, runs, machines, spend, and what's next
+  cozy run birefnet/remove_background --file image=./dog.png --on corteo
+  cozy machine rent rtx-4090 --yes          billing until `cozy machine end`
+  cozy --json run ls                        the same facts as JSON, for a program or an agent
 
+Exit codes, the same for every verb:
+  0  done, or nothing to do
+  1  failed: a run, render, install or check ran and failed, or was canceled
+  2  usage: a flag or argument is wrong, or a price needs --yes; nothing happened
+  3  partial: a push or pull left files out, an upgrade put something out of date, or you stopped following work that goes on
+  4  stalled: a run stopped moving, as Calcifer says after 10 minutes with no progress; it goes on until you cancel it
+  5  refused: cozy, Calcifer, a machine or the Hub said no or did not answer; nothing happened
+  6  not found: the run, machine, project, asset, package or model named does not exist
+
+A refusal is one line with its code, then `next:`, the command to run. With --json it is {\"error\": {kind, code, message, next}}
+on stdout, and work that is followed prints NDJSON. Progress and warnings go to stderr; nothing ever prompts off a terminal.
 `cozy` alone says what's going here. --json prints what a view shows, --full all of it.";
 
 #[derive(Parser, Debug)]
@@ -66,31 +76,70 @@ enum Command {
     /// Run a function: `pkg/fn` (first-party), `org/pkg/fn`, `./dir[/fn]` or `./script.py[/fn]`.
     Run(run::Args),
     /// Local, rented and added machines.
+    #[command(after_help = "Examples:
+  cozy machine ls
+  cozy machine rent                         what is for rent
+  cozy machine rent rtx-4090 --yes
+  cozy machine end corteo")]
     Machine(machine::Args),
     /// Find, install and publish packages.
+    #[command(after_help = "Examples:
+  cozy package ls upscale
+  cozy package info birefnet
+  cozy package install birefnet --on corteo")]
     Package(package::Args),
     /// Find, download, upload and publish models.
+    #[command(after_help = "Examples:
+  cozy model ls flux
+  cozy model info zhengpeng7/birefnet
+  cozy model download zhengpeng7/birefnet --on corteo")]
     Model(model::Args),
     /// Projects: assets, and the operations that make them.
     Project(project::Args),
     /// Open the canvas in your browser: the project you're in, else the home.
     Open(open::Args),
     /// Claim an organization parked under your name.
+    #[command(after_help = "Example:
+  cozy org claim black-forest-labs")]
     Org(org::Args),
     /// Sign in to the Hub with this computer's device key.
+    #[command(after_help = "Examples:
+  cozy login you@example.com                in a terminal: type the code the Hub emails
+  cozy login you@example.com --export ci.key   a key for another computer, such as CI
+  cozy login --key ci.key                   on that computer: no terminal needed")]
     Login(account::Login),
     /// Sign out of the Hub.
+    #[command(after_help = "Examples:
+  cozy logout
+  cozy logout --everywhere                  every computer of this account (in a terminal: it asks for an emailed code)")]
     Logout(account::Logout),
     /// Show the signed-in account, its credit and where to buy more.
+    #[command(after_help = "Examples:
+  cozy whoami
+  cozy --json whoami")]
     Whoami(account::Whoami),
     /// This project, the runs going, machines and spend at a glance; `cozy` alone says the same.
+    #[command(after_help = "Examples:
+  cozy status
+  cozy --json status                        the same, as JSON; --full the whole record")]
     Status(daemon::Status),
     /// Replace this binary with the newest release.
+    #[command(after_help = "Examples:
+  cozy update
+  cozy update 0.20.0")]
     Update(update::Args),
     /// Print a shell completion script.
+    #[command(after_help = "Examples:
+  cozy completion bash > ~/.local/share/bash-completion/completions/cozy
+  cozy completion zsh > \"${fpath[1]}/_cozy\"
+  cozy completion fish > ~/.config/fish/completions/cozy.fish")]
     Completion(completion::Args),
     /// Diagnose this computer's cozy (Calcifer, its service, the machine) and fix a stuck Calcifer;
     /// then a machine's driver, GPUs, toolchain and kernels.
+    #[command(after_help = "Examples:
+  cozy doctor
+  cozy doctor --on corteo
+  cozy --json doctor")]
     Doctor(doctor::Args),
 }
 
@@ -98,7 +147,9 @@ enum Command {
 /// codes: `EXITS`.
 pub fn main() -> ExitCode {
     completion::answer(Cli::command);
-    let cli = match Cli::try_parse() {
+    let args: Vec<String> = std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()).collect();
+    output::VERB.get_or_init(|| verb(&Cli::command(), &args));
+    let cli = match Cli::command().try_get_matches_from(std::env::args_os()).and_then(|matches| Cli::from_arg_matches(&matches)) {
         Ok(cli) => cli,
         Err(error) => return usage(error),
     };
@@ -126,24 +177,65 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// clap's own rendering for a person; with `--json` the typed envelope, exit 2.
+/// The verbs `args` names, as far as they go (`machine end`), read off the grammar: an option's value is never a verb.
+fn verb(root: &clap::Command, args: &[String]) -> String {
+    let mut path: Vec<&clap::Command> = vec![root];
+    let takes = |path: &[&clap::Command], hit: &dyn Fn(&clap::Arg) -> bool| {
+        path.iter().flat_map(|command| command.get_arguments()).any(|arg| hit(arg) && arg.get_action().takes_values())
+    };
+    let mut words = args.iter().skip(1);
+    while let Some(word) = words.next() {
+        let skip = match word.strip_prefix("--") {
+            Some("") => break,
+            Some(long) => !long.contains('=') && takes(&path, &|arg| arg.get_long() == Some(long)),
+            None => match word.strip_prefix('-').map(|short| short.chars().collect::<Vec<_>>()) {
+                Some(short) if !short.is_empty() => short.len() == 1 && takes(&path, &|arg| arg.get_short() == Some(short[0])),
+                _ => match path.last().and_then(|command| command.find_subcommand(word)) {
+                    Some(sub) => {
+                        path.push(sub);
+                        continue;
+                    }
+                    None => break,
+                },
+            },
+        };
+        if skip {
+            words.next();
+        }
+    }
+    path[1..].iter().map(|command| command.get_name()).collect::<Vec<_>>().join(" ")
+}
+
+/// A grammar error as every refusal is said: one line, its code, and the verb's `--help` next (the envelope with `--json`), exit 2.
+/// Help and the version are clap's own, as is a verb asked without its subcommand off `--json`: its help, on stderr.
 fn usage(error: clap::Error) -> ExitCode {
     use clap::error::ErrorKind;
     let json = std::env::args_os().any(|arg| arg == "--json");
-    if !json
-        || matches!(
-            error.kind(),
-            ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        )
-    {
-        error.exit();
-    }
-    let message = error.render().to_string();
-    let message = message.lines().next().unwrap_or_default();
-    let message = message.strip_prefix("error: ").unwrap_or(message);
-    output::refuse(true, &Error::new(Kind::Usage, "usage", message))
+    let code = match error.kind() {
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => error.exit(),
+        ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand | ErrorKind::MissingSubcommand if !json => error.exit(),
+        ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand | ErrorKind::MissingSubcommand => "verb_missing",
+        ErrorKind::InvalidSubcommand => "verb_unknown",
+        ErrorKind::UnknownArgument => "argument_unknown",
+        ErrorKind::MissingRequiredArgument => "argument_missing",
+        ErrorKind::ArgumentConflict => "arguments_conflict",
+        ErrorKind::InvalidValue | ErrorKind::ValueValidation | ErrorKind::NoEquals => "value_invalid",
+        ErrorKind::TooManyValues | ErrorKind::TooFewValues | ErrorKind::WrongNumberOfValues => "values_count",
+        _ => "usage",
+    };
+    let rendered = error.render().to_string();
+    let mut lines = rendered.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default();
+    let message = first.strip_prefix("error: ").unwrap_or(first);
+    let said: Vec<&str> = lines.filter(|line| !line.starts_with("For more information")).collect();
+    let tips: Vec<&str> = said.iter().filter_map(|line| line.strip_prefix("tip: ")).collect();
+    let remedy = match tips.is_empty() {
+        true => said.iter().find(|line| line.starts_with("Usage: ")).map(|line| line.to_string()),
+        false => Some(tips.join("; ")),
+    };
+    let mut refusal = Error::new(Kind::Usage, code, message);
+    refusal.remedy = remedy;
+    output::refuse(json, &refusal)
 }
 
 async fn dispatch(ctx: &Context, command: Option<Command>) -> Result<ExitCode, Error> {

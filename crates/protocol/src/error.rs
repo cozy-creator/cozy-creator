@@ -122,9 +122,13 @@ impl Error {
         matches!(self.code.as_str(), "hub_unreachable" | "hub_slow") || (self.kind == Kind::Unavailable && self.cause.as_ref() == Some(&self.code))
     }
 
-    /// The process exit code: 2 for usage, 1 for everything else.
+    /// The process exit code of a refusal: 2 usage, 6 not found, 5 any other. 1 is work that ran and failed.
     pub fn exit_code(&self) -> i32 {
-        if self.kind == Kind::Usage { 2 } else { 1 }
+        match self.kind {
+            Kind::Usage => 2,
+            Kind::NotFound => 6,
+            _ => 5,
+        }
     }
 }
 

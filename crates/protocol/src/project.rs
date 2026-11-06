@@ -96,9 +96,9 @@ pub struct Cancel {
 /// What a cancel did: the names dropped from the queue, and the runs asked to stop.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cancelled {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub dropped: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub canceled: Vec<u64>,
 }
 

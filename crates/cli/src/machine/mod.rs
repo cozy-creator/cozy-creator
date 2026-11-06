@@ -35,7 +35,10 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 enum Verb {
     /// Every machine: this computer's, rentals and added ones; live on a terminal.
-    #[command(alias = "list")]
+    #[command(alias = "list", after_help = "Examples:
+  cozy machine ls
+  cozy machine ls --history --since 7d     every rental this week and what it cost
+  cozy --json machine ls")]
     Ls {
         /// Every rental instead, ended ones too and rented from any computer, newest first: what
         /// each ran and cost, and the total per UTC day and in all.
@@ -46,11 +49,18 @@ enum Verb {
         since: Option<jiff::SignedDuration>,
     },
     /// One machine and what it reports of itself; live on a terminal while it lives.
+    #[command(after_help = "Examples:
+  cozy machine show local
+  cozy --json machine show corteo")]
     Show {
         /// A live machine's name, or any machine's rental id.
         name: String,
     },
     /// Print a machine's log: its own, or the tensorfs or memory log it keeps.
+    #[command(after_help = "Examples:
+  cozy machine logs corteo -n 50
+  cozy machine logs local calcifer --since 30m
+  cozy machine logs corteo --follow          until Ctrl-C")]
     Logs {
         /// A live machine's name, or any machine's rental id.
         name: String,
@@ -63,10 +73,18 @@ enum Verb {
     /// never the order: 3 and `<name>: still live …`. With --json: NDJSON lines, the quote and then
     /// `rental.accepted` (its rental id and name) once the Hub accepts, then the machine's document
     /// when it is ready, or `rental.unfollowed`.
+    #[command(after_help = "Examples:
+  cozy machine rent                         the catalog: names, GPUs, VRAM, price an hour
+  cozy machine rent rtx-4090                quotes it; off a terminal nothing is rented without --yes
+  cozy machine rent rtx-4090 --gpus 2 --ssh --yes
+  cozy --json machine rent l40s --yes       NDJSON: the quote, rental.accepted (its id and name) at once, the machine when ready")]
     Rent(rent::Rent),
     /// End a rental (billing stops once its Hub confirms), or remove an added machine, once
     /// its runs' outputs have landed here. Calcifer carries the end out: Ctrl-C stops following,
     /// never the end.
+    #[command(after_help = "Examples:
+  cozy machine end corteo
+  cozy machine end corteo --force           now, giving up outputs that have not landed")]
     End {
         name: String,
         /// End it now, giving up outputs that have not landed.
@@ -74,8 +92,15 @@ enum Verb {
         force: bool,
     },
     /// Reset a rental's 15-minute idle clock once.
+    #[command(after_help = "Example:
+  cozy machine keepalive corteo")]
     Keepalive { name: String },
-    /// Log in to a rental as root over SSH (one rented with `--ssh`), or run a command there.
+    /// Log in to a rental as root over SSH (one rented with `--ssh`), or run a command there: with --json, its exit, stdout
+    /// and stderr.
+    #[command(after_help = "Examples:
+  cozy machine ssh corteo
+  cozy machine ssh corteo nvidia-smi
+  cozy --json machine ssh corteo -- df -h   the command's exit, stdout and stderr")]
     Ssh {
         name: String,
         /// A command to run there instead of a shell.
@@ -84,6 +109,10 @@ enum Verb {
     },
     /// Update a machine's Runtime, TensorFS and TensorD in one run and one restart: to the Hub's
     /// target, or to the versions or local builds named.
+    #[command(after_help = "Examples:
+  cozy machine update corteo                 to the Hub's target
+  cozy machine update corteo --runtime 0.41.0 --tensorfs 0.20.0
+  cozy machine update local --tensord ~/cozy-creator   a dev build of this checkout")]
     Update {
         name: String,
         /// The Runtime: a release (`0.30.16`) the machine fetches from PyPI, else its GitHub
@@ -109,6 +138,9 @@ enum Verb {
         gpu_memory_limit: Option<u64>,
     },
     /// Add another computer's machine by its address and TLS fingerprint.
+    #[command(after_help = "Examples:
+  cozy machine add studio 192.168.1.20:<port> --fingerprint sha256:<hex>
+      both from `cozy machine show local` on that computer, which runs `cozy machine authorize` first")]
     Add {
         name: String,
         /// host:port
@@ -119,6 +151,9 @@ enum Verb {
     },
     /// On this computer: let the controller with this public key use this machine, which then
     /// listens on every interface (every call still needs an authorized key).
+    #[command(after_help = "Examples:
+  cozy machine authorize <key>              the controller key `cozy machine show local` prints on the other computer
+  cozy machine authorize <key> --remove")]
     Authorize {
         /// The controller's Ed25519 key (`cozy machine show local` on that computer). A base64url
         /// key may begin with `-`: it is the key, never a flag.
@@ -241,6 +276,10 @@ async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, 
             None => Error::new(Kind::Usage, "machine_ssh_none", format!("{} is not a rental: SSH there as its owner does", m.name)),
         });
     };
+    if ctx.json && command.is_empty() {
+        return Err(Error::new(Kind::Usage, "ssh_shell_json", format!("a shell on {} is a terminal's: with --json, name a command to run there", m.name))
+            .next(format!("cozy --json machine ssh {} nvidia-smi", m.name)));
+    }
     let mut ssh = std::process::Command::new(&login.args[0]);
     ssh.args(&login.args[1..]);
     if !command.is_empty() {
@@ -250,6 +289,15 @@ async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, 
         Error::new(Kind::Unavailable, "ssh_unavailable", format!("ssh: {e}"))
             .remedy("install an OpenSSH client")
     };
+    // With --json, the command's exit and output in one document.
+    if ctx.json {
+        let ran = ssh.stdin(std::process::Stdio::null()).output().map_err(unstarted)?;
+        output::json(&serde_json::json!({
+            "machine": m.name, "command": command, "exit": ran.status.code(),
+            "stdout": String::from_utf8_lossy(&ran.stdout), "stderr": String::from_utf8_lossy(&ran.stderr),
+        }));
+        return Ok(ExitCode::from(ran.status.code().unwrap_or(1).clamp(0, 255) as u8));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;

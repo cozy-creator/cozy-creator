@@ -73,7 +73,10 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     let mut query = vec![("hub", ctx.hub().to_string())];
     query.extend(selected.map(|release| ("release", release)));
     let at = path(&["v1", "models", &repo.org, &repo.name]);
-    let view: ModelDetail = ctx.calcifer().await?.get_query(&at, &query).await?;
+    let view: ModelDetail = ctx.calcifer().await?.get_query(&at, &query).await.map_err(|error| match error.kind {
+        Kind::NotFound if error.next.is_empty() => error.next(format!("cozy model ls {}", repo.name)),
+        _ => error,
+    })?;
     if ctx.json {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);

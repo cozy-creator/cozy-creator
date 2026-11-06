@@ -129,7 +129,10 @@ enum Warm {
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
     /// Every run, newest first; live on a terminal.
-    #[command(alias = "list")]
+    #[command(alias = "list", after_help = "Examples:
+  cozy run ls
+  cozy run ls --state failed --limit 5
+  cozy run ls --all --on corteo")]
     Ls {
         /// Only runs in this state: queued, in_progress (or running), completed, failed or canceled.
         #[arg(long, value_name = "STATE", value_parser = run_state)]
@@ -149,6 +152,10 @@ enum Verb {
     },
     /// One run: its result, outputs, calls, logs and how it ran. A run not yet settled is
     /// followed to its end (Ctrl-C stops following, never the run); its exit code is the run's.
+    #[command(after_help = "Examples:
+  cozy run show 42                          follows a run going to its end: Ctrl-C stops following, never the run
+  cozy run show 42 --once                   a snapshot, at once
+  cozy --json --full run show 42")]
     Show {
         /// The run's number or id.
         run: String,
@@ -157,11 +164,16 @@ enum Verb {
         once: bool,
     },
     /// Cancel a queued or running run.
+    #[command(after_help = "Example:
+  cozy run cancel 42")]
     Cancel {
         /// The run's number or id.
         run: String,
     },
     /// Print a link that plays a run's output in a browser, straight from its machine.
+    #[command(after_help = "Examples:
+  cozy run play 42
+  cozy run play 42 --output video --expires 2h")]
     Play {
         /// The run's number or id.
         run: String,

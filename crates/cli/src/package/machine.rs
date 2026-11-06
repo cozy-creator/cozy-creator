@@ -73,11 +73,11 @@ pub async fn install(ctx: &Context, package: String, release: Option<String>, on
     let mut next = vec![format!("cozy package ls --on {machine}")];
     if let Some(installed) = installed {
         let package = &installed.package;
-        output::say(ctx, &format!("{package}@{} is installed on {machine}", installed.release));
+        output::answer(ctx, &format!("{package}@{} is installed on {machine}", installed.release));
         for retired in &installed.after.retired {
             match &retired.reason {
-                None => output::say(ctx, &format!("{package}@{} left {machine}", retired.release)),
-                Some(why) => output::say(ctx, &format!("{package}@{} stays on {machine}: {why}", retired.release)),
+                None => output::answer(ctx, &format!("{package}@{} left {machine}", retired.release)),
+                Some(why) => output::answer(ctx, &format!("{package}@{} stays on {machine}: {why}", retired.release)),
             }
         }
         let first = protocol::interface::Interface::parse(&installed.interface)

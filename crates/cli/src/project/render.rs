@@ -260,7 +260,8 @@ impl Rendering {
         let Some((error, rendered)) = &self.ended else { return Ok(ExitCode::SUCCESS) };
         // A render that fell short ends on how far it got, the error's own words.
         match error {
-            Some(error) if error.code != "render_incomplete" && self.told(error) => Ok(ExitCode::from(error.exit_code() as u8)),
+            Some(error) if error.code != "render_incomplete" && self.told(error) => Ok(ExitCode::FAILURE),
+            Some(error) if error.code == "render_incomplete" => Ok(output::failed(ctx, error)),
             Some(error) => Err(error.clone()),
             None => {
                 rendered.iter().for_each(|rendered| output::say(ctx, &finished(rendered)));
@@ -318,7 +319,7 @@ impl Rendering {
         for next in error.next.iter().filter(|next| !shown.contains(next)) {
             output::next(ctx, &[next]);
         }
-        Ok(ExitCode::from(error.exit_code() as u8))
+        Ok(ExitCode::FAILURE)
     }
 
     /// Each asset made: its take or version, its time, its file, and what came of it, in columns.

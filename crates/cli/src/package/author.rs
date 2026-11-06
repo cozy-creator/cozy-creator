@@ -138,7 +138,7 @@ pub async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Err
             "package_release_not_taken",
             format!("{package} names a release; delete takes the whole package, [org/]name"),
         )
-        .remedy(format!("cozy package yank {package}")));
+        .next(format!("cozy package yank {package}")));
     }
     let hub = ctx.hub();
     if !ctx.yes {
@@ -150,7 +150,7 @@ pub async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Err
                 hub
             ),
         )
-        .remedy("run it again with --yes"));
+        .next(output::again_with("--yes")));
     }
     let at = path(&["v1", "packages", &package.org, &package.name]);
     let result: PackageDeleted = ctx.calcifer().await?.delete_query(&at, &At { hub: Some(hub.to_string()) }).await?;

@@ -47,7 +47,7 @@ pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Erro
     let hub = ctx.hub();
     if !ctx.yes {
         return Err(usage("model_delete_unconfirmed", format!("deleting {} from {} cannot be undone", args.model, hub))
-            .remedy("run it again with --yes"));
+            .next(output::again_with("--yes")));
     }
     let mut at = vec!["v1", "models", repo.org.as_str(), repo.name.as_str()];
     let note = match (&release, &commit) {

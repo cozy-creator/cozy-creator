@@ -282,7 +282,8 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
     }
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return Err(Error::new(Kind::Usage, "quote_unagreed", format!("{offer}: nothing was rented"))
-            .remedy("to rent at this price, run the same command with --yes"));
+            .remedy("to rent at this price, run the same command with --yes")
+            .next(output::again_with("--yes")));
     }
     if !why.is_empty() {
         anstream::eprintln!("{why}");
@@ -455,7 +456,7 @@ async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
     let query = [("hub", hub.to_string())];
     let RentalSkus { rental_skus: skus } = ctx.calcifer().await?.get_query("/v1/rental-skus", &query).await?;
     if ctx.json {
-        output::json(&skus);
+        output::view(ctx, &skus, SKU_FIELDS);
         return Ok(ExitCode::SUCCESS);
     }
     let mut table = output::Table::new(
@@ -486,13 +487,16 @@ async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
             usd(width.price_usd_micros_per_hour),
         ]);
     }
-    table.print();
-    match skus.is_empty() {
-        false => {
-            output::say(ctx, "Prices are for the fewest GPUs, an hour.");
-            output::next(ctx, &["cozy machine rent <name> [--gpus N]"]);
-        }
-        true => output::say(ctx, "No machine is for rent on this Hub right now."),
+    if skus.is_empty() {
+        anstream::println!("No machine is for rent on this Hub right now.");
+        return Ok(ExitCode::SUCCESS);
     }
+    table.note("Prices are for the fewest GPUs, an hour.").print();
+    output::next(ctx, &["cozy machine rent <name> [--gpus N]"]);
     Ok(ExitCode::SUCCESS)
 }
+
+/// What `machine rent --json` keeps of each product without `--full`: what the table shows, a width's price each.
+const SKU_FIELDS: &[&str] = &[
+    "name", "accelerator_model", "compute_capability", "vram_gb", "widths.accelerator_count", "widths.price_usd_micros_per_hour",
+];

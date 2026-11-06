@@ -26,7 +26,10 @@ pub struct Args {
 enum Command {
     /// The Hub's packages; words search. `--on` lists what machines have installed instead, live on
     /// a terminal.
-    #[command(alias = "list")]
+    #[command(alias = "list", after_help = "Examples:
+  cozy package ls
+  cozy package ls upscale video --limit 5
+  cozy package ls --on local                what this computer's machine has installed")]
     Ls {
         /// Words to match; none lists every package.
         query: Vec<String>,
@@ -39,6 +42,9 @@ enum Command {
     },
     /// A published package's releases, newest first; one release, with what its publish warned
     /// of (its owner sees the warnings).
+    #[command(after_help = "Examples:
+  cozy package info birefnet
+  cozy package info birefnet@0.2.0")]
     Info {
         /// [org/]name[@release]
         package: String,
@@ -46,6 +52,10 @@ enum Command {
     /// Install a published package ([org/]name[@release]), a directory or a script on a machine:
     /// its environment, no weights. Without a release, the newest; over an installed package, its
     /// older releases there go. Follows the install; Ctrl-C stops following, never it.
+    #[command(after_help = "Examples:
+  cozy package install birefnet --on corteo
+  cozy package install ./my-package         a directory, on this computer's machine
+  cozy --json package install birefnet@0.2.0 --on corteo   NDJSON: the install run's events, its number first")]
     Install {
         /// [org/]name[@release], a directory such as `.` or `./project`, or a `script.py`.
         #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
@@ -56,6 +66,9 @@ enum Command {
     /// Move a package on a machine to its newest release (or the one named), installing it if it
     /// isn't there; the older ones there go. A run with no version stays on what is installed
     /// until this.
+    #[command(after_help = "Examples:
+  cozy package update birefnet --on corteo
+  cozy package update birefnet@0.2.0")]
     Update {
         /// [org/]name[@release]
         package: String,
@@ -63,6 +76,9 @@ enum Command {
         placement: Placement,
     },
     /// Remove packages from a machine.
+    #[command(after_help = "Examples:
+  cozy package remove birefnet --on corteo
+  cozy package remove local/my-package")]
     Remove {
         /// [org/]name or local/name.
         #[arg(required = true)]
@@ -71,6 +87,9 @@ enum Command {
         placement: Placement,
     },
     /// Lock this project's dependencies for the Hub and account it publishes to (needs uv).
+    #[command(after_help = "Examples:
+  cd my-package && cozy package lock
+  cozy package lock --upgrade-package torch")]
     Lock {
         /// Let this dependency move to its newest compatible release; repeat for each.
         #[arg(long = "upgrade-package", value_name = "PACKAGE")]
@@ -80,6 +99,9 @@ enum Command {
         root: bool,
     },
     /// Publish this project as <account>/<name>@<version>, or <name>@<version> with --root (needs uv).
+    #[command(after_help = "Examples:
+  cd my-package && cozy package lock && cozy package publish
+  cozy package publish --yanked             only an exact pin installs it until `cozy package yank --undo`")]
     Publish {
         /// At the root namespace: first-party, Hub admins only.
         #[arg(long)]
@@ -91,11 +113,16 @@ enum Command {
     },
     /// Delete a package from the Hub with every release, for good: its name and versions are free
     /// again. Machines that installed it keep their copies.
+    #[command(after_help = "Example:
+  cozy package delete my-package --yes     for good: without --yes nothing is sent")]
     Delete {
         /// [org/]name
         package: String,
     },
     /// Yank a release: machines that hold it keep it, only an exact pin installs it.
+    #[command(after_help = "Examples:
+  cozy package yank my-package@0.3.0
+  cozy package yank my-package@0.3.0 --undo")]
     Yank {
         /// [org/]name@release
         release: String,

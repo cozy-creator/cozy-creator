@@ -42,10 +42,19 @@ enum Shell {
     Powershell,
 }
 
-pub async fn exec(_ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+/// The script on stdout; with `--json`, `{shell, script}`.
+pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+    let mut script = vec![];
     args.shell
-        .write_registration(VAR, "cozy", "cozy", "cozy", &mut io::stdout())
-        .map_err(|e| Error::new(Kind::Internal, "stdout", e.to_string()))?;
+        .write_registration(VAR, "cozy", "cozy", "cozy", &mut script)
+        .map_err(|e| Error::new(Kind::Internal, "completion_unwritten", e.to_string()))?;
+    match ctx.json {
+        true => crate::output::json(&serde_json::json!({
+            "shell": args.shell.to_possible_value().map(|value| value.get_name().to_owned()),
+            "script": String::from_utf8_lossy(&script),
+        })),
+        false => io::stdout().write_all(&script).map_err(|e| Error::new(Kind::Internal, "stdout", e.to_string()))?,
+    }
     Ok(ExitCode::SUCCESS)
 }
 
