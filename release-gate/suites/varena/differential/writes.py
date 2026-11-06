@@ -47,7 +47,7 @@ def _writes_run(self: Any, step: Any, steps: Any, state: Any, carried: Any, inpu
 def _first_records_nothing(*args: Any, **kwargs: Any) -> Any:
     if not _recorded[0]:
         _recorded[0] = True
-        return None, ""
+        return None, "", 0
     return _record_first(*args, **kwargs)
 
 

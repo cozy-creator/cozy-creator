@@ -14,7 +14,7 @@ def calls(record):
 def facts(path):
     """Its digests by call and name, what `vt.checks` did, each split's level and any replay caught wrong."""
     record = json.load(open(path))
-    digests, checks, levels = {}, {'uses': 0, 'unmapped_bytes': 0, 'perturbed_bytes': 0}, []
+    digests, checks, levels = {}, {'uses': 0, 'unmapped_bytes': 0, 'perturbed_bytes': 0}, {}
     mismatched = 0
     for index, call in enumerate(calls(record)):
         measured = call.get('measurements') or {}
@@ -28,7 +28,7 @@ def facts(path):
             if isinstance(value, dict):
                 for key, held in value.items():
                     if key == 'working_splits':
-                        levels.extend(sorted((row.get('site', ''), sorted((row.get('levels') or {}).items())) for row in held))
+                        levels.update((f'{index}.{row.get("site", "")}', sorted((row.get('levels') or {}).items())) for row in held)
                     walk(held)
             elif isinstance(value, list):
                 for held in value:
@@ -51,8 +51,9 @@ def main(a, b):
     if not different:
         return f'PASS byte-identical: {said}'
     if levels != others:
-        moved = sum(one != other for one, other in zip(levels, others))
-        return f'FAIL {different} differ, and split levels moved at {moved} of {len(levels)} sites: {said}'
+        sites = levels.keys() | others.keys()
+        moved = sum(levels.get(site) != others.get(site) for site in sites)
+        return f'FAIL {different} differ, and split levels moved at {moved} of {len(sites)} sites: {said}'
     return f'FAIL {different} differ: {said}'
 
 
