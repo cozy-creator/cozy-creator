@@ -229,7 +229,7 @@ pub fn main() {
     let ended = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     std::thread::spawn({
         let ended = ended.clone();
-        move || supervisor.supervise(|| Some(ended.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0))
+        move || supervisor.supervise(|_| Some(ended.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0))
     });
     let (first, second) = waiting.join().unwrap();
     println!("supervised: {first:?} then {second:?}, asked {}", ended.load(std::sync::atomic::Ordering::SeqCst));
