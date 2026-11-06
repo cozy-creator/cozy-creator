@@ -81,7 +81,7 @@ impl Drop for Page {
     }
 }
 
-/// A bake's bytes to keep, whole on the card, once `use` has gone on.
+/// A page's bytes to keep, a bake's or a store read's, whole on the card, once `use` has gone on.
 struct Behind {
     key: String,
     set: String,
@@ -305,8 +305,9 @@ impl Tier {
         Ok(Some(Page::new(len)?))
     }
 
-    /// Keep `region`'s bytes as `key` behind the thread that called `use`: first touching 21 GB of
-    /// pages there left the card idle for 17 s of H3's first step. The thread ends with its queue.
+    /// Keep `region`'s bytes as `key` behind the thread that called `use`, a bake's or a store read's:
+    /// first touching 21 GB of pages there left the card idle for 17 s of H3's first step, and store
+    /// pages kept only at idle left back-to-back calls reading the store. The thread ends with its queue.
     pub(super) fn keep_behind(self: &Arc<Self>, key: &str, set: &str, region: Weak<varena::Region>, len: usize) {
         let mut state = self.state();
         state.behind.push_back(Behind { key: key.to_owned(), set: set.to_owned(), region, len });
@@ -332,6 +333,9 @@ impl Tier {
     /// that went first, or a capture, costs its next fill a bake, never a wrong page: its bytes
     /// never change, and `key` names them.
     fn keep(&self, job: Behind) {
+        if !job.region.upgrade().is_some_and(|region| region.holds_contents()) {
+            return; // Gone from the card first: `pin_idle` reads a store page again.
+        }
         let Ok(Some(page)) = self.reserve(&job.key, job.len) else { return };
         let Some(region) = job.region.upgrade() else { return };
         let Ok(_producer) = varena::enter_producer(self.device) else { return };
@@ -358,7 +362,9 @@ impl Tier {
         drop(unsafe { pin.into_completed_region() });
         if copied.is_ok() {
             self.insert(&job.key, &job.set, page);
-            self.state().unregistered.push(job.key);
+            let mut state = self.state();
+            state.wanted.remove(&job.key); // Kept: `pin_idle` registers it, and never reads it again.
+            state.unregistered.push(job.key);
         }
     }
 
