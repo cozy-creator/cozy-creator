@@ -41,8 +41,12 @@ async fn authored(ctx: &Context, route: &str, ask: &impl Serialize) -> Result<Au
     }
 }
 
-pub async fn lock(ctx: &Context, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
-    let ask = LockAsk { hub: Some(ctx.hub().to_string()), dir: here()?, root, upgrade: upgrade.to_vec() };
+pub async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
+    let dir = match path {
+        Some(path) => here()?.join(path),
+        None => here()?,
+    };
+    let ask = LockAsk { hub: Some(ctx.hub().to_string()), dir, root, upgrade: upgrade.to_vec() };
     let done = authored(ctx, "/v1/package-locks", &ask).await?;
     let result = done.locked.ok_or_else(|| Error::new(Kind::Internal, "untyped_answer", "a lock that ended with no lock"))?;
     match ctx.json {

@@ -801,17 +801,12 @@ pub fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> SubmitRun
 /// What a settled install answered, or why it installed nothing.
 pub fn installed(run: Run) -> Result<Installed, Error> {
     if run.status != Status::Completed {
-        let (code, message) = run.reason.map_or_else(
-            || ("local_install_unfinished".to_owned(), format!("its install is {:?}", run.status).to_lowercase()),
-            |r| (r.code, r.message),
+        let (code, message, next) = run.reason.map_or_else(
+            || ("local_install_unfinished".to_owned(), format!("its install is {:?}", run.status).to_lowercase(), vec![]),
+            |r| (r.code, r.message, r.next),
         );
-        return Err(Error::new(
-            Kind::Unavailable,
-            "local_install_failed",
-            format!("the machine did not install this code: {message}"),
-        )
-        .cause(code)
-        .next(format!("cozy run show {}", run.number)));
+        let failed = Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")).cause(code);
+        return Err(next.into_iter().chain([format!("cozy run show {}", run.number)]).fold(failed, Error::next));
     }
     let mut result = run.result.unwrap_or_default();
     if !interface(&result["interface"]) {

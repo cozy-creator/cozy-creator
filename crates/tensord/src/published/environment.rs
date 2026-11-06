@@ -465,6 +465,24 @@ pub(crate) fn publish(dir: &Path, record: &Value) -> Result<(), Failure> {
 }
 
 impl Built {
+    /// A description's `failure` said for what it is when the Runtime its lock pinned refused to
+    /// read the code (its `static_*` codes): that Runtime is older than the code, and `next`
+    /// re-locks it on a newer one. Any other failure stands.
+    pub(crate) fn unread(&self, failure: Failure, env: &Path, package: &str, next: &str) -> Failure {
+        // `code: code: why` (the Runtime's error says its code too).
+        let refused = failure.1.split_once(": ").filter(|(code, _)| code.starts_with("static_"))
+            .map(|(code, why)| why.strip_prefix(code).and_then(|why| why.strip_prefix(": ")).unwrap_or(why));
+        let runtime = installed(env).remove("cozy-runtime");
+        let (Some(why), Some(runtime), "locked") = (refused, runtime, self.sdk.as_str()) else { return failure };
+        // `file:line: `construct` — why; the static interface reads …`: the place and the why.
+        let why = why.split("; the static interface").next().unwrap_or(why);
+        let why = match why.split_once(" — ") {
+            Some((at, what)) => format!("{what} ({})", at.split(": `").next().unwrap_or(at)),
+            None => why.to_owned(),
+        };
+        ("package_lock_runtime_old", format!("{package}'s lock pins cozy-runtime {runtime}, which can't read it: {why}: re-lock it on a newer Runtime, `{next}`"))
+    }
+
     /// The record of the environment at `env` (a generation's): the package (distribution and
     /// version), its App and interface, the pair it holds, its description.
     pub(crate) fn record(&self, (identity, environment): (&str, &str), (distribution, version): (&str, &str), env: &Path, interface: &Value,

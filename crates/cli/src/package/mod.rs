@@ -72,6 +72,9 @@ enum Command {
     },
     /// Lock this project's dependencies for the Hub and account it publishes to (needs uv).
     Lock {
+        /// The package's folder, if not the one you are in.
+        #[arg(short = 'p', value_name = "PATH")]
+        path: Option<PathBuf>,
         /// Let this dependency move to its newest compatible release; repeat for each.
         #[arg(long = "upgrade-package", value_name = "PACKAGE")]
         upgrade: Vec<String>,
@@ -130,7 +133,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             packages,
             placement,
         } => machine::remove(ctx, &names(&packages)?, placement.on()?).await,
-        Command::Lock { upgrade, root } => author::lock(ctx, &upgrade, root).await,
+        Command::Lock { path, upgrade, root } => author::lock(ctx, path, &upgrade, root).await,
         Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
