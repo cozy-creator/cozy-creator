@@ -32,7 +32,8 @@ def poisoned() -> str | None:
 
 
 def request_boundary(device: int, *, begin: bool) -> None:
-    """A request started or ended here: orders who donates first. An atomic store, never fails."""
+    """A request started or ended here: orders who donates first, and the first to begin is a phase
+    boundary. Never fails."""
     _ext._varena_request_boundary(device, begin)
 
 
