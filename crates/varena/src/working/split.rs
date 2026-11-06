@@ -937,8 +937,8 @@ pub(super) fn phase_finished(
         if let Some(site) = state.splits.sites.get_mut(&row.key) {
             let sample = site.samples.entry(row.choice_id.clone()).or_default();
             if row.published {
-                let changed = !sample.known || sample.peak != row.peak_bytes || sample.backing != row.backing_peak_bytes
-                    || sample.classes != row.classes;
+                // Backing follows where blocks happened to land; a choice reads only the peak and classes.
+                let changed = !sample.known || sample.peak != row.peak_bytes || sample.classes != row.classes;
                 sample.known = true;
                 sample.peak = row.peak_bytes;
                 sample.backing = row.backing_peak_bytes;
