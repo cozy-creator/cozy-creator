@@ -349,12 +349,12 @@ function linesOf(text, name) {
     await box('shot').locator('button:text-is("Pick up from here")').click();
     await until('a picked-up take', () => versions('shot'), (n) => n === 2, FIRST_RUN_MS);
     const picked = await given('shot');
-    check('pickup_reaches_the_function', picked.pickup?.out_frame === 2 && picked.pickup.take?.file === 'VideoFile', picked.pickup);
+    check('pickup_reaches_the_function', picked.pickup?.out_frame === 2 && picked.pickup.take?.file?.file === 'VideoFile', picked.pickup);
     check('pickup_writes_nothing', linesOf(yaml(), 'shot') === typed && !yaml().includes('pickup'), linesOf(yaml(), 'shot'));
 
     // Another box's take let go on it: from that take, at a frame chosen on it.
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  other:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
-    await box('other').waitFor();
+    await until('other in the project', () => of('other'), Boolean);
     await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
     await render('other', 1);
     await open('other');
@@ -367,7 +367,7 @@ function linesOf(text, name) {
     await box('shot').locator('button:text-is("Pick up from here")').click();
     await until('picked up from other', () => versions('shot'), (n) => n === 3, FIRST_RUN_MS);
     const fromOther = await given('shot');
-    check('pickup_of_another_take', fromOther.pickup?.out_frame === 7 && fromOther.pickup.take?.file === 'VideoFile', fromOther.pickup);
+    check('pickup_of_another_take', fromOther.pickup?.out_frame === 7 && fromOther.pickup.take?.file?.file === 'VideoFile', fromOther.pickup);
     await shot('picked-up');
   }
 

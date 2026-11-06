@@ -92,7 +92,7 @@ class Everything(msgspec.Struct, kw_only=True):
 
 
 class Take(msgspec.Struct):
-    video: File
+    video: VideoFile
     latents: Latents
     given: File
     warnings: list[str]
@@ -117,12 +117,17 @@ def shot(payload: Everything, out: Outputs) -> Take:
     source = payload.pickup.take.file if payload.pickup else payload.plate
     if source is None:
         raise InvalidRequest("this has no plate and picks up from no take")
-    bytes_ = source.read_bytes()
     for index in range(payload.segments):
         time.sleep(1.5)
-        out.publish("video", out.save_bytes(bytes_, media_type="video/mp4"), label=f"Segment {index + 1} of {payload.segments}")
+        out.publish("video", _copy(source, out), label=f"Segment {index + 1} of {payload.segments}")
     given = msgspec.json.encode(_seen(payload))
-    return Take(out.save_bytes(bytes_, media_type="video/mp4"), out.save_bytes(os.urandom(32), media_type="application/octet-stream"), out.save_bytes(given, media_type="application/json"), [])
+    return Take(_copy(source, out), out.save_bytes(os.urandom(32), media_type="application/octet-stream"), out.save_bytes(given, media_type="application/json"), [])
+
+
+def _copy(video: VideoFile, out: Outputs) -> VideoFile:
+    """The video again, as a file of this run's."""
+    with video.stream() as events:
+        return out.save_video_stream(iter(events)).video
 
 
 class StillBox(msgspec.Struct, kw_only=True):
