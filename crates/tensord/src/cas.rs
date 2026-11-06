@@ -82,6 +82,7 @@ impl Cas {
         let written = (|| {
             let mut file = File::create_new(&temp)?;
             let (mut hash, mut length, mut buffer) = (Sha256::new(), 0u64, vec![0; 1 << 20]);
+            let mut paced = platform::durable::Paced::default();
             loop {
                 let n = match src.read(&mut buffer) {
                     Ok(0) => break,
@@ -90,6 +91,7 @@ impl Cas {
                     Err(error) => return Err(error),
                 };
                 file.write_all(&buffer[..n])?;
+                paced.wrote(&file, length, n as u64);
                 hash.update(&buffer[..n]);
                 length += n as u64;
             }
