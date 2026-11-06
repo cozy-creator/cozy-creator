@@ -313,8 +313,8 @@ impl Binder<'_> {
         Ok(format!("{CUT}{n}"))
     }
 
-    /// The files a slot takes from what's written in it: each mention, else a hash of the project's. A slot holding the wrong kind fails,
-    /// free, rather than render without it.
+    /// The files a slot takes from what's written in it: each mention, else a hash of the project's. One of the wrong kind is left out,
+    /// with a warning (decision 8).
     fn slot(&mut self, at: &str, kind: &str, value: &Value, many: bool) -> Result<Vec<Named>, Error> {
         let written: Vec<&str> = match value {
             Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
@@ -339,8 +339,7 @@ impl Binder<'_> {
                     None => self.nothing.push(inner.to_owned()),
                     Some(None) => self.warn(format!("{}'s {at}: <{inner}> has no file yet, so it's left empty", self.call.name)),
                     Some(Some(named)) if kind != "file" && named.kind != kind => {
-                        let said = format!("{}'s {at} takes {}, and <{inner}> is {}", self.call.name, a(kind), a(&named.kind));
-                        return Err(Error::new(Kind::Validation, "slot_wrong_kind", said).remedy(format!("put {} in {at}, or clear it", a(kind))));
+                        self.warn(format!("{}'s {at} takes {}, and <{inner}> is {}: it's left empty", self.call.name, a(kind), a(&named.kind)));
                     }
                     Some(Some(named)) => found.push(named),
                 }

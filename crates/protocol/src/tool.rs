@@ -352,6 +352,8 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
         Type::Prompt(kinds) => {
             out.ty = FieldType::Prompt;
             out.auto = false;
+            // A prompt is written as its text.
+            out.default = out.default.take().map(|value| value.get("text").cloned().unwrap_or(value)).filter(|text| text.as_str() != Some(""));
             out.takes = Some(kinds.clone()).filter(|kinds| !MEDIA.iter().all(|media| kinds.iter().any(|kind| kind == media)));
         }
         Type::Bool => out.ty = FieldType::Toggle,
