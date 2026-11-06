@@ -268,16 +268,12 @@ struct Fit {
     after_idle: usize,
     generation: u64,
     phase: Option<crate::plan::Snapshot>,
-    /// This phase's own resident weights not held now, when it streams anyway: they are read again
-    /// every step whatever this level does, so taking their room only streams more.
-    streamed: usize,
+    after_outside: usize,
+    phase_available: Option<usize>,
 }
 impl Fit {
-    /// Free room, idle pages and this phase's streamed weights hold it; another phase's resident
-    /// weights never do: Qwen 4 MP's text encoder, evicted for a level no faster, was read back on
-    /// the next call's critical path.
     fn fits(&self) -> bool {
-        self.missing <= self.after_idle.saturating_add(self.streamed)
+        self.missing <= self.after_idle
     }
     fn measured(&self) -> bool {
         self.basis == "measured"
@@ -288,8 +284,12 @@ impl Fit {
         if self.measured() { self.full } else { self.full.saturating_mul(5) / 4 }
     }
 
+    fn preserves_phase(&self) -> bool {
+        self.phase_available
+            .is_some_and(|available| self.missing <= available)
+    }
     fn usable(&self) -> bool {
-        self.fits()
+        self.fits() || self.preserves_phase()
     }
     fn short(&self) -> Error {
         Error::Exhausted { requested_bytes: self.missing, available_bytes: self.after_idle }
@@ -314,9 +314,6 @@ fn fits(
     // Only pages whose owner released them and whose submitted fence was observed complete.
     // These are reclaimable backing, not reusable working slots or phase working demand.
     let reclaimable_cache = cache::ready_bytes(state, owner.page());
-    let card = owner.capacity().min(owner.total.load(Ordering::Acquire));
-    let streamed = phase.filter(|intent| intent.bytes > card)
-        .map_or(0, |intent| (intent.bytes - intent.missing).saturating_sub(owner.held.load(Ordering::Acquire)));
     let site = state
         .splits
         .sites
@@ -400,6 +397,13 @@ fn fits(
                 .filter(|(base, segment)| segment.pool.is_none() && !preserve.contains(base))
                 .map(|(base, segment)| state.releasable(*base, segment))
                 .sum();
+            let after_outside = headroom(
+                owner,
+                free,
+                reclaimable
+                    .saturating_add(reclaimable_cache)
+                    .saturating_add(phase.map_or(0, |intent| intent.outside_reclaimable)),
+            );
             Ok(Fit {
                 id: choice.id.clone(),
                 tried: site.tried.contains(&choice.id),
@@ -417,7 +421,8 @@ fn fits(
                 after_idle: headroom(owner, free, reclaimable.saturating_add(reclaimable_cache)),
                 generation,
                 phase: phase.cloned(),
-                streamed,
+                after_outside,
+                phase_available: phase.and_then(|intent| after_outside.checked_sub(intent.missing)),
             })
         })
         .collect()
@@ -455,19 +460,17 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
 
 impl Menu {
     /// The level this operation should run at, whatever is free right now: the largest under
-    /// what the card leaves beside the phase's weights, or beside what's live when it streams them
-    /// anyway. Weights make room for it, but what's live can't: the op gets no more than the
+    /// what the card leaves beside the phase's weights, or a quarter of it on a card that streams
+    /// them anyway. Weights make room for it, but what's live can't: the op gets no more than the
     /// rest of the card. Following free memory instead runs at the finest level whenever weights
     /// fill the card, and makes millions of allocations.
     fn target(&self) -> usize {
         self.trial().unwrap_or_else(|| self.fitting())
     }
 
-    /// The coarsest level under the budget that fits (`Fit::fits`); with none, the finest.
     fn fitting(&self) -> usize {
         let cap = self.budget();
-        let under = self.plans.iter().position(|plan| plan.want() <= cap).unwrap_or(self.plans.len() - 1);
-        self.plans[under..].iter().position(Fit::fits).map_or(self.plans.len() - 1, |finer| under + finer)
+        self.plans.iter().position(|plan| plan.want() <= cap).unwrap_or(self.plans.len() - 1)
     }
 
     /// A level that never ran is only an estimate, which can sit well over what it measures, and
@@ -479,17 +482,14 @@ impl Menu {
         let at = self.fitting();
         let room = self.capacity.saturating_sub(self.live);
         self.plans[at].measured().then(|| {
-            self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room && plan.fits())
+            self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room)
         })?
     }
 
-    /// What the card leaves beside this phase's weights; all that isn't live when the phase streams
-    /// anyway, since its weights then give room for free while the link has headroom (H3 Turbo at
-    /// 8 GiB ran its heads at level 6 under a quarter-card floor, 26% more GPU work than v1).
     fn budget(&self) -> usize {
         let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
-        let room = self.capacity.saturating_sub(self.live);
-        if weights > self.capacity { room } else { self.capacity.saturating_sub(weights).min(room) }
+        self.capacity.saturating_sub(weights).max(self.capacity / 4)
+            .min(self.capacity.saturating_sub(self.live))
     }
 
     fn selection(&self, selected: &Fit, target: usize, stream: u64) -> SplitSelection {
@@ -498,7 +498,11 @@ impl Menu {
             choice_id: selected.id.clone(),
             eligible: self.plans[target..].iter().filter(|plan| plan.usable()).map(|plan| plan.id.clone()).collect(),
             required_bytes: selected.missing,
-            available_bytes: selected.after_idle.saturating_add(selected.streamed),
+            available_bytes: if selected.preserves_phase() {
+                selected.after_outside
+            } else {
+                selected.after_idle
+            },
             allocation_backing_bytes: selected.full,
             measured_backing_peak_bytes: selected.measured,
             reused_capacity_bytes: selected.reused,
