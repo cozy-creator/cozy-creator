@@ -120,6 +120,8 @@ else
   diff_eager krea krea-2 generate prompt="$SCENE, photo" seed:=$((R + 75)) steps:=8
   diff_eager moss moss-image generate prompt="$SCENE, photo" seed:=$((R + 76)) steps:=8
   diff_eager h3-full minimax-h3 generate prompt="$MOTION Wide, steady." seed:=$((R + 77)) duration_s:=5 turbo:=false steps:=30
+  diff_eager h3-turbo minimax-h3 generate prompt="$MOTION Handheld, close." seed:=$((R + 78)) duration_s:=5 turbo:=true
+  diff_eager h3-ref2va minimax-h3 generate references:="$H3REF" prompt="<Lead> $MOTION A slow pan." seed:=$((R + 79)) duration_s:=5 turbo:=false steps:=30
   # Guards split no run, so H3's 2 GiB blocks find no room at 12 GB (31012, 31020): bigger cards keep them.
   [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -gt 12 ] || CHECKS="unmap_idle=True, perturb=True"
   diff_model h3 minimax-h3 generate 8GiB perturbed_bytes prompt="$MOTION Wide, steady." seed:=$((R + 73)) duration_s:=5 turbo:=true
