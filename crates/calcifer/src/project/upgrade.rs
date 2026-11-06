@@ -974,8 +974,8 @@ pub fn tools(dir: &Path) -> Result<Upgraded, Error> {
         let are = if typed.len() == 1 { "is" } else { "are" };
         said.push(format!("{project}: {} {are} now a picture reference like any other", typed.join(", ")));
     }
-    for (old, new) in &renames {
-        said.push(format!("{old} is {new}: a name holds no `.` now"));
+    for name in names.iter().filter(|name| name.contains('.')) {
+        said.push(format!("{name} is {}: a name holds no `.` now", renamed(name).unwrap_or_default()));
     }
     let (head, mut before, tail) = comments_of(&text);
     for (from, to) in &renames {
