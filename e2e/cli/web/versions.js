@@ -2,7 +2,8 @@
 // them and every comment, and happens at once during a real render, whose take lands under the new name with what reads it reading on; a tool goes on a text box, on a
 // picture, and swaps, opening the box; its X takes its fields; a picture joins a box with no tool; a take dragged into text is `<abr.2>`; a version something reads can
 // be deleted, with Undo; `reclaim` keeps what a number names. Takes beside the open picture, a double tap or Enter approving; a take picked is the `<self.N>` its words
-// edit; a box of pictures merges into another; a box's shape is its tool's; Render stays Render while it makes, each take with its ×.
+// edit; a box of pictures merges into another; a box's shape is its tool's; open on a take, only its description, and its + writes the next one in the frame over
+// what it mentions; Render stays Render while it makes, each take with its ×.
 //   node versions.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: not on this computer's machine, which the rename during a
 // render needs, as it renders the free `waits.py`. Prints what it saw as JSON and exits 1 if anything failed.
@@ -335,6 +336,13 @@ async function died(why) {
     await until('the file', () => Promise.resolve(lines('other')), (text) => text.includes('<self.1>'));
     const other = await asset('other');
     check('a_picture_is_version_1', other.versions === 1 && other.approved === 1 && other.tool === tool.id, other);
+    // An image tool on a picture opens it on its next take's words: the caret in them, the approved take the first they mention, ghosted behind them.
+    const onIt = page.locator('.card.here[data-asset="other"]');
+    const caret = await until('writing on it', () => onIt.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
+    const firstChip = await onIt.locator('.in-frame .chip').first().innerText().catch(() => null);
+    const behind = await until('its picture behind', () => onIt.locator('.in-frame .ghosts img').count(), (n) => n === 1).catch(() => 0);
+    check('a_tool_on_a_picture_writes_its_next_take', caret === true && firstChip === `<Self.${other.approved}>` && behind === 1, { caret, firstChip, behind });
+    await onIt.locator('.in-frame .mention-text').evaluate((el) => el.blur()).catch(() => {});
     await shot('tool-on-picture');
     // Drawn out till words are larger than at 1:1, its tool chip stops short of its ratio.
     const middle = await box('other').locator('.card').boundingBox();
@@ -486,6 +494,21 @@ async function died(why) {
     await pullCorner('picked', 120, -40);
     const scaled = await until('it scaled', async () => (await box('picked').locator('.media').first().boundingBox()).width, (width) => width > picturedWas.width + 20).catch((why) => String(why));
     check('a_picture_only_scales', typeof scaled === 'number' && Math.abs((await shapeOf('picked')) / picturedWas.shape - 1) < 0.03 && !lines('picked').includes('aspect_ratio'), { picturedWas, scaled, now: await shapeOf('picked'), lines: lines('picked') });
+    // Open on a take, only its description is under it. Its + writes the next take in the frame, over the pictures its words mention, faded, with its tool
+    // and Render under it; a take goes back to looking.
+    await open('picked');
+    const writing = page.locator('.card.here[data-asset="picked"]');
+    await writing.locator('.here-under .desc-field').waitFor();
+    const onItsTake = await writing.locator('.here-under').innerText();
+    check('a_take_has_only_its_description', !/Render|Instructions/.test(onItsTake) && onItsTake.includes('Description'), onItsTake);
+    await writing.locator('.here-side .take.add[aria-label="Its next take"]').click();
+    await writing.locator('.in-frame .mention-text[data-field=instructions]').waitFor();
+    const ghosted = await until('what it mentions, behind', () => writing.locator('.in-frame .ghosts img').count(), (n) => n > 0).catch(() => 0);
+    const underWords = await writing.locator('.here-under').innerText();
+    check('its_plus_writes_the_next_take', ghosted > 0 && /Render/.test(underWords) && (await writing.locator('.here-side .take.add.on').count()) === 1, { ghosted, underWords });
+    await writing.locator('.here-side .take[data-take="1"]').click();
+    check('a_take_leaves_its_words', (await writing.locator('.in-frame').count()) === 0 && (await writing.locator('.here-side .take.on').getAttribute('data-take')) === '1', await writing.innerText());
+    await shut();
 
     // A swap across families: what it can't take goes, in words, with Undo. Two tools of different families, where the list has them.
     const onPanel = await page.locator('.tools li.tool').evaluateAll((rows) => rows.map((held) => held.dataset.tool));

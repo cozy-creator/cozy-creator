@@ -9,7 +9,7 @@ import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, ratioOf, reshapes, sentShape, shownOf, valueIn, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, paints, ratioOf, reshapes, sentShape, shownOf, valueIn, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -213,6 +213,8 @@ export class CanvasStore {
   leaveHere: () => void = () => {}
   /** Opens a box where it stands, as a click on it does. */
   openHere: (name: string) => void = () => {}
+  /** The box to open on its next take's words: an image tool was just put on its pictures. */
+  writeOnOpen: string | null = null
   /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
   fitHere: (only?: boolean) => void = () => {}
   /** The box being worked on has another name now. */
@@ -365,6 +367,37 @@ export class CanvasStore {
     }
     // The SDK's own default with none: 1:1.
     return heldTo(control, ratioOf(control.default) ?? 1)
+  }
+
+  /** The pictures a box's words mention, in order: the version named, else what each shows. */
+  mentionedPictures(name: string): string[] {
+    const view = this.get(name)
+    if (!view) return []
+    const files = this.mentionsOf(view).flatMap((mention) => {
+      const read = this.mentionOf(mention, view.name)
+      const of = read ? this.views.get(read.name) : undefined
+      const file = of && (read?.number !== undefined ? of.asset?.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of))
+      return file && !file.absent && file.field === "image" ? [file.sha256] : []
+    })
+    return [...new Set(files)]
+  }
+
+  /** Writing its next take in its frame. Words that hold nothing but a take of its own begin from the one looked at, as `<self.N>`; `lead`: whatever they
+   * hold, that take is the first they mention. */
+  writeNext(name: string, lead = false) {
+    const view = this.get(name)
+    const asset = view?.asset
+    if (!view || !asset?.tool) return
+    const field = this.tools.get().get(asset.tool)?.controls.find((control) => control.type === "text")?.field ?? "instructions"
+    const said = this.valueOf(name, field)
+    const words = typeof said === "string" ? said : ""
+    const number = shownOf(view)?.number
+    const self = `<${SELF}.${number}>`
+    const first = mentionsIn(words)[0]
+    const next = /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : !lead ? words : first && isSelf(versionOf(first)?.name ?? "") ? words.replace(`<${first}>`, self) : `${self} ${words}`
+    if (number !== undefined && next !== words) this.setDraft(name, field, next)
+    this.focusing = name
+    this.patch(name, { hereWords: true })
   }
 
   /** What a box's fields mention, in order. */
@@ -529,8 +562,8 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
-          // Its first take, landing while it's open on its words with nothing typed: it shows the take.
-          if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline) change.hereWords = undefined
+          // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
+          if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
@@ -1052,6 +1085,11 @@ export class CanvasStore {
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool)
     this.retool(key, step, step.lost.length ? `${name} runs ${tool.label} now, which can't take ${step.lost.join(" or ")}` : undefined)
+    // On pictures, an image tool opens on its next take's words; anything else opens as it is.
+    if (tool.kind !== "image" || !holdsPictures(view.asset)) return this.openHere(key)
+    if (this.inPlace?.name === key) return this.writeNext(key, true)
+    this.writeOnOpen = key
+    this.openHere(key)
   }
 
   /** Its tool's X: the tool and its fields go. A box of no pictures is its words, and a note offers Undo for a while. */

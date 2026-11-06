@@ -307,6 +307,8 @@ function Canvas({
       const words = !view || !shownOf(view)
       if (words) store.focusing = name
       store.patch(name, { here: true, hereWords: words || undefined })
+      if (store.writeOnOpen === name) store.writeNext(name, true)
+      store.writeOnOpen = null
       if (window.innerWidth < NARROW && !shutNow.current) {
         folded.current = true
         setShut(true)

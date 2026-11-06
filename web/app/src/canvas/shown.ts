@@ -1,4 +1,4 @@
-import type { MainFile } from "../types"
+import type { MainFile, Tool } from "../types"
 import type { ElementView } from "./CanvasStore"
 
 /** The file a card shows, and where it came from. */
@@ -57,6 +57,9 @@ export function valueIn(view: ElementView | undefined, field: string): unknown {
   if (view?.sent && field in view.sent) return view.sent[field]
   return view?.asset?.fields?.[field]
 }
+
+/** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */
+export const paints = (view: ElementView, tools: Map<string, Tool>) => makes(view) && !view.asset?.timeline && tools.get(view.asset?.tool ?? "")?.kind === "image"
 
 /** Showing no picture, or its words, a box is the shape it will make, which its corner changes; showing one, it's that picture's. */
 export const reshapes = (view: ElementView) => makes(view) && (Boolean(view.hereWords) || !shownOf(view))

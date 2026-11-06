@@ -11,7 +11,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
+const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -413,6 +413,9 @@ function calciferMb() {
   const openOn = async (name) => {
     await page.goto(`${base}/#/projects/${id}/assets/${encodeURIComponent(name)}`);
     const here = page.locator(`.card.here[data-asset="${name}"]`);
+    await here.waitFor();
+    // On a take an image tool made, its words are its next take's, behind its +.
+    await renderOf(page, name);
     await here.locator('.more-toggle').waitFor();
     if (!(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
     await here.locator('.mention-text[data-field=instructions], .held-line:has-text("Instructions")').first().waitFor();

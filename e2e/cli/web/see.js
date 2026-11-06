@@ -15,7 +15,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
+const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -331,8 +331,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await away(page);
   const numberBefore = Math.max(0, ...((await asset('picture')).prefixes ?? []).map((version) => version.number));
   await open(page, 'picture');
-  // Render is with its words, whatever it shows.
-  await picture.locator('button[aria-label=Render]').click();
+  // Render is with its words: on a take, its + goes to them.
+  await (await renderOf(page, 'picture')).click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1).catch(async (error) => {
@@ -459,7 +459,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const versions = async () => (await asset('card')).prefixes?.length ?? 0;
     const take = async (count) => {
       await open(page, 'card');
-      await card.locator('button[aria-label=Render]').click();
+      await (await renderOf(page, 'card')).click();
       await until(`version ${count}`, versions, (n) => n === count, FIRST_RUN_MS);
     };
     await take(1);

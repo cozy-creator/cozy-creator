@@ -55,6 +55,7 @@ export function MentionText({
   placeholder,
   missing,
   focus,
+  thumbs = true,
   onDraft,
   onSave,
 }: {
@@ -66,6 +67,8 @@ export function MentionText({
   placeholder?: string
   missing: string[]
   focus?: boolean
+  /** The pictures it mentions, small, under it. */
+  thumbs?: boolean
   onDraft: (text: string) => void
   onSave: () => void
 }) {
@@ -306,7 +309,7 @@ export function MentionText({
           </ul>,
           document.body,
         )}
-      <MentionThumbs text={value} besides={asset} />
+      {thumbs && <MentionThumbs text={value} besides={asset} />}
     </>
   )
 }

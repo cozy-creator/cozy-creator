@@ -102,6 +102,14 @@ async function closeBox(page) {
   await settled(page);
 }
 // A click works on a box where it stands: the middle of it, where there's nothing else to press.
+/** An open box's Render. An image tool's box looking at a take shows only its description: its + goes to its next take's words, with Render. */
+async function renderOf(page, name) {
+  const here = page.locator(`.card.here[data-asset="${name}"]`).first();
+  const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
+  if (!(await here.locator('.in-frame').count()) && (await next.count())) await next.click();
+  return here.locator('button[aria-label=Render]');
+}
+
 async function openBox(page, name) {
   // By the address too: a box left a moment ago can still say so, and reaching for it finds it gone (macOS, 41977214625).
   const card = page.locator(`.card.here[data-asset="${name}"]`);
@@ -237,4 +245,4 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, settled, signIn, until, watchBoxes, wav };
+module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, renderOf, settled, signIn, until, watchBoxes, wav };

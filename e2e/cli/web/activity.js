@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -96,7 +96,7 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
     }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
   });
   await openBox(page, 'waits');
-  await page.locator('.card.here[data-asset="waits"] button[aria-label=Render]').click();
+  await (await renderOf(page, 'waits')).click();
   await page.keyboard.press('Escape');
   await chip.click();
   const list = page.locator('.activity');

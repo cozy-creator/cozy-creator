@@ -100,7 +100,7 @@ export function comingOff(asset: Asset, fields: Fields): ToolStep {
   return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...kept, text: (words && fields[words]) ?? "" } }, tool: "", fields: send, back, lost: [] }
 }
 
-/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens. On open canvas it's a new box. */
+/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas it's a new box. */
 export const carryingTool = (tool: Tool): Carried => ({
   canvas: true,
   whyNot(name, view) {
@@ -108,8 +108,5 @@ export const carryingTool = (tool: Tool): Carried => ({
     if (madeHere(view.asset.tool)) return `${name} is made here, so ${tool.label} can't go on it`
     return view.asset.tool === tool.id ? `${tool.label} is on ${name} already` : null
   },
-  put: (store, name) => {
-    store.putTool(name, tool)
-    store.openHere(name)
-  },
+  put: (store, name) => store.putTool(name, tool),
 })

@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawn } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -258,7 +258,7 @@ async function loseAnswers(page, method, path, times) {
     await page.waitForTimeout(500);
     await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
-    await box('fixture').locator('button[aria-label="Render"]').click();
+    await (await renderOf(page, 'fixture')).click();
     await page.waitForTimeout(20);
     check('render_says_queued_at_once', /Queued/.test((await box('fixture').locator('.status').allInnerTexts()).join(' ')), await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
