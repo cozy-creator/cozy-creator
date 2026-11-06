@@ -61,6 +61,17 @@ export function valueIn(view: ElementView | undefined, field: string): unknown {
   return view?.asset?.fields?.[field]
 }
 
+const ONE: Record<string, string> = { image: "a picture", video: "a video", audio: "a sound", text: "words" }
+const SEVERAL: Record<string, string> = { image: "pictures", video: "videos", audio: "sounds" }
+
+/** Why `tool`'s words can't send a mention of `view`: a box of a kind it doesn't take. A text box is words, and a tool that doesn't say takes anything. */
+export function refusal(tool: Tool | undefined, view: ElementView | undefined): string | null {
+  const kind = view?.asset?.kind ?? view?.landed?.field
+  const takes = tool?.references ?? []
+  if (!view || !kind || !takes.length || kind === "text" || takes.includes(kind)) return null
+  return `${tool!.label} takes ${takes.map((one) => SEVERAL[one] ?? one).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
+}
+
 /** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */
 export const paints = (view: ElementView, tools: Map<string, Tool>) => makes(view) && !view.asset?.timeline && tools.get(view.asset?.tool ?? "")?.kind === "image"
 

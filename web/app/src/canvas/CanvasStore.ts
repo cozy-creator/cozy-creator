@@ -9,7 +9,7 @@ import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, paints, ratioOf, reshapes, sentShape, shownOf, valueIn, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, paints, ratioOf, refusal, reshapes, sentShape, shownOf, valueIn, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -98,6 +98,8 @@ export interface ElementView {
   warned?: boolean
   /** Something is being dragged over it. */
   hot?: boolean
+  /** What's dragged over it can't go in, and why. */
+  refused?: string
   /** How many files dropped on it are on their way to being its versions. */
   joining?: number
   /** It just arrived, and lands. */
@@ -401,7 +403,7 @@ export class CanvasStore {
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined
       const file = of && (read?.number !== undefined ? of.asset?.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of))
-      return file && !file.absent && file.field === "image" ? [file.sha256] : []
+      return file && !file.absent && file.field === "image" && !this.refusalOf(name, mention) ? [file.sha256] : []
     })
     return [...new Set(files)]
   }
@@ -1394,7 +1396,18 @@ export class CanvasStore {
   // Names in a text
 
   /** Each name a mention could be, for the `<` list: nodes only. */
+  /** Why the box `name`'s tool can't send a mention of `mention`, if it can't. */
+  refusalOf(name: string, mention: string): string | null {
+    const asset = this.get(name)?.asset
+    const read = this.mentionOf(mention, name)
+    return read ? refusal(this.tools.get().get(asset?.tool ?? ""), this.get(read.name)) : null
+  }
+
   namesLike(typed: string, besides: string): string[] {
+    return this.offered(typed, besides).filter((name) => !this.refusalOf(besides, name))
+  }
+
+  private offered(typed: string, besides: string): string[] {
     const version = /^(.+)\.(\d*)$/.exec(typed)
     if (version) {
       const of = isSelf(version[1]) ? besides : this.nameOf(version[1])
@@ -1437,13 +1450,21 @@ export class CanvasStore {
   // A drag
 
   /** Whatever box is under the pointer, with `dragged` taken away. One being worked on takes a drop in the part it's let go on. */
-  dropTargetAt(x: number, y: number, dragged: Element[]): DropTarget | null {
+  dropTargetAt(x: number, y: number, dragged: Element[], names: string[] = dragged.flatMap((held) => held.querySelector<HTMLElement>(".card[data-asset]")?.dataset.asset ?? [])): DropTarget | null {
     for (const el of document.elementsFromPoint(x, y)) {
       if (dragged.some((held) => held.contains(el))) continue
       const card = el.closest<HTMLElement>(".card[data-asset]")
       if (!card) continue
       const name = this.resolveName(card.dataset.asset ?? "")
       const view = this.views.get(name)
+      // What its tool's words don't take is refused, saying why, unless it merges in as one of its own.
+      const tool = this.tools.get().get(view?.asset?.tool ?? "")
+      const merges = (one: ElementView | undefined) => Boolean(view?.asset && holdsPictures(view.asset) && one?.asset?.kind === view.asset.kind)
+      const refused = names.map((one) => this.get(one)).map((one) => (merges(one) ? null : refusal(tool, one))).find(Boolean)
+      if (refused) {
+        this.setHot(name, refused)
+        return { over: () => {}, drop: () => void say(refused) }
+      }
       const at = view?.here && el.closest("[data-drop-target]")
       const part = at && this.dropTargets.get(at)
       if (part) {
@@ -1488,7 +1509,10 @@ export class CanvasStore {
   takeInto(target: string, names: string[]) {
     const key = this.resolveName(target)
     const asset = this.views.get(key)?.asset
-    const given = names.map((name) => this.resolveName(name)).filter((name) => name !== key)
+    const tool = this.tools.get().get(asset?.tool ?? "")
+    const refused = names.map((name) => refusal(tool, this.get(name))).find(Boolean)
+    if (refused) say(refused)
+    const given = names.map((name) => this.resolveName(name)).filter((name) => name !== key && !refusal(tool, this.get(name)))
     if (!asset || !given.length) return
     const tags = given.map((name) => `<${name}>`)
     const asText = (held: unknown) => [typeof held === "string" ? held.trimEnd() : "", ...tags].filter(Boolean).join(" ")
@@ -1512,10 +1536,10 @@ export class CanvasStore {
 
   private hot: string | null = null
 
-  setHot(name: string | null) {
-    if (this.hot === name) return
-    if (this.hot) this.patch(this.hot, { hot: undefined })
-    if (name) this.patch(name, { hot: true })
+  setHot(name: string | null, refused?: string) {
+    if (this.hot === name && this.get(name ?? "")?.refused === refused) return
+    if (this.hot) this.patch(this.hot, { hot: undefined, refused: undefined })
+    if (name) this.patch(name, { hot: true, refused })
     this.hot = name
   }
 

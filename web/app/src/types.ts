@@ -1056,6 +1056,8 @@ export interface Tool {
   /** The package a machine installs, where `package` is local code's path. */
   installs?: string
   controls: Control[]
+  /** The kinds its words' mentions are sent as: `image`. A mention of another kind isn't sent; a text box is words. Absent: it doesn't say. */
+  references?: string[]
   /** The path in its package of a component that draws its box. */
   ui?: string
   /** A new take can keep the start of one of its. */

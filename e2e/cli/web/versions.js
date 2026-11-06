@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, until } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, until } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -514,7 +514,8 @@ async function died(why) {
     const writing = page.locator('.card.here[data-asset="picked"]');
     await writing.locator('.here-under .desc-field').waitFor();
     const onItsTake = await writing.locator('.here-under').innerText();
-    check('a_take_has_only_its_description', !/Render|Instructions/.test(onItsTake) && onItsTake.includes('Description'), onItsTake);
+    const toolShown = await writing.locator('.tool-head, .more-toggle, .add-on, .ratio-rest, .status, .warned, button[aria-label=Render]').count();
+    check('a_take_has_only_its_description', !/Render|Instructions|More/.test(onItsTake) && onItsTake.includes('Description') && toolShown === 0, { onItsTake, toolShown });
     await writing.locator('.here-side .take.add[aria-label="Its next take"]').click();
     await writing.locator('.in-frame .mention-text[data-field=instructions]').waitFor();
     const ghosted = await until('what it mentions, behind', () => writing.locator('.in-frame .ghosts img').count(), (n) => n > 0).catch(() => 0);
@@ -523,6 +524,42 @@ async function died(why) {
     await writing.locator('.here-side .take[data-take="1"]').click();
     check('a_take_leaves_its_words', (await writing.locator('.in-frame').count()) === 0 && (await writing.locator('.here-side .take.on').getAttribute('data-take')) === '1', await writing.innerText());
     await shut();
+    // Its words take only the kinds its tool sends (`references`): a video box is refused when dragged onto it, saying why, isn't offered after `<`,
+    // and written by hand it's a dimmed chip, which Calcifer doesn't send.
+    const sends = (await api(`/v1/tools?project=${id}`)).body.tools.find((one) => one.id === tool.id)?.references ?? [];
+    seen.references = sends;
+    if (sends.length && !sends.includes('video')) {
+      const reelAt = join(pictures, 'reel.mp4');
+      writeFileSync(reelAt, MP4);
+      await post(`${at}/imports`, { source: reelAt, name: 'reel', exact: true, at: { x: 100, y: 900 } });
+      await box('reel').waitFor();
+      await page.keyboard.press('f');
+      await page.waitForTimeout(400);
+      const wordsBefore = (await asset('picked')).fields?.instructions;
+      const reelFrom = await box('reel').locator('.nm').boundingBox();
+      const onto = await box('picked').locator('.media').first().boundingBox();
+      await page.mouse.move(reelFrom.x + 4, reelFrom.y + 4);
+      await page.mouse.down();
+      await page.mouse.move(reelFrom.x + 12, reelFrom.y + 4);
+      await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 });
+      await page.waitForTimeout(100);
+      const why = await box('picked').locator('.refused-line').innerText().catch(() => null);
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+      check('a_video_is_refused_on_a_picture_tool', Boolean(why?.includes('reel is a video')) && (await asset('picked')).fields?.instructions === wordsBefore, { why, words: (await asset('picked')).fields?.instructions });
+      await open('picked');
+      await writing.locator('.here-side .take.add[aria-label="Its next take"]').click();
+      const prompt = writing.locator('.in-frame .mention-text[data-field=instructions]');
+      await prompt.click();
+      await page.keyboard.press('End');
+      await page.keyboard.type(' <re');
+      const offeredNames = await until('the names offered', () => page.locator('.name-menu li').allInnerTexts(), () => true, 1000).catch(() => []);
+      for (let i = 0; i < 4; i++) await page.keyboard.press('Backspace');
+      await api(`${at}/assets/picked`, { method: 'PATCH', body: JSON.stringify({ fields: { instructions: `${wordsBefore} <reel>` } }) });
+      const dimmed = await until('a dimmed chip', () => prompt.locator('.chip.refused[data-mention="reel"]').count(), (n) => n === 1).catch(() => 0);
+      check('a_video_isnt_offered_and_is_dimmed', !offeredNames.includes('reel') && dimmed === 1, { offeredNames, dimmed });
+      await shut();
+    }
 
     // A swap across families: what it can't take goes, in words, with Undo. Two tools of different families, where the list has them.
     const onPanel = await page.locator('.tools li.tool').evaluateAll((rows) => rows.map((held) => held.dataset.tool));

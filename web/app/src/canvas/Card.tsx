@@ -532,7 +532,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const editing = here && (asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
   const looking = here && !view.hereWords && paints(view, tools)
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
-  const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
+  // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
+  const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
   return (
     <div
       ref={self}
@@ -604,7 +605,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
+      {!lite && asset && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
         <div className="rest-waiting">
           <Waiting view={view} />
@@ -634,7 +636,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
                 ))}
               </div>
             ) : null}
-            <Status view={view} name={name} />
+            {!looking && <Status view={view} name={name} />}
           </div>
         </div>
       )}

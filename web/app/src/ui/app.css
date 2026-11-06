@@ -2381,6 +2381,27 @@ a.tab:hover {
   font: 600 0.9em var(--mono);
   white-space: nowrap;
 }
+/* A name its tool doesn't take: there, and not sent. */
+.chip.refused {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+/* What's dragged over a box that can't take it, and why. */
+.card.hot:has(> .refused-line) .media {
+  outline-color: var(--bad);
+}
+.refused-line {
+  position: absolute;
+  inset: auto 0 calc(100% + 4px) auto;
+  max-width: 100%;
+  padding: 0.2em 0.5em;
+  border-radius: 0.3em;
+  background: var(--bad);
+  color: #fff;
+  font-size: calc(14px * var(--text, 1));
+  pointer-events: none;
+  z-index: 6;
+}
 .chip.missing {
   background: color-mix(in srgb, var(--bad) 13%, transparent);
   color: var(--bad);

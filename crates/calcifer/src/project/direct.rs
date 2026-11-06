@@ -52,6 +52,25 @@ fn made_here(made_by: &str, package: &str) -> bool {
     function.rsplit_once('/').is_some_and(|(made, _)| of(made) == of(package))
 }
 
+/// `video` as a person says one: `a video`.
+fn one(kind: &str) -> &'static str {
+    match kind {
+        "image" => "a picture",
+        "video" => "a video",
+        _ => "a sound",
+    }
+}
+
+/// `image` as a person says several: `pictures`.
+fn plural(kind: &str) -> &'static str {
+    match kind {
+        "image" => "pictures",
+        "video" => "videos",
+        "audio" => "sounds",
+        _ => "files",
+    }
+}
+
 /// The role of `files` a member takes: its own name, else its kind of file.
 fn role<'a>(member: &'a Field, kind: &'a str) -> &'a str {
     if ROLES.contains(&member.name.as_str()) || kind == "file" { &member.name } else { kind }
@@ -66,6 +85,8 @@ struct Filling<'a> {
     taken: Vec<bool>,
     warnings: Vec<String>,
     name: &'a str,
+    /// What makes it, in words: `Qwen Image 2`.
+    label: String,
 }
 
 impl Filling<'_> {
@@ -156,10 +177,18 @@ impl Filling<'_> {
     fn mentioned(&mut self, members: &Struct, said: &BTreeSet<String>) -> Vec<Value> {
         let holds: Vec<(&Field, &str)> = members.fields.iter().filter_map(|field| Some((field, field.ty.media().filter(|(_, many)| !many)?.0))).collect();
         let words: Vec<&Field> = members.fields.iter().filter(|field| field.ty.media().is_none()).collect();
+        let takes: Vec<&str> = members.fields.iter().filter_map(|field| Some(field.ty.media()?.0)).collect();
         let mut entries = vec![];
         for at in 0..self.reads.len() {
             let read = &self.reads[at];
             if !said.contains(&name_key(&read.name)) {
+                continue;
+            }
+            // A box of a kind it doesn't take isn't sent, not even as words (Paul, decision 8). A text box holds no file: it's words.
+            let held = tool::MEDIA.into_iter().find(|kind| !files_of(&read.files, kind).is_empty());
+            if let Some(kind) = held.filter(|kind| !takes.is_empty() && !takes.contains(kind) && !takes.contains(&"file")) {
+                let these = takes.iter().map(|kind| plural(kind)).collect::<Vec<_>>().join(" and ");
+                self.warnings.push(format!("<{}> is {}; {} takes {these}, so it isn't sent", read.name, one(kind), self.label));
                 continue;
             }
             let entry = |this: &Self| -> Map<String, Value> { words.iter().filter_map(|field| Some((field.name.clone(), this.word(read, &field.name)?))).collect() };
@@ -331,7 +360,8 @@ pub struct Call<'a> {
 /// What `callable` is called with. Err: it needs what it hasn't got, and no run is sent.
 pub fn input(call: Call) -> Result<(Map<String, Value>, Vec<String>), Error> {
     let Call { name, tool, package, callable, inputs, own, reads, lock, take } = call;
-    let mut filling = Filling { reads, lock, package, taken: vec![false; reads.len()], warnings: vec![], name };
+    let label = tool::label_of(tool.rsplit_once('/').map_or(package, |(package, _)| package), callable);
+    let mut filling = Filling { reads, lock, package, taken: vec![false; reads.len()], warnings: vec![], name, label };
     let node = callable.node.clone().unwrap_or_else(Node::default);
     let declared = &callable.request.fields;
     let text = tool::text_input(&callable.request).map(|field| field.name.as_str());
