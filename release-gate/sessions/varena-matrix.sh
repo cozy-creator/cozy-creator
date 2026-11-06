@@ -1,6 +1,7 @@
 # varena-matrix (Paul, 11-06): a varena, residency or loop change lands only if no row of this matrix is more than 5%
-# worse in total than the release, and the candidate completes every call the release completes. One rtx-4090, rented
-# with SSH. The release is the Hub's current one (`machine update` to its target, the Hub's package releases); the
+# worse in total than the release, and the candidate completes every call the release completes. rtx-4090s rented with
+# SSH: one a cap, together (`parallel`), or one for all. The release is the Hub's current one (`machine update` to its
+# target, the Hub's package releases); the
 # candidate a TensorD and a Runtime. Rows: SDXL 1 MP, Qwen-Image 2.1 4 MP, Klein 1 MP (prompt upsampling on), H3 Turbo
 # text-only at 768p and Flux-2 1 MP, each uncapped and at an equal-room 8 and 6 GiB (the candidate gets the driver's
 # reservation on top when the release is varena v1, whose limit leaves it out). Per cap the release runs every row, then
@@ -17,7 +18,9 @@
 #   h3_seconds   H3 Turbo's clip (5: a third of the default 15 s, the same frames a second and steps)
 #   flux2_steps  Flux-2's steps (20)
 #   tolerance    a row's allowed excess over the release (0.05)
-#   traffic_gb   GB the provider bills: the image and every row's weights twice over (260); need_s (6600)
+#   parallel     one pod a cap, rented and run together, the verdicts one table (true: about 45 min); false: one pod in turn
+#   traffic_gb   GB the provider bills, all pods: the image and every row's weights on each (180 a pod); need_s (4200, one
+#                pod: 7800)
 . "$(dirname "$0")/lib.sh"
 TD=$(param tensord "$(command -v cozy)") RT=$(param runtime "${RUNTIME_WHEEL:-}") TF=$(param tensorfs '')
 PK=$(param packages '') ROWS=$(param rows '["sdxl", "qwen", "klein", "h3turbo", "flux2"]') CAPS=$(param caps '["off", "8GiB", "6GiB"]')
@@ -74,12 +77,19 @@ for arm in rel cand; do
   done
 done
 say "candidate: TensorD $TD, Runtime $RT${TF:+, TensorFS $TF}, packages ${PK:-the Hub releases}; rows ${rows[*]}; caps ${caps[*]}; $(ls "$M"/*.*.*.json | wc -l) requests"
-quote "$(param traffic_gb 260)" "$(param need_s 6600)"
-rent
+PAR=$(param parallel true)
+if [ "$PAR" = true ]; then
+  pods=("${caps[@]/*/$SKU}")
+  quote "$(param traffic_gb $((180 * ${#caps[@]})))" "$(param need_s 4200)" "${pods[@]}"
+  for _ in "${caps[@]}"; do order; done  # booted together; the guard and the trap cover every one
+  NAMES=(); for i in "${!caps[@]}"; do ready "$i"; NAMES+=("$NAME"); done
+else
+  quote "$(param traffic_gb 180)" "$(param need_s 7800)"
+  rent; NAMES=("${caps[@]/*/$NAME}")
+fi
 
 # pod <cmd>: a shell command on the pod.
 pod() { cozy machine ssh "$NAME" -- "$1" 2>> "$OUT/ssh.err"; }
-RESERVE=0
 reservation() {  # NVML's total minus CUDA's, the largest GPU's: what the driver keeps for itself
   pod "python3 -I -c 'import ctypes
 class M(ctypes.Structure): _fields_ = [(\"t\", ctypes.c_ulonglong), (\"f\", ctypes.c_ulonglong), (\"u\", ctypes.c_ulonglong)]
@@ -153,27 +163,38 @@ call() {
   [ "$ran" = " " ] || [ "$rr" = "$wr" ] || { [[ $wr != *+* && $rr == "$wr"+* && $rr != *+dev* ]]; } || fail "$n ran on Runtime $rr, not the $1 arm's $wr"
 }
 
-swap rel off
-RESERVE=$(reservation); [ -n "$RESERVE" ] || fail "no reservation reading"
-# Equal room: a varena v1 release (TensorD below 0.21) leaves the driver's reservation out of its limit, varena v2 counts it.
-rv=$(jq -r .version "$M/stack-rel-off.json")
-CAND_EXTRA=$(python3 -c "import sys; v = tuple(int(x) for x in sys.argv[1].split('+')[0].split('.')[:2]); print(int(sys.argv[2]) if v < (0, 21) else 0)" "$rv" "$RESERVE")
-say "release TensorD $rv; driver reservation $((RESERVE >> 20)) MiB; the candidate's limit $((CAND_EXTRA >> 20)) MiB over the release's"
-for r in "${rows[@]}"; do  # every row's weights before anything is timed: no timed call fetches
-  step "weights-$r" run "$(target "$r" rel)" --on "$NAME" --lane "$(lane "$r")" --warm downloaded || fail "weights $r"
-  cozy run "$(target "$r" rel)" --on "$NAME" --warm off -p "$RUN_PROJECT" > /dev/null 2>&1
-done
-for cap in "${caps[@]}"; do
+# matrix_cap <cap>: one cap on $NAME, the release's rows then the candidate's. Equal room is the pod's own: a varena v1
+# release (TensorD below 0.21) leaves the driver's reservation out of its limit, varena v2 counts it.
+matrix_cap() {
+  local cap=$1 r arm tier rv reserve
+  swap rel "$cap"
+  reserve=$(reservation); [ -n "$reserve" ] || fail "$NAME: no reservation reading"
+  rv=$(jq -r .version "$M/stack-rel-$cap.json")
+  CAND_EXTRA=$(python3 -c "import sys; v = tuple(int(x) for x in sys.argv[1].split('+')[0].split('.')[:2]); print(int(sys.argv[2]) if v < (0, 21) else 0)" "$rv" "$reserve")
+  say "$NAME at $cap: release TensorD $rv; driver reservation $((reserve >> 20)) MiB; the candidate's limit $((CAND_EXTRA >> 20)) MiB over the release's"
+  [ -f "$M/weights-$NAME" ] || for r in "${rows[@]}"; do  # every row's weights before anything is timed: no timed call fetches
+    step "weights-$cap-$r" run "$(target "$r" rel)" --on "$NAME" --lane "$(lane "$r")" --warm downloaded || fail "$NAME: weights $r"
+    cozy run "$(target "$r" rel)" --on "$NAME" --warm off -p "$RUN_PROJECT" > /dev/null 2>&1
+  done
+  touch "$M/weights-$NAME"
   for arm in rel cand; do
-    swap "$arm" "$cap"
+    [ "$arm" = rel ] || swap "$arm" "$cap"
     for r in "${rows[@]}"; do
-      step "ready-$arm-$r-$cap" run "$(target "$r" "$arm")" --on "$NAME" --lane "$(lane "$r")" --warm downloaded || fail "install $arm $r"
+      step "ready-$arm-$r-$cap" run "$(target "$r" "$arm")" --on "$NAME" --lane "$(lane "$r")" --warm downloaded || fail "$NAME: install $arm $r"
       evict
       for tier in cold w1 w2; do [ "$r.$tier" != h3turbo.w2 ] && call "$arm" "$r" "$cap" "$tier"; done
       cozy run "$(target "$r" "$arm")" --on "$NAME" --warm off -p "$RUN_PROJECT" > /dev/null 2>&1  # the next row starts with the GPU free
     done
   done
-done
+}
+CUT=()  # caps whose pod stopped short: their rows read as missing in the verdict
+if [ "$PAR" = true ]; then
+  JOBS=()
+  for i in "${!caps[@]}"; do ( NAME=${NAMES[$i]}; matrix_cap "${caps[$i]}" ) & JOBS+=($!); done  # a subshell's fail ends it alone
+  for i in "${!caps[@]}"; do wait "${JOBS[$i]}" || CUT+=("${caps[$i]}"); done
+else
+  for cap in "${caps[@]}"; do ( matrix_cap "$cap" ) || CUT+=("$cap"); done
+fi
 
 python3 -I - "$M" "$TOL" "$ROWS" "$CAPS" > "$OUT/verdict.md" <<'E'
 import json, statistics, sys
@@ -225,5 +246,6 @@ print("\n".join(lines))
 print(f"\nVERDICT {'FAIL: ' + ', '.join(fails) if fails else 'PASS'} (a row: its warm calls' mean, H3 both calls'; over {tol:.0%} worse fails)")
 E
 cat "$OUT/verdict.md" >> "$R"
+[ "${#CUT[@]}" = 0 ] || fail "cut short at ${CUT[*]}: $(grep '^VERDICT' "$OUT/verdict.md")"
 grep -q '^VERDICT PASS' "$OUT/verdict.md" || fail "$(grep '^VERDICT' "$OUT/verdict.md")"
 say "PASS: no row over $(awk -v t="$TOL" 'BEGIN { printf "%d%%", t * 100 }') worse than the release, and nothing the release completes fails"

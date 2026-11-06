@@ -129,7 +129,8 @@ previous release and the session's cozy control each other (`-f params='{"old": 
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
 `project-remote` (xs-143) proves `cozy project push` and `pull`: a second user on the runner, holding only project.yaml
 and project.lock, pulls and cuts the same `edit.mp4`; kills on both sides resume.
-`varena-matrix` (Paul, 11-06) is the landing bar for a varena, residency or loop change: on one 4090, the Hub's release against a
+`varena-matrix` (Paul, 11-06) is the landing bar for a varena, residency or loop change: on 4090s, one a cap rented together
+(about 45 min), the Hub's release against a
 candidate TensorD and Runtime, SDXL, Qwen-Image 2.1 4 MP, Klein, H3 Turbo (nonresident) and Flux-2, each uncapped and at an
 equal-room 8 and 6 GiB, a cold call and two warm per arm on the same requests; FAIL when a row is more than 5% worse in total or
 the candidate fails a call the release completes (`verdict.md`).
