@@ -2671,6 +2671,9 @@ impl Walk {
             let stand = doc.stand(&lock);
             self.say_cuts(&doc, &stand).await?;
         }
+        // Under `walking`, as an ask keeps its words and joins: one asked now of the same words keeps them.
+        let _walking = self.project.walking.lock().expect("walking lock");
+        let asks = self.folder().walk_now()?.walk.asks;
         if let Some(digest) = asks.iter().find(|ask| ask.id == id).map(|ask| &ask.digest) {
             if !asks.iter().any(|ask| ask.id != id && &ask.digest == digest) {
                 self.project.walker.lock().expect("walker lock").readings.remove(digest);
