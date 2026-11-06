@@ -37,7 +37,8 @@ what it is asked for (`CacheOwner`), and TensorD may end an idle process.
 `Wait::No` takes completed memory only, `Local` also waits for submitted GPU work, and `Yes` adds
 owners and peers under a 2 s budget of last resort. Eviction rank: contentless, prefetched and
 unused, unplanned, later phases furthest first, then this phase's used regions most recent first,
-then its next use.
+then its next use. A plan phase that ran through last time with no region coming back is a single
+pass: its used regions rank with the unplanned, and other phases' loops go after every single pass's.
 
 ## Fills
 
@@ -66,7 +67,9 @@ capture out; replay does not block reclaim, because pins and references protect 
 Up to 1 MiB, one-class slabs, every block 512 B aligned. Above that, runs, cut best-fit and merged
 when free; up to 64 MiB they share 64 MiB segments. A segment has one VMM handle per 16 MiB, since a
 handle comes back only whole: free pages stay mapped until something needs them, and then only those
-handles go. Own-stream reuse does no driver work.
+handles go. Own-stream reuse does no driver work. A plan phase seen looping keeps every segment its
+working phases touched: its weights and its own allocations take weights first, and it never waits on
+its own frees, so a step makes no driver call for working memory.
 
 A split (`split_select`, `split_begin`) picks the first level that fits
 `min(max(C − W, C/4), C − live − pinned)`, whatever is free right now. `C` is the card or its cap,

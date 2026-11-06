@@ -44,8 +44,8 @@ pub(crate) struct Protect<'a> {
     pub(crate) pool: Option<PoolId>,
     /// The caller's fit already counts completed working pages, or they are not its to take.
     pub(crate) keep_working: bool,
-    /// A weight's demand leaves the free pages the rest of this phase will use again: they would
-    /// only map straight back. It takes the other weights first, and these pages last.
+    /// A weight's demand, or a loop's working one, leaves the free pages the rest of this phase
+    /// will use again: they would only map straight back. It takes weights first, these pages last.
     pub(crate) keep_phase: bool,
     /// A guess must not take another guess.
     pub(crate) speculative: bool,
@@ -157,9 +157,12 @@ impl<'a> Sequence<'a> {
 
     fn working(&mut self, want: usize) -> Result<()> {
         if !self.protect.keep_working {
-            let want = if self.protect.keep_phase { want.min(working::beyond_phase(self.device)?) } else { want };
-            self.released += working::release_completed(self.device, want,
-                self.maximum.saturating_sub(self.released), self.protect.pool)?;
+            let maximum = self.maximum.saturating_sub(self.released);
+            self.released += if self.protect.keep_phase {
+                working::release_beyond_phase(self.device, want, maximum, self.protect.pool)?
+            } else {
+                working::release_completed(self.device, want, maximum, self.protect.pool)?
+            };
         }
         Ok(())
     }
@@ -184,7 +187,7 @@ impl<'a> Sequence<'a> {
                 self.weights(want, classes, waiting, waiting)
             }
             Step::PendingWorking if waiting => {
-                if self.protect.keep_phase && working::beyond_phase(self.device)? != usize::MAX {
+                if self.protect.keep_phase && working::phase_known(self.device)? {
                     return Ok(false);
                 }
                 if !working::wait_pending(self.device, want, self.protect.pool)? {
@@ -395,12 +398,11 @@ pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
 /// into room already free, and so does `free_only`: a fill past the one a use asked for. False
 /// declines with no IO and no waiting.
 pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, free_only: bool) -> Result<bool> {
-    let Some((gap, reusable, known)) = working::prefetch_gap(device)? else {
+    let Some((gap, reusable, excess, known)) = working::prefetch_gap(device)? else {
         return Ok(false);
     };
     // Mapped free pages serve the phase's working demand first.
     let needed = bytes + gap.saturating_sub(reusable);
-    let excess = reusable.saturating_sub(gap);
     let gpu = crate::gpu(device)?;
     let into = group.first().copied();
     let protect = Protect { regions: Some(group), speculative: true, keep_working: true, into, ..Default::default() };
@@ -430,7 +432,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
     if !known || free_only || short > idle + excess {
         return Ok(false);
     }
-    let trimmed = working::release_completed(device, short.min(excess), usize::MAX, None)?;
+    let trimmed = working::release_beyond_phase(device, short.min(excess), usize::MAX, None)?;
     if trimmed < short {
         let mut released = 0;
         release(device, short - trimmed, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
