@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use crate::{Completion, Contents, Device, Error, Region, Result};
+use crate::{Contents, Device, Error, Region, Result};
 
 struct Phase {
     name: String,
@@ -40,7 +40,6 @@ pub(crate) struct Snapshot {
     pub name: String,
     pub bytes: usize,
     pub missing: usize,
-    pub outside_reclaimable: usize,
 }
 
 /// Owns the active plan's regions before gate and table guards are taken: a Plan's last drop
@@ -167,7 +166,7 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
     };
     let phase = &plan.phases[*index];
     let state = lease.device.lock()?;
-    let (mut missing, mut outside_reclaimable) = (0usize, 0usize);
+    let mut missing = 0usize;
     for id in &phase.ids {
         let entry = state.entries.get(id).ok_or(Error::Invalid("planned region is missing from the table"))?;
         if entry.uses.state() == Contents::Retired {
@@ -177,12 +176,7 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
             missing += entry.bytes;
         }
     }
-    for (id, entry) in &state.entries {
-        if !phase.ids.contains(id) && entry.idle() && lease.device.completion(&state, *id) == Completion::Done {
-            outside_reclaimable += entry.bytes;
-        }
-    }
-    Ok(Some(Snapshot { name: phase.name.clone(), bytes: phase.bytes, missing, outside_reclaimable }))
+    Ok(Some(Snapshot { name: phase.name.clone(), bytes: phase.bytes, missing }))
 }
 
 /// Next use of each planned region: phases ahead of the active one, then position within it.
