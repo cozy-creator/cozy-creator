@@ -9,7 +9,7 @@ use std::{
 use protocol::{
     calcifer::{Event as RunEvent, Progress, Run, Status},
     ids::RunId,
-    project::{Ahead, Board, Event, HeldBy, Job, JobState, Preview},
+    project::{Ahead, Board, Event, Job, JobState, Preview},
 };
 use tokio::sync::{broadcast, watch};
 
@@ -83,50 +83,12 @@ impl Jobs {
 
     pub fn board(&self) -> Board {
         let mut board = self.board.borrow().clone();
-        let held = self.held.lock().expect("jobs lock");
-        // A board another machine holds has its own.
-        if !held.ahead.is_empty() {
-            board.ahead = held.ahead.iter().map(|(.., row)| row.clone()).collect();
-        }
+        board.ahead = self.held.lock().expect("jobs lock").ahead.iter().map(|(.., row)| row.clone()).collect();
         board
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Board> {
         self.board.subscribe()
-    }
-
-    /// The board of a render another machine holds, as it draws it: nothing here walks it.
-    pub fn mirror(&self, board: Board) {
-        self.board.send_if_modified(|held| {
-            let newer = board.seq >= held.seq && *held != board;
-            if newer {
-                *held = board;
-            }
-            newer
-        });
-    }
-
-    /// One job of that board, as it changed: a client keeping the board hears it as its job.
-    pub fn mirror_job(&self, job: &Job, seq: u64) {
-        self.board.send_if_modified(|board| {
-            board.seq = board.seq.max(seq);
-            match board.jobs.iter_mut().find(|held| held.id == job.id) {
-                Some(held) => *held = job.clone(),
-                None => board.jobs.push(job.clone()),
-            }
-            false
-        });
-    }
-
-    /// Who holds the render, and what of it isn't here yet.
-    pub fn held(&self, held: Option<HeldBy>) {
-        self.board.send_if_modified(|board| std::mem::replace(&mut board.held, held.clone()) != held);
-    }
-
-    /// Whether run `id` is one of this board's, going or fetching ahead.
-    pub fn has_run(&self, id: &RunId) -> bool {
-        let held = self.held.lock().expect("jobs lock");
-        held.live.iter().any(|live| live.id == *id) || held.ahead.iter().any(|(run, ..)| run == id)
     }
 
     /// A walk begins: the board starts empty, its `seq` still rising.
@@ -421,7 +383,7 @@ impl Jobs {
             let _ = self.events.send(Event::Job { job: job.clone(), seq });
         }
         held.told = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
-        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect(), held: None };
+        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect() };
         // A client that keeps the board hears only when more than a job changed: its jobs it hears one by one.
         self.board.send_if_modified(|stands| {
             *stands = board;
