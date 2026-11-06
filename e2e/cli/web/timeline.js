@@ -3,7 +3,7 @@
 // The film's frames are counted, its `.otio` read back with OpenTimelineIO's own reader. Two different edits make two versions, each with
 // its own clips, and the same edit twice makes one; a version carries on and drags out to its own asset; a clip whose asset is deleted says
 // so on the clip, and a render goes on without it.
-//   node timeline.js <sign-in link from `cozy open --no-open`>
+//   node timeline.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep its
 // screenshots; ffmpeg, ffprobe and uv on PATH. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, until, watchBoxes, pointAt } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -41,8 +41,7 @@ function plate(path, color, seconds, hz) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1900, height: 1000 } });
   const page = await context.newPage();
@@ -57,7 +56,7 @@ function plate(path, color, seconds, hz) {
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
   });
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const projectName = `web-timeline-${Date.now()}`;
   await page.goto(`${base}/#/projects`);

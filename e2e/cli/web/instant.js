@@ -4,7 +4,7 @@
 // under its key and makes one asset; another writer's name renames the box; a refused action rolls back with one line; a pending edit and another
 // writer's end in the conflict line; a write's answer never claims another writer's lines; kill -9 of Calcifer mid-queue lands once; and a render whose
 // answer is lost runs once.
-//   node instant.js <sign-in link from `cozy open --no-open`>
+//   node instant.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $RESTART: a shell command that kills this Calcifer with -9 and brings it
 // back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
 // Prints what it saw as JSON and exits 1 if anything failed.
@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawn } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -76,8 +76,7 @@ async function loseAnswers(page, method, path, times) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   context.setDefaultTimeout(STEP_MS);
@@ -85,7 +84,7 @@ async function loseAnswers(page, method, path, times) {
   lookAt(page);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/#/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-instant-${Date.now()}`);

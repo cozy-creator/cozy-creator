@@ -1,7 +1,7 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project in the file format as it stands, a real Calcifer, the real CLI, a real
 // Chrome. How long `cozy project status` takes, opening it in the page, one edit to show, what's read for it, a render landing, panning, memory.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
-//   node scale.js <sign-in link from `cozy open --no-open`>
+//   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $HOLDER: Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
 // Prints what it saw as JSON and exits 1 if anything failed.
@@ -11,7 +11,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
+const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -180,8 +180,7 @@ function calciferMb() {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const folder = join(homedir(), '.cozy', 'projects', `web-scale-${Date.now()}`);
   mkdirSync(folder, { recursive: true });
   const numbers = {};
@@ -296,7 +295,7 @@ function calciferMb() {
   const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png`, timeout: 60_000 }).catch(() => {}) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   await page.evaluate(() => { window.notReloaded = true; });

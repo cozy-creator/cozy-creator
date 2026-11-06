@@ -1,5 +1,6 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
-const { writeFileSync } = require('fs');
+const { execFileSync } = require('child_process');
+const { appendFileSync, readFileSync, writeFileSync } = require('fs');
 const zlib = require('zlib');
 
 const STEP_MS = 60_000;
@@ -195,6 +196,20 @@ const boxLog = (page) => page.evaluate(() => ({
   focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
   under: [...document.querySelectorAll(':hover')].at(-1)?.className,
 }));
+/** This computer's Calcifer, where its lock ($HOLDER) says: what serves each cell's page. */
+const calcifer = () => `http://${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).address}`;
+
+/** `page`, signed in as a person is: `cozy open --no-open`, and its link at once. Its code lives 60 s, so a cell asks for it with its browser
+ *  up: asked for before a slow runner launched one, a code had run out by the time the page redeemed it (42113601659). */
+function signIn(page, options) {
+  const words = ['open', '--no-open'];
+  if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
+  const said = execFileSync(process.env.COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0];
+  if (!link) throw new Error(`cozy open --no-open printed no link: ${said.slice(0, 300)}`);
+  return page.goto(link, options);
+}
+
 /** This pass's browser: $ENGINE's own build (webkit, firefox), else the Chrome at $CHROME. */
 const launch = (playwright) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true }));
 
@@ -222,4 +237,4 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, until, watchBoxes, wav };
+module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, signIn, until, watchBoxes, wav };

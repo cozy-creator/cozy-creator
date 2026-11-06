@@ -130,23 +130,16 @@ web_restart() {
   echo "$point$kill; sleep 1; ${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
 }
 
-# A fresh sign-in link in $link, or a failed check.
-web_link() {
-  cozy open --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy open --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return 1; }
-  link=$(grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1)
-  [ -n "$link" ] || { check "web-serves: cozy open --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
-}
-
-# web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by
-# name, which it forgets, folder and all, whatever happened.
+# web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, signed in by its own
+# `cozy open --no-open` once its browser is up (page.js: signIn), on a project of its own by name, which it forgets, folder and all,
+# whatever happened.
 web_proof() {
-  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot link code=0 id folder lock addr token
+  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot code=0 id folder lock addr token
   json=$OUT/web-$pass.json shot=$(web_path "$OUT/web-$pass")
   # A screenshot in WebKit sets off the CSP on any page, with an inline style of Playwright's: its pass keeps its last look, past caring, and no others.
   [ "${ENGINE:-}" != webkit ] || shot=''
-  web_link || return
   HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart ENGINE=${ENGINE:-} LAST_LOOK=$(web_path "$OUT/web-$pass") SHOT=$shot CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
-    node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$pass.err" || code=$?
+    node "$(web_path "$here/web/$name.js")" > "$json" 2> "$OUT/web-$pass.err" || code=$?
   [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
@@ -159,14 +152,12 @@ web_proof() {
 
 # web_serves's own, on its project, which it forgets whatever happens here.
 web_signed_in() {
-local link code=0 wait expires
-web_link || return
-
-CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
-  node "$(web_path "$here/web/serves.js")" "$link" "$id" "$(web_path "$P")" "$(web_path "$pic")" > "$OUT/web.json" 2> "$OUT/web.err" || code=$?
+local code=0 wait expires
+HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
+  node "$(web_path "$here/web/serves.js")" "$id" "$(web_path "$P")" "$(web_path "$pic")" > "$OUT/web.json" 2> "$OUT/web.err" || code=$?
 [ "$code" = 0 ] || check "web-serves: the browser failed: $(tail -c 500 "$OUT/web.err")"
 J '.session.status == 200 and (.session.token | length > 0) and (.session.media | length > 0)' "$OUT/web.json" \
-  || { check "web-serves: the page did not redeem its code: $(jq -c .session "$OUT/web.json")"; return; }
+  || { check "web-serves: the page did not redeem its code: $(jq -c '{session, signed_in}' "$OUT/web.json")"; return; }
 local session media
 session=$(jq -r .session.token "$OUT/web.json") media=$(jq -r .session.media "$OUT/web.json")
 

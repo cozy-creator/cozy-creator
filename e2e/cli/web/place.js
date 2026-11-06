@@ -1,14 +1,14 @@
 // Place, in a real browser (web-ui.md §1): a PNG, an MP4 and a WAV dropped together; one chosen from the selector; one renamed; a
 // move read back from project.canvas.yaml; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
-//   node place.js <sign-in link from `cozy open --no-open`>
+//   node place.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
 // terminal sees the same project; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -44,8 +44,7 @@ const constants = (folder) => {
 };
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1500, height: 900 } });
   const page = await context.newPage();
@@ -59,7 +58,7 @@ const constants = (folder) => {
   });
 
   // Sign in: the link's code becomes a session, and leaves the URL.
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   check('code_left_the_url', !page.url().includes('code='), page.url());
   const session = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
