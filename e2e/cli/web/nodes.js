@@ -612,6 +612,10 @@ function linesOf(text, name) {
     // Read with this machine's Runtime, as tool.py is above.
     execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
+    // Render kept Other open, and drawn in on a box the canvas draws only what's near it: a new one is seen at rest, all of it in view.
+    await away();
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box('sounded').waitFor();
     await open('sounded');
     const sounded = box('sounded');

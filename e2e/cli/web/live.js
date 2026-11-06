@@ -507,13 +507,15 @@ function linesOf(text, name) {
     check('approve_a_take_in_the_status', (await held('live_shot')).approved === 2);
     await project('unapprove', 'live_shot');
 
-    // A text asset's words stand wherever it's mentioned: changed by a command, what mentions it is out of date on the open canvas.
+    // A text asset's words stand wherever it's mentioned: changed by a command, they're on the open canvas, and what mentions them is out of date,
+    // which no dot or line says at rest (Paul, 11-05).
     place = await spot();
     await project('add', 'text', 'live_mood', 'text=Soft morning light.');
     await project('add', `${TOOL}/still`, 'live_styled', `at=${place.x},${place.y},260`, 'instructions=A still in <live_mood>.');
     await project('render', 'live_styled', '--on', 'local');
     await shows({ name: 'live_styled', dot: 's-current' });
-    await timed('text_asset_outdates', { name: 'live_styled', dot: 's-ood' }, () => project('set', 'live_mood', 'text=Hard evening light.'));
+    await timed('text_asset_outdates', { all: [{ name: 'live_mood', has: 'Hard evening light.' }, { name: 'live_styled', dot: 's-current' }] }, () => project('set', 'live_mood', 'text=Hard evening light.'));
+    check('what_mentions_it_is_out_of_date', (await held('live_styled')).standing === 'out_of_date', await held('live_styled'));
     await project('delete', 'live_styled', 'live_mood');
 
     // What waits its turn says so, and when it has landed no longer does: what's said of the project besides its assets goes when it's over.

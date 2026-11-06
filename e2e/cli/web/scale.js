@@ -62,26 +62,28 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 /** The project: pictures approved as they are, and shots of them, each with two versions, as files. `inputs`, once known, makes them current. */
 function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
   mkdirSync(join(folder, 'files'), { recursive: true });
-  const base = png(90, 16, 16);
-  const seedFile = join(folder, 'seed.png');
-  writeFileSync(seedFile, base);
+  // A picture is square; a shot's take is the 16:9 it asks for, as a render makes it, so a box showing one is that shape.
+  const seeds = { square: [16, 16], wide: [32, 18] };
+  const seedOf = (shape) => join(folder, `seed-${shape}.png`);
+  for (const [shape, [width, height]] of Object.entries(seeds)) writeFileSync(seedOf(shape), png(90, width, height));
   const hash = (word) => sha(Buffer.from(word));
-  let file = (hex) => {
+  let file = (hex, shape) => {
     const at = join(folder, 'files', `${hex}.png`);
     try {
-      linkSync(seedFile, at);
+      linkSync(seedOf(shape), at);
     } catch (error) {
       // NTFS allows 1023 links to a file.
-      if (error.code !== 'EEXIST') copyFileSync(seedFile, at);
+      if (error.code !== 'EEXIST') copyFileSync(seedOf(shape), at);
     }
   };
   const lines = ['version: 3', 'assets:'];
   // Each measured as it landed, as a person's are.
   const measured = {};
   const made = file;
-  file = (hex) => {
-    made(hex);
-    measured[`sha256:${hex}`] = { width: 16, height: 16 };
+  file = (hex, shape = 'square') => {
+    made(hex, shape);
+    const [width, height] = seeds[shape];
+    measured[`sha256:${hex}`] = { width, height };
   };
   const assets = {};
   const words = 'The colossal blue whale rises through a storm, lit from below, the sea torn white around it, and the small boat holds. '.repeat(3);
@@ -96,7 +98,7 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
     lines.push(`  ${name}:`, `    tool: ${tool}`, `    instructions: ${words}<pic_${i % pictures}> and <pic_${(i * 7) % pictures}>.`, '    aspect_ratio: "16:9"');
     const versions = [1, 2].map((number) => {
       const hex = hash(`${name} ${number}`);
-      file(hex);
+      file(hex, 'wide');
       return { number, inputs: inputs?.[name] ?? 'not yet', files: { image: `sha256:${hex}` }, seed: i * number, run: 1000 + i * 2 + number, execution_ms: 1234 };
     });
     assets[`shot ${i}`] = { name, kind: 'image', versions, numbered: 2 };
@@ -116,7 +118,7 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
   for (let i = 0; i < assetCount - pictures; i++) card(`shot_${i}`, i);
   for (let i = 0; i < pictures; i++) card(`pic_${i}`, assetCount - pictures + i);
   replaceFile(join(folder, 'project.canvas.yaml'), `${rows.join('\n')}\n`);
-  rmSync(seedFile);
+  for (const shape of Object.keys(seeds)) rmSync(seedOf(shape));
 }
 
 /** A wait that ends, so a cell that can't see what it waits for says so. */
@@ -241,16 +243,17 @@ function calciferMb() {
     window.violations = [];
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
     window.boxOf = (name) => [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
-    window.dotIs = (name, dot) => new Promise((done) => {
-      const look = () => (window.boxOf(name)?.querySelector(`.dot.${dot}`) ? done(Date.now()) : requestAnimationFrame(look));
-      look();
-    });
     window.placedAt = (name, x, y) => new Promise((done) => {
       const look = () => {
         const node = window.boxOf(name);
         const m = node && new DOMMatrix(getComputedStyle(node).transform);
         return m && Math.abs(m.e - x) < 0.5 && Math.abs(m.f - y) < 0.5 ? done(Date.now()) : requestAnimationFrame(look);
       };
+      look();
+    });
+    window.wordsAre = (name, words) => new Promise((done) => {
+      const held = () => [...document.querySelectorAll(`.card.here[data-asset="${name}"] .mention-text[data-field=instructions], .card.here[data-asset="${name}"] .held-line`)];
+      const look = () => (held().some((line) => line.textContent.includes(words)) ? done(Date.now()) : requestAnimationFrame(look));
       look();
     });
     window.pictureOf = (name) => new Promise((done) => {
@@ -406,10 +409,19 @@ function calciferMb() {
   numbers.shots_on_screen = onScreen.length;
   check('a_shot_on_screen', onScreen.length > 0, await page.locator('.nm').allTextContents());
   const edited = onScreen[0];
-  // A box of a picture says nothing at rest: what changes on it is that it's out of date.
-  const outOfDate = (name) => within(`${name} out of date`, page.evaluate((asked) => window.dotIs(asked, 's-ood'), name));
+  // A box of a picture says nothing at rest of its words, nor that they've changed (Paul, 11-05): open, its instructions are what the file says,
+  // its tool's own field, or under More what it holds that its tool doesn't read.
+  const openOn = async (name) => {
+    await page.goto(`${base}/#/projects/${id}/assets/${encodeURIComponent(name)}`);
+    const here = page.locator(`.card.here[data-asset="${name}"]`);
+    await here.locator('.more-toggle').waitFor();
+    if (!(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
+    await here.locator('.mention-text[data-field=instructions], .held-line:has-text("Instructions")').first().waitFor();
+  };
+  const says = (name, words) => within(`${name} says ${words}`, page.evaluate(([asked, said]) => window.wordsAre(asked, said), [name, words]));
+  await openOn(edited);
   const before = { ...reads };
-  const shownEdit = outOfDate(edited);
+  const shownEdit = says(edited, 'ONE EDIT FROM THE CLI');
   const edit = await project('set', edited, 'instructions=ONE EDIT FROM THE CLI');
   numbers.edit_shows_ms = (await shownEdit) - edit.at;
   check('one_edit_shows_live', numbers.edit_shows_ms <= BARS.edit_shows_ms, numbers.edit_shows_ms);
@@ -426,7 +438,8 @@ function calciferMb() {
 
   // A hand's save, the same way.
   const byHand = onScreen[1] ?? edited;
-  const shownHand = outOfDate(byHand);
+  await openOn(byHand);
+  const shownHand = says(byHand, 'ONE EDIT BY HAND');
   const text = readFileSync(join(folder, 'project.yaml'), 'utf8');
   const lineAt = text.indexOf(`  ${byHand}:\n`);
   const instructionsAt = text.indexOf('    instructions: ', lineAt);
@@ -434,6 +447,9 @@ function calciferMb() {
   const savedAt = Date.now();
   numbers.hand_shows_ms = (await shownHand) - savedAt;
   check('a_hand_shows_live', numbers.hand_shows_ms <= BARS.edit_shows_ms, numbers.hand_shows_ms);
+  await page.goto(`${base}/#/projects/${id}`);
+  await page.locator('.card.here').waitFor({ state: 'detached' });
+  await until('its frames short again', shortFrames, (p95) => p95 < 100, 60_000);
 
   // Moved by a command, as a drag is: a row, and no read of the project.
   const moving = { ...reads };

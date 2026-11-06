@@ -269,6 +269,8 @@ async function loseAnswers(page, method, path, times) {
     const runs = (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
     check('render_key_one', renders.keys.length >= 2 && new Set(renders.keys).size === 1, renders.keys);
     check('render_ran_once', held.versions === 1 && runs.length === 1, { versions: held.versions, runs: runs.length });
+    // Render keeps the box open: shut, as what follows begins at rest.
+    await closeBox(page);
   }
 
   // Each project a tab, top left: one click, its boxes there at once, its own view kept. One that can't be read says why and what to do, on the canvas, with the tools
