@@ -3,13 +3,20 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const NAMES: [&str; 23] = [
+const NAMES: [&str; 28] = [
     "lock_wait", "gate_wait", "poll", "refresh_phase", "alloc", "alloc_slow", "free", "split_select",
     "split_begin", "split_end", "room", "use_on", "acquire", "prefetch_room", "memory_info", "fits",
     "plan_snapshot", "lease", "note_held", "trim_ready", "reslab", "split_run", "fence_poll",
+    "slow_pending_ours", "slow_pending_ours_multi", "slow_pending_other", "slow_fragmented", "slow_short",
 ];
-static NS: [AtomicU64; 23] = [const { AtomicU64::new(0) }; 23];
-static N: [AtomicU64; 23] = [const { AtomicU64::new(0) }; 23];
+static NS: [AtomicU64; 28] = [const { AtomicU64::new(0) }; 28];
+static N: [AtomicU64; 28] = [const { AtomicU64::new(0) }; 28];
+
+/// Count one event under `index`, with `bytes` in the time slot.
+pub(crate) fn count(index: usize, bytes: u64) {
+    N[index].fetch_add(1, Relaxed);
+    NS[index].fetch_add(bytes, Relaxed);
+}
 static LAST: AtomicU64 = AtomicU64::new(0);
 static START: OnceLock<Instant> = OnceLock::new();
 
