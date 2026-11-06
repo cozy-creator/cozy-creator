@@ -2319,8 +2319,16 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
             session.prepared = true;
         }
     }
-    let need = wanted + owner.lock()?.segments.values().filter(|s| s.pool == Some(pool))
-        .map(Segment::unbacked).sum::<usize>();
+    let (unbacked, total) = owner.lock()?.segments.values().filter(|s| s.pool == Some(pool))
+        .fold((0, 0), |(unbacked, total), s| (unbacked + s.unbacked(), total + s.bytes));
+    let need = wanted + unbacked;
+    // Its new pages take completed free working pages' place first, whatever the card has free: a
+    // recorded program is what runs from now on, and mapped beside them its pool summed with
+    // them (SDXL uncapped on a 4090: a 2.7 GiB pool beside 3.7 GiB of eager pages, 11.6 GiB).
+    let fresh = unbacked + wanted.saturating_sub(total);
+    if bytes != 0 && fresh != 0 {
+        release_completed(device, fresh, usize::MAX, Some(pool))?;
+    }
     let reserve = || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;

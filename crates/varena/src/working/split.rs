@@ -445,6 +445,10 @@ struct Menu {
     capacity: usize,
     /// What no eviction can touch: live working bytes and weights held for use.
     live: usize,
+    /// The plan's other phases' weights on the card, when all its phases fit it: taken for a
+    /// coarser level, they are read back every call. SDXL's VAE decode at 6 GiB ran whole beside
+    /// 0.18 GiB of its own weights, evicted 1 GB of UNet a call and lost its recorded program.
+    kept: usize,
 }
 
 /// Settle completions, then fit each choice. Holds nothing on return.
@@ -467,7 +471,9 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     // UNet peak squeezed its VAE decode at 6 GiB into 64 bands (run 32599).
     let (now, peak) = owner.note_held();
     let held = phase.as_ref().map_or(peak, |phase| now.max(peak.min(phase.bytes)));
-    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: live_working(&state) + held })
+    let capacity = total.min(owner.capacity());
+    let kept = phase.as_ref().filter(|phase| phase.plan_bytes <= capacity).map_or(0, |phase| phase.kept);
+    Ok(Menu { plans, capacity, live: live_working(&state) + held, kept })
 }
 
 impl Menu {
@@ -503,7 +509,7 @@ impl Menu {
     /// hold it, and that measure decides.
     fn trial(&self) -> Option<usize> {
         let at = self.fitting();
-        let room = self.capacity.saturating_sub(self.live);
+        let room = self.room();
         self.plans[at].measured().then(|| {
             self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room && (!self.streams() || plan.fits()))
         })?
@@ -514,8 +520,13 @@ impl Menu {
     /// keep at least a quarter of the card for the level (H3 Turbo's 20.7 GiB on a 4090).
     fn budget(&self) -> usize {
         let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
-        let room = self.capacity.saturating_sub(self.live);
+        let room = self.room();
         if self.streams() { room } else { self.capacity.saturating_sub(weights).max(self.capacity / 4).min(room) }
+    }
+
+    /// What neither what's live nor the plan's kept weights hold.
+    fn room(&self) -> usize {
+        self.capacity.saturating_sub(self.live).saturating_sub(self.kept)
     }
 
     fn selection(&self, selected: &Fit, target: usize, stream: u64) -> SplitSelection {
