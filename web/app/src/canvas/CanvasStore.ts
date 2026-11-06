@@ -9,7 +9,7 @@ import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, ratioOf, sentShape, shownOf, valueIn, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, ratioOf, reshapes, sentShape, shownOf, valueIn, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -339,14 +339,16 @@ export class CanvasStore {
     for (let pass = 0; pass < 4; pass++) if (![...this.views].filter(([key, view]) => this.reauto(key, view) !== view).length) return
   }
 
-  /** Its auto shape, kept on its view: the view it has now. */
+  /** Its auto shape, kept on its view: the view it has now. Only a box showing no picture is drawn by it; one showing a picture keeps it for what reads it. */
   private reauto(key: string, view: ElementView): ElementView {
     const auto = this.autoOf(view)
     if (auto === view.auto) return view
     const now = { ...view, auto }
     this.views.set(key, now)
-    this.notify(key)
-    this.reshape(key)
+    if (reshapes(now)) {
+      this.notify(key)
+      this.reshape(key)
+    }
     return now
   }
 
