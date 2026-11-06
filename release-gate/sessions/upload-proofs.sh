@@ -13,6 +13,8 @@ MB=$(param download_mb 2048)
 TS=$(date -u +%m%d%H%M) A=$(cozy --json whoami | jq -r .account)
 [ -n "$A" ] && [ "$A" != null ] || fail "not signed in"
 MD=$A/proofs-d-$TS MU=$A/proofs-u-$TS
+# The weights stay out of $OUT, which is published.
+W=$(mktemp -d)
 tensors() { python3 -I -c 'import json,struct,sys,os
 n=int(sys.argv[2])*2**20//4; h=json.dumps({"w":{"dtype":"F32","shape":[n],"data_offsets":[0,n*4]}}).encode(); h+=b" "*(-len(h)%8)
 with open(sys.argv[1],"wb") as f:
@@ -23,7 +25,7 @@ with open(sys.argv[1],"wb") as f:
 records() { grep '^{' "$OUT/$1"; }
 commit() { records "$1.txt" | jq -r 'select(.type? == "run.completed") | .run.result.models[0].published.commit // empty' | tail -1; }
 settled() { records "$1" | jq -r 'select(.run.settled_at_ms?) | .run.settled_at_ms' | tail -1; }
-cleanup() { for m in $MD $MU; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
+cleanup() { rm -rf "$W"; for m in $MD $MU; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
 quote "$(param traffic_gb 14)" 1800
 rent
 trap 'cleanup; finish' EXIT
@@ -32,15 +34,15 @@ trap 'cleanup; finish' EXIT
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
 v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
-tensors "$OUT/d.safetensors" "$MB"
-step upload-d --json model upload "$OUT/d.safetensors" "$MD" --lane f32 --source-format as-is || fail "upload from the runner"
+tensors "$W/d.safetensors" "$MB"
+step upload-d --json model upload "$W/d.safetensors" "$MD" --lane f32 --source-format as-is || fail "upload from the runner"
 CD=$(commit upload-d); [ -n "$CD" ] || fail "upload-d named no commit"
 say "$MD@$CD ($MB MB, private)"
 
 # 2. Two uploads on the pod, in a row.
 for i in 1 2; do
-  tensors "$OUT/u$i.safetensors" 1
-  step "upload-$i" --json model upload "$OUT/u$i.safetensors" "$MU" --lane f32 --source-format as-is --on "$NAME" || fail "upload $i --on the pod"
+  tensors "$W/u$i.safetensors" 1
+  step "upload-$i" --json model upload "$W/u$i.safetensors" "$MU" --lane f32 --source-format as-is --on "$NAME" || fail "upload $i --on the pod"
   [ -n "$(commit "upload-$i")" ] || fail "upload $i named no commit"
   say "upload $i: $MU@$(commit "upload-$i")"
 done
@@ -51,8 +53,8 @@ until records download-1.ndjson | jq -e 'select(.progress.stage? | strings | sta
   kill -0 $D1 2> /dev/null || fail "download 1 ended before it downloaded: $(tail -c 300 "$OUT/download-1.ndjson")"; sleep 0.5
 done
 cozy --json model download "$MD@$CD" --on "$NAME" > "$OUT/download-2.ndjson" 2> "$OUT/download-2.err" & D2=$!
-tensors "$OUT/u3.safetensors" 1
-step upload-3 --json model upload "$OUT/u3.safetensors" "$MU" --lane f32 --source-format as-is --on "$NAME" || fail "upload 3 --on the pod"
+tensors "$W/u3.safetensors" 1
+step upload-3 --json model upload "$W/u3.safetensors" "$MU" --lane f32 --source-format as-is --on "$NAME" || fail "upload 3 --on the pod"
 wait $D1 || fail "download 1: $(tail -c 300 "$OUT/download-1.ndjson")"
 wait $D2 || fail "download 2: $(tail -c 300 "$OUT/download-2.ndjson")"
 U=$(settled upload-3.txt)
