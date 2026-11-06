@@ -925,8 +925,11 @@ export class CanvasStore {
     return () => count(-1)
   }
 
-  /** A picture is `name`'s next version, there at once, a note offering Undo. `file` needs a path to show before the project holds it. `source` is what Calcifer finds it by. */
-  joinVersion(name: string, file: Pick<MainFile, "sha256" | "field"> & Partial<MainFile>, source: string, what: string) {
+  /**
+   * A picture is `name`'s next version, there at once, a note offering Undo. `file` needs a path to show before the project holds it. `source` is what Calcifer finds
+   * it by. `merged`: a box merging in, so on an approved box it's the one approved, and its undo is handed back for the merge's own note.
+   */
+  joinVersion(name: string, file: Pick<MainFile, "sha256" | "field"> & Partial<MainFile>, source: string, what: string, merged = false): (() => void) | undefined {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
     if (!asset) return
@@ -938,20 +941,25 @@ export class CanvasStore {
     const main = file.path === undefined ? undefined : { output: file.field, path: file.path, ...file }
     const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
     const back: Partial<Asset> = { prefixes: asset.prefixes, versions: asset.versions, version: asset.version, approved: asset.approved }
-    const stands = asset.pinned ? (asset.approved ?? 1) : number
+    const was = asset.pinned ? (asset.approved ?? 1) : undefined
+    const approves = merged && was !== undefined
+    const stands = was !== undefined && !approves ? was : number
     let joined = 0
     let note = 0
-    const going = this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(asset.pinned ? { approved: stands } : {}) }, (served, once) => this.client.addVersion(this.projectId!, served, source, once), "add to", {
+    const going = this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(was !== undefined ? { approved: stands } : {}) }, (served, once) => this.client.addVersion(this.projectId!, served, source, once), "add to", {
       done: (answer) => {
         joined = answer.number
         if (answer.already) dismiss(note)
+        if (approves) this.pin(key, answer.number)
       },
       refused: () => dismiss(note),
     })
     const undo = () => {
       if (going && this.outbox.takeBack(going)) return this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...back } })
       this.over(key, back, (served, once) => this.client.discardVersion(this.projectId!, served, joined, once), "take back from")
+      if (approves) this.pin(key, was)
     }
+    if (merged) return undo
     note = say(`${what} joined ${name}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
   }
 
@@ -1328,10 +1336,10 @@ export class CanvasStore {
         this.setHot(name)
         return part
       }
-      // A box of pictures with no tool takes pictures, as its versions.
-      if (this.joins(name)) {
+      // A box of pictures takes a box of the same kind: it merges in.
+      if (view?.asset && holdsPictures(view.asset) && !view.asset.timeline && !madeHere(view.asset.tool)) {
         this.setHot(name)
-        return { over: () => {}, drop: (names) => this.joinBoxes(name, names) }
+        return { over: () => {}, drop: (names) => this.mergeBoxes(name, names) }
       }
       // Only a box being made takes anything: what's made, approved or only words is just in the way.
       if (!view || !makes(view) || faceOf(view) !== "edit") break
@@ -1342,13 +1350,24 @@ export class CanvasStore {
     return null
   }
 
-  /** Boxes let go on a box of pictures: what each shows joins it, and they stay as they are. */
-  private joinBoxes(target: string, names: string[]) {
-    for (const name of names) {
-      const shown = this.get(name)
-      const file = shown && shownOf(shown)
-      if (file && this.resolveName(name) !== this.resolveName(target)) this.joinVersion(target, { ...file, path: file.path || "" }, file.sha256, name)
+  /** Boxes let go on a box of pictures: each of its kind merges in, what it shows the newest take, approved if the box was, and it's gone. Any other a tool reads. */
+  private mergeBoxes(target: string, names: string[]) {
+    const key = this.resolveName(target)
+    const kind = this.get(key)?.asset?.kind
+    const undos: (() => void)[] = []
+    const merged: string[] = []
+    const rest: string[] = []
+    for (const name of names.map((one) => this.resolveName(one)).filter((one) => one !== key)) {
+      const view = this.get(name)
+      const file = view?.asset && view.asset.kind === kind && !view.asset.timeline ? shownOf(view) : undefined
+      const undo = file && this.joinVersion(key, { ...file, path: file.path || "" }, file.sha256, name, true)
+      if (undo) {
+        undos.push(undo)
+        merged.push(name)
+      } else rest.push(name)
     }
+    if (merged.length) this.remove(merged, { into: key, undo: () => undos.forEach((undo) => undo()) })
+    if (rest.length && this.get(key)?.asset?.tool) this.takeInto(key, rest)
   }
 
   /** Names into a box that's shut: its first place for one, after what's there. */
@@ -1389,7 +1408,7 @@ export class CanvasStore {
   // Deleting
 
   /** Gone at once, with no dialog. Files stay: a note offers Undo for a while, and says if something still needs what went. */
-  remove(names: string[]) {
+  remove(names: string[], merged?: { into: string; undo: () => void }) {
     // One taken out or pasted a moment ago may have no row read yet: its delete waits behind its import.
     const going = names.map((name) => this.resolveName(name)).filter((name) => (this.views.get(name)?.asset || this.views.get(name)?.landed) && !this.views.get(name)?.placing)
     if (!going.length) return
@@ -1423,7 +1442,11 @@ export class CanvasStore {
     }
     const what = gone.length === 1 ? gone[0].name : `${gone.length} assets`
     const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} this and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
-    note = say(`Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: () => gone.forEach((box) => this.undo(box)) }, ms: UNDO_MS })
+    const undo = () => {
+      gone.forEach((box) => this.undo(box))
+      merged?.undo()
+    }
+    note = say(merged ? `${what} merged into ${merged.into}.${said}` : `Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
   }
 
   /** A box again, as it was, where it was. */

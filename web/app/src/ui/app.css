@@ -406,7 +406,7 @@ code {
 .media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
-  background-size: 14px 14px;
+  background-size: 18px 18px;
 }
 /* Nothing made yet: the marks of a viewfinder, on the canvas itself. The corner still reshapes it. */
 .media.blank {
@@ -1204,7 +1204,7 @@ code {
 .slot-media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
-  background-size: 14px 14px;
+  background-size: 18px 18px;
 }
 .slot-media img {
   position: absolute;

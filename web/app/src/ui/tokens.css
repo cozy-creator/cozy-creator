@@ -54,8 +54,8 @@
   /* Media reads on neutral grey whatever the theme: warm cream around a picture skews it. */
   --stage: #161616;
   --veil: #161616c4;
-  --check: #d6d6d6;
-  --check2: #f2f2f2;
+  --check: #ffffff;
+  --check2: #ececec;
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: "M PLUS Rounded 1c", "Trebuchet MS", system-ui, sans-serif;
