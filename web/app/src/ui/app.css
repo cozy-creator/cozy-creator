@@ -1,6 +1,42 @@
 * {
   box-sizing: border-box;
 }
+/* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
+   by --here, and a box's insides scale with the canvas, so each sets --m. Its name, its words and what's said around them read the
+   same at any zoom: --on. */
+:root,
+.drawer-head,
+.drawer-body,
+.card,
+.here-under,
+.here-side,
+.rest-waiting {
+  --title: calc(var(--t-title) * var(--m));
+  --heading: calc(var(--t-heading) * var(--m));
+  --body: calc(var(--t-body) * var(--m));
+  --small: calc(var(--t-small) * var(--m));
+  --tiny: calc(var(--t-tiny) * var(--m));
+}
+.react-flow__node {
+  /* What hangs off a box at rest stops growing at --hang, past which it shrinks with the canvas, in the room its box keeps (shown.ts). */
+  --on: calc(var(--ui) * var(--hang, 1));
+}
+.card.here {
+  --on: calc(var(--ui) * var(--text, 1));
+}
+.card {
+  --m: 1;
+  font-size: var(--body);
+}
+.here-under,
+.here-side {
+  --m: 1;
+  font-size: var(--body);
+}
+.rest-waiting {
+  --m: var(--ui);
+}
+
 html,
 body,
 #root {
@@ -9,7 +45,7 @@ body,
   overflow: hidden;
   background: var(--bg);
   color: var(--ink);
-  font: 13px/1.4 var(--sans);
+  font: var(--body) / 1.4 var(--sans);
 }
 button,
 select,
@@ -29,7 +65,7 @@ a {
   text-decoration: none;
 }
 code {
-  font: 12px var(--mono);
+  font: 0.95em var(--mono);
 }
 .sp {
   flex: 1;
@@ -50,8 +86,8 @@ code {
 }
 .gate h1 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--title);
+  font-weight: var(--w-title);
   color: var(--ink);
 }
 .gate p {
@@ -69,7 +105,7 @@ code {
 }
 .copyable button {
   color: var(--mute);
-  font-size: 11px;
+  font-size: var(--small);
 }
 .copyable button:hover {
   color: var(--ink);
@@ -103,8 +139,8 @@ code {
   padding: 5px 10px;
   border-radius: var(--round);
   background: var(--float);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
   white-space: nowrap;
 }
 .proj:hover {
@@ -112,7 +148,7 @@ code {
 }
 .sum {
   color: var(--mute);
-  font-size: 12px;
+  font-size: var(--small);
   white-space: nowrap;
 }
 .sum.mak {
@@ -139,7 +175,7 @@ code {
   border-radius: var(--round);
   background: var(--card);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--body);
   white-space: nowrap;
   transition: transform 80ms ease-out;
 }
@@ -156,7 +192,7 @@ code {
   font-weight: 600;
 }
 .pill {
-  font-size: 11px;
+  font-size: var(--small);
   padding: 3px 9px;
   border-radius: 12px;
   background: var(--float);
@@ -167,7 +203,7 @@ code {
   border: 1px solid color-mix(in srgb, var(--ood) 33%, transparent);
 }
 .pill code {
-  font-size: 11px;
+  font-size: 1em;
 }
 
 /* The canvas: the whole window, with what floats over it. */
@@ -221,7 +257,7 @@ code {
   border: 1px dashed var(--line2);
   border-radius: 16px;
   color: var(--mute);
-  font-size: 15px;
+  font-size: var(--body);
   pointer-events: auto;
   transition: transform 120ms cubic-bezier(0.2, 1.4, 0.4, 1);
 }
@@ -306,12 +342,16 @@ code {
   flex: 0 1 auto;
   max-width: 100%;
   color: var(--ink);
-  font: calc(20px * var(--text, 1)) / 1.25 var(--mono);
+  font: var(--body) / 1.25 var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
   cursor: text;
+}
+/* A box's name is its title, the same size at any zoom. */
+.card .nm {
+  font: var(--w-title) calc(var(--t-title) * var(--on)) / 1.25 var(--mono);
 }
 .card.here .nm,
 .react-flow__node.selected .nm {
@@ -319,7 +359,7 @@ code {
 }
 .nm-field {
   user-select: text;
-  font: calc(20px * var(--text, 1)) var(--mono);
+  font: var(--w-title) calc(var(--t-title) * var(--on)) var(--mono);
   flex: 1;
   min-width: 0;
   background: var(--field);
@@ -329,7 +369,7 @@ code {
   outline: 0;
 }
 .tag {
-  font-size: 10px;
+  font-size: var(--tiny);
   color: var(--faint);
   white-space: nowrap;
 }
@@ -349,7 +389,9 @@ code {
 }
 /* Let go, it slides: back from a box that took its name, or off one it can't lie on. */
 .react-flow__node.glide {
-  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    width 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 .dot {
   width: 7px;
@@ -388,7 +430,7 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--body);
   flex: none;
 }
 .iconb:hover {
@@ -401,7 +443,7 @@ code {
 }
 .count {
   color: var(--mute);
-  font: 11px var(--mono);
+  font: var(--small) var(--mono);
   white-space: nowrap;
 }
 
@@ -492,7 +534,7 @@ code {
 }
 .media-note {
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--small);
   z-index: 1;
 }
 .media-note.over {
@@ -509,6 +551,7 @@ code {
 .play,
 .stop {
   position: absolute;
+  color: #fff;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -575,7 +618,7 @@ code {
   border-radius: 5px;
   background: #000a;
   color: #cfe6ff;
-  font: 500 11px var(--sans);
+  font: var(--small) var(--sans);
 }
 .tc {
   position: absolute;
@@ -584,7 +627,7 @@ code {
   padding: 0 4px;
   border-radius: 3px;
   background: #000a;
-  font: 10px var(--mono);
+  font: var(--tiny) var(--mono);
   z-index: 1;
 }
 /* A video's poster, and its frames under the pointer. */
@@ -619,15 +662,16 @@ video.preview.on {
 .in-frame .mention-text {
   padding: 12px;
   color: var(--ink);
-  font-size: calc(22px * var(--text, 1));
-  line-height: calc(30px * var(--text, 1));
+  font-size: calc(var(--t-title) * var(--ui) * var(--text, 1));
+  line-height: 1.4;
 }
-/* As many lines as the box holds at this zoom. */
+/* As many whole lines as the box holds at this zoom: the last one shown is never cut through. */
 .words {
   margin: 0;
   align-self: flex-start;
   width: 100%;
-  max-height: 100%;
+  padding-bottom: 0;
+  max-height: calc(12px + round(down, 100% - 12px, 1.4em));
   overflow: hidden;
   overflow-wrap: anywhere;
 }
@@ -713,6 +757,21 @@ video.preview.on {
 .card.here .media {
   user-select: text;
 }
+/* At rest, its × and its state are drawn with its name: one size on screen, down to --hang. */
+.card .head .iconb {
+  width: calc(22px * var(--hang, 1));
+  height: calc(22px * var(--hang, 1));
+  border-radius: calc(5px * var(--hang, 1));
+}
+.card .head .iconb .icon {
+  width: calc(14px * var(--hang, 1));
+  height: calc(14px * var(--hang, 1));
+}
+.card .head .dot {
+  width: calc(7px * var(--hang, 1));
+  height: calc(7px * var(--hang, 1));
+  margin: 0 calc(2px * var(--hang, 1));
+}
 /* What it can do at its head and on its picture stays one size too: the canvas is drawn in on it. */
 .card.here .head .iconb {
   width: calc(30px * var(--text, 1));
@@ -727,7 +786,7 @@ video.preview.on {
   height: calc(20px * var(--text, 1));
 }
 .card.here .count {
-  font-size: calc(16px * var(--text, 1));
+  font-size: calc(var(--t-small) * var(--on));
 }
 .card.here .dot {
   width: calc(10px * var(--text, 1));
@@ -739,16 +798,26 @@ video.preview.on {
   height: calc(40px * var(--text, 1));
 }
 .card.here .tc {
-  font-size: calc(15px * var(--text, 1));
+  font-size: calc(var(--t-small) * var(--on));
 }
+/* Waiting, at rest: said on its picture, bottom left, as how far it's got is, so nothing hangs under it but what its box keeps room for. */
 .rest-waiting {
   position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  transform: scale(var(--text, 1));
-  transform-origin: top left;
-  white-space: nowrap;
+  left: calc(var(--s3) * var(--hang, 1));
+  bottom: calc(var(--s3) * var(--hang, 1));
+  max-width: calc(100% / var(--hang, 1) - 2 * var(--s3));
+  transform: scale(var(--hang, 1));
+  transform-origin: bottom left;
   z-index: 5;
+}
+.card .rest-waiting .status {
+  padding: 1px var(--s3);
+  border-radius: 5px;
+  overflow: hidden;
+  background: #000a;
+  color: #cfe6ff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* All of a box, under it. --here-width and --here-room come with each fit, and --here is how large it's drawn for the screen. */
 .stage {
@@ -784,14 +853,16 @@ video.preview.on {
 }
 .here-under > * {
   --text: 1;
+  --hang: 1;
 }
-/* A box worked on: its takes in a column beside the picture, the newest on top, the first's top on the picture's. */
+/* A box worked on: its takes in a column beside the picture, the newest on top, the first's top on the picture's and the column as tall
+   as it. A take's ring is drawn inside it, so nothing of one rises past the picture or is cut off by the column. */
 .here-side {
   position: absolute;
-  top: calc(var(--head) - 4px * var(--text, 1) * var(--here));
-  left: calc(100% + 8px * var(--text, 1));
-  width: var(--side-width, 132px);
-  height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)) + 4px);
+  top: var(--head);
+  left: calc(100% + var(--s5) * var(--text, 1));
+  width: var(--side-width, 124px);
+  height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)));
   overflow: hidden auto;
   overscroll-behavior: contain;
   transform: scale(calc(var(--text, 1) * var(--here)));
@@ -801,11 +872,12 @@ video.preview.on {
 }
 .here-side > * {
   --text: 1;
+  --hang: 1;
 }
 .here-side .takes {
   flex-direction: column;
-  gap: 6px;
-  padding: 4px;
+  gap: var(--s3);
+  padding: 0;
   overflow: visible;
 }
 .here-side .take {
@@ -827,7 +899,7 @@ video.preview.on {
   line-height: 1;
 }
 .take-new {
-  font-size: 12px;
+  font-size: var(--small);
   font-family: var(--sans);
   color: var(--mute);
   white-space: nowrap;
@@ -839,15 +911,21 @@ video.preview.on {
   border-color: var(--ember);
   color: var(--ember);
 }
-.here-side .take.on {
-  outline: 4px solid var(--ember);
-  outline-offset: 2px;
+/* The one looked at: a ring inside its edge, over its picture and under its number. */
+.here-side .take.on::before,
+.here-under .take.on::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 4px solid var(--ember);
+  pointer-events: none;
 }
 .here-side .take.making {
   background: var(--card);
   border: 1px solid var(--ember);
   color: var(--ink);
-  font-size: 22px;
+  font-size: var(--title);
 }
 /* What a box is, in its own words: a field of its own, under its label. */
 .desc-field {
@@ -856,8 +934,8 @@ video.preview.on {
   gap: 4px;
 }
 .block-label {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
   color: var(--mute);
 }
 .field-block {
@@ -866,7 +944,7 @@ video.preview.on {
   gap: 4px;
 }
 .field-block .mention-text {
-  font-size: 15px;
+  font-size: var(--body);
 }
 .tool-head {
   display: flex;
@@ -887,7 +965,7 @@ video.preview.on {
   border: 1px solid var(--line2);
   border-radius: var(--round);
   background: var(--card);
-  font-size: 13px;
+  font-size: var(--body);
   line-height: 1.4;
 }
 .here-all {
@@ -898,7 +976,7 @@ video.preview.on {
 }
 .here-all .field,
 .here-all .tb {
-  font-size: 14px;
+  font-size: var(--body);
 }
 .here-all .row.actions,
 .here-all .edit-shown,
@@ -946,10 +1024,6 @@ video.preview.on {
 .here-under .takes {
   padding: 6px;
 }
-.here-under .take.on {
-  outline: 4px solid var(--ember);
-  outline-offset: 2px;
-}
 .take.approved::after {
   content: "✓";
   position: absolute;
@@ -971,7 +1045,7 @@ video.preview.on {
   background: var(--card);
   border: 1px solid var(--ember);
   color: var(--ink);
-  font-size: 22px;
+  font-size: var(--title);
 }
 .here-under .take.add {
   flex: none;
@@ -1051,7 +1125,7 @@ video.preview.on {
   top: 100%;
   right: 2px;
   color: var(--ink);
-  font: calc(20px * var(--text, 1)) / 1.25 var(--mono);
+  font: calc(var(--t-small) * var(--on)) / 1.25 var(--mono);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -1068,7 +1142,7 @@ video.preview.on {
   border-radius: 0.3em;
   background: #000b;
   color: #fff;
-  font-size: calc(16px * var(--text, 1));
+  font-size: calc(var(--t-small) * var(--on));
 }
 .ratio-clear {
   display: grid;
@@ -1107,7 +1181,7 @@ video.preview.on {
 
 .status {
   padding: 5px 10px;
-  font-size: 11px;
+  font-size: var(--small);
   color: var(--mute);
 }
 .status.ood {
@@ -1123,7 +1197,7 @@ video.preview.on {
   color: var(--ink);
   text-decoration: underline;
   text-underline-offset: 2px;
-  font-size: 11px;
+  font-size: var(--small);
 }
 .act.going {
   animation: pulse 1.2s infinite;
@@ -1139,7 +1213,7 @@ video.preview.on {
   padding: 4px 10px;
   border: 1px solid var(--line2);
   border-radius: var(--round);
-  font-size: 12px;
+  font-size: var(--small);
   text-decoration: none;
   transition: transform 80ms ease-out;
 }
@@ -1160,8 +1234,8 @@ video.preview.on {
   border-radius: var(--round);
   background: var(--ember);
   color: var(--on-ember);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
   transition: transform 80ms ease-out;
 }
 .run:hover {
@@ -1177,7 +1251,7 @@ video.preview.on {
   gap: 4px;
 }
 .tc-inline {
-  font: 10px var(--mono);
+  font: var(--tiny) var(--mono);
   color: var(--mute);
 }
 /* Its takes or versions, side by side. */
@@ -1200,7 +1274,7 @@ video.preview.on {
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
   background-size: 8px 8px;
   color: var(--mute);
-  font-size: 11px;
+  font-size: var(--tiny);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1279,7 +1353,7 @@ video.preview.on {
   text-overflow: ellipsis;
   background: var(--tint);
   color: var(--mute);
-  font-size: 10px;
+  font-size: var(--small);
 }
 .beats button:hover {
   background: var(--tint2);
@@ -1291,7 +1365,7 @@ video.preview.on {
   margin: 6px 8px;
   height: 48px;
   color: var(--mute);
-  font-size: 11.5px;
+  font-size: var(--small);
   line-height: 16px;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -1325,7 +1399,7 @@ video.preview.on {
   border-radius: 0;
   background: var(--well);
   color: var(--faint);
-  font-size: 13px;
+  font-size: var(--body);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1346,7 +1420,7 @@ video.preview.on {
 .slot-name {
   display: block;
   color: var(--faint);
-  font-size: 13px;
+  font-size: var(--body);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1360,7 +1434,7 @@ video.preview.on {
   height: 22px;
   padding: 5px 8px 0;
   color: var(--ember2);
-  font: 11px var(--mono);
+  font: var(--small) var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1420,19 +1494,21 @@ video.preview.on {
   gap: 6px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
-  font-size: 12px;
+  font-size: var(--body);
 }
 .drawer-head b {
-  font-weight: 500;
+  font-size: var(--title);
+  font-weight: var(--w-title);
 }
 .drawer-body {
   flex: 1;
   overflow: auto;
   padding: 10px;
+  font-size: var(--body);
 }
 .yaml {
   margin: 0;
-  font: 11.5px/1.5 var(--mono);
+  font: var(--body) / 1.5 var(--mono);
   color: var(--ink);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1469,11 +1545,11 @@ video.preview.on {
 }
 .list b {
   display: block;
-  font: 500 12px var(--mono);
+  font: var(--w-heading) var(--heading) var(--mono);
 }
 .list small {
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--small);
   word-break: break-all;
 }
 
@@ -1505,7 +1581,7 @@ video.preview.on {
   border: 1px solid var(--line2);
   border-radius: var(--round2);
   box-shadow: 0 8px 24px var(--shadow);
-  font-size: 18px;
+  font-size: var(--body);
   animation: open-up 140ms ease-out;
 }
 .note .line {
@@ -1558,7 +1634,7 @@ button:disabled {
   align-items: center;
   gap: 6px;
   color: var(--mute);
-  font-size: 12px;
+  font-size: var(--body);
   white-space: nowrap;
 }
 .failure {
@@ -1571,7 +1647,7 @@ button:disabled {
   border: 1px solid color-mix(in srgb, var(--bad) 33%, transparent);
   border-radius: 6px;
   background: color-mix(in srgb, var(--bad) 6%, transparent);
-  font-size: 12px;
+  font-size: var(--body);
   overflow-wrap: anywhere;
 }
 .failure .remedy {
@@ -1606,12 +1682,12 @@ button:disabled {
   min-width: 0;
 }
 .runrow b {
-  font: 500 12px var(--mono);
+  font: var(--w-heading) var(--heading) var(--mono);
 }
 .runrow small,
 .outputs small {
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--small);
   white-space: nowrap;
 }
 .runrow .under {
@@ -1645,7 +1721,8 @@ button:disabled {
   margin-bottom: 8px;
 }
 .run-head b {
-  font-weight: 500;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
 }
 .run-head small {
   color: var(--mute);
@@ -1657,13 +1734,13 @@ button:disabled {
   margin: 10px 0 6px;
 }
 .cost b {
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--title);
+  font-weight: var(--w-title);
   letter-spacing: -0.01em;
 }
 .cost small {
   color: var(--mute);
-  font-size: 12px;
+  font-size: var(--small);
 }
 .keep-up:empty {
   display: none;
@@ -1680,11 +1757,11 @@ button:disabled {
 }
 .kv dt {
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--small);
 }
 .kv dd {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--body);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -1696,13 +1773,13 @@ button:disabled {
   align-items: center;
   gap: 8px;
   margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 500;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
   color: var(--mute);
 }
 .sect summary {
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--heading);
   color: var(--mute);
 }
 .sect[open] summary {
@@ -1716,7 +1793,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--field);
-  font: 11px/1.45 var(--mono);
+  font: var(--small) / 1.45 var(--mono);
   color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1757,7 +1834,7 @@ button:disabled {
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: var(--small);
 }
 .stillframe {
   position: relative;
@@ -1788,11 +1865,11 @@ button:disabled {
 .grid {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: var(--small);
 }
 .grid th {
   text-align: left;
-  font-weight: 500;
+  font-weight: var(--w-heading);
   color: var(--faint);
   padding: 2px 8px 2px 0;
 }
@@ -1803,8 +1880,8 @@ button:disabled {
 }
 .measured h4 {
   margin: 8px 0 2px;
-  font-size: 11px;
-  font-weight: 500;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
   color: var(--mute);
 }
 .row.center {
@@ -1814,7 +1891,7 @@ button:disabled {
   flex: none;
   height: 22px;
   padding: 0 4px;
-  font-size: 11px;
+  font-size: var(--small);
 }
 .field.wide {
   width: 100%;
@@ -1833,12 +1910,12 @@ button:disabled {
   background: var(--tint);
 }
 .sku b {
-  font: 600 13px var(--mono);
+  font: var(--w-heading) var(--heading) var(--mono);
   white-space: nowrap;
 }
 .sku small {
   color: var(--mute);
-  font-size: 12px;
+  font-size: var(--small);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1851,7 +1928,7 @@ button:disabled {
 }
 .price {
   color: var(--mute);
-  font-size: 12px;
+  font-size: var(--body);
   white-space: nowrap;
 }
 .order {
@@ -1881,7 +1958,7 @@ button:disabled {
   align-items: center;
   gap: 8px;
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--body);
 }
 .heldrow {
   display: flex;
@@ -1892,7 +1969,7 @@ button:disabled {
 }
 .heldrow small {
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--small);
 }
 .heldrow small.warn {
   flex-basis: 100%;
@@ -1929,7 +2006,7 @@ button:disabled {
 .alt {
   display: block;
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--small);
   text-align: left;
 }
 .dropzone {
@@ -1937,7 +2014,7 @@ button:disabled {
   border: 1px dashed var(--line2);
   border-radius: 6px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--body);
 }
 .dropzone.over {
   border-color: var(--ember);
@@ -1956,11 +2033,11 @@ button:disabled {
   padding: 3px 6px;
   border: 1px solid var(--line);
   border-radius: 5px;
-  font-size: 12px;
+  font-size: var(--body);
 }
 .filerow small {
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--small);
   white-space: nowrap;
 }
 .filerow.bad small {
@@ -1980,7 +2057,7 @@ button:disabled {
 }
 .fname {
   padding-top: 5px;
-  font: 12px var(--mono);
+  font: var(--body) var(--mono);
   color: var(--mute);
   overflow-wrap: anywhere;
 }
@@ -1996,7 +2073,7 @@ button:disabled {
   resize: vertical;
 }
 .field.area.code {
-  font: 12px/1.45 var(--mono);
+  font: var(--body) / 1.45 var(--mono);
   margin: 8px 0;
 }
 .tabs {
@@ -2007,7 +2084,7 @@ button:disabled {
   padding: 3px 8px;
   border-radius: 4px;
   color: var(--mute);
-  font: 12px var(--mono);
+  font: var(--body) var(--mono);
 }
 .tab.on {
   background: var(--tint);
@@ -2030,12 +2107,12 @@ button:disabled {
 }
 .choose small {
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--small);
   min-width: 0;
 }
 .topback {
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--body);
 }
 .switcher {
   margin-bottom: 8px;
@@ -2052,7 +2129,7 @@ button:disabled {
   border-radius: 8px;
   background: var(--mak);
   color: var(--on-ember);
-  font-size: 11px;
+  font-size: var(--tiny);
   font-weight: 600;
 }
 .field.releasepick {
@@ -2064,7 +2141,7 @@ button:disabled {
   white-space: nowrap;
 }
 .grid td.nm {
-  font: 11px var(--mono);
+  font: var(--small) var(--mono);
 }
 a.tab:hover {
   color: var(--ink);
@@ -2131,8 +2208,8 @@ a.tab:hover {
   margin: 10px 0 2px;
   padding: 0 6px;
   color: var(--faint);
-  font-size: 11px;
-  font-weight: 500;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
 }
 .tool-groups section:first-of-type h4 {
   margin-top: 2px;
@@ -2148,7 +2225,7 @@ a.tab:hover {
 }
 .tools p {
   margin: 4px 6px;
-  font-size: 11px;
+  font-size: var(--small);
 }
 .tool {
   display: flex;
@@ -2157,7 +2234,7 @@ a.tab:hover {
   padding: 4px 6px;
   border-radius: 6px;
   cursor: grab;
-  font-size: 12.5px;
+  font-size: var(--body);
 }
 .tool:hover {
   background: var(--tint);
@@ -2201,7 +2278,7 @@ a.tab:hover {
   grid-template-columns: 1fr auto;
   gap: 0 6px;
   padding: 4px 6px;
-  font-size: 12.5px;
+  font-size: var(--body);
 }
 .browsed b {
   font-weight: 400;
@@ -2212,7 +2289,7 @@ a.tab:hover {
 .browsed span {
   grid-row: 2;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: var(--small);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2256,7 +2333,7 @@ a.tab:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--small);
   color: var(--mute);
 }
 .render-all label {
@@ -2284,7 +2361,7 @@ a.tab:hover {
 .main-menu nav {
   position: absolute;
   right: 0;
-  top: 34px;
+  top: calc(100% + var(--s2));
   min-width: 140px;
   padding: 4px;
   display: flex;
@@ -2321,14 +2398,19 @@ a.tab:hover {
   border-top: 1px solid var(--line);
   margin-top: 6px;
 }
+/* Names in a column, each on one line: a long one ends in an ellipsis, and its title says it all. */
 .edit-more .slide > .ctl-name:first-child {
-  flex: 0 0 68px;
+  flex: 0 0 26%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.text-row {
+/* Its name level with the first line of its words, not the middle of all it holds. */
+.slide.text-row {
   align-items: flex-start;
 }
 .text-row > .ctl-name {
-  padding-top: 6px;
+  padding-top: var(--s3);
 }
 .text-box {
   flex: 1;
@@ -2345,7 +2427,7 @@ a.tab:hover {
   align-items: baseline;
   gap: 6px;
   padding: 4px 2px;
-  font-size: 11px;
+  font-size: var(--small);
   color: var(--faint);
 }
 .more-toggle:hover {
@@ -2369,7 +2451,7 @@ a.tab:hover {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--tint);
-  font-size: 12px;
+  font-size: var(--body);
   line-height: 18px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2395,6 +2477,11 @@ a.tab:hover {
   font: 600 0.9em var(--mono);
   white-space: nowrap;
 }
+/* In a frame at rest a chip is words among words: it wraps with them, so a long one is never cut off at the box's edge. */
+.words .chip {
+  display: inline;
+  white-space: normal;
+}
 /* A name its tool doesn't take: there, and not sent. */
 .chip.refused {
   opacity: 0.5;
@@ -2412,7 +2499,7 @@ a.tab:hover {
   border-radius: 0.3em;
   background: var(--bad);
   color: #fff;
-  font-size: calc(14px * var(--text, 1));
+  font-size: calc(var(--t-small) * var(--on));
   pointer-events: none;
   z-index: 6;
 }
@@ -2433,7 +2520,7 @@ a.tab:hover {
   background: var(--panel);
   border: 1px solid var(--line2);
   border-radius: 6px;
-  font: 11px var(--mono);
+  font: var(--small) var(--mono);
   max-height: 200px;
   overflow-y: auto;
 }
@@ -2450,7 +2537,7 @@ a.tab:hover {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 14px;
+  font-size: var(--body);
   color: var(--ink);
 }
 .slide input[type="range"] {
@@ -2473,7 +2560,7 @@ input[type="checkbox"] {
   position: relative;
 }
 .beat .mention-text {
-  font-size: 15px;
+  font-size: var(--body);
 }
 .beat.can-go .mention-text {
   padding-right: 22px;
@@ -2498,8 +2585,8 @@ input[type="checkbox"] {
   padding: 6px 14px;
   border: 1px dashed var(--line2);
   border-radius: var(--round);
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--body);
+  font-weight: var(--w-heading);
   color: var(--ink);
 }
 .add-beat:hover {
@@ -2511,7 +2598,7 @@ input[type="checkbox"] {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
-  font-size: 13px;
+  font-size: var(--small);
   color: var(--mute);
 }
 .slot-control {
@@ -2523,7 +2610,7 @@ input[type="checkbox"] {
   min-height: 30px;
   border: 1px dashed var(--line2);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: var(--small);
   color: var(--mute);
 }
 .card.here [data-drop-target]:hover {
@@ -2539,7 +2626,7 @@ input[type="checkbox"] {
   flex: 1;
   min-width: 0;
   text-align: left;
-  font-size: 11px;
+  font-size: var(--small);
   color: var(--mute);
   white-space: nowrap;
   overflow: hidden;
@@ -2563,7 +2650,7 @@ input[type="checkbox"] {
 }
 .warned-lines {
   padding: 2px 10px;
-  font-size: 11px;
+  font-size: var(--small);
   color: var(--ood);
 }
 .warned-lines p {
@@ -2592,7 +2679,7 @@ input[type="checkbox"] {
   padding: 6px 8px;
   border-radius: 5px;
   text-align: left;
-  font-size: 12px;
+  font-size: var(--body);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2607,13 +2694,13 @@ input[type="checkbox"] {
   justify-content: space-between;
   gap: 8px;
   padding: 2px 2px 2px 8px;
-  font-size: 12px;
+  font-size: var(--body);
 }
 .menu-row .field {
   flex: none;
   width: 130px;
   height: 26px;
-  font-size: 12px;
+  font-size: var(--body);
 }
 .menu-list {
   list-style: none;
@@ -2705,7 +2792,6 @@ input[type="checkbox"] {
   height: calc(28px * var(--ui));
   padding: 0 calc(10px * var(--ui));
   gap: calc(5px * var(--ui));
-  font-size: calc(12px * var(--ui));
   border-radius: calc(var(--round) * var(--ui));
 }
 .top .iconb,
@@ -2713,17 +2799,13 @@ input[type="checkbox"] {
   width: calc(22px * var(--ui));
   height: calc(22px * var(--ui));
   border-radius: calc(5px * var(--ui));
-  font-size: calc(12px * var(--ui));
 }
 .top .pill {
   padding: calc(3px * var(--ui)) calc(9px * var(--ui));
-  font-size: calc(11px * var(--ui));
 }
 .top .sum {
-  font-size: calc(12px * var(--ui));
 }
 .top .render-all label {
-  font-size: calc(11px * var(--ui));
 }
 .top .render-all label input {
   width: calc(13px * var(--ui));
@@ -2731,7 +2813,6 @@ input[type="checkbox"] {
 }
 .top .main-menu nav .tb {
   height: calc(32px * var(--ui));
-  font-size: calc(14px * var(--ui));
 }
 @media (min-width: 760px) {
   .drawer {
@@ -2740,6 +2821,7 @@ input[type="checkbox"] {
   .drawer-head,
   .drawer-body {
     zoom: 1.15;
+    --m: calc(var(--ui) / 1.15);
   }
 }
 .tools {
@@ -2755,7 +2837,6 @@ input[type="checkbox"] {
 }
 .tools .field {
   height: calc(26px * var(--ui));
-  font-size: calc(12px * var(--ui));
 }
 .tools .add {
   height: calc(30px * var(--ui));
@@ -2764,7 +2845,6 @@ input[type="checkbox"] {
   margin: calc(10px * var(--ui)) 0 calc(2px * var(--ui));
   padding: 0 calc(6px * var(--ui));
   gap: calc(5px * var(--ui));
-  font-size: calc(11px * var(--ui));
 }
 .tool-groups h4 .icon {
   width: calc(12px * var(--ui));
@@ -2772,13 +2852,11 @@ input[type="checkbox"] {
 }
 .tools p {
   margin: calc(4px * var(--ui)) calc(6px * var(--ui));
-  font-size: calc(11px * var(--ui));
 }
 .tool {
   gap: calc(4px * var(--ui));
   padding: calc(4px * var(--ui)) calc(6px * var(--ui));
   border-radius: calc(6px * var(--ui));
-  font-size: calc(12.5px * var(--ui));
 }
 .tool-off .icon {
   width: calc(11px * var(--ui));
@@ -2786,7 +2864,7 @@ input[type="checkbox"] {
 }
 
 .browse-toggle {
-  font-size: calc(12px * var(--ui));
+  font-size: var(--body);
 }
 
 /* Each project a tab, top left, as many as fit: one click to any, the rest behind "N more", and + for a new one. */
@@ -2800,16 +2878,16 @@ input[type="checkbox"] {
   border-radius: calc(var(--round) * var(--ui));
   background: var(--float);
 }
+/* A block, so a name too long for its tab ends in an ellipsis: a flex box cuts its text where it ends. */
 .ptab,
 .ptabs-ghost > span {
-  display: inline-flex;
-  align-items: center;
+  display: block;
   max-width: calc(150px * var(--ui));
   padding: calc(4px * var(--ui)) calc(10px * var(--ui));
   overflow: hidden;
   border-radius: calc(5px * var(--ui));
   color: var(--mute);
-  font-size: calc(13px * var(--ui));
+  font-size: var(--title);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2819,13 +2897,15 @@ input[type="checkbox"] {
 .ptab.on {
   background: var(--card2);
   color: var(--ink);
-  font-weight: 600;
+  font-weight: var(--w-title);
 }
 .ptab.more {
   flex: none;
 }
 .ptab.new {
   flex: none;
+  display: inline-flex;
+  align-items: center;
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));
 }
 /* What each tab takes at its full width, laid out where no one sees it. */
@@ -2840,7 +2920,7 @@ input[type="checkbox"] {
   flex: none;
 }
 .ptabs-ghost > .on {
-  font-weight: 600;
+  font-weight: var(--w-title);
 }
 
 /* Each machine, top right: what it's doing, its name, and how many things. */
@@ -2866,7 +2946,7 @@ input[type="checkbox"] {
   background: none;
   color: var(--ink);
   font: inherit;
-  font-size: calc(14px * var(--ui));
+  font-size: var(--body);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -2986,7 +3066,7 @@ input[type="checkbox"] {
 }
 .activity .kind {
   color: var(--mute);
-  font-size: 12px;
+  font-size: var(--small);
 }
 .activity .doing .bar,
 .activity .doing .said {
@@ -2994,7 +3074,7 @@ input[type="checkbox"] {
 }
 .activity .said {
   color: var(--mute);
-  font-size: 12px;
+  font-size: var(--body);
   font-variant-numeric: tabular-nums;
 }
 .activity > p {
@@ -3098,13 +3178,13 @@ input[type="checkbox"] {
 }
 .unread h2 {
   margin: 0 0 8px;
-  font-size: 17px;
-  font-weight: 600;
+  font-size: var(--title);
+  font-weight: var(--w-title);
 }
 .unread p {
   margin: 0 0 10px;
   color: var(--mute);
-  font-size: 14px;
+  font-size: var(--body);
   line-height: 1.45;
 }
 
@@ -3128,6 +3208,108 @@ input[type="checkbox"] {
 .project-path {
   display: block;
   color: var(--mute);
-  font: 11px var(--mono);
+  font: var(--small) var(--mono);
   overflow-wrap: anywhere;
+}
+
+/* Zoom, in the canvas's bottom right corner (FigJam's): − the zoom +, sized like the top bar's buttons. The zoom opens its menu above it. */
+.zoom {
+  position: absolute;
+  right: calc(8px * var(--ui));
+  bottom: calc(8px * var(--ui));
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  height: calc(28px * var(--ui));
+  padding: 0 calc(2px * var(--ui));
+  border: 1px solid var(--line);
+  border-radius: calc(var(--round) * var(--ui));
+  background: var(--float);
+  font-size: var(--body);
+}
+.zoom > button {
+  height: calc(22px * var(--ui));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: calc(5px * var(--ui));
+  background: none;
+  color: var(--ink);
+  font: inherit;
+}
+.zoom > button:hover,
+.zoom > button[aria-expanded="true"] {
+  background: var(--tint2);
+}
+.zoom-step {
+  width: calc(22px * var(--ui));
+}
+.zoom-step .icon {
+  width: calc(14px * var(--ui));
+  height: calc(14px * var(--ui));
+}
+.zoom-at {
+  min-width: calc(44px * var(--ui));
+  padding: 0 calc(4px * var(--ui));
+  font-variant-numeric: tabular-nums;
+}
+.zoom-menu {
+  position: absolute;
+  right: -1px;
+  bottom: calc(100% + 6px);
+  min-width: calc(190px * var(--ui));
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--float);
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  box-shadow: 0 10px 28px var(--shadow);
+  animation: open-down 90ms ease-out;
+}
+.zoom-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: calc(26px * var(--ui));
+  padding: 0 calc(8px * var(--ui));
+  border: 0;
+  border-radius: calc(5px * var(--ui));
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+.zoom-menu button:hover:not(:disabled),
+.zoom-menu button:focus-visible {
+  background: var(--tint);
+}
+.zoom-menu button:disabled {
+  color: var(--faint);
+  opacity: 0.6;
+}
+.zoom-menu kbd {
+  color: var(--mute);
+  font: inherit;
+  font-size: 0.92em;
+}
+.zoom-menu hr {
+  margin: 3px 4px;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+@keyframes open-down {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+/* Clear of an open drawer, where there's room beside it. */
+@media (min-width: 760px) {
+  .shell:not([data-drawer="none"]) .zoom {
+    right: calc(var(--drawer) * 1.15 + 16px);
+  }
 }

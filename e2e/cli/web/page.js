@@ -245,4 +245,32 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, renderOf, settled, signIn, until, watchBoxes, wav };
+/** The frames while a pan goes on, how many places the viewport went, as a pan that didn't move proves nothing, and the fewest cards on
+ *  screen at any moment of it. It goes 480 px left and back. */
+const panning = (page, ms) => page.evaluate((ms) => new Promise((done) => {
+  const pane = document.querySelector('.react-flow__pane');
+  const viewport = document.querySelector('.react-flow__viewport');
+  const frames = [];
+  const places = new Set();
+  let [last, sign, count, fewest] = [performance.now(), 1, 0, Infinity];
+  const end = last + ms;
+  const step = (now) => {
+    frames.push(now - last);
+    last = now;
+    places.add(getComputedStyle(viewport).transform);
+    fewest = Math.min(fewest, document.querySelectorAll('.react-flow__node').length);
+    if (++count % 40 === 0) sign = -sign;
+    pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
+    if (now < end) requestAnimationFrame(step);
+    else done({ frames: frames.slice(1), places: places.size, fewest });
+  };
+  requestAnimationFrame(step);
+}), ms);
+
+/** A run of frame times as its median, its 95th and how many. */
+function summary(frames) {
+  const sorted = [...frames].sort((a, b) => a - b);
+  return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
+}
+
+module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, settled, signIn, summary, until, watchBoxes, wav };

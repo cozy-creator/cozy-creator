@@ -139,6 +139,14 @@ pub fn of_class(class: &str) -> Option<&'static Family> {
 
 /// What a LoRA's tensors end in.
 pub const FACTORS: [&str; 3] = [".lora_A.weight", ".lora_B.weight", ".alpha"];
+/// What a LoRA keeps beside its factors that adapts no base weight: a parallel decoder's per-step
+/// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`).
+pub const KEPT: [&str; 1] = [".heads"];
+
+/// Whether a key is a LoRA's: a factor, an alpha or a tensor it keeps.
+pub fn lora_key(key: &str) -> bool {
+    FACTORS.iter().chain(&KEPT).any(|f| key.ends_with(f))
+}
 
 /// A LoRA target's factors' shapes, A and B.
 pub type Factors<'a> = (Option<&'a [u64]>, Option<&'a [u64]>);
@@ -165,7 +173,7 @@ pub fn fitting(targets: &BTreeMap<&str, Factors>) -> Vec<(&'static Family, &'sta
 }
 
 fn is_lora(component: &Component) -> bool {
-    component.tensors.iter().all(|t| FACTORS.iter().any(|f| t.key.ends_with(f)))
+    component.tensors.iter().all(|t| lora_key(&t.key))
 }
 
 /// What a checkpoint is, from its header alone.

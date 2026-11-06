@@ -25,10 +25,6 @@ export interface AddOn {
   strength: number
 }
 
-/** The room under a box its stack takes: at rest, as other boxes keep clear of it whatever a tab is zoomed to. */
-export const STACK_GAP = 4
-export const ADD_ON_HEIGHT = 26
-
 /** What a checkpoint can go on in what a tool runs. One for now. */
 export const modelsOf = (tool: Tool | undefined) => (tool?.model ? [tool.model] : [])
 

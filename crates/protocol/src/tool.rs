@@ -295,11 +295,24 @@ pub fn references(callable: &Callable) -> Vec<String> {
         },
         _ => None,
     });
-    let mut kinds: Vec<String> = mentioned.flat_map(|row| row.fields.iter().filter_map(|member| Some(member.ty.media()?.0.to_owned()))).collect();
+    let mut kinds: Vec<String> = mentioned.flat_map(|row| row.fields.iter().filter_map(|member| member_kind(member).map(str::to_owned))).collect();
     kinds.extend(callable.assets.iter().flat_map(|assets| assets.kinds.iter().map(|kind| kind.kind.clone())));
     kinds.sort();
     kinds.dedup();
     kinds
+}
+
+/// The kind of box a mention row's member takes: its type's, and a plain `File`'s by its name as the binder reads it (`image`, `video`, `audio`, a
+/// `voice` a sound, `file` any). A `File` of another name, such as `latents`, is an extra of the same mention, and takes no kind of its own.
+pub fn member_kind(member: &Field) -> Option<&str> {
+    match member.ty.media()?.0 {
+        "file" => match member.name.as_str() {
+            "voice" => Some("audio"),
+            name @ ("image" | "video" | "audio" | "file") => Some(name),
+            _ => None,
+        },
+        kind => Some(kind),
+    }
 }
 
 /// What a new box of `callable` is called, which counts up as it's taken: its `Node`'s word, else its package's, numbered.

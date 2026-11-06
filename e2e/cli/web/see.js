@@ -15,7 +15,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes, wav } = require('./page');
+const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, panning, renderOf, summary, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -59,28 +59,6 @@ async function drag(page, handle, dx, dy) {
   await page.mouse.up();
 }
 
-/** The frames while a pan goes on, how many places the viewport went, as a pan that didn't move proves nothing, and the fewest cards on
- *  screen at any moment of it. It goes 480 px left and back. */
-const panning = (page, ms) => page.evaluate((ms) => new Promise((done) => {
-  const pane = document.querySelector('.react-flow__pane');
-  const viewport = document.querySelector('.react-flow__viewport');
-  const frames = [];
-  const places = new Set();
-  let [last, sign, count, fewest] = [performance.now(), 1, 0, Infinity];
-  const end = last + ms;
-  const step = (now) => {
-    frames.push(now - last);
-    last = now;
-    places.add(getComputedStyle(viewport).transform);
-    fewest = Math.min(fewest, document.querySelectorAll('.react-flow__node').length);
-    if (++count % 40 === 0) sign = -sign;
-    pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
-    if (now < end) requestAnimationFrame(step);
-    else done({ frames: frames.slice(1), places: places.size, fewest });
-  };
-  requestAnimationFrame(step);
-}), ms);
-
 const quiet = (page, ms) => page.evaluate((ms) => new Promise((done) => {
   const frames = [];
   let last = performance.now();
@@ -120,10 +98,6 @@ async function rest(page, handle) {
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5, { steps: 3 });
 }
 
-function summary(frames) {
-  const sorted = [...frames].sort((a, b) => a - b);
-  return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
-}
 
 (async () => {
   const base = calcifer();
@@ -283,7 +257,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
   const checker = await element(page, 'hero_art').locator('.media.alpha').evaluate((el) => ({ under: getComputedStyle(el).backgroundColor, over: getComputedStyle(el).getPropertyValue('--check2').trim() }));
-  check('checkerboard_white_and_light_grey', checker.under === 'rgb(255, 255, 255)' && checker.over === '#ececec', checker);
+  check('checkerboard_white_and_light_grey', checker.under === 'rgb(251, 251, 251)' && checker.over === '#e8e8e8', checker);
   check('no_checkerboard_without_alpha', (await element(page, 'older_art').locator('.media.alpha').count()) === 0);
   const thumbUp = (name) => until(`${name}'s thumbnail`, () => element(page, name).locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await thumbUp('sea_sound');

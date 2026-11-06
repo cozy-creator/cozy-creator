@@ -146,7 +146,7 @@ pub fn normalize(
                 read.insert(path.clone());
                 Some(parse(&path, bytes)?)
             }
-            (None, Some(text)) => Some(parse(DIFFUSERS_CONFIG, text.as_bytes())?),
+            (None, Some(text)) => Some(unpacked(component, parse(DIFFUSERS_CONFIG, text.as_bytes())?)),
             (None, None) => None,
         };
         // Each `.alpha` the source holds, as the F32 scalar its loaders read.
@@ -259,6 +259,15 @@ fn commonest(values: &BTreeMap<String, f64>) -> Option<f64> {
 /// A JSON number: an integer when `value` is one.
 fn number(value: f64) -> Json {
     if value.fract() == 0.0 && value.abs() < 9.0e15 { json!(value as i64) } else { json!(value) }
+}
+
+/// diffusers' `save_lora_weights` packs each component's `LoraConfig` under the component's name
+/// (`transformer.r`, `transformer.lora_alpha`) and its loader unpacks it by that name: this
+/// component's fields, else a config that is not packed, as it is.
+fn unpacked(component: &str, config: Config) -> Config {
+    let prefix = format!("{component}.");
+    let mine: Config = (config.iter()).filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_owned(), v.clone()))).collect();
+    if mine.is_empty() { config } else { mine }
 }
 
 fn parse(what: &str, bytes: &[u8]) -> Result<Config> {
