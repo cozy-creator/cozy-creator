@@ -41,6 +41,9 @@ export function withMentions(text: string): { text: string; mention: boolean }[]
   return parts
 }
 
+/** A mention as a chip shows it: in its brackets, first letter up, `<Self.2>`. The file keeps the name as typed (names ignore case). */
+export const chipWords = (name: string) => `<${name.charAt(0).toUpperCase()}${name.slice(1)}>`
+
 /** The names `<like this>` in `text`, once each, in order. */
 export const mentionsIn = (text: string): string[] => [...new Set(withMentions(text).filter((part) => part.mention).map((part) => part.text.slice(1, -1)))]
 

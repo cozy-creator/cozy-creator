@@ -1092,11 +1092,12 @@ export class CanvasStore {
     this.over(name, { pinned: true, approved: number, version: number }, (served, once) => this.client.approve(this.projectId!, served, String(number), once), "approve")
   }
 
-  /** A double tap on a take: it's approved, or if it was, nothing is. */
+  /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */
   toggleApproved(name: string, number: number) {
     const asset = this.get(name)?.asset
-    if (asset?.pinned && asset.approved === number) this.unpin(name)
-    else this.pin(name, number)
+    if (!asset?.pinned || asset.approved !== number) return this.pin(name, number)
+    this.unpin(name)
+    this.view(name, number)
   }
 
   unpin(name: string) {

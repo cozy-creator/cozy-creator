@@ -10,7 +10,7 @@ import { controlsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
-import { clock, lineOf, withMentions } from "./text"
+import { chipWords, clock, lineOf, withMentions } from "./text"
 import { isSelf } from "./versions"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
@@ -368,7 +368,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
           {withMentions(words).map((part, i) =>
             part.mention ? (
               <span key={i} className={`chip ${asset?.missing?.includes(part.text.slice(1, -1)) || (store.mentionOf(part.text.slice(1, -1), name)?.gone ?? isSelf(part.text.slice(1, -1))) ? "missing" : ""}`}>
-                {part.text.slice(1, -1)}
+                {chipWords(part.text.slice(1, -1))}
               </span>
             ) : (
               part.text
