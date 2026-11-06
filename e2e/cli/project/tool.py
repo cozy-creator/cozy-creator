@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]==0.41.0+dev.gef558809", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
 # ///
 """The tool cells' package: weightless tools as a canvas drops them. `still` makes a picture of one colour, `slow` too, saying how far
 it's got, and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
