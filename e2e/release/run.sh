@@ -10,7 +10,8 @@
 # non-ASCII), machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
 # checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT
 # trap whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
-#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--rent-wait S] [--release DIR]
+#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--rent-wait S]
+#                      [--rent-lock FILE] [--release DIR]
 #                      [--tensord F|V] [--pod-tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -106,17 +107,23 @@ step rental
 before=$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length') || true
 ! cozy --json machine rent "$SKU" --gpus 64 -y > "$OUT/rent-too-many.json" 2>&1 || check "machine rent --gpus 64 bought something"
 [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
-# No pod in --rent-wait s is a not-run, as gate.sh's: an order the Hub never acquires (41977686738's sat 56 min) must not
-# hold the run; the trap ends the order by its rental id, named or not (cl-789).
-cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" & rent_pid=$!
-rent_began=$SECONDS
+# No pod --rent-wait s after the Hub accepted the order is a not-run, as gate.sh's: an order the Hub never acquires
+# (41977686738's sat 56 min) must not hold the run. The wait counts from `rental.accepted`: its rental id is what the trap
+# ends the order by, named or not (cl-789), and a rent stopped before it leaves an order no id here names.
+# Other renters' lock (fd 9) is held only while ordering: nothing it starts keeps it.
+[ -z "$RENT_LOCK" ] || { exec 9> "$RENT_LOCK"; flock 9; }
+cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" 9>&- & rent_pid=$!
+accepted=''
+unlock() { [ -z "$RENT_LOCK" ] || { flock -u 9 2> /dev/null; exec 9>&-; }; }
 while kill -0 "$rent_pid" 2> /dev/null; do
-  if (( SECONDS - rent_began > RENT_WAIT )); then
-    kill "$rent_pid" 2> /dev/null; wait "$rent_pid" 2> /dev/null
-    fail "machine rent $SKU: no pod after $(( (SECONDS - rent_began) / 60 )) min: $(tail -c 300 "$OUT/rent.ndjson")"
+  [ -n "$accepted" ] || [ -z "$(ordered "$OUT/rent.ndjson")" ] || { accepted=$SECONDS; unlock; }
+  if [ -n "$accepted" ] && (( SECONDS - accepted > RENT_WAIT )); then
+    kill "$rent_pid" 2> /dev/null; wait "$rent_pid" 2> /dev/null || true
+    fail "machine rent $SKU: no pod $(( (SECONDS - accepted) / 60 )) min after the Hub accepted the order: $(tail -c 300 "$OUT/rent.ndjson")"
   fi
   sleep 5
 done
+unlock
 wait "$rent_pid" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
 rented_at=$(date +%s)
 M=$(jq -r '.. | objects | select(.kind? == "rental") | .name // empty' "$OUT/rent.ndjson" 2> /dev/null | tail -1) || true
