@@ -417,6 +417,28 @@ impl Table {
         gave
     }
 
+    /// TensorD's ask for a process in no row (an executor older than the ledger) about to use this
+    /// GPU: every donor gives back all it holds idle. A borrowed row, which answers other asks with
+    /// nothing meanwhile, waits until each donor has answered or `deadline`. Needs its own `Table`:
+    /// the supervisor's would reap the row. The bytes given back; None with no free row.
+    pub fn ask_all_idle(&self, deadline: Instant) -> Option<u64> {
+        let row = self.claim()?;
+        let before = self.page.released.load(Acquire);
+        let generation = self.ask(row, u64::MAX);
+        loop {
+            let seen = self.page.answers.load(Acquire);
+            self.reap();
+            self.page.rows[row.0].answered.store(self.page.generation.load(Acquire), Release);
+            let now = Instant::now();
+            let waiting = self.page.rows.iter().any(|words| words.pid.load(Acquire) != 0 && words.answered.load(Acquire) < generation);
+            if !waiting || now >= deadline { break; }
+            wait(&self.page.answers, seen, TICK.min(deadline - now));
+        }
+        let given = self.page.released.load(Acquire) - before;
+        self.leave(row);
+        Some(given)
+    }
+
     /// TensorD's side, for this GPU. While the table's supervisor byte is held, an asker that
     /// peers could not help waits for `end_idle`: it ends an idle process, or says there is none.
     /// Only an exit returns a CUDA context. `end_idle` returns None when the service is gone.
