@@ -119,7 +119,7 @@ function TakeThumb({ main, width }: { main: MainFile; width: number }) {
   )
 }
 
-/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, and held down the pointer slides between them. + at the far left goes back to its words. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
+/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, a double tap approves it or, approved, unapproves it, and held down the pointer slides between them. + at the far left goes back to its words. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
 function Takes({ view, name, width }: { view: ElementView; name: string; width: number }) {
   const store = useCanvasStore()
   const asset = view.asset!
@@ -136,7 +136,6 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   }
   const pick = (number: number) => {
     store.view(name, number === asset.version ? undefined : number)
-    store.patch(name, { chosen: number })
     if (onWords) store.patch(name, { hereWords: undefined })
   }
   return (
@@ -180,6 +179,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             onDragStart={(event) => version.main && takeOut(event, store, name, asset, version)}
             onPointerDown={() => pick(version.number)}
             onClick={() => pick(version.number)}
+            onDoubleClick={() => store.toggleApproved(name, version.number)}
           >
             {version.main && !version.main.absent ? <TakeThumb main={version.main} width={width} /> : null}
             <span className="take-no">{version.number}</span>
@@ -355,7 +355,8 @@ function Description({ name, view }: { name: string; view: ElementView }) {
   if (!view.asset) return null
   return (
     <div className="desc-field">
-      <span className="desc-label">Description</span>
+      {view.asset.tool && <hr className="here-rule" />}
+      <span className="block-label">Description</span>
       <MentionText
         asset={name}
         place="description"
@@ -589,14 +590,9 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
               name={name}
               view={view}
               editing={editing}
-              actions={
-                <>
-                  {editing && <RenderButton name={name} view={view} />}
-                  <Stack name={name} />
-                </>
-              }
-            >
-            </AssetEdit>
+              head={<Stack name={name} />}
+              actions={editing && <RenderButton name={name} view={view} />}
+            />
             <Description name={name} view={view} />
             {view.warned && warned ? (
               <div className="warned-lines">

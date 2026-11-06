@@ -29,7 +29,13 @@ function TextControl({ name, control, view, focus, named }: { name: string; cont
       onSave={() => void store.save(name)}
     />
   )
-  if (!named) return text
+  if (!named)
+    return (
+      <div className="field-block">
+        <span className="block-label">{control.label}</span>
+        {text}
+      </div>
+    )
   return (
     <div className="slide text-row">
       <span className="ctl-name">{control.label}</span>
@@ -401,7 +407,7 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 const set = (control: Control) => control.type === "toggle" || control.type === "range" || control.type === "choice"
 
 /** What a box asks and holds, under it. On its words: what a render can't go without and Render, each drawn from its tool's controls or by its package. On a take: what's done with that. Everything else is under More, if there's anything. */
-export function AssetEdit({ name, view, editing, actions, children }: { name: string; view: ElementView; editing: boolean; actions: ReactNode; children?: ReactNode }) {
+export function AssetEdit({ name, view, editing, head, actions, children }: { name: string; view: ElementView; editing: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
@@ -420,6 +426,7 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
   const shown = rest.filter((control) => asked.includes(control))
   return (
     <div className="edit-face">
+      {head && <div className="tool-head">{head}</div>}
       <ToolBox
         tool={tool}
         name={name}
@@ -434,8 +441,8 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
               <div className="row actions">
-                {actions}
                 {more !== null && shown.filter(set).map((control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={false} named={false} />)}
+                {actions}
                 {behind && (
                   <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}>
                     <span className="more-word">{open ? "Less" : "More"}</span>

@@ -31,7 +31,6 @@ import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
 import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
-import { viewable } from "./Media"
 import { Placer } from "./place"
 import { Sheet } from "./Sheet"
 import { madeHere, shownOf } from "./shown"
@@ -59,8 +58,6 @@ const UNDER_GAP = 8
 const NARROW = 760
 /** How long the canvas takes to draw in on a box, or go back. */
 const HERE_MS = 260
-/** How long a click on a picture waits to see if it's the first of two, which looks at it large: the press itself shows at once, and a box with no picture to look at doesn't wait. */
-const DOUBLE_CLICK_MS = 200
 
 /** The view of a box and what's under it, the two as large as they go together, and what's under it told how wide it is and how tall it may be. Null with no node to fit to. */
 function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: string, stage: HTMLElement) {
@@ -325,11 +322,7 @@ function Canvas({
     if (!held) return
     store.inPlace = null
     void store.save(held.name)
-    // The take left showing is the one kept: the last one picked, if any was.
-    const view = store.get(held.name)
-    const chosen = view?.chosen
-    if (chosen !== undefined && !(view?.asset?.pinned && view.asset.approved === chosen)) store.pin(held.name, chosen)
-    store.patch(held.name, { here: undefined, hereWords: undefined, chosen: undefined })
+    store.patch(held.name, { here: undefined, hereWords: undefined })
     store.view(held.name)
     returning.current = { view: held.back, until: performance.now() + HERE_MS }
     if (folded.current) {
@@ -344,6 +337,7 @@ function Canvas({
     navigate(`/projects/${store.projectId}`)
   }, [store, navigate, stopWriting])
   store.leaveHere = leaveHere
+  store.openHere = (name) => navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
   store.hereRenamed = (name) => navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`, { replace: true })
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
@@ -351,7 +345,6 @@ function Canvas({
   }, [opened, stopWriting])
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const firstClick = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store)
@@ -515,7 +508,7 @@ function Canvas({
     [store],
   )
 
-  /** On a box's picture, the arrows walk its row one take at a time, and Enter approves the one showing. */
+  /** On a box's picture, the arrows walk its row one take at a time, and Enter approves the one showing, or unapproves it. */
   const stepTakes = useCallback(
     (name: string, event: KeyboardEvent) => {
       const view = store.get(name)
@@ -526,14 +519,12 @@ function Canvas({
       if (at < 0) return false
       event.preventDefault()
       if (event.key === "Enter") {
-        store.patch(name, { chosen: row[at].number })
-        store.leaveHere?.()
+        store.toggleApproved(name, row[at].number)
         return true
       }
       const next = row[at + (event.key === "ArrowLeft" ? -1 : 1)]
       if (next) {
         store.view(name, next.number === asset.version ? undefined : next.number)
-        store.patch(name, { chosen: next.number })
         requestAnimationFrame(() => document.querySelector(".card.here .take.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }))
       }
       return true
@@ -631,24 +622,20 @@ function Canvas({
   const nodeClicked = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
-      clearTimeout(firstClick.current)
       const { name } = node.data
-      const looks = viewable(store.get(name))
-      if (event.detail > 1 && looks && (event.target as Element).closest(".media")) return store.viewing.set(name)
-      if (store.inPlace?.name === name && store.get(name)?.here) return
+      const view = store.get(name)
+      // A double tap on its picture approves the take showing, or unapproves it.
+      const shown = view?.asset?.prefixes?.length ? shownOf(view)?.number : undefined
+      if (event.detail > 1 && shown !== undefined && (event.target as Element).closest(".media")) return store.toggleApproved(name, shown)
+      if (store.inPlace?.name === name && view?.here) return
       // A click opens: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
-      const go = () => {
-        writeHere(name)
-        navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
-      }
-      if (looks) firstClick.current = setTimeout(go, DOUBLE_CLICK_MS)
-      else go()
+      writeHere(name)
+      navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
     },
     [store, flow, writeHere, navigate],
   )
   const paneClicked = useCallback(() => {
-    clearTimeout(firstClick.current)
     leaveHere()
   }, [leaveHere])
   const nodeMenu = useCallback(

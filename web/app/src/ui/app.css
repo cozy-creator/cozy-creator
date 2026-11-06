@@ -755,18 +755,39 @@ code {
   flex-direction: column;
   gap: 4px;
 }
-.desc-label {
+.block-label {
   font-size: 13px;
   font-weight: 600;
   color: var(--mute);
 }
+.field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field-block .mention-text {
+  font-size: 15px;
+}
+.tool-head {
+  display: flex;
+  padding: 2px 0 4px;
+}
+.tool-head .add-ons {
+  position: static;
+}
+.here-rule {
+  width: 100%;
+  margin: 8px 0 6px;
+  border: 0;
+  border-top: 1px solid var(--line2);
+}
 .desc-field .mention-text {
-  min-height: 4.5em;
+  min-height: 3.5em;
   padding: 8px 10px;
   border: 1px solid var(--line2);
   border-radius: var(--round);
   background: var(--card);
-  font-size: 18px;
+  font-size: 13px;
   line-height: 1.4;
 }
 .here-all {
@@ -1226,6 +1247,11 @@ code {
 .stage[data-lod="1"] .beats,
 .stage[data-lod="2"] .beats {
   display: none;
+}
+/* An open box shows its takes however far out. */
+.stage[data-lod] .here-side .takes,
+.stage[data-lod] .here-under .takes {
+  display: flex;
 }
 .stage[data-lod="2"] .dot {
   width: 18px;

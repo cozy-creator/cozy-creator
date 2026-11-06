@@ -48,8 +48,6 @@ export interface ElementView {
   linked?: Standing | "failed"
   /** The version being looked at, which changes only this page, until it's pinned. */
   viewed?: number
-  /** The take last picked while the box was open: leaving the box makes it the one kept (Paul, 11-06). */
-  chosen?: number
   /** Its turn hasn't come: nothing is making it yet. */
   queued?: boolean
   /** What reading the project said of it. */
@@ -209,6 +207,8 @@ export class CanvasStore {
   inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
   leaveHere: () => void = () => {}
+  /** Opens a box where it stands, as a click on it does. */
+  openHere: (name: string) => void = () => {}
   /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
   fitHere: (only?: boolean) => void = () => {}
   /** The box being worked on has another name now. */
@@ -1006,6 +1006,13 @@ export class CanvasStore {
   pin(name: string, number: number) {
     this.patch(name, { hereWords: undefined, viewed: undefined })
     this.over(name, { pinned: true, approved: number, version: number }, (served, once) => this.client.approve(this.projectId!, served, String(number), once), "approve")
+  }
+
+  /** A double tap on a take: it's approved, or if it was, nothing is. */
+  toggleApproved(name: string, number: number) {
+    const asset = this.get(name)?.asset
+    if (asset?.pinned && asset.approved === number) this.unpin(name)
+    else this.pin(name, number)
   }
 
   unpin(name: string) {
