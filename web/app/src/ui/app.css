@@ -170,6 +170,16 @@ code {
 .top > .gap {
   pointer-events: none;
 }
+/* What only holds controls takes the pointer only on them: between them, a press is the canvas's. */
+.top > .history-controls,
+.top > .canvas-controls,
+.history,
+.render-all {
+  pointer-events: none;
+}
+:where(.history-controls, .canvas-controls, .history, .render-all) > * {
+  pointer-events: auto;
+}
 .icon {
   display: block;
   flex: none;
@@ -350,7 +360,7 @@ code {
 /* Of no weight, so what sets its own (.ratio-rest at rest) keeps it. */
 :where(.react-flow__node > .card) > :where(:not(.head, .here-side)),
 :where(.react-flow__node > .card > .head) > :where(:not(.sp)),
-:where(.here-side, .add-ons) > * {
+:where(.here-side .takes, .add-ons) > * {
   pointer-events: auto;
 }
 .react-flow__attribution {
