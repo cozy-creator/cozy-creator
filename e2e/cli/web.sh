@@ -73,7 +73,7 @@ web_proof nodes "$chrome" "$pw" ''
 step "web-addons: the checkpoint explorer, a LoRA and a fine-tune dragged onto a box, chips, why one doesn't fit, a hand's file kept"
 web_proof addons "$chrome" "$pw" ''
 jq -c '.seen.skipped // empty' "$OUT/web-addons.json" 2> /dev/null || true
-step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, and a rename during a real render"
+step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, a rename during a real render, takes approved by a double tap, a merge, a box's shape, Render while it makes"
 web_proof versions "$chrome" "$pw" ''
 step "web-timeline: real clips and a still in an Edit, trims and a reorder, rendered free, frame-exact, read back in its .otio, its versions"
 # Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.

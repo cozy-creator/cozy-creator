@@ -756,7 +756,9 @@ function linesOf(text, name) {
     check('orphan_is_listed', (await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
     await page.locator('.note:has-text("Other") button:has-text("Undo")').click();
     await box('Other').waitFor();
-    check('undo_brings_its_versions', (await versions('Other')) === takes, await versions('Other'));
+    // The box is back as it's asked for, ahead of the file and its versions.
+    const restored = await until('its versions back', () => versions('Other'), (n) => n === takes).catch(() => versions('Other'));
+    check('undo_brings_its_versions', restored === takes, restored);
 
     // What hasn't been approved when its source goes is worth a plain note, with no dialog, and Undo stays.
     await open('Other');
@@ -805,6 +807,8 @@ function linesOf(text, name) {
     await render('Clip', 1);
     await until('its length measured', () => of('Clip'), (held) => held.prefixes?.[0]?.main?.duration_ms > 0);
     await open('Clip');
+    // Rendered from its words, it's still on them: its take, pressed, is what's kept from.
+    await box('Clip').locator('.take[aria-label="take 1"]').click();
     const clipFile = linesOf(yaml(), 'Clip');
     await more('Clip');
     await box('Clip').locator('.from-here .keeps').fill('12');

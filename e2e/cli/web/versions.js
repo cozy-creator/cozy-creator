@@ -1,7 +1,8 @@
 // Versions by name and a tool on a box (Paul, 11-05), in a real browser on a real Calcifer. `<abr.2>` and `<self.1>` read a version, fixed, and make no cycle; a rename keeps
 // them and every comment, and happens at once during a real render, whose take lands under the new name with what reads it reading on; a tool goes on a text box, on a
-// picture, and swaps; its X changes only that; a picture joins a box with no tool; a take dragged into text is `<abr.2>`; a version something reads can be deleted, with
-// Undo; `reclaim` keeps what a number names.
+// picture, and swaps, opening the box; its X takes its fields; a picture joins a box with no tool; a take dragged into text is `<abr.2>`; a version something reads can
+// be deleted, with Undo; `reclaim` keeps what a number names. Takes beside the open picture, a double tap or Enter approving; a take picked is the `<self.N>` its words
+// edit; a box of pictures merges into another; a box's shape is its tool's; Render stays Render while it makes, each take with its ×.
 //   node versions.js <sign-in link from `cozy open --no-open`, or the address of a page that needs none>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: not on this computer's machine, which the rename during a
 // render needs, as it renders the free `waits.py`. Prints what it saw as JSON and exits 1 if anything failed.
