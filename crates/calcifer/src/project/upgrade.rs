@@ -31,6 +31,8 @@ const KINDS: [&str; 3] = ["image", "video", "audio"];
 const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
 const WAS_YAML: &str = "project.yaml.v2";
 const WAS_LOCK: &str = "project.lock.v2";
+const WAS_THREE: &str = "project.yaml.v3";
+const WAS_THREE_LOCK: &str = "project.lock.v3";
 /// An asset's keys in the order they're written, then any other by name, then what's said of it.
 const FIRST: [&str; 14] = ["tool", "models", "lora", "instructions", "summary", "soundscape", "music", "style", "aspect_ratio", "resolution", "video", "beats", "fps", "tracks"];
 const LAST: [&str; 4] = ["approved", "description", "asset_type", "voice"];
@@ -511,10 +513,10 @@ fn split_comment(rest: &str) -> (&str, Option<&str>) {
 }
 
 /// The file whole, its comments back. Err: it wouldn't read back as what it says.
-fn written(assets: &[(String, Map<String, Value>)], head: &[String], before: &HashMap<String, Vec<String>>, tail: &[String]) -> Result<String, Error> {
+fn written(assets: &[(String, Map<String, Value>)], head: &[String], before: &HashMap<String, Vec<String>>, tail: &[String], format: u64) -> Result<String, Error> {
     let mut out = String::new();
     head.iter().for_each(|line| out.push_str(&format!("{line}\n")));
-    out.push_str(&format!("version: {FORMAT}\n"));
+    out.push_str(&format!("version: {format}\n"));
     out.push_str("\nassets:\n");
     for (at, (name, body)) in assets.iter().enumerate() {
         if at > 0 {
@@ -530,7 +532,7 @@ fn written(assets: &[(String, Map<String, Value>)], head: &[String], before: &Ha
         }
     }
     tail.iter().for_each(|line| out.push_str(&format!("{line}\n")));
-    let mut wanted = Map::from_iter([("version".to_owned(), json!(FORMAT))]);
+    let mut wanted = Map::from_iter([("version".to_owned(), json!(format))]);
     wanted.insert("assets".to_owned(), Value::Object(assets.iter().map(|(name, body)| (name.clone(), Value::Object(body.clone()))).collect()));
     let read = to_json_keeping(&out, names_a_file).map_err(|why| invalid("project_yaml", format!("what it would write: {why}")))?;
     (canonical(&read) == canonical(&Value::Object(wanted))).then_some(out).ok_or_else(|| invalid("project_edit", format!("{} wouldn't read back as what it says, so it is left as it is", folder::PROJECT)))
@@ -670,11 +672,11 @@ fn word_of(state: &State) -> &'static str {
 /// Held while a project moves, so that two touches of it make one move.
 static MOVING: Mutex<()> = Mutex::new(());
 
-/// Whether `text` is a project.yaml of the format `upgrade` moves.
-fn moves(text: &str) -> bool {
+/// The format of `text`, a project.yaml: 2 with no `version:` and `entities:`.
+fn format_of(text: &str) -> Option<u64> {
     match text.lines().find_map(|line| line.strip_prefix("version:")) {
-        Some(version) => version.split('#').next().is_some_and(|version| version.trim() == "2"),
-        None => text.lines().any(|line| line.starts_with("entities:")),
+        Some(version) => version.split('#').next().and_then(|version| version.trim().parse().ok()),
+        None => text.lines().any(|line| line.starts_with("entities:")).then_some(2),
     }
 }
 
@@ -683,13 +685,12 @@ fn moves(text: &str) -> bool {
 pub(super) fn on_touch(dir: &Path) -> Result<Vec<String>, Error> {
     let _one = MOVING.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(text) = std::fs::read_to_string(dir.join(folder::PROJECT)) else { return Ok(vec![]) };
-    if !moves(&text) {
-        return Ok(vec![]);
-    }
-    let done = upgrade(dir, None)?;
-    let mut said = vec![format!("{} was format 2 and is format {FORMAT} now: the old files stay beside it as {WAS_YAML} and {WAS_LOCK}", folder::PROJECT)];
-    said.extend(done.said);
-    Ok(said)
+    let (said, done) = match format_of(&text) {
+        Some(2) => (format!("{} was format 2 and is format {FORMAT} now: the old files stay beside it as {WAS_YAML} and {WAS_LOCK}", folder::PROJECT), upgrade(dir, None)?),
+        Some(3) => (format!("{} was format 3 and is format {FORMAT} now: the old files stay beside it as {WAS_THREE} and {WAS_THREE_LOCK}", folder::PROJECT), tools(dir)?),
+        _ => return Ok(vec![]),
+    };
+    Ok(std::iter::once(said).chain(done.said).collect())
 }
 
 /// `dir`'s project, format 2, as format 3. `status`: what `cozy project status --json` said.
@@ -702,6 +703,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     let Some(top) = top.as_object() else { return Err(refused("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))) };
     match top.get("version").and_then(Value::as_u64) {
         Some(FORMAT) => return Err(refused("project_format", format!("{} is format {FORMAT} already", folder::PROJECT))),
+        Some(3) => return tools(&dir),
         Some(2) | None => {}
         Some(other) => return Err(refused("project_format", format!("{} is format {other}, and this moves format 2", folder::PROJECT)).next("cozy project new")),
     }
@@ -827,7 +829,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
             before.entry(name_key(to)).or_default().extend(lines);
         }
     }
-    let new_text = written(&assets, &head, &before, &tail)?;
+    let new_text = written(&assets, &head, &before, &tail, 3)?;
 
     // The lock under the new names, in what a version keeps. Only the versions that stand get the new key.
     let was_key: HashMap<String, (u32, String)> = old["assets"].as_object().into_iter().flatten().flat_map(|(key, held)| {
@@ -868,7 +870,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     }
     lock.makes.extend(kinds);
     let old_reserved = std::mem::take(&mut lock.reserved);
-    let doc = Doc::of(&folder, &new_text, &lock)?;
+    let doc = Doc::of_three(&folder, &new_text, &lock)?;
     for asset in &doc.assets {
         let Some(tool) = &asset.tool else { continue };
         let package = tool.split('/').next().unwrap_or(tool);
@@ -876,7 +878,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
             lock.reserved.insert(tool.clone(), tags.clone());
         }
     }
-    let doc = Doc::of(&folder, &new_text, &lock)?;
+    let doc = Doc::of_three(&folder, &new_text, &lock)?;
     // What its status said, under whichever name it had.
     let was_of = |name: &str| renames.iter().filter(|(_, new)| name_key(new) == name_key(name)).map(|(old, _)| old).find(|old| rows.contains_key(*old)).cloned();
     let row_of = |name: &str| rows.get(&was_of(name).unwrap_or_else(|| name_key(name)));
@@ -903,29 +905,212 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     canvas::all_renamed(&folder, &renamed)?;
     platform::durable::replace(&yaml_at, new_text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
 
-    // As a status would read it now, from what is on disk.
-    let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
-    let stood = doc.stand(&lock);
+    // Then on to format 4, each state carried, and reported as a status reads it now, from what is on disk.
     said.extend(notes);
-    for i in 0..doc.assets.len() {
-        let tags = doc.tags(i).cloned().unwrap_or_default();
-        let gone = doc.missing_names(i, &tags, &lock);
-        if !gone.is_empty() {
-            said.push(format!("{} mentions {}, which no version wrote and nothing makes: edit its text", doc.assets[i].name, gone.iter().map(|name| format!("<{name}>")).collect::<Vec<_>>().join(", ")));
+    let four = tools(&dir)?;
+    said.extend(four.said);
+    let assets = four.assets.into_iter().map(|row| {
+        let then = was_of(&row.name).or_else(|| (!row.was.is_empty()).then(|| row.was.clone()));
+        let before = row_of(&row.name).and_then(|held| held["standing"].as_str()).unwrap_or("new").to_owned();
+        Row { was: then.unwrap_or_default(), before, ..row }
+    });
+    Ok(Upgraded { assets: assets.collect(), said })
+}
+
+/// Each of H3's edits: the LoRA that is it, and the word its prompt opened with (H3's `EDITS`).
+const H3_EDITS: [(&str, &str, &str); 5] = [
+    ("character_swap", "alissonerdx/minimax-h3-character-swap", "body_swap:"),
+    ("head_swap", "alissonerdx/minimax-h3-head-swap", "head_swap:"),
+    ("style_transfer", "alissonerdx/minimax-h3-style-transfer", "style_transfer:"),
+    ("vfx_edit", "alissonerdx/minimax-h3-vfx-edit", "vfx_edit:"),
+    ("motion_transfer", "alissonerdx/minimax-h3-motion-transfer", "motion_transfer:"),
+];
+
+/// `dir`'s project, format 3, as format 4 (design/tools.md): each box's state as format 3 read it carried over, so nothing goes out of
+/// date and nothing runs, and what format 4 reads another way said once. The old files stay beside it.
+pub fn tools(dir: &Path) -> Result<Upgraded, Error> {
+    let dir = holding(dir)?;
+    let folder = Folder::at(&dir);
+    let text = folder.text()?;
+    let mut lock = folder.lock()?;
+    if !lock.pending.is_empty() || !lock.walk.asks.is_empty() {
+        return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy project status"));
+    }
+    // What stood, as format 3 read it.
+    let was = Doc::of_three(&folder, &text, &lock)?;
+    let stood = was.stand(&lock);
+    let then: HashMap<String, (State, Option<u32>)> = was.assets.iter().zip(&stood).map(|(asset, standing)| (name_key(&asset.name), (standing.state.clone(), standing.version()))).collect();
+    let top = to_json_keeping(&text, names_a_file).map_err(|why| refused("project_yaml", format!("{}: {why}", folder::PROJECT)))?;
+    let empty = Map::new();
+    let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
+    let names = keys(&text, &["assets"]);
+    let project = dir.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+
+    // A dotted name is `_` now, and so is every mention of it.
+    let mut taken: BTreeSet<String> = names.iter().map(|name| name_key(name)).collect();
+    let mut renames: BTreeMap<String, String> = BTreeMap::new();
+    for name in names.iter().filter(|name| name.contains('.')) {
+        let plain = name.replace('.', "_");
+        let new = (1..).map(|n| if n == 1 { plain.clone() } else { format!("{plain}_{n}") }).find(|new| !taken.contains(&name_key(new))).expect("a free name");
+        taken.insert(name_key(&new));
+        renames.insert(name_key(name), new);
+    }
+    let renamed = |inner: &str| renames.get(&name_key(inner)).cloned();
+    let (mut said, mut typed, mut assets) = (vec![], vec![], vec![]);
+    for name in &names {
+        let mut body = declared.get(name).and_then(Value::as_object).cloned().unwrap_or_default();
+        let new = renamed(name).unwrap_or_else(|| name.clone());
+        if body.remove("kind").is_some() | body.remove("asset_type").is_some() {
+            typed.push(new.clone());
+        }
+        if body.remove("voice").is_some() {
+            said.push(format!("{new}'s voice: a voice is a sound box of its own now, mentioned where it speaks"));
+        }
+        retooled(&new, &mut body, &mut said);
+        body.values_mut().for_each(|value| mentions_renamed(value, &renamed));
+        assets.push((new, body));
+    }
+    if !typed.is_empty() {
+        let are = if typed.len() == 1 { "is" } else { "are" };
+        said.push(format!("{project}: {} {are} now a picture reference like any other", typed.join(", ")));
+    }
+    for (old, new) in &renames {
+        said.push(format!("{old} is {new}: a name holds no `.` now"));
+    }
+    let (head, mut before, tail) = comments_of(&text);
+    for (from, to) in &renames {
+        if let Some(lines) = before.remove(from) {
+            before.entry(name_key(to)).or_default().extend(lines);
         }
     }
-    said.extend(doc.warnings.iter().map(|warning| warning.message.clone()));
-    let assets = (0..doc.assets.len())
-        .map(|i| {
-            let name = doc.assets[i].name.clone();
-            Row {
-                was: was_of(&name).unwrap_or_default(),
-                before: row_of(&name).and_then(|row| row["standing"].as_str()).unwrap_or("new").to_owned(),
-                after: word_of(&stood[i].state).to_owned(),
-                version: stood[i].version(),
-                name,
-            }
+    let new_text = written(&assets, &head, &before, &tail, FORMAT)?;
+
+    // The lock under the new names; each version that stood gets its new key.
+    for (from, to) in &renames {
+        let shown = lock.asset(from).map_or_else(|| from.clone(), |held| held.name.clone());
+        super::renamed(&mut lock, &shown, to);
+    }
+    let doc = Doc::of(&folder, &new_text, &lock)?;
+    let was_of = |name: &str| renames.iter().find(|(_, new)| name_key(new) == name_key(name)).map_or_else(|| name_key(name), |(old, _)| old.clone());
+    let current: BTreeMap<String, u32> = (doc.assets.iter())
+        .filter_map(|asset| match then.get(&was_of(&asset.name))? {
+            (State::Current(number), _) => Some((name_key(&asset.name), *number)),
+            (State::Pinned { version: Some(number), changed }, _) if changed.is_empty() => Some((name_key(&asset.name), *number)),
+            _ => None,
         })
         .collect();
-    Ok(Upgraded { assets, said })
+    doc.stamped(&mut lock, &current);
+
+    if !dir.join(WAS_THREE).is_file() {
+        platform::durable::replace(&dir.join(WAS_THREE), text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+        let held = std::fs::read(dir.join(folder::LOCK)).unwrap_or_default();
+        platform::durable::replace(&dir.join(WAS_THREE_LOCK), &held, 0o644).map_err(|e| io(&dir, e))?;
+    }
+    platform::durable::replace(&dir.join(folder::LOCK), lock.written().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+    canvas::all_renamed(&folder, |name| renamed(name))?;
+    platform::durable::replace(&dir.join(folder::PROJECT), new_text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+
+    let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
+    let now = doc.stand(&lock);
+    said.extend(doc.warnings.iter().map(|warning| warning.message.clone()));
+    let rows = (0..doc.assets.len()).map(|i| {
+        let name = doc.assets[i].name.clone();
+        let old = was_of(&name);
+        let before = then.get(&old).map_or("new", |(state, _)| word_of(state)).to_owned();
+        let was = renames.get(&old).map(|_| was.assets.iter().find(|asset| name_key(&asset.name) == old).map_or(old.clone(), |asset| asset.name.clone())).unwrap_or_default();
+        Row { was, before, after: word_of(&now[i].state).to_owned(), version: now[i].version(), name }
+    });
+    Ok(Upgraded { assets: rows.collect(), said })
+}
+
+/// A format 3 box's tool and fields as format 4's: Qwen's two functions one tool with Turbo, a shot with a plate an Edit, what's no longer
+/// a field said and dropped.
+fn retooled(name: &str, body: &mut Map<String, Value>, said: &mut Vec<String>) {
+    let Some(tool) = body.get("tool").and_then(Value::as_str).map(str::to_owned) else { return };
+    let Some((head, function)) = tool.rsplit_once('/') else { return };
+    let (function, release) = function.split_once('@').map_or((function, None), |(function, release)| (function, Some(release)));
+    let package = protocol::tool::package_word(head);
+    let tool_of = |function: &str| format!("{head}/{function}{}", release.map_or_else(String::new, |release| format!("@{release}")));
+    let dropped = |body: &mut Map<String, Value>, fields: &[&str], why: &str, said: &mut Vec<String>| {
+        for field in fields {
+            if body.remove(*field).is_some() {
+                said.push(format!("{name}'s {field}: {why}: it's dropped"));
+            }
+        }
+    };
+    match (package, function) {
+        ("qwen-image-2", "generate") => {
+            body.insert("tool".into(), json!(tool_of("image")));
+            body.insert("turbo".into(), json!(false));
+        }
+        ("qwen-image-2", "generate_turbo") => drop(body.insert("tool".into(), json!(tool_of("image")))),
+        ("minimax-h3", "generate") if body.contains_key("plate") => {
+            body.insert("tool".into(), json!(tool_of("edit")));
+            dropped(body, &["summary", "soundscape", "music", "aspect_ratio", "first_frame", "last_frame", "context_frames"], "MiniMax H3 Edit follows its plate and has none", said);
+            dropped(body, &["continue_from"], "a pickup isn't written; use Pick up from here", said);
+            dropped(body, &["resolution", "upscale"], "upscaling is MiniMax H3 Upscale, a box of its own", said);
+            dropped(body, &["references", "preset", "steps"], "MiniMax H3 Edit reads none", said);
+            match lora_edit(body) {
+                Some((edit, trigger)) => {
+                    body.insert("edit".into(), json!(edit));
+                    for beat in body.get_mut("beats").and_then(Value::as_array_mut).into_iter().flatten() {
+                        if let Some(text) = beat["description"].as_str().and_then(|text| text.trim_start().strip_prefix(trigger)) {
+                            beat["description"] = json!(text.trim_start());
+                        }
+                    }
+                }
+                None => said.push(format!("{name}: its lora is none of MiniMax H3's edits: choose its Edit")),
+            }
+        }
+        ("minimax-h3", "generate") => {
+            dropped(body, &["continue_from"], "a pickup isn't written; use Pick up from here", said);
+            dropped(body, &["resolution", "upscale"], "upscaling is MiniMax H3 Upscale, a box of its own", said);
+            dropped(body, &["references", "preset", "steps"], "MiniMax H3 reads none now", said);
+            if let Some(frames) = body.remove("context_frames") {
+                let held = [22, 39, 56].into_iter().min_by_key(|carried| (frames.as_i64().unwrap_or(22) - carried).abs()).unwrap_or(22);
+                body.insert("carried_frames".into(), json!(held));
+            }
+        }
+        ("minimax-h3", "upscale") => {
+            let seedvr2 = body.get("upscale").and_then(|upscale| upscale["model"].as_str()) == Some("seedvr2");
+            if seedvr2 {
+                let parent = head.rsplit_once('/').map_or(String::new(), |(parent, _)| format!("{parent}/"));
+                body.insert("tool".into(), json!(format!("{parent}seedvr2/upscale")));
+                body.remove("upscale");
+                dropped(body, &["prompt", "latents", "preset"], "SeedVR2 reads none", said);
+                return;
+            }
+            if let Some(strength) = body.get("upscale").and_then(|upscale| upscale.get("strength")).filter(|strength| strength.is_number()).cloned() {
+                body.insert("strength".into(), strength);
+            }
+            body.remove("upscale");
+            if let Some(resolution) = body.remove("resolution") {
+                match resolution.as_str().filter(|to| ["1080p", "1440p", "2160p"].contains(to)) {
+                    Some(to) => drop(body.insert("to".into(), json!(to))),
+                    None => said.push(format!("{name}'s resolution: {resolution} is no size MiniMax H3 Upscale goes to: it's 1440p")),
+                }
+            }
+            dropped(body, &["prompt", "latents", "preset", "seed"], "MiniMax H3 Upscale reads its take's own", said);
+        }
+        _ => {}
+    }
+}
+
+/// The edit a box's `lora` was, and its word, the LoRA taken off: its choice is the edit now.
+fn lora_edit(body: &mut Map<String, Value>) -> Option<(&'static str, &'static str)> {
+    let repo = |value: &Value| value.as_str().or_else(|| value["ref"].as_str()).map(|text| text.split('@').next().unwrap_or(text).to_ascii_lowercase());
+    let found = |value: &Value| H3_EDITS.iter().find(|(_, model, _)| repo(value).as_deref() == Some(model));
+    let edit = match body.get_mut("lora")? {
+        Value::Array(loras) => {
+            let at = loras.iter().position(|lora| found(lora).is_some())?;
+            let edit = found(&loras[at]).copied();
+            loras.remove(at);
+            edit
+        }
+        one => found(one).copied(),
+    }?;
+    if body.get("lora").is_none_or(|lora| !lora.is_array() || lora.as_array().is_some_and(Vec::is_empty)) {
+        body.remove("lora");
+    }
+    Some((edit.0, edit.2))
 }

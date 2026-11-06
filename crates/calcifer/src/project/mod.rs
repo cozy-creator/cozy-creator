@@ -1667,7 +1667,7 @@ fn film_renamed(folder: &Folder, from: &str, to: &str) {
 }
 
 /// project.lock with asset `from` called `to`: its row, what is pending or owed of it, and what a cut's versions say of it.
-fn renamed(lock: &mut Lock, from: &str, to: &str) {
+pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
     lock.untombstone(from);
     let key = name_key(from);
     for version in lock.assets.values_mut().flat_map(|held| held.versions.iter_mut().chain(&mut held.discarded)) {
