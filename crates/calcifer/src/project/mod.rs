@@ -4057,7 +4057,8 @@ impl Walk {
                 None => format!("{name}: {status}"),
             };
             let code = if run.status == RunStatus::Canceled { CANCELED } else { "version_failed" };
-            return Err(Error::new(Kind::Unavailable, code, said).next(format!("cozy run show {}", run.number)));
+            let next = run.reason.iter().flat_map(|reason| reason.next.iter().cloned()).chain([format!("cozy run show {}", run.number)]);
+            return Err(next.fold(Error::new(Kind::Unavailable, code, said), Error::next));
         }
         let mut version = pending.version.clone();
         // Where its function kept the other take up to, exactly: the time asked lands on its own grid.
