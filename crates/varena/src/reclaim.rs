@@ -54,6 +54,10 @@ pub(crate) struct Protect<'a> {
     pub(crate) reuse_working: bool,
     /// The absent region this is for: a region of its size evicted moves its pages there.
     pub(crate) into: Option<u64>,
+    /// A graph pool's new reservation: no weight with content goes for it. A recording that does
+    /// not fit refuses, and the weights its call streams stay (SDXL at 6 GiB read 1.5 GB a call
+    /// back after each refused attempt).
+    pub(crate) keep_weights: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,6 +236,9 @@ impl<'a> Sequence<'a> {
     /// outside every lock for those passed over that finish first, before a costlier class goes.
     /// `join` also covers unknown consumers.
     fn weights(&mut self, want: usize, classes: RangeInclusive<u8>, wait: bool, join: bool) -> Result<bool> {
+        if self.protect.keep_weights && classes != (CONTENTLESS..=CONTENTLESS) {
+            return Ok(false);
+        }
         let released = self.released;
         let first = self.weight_pass(want, &classes)?;
         if self.released > released {

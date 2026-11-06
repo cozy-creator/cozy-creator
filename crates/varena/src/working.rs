@@ -2308,7 +2308,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     }
     let owner = initialize_owner(device)?;
     let wanted = rounded(bytes, owner.page())?;
-    let keep = Protect { pool: Some(pool), ..Default::default() };
+    let keep = Protect { pool: Some(pool), keep_weights: bytes != 0, ..Default::default() };
     let scramble = bytes == 0 && checks::before_use(owner, device, pool)?;
     {
         let mut state = owner.lock()?;
