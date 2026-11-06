@@ -23,9 +23,9 @@ struct Retained {
     writes: Mutex<Option<(Vec<(u64, u64, usize)>, bool)>>,
     /// The host copy, once it landed.
     host: Mutex<Option<Arc<Page>>>,
-    /// The region's pin when it has no host copy (none taken, or it failed): it stays on the card
-    /// until its owner goes.
-    held: Mutex<Option<varena::Pin>>,
+    /// The region's pin when it has no host copy, and the stream that wrote it if one may still
+    /// be taken: under pressure the core's ask spills it (`on_card`). A failed copy keeps it here.
+    held: Mutex<Option<(varena::Pin, Option<u64>)>>,
 }
 
 impl Drop for Retained {
@@ -72,7 +72,12 @@ impl varena::Source for RetainedSource {
                 let pin = stream_fill(fill, consumer, &copies, Box::new(Holds(())))?;
                 match copied {
                     true => spill(&self.0, pin.try_clone()?, consumer),
-                    false => *lock(&self.0.held) = Some(pin.try_clone()?),
+                    false => {
+                        // It goes after every weight, once the core has asked for it (`on_card`).
+                        pin.region().set_high(true)?;
+                        *lock(&self.0.held) = Some((pin.try_clone()?, Some(consumer)));
+                        on_card(&self.0, pin.device());
+                    }
                 }
                 Ok(Some(pin))
             }
@@ -151,6 +156,8 @@ struct Job {
     pin: varena::Pin,
     /// Recorded on the writer's stream after its copies.
     ready: usize,
+    /// Told once the copy landed or failed: an ask waits for its spills.
+    done: Option<mpsc::Sender<()>>,
 }
 
 struct Spiller {
@@ -184,13 +191,68 @@ fn keep(retained: &Weak<Retained>, pin: varena::Pin, error: &str) {
         tracing::warn!("a retained region stays on the card: its host copy failed: {error}");
     }
     if let Some(retained) = retained.upgrade() {
-        *lock(&retained.held) = Some(pin);
+        *lock(&retained.held) = Some((pin, None));
+    }
+}
+
+/// One device's retained regions kept on the card, and the cache owner the core asks once every
+/// weight that could go has gone: it spills them, so they leave in the next class like weights,
+/// whatever the room did since their call decided to keep them (a foreign program, a display).
+struct OnCard {
+    regions: Mutex<Vec<Weak<Retained>>>,
+    owner: OnceLock<varena::CacheOwner>,
+}
+
+fn on_card(retained: &Arc<Retained>, device: i32) {
+    static DEVICES: OnceLock<Mutex<HashMap<i32, Arc<OnCard>>>> = OnceLock::new();
+    let card = lock(DEVICES.get_or_init(Mutex::default)).entry(device)
+        .or_insert_with(|| Arc::new(OnCard { regions: Mutex::default(), owner: OnceLock::new() })).clone();
+    {
+        let mut regions = lock(&card.regions);
+        regions.retain(|region| region.strong_count() != 0);
+        regions.push(Arc::downgrade(retained));
+    }
+    let asked = card.clone();
+    let owner = card.owner.get_or_init(|| {
+        varena::CacheOwner::new(device, move |bytes| Ok(asked.spill(bytes)))
+            .expect("a retained regions' cache owner")
+    });
+    let _ = owner.touch();
+}
+
+impl OnCard {
+    /// Spill at least `bytes` of them, oldest first, and wait for the copies: each then goes
+    /// unpinned, with its host copy, in the core's next class.
+    fn spill(&self, bytes: usize) -> varena::cache_owner::CallbackResult {
+        let mut regions = lock(&self.regions);
+        regions.retain(|region| region.strong_count() != 0);
+        let (done, landed) = mpsc::channel();
+        let (mut asked, mut freed) = (0, 0);
+        while freed < bytes && !regions.is_empty() {
+            let weak = regions.remove(0);
+            let Some(retained) = weak.upgrade() else { continue };
+            let Some((pin, Some(stream))) = lock(&retained.held).take() else { continue };
+            freed += pin.len();
+            if queue(&weak, pin, stream, Some(done.clone())) {
+                asked += 1;
+            }
+        }
+        drop(regions);
+        for _ in 0..asked {
+            let _ = landed.recv();
+        }
+        if asked == 0 { varena::cache_owner::CallbackResult::Declined } else { varena::cache_owner::CallbackResult::Returned }
     }
 }
 
 /// Queue the host copy of a region just written on `consumer`.
 fn spill(retained: &Arc<Retained>, pin: varena::Pin, consumer: u64) {
-    let weak = Arc::downgrade(retained);
+    queue(&Arc::downgrade(retained), pin, consumer, None);
+}
+
+/// The host copy of a region `stream` wrote, behind that stream's work so far. False: it could not
+/// be queued, and the region keeps its pin.
+fn queue(retained: &Weak<Retained>, pin: varena::Pin, stream: u64, done: Option<mpsc::Sender<()>>) -> bool {
     let ready = (|| -> Result<(Arc<Spiller>, usize), String> {
         let spiller = spiller(pin.device()).map_err(|error| error.to_string())?;
         let driver = cuda::driver().map_err(|error| error.to_string())?;
@@ -200,7 +262,7 @@ fn spill(retained: &Arc<Retained>, pin: varena::Pin, consumer: u64) {
         unsafe {
             cuda::check("cuEventCreate", (driver.event_create)(&mut event, cuda::EVENT_DISABLE_TIMING))
                 .map_err(|error| error.to_string())?;
-            if let Err(error) = cuda::check("cuEventRecord", (driver.event_record)(event, consumer as cuda::CUstream)) {
+            if let Err(error) = cuda::check("cuEventRecord", (driver.event_record)(event, stream as cuda::CUstream)) {
                 (driver.event_destroy)(event);
                 return Err(error.to_string());
             }
@@ -209,12 +271,17 @@ fn spill(retained: &Arc<Retained>, pin: varena::Pin, consumer: u64) {
     })();
     let (spiller, ready) = match ready {
         Ok(ready) => ready,
-        Err(error) => return keep(&weak, pin, &error),
+        Err(error) => {
+            keep(retained, pin, &error);
+            return false;
+        }
     };
-    let sent = lock(&spiller.jobs).send(Job { retained: weak, pin, ready });
+    let sent = lock(&spiller.jobs).send(Job { retained: retained.clone(), pin, ready, done });
     if let Err(mpsc::SendError(job)) = sent {
         keep(&job.retained, job.pin, "the spill worker is gone");
+        return false;
     }
+    true
 }
 
 fn run(device: i32, context: usize, jobs: mpsc::Receiver<Job>) {
@@ -254,6 +321,9 @@ fn run(device: i32, context: usize, jobs: mpsc::Receiver<Job>) {
                 release_region(unsafe { job.pin.into_completed_region() });
             }
             Err(error) => keep(&job.retained, job.pin, &error),
+        }
+        if let Some(done) = job.done {
+            let _ = done.send(());
         }
     }
 }
