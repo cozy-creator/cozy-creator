@@ -19,7 +19,7 @@ pub mod path {
     pub const RELEASE: &str = "/v1/release";
     /// Any method: forwarded to the machine's own Calcifer, whose answer this is.
     pub const CALCIFER: &str = "/v1/calcifer/{*path}";
-    /// `POST` a [`super::RunRequest`].
+    /// `POST` a [`super::RunRequest`]; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
     /// `GET`: SSE of the run's [`super::RunEvent`]s after `Last-Event-ID`.
     pub const EVENTS: &str = "/v1/runs/{id}/events";
@@ -526,6 +526,20 @@ pub struct RunState {
     /// When it began executing (`running`), Unix ms: its time counts from here, never its queue's.
     /// 0 before it does.
     pub started_at_ms: u64,
+    /// What it runs, `<package>/<function>`; empty for an update.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    /// When the machine accepted it and when it ended, Unix ms; 0 until then.
+    pub accepted_at_ms: u64,
+    pub finished_at_ms: u64,
+}
+
+/// `GET /v1/runs`: the runs the caller reads, newest first; on a rental its owner reads every
+/// one, whichever of its clients sent it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunList {
+    pub runs: Vec<RunState>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

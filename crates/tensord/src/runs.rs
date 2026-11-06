@@ -303,7 +303,7 @@ pub(crate) fn upload(
 impl Runs {
     /// The run this id already names, if its spec is `digest`; another spec is a conflict.
     pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str) -> Result<Option<Execution>, Refused> {
-        match self.service.engine.get_public(actor, id) {
+        match self.service.engine.get_public(Some(actor), id) {
             Ok(run) if run.canceled_before_acceptance && run.state == crate::journal::State::Canceled => Ok(Some(run)),
             Ok(run) if run.submission.as_ref().map(|s| s.invocation_digest.as_str()) == Some(digest) => Ok(Some(run)),
             Ok(_) => Err(refused("run_id_conflict", "this run id already names another run spec")),

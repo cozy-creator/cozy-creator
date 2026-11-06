@@ -82,7 +82,7 @@ pub(super) fn router<B: MachineBackend>(identity: Arc<MachineIdentity>, backend:
         .route(path::KEEPALIVE, post(keepalive::<B>))
         .route(path::RELEASE, post(release::<B>))
         .route(path::CALCIFER, get(calcifer::<B>).head(calcifer::<B>).post(calcifer::<B>).put(calcifer::<B>).patch(calcifer::<B>).delete(calcifer::<B>))
-        .route(path::RUNS, post(submit::<B>).layer(DefaultBodyLimit::max(16 << 20)))
+        .route(path::RUNS, post(submit::<B>).layer(DefaultBodyLimit::max(16 << 20)).get(runs::<B>))
         .route(path::EVENTS, get(events::<B>))
         .route(path::CANCEL, post(cancel::<B>))
         .route(path::OUTPUT, get(output::<B>))
@@ -144,7 +144,8 @@ impl<B: MachineBackend> Machine<B> {
                 capability::Refusal::Clock => Error::credential("machine_clock", format!("{refusal} (this machine reads {} Unix seconds): set right whichever is wrong", unix_now())),
                 refusal => Error::credential("capability_invalid", refusal.to_string()),
             })?;
-        Ok(Caller { actor: VerifiedActor { public_key: signer.to_bytes() }, grant })
+        let owner = authority.keys.granted(&signer);
+        Ok(Caller { actor: VerifiedActor { public_key: signer.to_bytes(), owner }, grant })
     }
 
     /// A response stream lives until its key stops authorizing; a play link's also until its
@@ -304,6 +305,23 @@ async fn submit<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderM
     };
     let status = if created { StatusCode::CREATED } else { StatusCode::OK };
     Ok(json(status, &state))
+}
+
+#[derive(Deserialize)]
+struct Page {
+    #[serde(default)]
+    before: u64,
+    #[serde(default)]
+    limit: u32,
+}
+
+/// `GET /v1/runs`: the runs the caller reads, newest first, before the run numbered `?before=`.
+async fn runs<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, page: Result<Query<Page>, QueryRejection>) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    let (Page { before, limit }, actor) = (query(page)?, caller.actor);
+    let list = m.call(move |backend| super::machine_runs::list(backend, actor, before, limit)).await?;
+    Ok(json(StatusCode::OK, &list))
 }
 
 #[derive(Deserialize)]

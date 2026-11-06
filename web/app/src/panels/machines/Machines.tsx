@@ -36,7 +36,7 @@ function MachineRow({ machine, now }: { machine: Machine; now: number }) {
         {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
         {machine.state === "ending" && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : machine.reason === "release_unconfirmed" ? "The Hub hasn't confirmed it gone: it may still be billing" : "Bills until its Hub affirms it gone"}</small>}
       </Link>
-      {trying && machine.recorded !== false && (
+      {trying && machine.ordered !== false && (
         <div className="rowend">
           <End machine={machine} />
         </div>
@@ -110,7 +110,7 @@ function Switcher() {
     refetchOnMount: remote ? "always" : true,
     enabled: !client.transport.channel,
   })
-  const doors = data?.machines.filter((machine) => machine.kind === "rental" && machine.state === "ready" && machine.recorded !== false && !machine.offline) ?? []
+  const doors = data?.machines.filter((machine) => machine.kind === "rental" && machine.state === "ready" && machine.ordered !== false && !machine.offline) ?? []
   const looked = remote ? data?.machines.find((machine) => named(machine, remote)) : undefined
   if (!remote && !doors.length) return null
   return (

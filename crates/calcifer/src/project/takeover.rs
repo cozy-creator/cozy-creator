@@ -212,7 +212,7 @@ pub(super) async fn render(api: &Arc<Api>, project: &Arc<Project>, asked: &Runs,
         _ => return Ok(None),
     };
     // A rental still booting takes it: the watcher hands it over once it answers.
-    let row = api.machines.here(&machine).map_err(Refusal)?.ok_or_else(|| Refusal(crate::machines::not_found(&machine)))?;
+    let row = api.machines.named(&machine).map_err(Refusal)?.ok_or_else(|| Refusal(crate::machines::not_found(&machine)))?;
     if row.state == protocol::calcifer::MachineState::Ended {
         return Err(Refusal(Error::new(Kind::Conflict, "machine_ended", format!("{} has ended", row.name)).next("cozy machine ls")));
     }

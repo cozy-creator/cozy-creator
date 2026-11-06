@@ -834,7 +834,8 @@ export interface Machine {
   attempt?: Attempt
   running?: number
   queued?: number
-  recorded?: boolean
+  /** False: a rental another client of this account ordered; reached as this computer's own, never placed on unasked. */
+  ordered?: boolean
   unverified?: boolean
   reach?: string
   ending?: string

@@ -622,6 +622,7 @@ impl<B: MachineBackend> Cozy<B> {
                     grant,
                     VerifiedActor {
                         public_key: signer.to_bytes(),
+                        owner: authority.keys.granted(&signer),
                     },
                 ));
             }

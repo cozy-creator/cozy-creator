@@ -144,15 +144,11 @@ impl Hubs {
         }
     }
 
-    /// Every Hub's last listing: when each answered, which did not, which this computer is not
-    /// signed in to, and the live rentals of this account that `rows` does not record.
-    pub(crate) fn listing(
-        &self,
-        rows: &[MachineRow],
-        orders: &[Machine],
-    ) -> (Vec<HubListing>, Vec<HubProblem>, Vec<String>, Vec<Machine>) {
+    /// Every Hub's last listing: when each answered, which did not, and which this computer is
+    /// not signed in to.
+    pub(crate) fn listing(&self) -> (Vec<HubListing>, Vec<HubProblem>, Vec<String>) {
         let listings = lock(&self.listings);
-        let (mut hubs, mut problems, mut signed_out, mut others) = (vec![], vec![], vec![], vec![]);
+        let (mut hubs, mut problems, mut signed_out) = (vec![], vec![], vec![]);
         for (origin, listing) in listings.iter() {
             if let Some(at) = listing.listed_at_ms {
                 hubs.push(HubListing {
@@ -164,31 +160,8 @@ impl Hubs {
             if listing.signed_out {
                 signed_out.push(origin.clone());
             }
-            for rental in listing.rentals.values() {
-                let recorded = rows
-                    .iter()
-                    .any(|row| row.rental_id.as_deref() == Some(rental.rental_id.as_str()));
-                // An order whose answer was lost shows once, as the order, until it is answered.
-                let ordered = orders.iter().any(|order| order.name == rental.name);
-                if !recorded && !ordered && !gone(&rental.state) {
-                    others.push(other(origin, rental, listing.problem.is_some()));
-                }
-            }
         }
-        others.sort_by(|a, b| a.name.cmp(&b.name));
-        (hubs, problems, signed_out, others)
-    }
-
-    /// The live rentals of this account in the Hubs' last listings that `text` names, by name or
-    /// rental id: this controller's own among them.
-    pub(crate) fn listed(&self, text: &str) -> Vec<Machine> {
-        let listings = lock(&self.listings);
-        let rentals = listings.iter().flat_map(|(origin, listing)| {
-            (listing.rentals.values())
-                .filter(|rental| names(rental, text) && !gone(&rental.state))
-                .map(|rental| other(origin, rental, listing.problem.is_some()))
-        });
-        rentals.collect()
+        (hubs, problems, signed_out)
     }
 
     /// The configured Hub and every Hub a live rental was asked of.
@@ -1118,13 +1091,16 @@ impl Machines {
             listing.listed_at_ms = Some(crate::store::now_ms());
             (listing.signed_out, listing.problem) = (false, None);
             listing.rentals = rentals
-                .into_iter()
-                .map(|r| (r.rental_id.clone(), r))
+                .iter()
+                .map(|r| (r.rental_id.clone(), r.clone()))
                 .collect();
         }
         let Ok(rows) = self.store().machines() else {
             return;
         };
+        for rental in rentals.iter().filter(|rental| !gone(&rental.state)) {
+            self.adopt(origin, rental, &rows);
+        }
         for row in rows {
             if row.kind == MachineKind::Rental
                 && row.hub == origin
@@ -1136,6 +1112,36 @@ impl Machines {
             {
                 self.hub_word(&row.name).await;
             }
+        }
+    }
+
+    /// Records a live rental of this account that another of its clients ordered as one of this
+    /// controller's machines: the Hub grants each device the account signed in on every one of its
+    /// rentals, so this computer reaches it with its device key at that Hub. One this controller
+    /// ordered itself (its key is here) is its order's to record.
+    fn adopt(self: &Arc<Self>, origin: &str, rental: &types::Rental, rows: &[MachineRow]) {
+        let ours = crate::machines::valid_name(&rental.name).is_ok() && self.home.rental_key(&rental.name).exists();
+        if ours || rows.iter().any(|row| row.rental_id.as_deref() == Some(rental.rental_id.as_str())) {
+            return;
+        }
+        let Ok(hub) = config::Origin::parse(origin) else { return };
+        let endpoint = endpoint(rental);
+        let row = MachineRow {
+            name: hub_name(rental).unwrap_or_else(|| rental.rental_id.to_ascii_lowercase()),
+            kind: MachineKind::Rental,
+            hub: origin.to_owned(),
+            rental_id: Some(rental.rental_id.clone()),
+            state: if endpoint.is_some() { MachineState::Ready } else { MachineState::Booting },
+            endpoint,
+            key: hub.device_key(&self.home),
+            served: false,
+            reason: None,
+        };
+        match self.store().adopt(&row) {
+            Ok(Some(row)) if row.endpoint.is_some() => self.watch(&row),
+            Ok(Some(row)) => self.follow_boot(row),
+            Ok(None) => {}
+            Err(e) => warn!(rental = rental.rental_id, "recording another client's rental: {e}"),
         }
     }
 
@@ -1170,19 +1176,6 @@ impl Machines {
             machine: self.picture(&row)?,
             changed: true,
             abandoned,
-        })
-    }
-
-    /// Ends a live rental of this account that this controller did not rent: no output of it is
-    /// owed here.
-    pub(crate) fn end_other(self: &Arc<Self>, mut machine: Machine) -> Result<Ended, Error> {
-        let id = machine.rental_id.clone().unwrap_or_default();
-        self.ask_end(&format!("end-{id}"), &machine.hub, &id, None, false)?;
-        machine.state = MachineState::Ending;
-        Ok(Ended {
-            machine,
-            changed: true,
-            abandoned: vec![],
         })
     }
 
@@ -1834,52 +1827,4 @@ fn ms(at: &str) -> Option<i64> {
     let at = time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339);
     at.ok()
         .map(|at| (at.unix_timestamp_nanos() / 1_000_000) as i64)
-}
-
-/// A live rental of this account that this controller did not rent.
-fn other(origin: &str, rental: &types::Rental, unverified: bool) -> Machine {
-    Machine {
-        ssh: None,
-        name: hub_name(rental).unwrap_or_else(|| rental.rental_id.clone()),
-        kind: MachineKind::Rental,
-        state: match rental.state.as_str() {
-            "ready" | "degraded" => MachineState::Ready,
-            "release_requested" => MachineState::Ending,
-            _ => MachineState::Booting,
-        },
-        hub: origin.to_owned(),
-        rental_id: Some(rental.rental_id.clone()),
-        alias: None,
-        address: rental.worker_address.clone(),
-        fingerprint: rental
-            .cert_pem
-            .as_deref()
-            .and_then(pin_of)
-            .map(protocol::ids::Digest::from_bytes),
-        reason: None,
-        offline: None,
-        rental: Some(view(rental, None)),
-        status: None,
-        unreachable: None,
-        unreachable_since_ms: None,
-        boot: boot_phase(rental).filter(|_| rental.state != "ready"),
-        attempt: attempt(rental).filter(|_| rental.state != "ready"),
-        running: 0,
-        queued: 0,
-        recorded: false,
-        unverified,
-        controller_key: None,
-        reach: None,
-        ending: None,
-    }
-}
-
-/// Whether `text` names the rental: its id, its Hub name, or the name it was asked under.
-fn names(rental: &types::Rental, text: &str) -> bool {
-    rental.rental_id.eq_ignore_ascii_case(text)
-        || rental.name.eq_ignore_ascii_case(text)
-        || rental
-            .machine_name
-            .as_deref()
-            .is_some_and(|name| name.eq_ignore_ascii_case(text))
 }

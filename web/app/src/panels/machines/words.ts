@@ -2,7 +2,7 @@ import type { Machine } from "../../types"
 import { span, usd } from "../format"
 
 /** A rental that doesn't answer yet: nothing else may be ordered until it comes to something. */
-export const ordering = (machine: Machine) => machine.kind === "rental" && machine.recorded !== false && machine.state === "booting"
+export const ordering = (machine: Machine) => machine.kind === "rental" && machine.ordered !== false && machine.state === "booting"
 
 /** What `name` in a route means: a machine's name, former name or rental id. */
 export const named = (machine: Machine, name: string) => [machine.name, machine.alias, machine.rental_id].some((known) => known?.toLowerCase() === name.toLowerCase())
@@ -53,7 +53,7 @@ export const stateClass = (machine: Machine) =>
           : "s-queued"
 
 export const kindWords = (machine: Machine) =>
-  machine.kind === "rental" && machine.recorded === false ? "rental, another computer's" : machine.kind
+  machine.kind === "rental" && machine.ordered === false ? "rental, another computer's" : machine.kind
 
 /** When an idle machine ends itself; a rental with work names no deadline and ends after it. */
 export function endsWords(machine: Machine, now: number): string {
