@@ -62,11 +62,12 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}` } })).json();
 
-  // `local` is a machine at the top right, whatever it's doing.
+  // `local` is a machine at the top right, whatever it's doing, where this computer runs models: macOS and Windows list none.
   const chip = page.locator('.mtab[data-machine="local"]');
-  await chip.waitFor();
-  check('local_has_a_chip', true);
-  if (!(await api('/v1/status')).local_usable || process.env.ALONE) {
+  const usable = (await api('/v1/status')).local_usable;
+  if (usable) await chip.waitFor();
+  check('local_has_a_chip', (await chip.count()) === (usable ? 1 : 0), { usable, chips: await page.locator('.mtab').allInnerTexts() });
+  if (!usable || process.env.ALONE) {
     seen.ran = false;
     return finish();
   }

@@ -9,8 +9,9 @@ export const stepZoom = (zoom: number, by: 1 | -1) =>
   by > 0 ? (ZOOMS.find((step) => step > zoom * 1.001) ?? ZOOMS[ZOOMS.length - 1]) : ([...ZOOMS].reverse().find((step) => step < zoom / 1.001) ?? ZOOMS[0])
 
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform)
-/** A shortcut as this computer writes it. */
-export const keys = (...parts: string[]) => parts.map((part) => (part === "Mod" ? (MAC ? "⌘" : "Ctrl") : part)).join(MAC ? "" : " ")
+/** A shortcut as this computer writes it: a Mac's in its symbols, run together (⌘+, ⇧1), others' in words (Ctrl +, Shift 1). */
+const MAC_KEYS: Record<string, string> = { Mod: "⌘", Shift: "⇧" }
+export const keys = (...parts: string[]) => parts.map((part) => (MAC ? (MAC_KEYS[part] ?? part) : part === "Mod" ? "Ctrl" : part)).join(MAC ? "" : " ")
 
 export type ZoomItem = { label: string; keys?: string; run: () => void; disabled?: boolean } | "rule"
 

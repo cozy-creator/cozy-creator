@@ -12,7 +12,7 @@
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawnSync } = require('child_process');
-const { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
 const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, panning, renderOf, summary, until, watchBoxes, wav } = require('./page');
@@ -587,7 +587,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // The tabs: as many as fit the bar, each where it was and as wide while the window resizes, the rest behind "N more", which opens All
   // projects with them first; a search there, by name and by folder; and + ready for a new one's name.
   const trees = ['alder', 'birch', 'cedar', 'dogwood', 'elm', 'fir', 'ginkgo', 'hazel', 'ironwood', 'juniper', 'larch', 'maple', 'oak', 'pine', 'rowan', 'spruce'];
-  const forest = mkdtempSync(join(tmpdir(), 'web-tabs-'));
+  // As Calcifer has it: macOS's temp folder is a link (/var → /private/var).
+  const forest = realpathSync(mkdtempSync(join(tmpdir(), 'web-tabs-')));
   const listed = async () => (await api('/v1/projects?limit=200')).projects.filter((row) => !row.missing);
   let ours = [];
   try {

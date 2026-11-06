@@ -261,8 +261,11 @@ async function loseAnswers(page, method, path, times) {
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
     await (await renderOf(page, 'fixture')).click();
     await page.waitForTimeout(20);
-    check('render_says_queued_at_once', /Queued/.test((await box('fixture').locator('.status').allInnerTexts()).join(' ')), await box('fixture').innerText());
+    // Render looks at the take it asks for: picked at once in the takes beside it, saying it's queued.
+    check('render_says_queued_at_once', (await box('fixture').locator('.here-side .take.making.on[title="Queued"]').count()) === 1, await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
+    // The take can land before the lost answer's reset reaches the page: what it asks again is seen before the route goes.
+    await until('asked again', () => Promise.resolve(renders.keys.length), (n) => n >= 2, 10_000).catch(() => {});
     await renders.done();
     await page.waitForTimeout(1500);
     const held = status().find((asset) => asset.name === 'fixture');

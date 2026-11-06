@@ -305,6 +305,11 @@ async function died(why) {
     const tool = { id: await row.getAttribute('data-tool') };
     seen.tool = tool.id;
     const carry = async (name) => {
+      // F fits the box worked on (447b9127b): at rest, it fits them all.
+      if (await page.locator('.card.here').count()) {
+        await page.keyboard.press('Escape');
+        await page.locator('.card.here').waitFor({ state: 'detached' });
+      }
       await page.keyboard.press('f');
       await page.waitForTimeout(400);
       await row.scrollIntoViewIfNeeded();
@@ -383,6 +388,9 @@ async function died(why) {
     await undoIn('Its pictures stay').click();
     await until('the tool back', () => Promise.resolve(lines('other')), (text) => text.includes(`tool: ${tool.id}`) && text.includes('<self.1>'));
     check('undo_puts_it_back', (await asset('other')).versions === 1 && (await asset('other')).fields?.instructions === '<self.1>', await asset('other'));
+    // Back, it looks at its take: its tool is its next take's, behind its +.
+    await open('other');
+    await renderOf(page, 'other');
     await box('other').locator(`button[aria-label^="Take"]`).first().click();
     await until('the tool gone', () => Promise.resolve(lines('other')), (text) => !text.includes('tool:'));
     await box('other').locator('.card').waitFor();
@@ -465,9 +473,11 @@ async function died(why) {
     // A box's shape is its tool's, and no field says it. With none set it's the first picture its words mention, as they change; its corner on a box
     // with no picture sets one, at rest or open, and open, the one set has an × back to Auto. A box showing a picture only scales.
     writeFileSync(yamlAt, `${yaml().trimEnd()}\n  framed:\n    tool: ${tool.id}\n    instructions: <Ada.2> beside <Ada>.\n`);
-    await box('framed').waitFor();
+    // Placed where there's room, which may be off the view: a box off it isn't drawn.
+    await until('framed placed', async () => (await api(`${at}/canvas`)).body?.cards?.framed, Boolean);
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
+    await box('framed').waitFor();
     const shapeOf = async (name) => {
       const { width, height } = await box(name).locator('.media').first().boundingBox();
       return width / height;
@@ -555,7 +565,12 @@ async function died(why) {
       await page.keyboard.type(' <re');
       const offeredNames = await until('the names offered', () => page.locator('.name-menu li').allInnerTexts(), () => true, 1000).catch(() => []);
       for (let i = 0; i < 4; i++) await page.keyboard.press('Backspace');
+      // Left with nothing typed, so a write from elsewhere is the box's words and no conflict with them; open again on its next take.
+      await shut();
       await api(`${at}/assets/picked`, { method: 'PATCH', body: JSON.stringify({ fields: { instructions: `${wordsBefore} <reel>` } }) });
+      await until('the reel in its words', () => asset('picked'), (row) => row.fields?.instructions?.includes('<reel>'));
+      await open('picked');
+      await renderOf(page, 'picked');
       const dimmed = await until('a dimmed chip', () => prompt.locator('.chip.refused[data-mention="reel"]').count(), (n) => n === 1).catch(() => 0);
       check('a_video_isnt_offered_and_is_dimmed', !offeredNames.includes('reel') && dimmed === 1, { offeredNames, dimmed });
       await shut();
@@ -708,6 +723,10 @@ async function died(why) {
     // mentioned in it isn't marked refused.
     const draw = join(__dirname, '..', 'project', 'draw.py');
     writeFileSync(yamlAt, `${yaml().trimEnd()}\n  drawn_from:\n    tool: ${draw}/draw\n    instructions: <Ada> in the rain.\n`);
+    // Placed where there's room, which may be off the view: a box off it isn't drawn.
+    await until('drawn_from placed', async () => (await api(`${at}/canvas`)).body?.cards?.drawn_from, Boolean);
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box('drawn_from').waitFor();
     const drawTakes = await until('draw listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((one) => one.id.endsWith('draw.py/draw'))?.references, Boolean).catch(() => null);
     await open('drawn_from');

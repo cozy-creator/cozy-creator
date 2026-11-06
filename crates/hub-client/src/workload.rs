@@ -11,8 +11,16 @@ use jsonwebtoken::{
     Algorithm, EncodingKey, Header,
     jwk::{CommonParameters, Jwk, ThumbprintHash},
 };
+use reqwest::{
+    Url,
+    header::{AGE, DATE, HeaderMap, HeaderName},
+};
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeMap,
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::{Client, Error, types::WorkloadToken};
 
@@ -56,7 +64,7 @@ impl WorkloadKey {
     /// when it goes with one.
     pub fn proof(&self, method: &str, url: &str, token: Option<&str>) -> String {
         let htu = url.split(['?', '#']).next().unwrap_or(url);
-        let mut claims = json!({"htm": method, "htu": htu, "iat": now(), "jti": jti()});
+        let mut claims = json!({"htm": method, "htu": htu, "iat": hub_now(url), "jti": jti()});
         if let Some(token) = token {
             claims["ath"] = URL_SAFE_NO_PAD.encode(digest(&SHA256, token.as_bytes())).into();
         }
@@ -65,7 +73,7 @@ impl WorkloadKey {
 
     /// The assertion that presents `capability` at `token_endpoint`, signed by this key.
     fn assertion(&self, token_endpoint: &str, capability: &str) -> String {
-        let now = now();
+        let now = hub_now(token_endpoint);
         let claims = json!({
             "iss": CLIENT, "sub": self.thumbprint, "aud": token_endpoint,
             "iat": now, "exp": now + 60, "jti": jti(), "capability": capability,
@@ -85,6 +93,7 @@ impl Client {
             .ok_or_else(|| Error::Answer("the Hub names no authorization server".into()))?;
         let url = format!("{}/.well-known/oauth-authorization-server", issuer.trim_end_matches('/'));
         let response = self.http().get(url).send().await.map_err(|e| Error::unanswered(&e))?;
+        observe(response.url(), response.headers());
         if !response.status().is_success() {
             return Err(Error::refused(response).await);
         }
@@ -96,24 +105,34 @@ impl Client {
             .ok_or_else(|| Error::Answer("the authorization server names no token endpoint".into()))
     }
 
-    /// `capability` redeemed at `token_endpoint` for a token bound to `key`.
+    /// `capability` redeemed at `token_endpoint` for a token bound to `key`. A proof refused on a
+    /// clock its answer corrected is made again, once, in the Hub's time.
     pub async fn redeem(&self, key: &WorkloadKey, token_endpoint: &str, capability: &str) -> Result<WorkloadToken, Error> {
-        let form = [
-            ("grant_type", JWT_BEARER),
-            ("client_id", CLIENT),
-            ("assertion", &key.assertion(token_endpoint, capability)),
-        ];
-        let request = self
-            .http()
-            .post(token_endpoint)
-            .header("dpop", key.proof("POST", token_endpoint, None))
-            .form(&form);
-        let response = request.send().await.map_err(|e| Error::unanswered(&e))?;
-        let status = response.status().as_u16();
-        let body: Value = response.json().await.map_err(|e| Error::Answer(e.to_string()))?;
-        if status != 200 {
+        let mut again = true;
+        loop {
+            let signed_at = hub_now(token_endpoint);
+            let form = [
+                ("grant_type", JWT_BEARER),
+                ("client_id", CLIENT),
+                ("assertion", &key.assertion(token_endpoint, capability)),
+            ];
+            let request = self
+                .http()
+                .post(token_endpoint)
+                .header("dpop", key.proof("POST", token_endpoint, None))
+                .form(&form);
+            let response = request.send().await.map_err(|e| Error::unanswered(&e))?;
+            observe(response.url(), response.headers());
+            let status = response.status().as_u16();
+            let body: Value = response.json().await.map_err(|e| Error::Answer(e.to_string()))?;
+            if status == 200 {
+                return serde_json::from_value(body).map_err(|e| Error::Answer(e.to_string()));
+            }
             let text = |name: &str| body[name].as_str().unwrap_or_default().to_owned();
             let (error, reason) = (text("error"), text("reason"));
+            if std::mem::take(&mut again) && error == "invalid_dpop_proof" && hub_now(token_endpoint).abs_diff(signed_at) > SKEWED_S as u64 {
+                continue;
+            }
             return Err(Error::Hub {
                 status,
                 code: if reason.is_empty() { error } else { reason },
@@ -123,11 +142,43 @@ impl Client {
                 metadata: None,
             });
         }
-        serde_json::from_value(body).map_err(|e| Error::Answer(e.to_string()))
     }
 }
 
-fn now() -> u64 {
+/// How far each Hub's clock reads ahead of this host's, in seconds, by origin. AuthKit takes a
+/// proof only within 60 s of its own clock, so a workload signs in the Hub's time: a rental host's
+/// clock ran 11 minutes fast, and every redemption there was refused.
+static AHEAD: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
+
+/// A Hub this far off is named in the log.
+const SKEWED_S: i64 = 30;
+
+/// Reads the clock of the Hub that answered `url` from the answer's `Date`, plus its `Age` when a
+/// cache kept it.
+pub(crate) fn observe(url: &Url, headers: &HeaderMap) {
+    let text = |name: HeaderName| headers.get(name)?.to_str().ok();
+    let Some(date) = text(DATE).and_then(|date| httpdate::parse_http_date(date).ok()) else {
+        return;
+    };
+    let age = text(AGE).and_then(|age| age.trim().parse::<i64>().ok()).unwrap_or(0);
+    let hub = date.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) + age;
+    let ahead = hub - local_now() as i64;
+    let origin = url.origin().ascii_serialization();
+    let before = AHEAD.lock().unwrap().insert(origin.clone(), ahead);
+    if ahead.abs() > SKEWED_S && before.is_none_or(|before| before.abs() <= SKEWED_S) {
+        let (seconds, way) = (ahead.abs(), if ahead > 0 { "behind" } else { "ahead of" });
+        tracing::warn!(%origin, ahead_s = ahead, "this host's clock is {seconds} s {way} the Hub's: its proofs there are signed in the Hub's time");
+    }
+}
+
+/// Now on the clock of the Hub that serves `url`; this host's until that Hub has answered.
+fn hub_now(url: &str) -> u64 {
+    let origin = Url::parse(url).map(|url| url.origin().ascii_serialization()).unwrap_or_default();
+    let ahead = AHEAD.lock().unwrap().get(&origin).copied().unwrap_or(0);
+    local_now().saturating_add_signed(ahead)
+}
+
+fn local_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 

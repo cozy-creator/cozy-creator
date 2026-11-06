@@ -266,7 +266,9 @@ const constants = (folder) => {
     const lay = {};
     const left = Math.max(...Object.values(rows(folder)).map((row) => row.x)) + 1500;
     const put = (name, x, y, w) => { lay[name] = { x: left + x, y, w }; };
-    for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, 221 * j, 300);
+    // Rows of the grid touch: a picture 300 wide and the room it keeps under it for the name of a box below (e139a61c6, shown.ts).
+    const ROW = 262;
+    for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, ROW * j, 300);
     put('crowded', 290, 800, 360);
     put('beside', 0, 1200, 240);
     put('free', 200, 1500, 240);
@@ -278,6 +280,9 @@ const constants = (folder) => {
       writeFileSync(file, png(40 + i * 9, 320, 180));
       execFileSync(process.env.COZY, ['project', '-p', folder, 'import', file, name], { stdio: 'ignore' });
     });
+    // Each placed by the page as it arrives first: placed after its `at`, it would be put where the page found room (the page's read of where
+    // things sit, then its write of a new one's place, can straddle another writer's).
+    await until('each placed', () => rows(folder), (now) => Object.keys(lay).every((name) => now[name]));
     for (const [name, { x, y, w }] of Object.entries(lay)) at(name, x, y, w);
     rmSync(pictures, { recursive: true, force: true });
     await until('laid out', () => rows(folder), (now) => Object.entries(lay).every(([name, row]) => now[name]?.x === row.x && now[name]?.y === row.y));
@@ -318,7 +323,7 @@ const constants = (folder) => {
       const moved = Object.fromEntries(Object.keys(lay).filter((other) => other !== name && apart(after[other], before[other]) > 0).map((other) => [other, apart(after[other], before[other])]));
       return { dropped: { ...before[name], x: Math.round(held.e), y: Math.round(held.f) }, now: after[name], moved, lying: await lying() };
     };
-    const crowded = await letGo('crowded', 221 + 3 - 800);
+    const crowded = await letGo('crowded', ROW + 3 - 800);
     seen.crowded = { ...crowded, by: apart(crowded.now, crowded.dropped) };
     check('a_crowded_drop_shrinks_where_it_was_let_go', crowded.now.w < 360 * 0.97 && crowded.now.w >= 180 && seen.crowded.by <= 40, seen.crowded);
     check('a_crowded_drop_nudges_little', Object.values(crowded.moved).every((by) => by <= 40), crowded.moved);
