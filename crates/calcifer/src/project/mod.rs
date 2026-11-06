@@ -11,6 +11,7 @@ mod assets;
 mod canvas;
 mod folder;
 mod format;
+mod format2;
 mod graph;
 pub(crate) mod host;
 mod jobs;

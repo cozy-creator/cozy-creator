@@ -698,6 +698,49 @@ before=$(sha "$C/project.yaml")
 code=0; cozy project -p "$C" status > "$OUT/first-open-stuck.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy_one' "$OUT/first-open-stuck.txt" && [ "$(sha "$C/project.yaml")" = "$before" ] && [ ! -e "$C/project.yaml.v2" ]; } || check "first open: names that are one (exit $code): $(tail -c 300 "$OUT/first-open-stuck.txt")"
 rm -rf "$C"
+
+step "a project: format 2 opened keeps what was out of date, and says each mention of what a beat wrote"
+local S=$OUT/first-open-states draw=$here/project/draw.py art plate poster f
+mkdir -p "$S/files"
+still "$S/art.png" teal; still "$S/plate.png" navy; still "$S/poster.png" olive
+art=$(sha "$S/art.png") plate=$(sha "$S/plate.png") poster=$(sha "$S/poster.png")
+for f in art plate poster; do mv "$S/$f.png" "$S/files/$(sha "$S/$f.png").png"; done
+# As 0.19 left it: coast's plate approved, poster's one version from before keys (out of date), and two stills clash's beats wrote, never made.
+cat > "$S/project.yaml" <<YAML
+version: 2
+entities:
+  coast:
+    kind: environment
+    image: <coast_plate>
+assets:
+  art:
+    image: ${art:0:12}
+  coast_plate:
+    image: ${plate:0:12}
+    render: {with: $draw, prompt: A coast.}
+  poster:
+    render: {with: $draw, prompt: From <art>.}
+  clash:
+    kind: video
+    render: {with: /nowhere/minimax-h3}
+    beats:
+      - description: On <coast>.
+        writes: [{image: coast.1}]
+      - description: Then on <coast.1>.
+        writes: [{image: coast.2}]
+      - description: And on <coast.2>.
+YAML
+jq -n --arg art "sha256:$art" --arg plate "sha256:$plate" --arg poster "sha256:$poster" '{format: 2,
+  files: ([$art, $plate, $poster] | map({(.): {path: "files/\(.[7:]).png", sha256: .}}) | add),
+  assets: {"coast plate": {name: "coast_plate", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $plate}}]},
+    poster: {name: "poster", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $poster}}]}}}' > "$S/project.lock"
+cozy project -p "$S" status > "$OUT/first-open-states.txt" 2>&1 || check "first open: states: $(tail -c 300 "$OUT/first-open-states.txt")"
+status "$S" > "$OUT/first-open-states.json"
+J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .versions == 1' "$OUT/first-open-states.json" || check "first open: what was out of date isn't: $(row "$S" poster .)"
+J '.assets[] | select(.name == "coast") | .standing == "current" and .approved == 1' "$OUT/first-open-states.json" || check "first open: coast: $(row "$S" coast .)"
+J '.assets[] | select(.name == "art") | .standing == "current"' "$OUT/first-open-states.json" || check "first open: art: $(row "$S" art .)"
+grep -qE "clash, line [0-9]+: <coast\.1> was what a beat of clash wrote, and now reads as coast's version 1" "$OUT/first-open-states.txt" || check "first open: <coast.1> not said: $(cat "$OUT/first-open-states.txt")"
+grep -qE "clash, line [0-9]+: <coast\.2> was what a beat of clash wrote, and now reads as coast's version 2, which it hasn't" "$OUT/first-open-states.txt" || check "first open: <coast.2> not said: $(cat "$OUT/first-open-states.txt")"
 }
 
 # A version keeps the words that made it, only where they changed, whatever becomes of the one that held them.

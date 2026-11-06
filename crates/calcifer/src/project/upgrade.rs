@@ -1,8 +1,9 @@
 //! One way, once: a project folder of format 2 to format 3 (design/project-format-ui.md), in this process, with no Calcifer, for a Calcifer of
-//! this format can't read it yet. Each asset's current version comes from what `cozy project status --json` said under the cozy that reads
-//! format 2; the new key is stamped on those versions, so nothing goes out of date and nothing runs. Each entity folds into its sheet, which takes
-//! its name, `description` and `asset_type`; each form becomes an asset of its dotted name; a written still a file. Comments come along. The
-//! old files stay beside the new. It writes the file whole, the one place anything does, as nothing of the old lines can stand.
+//! this format can't read it yet. Each asset's current version is its state in format 2, worked out as the cozy that reads it did (`format2`),
+//! or what its `cozy project status --json` said; the new key is stamped on those versions, so nothing goes out of date and nothing runs. Each
+//! entity folds into its sheet, which takes its name, `description` and `asset_type`; each form becomes an asset of its dotted name; a written
+//! still a file. Comments come along. The old files stay beside the new. It writes the file whole, the one place anything does, as nothing of
+//! the old lines can stand.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
@@ -23,6 +24,7 @@ use super::{
     canvas,
     folder::{self, Folder, Lock, MEASURED},
     format::{Doc, FORMAT, State, TEXT, canonical, invalid, made_here, names_a_file, plain_tool, yaml_key},
+    format2,
     graph::{mentions, mentions_in, name_key},
     holding,
 };
@@ -497,7 +499,7 @@ fn comments_of(text: &str) -> (Vec<String>, HashMap<String, Vec<String>>, Vec<St
 }
 
 /// What a value writes, and its comment. A `#` in quotes is no comment, and neither is one with no space before it.
-fn split_comment(rest: &str) -> (&str, Option<&str>) {
+pub(super) fn split_comment(rest: &str) -> (&str, Option<&str>) {
     let (mut quote, bytes) = (None, rest.as_bytes());
     for (n, byte) in bytes.iter().enumerate() {
         match (quote, *byte) {
@@ -611,6 +613,24 @@ fn inline(value: &Value) -> String {
 }
 
 
+/// Asset `name` and the lines of `text` where it says `<mention>`.
+fn where_in(text: &str, name: &str, mention: &str) -> String {
+    let (said, mut inside, mut lines) = (format!("<{mention}>"), false, vec![]);
+    for (n, line) in text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty()) {
+        let at = line.len() - line.trim_start_matches(' ').len();
+        if at <= 2 && !line.trim_start().starts_with('#') {
+            inside = at == 2 && name_key(line.trim().split(':').next().unwrap_or_default().trim_matches(['"', '\''])) == name_key(name);
+        } else if inside && line.contains(&said) {
+            lines.push((n + 1).to_string());
+        }
+    }
+    match lines.as_slice() {
+        [] => name.to_owned(),
+        [one] => format!("{name}, line {one}"),
+        many => format!("{name}, lines {}", many.join(", ")),
+    }
+}
+
 /// The old lock's rows as versions now are: what they keep, and an Edit's clips each with the file it cut.
 fn shrunk(lock: &mut Value) {
     for asset in lock.get_mut("assets").and_then(Value::as_object_mut).into_iter().flat_map(|assets| assets.values_mut()) {
@@ -678,7 +698,7 @@ fn moves(text: &str) -> bool {
     }
 }
 
-/// The first thing to touch `dir`'s project moves it, if it's format 2, as `cozy project upgrade` with no status would. What to say of that, once:
+/// The first thing to touch `dir`'s project moves it, if it's format 2, as `cozy project upgrade` would. What to say of that, once:
 /// nothing if there was nothing to move. What can't convert refuses, says why and is left as it is.
 pub(super) fn on_touch(dir: &Path) -> Result<Vec<String>, Error> {
     let _one = MOVING.lock().unwrap_or_else(|e| e.into_inner());
@@ -719,14 +739,15 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     if old["pending"].as_object().is_some_and(|pending| !pending.is_empty()) || old["walk"]["asks"].as_array().is_some_and(|asks| !asks.is_empty()) {
         return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy project status"));
     }
+    let was_lock: format2::Lock = serde_json::from_value(old.clone()).map_err(|e| Error::new(Kind::Validation, "lock_unreadable", format!("{}: {e}", folder::LOCK)))?;
+    let was = format2::Doc::read(&dir, &text, top, &was_lock);
     let status: Option<Value> = status.map(serde_json::from_str).transpose().map_err(|e| refused("status_unreadable", format!("that isn't what `cozy project status --json` says: {e}")))?;
-    let rows: BTreeMap<String, Value> = (status.iter().flat_map(|status| status["assets"].as_array().into_iter().flatten()))
-        .filter_map(|row| Some((name_key(row["name"].as_str()?), row.clone())))
-        .collect();
+    let rows = match &status {
+        Some(status) => status["assets"].as_array().cloned().unwrap_or_default(),
+        None => was.rows(&was_lock),
+    };
+    let rows: BTreeMap<String, Value> = rows.into_iter().filter_map(|row| Some((name_key(row["name"].as_str()?), row))).collect();
     let mut said = vec![];
-    if status.is_none() {
-        said.push("no --status: each asset's approved version, else its newest, is taken as current, so what was out of date no longer shows it".to_owned());
-    }
 
     let empty = Map::new();
     let old_defaults = top.get("defaults").and_then(Value::as_object).unwrap_or(&empty);
@@ -908,10 +929,24 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     let stood = doc.stand(&lock);
     said.extend(notes);
     for i in 0..doc.assets.len() {
+        let name = &doc.assets[i].name;
         let tags = doc.tags(i).cloned().unwrap_or_default();
         let gone = doc.missing_names(i, &tags, &lock);
-        if !gone.is_empty() {
-            said.push(format!("{} mentions {}, which no version wrote and nothing makes: edit its text", doc.assets[i].name, gone.iter().map(|name| format!("<{name}>")).collect::<Vec<_>>().join(", ")));
+        // Format 2 had no `<name.2>`, and format 3 has no beat writes: a mention read as a version, or of what a beat wrote, means another thing now.
+        let mut moved: Vec<(&str, String)> = vec![];
+        for read in &doc.assets[i].reads {
+            let Some(number) = read.number else { continue };
+            let none = if gone.contains(&read.said) { ", which it hasn't: edit its text" } else { "" };
+            moved.push((read.said.as_str(), format!("now reads as {}'s version {number}{none}", doc.assets[read.asset].name)));
+        }
+        let unwritten: Vec<&str> = gone.iter().map(String::as_str).filter(|mention| was.beat_of(mention).is_some() && !moved.iter().any(|(said, _)| said == mention)).collect();
+        moved.extend(unwritten.into_iter().map(|mention| (mention, "now names nothing: edit its text".to_owned())));
+        for (mention, now) in &moved {
+            said.push(format!("{}: <{mention}> {}, and {now}", where_in(&new_text, name, mention), was.meant(mention)));
+        }
+        let rest: Vec<String> = gone.iter().filter(|mention| !moved.iter().any(|(said, _)| said == mention)).map(|mention| format!("<{mention}>")).collect();
+        if !rest.is_empty() {
+            said.push(format!("{name} mentions {}, which no version wrote and nothing makes: edit its text", rest.join(", ")));
         }
     }
     said.extend(doc.warnings.iter().map(|warning| warning.message.clone()));
