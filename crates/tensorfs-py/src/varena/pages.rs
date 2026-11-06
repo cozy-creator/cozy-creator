@@ -113,6 +113,10 @@ struct State {
     filled: Option<(String, String, Page)>,
     refills: HashMap<String, u64>,
     rate: HashMap<String, u64>,
+    /// The most active page cache that counts as room, and the limit it was decided under: see
+    /// `request_ended`.
+    own: i64,
+    bound: i64,
     clock: u64,
     log: Vec<Row>,
 }
@@ -177,13 +181,17 @@ impl Tier {
     }
 
     /// The host RAM this process can still take, re-read at most every `LOOK`, after kept pages
-    /// go, the least worth first, while it is under the headroom. Unreadable: they all go.
+    /// go, the least worth first, while it is under the headroom. Unreadable: they all go. Active
+    /// page cache up to `own` is room: the loop's store reads keep it active, so yielding to it
+    /// only feeds a cache the loop's own refills fill.
     fn trim(&self, state: &mut State) -> Vec<Kept> {
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
             return Vec::new();
         }
         state.looked = Some(Instant::now());
-        let mut room = host_memory::read().available;
+        let memory = host_memory::read();
+        let own = if memory.bound == state.bound { memory.active.min(state.own) } else { 0 };
+        let mut room = if memory.available < 0 { memory.available } else { memory.available + own };
         state.room = room;
         let mut gone = Vec::new();
         if room >= self.headroom {
@@ -305,6 +313,23 @@ impl Tier {
         if !state.kept.contains_key(key) {
             state.wanted.insert(key.to_owned(), Wanted { set: set.to_owned(), source, region });
         }
+    }
+
+    /// A request ended: its refills become each page's worth, and the bytes its loop read from the
+    /// store and the tier does not keep bound the active page cache that counts as room until the
+    /// next ends. Moving the loop's bytes from the page cache into the tier shrinks what the cache
+    /// must hold by as much as the cache shrinks, and a kept page always hits: on a 32 GB cgroup
+    /// the tier held 17.3 GB of Flux-2 to v1's 21.2 while 3.2 GB of active cache stayed outside
+    /// its room, and 5.8 GB a step more came from the store (run 37385: 12.7 s a step against
+    /// v1's 3.4). Decided once a request, never per step: the cache the loop keeps active moves
+    /// every pass. Other active cache is never room past those bytes.
+    pub(super) fn request_ended(&self) {
+        let memory = host_memory::read();
+        let mut state = self.state();
+        let refills = std::mem::take(&mut state.refills);
+        state.rate.extend(refills);
+        let streamed = state.wanted.values().filter_map(|wanted| wanted.source.upgrade()).map(|source| source.bytes() as i64).sum();
+        (state.own, state.bound, state.looked) = (streamed, memory.bound, None);
     }
 
     pub(super) fn row(&self, row: Row) {
@@ -450,11 +475,9 @@ impl PyPages {
     fn forget(&self, py: Python<'_>, set: Option<String>) {
         py.detach(|| self.tier.forget(set.as_deref()));
     }
-    /// A request ended: its refills become each page's worth.
-    fn request_ended(&self) {
-        let mut state = self.tier.state();
-        let refills = std::mem::take(&mut state.refills);
-        state.rate.extend(refills);
+    /// A request ended: see `Tier::request_ended`.
+    fn request_ended(&self, py: Python<'_>) {
+        py.detach(|| self.tier.request_ended());
     }
     /// The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms).
     fn drain(&self) -> Vec<(String, u32, u64, &'static str, bool, u64, f64)> {

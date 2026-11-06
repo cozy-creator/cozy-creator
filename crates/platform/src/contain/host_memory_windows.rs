@@ -37,6 +37,7 @@ pub(super) fn read() -> HostMemory {
         shmem: 0,
         mem_available: available,
         bound: total(),
+        active: 0,
     }
 }
 
