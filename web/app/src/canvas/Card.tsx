@@ -167,7 +167,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   }
   const pick = (number: number) => {
     store.pickTake(name, number)
-    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined })
+    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined, watchRun: undefined })
   }
   return (
     <div
@@ -190,9 +190,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       )}
       {waiting && (
         <span className="take-at">
-          <span className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued">
+          <button type="button" className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued" onClick={() => store.watchTake(name)}>
             …
-          </span>
+          </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
             <Icon name="close" />
           </button>
@@ -200,9 +200,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       )}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <span className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`}>
+          <button type="button" className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`} onClick={() => store.watchTake(name, run)}>
             <TakeProgress view={view} run={run} />
-          </span>
+          </button>
           <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
             <Icon name="close" />
           </button>

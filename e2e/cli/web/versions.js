@@ -696,6 +696,10 @@ async function died(why) {
     check('each_press_one_more', making.length === 2 && Array.isArray(crosses) && making.every((run) => crosses.includes(`Cancel run ${run}`)), { making, crosses });
     await shot('making-two');
     const [older, newer] = [...making].sort((a, b) => a - b);
+    // A tile of a take still being made is picked like any: its outline, and its progress on the frame.
+    await slow.locator(`.here-side .take.making[title="Run ${older}"]`).click();
+    const pickedOlder = await until('the older picked', () => slow.locator('.here-side .take.making.on').getAttribute('title').catch(() => null), (title) => title === `Run ${older}`).catch(() => null);
+    check('a_take_being_made_is_picked_by_its_tile', pickedOlder === `Run ${older}` && (await slow.locator('.here-side .take.on').count()) === 1 && (await slow.locator('.media .media-making').count()) === 1, { pickedOlder, on: await slow.locator('.here-side .take.on').count() });
     const runState = async (number) => (await api(`/v1/runs/${number}`)).body?.status;
     await slow.locator(`.take-off[aria-label="Cancel run ${newer}"]`).click();
     const canceled = await until('the newer canceled', () => runState(newer), (status) => status === 'canceled', 2 * STEP_MS).catch((why) => String(why));

@@ -102,6 +102,8 @@ export interface ElementView {
   refused?: string
   /** Rendered from its words: the newest take asked after this run is the one looked at (`watched`). */
   watchFrom?: number
+  /** A take being made, picked by its tile: its run, looked at until it lands, and then as it lands. */
+  watchRun?: number
   /** How many files dropped on it are on their way to being its versions. */
   joining?: number
   /** It just arrived, and lands. */
@@ -609,7 +611,9 @@ export class CanvasStore {
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
           const seen = watched({ ...view, asset })
-          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, viewed: seen.number === asset.version ? undefined : seen.number })
+          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number })
+          // The take picked stopped without one: nothing's being looked at.
+          else if (view.watchRun !== undefined && !asset.making?.includes(view.watchRun)) change.watchRun = undefined
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
@@ -979,6 +983,14 @@ export class CanvasStore {
     if (next !== words) this.setDraft(name, field, next)
   }
 
+  /** Looks at a take still being made: the run picked, or with none the next one asked. Its tile is picked, its progress on the frame. */
+  watchTake(name: string, run?: number) {
+    const asset = this.get(name)?.asset
+    if (!asset) return
+    const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
+    this.patch(name, { hereWords: undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
+  }
+
   seek(name: string, at: number) {
     const held = this.get(name)
     if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
@@ -994,10 +1006,7 @@ export class CanvasStore {
     const asset = view?.asset
     if (!asset || view.conflict) return
     // From an image tool's words, the box looks at the take being made, and its + goes back to them.
-    if (view.here && view.hereWords && paints(view, this.tools.get())) {
-      const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-      this.patch(key, { hereWords: undefined, viewed: undefined, watchFrom: Math.max(0, ...runs) })
-    }
+    if (view.here && view.hereWords && paints(view, this.tools.get())) this.watchTake(key)
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {

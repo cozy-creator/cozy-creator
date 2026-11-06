@@ -97,13 +97,14 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   return `${tool!.label} takes ${takes.map((one) => SEVERAL[one] ?? one).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
-/** Rendered from its words, the take since `watchFrom` that it looks at: the newest asked, its run while it's made, and its number once it's landed. */
+/** The take being made that it looks at: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made, and its number once it's landed. */
 export function watched(view: ElementView): { run?: number; number?: number } | undefined {
-  const from = view.watchFrom
-  if (from === undefined) return undefined
-  const landed = (view.asset?.prefixes ?? []).filter((held) => (held.run ?? 0) > from)
-  const run = Math.max(0, ...(view.asset?.making ?? []).filter((one) => one > from), ...landed.map((held) => held.run ?? 0))
-  return { run: run || undefined, number: landed.find((held) => held.run === run)?.number }
+  const { watchRun, watchFrom: from } = view
+  if (watchRun === undefined && from === undefined) return undefined
+  const versions = view.asset?.prefixes ?? []
+  const newer = (run?: number) => (run ?? 0) > (from ?? 0)
+  const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
+  return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
 }
 
 /** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */
