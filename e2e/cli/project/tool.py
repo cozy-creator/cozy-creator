@@ -55,10 +55,11 @@ class SlowInput(msgspec.Struct, kw_only=True):
 
 @app.entrypoint(node=Node())
 def slow(payload: SlowInput, out: Outputs, tel: Telemetry) -> Picture:
-    """A still that takes its time, saying how far it's got."""
-    for step in range(10):
-        tel.progress(step / 10, stage="drawing")
+    """A still that takes its time, saying how far it's got in steps."""
+    step = tel.step_callback(10, stage="drawing")
+    for at in range(10):
         time.sleep(payload.seconds / 10)
+        step(at)
     return Picture(_picture(out), payload.prompt)
 
 

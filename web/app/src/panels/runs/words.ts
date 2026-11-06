@@ -1,5 +1,5 @@
 import type { Run, Stalled } from "../../types"
-import { bytes, leftWords, shown, span, usd } from "../format"
+import { bytes, shown, span, usd } from "../format"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
 
@@ -42,13 +42,22 @@ export function eta(run: Run): string | null {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-/** Its own work, as a person reads it: `Generating image 3 / 8, 25 s left`. */
+/** Its own work, as a person reads it, by what its progress carries: steps are `Denoise steps: 6/8, 3s left`, bytes `Downloading`, and any
+ *  other stage its own words, short: `Decoding`, `Encoding prompt`. */
 export function workWords(run: Run): string {
   const progress = run.progress
   if (!progress?.stage) return ""
-  const steps = progress.total ? ` ${progress.completed ?? 0} / ${progress.total}` : ""
   const left = secondsLeft(run)
-  return `${sentence(progress.stage)}${steps}${left === undefined ? "" : `, ${leftWords(left)}`}`
+  const after = left === undefined ? "" : `, ${span(left)} left`
+  if (progress.bytes_total) return `Downloading${after}`
+  if (progress.total) return `Denoise steps: ${progress.completed ?? 0}/${progress.total}${after}`
+  return `${phase(progress.stage)}${after}`
+}
+
+/** A stage in a word or two: what it's done to, a picture or a video, goes. `decoding image` is `Decoding`. */
+function phase(stage: string): string {
+  const [verb, ...rest] = stage.trim().split(/\s+/)
+  return sentence(rest.length === 1 && /^(image|images|video|videos|audio|picture|pictures)$/i.test(rest[0]) ? verb : stage.trim())
 }
 
 /** Worth saying more than a bar: it has run over 10 s, or has over 10 s to go. */
