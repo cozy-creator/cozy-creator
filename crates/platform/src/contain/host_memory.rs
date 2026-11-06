@@ -52,6 +52,14 @@ pub fn read() -> HostMemory {
     sys::read()
 }
 
+/// The page cache a read ahead or a store read may still fill: what is available past half the
+/// limit. Past it a store larger than the cache streams by it instead of thrashing it. Negative:
+/// none (or unreadable).
+pub fn cache_room() -> i64 {
+    let half = limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
+    read().available.saturating_sub(half)
+}
+
 /// One process's resident and proportional set sizes: Linux's PSS counts a shared sealed layout
 /// once across every process that maps it; macOS gives its physical footprint and Windows its
 /// private commit there, with no shared part.

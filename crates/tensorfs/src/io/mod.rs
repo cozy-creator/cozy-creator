@@ -255,7 +255,8 @@ pub struct ReadOpts {
     pub request: usize,
     /// Copy streams per device (device destinations).
     pub streams: usize,
-    /// Read a range the page cache mostly lacks with O_DIRECT, where the filesystem allows.
+    /// Read a range the page cache mostly lacks with O_DIRECT once the cache has no room for it,
+    /// where the filesystem allows.
     pub direct: bool,
     /// Told of each copy as it lands, before the read returns; `None` costs nothing.
     pub landed: Option<Landed>,
@@ -320,8 +321,8 @@ pub fn drain(device: i32) -> cuda::Result<()> {
 }
 
 /// Every copy, at once: reads on `opts.threads` threads, each cut on the `opts.request` grid,
-/// O_DIRECT for a range the page cache mostly lacks (straight into the destination where it is
-/// aligned with the file, else through a bounce buffer), buffered for one it mostly holds.
+/// buffered for a range the page cache mostly holds or has room for, else O_DIRECT (straight into
+/// the destination where it is aligned with the file, else through a bounce buffer).
 ///
 /// # Safety
 /// Each destination is valid for writes of its length, the destinations do not overlap, and
@@ -434,17 +435,25 @@ unsafe fn read_impl(
     Ok(stats)
 }
 
-/// Whether each copy reads past the page cache: a file range the cache holds under half of, where
-/// `opts.direct` allows. Sampled once a read, never per piece: what the cache mostly holds costs
-/// the disk only its holes, which then stay cached; what it lacks stays out, so a cold read pushes
-/// nothing out of it.
+/// Whether each copy reads past the page cache (O_DIRECT, where `opts.direct` allows), sampled
+/// once a read, never per piece. A range the cache mostly holds reads through it: the disk serves
+/// only its holes. So does the rest while the cache can take this read's missing bytes
+/// (`host_memory::cache_room`, TensorD's read-ahead's bound), so a second read of them hits
+/// memory. Past that room it goes O_DIRECT: a store larger than the cache streams by it instead
+/// of thrashing it.
 fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
-    copies.iter().map(|c| match c.src {
-        Src::File(f, at) if opts.direct && !c.dst.is_empty() => {
-            platform::durable::cached_pages(f, at, c.dst.len() as u64).is_none_or(|(held, of)| held * 2 < of)
-        }
-        _ => false,
-    }).collect()
+    let page = platform::durable::page_size();
+    let missing: Vec<u64> = copies.iter().map(|c| match c.src {
+        Src::File(f, at) if opts.direct && !c.dst.is_empty() => match platform::durable::cached_pages(f, at, c.dst.len() as u64) {
+            Some((held, of)) if held * 2 >= of => 0,
+            Some((held, of)) => (of - held) * page,
+            None => c.dst.len() as u64,
+        },
+        _ => 0,
+    }).collect();
+    let need: u64 = missing.iter().sum();
+    let past = need > 0 && platform::contain::host_memory::cache_room() < i64::try_from(need).unwrap_or(i64::MAX);
+    missing.iter().map(|&m| past && m > 0).collect()
 }
 
 /// Logs the file reads among `copies` as one disk run (`metrics`).
