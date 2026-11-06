@@ -18,7 +18,7 @@ use protocol::{
     error::{Error, Kind},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Map;
 use sha2::{Digest, Sha256};
 use tracing::warn;
 use tensorfs::err::{Code, Refusal};
@@ -173,12 +173,6 @@ pub(super) struct Measured {
 }
 
 impl File {
-    /// What an operation is given of it: no path, since nothing of this computer goes. Not measured yet, its sizes are 0, and nothing says it's opaque.
-    pub fn record(&self) -> Value {
-        let alpha = if self.unmeasured() { 1.0 } else { self.alpha };
-        serde_json::json!({"sha256": self.sha256, "width": self.width, "height": self.height, "fps": self.fps, "frames": self.frames, "alpha": alpha})
-    }
-
     fn extension(&self) -> String {
         Path::new(&self.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
     }
@@ -241,9 +235,9 @@ pub struct Version {
     /// What made it, `org/package/function@release`, as the asset's tool can change after.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
-    /// And the start of another take that it keeps.
+    /// The take it picked up from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept: Option<protocol::project::Kept>,
+    pub pickup: Option<protocol::project::Pickup>,
     /// An Edit's: the clips that made it, each with its file, and their rate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clips: Vec<protocol::project::Clip>,
@@ -664,17 +658,9 @@ pub struct Take {
     /// A new seed even with a state, as every render but `--missing` asks: no such take is a run a state already answers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub new: bool,
-    /// It keeps the start of an earlier take (`--take`, `--in`).
+    /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keeps: Option<Keeps>,
-}
-
-/// The take a new take keeps the start of, and where it stops keeping it: None is its end.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Keeps {
-    pub take: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub in_s: Option<f64>,
+    pub pickup: Option<protocol::project::Pickup>,
 }
 
 impl Lock {

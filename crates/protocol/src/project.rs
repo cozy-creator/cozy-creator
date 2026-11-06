@@ -359,9 +359,12 @@ pub struct ClipNow {
 pub struct VersionPrefix {
     pub number: u32,
     pub prefix: String,
-    /// What it keeps of another take.
+    /// The take it picked up from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept: Option<Kept>,
+    pub pickup: Option<Pickup>,
+    /// The machine keeping its latents, when one does: the box warns before a pickup if that machine is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latents: Option<String>,
     /// How long its runs took.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_ms: Option<u64>,
@@ -397,6 +400,9 @@ pub struct MainFile {
     pub height: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// A video's frames per second, for timecode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<f64>,
     /// Part of it is fully transparent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub alpha: bool,
@@ -408,17 +414,21 @@ pub struct MainFile {
     pub machine: Option<String>,
 }
 
-/// The start of another take that a take keeps (`render --take --in`): which, and up to where. What follows is new.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Kept {
-    pub take: u32,
-    pub until_s: f64,
+/// Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Pickup {
+    /// `<shot_1.3>`: one of the box's own takes, or another box's.
+    pub take: String,
+    pub out_frame: u32,
+    /// Seconds into the box's beats where the new part starts. Absent: the tool's choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beats_from: Option<f64>,
 }
 
-impl Kept {
-    /// `clash: take 3 is take 2 to 15.08 s, then new`.
+impl Pickup {
+    /// `clash: take 3 picks up <clash.2> at frame 243`.
     pub fn said(&self, name: &str, number: u32) -> String {
-        format!("{name}: take {number} is take {} to {:.2} s, then new", self.take, self.until_s)
+        format!("{name}: take {number} picks up {} at frame {}", self.take, self.out_frame)
     }
 }
 
@@ -683,9 +693,9 @@ pub struct Version {
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-    /// What it keeps of another take.
+    /// The take it picked up from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept: Option<Kept>,
+    pub pickup: Option<Pickup>,
     /// How long its runs took.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_ms: Option<u64>,
@@ -717,12 +727,9 @@ pub struct Runs {
     /// lands. The version it held stays, to be approved again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outdated: bool,
-    /// One asset's new take keeps the start of this take, not the one in use.
+    /// Pick up from here: one box's new take goes on from this take's frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub take: Option<u32>,
-    /// One asset's new take keeps that take up to here, in seconds, and regenerates what follows: not from its end.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub in_s: Option<f64>,
+    pub pickup: Option<Pickup>,
 }
 
 fn one() -> u32 {

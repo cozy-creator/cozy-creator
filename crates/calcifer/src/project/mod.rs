@@ -12,14 +12,14 @@ mod canvas;
 mod fit;
 mod folder;
 mod format;
-mod graph;
+pub(crate) mod graph;
 pub(crate) mod host;
 mod jobs;
 pub(crate) mod model;
 mod remote;
 mod thumbs;
 mod caption;
-mod direct;
+mod binder;
 mod tools;
 mod sim;
 mod takeover;
@@ -57,7 +57,7 @@ use protocol::{
     ids::{Digest, RunId},
     machine as v1,
     project::{
-        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Job, JobState, Kept, Known, MainFile, Open, Opened,
+        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Job, JobState, Known, MainFile, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         VersionPrefix, Warning as ProjectWarning,
     },
@@ -69,7 +69,7 @@ use tokio::sync::{Notify, broadcast};
 use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
-use folder::{Ask, Coming, Failed, Files, Folder, Keeps, Lock, Pending, Take, Target, Tried, Version};
+use folder::{Ask, Coming, Failed, Files, Folder, Lock, Pending, Take, Target, Tried, Version};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
 use host::{Host, Package, Renderer};
@@ -355,6 +355,53 @@ impl Holding {
             }
             several => Err(Error::new(Kind::Usage, "file_ambiguous", format!("{written} fits {} files of this project: write more of its hash", several.len()))),
         }
+    }
+
+    /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, ranges are cut here, and `pickup.`
+    /// terms are the gesture. Answers the call, the project's files it names (fetched here if a machine keeps them), and what was said.
+    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &protocol::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
+        let folder = Folder::at(&self.dir);
+        let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
+        let stand = doc.stand(&lock);
+        let mut fields = written;
+        let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), protocol::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
+        let pickup = match picked {
+            None => None,
+            Some(value) => Some(serde_json::from_value::<protocol::project::Pickup>(value).map_err(|why| Error::new(Kind::Usage, "pickup_malformed", format!("a pickup is pickup.take=<box.N> and pickup.out_frame=<frame>: {why}")))?),
+        };
+        let reserved = callable.tool.as_ref().map(|tool| tool.reserved.clone()).unwrap_or_default();
+        let call = binder::Call { name: target, tool: target, package, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref() };
+        let mut bound = binder::bind(&call)?;
+        let mut cut = HashMap::new();
+        let mut digests = vec![];
+        for range in &bound.cuts {
+            let Some(path) = self.file(&range.source).await? else { continue };
+            let fps = lock.files.get(&range.source).map_or(0.0, |file| file.fps);
+            if fps <= 0.0 {
+                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy project status"));
+            }
+            let seconds = crate::runs::clip::Range { start: f64::from(range.from) / fps, end: range.to.map(|to| f64::from(to) / fps) };
+            let mut notes = vec![];
+            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await?;
+            bound.warnings.extend(notes.into_iter().filter(|note| note.level == protocol::calcifer::NoteLevel::Warning).map(|note| note.message));
+            let clip = made.clip.clone();
+            let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| Error::new(Kind::Internal, "clip_hash", e.to_string()))??;
+            cut.insert(sha256.clone(), made.clip);
+            digests.push(sha256);
+        }
+        let mut payload = Value::Object(std::mem::take(&mut bound.payload));
+        binder::cuts_filled(&mut payload, &digests);
+        let mut files = vec![];
+        for (field, _, sha256) in tools::files_in(&payload, &folder, &lock, &cut) {
+            let path = match cut.get(&sha256) {
+                Some(clip) => clip.clone(),
+                None => self.file(&sha256).await?.unwrap_or_else(|| folder.path(&lock.files[&sha256].path)),
+            };
+            let sniffed = crate::runs::bind::sniff(&path)?;
+            let digest = sha256.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
+            files.push(crate::runs::bind::InputFile { order: order_of(&field), field, path, digest, length: sniffed.length, media_type: sniffed.media_type });
+        }
+        Ok((payload.as_object().cloned().unwrap_or_default(), files, bound.warnings))
     }
 }
 
@@ -1242,6 +1289,7 @@ fn main_file(lock: &Lock, files: &Files) -> Option<MainFile> {
         width: measured(file.width),
         height: measured(file.height),
         duration_ms: measured(file.lasts_ms()),
+        fps: (file.fps > 0.0).then_some(file.fps),
         alpha: file.alpha > 0.0,
         absent,
         machine,
@@ -1323,7 +1371,8 @@ fn row(reading: &Reading, i: usize) -> Row {
                 Some(VersionPrefix {
                     number: version.number,
                     prefix: folder::prefix_of(version.main()?).to_owned(),
-                    kept: version.kept,
+                    pickup: version.pickup.clone(),
+                    latents: version.files.get("latents").and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays()).map(|file| file.machine.clone()),
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
                     main: main_file(lock, &version.files),
@@ -1718,9 +1767,9 @@ async fn runs(
     if asked.outdated && !all {
         say("--outdated goes with all: naming a pin already makes a new version of it: it is ignored".into());
     }
-    let keeping = asked.take.is_some() || asked.in_s.is_some();
-    if keeping && (all || asked.names.len() != 1) {
-        say(format!("--take and --in keep the start of one asset: with {} they are ignored", if all { "all" } else { "several names" }));
+    let picking = asked.pickup.is_some();
+    if picking && (all || asked.names.len() != 1) {
+        say(format!("a pickup is for one box: with {} it's ignored", if all { "all" } else { "several names" }));
     }
     if asked.approve && (all || asked.names.len() != 1) {
         say("--approve is for one asset: it is ignored".into());
@@ -1767,7 +1816,7 @@ async fn runs(
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
             if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, keeps: None });
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, pickup: None });
             }
             if approve {
                 say(format!("--approve pins what a run lands: `cozy project approve {name}` pins this once it is made"));
@@ -1778,22 +1827,16 @@ async fn runs(
             say(doc.nothing_to_make(i));
             continue;
         }
-        let keeps = match keeping && one {
-            false => None,
-            true => keeps_of(&doc, &lock, &stand, i, asked.take, asked.in_s).map_err(Refusal)?,
-        };
-        if keeping && keeps.is_none() && !all {
-            say(format!("{name} has no take to keep the start of: --take and --in are ignored"));
-        }
+        let pickup = asked.pickup.clone().filter(|_| one);
         let noun = noun(&doc, &lock, i);
         // Already on its way, the same inputs: another's version answers this.
         let making = lock.pending.values().any(|pending| name_key(&pending.asset) == name_key(&name) && Some(&pending.version.inputs) == stand[i].inputs.as_ref());
         let asked_of = lock.walk.asks.iter().any(|ask| ask.digest == digest && ask.takes.iter().any(|take| name_key(&take.asset) == name_key(&name)));
-        if missing && keeps.is_none() && (making || asked_of) {
+        if missing && pickup.is_none() && (making || asked_of) {
             said(&name, format!("{name} is being made"));
             continue;
         }
-        if missing && keeps.is_none() && stand[i].files.is_some() {
+        if missing && pickup.is_none() && stand[i].files.is_some() {
             said(&name, match &stand[i].state {
                 Stand::Pinned { changed, .. } if !changed.is_empty() => format!("{name} is pinned, though {} changed: unpin to make it again", changed.join(", ")),
                 Stand::Pinned { .. } => format!("{name} is approved: without --missing, naming it makes another {noun} to look at"),
@@ -1802,8 +1845,8 @@ async fn runs(
             });
             continue;
         }
-        let makes_new = !missing || keeps.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, keeps };
+        let makes_new = !missing || pickup.is_some();
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, pickup: pickup.clone() };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
@@ -1965,22 +2008,6 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) ->
     Ok((dropped.into_iter().map(|job| job.asset).collect(), canceled))
 }
 
-/// What `--take` and `--in` ask of asset `i`: the take a new one keeps the start of, the one that is its state, else its newest, if
-/// not named. A named take it doesn't have is an error.
-fn keeps_of(doc: &Doc, lock: &Lock, stand: &[Standing], i: usize, take: Option<u32>, in_s: Option<f64>) -> Result<Option<Keeps>, Error> {
-    let name = &doc.assets[i].name;
-    let versions = lock.asset(name).map(|held| held.versions.as_slice()).unwrap_or_default();
-    match take {
-        Some(take) if versions.iter().any(|version| version.number == take) => Ok(Some(Keeps { take, in_s })),
-        Some(take) if versions.is_empty() => Err(Error::new(Kind::Usage, "take_unknown", format!("{name} has no take {take}: it has none yet"))),
-        Some(take) => {
-            let numbers: Vec<String> = versions.iter().map(|version| version.number.to_string()).collect();
-            Err(Error::new(Kind::Usage, "take_unknown", format!("{name} has no take {take}: it has {}", numbers.join(", "))))
-        }
-        None => Ok(stand[i].version().or(versions.last().map(|version| version.number)).map(|take| Keeps { take, in_s })),
-    }
-}
-
 /// `source` kept as a file of the project, in project.lock.
 async fn keep_file(api: &Api, folder: &Folder, source: &str) -> Result<folder::Kept, Refusal> {
     // A file of the project's by the start of its hash, as `status` shows it: what lifting a take out of its asset names.
@@ -2024,9 +2051,9 @@ fn element_name(name: Option<&str>, source: &str) -> String {
             true => source.split_once("://")?.1.split_once('/')?.1.split(['?', '#']).next()?,
             false => source.strip_prefix("sha256:").map_or(Some(source), |_| None)?,
         };
-        FsPath::new(path).file_stem()?.to_str().and_then(format::asset_name).map(|stem| stem.to_lowercase())
+        FsPath::new(path).file_stem()?.to_str().and_then(format::plain_name).map(|stem| stem.to_lowercase())
     };
-    name.and_then(format::asset_name).or_else(stem).unwrap_or_else(|| "file".to_owned())
+    name.and_then(format::plain_name).or_else(stem).unwrap_or_else(|| "file".to_owned())
 }
 
 /// The element a kept file makes: one constant more in project.yaml, under a name nothing has, and with `at`, its row on the canvas.
@@ -2466,6 +2493,8 @@ struct Walk {
     stopped: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// That this computer's first need of ffprobe was met: it measures what a function reads of a file.
     measuring: AtomicBool,
+    /// The ranges of videos cut on this computer, by hash, where each is: sent from there, never kept in the project.
+    clips: Mutex<HashMap<String, PathBuf>>,
 }
 
 /// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
@@ -2559,6 +2588,7 @@ impl Walk {
             faults: Mutex::default(),
             stopped: Mutex::default(),
             measuring: AtomicBool::new(false),
+            clips: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2918,7 +2948,7 @@ impl Walk {
             }
         }
         let called = renderer.target();
-        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.calls.iter().collect());
+        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
         choices.take(&mut payload)?;
         let models = choices::wire(&choices.into_choices())?;
         let (source, inputs) = match &renderer.local {
@@ -3662,57 +3692,30 @@ impl Walk {
             let now = self.folder().lock()?;
             let holds = now.asset(&name).and_then(|held| held.versions.iter().rev().find(|version| version.inputs == inputs)).map(|version| version.number);
             let going = now.pending.values().any(|pending| name_key(&pending.asset) == name_key(&name) && pending.version.inputs == inputs);
-            let keeps = next.take.as_ref().and_then(|take| take.keeps);
-            let mut keep = match keeps {
-                Some(keeps) => self.keeping(doc, i, keeps).await?,
-                None => None,
-            };
-            if keeps.is_some() && keep.is_none() {
-                self.say(Event::Warning { message: format!("{name}: that take holds no video to keep: the whole {noun} renders"), name: None });
-            }
-            if let Some(keep) = &keep
-                && let Some(file) = keep["latents"]["sha256"].as_str().and_then(|sha256| lock.files.get(sha256))
-                && matches!(self.reach(file, &target.on).await, Reach::Gone)
-            {
-                let said = format!("{name}: take {}'s latents are gone from their machine: rendering again renders the whole shot", keep["take"]);
-                let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
-                return Err(Error::new(Kind::NotFound, "take_latents_gone", said).next(format!("cozy project render {name} --on {on}")));
-            }
+            let pickup = next.take.as_ref().and_then(|take| take.pickup.clone());
             // What stays on a machine that's gone isn't read: a function does without it.
-            let mut reads = standing.reads.clone();
-            for read in &mut reads {
-                for (field, sha256) in read.files.clone() {
-                    if let Some(file) = lock.files.get(&sha256)
-                        && matches!(self.reach(file, &target.on).await, Reach::Gone)
-                    {
-                        read.files.remove(&field);
-                    }
+            let mut gone = BTreeSet::new();
+            let taken = pickup.iter().flat_map(|pickup| self.take_files(doc, lock, stand, &pickup.take));
+            for sha256 in standing.reads.iter().flat_map(|read| read.files.values().cloned()).chain(taken) {
+                if let Some(file) = lock.files.get(&sha256)
+                    && matches!(self.reach(file, &target.on).await, Reach::Gone)
+                {
+                    gone.insert(sha256);
                 }
             }
             let unknown = || Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {}", package.name, maker.function));
             let callable = package.callable(&maker.function).ok_or_else(unknown)?;
-            let declared = callable.node.as_ref().map_or(BTreeMap::new(), |node| node.fill.clone());
-            if keep.is_some() && !declared.values().any(|source| source == protocol::interface::TAKE) {
-                self.say(Event::Warning { message: format!("{name}: {} can't keep the start of a take: the whole {noun} renders", doc.target(i)), name: None });
-                keep = None;
-            }
-            let given = doc.given(&reads, lock, stand);
-            let (input, mut warnings) = direct::input(direct::Call {
-                name: &name,
-                tool: &doc.target(i),
-                package: &package.name,
-                callable: &callable,
-                inputs: &doc.inputs_of(i),
-                own: &asset.own,
-                reads: &given,
-                lock,
-                take: keep.as_ref(),
-            })?;
+            let fields = doc.inputs_of(i);
+            let reserved = package.reserved();
+            let call = binder::Call { name: &name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &gone, pickup: pickup.as_ref() };
+            let mut bound = binder::bind(&call)?;
+            self.cut(&mut bound, lock).await.map_err(|why| cannot(&name, why))?;
+            let (input, mut warnings) = (bound.payload, bound.warnings);
             warnings.dedup();
             // A function with no seed has one result per inputs, as has an asset that names one.
             let fixed = input.contains_key("seed");
             let seeded = !fixed && maker.accepts.contains("seed");
-            if !seeded && (holds.is_some() || going) {
+            if !seeded && pickup.is_none() && (holds.is_some() || going) {
                 let stands = holds.map_or_else(|| "one is being made".to_owned(), |number| format!("{noun} {number} stands"));
                 let why = if fixed { "fixes its seed" } else { "takes no seed" };
                 match holds {
@@ -3728,7 +3731,7 @@ impl Walk {
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| !new && tried.inputs == inputs).map(|tried| tried.seed);
                 version.seed = Some(tried.unwrap_or_else(new_seed));
             }
-            version.kept = keep.and_then(|keep| Some(Kept { take: keep["take"].as_u64()? as u32, until_s: keep["at_s"].as_f64().or(keep["ends_s"].as_f64())? }));
+            version.pickup = pickup;
             // Its number now, whichever of several lands first.
             let listed = now.listed_number(&name);
             let number = std::cell::Cell::new(0);
@@ -3795,19 +3798,44 @@ impl Walk {
         }
     }
 
-    /// `--take`: what asset `i`'s adapter is told of the take it keeps. Where a take ends is measured from its bytes, so they are waited for.
-    async fn keeping(&self, doc: &Doc, i: usize, keeps: Keeps) -> Result<Option<Value>, Error> {
-        let mut lock = self.folder().lock()?;
-        let held = lock.asset(&doc.assets[i].name).and_then(|held| held.version(keeps.take)).and_then(|version| version.files.get("video"));
-        let coming = held.and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays() && !self.folder().path(&file.path).is_file()).cloned();
-        if let Some(file) = coming {
-            let brought = self.host.fetch(&file.sha256, &file.machine).await;
-            brought.map_err(|why| cannot(&doc.assets[i].name, format!("take {}'s video can't be had: {why}", keeps.take)))?;
-            self.host.ffmpeg().await?;
-            lock = self.folder().lock()?;
-            self.folder().measure(&mut lock)?;
+    /// The files of the take a pickup names, `<shot_1.3>`.
+    fn take_files(&self, doc: &Doc, lock: &Lock, stand: &[Standing], take: &str) -> Vec<String> {
+        let Some(mention) = graph::mentions(take).first().and_then(|inner| graph::mention(inner)) else { return vec![] };
+        let Some(j) = doc.find(mention.name) else { return vec![] };
+        let files = match mention.version {
+            Some(number) => doc.version_files(j, number, lock),
+            None => stand[j].files.clone(),
+        };
+        files.into_iter().flat_map(|files| files.into_values()).collect()
+    }
+
+    /// Each range `bound` names cut on this computer with cozy's ffmpeg, and named in its payload by the clip's hash.
+    async fn cut(&self, bound: &mut binder::Bound, lock: &Lock) -> Result<(), String> {
+        if bound.cuts.is_empty() {
+            return Ok(());
         }
-        Ok(doc.keep(i, &lock, keeps))
+        let home = self.host.home();
+        let clips = crate::runs::clip::Clips { dir: home.root().join("cache").join("clips"), home: home.clone() };
+        let mut cut = vec![];
+        for range in &bound.cuts {
+            let file = lock.files.get(&range.source).ok_or_else(|| format!("{} isn't one of the project's files", folder::prefix_of(&range.source)))?;
+            let path = self.folder().path(&file.path);
+            if !path.is_file() || file.fps <= 0.0 {
+                return Err(format!("{} must be on this computer, and measured, to cut a range of it: cozy project pull", folder::prefix_of(&range.source)));
+            }
+            let seconds = crate::runs::clip::Range { start: f64::from(range.from) / file.fps, end: range.to.map(|to| f64::from(to) / file.fps) };
+            let mut notes = vec![];
+            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await.map_err(|e| e.message)?;
+            notes.into_iter().filter(|note| note.level == protocol::calcifer::NoteLevel::Warning).for_each(|note| self.say(Event::Warning { message: note.message, name: None }));
+            let clip = made.clip.clone();
+            let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| e.to_string())?.map_err(|e| e.message)?;
+            self.clips.lock().expect("clips lock").insert(sha256.clone(), made.clip);
+            cut.push(sha256);
+        }
+        let mut payload = Value::Object(std::mem::take(&mut bound.payload));
+        binder::cuts_filled(&mut payload, &cut);
+        bound.payload = payload.as_object().cloned().unwrap_or_default();
+        Ok(())
     }
 
     /// Where a run going `on` can read `file` from.
@@ -3841,7 +3869,7 @@ impl Walk {
             }
         }
         let called = renderer.target();
-        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.calls.iter().collect());
+        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
         choices.take(&mut payload).map_err(named)?;
         pending.version.tool = Some(renderer.target());
         let mut warnings = match choices.dropped.is_empty() {
@@ -3859,10 +3887,16 @@ impl Walk {
         let payload = Value::Object(payload);
         let lock = self.folder().lock()?;
         let (mut inputs, mut staged, mut held, mut holder) = (vec![], vec![], vec![], None);
-        for (field, path, digest) in tools::files_in(&payload, self.folder(), &lock) {
-            let file = &lock.files[&digest];
+        let clips = self.clips.lock().expect("clips lock").clone();
+        for (field, path, digest) in tools::files_in(&payload, self.folder(), &lock, &clips) {
             // What stays on a machine: read there by its hash, else fetched now that a run needs it.
             let mut on_machine = false;
+            let Some(file) = lock.files.get(&digest) else {
+                let length = std::fs::metadata(&path).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())))?.len();
+                inputs.push(v1::InputFile { field: field.clone(), digest: digest.clone(), length, media_type: media_type(&path).to_owned(), order: order_of(&field) });
+                staged.push(StagedInput { path, digest: digest.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?, length });
+                continue;
+            };
             match self.reach(file, holder.as_ref().map_or(on.as_slice(), std::slice::from_ref)).await {
                 Reach::Here => {}
                 Reach::There(machine) => {
@@ -3885,8 +3919,7 @@ impl Walk {
                         .len()
                 }
             };
-            let order = field.split('.').filter_map(|part| part.parse().ok()).next_back().unwrap_or(0);
-            let media_type = media_type(&path).to_owned();
+            let (order, media_type) = (order_of(&field), media_type(&path).to_owned());
             inputs.push(v1::InputFile { field, digest: digest.clone(), length, media_type, order });
             let digest: Digest = digest.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
             match on_machine {
@@ -4111,10 +4144,6 @@ impl Walk {
             return Err(Error::new(Kind::Unavailable, code, said).next(format!("cozy run show {}", run.number)));
         }
         let mut version = pending.version.clone();
-        // Where its function kept the other take up to, exactly: the time asked lands on its own grid.
-        if let (Some(kept), Some(until_s)) = (&mut version.kept, run.result.as_ref().and_then(|result| result["kept_s"].as_f64())) {
-            kept.until_s = until_s;
-        }
         version.run = Some(run.number);
         version.execution_ms += run.execution_ms.unwrap_or(0);
         for said in said_by(run) {
@@ -4550,9 +4579,9 @@ impl Walk {
         let path = main_path(&lock, &version.files).unwrap_or_default();
         let execution_ms = (version.execution_ms > 0).then_some(version.execution_ms);
         self.say(Event::Landed { name: name.into(), noun: noun.into(), number, files: listed(&lock, &version.files), path, execution_ms });
-        if let Some(kept) = version.kept {
-            self.say(Event::Said { message: kept.said(name, number), name: Some(name.to_owned()) });
-            self.project.jobs.why(name, number, format!("keeps take {} to {:.2} s", kept.take, kept.until_s));
+        if let Some(pickup) = &version.pickup {
+            self.say(Event::Said { message: pickup.said(name, number), name: Some(name.to_owned()) });
+            self.project.jobs.why(name, number, format!("picks up {} at frame {}", pickup.take, pickup.out_frame));
         }
         Ok(())
     }
@@ -4638,6 +4667,11 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
     doc.find(name).ok_or_else(|| {
         Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")
     })
+}
+
+/// Where a file stands in its list: its path's last part, when that's an index.
+pub(crate) fn order_of(field: &str) -> u32 {
+    field.rsplit('.').next().and_then(|last| last.parse().ok()).unwrap_or(0)
 }
 
 fn media_type(path: &FsPath) -> &'static str {

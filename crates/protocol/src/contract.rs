@@ -71,6 +71,11 @@ pub fn phrase(ty: &Type) -> String {
         Type::Map(item) => format!("map[{}]", phrase(item)),
         Type::Struct(_) => "object".into(),
         Type::Asset(kind) => format!("{kind}-file"),
+        Type::Prompt(_) => "prompt".into(),
+        Type::Media { kind, .. } => kind.clone(),
+        Type::Pickup(_) => "pickup".into(),
+        Type::Shape => "aspect-ratio".into(),
+        Type::Seed => "seed".into(),
         Type::Tree => "tree-ref".into(),
         Type::Model => "model".into(),
         Type::Unknown => "json".into(),
@@ -120,8 +125,8 @@ fn bounds(c: &Constraints) -> Option<String> {
 pub fn contract(target: &str, interface: &Interface, callable: &Callable) -> String {
     let mut out = target.to_owned();
     if callable.accelerator == Some(false) {
-        out.push_str(match interface.orchestrates(callable) {
-            true => "\n  runs on: CPU; calls the package's GPU functions",
+        out.push_str(match interface.composes(callable) {
+            true => "\n  runs on: CPU; its calls run on GPUs",
             false => "\n  runs on: CPU",
         });
     }

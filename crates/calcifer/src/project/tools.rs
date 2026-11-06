@@ -2,6 +2,7 @@
 //! timeline, of videos and stills, and an `image`, one frame of a video. And what is measured of a file. Every in and out point is an
 //! exact frame.
 use std::{
+    collections::HashMap,
     fmt::Write as _,
     path::{Path, PathBuf},
 };
@@ -893,22 +894,24 @@ fn wont_start(tool: &str, error: &std::io::Error) -> Error {
 }
 
 /// Each file `value`, a request by its digests, names: its field, path and digest.
-pub fn files_in(value: &Value, folder: &Folder, lock: &Lock) -> Vec<(String, PathBuf, String)> {
-    fn walk(value: &Value, at: String, folder: &Folder, lock: &Lock, found: &mut Vec<(String, PathBuf, String)>) {
+pub fn files_in(value: &Value, folder: &Folder, lock: &Lock, clips: &HashMap<String, PathBuf>) -> Vec<(String, PathBuf, String)> {
+    fn walk(value: &Value, at: String, folder: &Folder, lock: &Lock, clips: &HashMap<String, PathBuf>, found: &mut Vec<(String, PathBuf, String)>) {
         let under = |key: String| if at.is_empty() { key } else { format!("{at}.{key}") };
         match value {
-            Value::Object(fields) => fields.iter().for_each(|(key, value)| walk(value, under(key.clone()), folder, lock, found)),
-            Value::Array(items) => items.iter().enumerate().for_each(|(n, value)| walk(value, under(n.to_string()), folder, lock, found)),
+            Value::Object(fields) => fields.iter().for_each(|(key, value)| walk(value, under(key.clone()), folder, lock, clips, found)),
+            Value::Array(items) => items.iter().enumerate().for_each(|(n, value)| walk(value, under(n.to_string()), folder, lock, clips, found)),
             Value::String(text) => {
                 if let Some(file) = lock.files.get(text) {
                     found.push((at, folder.path(&file.path), text.clone()));
+                } else if let Some(clip) = clips.get(text) {
+                    found.push((at, clip.clone(), text.clone()));
                 }
             }
             _ => {}
         }
     }
     let mut found = vec![];
-    walk(value, String::new(), folder, lock, &mut found);
+    walk(value, String::new(), folder, lock, clips, &mut found);
     found
 }
 

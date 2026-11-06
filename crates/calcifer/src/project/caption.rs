@@ -14,11 +14,12 @@ use protocol::{
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
+    interface::Type,
     project::{CaptionAsked, Captioned},
 };
 use serde_json::{Map, Value};
 
-use super::{Doc, Host, Package, Renderer, Project, direct, find, format::Given, landing, local_code_named, media_type, new_key, tools};
+use super::{Doc, Host, Package, Renderer, Project, binder, find, landing, local_code_named, media_type, new_key, order_of, tools};
 use crate::{
     api::{Api, Refusal, parse},
     runs, toolbox,
@@ -41,7 +42,8 @@ pub(super) async fn caption(
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &name).map_err(Refusal)?;
     let name = doc.assets[i].name.clone();
-    let files = doc.stand(&lock)[i].files.clone().or_else(|| lock.asset(&name)?.versions.last().map(|version| version.files.clone()));
+    let stand = doc.stand(&lock);
+    let files = stand[i].files.clone().or_else(|| lock.asset(&name)?.versions.last().map(|version| version.files.clone()));
     let Some(files) = files.filter(|files| ["image", "video"].iter().any(|kind| files.contains_key(*kind))) else {
         return Err(Refusal(Error::new(Kind::Conflict, "caption_no_file", format!("{name} has no picture or video yet to describe")).next(format!("cozy project render {name} --on <machine>"))));
     };
@@ -61,15 +63,16 @@ pub(super) async fn caption(
     let asking = package.function(CAPTION).map_err(Refusal)?;
     let callable = package.callable(CAPTION).expect("a describer has a caption");
     let kind = ["image", "video"].into_iter().find(|kind| files.contains_key(*kind)).expect("a picture or a video");
-    let given = Given { name: name.clone(), files: files.into_iter().filter(|(field, _)| field.starts_with(kind)).collect(), description: String::new(), asset_type: String::new(), made_by: String::new(), text: String::new() };
     let tool = format!("{}/{CAPTION}", package.name);
-    // Its own file, by name, to what takes that kind: a caption's only input, and nothing else fills it.
-    let Some(field) = callable.request.fields.iter().find(|field| field.ty.media().is_some_and(|(takes, _)| takes == kind)) else {
+    // Its own file, by mention, in what takes that kind: a caption's only input, through the binder like any call.
+    let takes = |ty: &Type| matches!(ty.plain(), Type::Asset(takes) | Type::Media { kind: takes, .. } if takes == kind);
+    let Some(field) = callable.request.fields.iter().find(|field| takes(&field.ty)) else {
         return Err(Refusal(Error::new(Kind::NotFound, "caption_no_tool", format!("{tool} reads no {kind}"))));
     };
-    let inputs = Map::from_iter([(field.name.clone(), Value::String(format!("<{name}>")))]);
-    let call = direct::Call { name: &name, tool: &tool, package: &package.name, callable: &callable, inputs: &inputs, own: &Default::default(), reads: std::slice::from_ref(&given), lock: &lock, take: None };
-    let (input, warnings) = direct::input(call).map_err(Refusal)?;
+    let fields = Map::from_iter([(field.name.clone(), Value::String(format!("<{name}>")))]);
+    let call = binder::Call { name: &name, tool: &tool, package: &package.name, callable: &callable, fields: &fields, reserved: &[], doc: &doc, own: None, lock: &lock, stand: &stand, gone: &Default::default(), pickup: None };
+    let bound = binder::bind(&call).map_err(Refusal)?;
+    let (input, warnings) = (bound.payload, bound.warnings);
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map_or_else(new_key, str::to_owned);
     let run = send(&host, &project, &asking, Value::Object(input), &on, &hub, &key).await?;
     let Some(text) = protocol::tool::output_text(&callable, run.result.as_ref().unwrap_or(&Value::Null)) else {
@@ -104,11 +107,10 @@ async fn send(host: &Host, project: &Project, renderer: &Renderer, payload: Valu
     let folder = &project.folder;
     let lock = folder.lock().map_err(Refusal)?;
     let (mut inputs, mut staged) = (vec![], vec![]);
-    for (field, path, digest) in tools::files_in(&payload, folder, &lock) {
+    for (field, path, digest) in tools::files_in(&payload, folder, &lock, &Default::default()) {
         let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy project pull"));
         let length = std::fs::metadata(&path).map_err(unreadable)?.len();
-        let order = field.split('.').filter_map(|part| part.parse().ok()).next_back().unwrap_or(0);
-        inputs.push(v1::InputFile { field, digest: digest.clone(), length, media_type: media_type(&path).to_owned(), order });
+        inputs.push(v1::InputFile { order: order_of(&field), field, digest: digest.clone(), length, media_type: media_type(&path).to_owned() });
         let digest: Digest = digest.parse().map_err(|why: &str| Refusal(Error::new(Kind::Internal, "digest", why)))?;
         staged.push(StagedInput { path, digest, length });
     }

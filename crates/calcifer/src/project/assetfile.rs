@@ -16,7 +16,7 @@ use sha2::{Digest as _, Sha256};
 use super::{
     folder::{PROJECT, prefix_of},
     format::{INSTRUCTIONS, LEADS, TEXT, canonical, invalid, names_a_file, yaml_key},
-    graph::{is_name, mention_moved, name_key},
+    graph::{mention, mention_moved, name_key},
 };
 
 /// Where an asset's tool lands.
@@ -556,7 +556,7 @@ fn text_renamed(text: &str, renamed: &dyn Fn(&str) -> Option<String>) -> String 
         let after = &rest[open + 1..];
         let inner = after.find(['<', '>', '\n']).filter(|&end| after.as_bytes()[end] == b'>').map(|end| &after[..end]);
         said.push_str(&rest[..=open]);
-        match inner.filter(|inner| is_name(inner)).and_then(|inner| Some((inner, renamed(inner)?))) {
+        match inner.filter(|inner| mention(inner).is_some()).and_then(|inner| Some((inner, renamed(inner)?))) {
             Some((inner, to)) => {
                 said.push_str(&to);
                 rest = &after[inner.len()..];

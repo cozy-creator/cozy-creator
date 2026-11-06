@@ -28,7 +28,7 @@ use crate::api::{Api, Refusal, parse};
 /// What to call an asset with no name asked when its tool can't be read: its package's word, numbered, with no release.
 fn tool_name(tool: &str) -> Option<String> {
     let (package, _) = tool.rsplit_once('/')?;
-    format::asset_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
+    format::plain_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
 }
 
 fn own_lines(name: &str) -> Error {
@@ -58,7 +58,7 @@ pub(super) async fn create(
         return Err(Refusal(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, or a text").remedy("name a tool from GET /v1/tools, or set `fields.text`")));
     }
     let plain = (!text_asset).then(|| format::plain_tool(&asked.tool, folder));
-    let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().kind));
+    let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().makes));
     let unsaid = said.is_none() && !plain.as_ref().is_some_and(|plain| folder.lock().is_ok_and(|lock| lock.makes.contains_key(plain)));
     let read = if plain.is_some() && (unsaid || asked.name.is_none()) {
         match crate::toolbox::read(&api, &asked.tool, &folder.dir).await {
@@ -82,7 +82,7 @@ pub(super) async fn create(
     let name = match &told {
         Some(told) => told.name.clone(),
         None => {
-            let wanted = asked.name.as_deref().and_then(format::asset_name).or_else(|| read_name.as_deref().and_then(format::asset_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
+            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
             let text = folder.text().map_err(Refusal)?;
             let names = assetfile::names(&text);
             let free = folder.reading_lock(|lock| {
@@ -140,7 +140,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             runs: version.run.into_iter().collect(),
             approved: Some(version.number) == pinned,
             warnings: version.warnings.clone(),
-            kept: version.kept,
+            pickup: version.pickup.clone(),
             text: lock.asset(&asset.name).and_then(|held| held.text_of(version.number)).map(str::to_owned),
             execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
         })

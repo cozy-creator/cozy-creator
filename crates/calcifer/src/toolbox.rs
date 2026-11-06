@@ -290,7 +290,7 @@ pub(crate) async fn candidates(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(Strin
 pub(crate) async fn read(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<(String, String), Error> {
     if tool == tool::EDIT {
         let edit = tool::edit();
-        return Ok((edit.kind, edit.name));
+        return Ok((edit.makes, edit.name));
     }
     let hub = api.machines.hubs.default_origin();
     let found = target::describe(api, &hub, tool, Some(dir), &runs::default_on(api)).await?;

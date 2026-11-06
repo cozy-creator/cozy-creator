@@ -24,7 +24,7 @@ use protocol::{
 use serde_json::{Map, Number, Value};
 use sha2::{Digest as _, Sha256};
 
-use super::clip::{self, Clips, Cut};
+use super::clip::{Clips, Cut};
 
 /// The request field every callable takes beside its interface: how LoRAs apply.
 const LORA_MODE: &str = "lora_mode";
@@ -257,6 +257,14 @@ pub async fn bind(
     binder.fidelities()?;
     let tree_files = binder.trees(&mut files)?;
     binder.seed();
+    if let Some(project) = &terms.project {
+        let package = target.rsplit_once('/').map_or(target, |(package, _)| package);
+        let (payload, named, said) = project.bound(target, package, callable, std::mem::take(&mut binder.document), &terms.clips).await?;
+        binder.document = payload;
+        files.retain(|file| !named.iter().any(|held| held.field == file.field));
+        files.extend(named);
+        said.into_iter().for_each(|message| binder.warn(message));
+    }
     let mut ignored = validate(target, release, callable, &mut binder.document)?;
     ignored.extend(std::mem::take(&mut binder.choices.dropped));
     ignored.sort();
@@ -406,9 +414,25 @@ impl Binder<'_> {
                 continue;
             }
             let key = self.fold(key)?;
+            // Pick up from here: `pickup.take=<shot_1.3> pickup.out_frame=240`.
+            if let Some((head, member)) = key.split_once('.')
+                && self.callable.field(head).is_some_and(|field| matches!(field.ty.plain(), Type::Pickup(_)))
+            {
+                let value = match member {
+                    "take" => Value::String(raw.to_owned()),
+                    _ => serde_json::from_str(raw).map_err(|_| usage("pickup_malformed", format!("{key}={raw} is not a number")))?,
+                };
+                set_path(&mut self.document, &[head.to_owned(), member.to_owned()], value)?;
+                continue;
+            }
+            // A mention is the project's box, which its binder fills.
+            if !structured && !crate::project::graph::mentions(raw).is_empty() {
+                self.document.insert(key, Value::String(raw.to_owned()));
+                continue;
+            }
             let spelled = self.callable.field(&key).and_then(|field| scalar(&field.ty, raw));
             if !structured && spelled.is_none() && self.names_a_file(&key) {
-                self.named_files.push(FileTerm { name: Some(key), file: raw.to_owned() });
+                self.named_files.push(FileTerm { name: Some(key), file: raw.strip_prefix('@').unwrap_or(raw).to_owned() });
                 continue;
             }
             let value = if structured {
@@ -565,8 +589,8 @@ impl Binder<'_> {
     }
 
     /// Binds every file: those named in the payload, `--file` and positional files. Each value
-    /// becomes the file's digest, and the file its InputFile. A video path naming a segment of
-    /// it (`clip.mp4#t=5,12`) is sent as that segment's clip.
+    /// becomes the file's digest, and the file its InputFile. A range of a video is a mention of
+    /// the project's, `<take3@48-336>`, which its binder cuts.
     async fn attach(&mut self) -> Result<Vec<InputFile>, Error> {
         self.cut_file_lists();
         let mut specs: Vec<Spec> = Vec::new();
@@ -654,7 +678,7 @@ impl Binder<'_> {
                 )
                 .remedy(describe::usage_line(self.target, self.callable))
             })?;
-            let (source, range) = clip::fragment(&spec.source, &field)?;
+            let source = spec.source.clone();
             let named = source.to_string_lossy();
             let path = match self.terms.by_content(&named).await? {
                 Some(path) => path,
@@ -665,29 +689,6 @@ impl Binder<'_> {
                 None => self.resolve(&source)?,
             };
             let sniffed = sniff(&path)?;
-            let (path, sniffed) = match range {
-                None => (path, sniffed),
-                Some(range) => {
-                    if !sniffed.media_type.starts_with("video/") {
-                        self.warn(format!("{field}: #t= cuts a video, and {} is {}: sent whole", path.display(), sniffed.media_type));
-                        (path, sniffed)
-                    } else {
-                        match self.terms.clips.cut(&field, &path, range, &mut self.notes).await {
-                            Ok(cut) => {
-                                let clipped = (cut.clip.clone(), sniff(&cut.clip)?);
-                                self.cuts.push(cut);
-                                clipped
-                            }
-                            // No ffmpeg costs the cut, never the run (Paul, 10-17).
-                            Err(e) if e.code == "ffmpeg_unavailable" => {
-                                self.warn(format!("{field}: {range} of {} is not cut, the whole file is sent: {}", path.display(), e.message));
-                                (path, sniffed)
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
-                }
-            };
             let (kind_max, kinds) = accepts;
             let max = kinds
                 .iter()
@@ -1174,7 +1175,7 @@ impl Binder<'_> {
         let declared = self
             .callable
             .field("seed")
-            .is_some_and(|f| f.ty == Type::Int);
+            .is_some_and(|f| matches!(f.ty.plain(), Type::Int | Type::Seed));
         if declared && !self.document.contains_key("seed") {
             let digest = Sha256::digest(format!("cozy-seed\0{}", self.terms.key));
             let seed =
@@ -1191,7 +1192,7 @@ type Accepts = (Option<u64>, Vec<(Vec<String>, Option<u64>)>);
 /// Whether a value of `ty` can name an input file.
 fn holds_file(ty: &Type) -> bool {
     match ty {
-        Type::Asset(_) | Type::Tree => true,
+        Type::Asset(_) | Type::Media { .. } | Type::Tree => true,
         Type::Union { branches, .. } => branches.iter().any(holds_file),
         Type::List(item) | Type::Map(item) => holds_file(item),
         Type::Struct(s) => s.fields.iter().any(|f| holds_file(&f.ty)),
@@ -1221,7 +1222,7 @@ fn asset_at(
     max: Option<u64>,
 ) -> Option<(Vec<String>, Option<u64>)> {
     match ty {
-        Type::Asset(_) if parts.is_empty() => Some((types.to_vec(), max)),
+        Type::Asset(_) | Type::Media { .. } if parts.is_empty() => Some((types.to_vec(), max)),
         Type::Union { branches, .. } => {
             branches.iter().find_map(|b| asset_at(b, parts, types, max))
         }
@@ -1247,7 +1248,7 @@ fn asset_at(
 /// Files named inside the payload: any string at an input-file position.
 fn embedded_files(ty: &Type, value: &Value, path: &str, terms: &Terms, out: &mut Vec<Spec>) -> Result<(), Error> {
     match (ty, value) {
-        (Type::Asset(_), Value::String(source)) if !source.is_empty() => {
+        (Type::Asset(_) | Type::Media { .. }, Value::String(source)) if !source.is_empty() && crate::project::graph::mentions(source).is_empty() => {
             if source.contains("://") {
                 return Err(invalid(
                     "asset_url",
@@ -1406,8 +1407,8 @@ fn set_path(
 /// A scalar spelled for `ty`; None when the type has no such spelling.
 pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
     match ty {
-        Type::Str | Type::Tree | Type::Unknown => Some(Value::String(raw.to_owned())),
-        Type::Int => integer(raw),
+        Type::Str | Type::Tree | Type::Unknown | Type::Prompt(_) | Type::Shape => Some(Value::String(raw.to_owned())),
+        Type::Int | Type::Seed => integer(raw),
         Type::Float => raw
             .parse::<f64>()
             .ok()
@@ -1466,7 +1467,7 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
                 .find_map(|b| scalar(b, raw))
                 .or_else(|| scalars().find_map(|b| scalar(b, raw)))
         }
-        Type::List(_) | Type::Map(_) | Type::Struct(_) | Type::Asset(_) | Type::Model => None,
+        Type::List(_) | Type::Map(_) | Type::Struct(_) | Type::Asset(_) | Type::Media { .. } | Type::Pickup(_) | Type::Model => None,
     }
 }
 
@@ -1631,7 +1632,10 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
         | (Type::Null, Value::Null)
         | (Type::Float, Value::Number(_)) => vec![],
         (Type::Int, Value::Number(n)) if n.is_i64() || n.is_u64() => vec![],
-        (Type::Asset(_) | Type::Tree, Value::String(s)) if !s.is_empty() => vec![],
+        (Type::Asset(_) | Type::Tree | Type::Shape, Value::String(s)) if !s.is_empty() => vec![],
+        (Type::Seed, Value::Number(n)) if n.is_u64() => vec![],
+        // What the project's binder made of a prompt, a described file and a pickup.
+        (Type::Prompt(_) | Type::Media { .. } | Type::Pickup(_), Value::Object(_)) => vec![],
         (Type::Literal(members), value)
             if members.iter().any(|m| same(m, value))
                 || numbers(members, value)
@@ -1762,8 +1766,9 @@ fn shape(ty: &Type, value: &Value) -> u8 {
         (Type::List(_), Value::Array(_))
         | (Type::Null, Value::Null)
         | (Type::Bool, Value::Bool(_))
-        | (Type::Str | Type::Asset(_) | Type::Tree, Value::String(_))
-        | (Type::Int | Type::Float, Value::Number(_)) => 2,
+        | (Type::Str | Type::Asset(_) | Type::Tree | Type::Shape, Value::String(_))
+        | (Type::Prompt(_) | Type::Media { .. } | Type::Pickup(_), Value::Object(_))
+        | (Type::Int | Type::Float | Type::Seed, Value::Number(_)) => 2,
         (Type::Literal(members), value) => {
             let kind = |v: &Value| std::mem::discriminant(v);
             u8::from(members.iter().any(|m| kind(m) == kind(value))) * 2

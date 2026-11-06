@@ -12,7 +12,7 @@ use protocol::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::{Digest, RunId},
-    interface::{self, Interface, Slot},
+    interface::{self, Call, Interface, Slot},
     model_ref::ModelRef,
     names::shown,
     project::Event,
@@ -67,17 +67,14 @@ impl Package {
         self.function(first).ok()
     }
 
-    /// The widths `function` runs at, smallest first: what it loads declares, one for all; for one that loads nothing itself, the first function
-    /// it can call. Empty: it needs no GPU.
+    /// The widths `function` runs at, smallest first: what it loads declares, one for all. A tool that composes calls runs each where its
+    /// GPUs are; while a render lands on one machine, that's the widths of its first call that takes a GPU. Empty: it needs no GPU.
     pub fn widths(&self, function: &str) -> Vec<u32> {
         let document = &self.document;
         let Some(entry) = interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)) else { return vec![] };
-        let entry = match interface::orchestrates(document, entry) {
-            true => interface::entrypoints(document).find(|other| interface::internal(other) && !interface::cpu(other) && !interface::models(other).is_empty()).unwrap_or(entry),
-            false => entry,
-        };
         if interface::cpu(entry) {
-            return vec![];
+            let calls = self.callable(function).map(|callable| callable.calls).unwrap_or_default();
+            return calls.iter().find(|call| call.gpu()).map(Call::widths).unwrap_or_default();
         }
         let mut common: BTreeSet<u32> = (1..=64).collect();
         for model in interface::models(entry).iter().filter(|model| model["weights"] != true) {
@@ -109,9 +106,9 @@ impl Package {
         Interface::parse(&self.document).unwrap_or_default()
     }
 
-    /// The tags of the function its tool names (`Node.reserved`): in a text they are text.
+    /// The tags of the function its tool names (`@app.tool(reserved=…)`): in a text they are text.
     pub fn reserved(&self) -> Vec<String> {
-        let mut tags = self.named.as_deref().and_then(|function| self.callable(function)?.node).map(|node| node.reserved).unwrap_or_default();
+        let mut tags = self.named.as_deref().and_then(|function| self.callable(function)?.tool).map(|tool| tool.reserved).unwrap_or_default();
         tags.sort_unstable();
         tags
     }
@@ -133,9 +130,10 @@ pub struct Renderer {
     pub local: Option<PathBuf>,
     /// What its request takes, read from its schema.
     pub accepts: BTreeSet<String>,
-    /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
+    /// Its model slots, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
-    pub calls: Vec<Slot>,
+    /// The functions it calls, each its own unit of placement, with their model slots.
+    pub calls: Vec<Call>,
 }
 
 impl Renderer {
@@ -164,8 +162,13 @@ impl Renderer {
             local,
             accepts,
             slots: read(interface::models(entry).iter().collect()),
-            calls: read(interface::call_slots(document, entry)),
+            calls: Interface::parse(document).ok().and_then(|parsed| parsed.callables.into_iter().find(|callable| callable.name == function)).map(|callable| callable.calls).unwrap_or_default(),
         })
+    }
+
+    /// The model slots of the calls it makes.
+    pub fn call_slots(&self) -> Vec<&Slot> {
+        self.calls.iter().flat_map(|call| &call.models).collect()
     }
 
     /// Its run's name for people: `org/package/function@release`, or `local/<name>/function`.
@@ -451,7 +454,7 @@ impl Host {
             return one.clone();
         }
         let load = self.api.calcifer.store().machine_load().unwrap_or_default();
-        let models: Vec<String> = (renderer.slots.iter().chain(&renderer.calls))
+        let models: Vec<String> = (renderer.slots.iter().chain(renderer.call_slots()))
             .filter_map(|slot| match ModelRef::parse(slot.default.as_deref()?) {
                 Ok(ModelRef::Hub { repo, .. }) => Some(repo.to_string()),
                 _ => None,
@@ -469,6 +472,11 @@ impl Host {
             (running + queued + u32::from(cold), cold)
         };
         on.iter().min_by_key(|on| cost(on)).cloned().unwrap_or(On::Any)
+    }
+
+    /// cozy's home.
+    pub fn home(&self) -> &platform::paths::Home {
+        self.api.machines.hubs.home()
     }
 
     /// cozy's cache folder for this user (`platform::paths::cache`), else one in its home.

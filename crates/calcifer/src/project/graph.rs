@@ -10,10 +10,10 @@ pub fn name_key(name: &str) -> String {
 }
 
 fn in_a_name(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '-' | '.')
+    c.is_alphanumeric() || matches!(c, '_' | '-')
 }
 
-/// Whether `text` can be a name: only letters, digits, `_`, `-` and `.`.
+/// Whether `text` can be a name: only letters, digits, `_` and `-`. A `.` selects inside a box, and `@` a range of it.
 pub fn is_name(text: &str) -> bool {
     !text.is_empty() && text.chars().all(in_a_name)
 }
@@ -21,28 +21,73 @@ pub fn is_name(text: &str) -> bool {
 /// What a box calls itself in its own text: `<self.2>`, a version of it.
 pub const SELF: &str = "self";
 
+/// A mention, `<name.2.cleaned@48-120>`: a box, a version of it, an extra of that version, and a range of its frames.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mention<'a> {
+    pub name: &'a str,
+    pub version: Option<u32>,
+    /// An extra output of the version: `<page.cleaned>`.
+    pub part: Option<&'a str>,
+    /// Frames `in` to `out` (not counting it), or to its end.
+    pub range: Option<(u32, Option<u32>)>,
+}
+
+impl Mention<'_> {
+    /// How a function hears it, its box's own name in place of how it was typed.
+    pub fn spelled(&self, name: &str) -> String {
+        let mut out = name.to_owned();
+        if let Some(version) = self.version {
+            out.push_str(&format!(".{version}"));
+        }
+        if let Some(part) = self.part {
+            out.push_str(&format!(".{part}"));
+        }
+        if let Some((from, to)) = self.range {
+            out.push_str(&format!("@{from}-{}", to.map_or_else(String::new, |to| to.to_string())));
+        }
+        out
+    }
+}
+
+/// `inner` as a mention, if it is one.
+pub fn mention(inner: &str) -> Option<Mention<'_>> {
+    let (head, range) = match inner.split_once('@') {
+        None => (inner, None),
+        Some((head, range)) => {
+            let (from, to) = range.split_once('-')?;
+            let number = |text: &str| text.bytes().all(|byte| byte.is_ascii_digit()).then(|| text.parse::<u32>().ok()).flatten();
+            let to = if to.is_empty() { None } else { Some(number(to)?) };
+            (head, Some((number(from)?, to)))
+        }
+    };
+    let mut parts = head.split('.');
+    let name = parts.next().filter(|name| is_name(name))?;
+    let (mut version, mut part) = (None, None);
+    for (n, word) in parts.enumerate() {
+        match word.parse::<u32>() {
+            Ok(number) if n == 0 && word.bytes().all(|byte| byte.is_ascii_digit()) => version = Some(number),
+            _ if part.is_none() && is_name(word) => part = Some(word),
+            _ => return None,
+        }
+    }
+    Some(Mention { name, version, part, range })
+}
+
 /// `abr.2` as the name it's a version of, and that number.
 pub fn version_of(mention: &str) -> Option<(&str, u32)> {
-    let (name, number) = mention.rsplit_once('.')?;
-    let digits = !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
-    if name.is_empty() || !digits {
-        return None;
-    }
-    Some((name, number.parse().ok()?))
+    let read = self::mention(mention)?;
+    Some((read.name, read.version?))
 }
 
-/// Whether something new can go by `name`: `x.2` says version 2 of x, and `self` the box a text is in.
+/// Whether something new can go by `name`: no `.`, and `self` is the box a text is in.
 pub fn can_take(name: &str) -> bool {
-    version_of(name).is_none() && name_key(name) != SELF
+    is_name(name) && name_key(name) != SELF
 }
 
-/// `mention` once `from` is called `to`, its version number with it: `<from>`, `<from.2>`. None: it doesn't say `from`.
+/// `mention` once `from` is called `to`, what follows its name with it: `<from>`, `<from.2>`, `<from@4-9>`. None: it doesn't say `from`.
 pub fn mention_moved(mention: &str, from: &str, to: &str) -> Option<String> {
-    if name_key(mention) == name_key(from) {
-        return Some(to.to_owned());
-    }
-    let (name, _) = version_of(mention)?;
-    (name_key(name) == name_key(from)).then(|| format!("{to}{}", &mention[name.len()..]))
+    let read = self::mention(mention)?;
+    (name_key(read.name) == name_key(from)).then(|| format!("{to}{}", &mention[read.name.len()..]))
 }
 
 /// `text` as it could be a name: what a name can't hold becomes `_`.
@@ -76,7 +121,7 @@ pub fn mentions_replaced(text: &str, with: &mut dyn FnMut(&str) -> Option<String
         let after = &rest[open + 1..];
         let inner = after.find(['<', '>', '\n']).filter(|&end| after.as_bytes()[end] == b'>').map(|end| &after[..end]);
         said.push_str(&rest[..open]);
-        match inner.filter(|inner| is_name(inner)).and_then(|inner| Some((inner, with(inner)?))) {
+        match inner.filter(|inner| mention(inner).is_some()).and_then(|inner| Some((inner, with(inner)?))) {
             Some((inner, words)) => {
                 said.push_str(&words);
                 rest = &after[inner.len() + 1..];
@@ -91,9 +136,9 @@ pub fn mentions_replaced(text: &str, with: &mut dyn FnMut(&str) -> Option<String
     said
 }
 
-/// Every mention in `text`: a `<…>` holding a name.
+/// Every mention in `text`: a `<…>` holding a name, and what selects in it.
 pub fn mentions(text: &str) -> Vec<&str> {
-    bracketed(text).into_iter().filter(|text| is_name(text)).collect()
+    bracketed(text).into_iter().filter(|text| mention(text).is_some()).collect()
 }
 
 /// Every mention in any text under `value`.

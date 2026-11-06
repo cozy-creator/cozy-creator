@@ -10,7 +10,7 @@ use protocol::{
     calcifer::{MachineList, On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Fit, FitAsk, Import, Imported, NewVersion, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Fit, FitAsk, Import, Imported, NewVersion, Open, Opened, Pickup, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved},
 };
 
 use crate::{
@@ -47,9 +47,10 @@ const RENDER_EXAMPLES: &str = "Examples:
   cozy project render fight -n 3 --on kiyui        three new takes of fight; approved, what it approved stays
   cozy project render fight --approve --on kiyui   a new take, approved as it lands
   cozy project render all --outdated --on kiyui    and of each approved asset whose inputs changed, as its turn comes: the new one takes its place
-  cozy project render fight --in 15 --on kiyui     a new take: the take in use up to about 15 s, the rest new
-  cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
-  cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
+  cozy project render fight pickup.take='<fight.2>' pickup.out_frame=240
+                                                   Pick up from here: take 2 up to frame 240, the rest new
+  cozy project render shot_2 pickup.take='<shot_1.3>' pickup.out_frame=120 pickup.beats_from=7
+                                                   picking up another box's take, its beats from 7 s
 
 An asset's state is the hash in its image:, video: or audio: (`approve` writes that line, `unapprove` removes it), else its newest
 version with these inputs, else none. Reverting a text returns the old output with no run. Every render makes new versions, except of what is approved and not named.
@@ -197,7 +198,8 @@ struct ImportFile {
 #[derive(clap::Args, Debug)]
 #[command(after_help = RENDER_EXAMPLES)]
 struct Render {
-    /// The assets (`theo`, `dock_b`, `fight`, `fight_upscale`, …), with what they read, or `all`: every asset.
+    /// The assets (`theo`, `dock_b`, `fight`, `fight_upscale`, …), with what they read, or `all`: every asset. For one box, `pickup.take=<box.N>`,
+    /// `pickup.out_frame=<frame>` and `pickup.beats_from=<seconds>` pick up from that take.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     /// The machines the renders go to: `local`, machine names, or `any`, comma-separated. None: your rentals and this computer, each render
@@ -219,21 +221,11 @@ struct Render {
     /// Approve the new take or version when it lands (only with -n 1).
     #[arg(long)]
     approve: bool,
-    /// One shot: a new take keeping this take's start, not the one in use. Without --in, it goes on from this take's end.
-    #[arg(long, value_name = "N")]
-    take: Option<u32>,
-    /// One shot: a new take keeping that take up to about here, and rendering what follows with the shot's current text.
-    #[arg(long = "in", value_name = "SECONDS", allow_negative_numbers = true, value_parser = seconds)]
-    in_s: Option<f64>,
     /// One line per event, each starting with its asset's name, rather than the live view. Off a terminal it always is.
     #[arg(long)]
     plain: bool,
 }
 
-/// A time in seconds, any finite number: Calcifer says what it comes to.
-fn seconds(text: &str) -> Result<f64, String> {
-    text.parse().ok().filter(|at: &f64| at.is_finite()).ok_or_else(|| format!("{text} is not a time in seconds"))
-}
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
@@ -467,7 +459,29 @@ fn upgrade(ctx: &Context, at: Option<&PathBuf>, status: Option<&PathBuf>) -> Res
     Ok(if worse { ExitCode::from(3) } else { ExitCode::SUCCESS })
 }
 
-async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<ExitCode, Error> {
+/// `pickup.take=<shot_1.3>`, `pickup.out_frame=240` and `pickup.beats_from=7` out of `names`: Pick up from here.
+fn pickup_of(names: &mut Vec<String>) -> Result<Option<Pickup>, Error> {
+    let (terms, rest): (Vec<String>, Vec<String>) = std::mem::take(names).into_iter().partition(|name| name.starts_with("pickup."));
+    *names = rest;
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    let malformed = |why: String| Error::new(Kind::Usage, "pickup_malformed", why).remedy("pickup.take=<box.N> pickup.out_frame=<frame> [pickup.beats_from=<seconds>]");
+    let mut said = serde_json::Map::new();
+    for term in terms {
+        let (key, value) = term["pickup.".len()..].split_once('=').ok_or_else(|| malformed(format!("{term} says no value")))?;
+        let value = match key {
+            "take" => serde_json::json!(value),
+            "out_frame" | "beats_from" => serde_json::from_str(value).map_err(|_| malformed(format!("{term}: {value} is not a number")))?,
+            _ => return Err(malformed(format!("a pickup has no {key}"))),
+        };
+        said.insert(key.to_owned(), value);
+    }
+    serde_json::from_value(serde_json::Value::Object(said)).map(Some).map_err(|why| malformed(why.to_string()))
+}
+
+async fn render(ctx: &Context, at: Option<&PathBuf>, mut args: Render) -> Result<ExitCode, Error> {
+    let pickup = pickup_of(&mut args.names)?;
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
     let queued = args.queue;
@@ -494,8 +508,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         hub: ctx.hub().to_string(),
         approve: args.approve,
         missing: args.missing,
-        take: args.take,
-        in_s: args.in_s,
+        pickup,
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
     let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
@@ -716,8 +729,8 @@ fn full_summary(ctx: &Context, state: &State) {
         let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}{}{}", asset.noun, made.number, made.prefix, from(made), went_without(&made.without))).collect();
         println!("{}: {}", asset.name, made.join(", "));
         for made in &asset.prefixes {
-            if let Some(kept) = made.kept {
-                println!("{}", kept.said(&asset.name, made.number));
+            if let Some(pickup) = &made.pickup {
+                println!("{}", pickup.said(&asset.name, made.number));
             }
         }
     }

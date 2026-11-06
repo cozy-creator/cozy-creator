@@ -1,6 +1,6 @@
-//! A segment of a local video, named by a media fragment on its path (`clip.mp4#t=3:19,3:32`):
-//! cut once with ffmpeg into `~/.cozy/cache/clips`, frame-accurate, and sent in its source's place.
-//! Calcifer cuts it, with cozy's ffmpeg (`crate::tools::ffmpeg`, fetched on first need).
+//! A range of a video a mention names (`<take3@48-336>`): cut once with ffmpeg into
+//! `~/.cozy/cache/clips`, frame-accurate, and sent in its source's place. Calcifer cuts it, with
+//! cozy's ffmpeg (`crate::tools::ffmpeg`, fetched on first need).
 use std::{
     fmt,
     fs::{self, FileTimes},
@@ -15,8 +15,6 @@ use protocol::{
 };
 use sha2::{Digest as _, Sha256};
 
-/// What follows a path to name a segment of it (W3C media fragments' temporal dimension).
-const FRAGMENT: &str = "#t=";
 const THREADS: &str = "4";
 /// Re-encoded at the source's size and rate. Part of each clip's key.
 #[rustfmt::skip]
@@ -49,52 +47,6 @@ pub struct Cut {
     pub source: PathBuf,
     pub range: Range,
     pub clip: PathBuf,
-}
-
-/// `source` without its `#t=start,end` fragment, and the range it names, if any.
-pub fn fragment(source: &Path, at: &str) -> Result<(PathBuf, Option<Range>), Error> {
-    let text = source.to_string_lossy();
-    let Some(split) = text.rfind(FRAGMENT) else {
-        return Ok((source.into(), None));
-    };
-    let (path, times) = (&text[..split], &text[split + FRAGMENT.len()..]);
-    let malformed = || {
-        invalid(format!("{at}: {text:?} names no range after {FRAGMENT}"))
-            .remedy("path#t=<start>,<end> in seconds, m:ss or h:mm:ss; either may be left out (#t=5, #t=,0:12)")
-    };
-    let (start, end) = times.split_once(',').unwrap_or((times, ""));
-    if path.is_empty() || (start.is_empty() && end.is_empty()) {
-        return Err(malformed());
-    }
-    let time = |t: &str| -> Result<Option<f64>, Error> {
-        if t.is_empty() {
-            return Ok(None);
-        }
-        seconds(t).map(Some).ok_or_else(|| {
-            invalid(format!("{at}: {t} is not a time")).remedy("seconds (199, 1.5), m:ss (3:19) or h:mm:ss (1:03:19)")
-        })
-    };
-    let range = Range {
-        start: time(start.strip_prefix("npt:").unwrap_or(start))?.unwrap_or(0.0),
-        end: time(end)?,
-    };
-    if let Some(end) = range.end {
-        range.ordered(end, at)?;
-    }
-    Ok((path.into(), Some(range)))
-}
-
-impl Range {
-    fn ordered(self, end: f64, at: &str) -> Result<Self, Error> {
-        if end <= self.start {
-            return Err(invalid(format!(
-                "{at}: end {} is not after start {}",
-                clock(end),
-                clock(self.start)
-            )));
-        }
-        Ok(self)
-    }
 }
 
 impl fmt::Display for Range {
@@ -335,19 +287,6 @@ fn sweep(dir: &Path) {
             let _ = fs::remove_file(entry.path());
         }
     }
-}
-
-/// Whole seconds written as `s`, `m:ss` or `h:mm:ss`.
-fn seconds(text: &str) -> Option<f64> {
-    let parts: Vec<&str> = text.split(':').collect();
-    if parts.len() > 3 {
-        return None;
-    }
-    parts.iter().enumerate().try_fold(0.0, |total, (i, part)| {
-        let plain = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit() || b == b'.');
-        let n: f64 = part.parse().ok().filter(|n: &f64| plain && n.is_finite())?;
-        (i == 0 || n < 60.0).then_some(total * 60.0 + n)
-    })
 }
 
 /// `m:ss[.fff]`, or `h:mm:ss[.fff]` from an hour.

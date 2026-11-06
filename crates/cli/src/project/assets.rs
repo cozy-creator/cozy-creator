@@ -12,7 +12,7 @@ use protocol::{
     error::{Error, Kind},
     project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, CanvasPatch, CanvasPatched, Card, NewAsset, VersionBack, VersionMoved},
 };
-use protocol::tool::{ControlType, Tools};
+use protocol::tool::{FieldType, Tools};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
@@ -96,10 +96,10 @@ async fn as_declared(calcifer: &Client, project: &str, tool: &str, fields: &mut 
     let Ok(listed) = calcifer.get_query::<_, Tools>(&route(&["v1", "tools"]), &[("project", project)]).await else { return };
     let plain = tool.trim_start_matches("./");
     let Some(held) = listed.tools.iter().find(|held| held.id == tool || held.id.ends_with(plain)) else { return };
-    for control in held.controls.iter().filter(|control| matches!(control.ty, ControlType::Group | ControlType::Shape)) {
-        let parsed = fields.get(&control.field).filter(|value| looks(value)).and_then(Value::as_str).and_then(|text| serde_json::from_str::<Value>(text).ok());
+    for declared in held.fields.iter().filter(|declared| matches!(declared.ty, FieldType::Group) || declared.multiple) {
+        let parsed = fields.get(&declared.field).filter(|value| looks(value)).and_then(Value::as_str).and_then(|text| serde_json::from_str::<Value>(text).ok());
         if let Some(parsed) = parsed {
-            fields.insert(control.field.clone(), parsed);
+            fields.insert(declared.field.clone(), parsed);
         }
     }
 }

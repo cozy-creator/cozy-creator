@@ -1,8 +1,8 @@
-//! project.yaml, format 3 (design/project-format-ui.md): each asset a name, its file's type, the function that makes it, its inputs, the
-//! file you approved, and words for whatever mentions it. The platform reads `kind`, `tool`, `approved`, `description`, `asset_type`,
-//! `voice`, `models`, `lora` and `<name>` in any text, and knows no input's meaning, but for the reserved package `cozy`, which it runs itself.
-//! Every other key is an input: it passes through to the function and counts in the key. Nothing refuses a project but a file of no
-//! format or another: what one line gets wrong is said, and that line does the best it can. `assetfile` writes the file.
+//! project.yaml, format 4 (design/tools.md): each box a name, the tool that makes it, its fields, the file you approved, and words for
+//! whatever mentions it. The platform reads `tool`, `approved`, `description`, `models`, `lora` and `<name>` in any text, and knows no
+//! field's meaning, but for the reserved package `cozy`, which it runs itself. Every other key is a field: the binder gives it to the tool by
+//! its type, and it counts in the key. Nothing refuses a project but a file of no format or another: what one line gets wrong is said, and
+//! that line does the best it can. `assetfile` writes the file.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
@@ -15,24 +15,21 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    folder::{self, Files, Folder, Keeps, Lock, Version},
-    graph::{Graph, SELF, as_name, can_take, edits, is_name, mentions, mentions_in, mentions_replaced, name_key, version_of},
+    folder::{self, Files, Folder, Lock, Version},
+    graph::{self, Graph, SELF, as_name, can_take, edits, is_name, mentions, mentions_in, mentions_replaced, name_key, version_of},
 };
 
 /// The name `cozy project render all` means.
 pub const ALL: &str = "all";
-pub(super) const FORMAT: u64 = 3;
+pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
-const PLATFORM: [&str; 7] = ["tool", "approved", "description", "asset_type", "voice", "models", "lora"];
+const PLATFORM: [&str; 5] = ["tool", "approved", "description", "models", "lora"];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
 pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
-const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// What a text asset holds, and what it is.
 pub(super) const TEXT: &str = "text";
-/// What once said an asset's type: its tool does now, and a file with none is what it is.
-const NOT_READ: &str = "kind";
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 const FRAME: &str = "cozy/frame";
@@ -62,35 +59,32 @@ fn kind_made_here(plain: &str) -> Option<&'static str> {
 /// A new project's project.yaml: a short film that renders as it stands.
 pub fn starter() -> String {
     r#"# A short film, ready to render: cozy project render all --on <machine>
-# Change anything. Each asset says what it is; `<name>` in any text reads that asset.
-version: 3
+# Change anything. Each box says what makes it; `<name>` in any text reads that box.
+version: 4
 
 assets:
   style:
     text: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
 
   kyogre:
-    tool: qwen-image-2/generate
+    tool: qwen-image-2/image
     aspect_ratio: "16:9"
     instructions: |
       <style> Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
     description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
-    asset_type: character
 
   groudon:
-    tool: qwen-image-2/generate
+    tool: qwen-image-2/image
     aspect_ratio: "16:9"
     instructions: |
       <style> Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
     description: Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
-    asset_type: character
 
   coast:
-    tool: qwen-image-2/generate
+    tool: qwen-image-2/image
     aspect_ratio: "16:9"
     instructions: <style> A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
     description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
-    asset_type: environment
 
   edit:
     tool: cozy/edit
@@ -168,9 +162,6 @@ pub struct Asset {
     pub own: BTreeSet<String>,
     /// The words for whatever mentions it.
     pub description: String,
-    pub asset_type: String,
-    /// The asset a read of this hears as its voice.
-    pub voice: Option<String>,
     /// `approved`: the sha256 it holds. Its tool and inputs stay in the file, and can show it out of date.
     pub pin: Option<String>,
     /// It has no operation: no `tool` that can make it, or the file says nothing of it.
@@ -214,7 +205,18 @@ pub struct Doc {
     unread: Vec<(usize, String)>,
     /// The project's folder, which says what is on this computer.
     dir: PathBuf,
+    /// Read as format 3, only for the upgrade: what each box's state was then (`key_three`).
+    three: Option<Three>,
 }
+
+/// What format 3 read that format 4 doesn't: each box's `asset_type`, by its index.
+#[derive(Default)]
+struct Three {
+    asset_types: Vec<String>,
+}
+
+/// What format 3 read as the platform's, not inputs.
+const THREE_ONLY: [&str; 3] = ["asset_type", "voice", "kind"];
 
 /// Why an asset has the state it has, or none.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -255,19 +257,6 @@ impl Standing {
     }
 }
 
-/// What a read gives the function that reads it.
-#[derive(Clone)]
-pub struct Given {
-    pub name: String,
-    pub files: Files,
-    pub description: String,
-    pub asset_type: String,
-    /// `org/package/function@release`.
-    pub made_by: String,
-    /// The words its version was made from. Only a function's `fill` of `<input>.text` takes them: a prompt never crosses a mention by itself.
-    pub text: String,
-}
-
 /// What an operation reads now.
 #[derive(Clone)]
 pub struct ReadNow {
@@ -293,6 +282,15 @@ impl Doc {
 
     /// The project `text` says, of the files and tags `lock` holds.
     pub(super) fn of(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
+        Self::of_format(folder, text, lock, FORMAT)
+    }
+
+    /// A format 3 file as format 3 read it, with its keys: what was current then, so the upgrade carries that over and nothing else.
+    pub(super) fn of_three(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
+        Self::of_format(folder, text, lock, 3)
+    }
+
+    fn of_format(folder: &Folder, text: &str, lock: &Lock, format: u64) -> Result<Self, Error> {
         let (value, listed) = protocol::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
             let (line, written) = at_line(text, &why);
             let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
@@ -307,9 +305,9 @@ impl Doc {
             _ => return Err(invalid("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))),
         };
         let version = top.get("version").and_then(Value::as_u64);
-        if version.is_some_and(|version| version != FORMAT) || (version.is_none() && top.contains_key("entities")) {
+        if version.is_some_and(|version| version != format) || (version.is_none() && top.contains_key("entities")) {
             let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
-            return Err(invalid("project_format", said).next(if version.is_none_or(|version| version == 2) { "cozy project upgrade" } else { "cozy project new" }));
+            return Err(invalid("project_format", said).next(if version.is_none_or(|version| version < FORMAT) { "cozy project upgrade" } else { "cozy project new" }));
         }
         let mut warnings = vec![];
         if let Some(why) = folder.unsaved() {
@@ -341,7 +339,7 @@ impl Doc {
             defaults.insert(section.clone(), Value::Object(filled));
         }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
-        for name in &listed {
+        for name in listed.iter().filter(|_| format == FORMAT) {
             named(name)?;
         }
         let mut seen: HashMap<String, &String> = HashMap::new();
@@ -350,7 +348,7 @@ impl Doc {
                 return Err(one_name_twice(text, first, name));
             }
         }
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone() };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone(), three: (format == 3).then(Three::default) };
         for name in &listed {
             let Some(written) = declared.get(name) else { continue };
             doc.declare(name, written, &defaults, folder, lock);
@@ -372,7 +370,7 @@ impl Doc {
         if key == ALL {
             self.warn(name, format!("{name} is named `{ALL}`: `cozy project render {ALL}` means everything, and makes it with the rest"));
         }
-        let body = match written {
+        let mut body = match written {
             Value::Object(body) => body.clone(),
             Value::Null => Map::new(),
             _ => {
@@ -380,6 +378,10 @@ impl Doc {
                 Map::new()
             }
         };
+        if let Some(three) = &mut self.three {
+            three.asset_types.push(text_of(body.get("asset_type")));
+            body.retain(|key, _| !THREE_ONLY.contains(&key.as_str()));
+        }
         let target = text_of(body.get("tool")).trim().to_owned();
         let tool = (!target.is_empty()).then(|| plain_tool(&target, folder));
         let mut pin = None;
@@ -395,9 +397,6 @@ impl Doc {
                 Err(why) => self.warn(name, format!("{name}'s approved{why}")),
             },
         }
-        if body.contains_key(NOT_READ) {
-            self.warn(name, format!("{name}'s kind: what an asset is comes from its tool, or its file: it is ignored"));
-        }
         let held = lock.asset(name).and_then(|held| held.versions.last());
         let made = held.and_then(|version| KINDS.iter().copied().find(|kind| version.files.contains_key(*kind)));
         let of_file = pin.as_ref().and_then(|sha256| lock.files.get(sha256)).and_then(folder::File::media);
@@ -406,29 +405,11 @@ impl Doc {
         let text = (tool.is_none() && pin.is_none() && held.is_none()).then(|| body.get(TEXT).or_else(|| LEADS.iter().find_map(|field| body.get(*field)))).flatten().map(|words| text_of(Some(words)).trim_end().to_owned());
         let said = tool.as_deref().and_then(kind_made_here).or(of_file).or(made).or(makes).or(text.as_ref().map(|_| TEXT));
         let kind = said.unwrap_or("image").to_owned();
-        let mut asset_type = text_of(body.get("asset_type"));
-        if !asset_type.is_empty() && !ASSET_TYPES.contains(&asset_type.as_str()) {
-            self.warn(name, format!("{name}'s asset_type: {asset_type} isn't {}: it is ignored", ASSET_TYPES.join(", ")));
-            asset_type.clear();
-        }
         let description = text_of(body.get("description")).trim().to_owned();
         for mention in mentions(&description) {
             self.warn(name, format!("{name}'s description says <{mention}>: a description is words, so it stays as text and nothing is read"));
         }
-        let voice = match body.get("voice") {
-            None | Some(Value::Null) => None,
-            Some(said) => {
-                let text = text_of(Some(said));
-                match mentions(&text).as_slice() {
-                    [one] if text.trim() == format!("<{one}>") => Some((*one).to_owned()),
-                    _ => {
-                        self.warn(name, format!("{name}'s voice: write `voice: <name>`, an asset: it is ignored"));
-                        None
-                    }
-                }
-            }
-        };
-        let own: BTreeSet<String> = body.keys().filter(|key| !PLATFORM.contains(&key.as_str()) && *key != NOT_READ).cloned().collect();
+        let own: BTreeSet<String> = body.keys().filter(|key| !PLATFORM.contains(&key.as_str())).cloned().collect();
         let (mut made, mut inputs) = (Map::new(), Map::new());
         // What Calcifer makes reads no style, and an edit's shape is its own to say.
         // By what its tool makes, never by what a version or an approved file is, or its key would move when it had one.
@@ -443,7 +424,7 @@ impl Doc {
         for (field, value) in &body {
             match field.as_str() {
                 field if MADE.contains(&field) => drop(made.insert(field.to_owned(), value.clone())),
-                field if PLATFORM.contains(&field) || field == NOT_READ || (field == TEXT && text.is_some()) => {}
+                field if PLATFORM.contains(&field) || (field == TEXT && text.is_some()) => {}
                 field => drop(inputs.insert(field.to_owned(), value.clone())),
             }
         }
@@ -455,7 +436,7 @@ impl Doc {
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, asset_type, voice, pin, hollow, reads: vec![] });
+        self.assets.push(Asset { name: name.to_owned(), kind, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, hollow, reads: vec![] });
     }
 
     /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and
@@ -532,9 +513,6 @@ impl Doc {
                     said.push(line);
                 }
             }
-            if let Some(voice) = asset.voice.as_deref().filter(|voice| self.find(voice).is_none()) {
-                said.push(Warning::of(&asset.name, format!("{}'s voice: <{voice}> is nothing in the project: add an asset named {voice}", asset.name)));
-            }
             for mention in mentions_in(&Value::Object(asset.inputs.clone())) {
                 // A tag of its package, in any case, stays text as written, whatever the project names.
                 if tags.is_some_and(|tags| is_tag(tags, &mention)) {
@@ -565,16 +543,7 @@ impl Doc {
                 }
             }
         }
-        // What it reads brings its voice, which isn't what it is made of, so it is the last edge to go in a cycle.
-        let mut fixed = vec![vec![]; n];
-        for i in 0..n {
-            for j in reads[i].iter().filter(|read| read.number.is_none()).map(|read| read.asset) {
-                if let Some(voice) = self.voice_of(j).filter(|voice| *voice != i && !upstream[i].contains(voice)) {
-                    upstream[i].push(voice);
-                    fixed[i].push(voice);
-                }
-            }
-        }
+        let fixed = vec![vec![]; n];
         let graph = Graph::new(upstream, &fixed);
         for &(reader, read) in &graph.closing {
             reads[reader].retain(|held| held.asset != read || held.number.is_some());
@@ -593,18 +562,14 @@ impl Doc {
         self.index.get(&name_key(name)).copied()
     }
 
-    /// What `mention` in asset `i`'s text names: an asset, and a version of it. A name ending like a version, from before none could, is that name.
+    /// What `mention` in asset `i`'s text names: a box, and a version of it.
     fn mentioned(&self, i: usize, mention: &str) -> Option<(usize, Option<u32>)> {
-        if let Some(j) = self.find(mention) {
+        if let Some(j) = self.find(mention).filter(|_| self.three.is_some()) {
             return Some((j, None));
         }
-        let (name, number) = version_of(mention)?;
-        let j = self.find(name).or((name_key(name) == SELF).then_some(i))?;
-        Some((j, Some(number)))
-    }
-
-    fn voice_of(&self, i: usize) -> Option<usize> {
-        self.find(self.assets[i].voice.as_deref()?)
+        let read = graph::mention(mention)?;
+        let j = self.find(read.name).or((name_key(read.name) == SELF && read.version.is_some()).then_some(i))?;
+        Some((j, read.version))
     }
 
     fn warn(&mut self, name: &str, message: String) {
@@ -625,8 +590,9 @@ impl Doc {
         flat.values_mut().for_each(end_trimmed);
         flat.extend(asset.made.iter().map(|(field, value)| (field.clone(), value.clone())));
         flat.extend(asset.text.iter().map(|text| (TEXT.to_owned(), json!(text))));
-        let words = [("description", asset.description.clone()), ("asset_type", asset.asset_type.clone()), ("voice", asset.voice.as_ref().map_or(String::new(), |voice| format!("<{voice}>")))];
-        flat.extend(words.into_iter().filter(|(_, text)| !text.is_empty()).map(|(field, text)| (field.to_owned(), json!(text))));
+        if !asset.description.is_empty() {
+            flat.insert("description".to_owned(), json!(asset.description));
+        }
         if let Some(tracks) = flat.remove("tracks") {
             let timeline = Timeline { tracks: vec![Track { clips: super::tools::clips_of(&tracks) }] };
             flat.insert("timeline".to_owned(), serde_json::to_value(timeline).expect("clips serialize"));
@@ -663,7 +629,9 @@ impl Doc {
         let fixed = self.assets.iter().flat_map(|asset| &asset.reads).filter_map(|read| Some((name_key(&self.assets[read.asset].name), read.number?)));
         let gone = self.unread.iter().filter_map(|(_, mention)| version_of(mention).map(|(name, number)| (name_key(name), number)));
         let mut named: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
-        fixed.chain(gone).for_each(|(key, number)| drop(named.entry(key).or_default().insert(number)));
+        fixed.chain(gone).for_each(|(key, number)| {
+            named.entry(key).or_default().insert(number);
+        });
         named
     }
 
@@ -673,11 +641,17 @@ impl Doc {
     }
 
     /// What is said of a name that is nothing in the project, and no tag of `tags`.
+    /// What's said of `mention` in a box's text, which names nothing and is no tag of `tags`.
+    pub(super) fn not_there(&self, mention: &str, tags: &[String]) -> String {
+        self.no_longer(mention, tags)
+    }
+
     fn no_longer(&self, name: &str, tags: &[String]) -> String {
         if name_key(name) == SELF {
             return no_bare_self(name);
         }
-        match self.near(name, tags) {
+        let named = graph::mention(name).map_or(name, |read| read.name);
+        match self.near(named, tags).map(|close| format!("{close}{}", &name[named.len()..])) {
             Some(close) => format!("<{name}> is no longer in the project: did you mean <{close}>?"),
             None => format!("<{name}> is no longer in the project"),
         }
@@ -876,7 +850,7 @@ impl Doc {
     }
 
     /// What asset `i` reads now; None while something has no state. A tool reads state, else the newest version: what has
-    /// neither it skips, and with nothing to read at all, it waits. Each read holds its voice, as `voice`.
+    /// neither it skips, and with nothing to read at all, it waits.
     fn reading(&self, i: usize, lock: &Lock, done: &[Standing]) -> Option<Vec<ReadNow>> {
         let tool = self.tool(i).is_some();
         let mut reads = vec![];
@@ -889,13 +863,7 @@ impl Doc {
             }
             let name = self.assets[j].name.clone();
             match &done[j].files {
-                Some(files) => {
-                    let mut files = files.clone();
-                    if let Some(voice) = self.voice_of(j).filter(|voice| !tool && self.upstream[i].contains(voice)) {
-                        files.extend(folder::main_of(done[voice].files.as_ref()?).map(|main| ("voice".to_owned(), main.clone())));
-                    }
-                    reads.push(ReadNow { name, asset: j, files, newest: None, number: None });
-                }
+                Some(files) => reads.push(ReadNow { name, asset: j, files: files.clone(), newest: None, number: None }),
                 None if tool => {
                     let newest = lock.asset(&self.assets[j].name).and_then(|held| held.versions.last());
                     reads.extend(newest.map(|newest| ReadNow { name, asset: j, files: newest.files.clone(), newest: Some(newest.number), number: None }));
@@ -907,7 +875,7 @@ impl Doc {
     }
 
     /// Version `number` of asset `j`, on record though deleted. A file it holds with no version of any yet is its first.
-    fn version_files(&self, j: usize, number: u32, lock: &Lock) -> Option<Files> {
+    pub(super) fn version_files(&self, j: usize, number: u32, lock: &Lock) -> Option<Files> {
         let asset = &self.assets[j];
         let held = lock.asset(&asset.name);
         if let Some(version) = held.and_then(|held| held.on_record().find(|version| version.number == number)) {
@@ -917,9 +885,12 @@ impl Doc {
         asset.pin.as_ref().filter(|_| none_yet).map(|sha256| Files::from([(asset.kind.clone(), sha256.clone())]))
     }
 
-    /// Its key: eight hex digits of what makes it and its inputs, then twelve for each thing it reads (`read_part`), in name order, so that a
-    /// read gone hides no change in the others.
+    /// Its key, blind to names: eight hex digits of what makes it and its written fields, each box they mention numbered by first mention,
+    /// then twelve for each of those boxes in that order (`parts`). So a rename puts nothing out of date.
     fn key(&self, i: usize, reads: &[ReadNow]) -> String {
+        if let Some(three) = &self.three {
+            return self.key_three(three, i, reads);
+        }
         let asset = &self.assets[i];
         let mut own = asset.made.clone();
         if let Some(tool) = &asset.tool {
@@ -927,39 +898,101 @@ impl Doc {
         }
         // A tool's key holds what it reads of its inputs.
         let tool = self.tool(i).is_some();
+        let mut inputs: Value = Value::Object(
+            (asset.written.as_ref().unwrap_or(&asset.inputs).iter())
+                .filter(|(field, _)| !tool || TOOL_INPUTS.contains(&field.as_str()))
+                .map(|(field, value)| (field.clone(), value.clone()))
+                .collect(),
+        );
+        let mut order = vec![];
+        self.numbered(i, &mut inputs, &mut order);
+        own.insert("inputs".into(), inputs);
+        let parts: String = self.parts(i, reads, &mut order).into_iter().map(|(_, part)| part).collect();
+        format!("{}{parts}", &digest(&Value::Object(own))[..OWN_PART])
+    }
+
+    /// Format 3's key: eight hex digits of what makes it and its inputs, then four of each read's name and eight of what it gave, in name
+    /// order. Only the upgrade reads it.
+    fn key_three(&self, three: &Three, i: usize, reads: &[ReadNow]) -> String {
+        let asset = &self.assets[i];
+        let mut own = asset.made.clone();
+        if let Some(tool) = &asset.tool {
+            own.insert("tool".into(), json!(tool));
+        }
+        let tool = self.tool(i).is_some();
         let inputs: Map<String, Value> = (asset.written.as_ref().unwrap_or(&asset.inputs).iter())
             .filter(|(field, _)| !tool || TOOL_INPUTS.contains(&field.as_str()))
             .map(|(field, value)| (field.clone(), value.clone()))
             .collect();
         own.insert("inputs".into(), Value::Object(inputs));
-        let parts: String = self.parts(i, reads).into_iter().map(|(_, part)| part).collect();
-        format!("{}{parts}", &digest(&Value::Object(own))[..8])
-    }
-
-    /// Each thing asset `i` takes in, by name, as its key holds it: what it reads, and each text asset's words.
-    fn parts(&self, i: usize, reads: &[ReadNow]) -> Vec<(String, String)> {
-        let tool = self.tool(i).is_some();
-        let read = reads.iter().map(|read| (read.name.clone(), self.read_part(tool, read)));
-        let text = self.assets[i].inlined.iter().map(|&j| &self.assets[j]).map(|of| (of.name.clone(), part(&of.name, &json!({"text": of.text}))));
+        let part = |name: &str, held: &Value| format!("{}{}", &digest(&json!(name_key(name)))[..4], &digest(held)[..8]);
+        let read = reads.iter().map(|read| {
+            let files: Vec<_> = read.files.values().collect();
+            let held = match tool || read.number.is_some() {
+                true => json!({"files": files}),
+                false => json!({"asset_type": three.asset_types.get(read.asset).cloned().unwrap_or_default(), "description": self.assets[read.asset].description, "files": files}),
+            };
+            (read.name.clone(), part(&read.name, &held))
+        });
+        let text = asset.inlined.iter().map(|&j| &self.assets[j]).map(|of| (of.name.clone(), part(&of.name, &json!({"text": of.text}))));
         let mut parts: Vec<(String, String)> = read.chain(text).collect();
         parts.sort();
+        format!("{}{}", &digest(&Value::Object(own))[..OWN_PART], parts.into_iter().map(|(_, part)| part).collect::<String>())
+    }
+
+    /// Each mention under `value` with its box by number, first mentioned first, as `order` holds them: `<Amy.2>` is `<#0.2>`. What names
+    /// nothing, or is a tag, stays as written.
+    fn numbered(&self, i: usize, value: &mut Value, order: &mut Vec<usize>) {
+        let tags = self.tags(i).cloned().unwrap_or_default();
+        let mut walk = |text: &mut String| {
+            *text = mentions_replaced(text, &mut |inner| {
+                if is_tag(&tags, inner) {
+                    return None;
+                }
+                let read = graph::mention(inner)?;
+                let (j, _) = self.mentioned(i, inner)?;
+                let k = order.iter().position(|&held| held == j).unwrap_or_else(|| {
+                    order.push(j);
+                    order.len() - 1
+                });
+                Some(format!("<#{k}{}>", &inner[read.name.len()..]))
+            });
+        };
+        each_text(value, &mut walk);
+    }
+
+    /// What each box asset `i` mentions sends, in `order`, by name: a text box its words, numbered on, and a box its files and description,
+    /// of each version read. Calcifer's own tools read files alone.
+    fn parts(&self, i: usize, reads: &[ReadNow], order: &mut Vec<usize>) -> Vec<(String, String)> {
+        let tool = self.tool(i).is_some();
+        let mut parts = vec![];
+        let mut k = 0;
+        while k < order.len() {
+            let j = order[k];
+            let of = &self.assets[j];
+            let held = match of.text.as_ref().filter(|_| self.assets[i].inlined.contains(&j)) {
+                Some(text) => {
+                    let mut words = json!(text);
+                    self.numbered(i, &mut words, order);
+                    json!({"text": words})
+                }
+                None => {
+                    let mut read: Vec<(Option<u32>, Value)> = reads.iter().filter(|read| read.asset == j).map(|read| {
+                        let files: Vec<_> = read.files.values().collect();
+                        (read.number, if tool || j == i { json!({"files": files}) } else { json!({"description": of.description, "files": files}) })
+                    }).collect();
+                    read.sort_by_key(|(number, _)| *number);
+                    json!(read)
+                }
+            };
+            parts.push((of.name.clone(), digest(&held)[..READ_PART].to_owned()));
+            k += 1;
+        }
         parts
     }
 
-    /// A read in a key: four hex digits of its name and eight of what reaches a reader, so editing an approved asset's instructions leaves what
-    /// reads it as it is. A tool's holds only files: same takes, same key, whatever their text says. So does a fixed version's: its file is all it is.
-    fn read_part(&self, tool: bool, read: &ReadNow) -> String {
-        let of = &self.assets[read.asset];
-        let files: Vec<_> = read.files.values().collect();
-        let held = match tool || read.number.is_some() {
-            true => json!({"files": files}),
-            false => json!({"asset_type": of.asset_type, "description": of.description, "files": files}),
-        };
-        part(&read.name, &held)
-    }
-
-    /// What moved since a version was made at key `then`: its inputs, or each thing it takes in that changed. One `then` holds that's gone is no
-    /// change, as nothing could make it again.
+    /// What moved since a version was made at key `then`: its inputs, or each box it mentions whose part changed. One `then` holds that's gone
+    /// is no change, as nothing could make it again.
     fn moved(&self, i: usize, then: &str, now: &str, reads: &[ReadNow]) -> Vec<String> {
         if then == now {
             return vec![];
@@ -968,20 +1001,11 @@ impl Doc {
             return vec!["its inputs".to_owned()];
         }
         let held: Vec<&[u8]> = then.as_bytes().get(OWN_PART..).unwrap_or_default().chunks_exact(READ_PART).collect();
-        self.parts(i, reads).into_iter().filter(|(_, part)| !held.contains(&part.as_bytes())).map(|(name, _)| format!("<{name}>")).collect()
-    }
-
-    /// What each of `reads` gives the function that reads it: its files, and the words meant for a reader. A prompt never crosses a mention.
-    pub fn given(&self, reads: &[ReadNow], lock: &Lock, stand: &[Standing]) -> Vec<Given> {
-        let given = |read: &ReadNow| {
-            let of = &self.assets[read.asset];
-            let number = read.number.or(stand[read.asset].version()).or(read.newest);
-            let made = number.and_then(|number| lock.asset(&of.name)?.version(number));
-            let made_by = made.map_or("", |made| made.tool.as_deref().unwrap_or(&of.target)).to_owned();
-            let text = number.and_then(|number| lock.asset(&of.name)?.text_of(number)).unwrap_or_default().to_owned();
-            Given { name: read.name.clone(), files: read.files.clone(), description: of.description.clone(), asset_type: of.asset_type.clone(), made_by, text }
-        };
-        reads.iter().map(given).collect()
+        let mut order = vec![];
+        let mut inputs = Value::Object(self.assets[i].written.clone().unwrap_or_else(|| self.assets[i].inputs.clone()));
+        self.numbered(i, &mut inputs, &mut order);
+        let parts = self.parts(i, reads, &mut order);
+        parts.into_iter().enumerate().filter(|(k, (_, part))| held.get(*k).is_some_and(|was| *was != part.as_bytes())).map(|(_, (name, _))| format!("<{name}>")).collect()
     }
 
     /// The words asset `i` is made from, its text assets' in them, what leads first, as a version keeps them. Calcifer's own tools have none.
@@ -997,16 +1021,6 @@ impl Doc {
         (!words.is_empty()).then(|| words.join("\n\n"))
     }
 
-    /// `--take`, `--in`: the take a new one keeps, its files as records; None if it holds no video.
-    pub fn keep(&self, i: usize, lock: &Lock, keeps: Keeps) -> Option<Value> {
-        // Discarded since it was asked, it's still on record, and reclaim waits for this render.
-        let held = lock.asset(&self.assets[i].name)?.on_record().find(|version| version.number == keeps.take)?;
-        let video = lock.files.get(held.files.get("video")?)?;
-        let latents = held.files.get("latents").and_then(|sha256| lock.files.get(sha256));
-        let ends_s = if video.fps > 0.0 { video.frames as f64 / video.fps } else { 0.0 };
-        let made_by = held.tool.as_deref().unwrap_or(&self.assets[i].target);
-        Some(json!({"take": keeps.take, "video": video.record(), "latents": latents.map(folder::File::record), "at_s": keeps.in_s, "ends_s": ends_s, "made_by": made_by}))
-    }
 }
 
 /// Every string of `value` that holds more than a word, in order: what's said, not a shape or a mention.
@@ -1073,22 +1087,19 @@ pub fn named(name: &str) -> Result<(), Error> {
     }
     let why = match name.contains([' ', ',']) {
         true => "names can't hold spaces or commas",
-        false => "names hold only letters, digits, `_`, `-` and `.`",
+        false if name.contains('.') => "names hold no `.`: `<name.2>` is a version of a box, and `<name.word>` an extra of it",
+        false => "names hold only letters, digits, `_` and `-`",
     };
     Err(invalid("project_name", format!("`{name}`: {why}; use `{}`", as_name(name))))
 }
 
-/// Whether something new can go by `name`, a person having typed it: a file that says so already goes on as it is.
+/// Whether something new can go by `name`, a person having typed it.
 pub fn new_name(name: &str) -> Result<(), Error> {
     named(name)?;
-    if can_take(name) {
-        return Ok(());
+    match can_take(name) {
+        true => Ok(()),
+        false => Err(invalid("project_name", format!("`{name}` is what a box calls itself in its own text: use `{name}_2`"))),
     }
-    let (why, instead) = match version_of(name) {
-        Some((of, number)) => (format!("`{name}` would read as version {number} of {of}"), format!("{of}_{number}")),
-        None => (format!("`{name}` is what a box calls itself in its own text"), format!("{name}_2")),
-    };
-    Err(invalid("project_name", format!("{why}: use `{instead}`")))
 }
 
 fn no_bare_self(said: &str) -> String {
@@ -1126,16 +1137,10 @@ pub fn blank() -> String {
     format!("version: {FORMAT}\n")
 }
 
-/// `text` as it calls something new, if it can: through `as_name`. A `.` is a character like any other.
+/// `text` as it calls something new, if it can: through `as_name`, so a `.` is `_`.
 pub fn plain_name(text: &str) -> Option<String> {
     let name = as_name(text);
     (!name_key(&name).is_empty()).then_some(name)
-}
-
-/// `text` as it calls a new asset: `x.2` says a version, so it's `x_2`.
-pub fn asset_name(text: &str) -> Option<String> {
-    let name = plain_name(text)?;
-    Some(version_of(&name).map_or(name.clone(), |(of, number)| format!("{of}_{number}")))
 }
 
 /// `wanted`, or counting up if something in the project goes by it, or versions wait in project.lock for it: `hero_2`, and `shot_1` is `shot_2`.
@@ -1198,9 +1203,14 @@ fn digest(value: &Value) -> String {
 const OWN_PART: usize = 8;
 const READ_PART: usize = 12;
 
-/// One thing a key holds: four hex digits of its name and eight of `held`.
-fn part(name: &str, held: &Value) -> String {
-    format!("{}{}", &digest(&json!(name_key(name)))[..4], &digest(held)[..8])
+/// Each text under `value`, changed by `with`.
+fn each_text(value: &mut Value, with: &mut dyn FnMut(&mut String)) {
+    match value {
+        Value::String(text) => with(text),
+        Value::Array(items) => items.iter_mut().for_each(|item| each_text(item, with)),
+        Value::Object(fields) => fields.values_mut().for_each(|item| each_text(item, with)),
+        _ => {}
+    }
 }
 
 /// `first` and `second` as the file spells them: one name, as names match by `name_key`, with where each is written.

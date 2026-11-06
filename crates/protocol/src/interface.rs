@@ -77,23 +77,6 @@ pub fn cpu(entry: &Value) -> bool {
     entry["accelerator"].as_bool() == Some(false)
 }
 
-/// Whether `entry` is a CPU function that loads no model, in a package with internal GPU functions:
-/// it calls them (H3's shot). Tensorhub's placement (`runplacement`) reads a function the same way.
-pub fn orchestrates(document: &Value, entry: &Value) -> bool {
-    cpu(entry)
-        && models(entry).is_empty()
-        && entrypoints(document).any(|e| internal(e) && !cpu(e) && !models(e).is_empty())
-}
-
-/// The model slots of the calls an orchestrator makes: its package's internal GPU functions'. A
-/// run names one by its parameter, and the machine gives that choice to every call declaring it.
-pub fn call_slots<'a>(document: &'a Value, entry: &Value) -> Vec<&'a Value> {
-    if !orchestrates(document, entry) {
-        return vec![];
-    }
-    entrypoints(document).filter(|e| internal(e) && !cpu(e)).flat_map(models).collect()
-}
-
 /// One declared model slot: `<callable>.models.<param>`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Slot {
@@ -124,12 +107,14 @@ impl Slot {
     /// `<callable>.models.<param>`.
     pub fn read(raw: &Value) -> Result<Self, String> {
         let mut slot = Self::deserialize(raw).map_err(|e| e.to_string())?;
-        match slot.path.split_once(".models.") {
-            Some((callable, param)) if !callable.is_empty() && !param.is_empty() && !param.contains('.') => {
-                slot.param = param.to_owned();
-                Ok(slot)
-            }
-            _ => Err(format!("model path {:?} is not <callable>.models.<parameter>", slot.path)),
+        slot.param = Self::param_of(&slot.path)?;
+        Ok(slot)
+    }
+
+    fn param_of(path: &str) -> Result<String, String> {
+        match path.split_once(".models.") {
+            Some((callable, param)) if !callable.is_empty() && !param.is_empty() && !param.contains('.') => Ok(param.to_owned()),
+            _ => Err(format!("model path {path:?} is not <callable>.models.<parameter>")),
         }
     }
 }
@@ -232,60 +217,74 @@ pub struct Callable {
     pub accelerator: Option<bool>,
     #[serde(default, deserialize_with = "or_default")]
     pub invocable: Invocable,
-    /// What its box says that its types can't. None: it declares nothing, which draws it only in a package where nothing declares.
+    /// `@app.tool`: it's a box. None: it's a function only `cozy run` and other tools call.
     #[serde(default, deserialize_with = "or_default")]
-    pub node: Option<Node>,
-    /// A CPU function that loads no model and calls its package's GPU functions
-    /// (`orchestrates`).
-    #[serde(skip)]
-    pub orchestrates: bool,
-    /// The model slots of the calls it makes (`call_slots`).
-    #[serde(skip)]
-    pub calls: Vec<Slot>,
+    pub tool: Option<ToolDecl>,
+    /// Each function it calls, its own package's or a dependency's: what placement reads of a composed tool's GPU work.
+    #[serde(default, deserialize_with = "or_default")]
+    pub calls: Vec<Call>,
 }
 
-/// `author.Node`: all a function says of its box beyond its types.
+/// `@app.tool`: what a box of it is, beyond its types.
 #[derive(Debug, Default, Clone, Deserialize)]
-pub struct Node {
-    /// What a box of it is called, numbered: `shot` makes `shot_1`, `shot_2`. Empty: its package.
-    #[serde(default, deserialize_with = "or_default")]
-    pub name: String,
-    /// Its name in the tool list, in place of one from its package and function.
+pub struct ToolDecl {
+    /// Its name in the tool list. Empty: from its package and function.
     #[serde(default, deserialize_with = "or_default")]
     pub label: String,
-    /// Inputs on its default face beside its first text and what's required.
+    /// What a box of it is called, numbered: `shot` makes `shot_1`. Empty: its package.
     #[serde(default, deserialize_with = "or_default")]
-    pub show: Vec<String>,
-    /// Inputs a box never draws, which a file or a run can still set.
-    #[serde(default, deserialize_with = "or_default")]
-    pub hide: Vec<String>,
-    /// Input to [`TAKE`], or to `<input>.<member>`: the platform fills it from what that input mentions.
-    #[serde(default, deserialize_with = "or_default")]
-    pub fill: BTreeMap<String, String>,
+    pub named: String,
     /// The model's own tags in a text: never mentions.
     #[serde(default, deserialize_with = "or_default")]
     pub reserved: Vec<String>,
     /// The path in its package of a component that draws its box.
     #[serde(default, deserialize_with = "or_default")]
     pub ui: Option<String>,
-    /// The frames a kept take can end on, if it can't end on any.
-    #[serde(default, deserialize_with = "or_default")]
-    pub cuts: Option<Cuts>,
-    /// This function's word beside another of its package of the same label: one box, and a toggle by this word that flips to it.
-    #[serde(default, deserialize_with = "or_default")]
-    pub variant: String,
 }
 
-/// `offset + k * every`, from frame `first`.
+/// One function a tool calls, each its own unit of placement.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Call {
+    pub package: String,
+    pub function: String,
+    /// Written only as false: it never opens a GPU.
+    #[serde(default, deserialize_with = "or_default")]
+    pub accelerator: Option<bool>,
+    /// The GPU widths it runs at, `[1, 2, 4]`; absent is `[1]`, or none for a CPU callee.
+    #[serde(default, deserialize_with = "or_default")]
+    pub gpus: Vec<u32>,
+    #[serde(default, deserialize_with = "or_default")]
+    pub models: Vec<Slot>,
+}
+
+impl Call {
+    pub fn gpu(&self) -> bool {
+        self.accelerator != Some(false)
+    }
+
+    /// The GPU widths it runs at: none for a CPU callee.
+    pub fn widths(&self) -> Vec<u32> {
+        match (self.gpu(), self.gpus.is_empty()) {
+            (false, _) => vec![],
+            (true, true) => vec![1],
+            (true, false) => self.gpus.clone(),
+        }
+    }
+}
+
+/// A pickup's frames: `offset + k * every`, from frame `first`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Cuts {
+pub struct Snap {
     pub every: u32,
     pub offset: u32,
     pub first: u32,
 }
 
-/// What `fill` calls the take a new one keeps the start of.
-pub const TAKE: &str = "take";
+impl Default for Snap {
+    fn default() -> Self {
+        Self { every: 1, offset: 0, first: 0 }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct WeightsOutput {
@@ -399,7 +398,17 @@ pub enum Type {
     List(Box<Type>),
     Map(Box<Type>),
     Struct(Box<Struct>),
+    /// A file: `image`, `video`, `audio`, `latents` or `file`, by its hash.
     Asset(String),
+    /// Text and what it mentions, of these kinds of file.
+    Prompt(Vec<String>),
+    /// A file of `kind` with its description, and the extras of the version it holds.
+    Media { kind: String, extras: Box<Struct> },
+    /// What a gesture fills: a take and where it's picked up.
+    Pickup(Box<Struct>),
+    /// The box's own shape, `"16:9"`.
+    Shape,
+    Seed,
     Tree,
     Model,
     Unknown,
@@ -429,12 +438,7 @@ impl Interface {
             let name = name(raw).unwrap_or_default().to_owned();
             match Callable::deserialize(raw).map_err(|e| e.to_string()) {
                 Ok(callable) => match callable.checked() {
-                    Ok(mut callable) => {
-                        callable.orchestrates = orchestrates(document, raw);
-                        let calls = call_slots(document, raw).into_iter();
-                        callable.calls = calls.filter_map(|slot| Slot::read(slot).ok()).collect();
-                        out.callables.push(callable)
-                    }
+                    Ok(callable) => out.callables.push(callable),
                     Err(why) => out.unavailable.push((name, why)),
                 },
                 Err(why) => out.unavailable.push((name, why)),
@@ -457,35 +461,24 @@ impl Interface {
 }
 
 impl Interface {
-    /// What a publish says of a `Node` naming an input its function hasn't got.
-    pub fn node_slips(&self) -> Vec<String> {
-        let named = |callable: &Callable, node: &Node| -> Vec<String> {
-            let written = node.show.iter().chain(&node.hide).chain(node.fill.keys());
-            written.filter(|input| callable.field(input).is_none()).map(|input| format!("{}'s node names {input}, which isn't one of its inputs", callable.name)).collect()
-        };
-        self.callables.iter().filter_map(|callable| Some(named(callable, callable.node.as_ref()?))).flatten().collect()
-    }
-
     /// Whether `callable` is the `quantize` that runs this package's recipes.
     pub fn runs_recipes(&self, callable: &Callable) -> bool {
         callable.name == RECIPES && !self.recipes.is_empty()
     }
 
-    /// Whether `callable` runs on a GPU: its own body, or the package's internal GPU functions a
-    /// CPU function that loads no model orchestrates (H3's ref2va and long_form). Tensorhub's
-    /// placement (`runplacement`) reads a function the same way.
+    /// Whether `callable` runs on a GPU: its own body, or a call it makes.
     pub fn gpu(&self, callable: &Callable) -> bool {
-        callable.accelerator != Some(false) || self.orchestrates(callable)
+        callable.accelerator != Some(false) || callable.calls.iter().any(Call::gpu)
     }
 
-    /// A CPU function that loads no model, in a package with internal GPU functions: it calls them.
-    pub fn orchestrates(&self, callable: &Callable) -> bool {
-        callable.orchestrates
+    /// Whether `callable` is a CPU tool that composes calls.
+    pub fn composes(&self, callable: &Callable) -> bool {
+        callable.accelerator == Some(false) && callable.calls.iter().any(Call::gpu)
     }
 
-    /// The model slots of the calls an orchestrator makes: its package's internal GPU functions'.
+    /// The model slots of the calls `callable` makes: a run names one by its parameter, and each call declaring it gets that choice.
     pub fn call_slots<'a>(&self, callable: &'a Callable) -> Vec<&'a Slot> {
-        callable.calls.iter().collect()
+        callable.calls.iter().flat_map(|call| &call.models).collect()
     }
 }
 
@@ -505,6 +498,9 @@ impl Callable {
                 }
             }
         }
+        for slot in self.calls.iter_mut().flat_map(|call| &mut call.models) {
+            slot.param = Slot::param_of(&slot.path)?;
+        }
         Ok(self)
     }
 
@@ -523,14 +519,20 @@ impl Callable {
     }
 }
 
-impl Struct {
-    /// Whether a list of these is filled from mentions, each by its `name`, rather than written row by row.
-    pub fn is_mention(&self) -> bool {
-        self.fields.iter().any(|field| field.name == "name" && field.ty == Type::Str)
-    }
-}
-
 impl Type {
+    /// It, or what it is when it's there: `T | None` is `T`.
+    pub fn plain(&self) -> &Type {
+        match self {
+            Type::Union { branches, .. } if branches.len() == 2 && branches.contains(&Type::Null) => branches.iter().find(|branch| **branch != Type::Null).unwrap_or(self),
+            _ => self,
+        }
+    }
+
+    /// Whether it may be absent: `T | None`.
+    pub fn optional(&self) -> bool {
+        matches!(self, Type::Union { branches, .. } if branches.contains(&Type::Null))
+    }
+
     /// An asset's kind, through an optional union with null; `list` is a list of them.
     pub fn media(&self) -> Option<(&str, bool)> {
         match self {
@@ -578,9 +580,21 @@ impl Type {
         if let Some(kind) = object.get("asset") {
             return Type::Asset(kind.as_str().unwrap_or("file").to_owned());
         }
+        if let Some(Value::Array(kinds)) = object.get("prompt") {
+            return Type::Prompt(kinds.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+        }
+        if let Some(kind) = object.get("media").and_then(Value::as_str) {
+            let extras = Struct::deserialize(Value::Object(object.clone())).unwrap_or_default();
+            return Type::Media { kind: kind.to_owned(), extras: Box::new(extras) };
+        }
+        if let Some(pickup) = object.get("pickup") {
+            return Struct::deserialize(pickup.clone()).map_or(Type::Unknown, |read| Type::Pickup(Box::new(read)));
+        }
         match object.get("input").and_then(Value::as_str) {
             Some("tree") => return Type::Tree,
             Some("model") => return Type::Model,
+            Some("aspect_ratio") => return Type::Shape,
+            Some("seed") => return Type::Seed,
             _ => {}
         }
         if let Some(Value::Array(members)) = object.get("literal") {
