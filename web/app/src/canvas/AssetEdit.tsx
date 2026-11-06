@@ -1,303 +1,609 @@
-import { type ReactNode, useEffect, useRef, useState } from "react"
-import type { Control, Tool } from "../types"
+import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import type { Field, Media, Tool } from "../types"
 import { Icon } from "../ui/Icon"
+import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AddOnRows } from "./AddOns"
 import { addOnsOf } from "./checkpoints"
-import type { ElementView } from "./CanvasStore"
-import { useCanvasStore } from "./context"
-import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
+import type { CanvasStore, ElementView } from "./CanvasStore"
+import { ClipRange } from "./ClipRange"
+import { useCanvasStore, useElement } from "./context"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { Thumb } from "./Media"
 import { MentionText } from "./MentionText"
+import { baseOf, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
 
+/** Where a field's value is, and how it's changed: what's typed waits for a pause, what's set is written at once, and unset takes its key away. */
+export interface Bound {
+  value: unknown
+  draft(next: unknown): void
+  write(next: unknown): void
+  unset(): void
+  save(): void
+}
+
+/** A field of the box itself. */
+export function topBound(store: CanvasStore, name: string, field: string): Bound {
+  return {
+    value: store.valueOf(name, field),
+    draft: (next) => store.setDraft(name, field, next),
+    write: (next) => void store.setField(name, field, next),
+    unset: () => void store.setField(name, field, null),
+    save: () => void store.save(name),
+  }
+}
+
+const isRow = (value: unknown): value is Row => typeof value === "object" && value !== null && !Array.isArray(value)
+
+/** A member of a row or a block: written as the whole of what holds it. */
+function memberBound(parent: Bound, field: string): Bound {
+  const row = isRow(parent.value) ? parent.value : {}
+  const without = () => Object.fromEntries(Object.entries(row).filter(([key]) => key !== field))
+  return {
+    value: row[field],
+    draft: (next) => parent.draft({ ...row, [field]: next }),
+    write: (next) => parent.write({ ...row, [field]: next }),
+    unset: () => parent.write(without()),
+    save: parent.save,
+  }
+}
+
 const said = (value: unknown): string => (typeof value === "string" ? value : "")
 
-function TextControl({ name, control, view, focus, named }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean }) {
-  const store = useCanvasStore()
+interface Drawn {
+  name: string
+  field: Field
+  bound: Bound
+  view: ElementView
+  /** Where it is in the box, as `data-field` says: `beats.0.description`. */
+  place: string
+  /** What a reader hears it called. */
+  label: string
+  focus?: boolean
+  /** Its name is beside it: under More, or in a block. */
+  named?: boolean
+}
+
+/** Its reset, when it isn't at its default: unset takes its key out of the file. */
+function Reset({ field, bound }: { field: Field; bound: Bound }) {
+  if (atDefault(field, bound.value)) return null
+  return (
+    <button type="button" className="reset nodrag" aria-label={`Reset ${field.label}`} title="Back to its default" onClick={bound.unset}>
+      ↺
+    </button>
+  )
+}
+
+/** Words, or a prompt: chips for what it mentions, and what a prompt can't send is marked, never sent. */
+function TextField({ name, field, bound, view, place, label, focus, named }: Drawn) {
   const text = (
     <MentionText
       asset={name}
-      place={control.field}
-      value={said(store.valueOf(name, control.field))}
-      label={control.label}
-      placeholder={control.placeholder}
+      place={place}
+      value={said(bound.value)}
+      label={label}
+      placeholder={field.placeholder}
       missing={view.asset?.missing ?? []}
+      takes={field.type === "words" ? [] : field.takes}
       focus={focus}
-      onDraft={(words) => store.setDraft(name, control.field, words)}
-      onSave={() => void store.save(name)}
+      onDraft={bound.draft}
+      onSave={bound.save}
     />
   )
   if (!named) return text
   return (
     <div className="slide text-row">
-      <span className="ctl-name">{control.label}</span>
+      <span className="ctl-name">{field.label}</span>
       <div className="text-box">{text}</div>
     </div>
   )
 }
 
-/** One member of a group's row, drawn by what it is: a text can hold mentions, and the rest change as they go. */
-function RowMember({ name, member, place, label, row, set, save, view }: { name: string; member: Control; place: string; label: string; row: Row; set(row: Row): void; save(): void; view: ElementView }) {
-  const value = row[member.field] ?? member.default
-  const change = (next: unknown) => set({ ...row, [member.field]: next })
-  switch (member.type) {
-    case "range": {
-      const most = Math.max(member.max ?? 0, Number(value) || 0)
-      return (
-        <label className="slide">
-          <input className="nodrag nopan" type="range" aria-label={label} min={member.min} max={most} step={member.step ?? "any"} value={Number(value) || 0} onChange={(event) => change(Number(event.target.value))} onPointerUp={save} onKeyUp={save} />
-          <span>{member.unit ? `${String(value)} ${member.unit}` : String(value)}</span>
-        </label>
-      )
-    }
-    case "toggle":
-      return (
-        <label className="slide">
-          <input className="nodrag" type="checkbox" aria-label={label} checked={value === true} onChange={(event) => { change(event.target.checked); save() }} />
-          <span className="ctl-name">{member.label}</span>
-        </label>
-      )
-    case "choice":
-      return (
-        <select className="field nodrag" aria-label={label} value={(member.options ?? []).findIndex((option) => JSON.stringify(option) === JSON.stringify(value))} onChange={(event) => { change((member.options ?? [])[Number(event.target.value)]); save() }}>
-          {(member.options ?? []).map((option, i) => (
-            <option key={i} value={i}>
-              {String(option)}
-            </option>
+/** A switch, or with Auto three: Auto, On and Off. */
+function ToggleField({ field, bound, label }: Drawn) {
+  const value = bound.value ?? field.default
+  if (field.auto) {
+    const options: [string, boolean | null][] = [["Auto", null], ["On", true], ["Off", false]]
+    return (
+      <div className="slide" role="radiogroup" aria-label={label}>
+        <span className="ctl-name">{field.label}</span>
+        <span className="segments">
+          {options.map(([word, is]) => (
+            <button key={word} type="button" role="radio" aria-checked={(value ?? null) === is} className={`seg nodrag ${(value ?? null) === is ? "on" : ""}`} onClick={() => (is === null ? bound.unset() : bound.write(is))}>
+              {word}
+            </button>
           ))}
-        </select>
-      )
-    default:
-      return <MentionText asset={name} place={place} value={said(value)} label={label} placeholder={member.placeholder} missing={view.asset?.missing ?? []} onDraft={change} onSave={save} />
+        </span>
+      </div>
+    )
   }
-}
-
-/** A list of rows, each its members drawn by these same rules, with add and remove down to its least: a file holding fewer shows them, to write in, and holds them once one's touched. */
-function GroupControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
-  const store = useCanvasStore()
-  const rows = fullRows(control, rowsIn(store.valueOf(name, control.field)))
-  const members = control.members ?? []
-  const called = control.label.replace(/s$/, "")
-  const set = (next: Row[]) => store.setDraft(name, control.field, next)
-  const save = () => void store.save(name)
-  const total = members.find((member) => member.total)
-  const sum = total && rows.reduce((all, row) => all + (Number(row[total.field] ?? total.default) || 0), 0)
-  const least = control.min_items ?? 0
-  const add = (rows.length < (control.max_items ?? Infinity)) && (
-    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => set([...rows, newRow(control)])}>
-      + {called}
-    </button>
-  )
   return (
-    <div className="beats-edit" role="group" aria-label={control.label}>
-      {rows.map((row, i) => {
-        const each = (member: Control) => (
-          <RowMember
-            key={member.field}
-            name={name}
-            member={member}
-            place={`${control.field}.${i}.${member.field}`}
-            label={member.type === "text" ? `${called} ${i + 1}` : `${called} ${i + 1}'s ${member.label.toLowerCase()}`}
-            row={row}
-            set={(one) => set(rows.map((other, at) => (at === i ? one : other)))}
-            save={save}
-            view={view}
-          />
-        )
-        return (
-          <div className={`beat ${rows.length > least ? "can-go" : ""}`} key={i}>
-            {members.filter((member) => member.type === "text").map(each)}
-            <div className="beat-time">
-              {members.filter((member) => member.type !== "text").map(each)}
-              {rows.length === 1 && add}
-            </div>
-            {rows.length > least && (
-              <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
-                set(rows.filter((_, at) => at !== i))
-                save()
-              }}>
-                <Icon name="close" />
-              </button>
-            )}
-          </div>
-        )
-      })}
-      {rows.length !== 1 && (
-        <div className="beats-last">
-          {total && <span>{sum} {total.unit ?? ""}</span>}
-          {add}
-        </div>
-      )}
-    </div>
+    <label className="slide">
+      <input className="nodrag" type="checkbox" role="switch" aria-label={label} checked={value === true} onChange={(event) => bound.write(event.target.checked)} />
+      <span className="ctl-name">{field.label}</span>
+      <Reset field={field} bound={bound} />
+    </label>
   )
 }
 
-/** A number that goes on being moved until it's let go, and only then is written. */
-function RangeControl({ name, control }: { name: string; control: Control }) {
-  const store = useCanvasStore()
-  const held = store.valueOf(name, control.field)
-  const value = typeof held === "number" ? held : typeof control.default === "number" ? control.default : (control.min ?? 0)
+/** A slider and its value, written as it's let go. With Auto, unset is Auto. */
+function NumberField({ field, bound, label }: Drawn) {
+  const held = typeof bound.value === "number" ? bound.value : undefined
+  const fallback = typeof field.default === "number" ? field.default : (field.min ?? 0)
   const [moving, setMoving] = useState<number | null>(null)
-  const shown = moving ?? value
+  const shown = moving ?? held ?? fallback
+  const auto = field.auto && held === undefined && moving === null
   const done = () => {
-    if (moving !== null && moving !== value) void store.setField(name, control.field, moving)
+    if (moving !== null && moving !== held) bound.write(moving)
     setMoving(null)
   }
   return (
-    <label className="slide" title={control.label}>
-      <span className="ctl-name">{control.label}</span>
+    <label className={`slide ${auto ? "auto" : ""}`} title={field.label}>
+      <span className="ctl-name">{field.label}</span>
       <input
         className="nodrag nopan"
         type="range"
-        aria-label={control.label}
-        min={control.min}
-        max={control.max}
-        step={control.step ?? "any"}
+        aria-label={label}
+        min={field.min}
+        max={Math.max(field.max ?? 0, shown)}
+        step={field.step ?? (field.integer ? 1 : "any")}
         value={shown}
         onChange={(event) => setMoving(Number(event.target.value))}
         onPointerUp={done}
         onKeyUp={done}
       />
-      <span>{shown}</span>
-    </label>
-  )
-}
-
-function ChoiceControl({ name, control }: { name: string; control: Control }) {
-  const store = useCanvasStore()
-  const options = control.options ?? []
-  const held = store.valueOf(name, control.field) ?? control.default
-  return (
-    <label className="slide">
-      <span className="ctl-name">{control.label}</span>
-      <select
-        className="field nodrag"
-        aria-label={control.label}
-        value={options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))}
-        onChange={(event) => void store.setField(name, control.field, options[Number(event.target.value)])}
-      >
-        <option value={-1} disabled hidden>
+      <span className="num">{auto ? "Auto" : `${shown}${field.unit ? ` ${field.unit}` : ""}`}</span>
+      {field.auto && held !== undefined ? (
+        <button type="button" className="reset nodrag" aria-label={`${field.label}: Auto`} title="Auto" onClick={bound.unset}>
           Auto
-        </option>
-        {options.map((option, i) => (
-          <option key={i} value={i}>
-            {String(option)}
-          </option>
-        ))}
-      </select>
+        </button>
+      ) : (
+        <Reset field={field} bound={bound} />
+      )}
     </label>
   )
 }
 
-function ToggleControl({ name, control }: { name: string; control: Control }) {
-  const store = useCanvasStore()
-  const held = store.valueOf(name, control.field) ?? control.default
-  return (
-    <label className="slide">
-      <input className="nodrag" type="checkbox" checked={held === true} onChange={(event) => void store.setField(name, control.field, event.target.checked)} />
-      <span className="ctl-name">{control.label}</span>
-    </label>
-  )
-}
-
-const WANTED: Record<string, string> = { image: "a picture", video: "a video", audio: "a sound" }
-
-/** A slot you drag an element into: it holds `<name>`, or with `multiple` several, in order. */
-function FileControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
-  const store = useCanvasStore()
-  const slot = useRef<HTMLDivElement>(null)
-  const value = store.valueOf(name, control.field)
-  const held = (Array.isArray(value) ? value : [value]).flatMap((item) => (typeof item === "string" ? mentionsIn(item) : []))
-  const write = (names: string[]) => {
-    const said = names.map((one) => `<${one}>`)
-    void store.setField(name, control.field, control.multiple ? said : (said[0] ?? null))
+/** Options that each say what they are: a dropdown of their words and a line on each, showing the chosen one's words shut. */
+function Described({ field, bound, label }: Drawn) {
+  const options = field.options ?? []
+  const held = bound.value ?? field.default
+  const at = options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))
+  const [open, setOpen] = useState(false)
+  const choose = (option: unknown) => {
+    setOpen(false)
+    bound.write(option)
   }
-  useEffect(() => {
-    const el = slot.current
-    if (!el) return
-    store.dropTargets.set(el, {
-      over: () => {},
-      drop: (names) => {
-        const fresh = names.filter((one) => one !== name)
-        write(control.multiple ? [...held, ...fresh] : fresh.slice(-1))
-      },
-    })
-    return () => void store.dropTargets.delete(el)
-  })
-  const missing = view.asset?.missing ?? []
   return (
-    <div className="slot-control" ref={slot} data-drop-target="" role="group" aria-label={control.label}>
-      <span className="ctl-name">{control.label}</span>
-      {held.map((one) => (
-        <span key={one} className={`chip ${missing.includes(one) ? "missing" : ""}`} title={one}>
-          {one}
-          <button type="button" className="nodrag" aria-label={`Take out ${one}`} onClick={() => write(held.filter((other) => other !== one))}>
-            ×
-          </button>
-        </span>
-      ))}
-      {!held.length && <span className="muted">Drag {WANTED[control.accept ?? ""] ?? "something"} here</span>}
+    <div className="slide described" onBlur={(event) => !event.currentTarget.contains(event.relatedTarget as Node | null) && setOpen(false)}>
+      <span className="ctl-name">{field.label}</span>
+      <button type="button" className="field dropdown nodrag" aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(!open)} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
+        {at < 0 ? (field.placeholder ?? "Choose") : optionWord(field, options[at])}
+      </button>
+      {open && (
+        <ul className="dropdown-list nodrag nowheel" role="listbox" aria-label={label}>
+          {options.map((option, i) => (
+            <li key={i}>
+              <button type="button" role="option" aria-selected={i === at} className={i === at ? "on" : ""} onClick={() => choose(option)}>
+                <b>{optionWord(field, option)}</b>
+                {field.descriptions?.[String(option)] && <span className="muted">{field.descriptions[String(option)]}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Reset field={field} bound={bound} />
     </div>
   )
 }
 
-/** What shape it makes. */
-function ShapeControl({ name, control }: { name: string; control: Control }) {
-  const store = useCanvasStore()
-  const held = store.valueOf(name, control.field) ?? control.default
-  const shapes = shapesOf(control)
+/** Up to four options side by side, more in a menu; options that say what they are, a dropdown. */
+function ChoiceField(props: Drawn) {
+  const { field, bound, label } = props
+  if (field.descriptions && Object.keys(field.descriptions).length) return <Described {...props} />
+  const options = field.options ?? []
+  const held = bound.value ?? field.default
+  const at = options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))
+  if (options.length <= 4) {
+    return (
+      <div className="slide" role="radiogroup" aria-label={label}>
+        <span className="ctl-name">{field.label}</span>
+        <span className="segments">
+          {options.map((option, i) => (
+            <button key={i} type="button" role="radio" aria-checked={i === at} className={`seg nodrag ${i === at ? "on" : ""}`} onClick={() => bound.write(option)}>
+              {optionWord(field, option)}
+            </button>
+          ))}
+        </span>
+        <Reset field={field} bound={bound} />
+      </div>
+    )
+  }
   return (
     <label className="slide">
-      <span className="ctl-name">{control.label}</span>
-      <select className="field nodrag" aria-label={control.label} value={typeof held === "string" ? held : ""} onChange={(event) => void store.setField(name, control.field, event.target.value)}>
-        <option value="" disabled hidden>
-          Auto
+      <span className="ctl-name">{field.label}</span>
+      <select className="field nodrag" aria-label={label} value={at} onChange={(event) => bound.write(options[Number(event.target.value)])}>
+        <option value={-1} disabled hidden>
+          {field.auto ? "Auto" : ""}
         </option>
-        {shapes.map((shape) => (
-          <option key={shape} value={shape}>
-            {shape}
+        {options.map((option, i) => (
+          <option key={i} value={i}>
+            {optionWord(field, option)}
           </option>
         ))}
       </select>
+      <Reset field={field} bound={bound} />
     </label>
   )
 }
 
-/** A toggle like any, flipping which of its package's two functions makes the box. Everything else it holds stays. */
-function VariantControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  const variant = variantOf(tools.get(view.asset?.tool ?? ""), tools)
-  if (!variant) return null
+/** The box's own shape, set by its corner: here only what it is, and Auto. */
+function ShapeField({ field, bound }: Drawn) {
+  const held = typeof bound.value === "string" ? bound.value : null
   return (
-    <label className="slide">
-      <input className="nodrag" type="checkbox" aria-label={control.label} checked={variant.on} onChange={() => store.setTool(name, variant.other)} />
-      <span className="ctl-name">{control.label}</span>
-    </label>
+    <div className="slide">
+      <span className="ctl-name">{field.label}</span>
+      <span className="num">{held ?? "Auto"}</span>
+      {held && (
+        <button type="button" className="reset nodrag" aria-label={`${field.label}: Auto`} title="Auto: the tool chooses" onClick={bound.unset}>
+          Auto
+        </button>
+      )}
+    </div>
   )
 }
 
-export function ControlRow({ name, control, view, focus, named }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean }) {
-  switch (control.type) {
-    case "text":
-      return <TextControl name={name} control={control} view={view} focus={focus} named={named} />
+/** Random, or a number kept. */
+function SeedField({ field, bound, label }: Drawn) {
+  const held = typeof bound.value === "number" ? bound.value : null
+  return (
+    <div className="slide" role="group" aria-label={label}>
+      <span className="ctl-name">{field.label}</span>
+      <span className="segments">
+        <button type="button" className={`seg nodrag ${held === null ? "on" : ""}`} aria-pressed={held === null} onClick={bound.unset}>
+          Random
+        </button>
+        <button type="button" className={`seg nodrag ${held !== null ? "on" : ""}`} aria-pressed={held !== null} onClick={() => held === null && bound.write(Math.floor(Math.random() * 2 ** 31))}>
+          Fixed
+        </button>
+      </span>
+      {held !== null && (
+        <input
+          className="field seed nodrag"
+          type="number"
+          aria-label={`${label}: its number`}
+          min={0}
+          step={1}
+          defaultValue={held}
+          key={held}
+          onBlur={(event) => {
+            const typed = Number(event.target.value)
+            if (Number.isInteger(typed) && typed >= 0 && typed !== held) bound.write(typed)
+          }}
+          onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+        />
+      )}
+    </div>
+  )
+}
+
+/** What a mention would put in a slot that takes `accept`, or why it can't: by what the box it names is. */
+export function whyNotIn(store: CanvasStore, accept: Media | undefined, mention: string, besides: string, label: string): string | null {
+  const said = store.mentionOf(mention, besides)
+  if (!said) return `${baseOf(mention)} is nothing in this project`
+  const kind = store.kindOf(mention, besides)
+  if (!accept || kind === accept) return null
+  return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "words" : (WANTED[kind as Media] ?? "a file")}`
+}
+
+/** A slot's file: its thumbnail, and on a video its in and out. */
+function Held({ name, mention, label, onRange, onOff }: { name: string; mention: string; label: string; onRange(next: string): void; onOff(): void }) {
+  const store = useCanvasStore()
+  const said = store.mentionOf(mention, name)
+  useElement(said?.name ?? "")
+  const file = store.fileOf(mention, name)
+  const range = rangeOf(mention)
+  const missing = !said || said.gone
+  const fps = file?.fps ?? FPS
+  const frames = framesIn(file?.duration_ms, fps)
+  return (
+    <div className={`slot-held ${missing ? "missing" : ""}`}>
+      <span className="chip" title={mention} data-mention={mention}>
+        {baseOf(mention)}
+        {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
+        <button type="button" className="nodrag" aria-label={`Take ${baseOf(mention)} out of ${label}`} onClick={onOff}>
+          ×
+        </button>
+      </span>
+      {file && !file.absent && file.field === "image" && (
+        <span className="slot-thumb">
+          <Thumb sha256={file.sha256} cardWidth={120} />
+        </span>
+      )}
+      {file && !file.absent && file.field === "video" && (
+        <ClipRange
+          sha256={file.sha256}
+          frames={frames}
+          fps={fps}
+          from={range?.from ?? 0}
+          to={range?.to ?? frames}
+          width={240}
+          label={`${label}: ${baseOf(mention)}`}
+          onSet={(from, to) => onRange(ranged(baseOf(mention), from, to, frames))}
+        />
+      )}
+    </div>
+  )
+}
+
+/** A drop target: a box or one of its versions, or `<name>` typed in it. What it can't take is refused at the drop, with why, and said as it's carried over. */
+function SlotField({ name, field, bound, view, label, place, siblings }: Drawn & { siblings?: Row }) {
+  const store = useCanvasStore()
+  const slot = useRef<HTMLDivElement>(null)
+  const [typed, setTyped] = useState("")
+  const value = bound.value
+  const held = (Array.isArray(value) ? value : [value]).flatMap((item) => (typeof item === "string" ? mentionsIn(item) : []))
+  const write = (mentions: string[]) => {
+    const said = mentions.map((one) => `<${one}>`)
+    if (!said.length) return bound.unset()
+    bound.write(field.multiple ? said : said[0])
+  }
+  const refusal = (mention: string) => whyNotIn(store, field.accept, mention, name, field.label)
+  const take = (mentions: string[]) => {
+    const fresh = mentions.filter((one) => store.resolveName(baseOf(one)) !== store.resolveName(name))
+    const why = fresh.map(refusal).find(Boolean)
+    if (why) return void say(why)
+    if (fresh.length) write(field.multiple ? [...held, ...fresh] : fresh.slice(-1))
+  }
+  useEffect(() => {
+    const el = slot.current
+    if (!el) return
+    store.dropTargets.set(el, { over: () => {}, whyNot: (names) => names.map(refusal).find(Boolean) ?? null, drop: take })
+    return () => void store.dropTargets.delete(el)
+  })
+  const spans = field.spans ? spanOf(store, name, field, held[0], siblings) : null
+  const refusing = useSignal(store.refusing)
+  const [carried, setCarried] = useState(false)
+  const version = carried ? store.carriedVersion(name) : null
+  const why = (refusing && refusing.el === slot.current ? refusing.why : null) ?? (version ? refusal(version) : null)
+  return (
+    <div
+      className={`slot-control ${held.length ? "filled" : ""} ${why ? "refuses" : ""}`}
+      ref={slot}
+      data-drop-target=""
+      data-field={place}
+      data-accept={field.accept}
+      role="group"
+      aria-label={label}
+      onDragEnter={() => setCarried(true)}
+      onDragLeave={(event) => !event.currentTarget.contains(event.relatedTarget as Node | null) && setCarried(false)}
+      {...versionDrop(store, name, (mentions) => {
+        setCarried(false)
+        take(mentions)
+      })}
+    >
+      <span className="ctl-name">{field.label}</span>
+      {why && <span className="refusal">{why}</span>}
+      {held.map((one, i) => (
+        <Held key={`${i}:${baseOf(one)}`} name={name} mention={one} label={field.label} onOff={() => write(held.filter((other) => other !== one))} onRange={(next) => write(held.map((other) => (other === one ? next : other)))} />
+      ))}
+      {(!held.length || field.multiple) && (
+        <input
+          className="slot-type nodrag"
+          aria-label={`${label}: a name`}
+          placeholder={`Drag ${WANTED[field.accept ?? "image"]} here`}
+          value={typed}
+          onChange={(event) => setTyped(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return
+            const mention = typed.trim().replace(/^<|>$/g, "")
+            if (!mention) return
+            setTyped("")
+            take([mention])
+          }}
+        />
+      )}
+      {spans && <span className={`spans ${spans.differs ? "warn" : ""}`}>{spans.says}</span>}
+      {view.asset?.missing?.some((gone) => held.includes(gone)) && <span className="muted">Not in this project any more</span>}
+    </div>
+  )
+}
+
+/** A take carried out of a box, let go on a slot: that version, if it's what the slot takes. */
+function versionDrop(store: CanvasStore, name: string, take: (mentions: string[]) => void) {
+  return {
+    onDragOver(event: DragEvent) {
+      if (store.carriedVersion()) event.preventDefault()
+    },
+    onDrop(event: DragEvent) {
+      const mention = store.carriedVersion(name)
+      if (!mention) return
+      event.preventDefault()
+      event.stopPropagation()
+      take([mention])
+    },
+  }
+}
+
+/** A slot whose video is the timeline of a list group's rows: both lengths, and a warning when they differ. */
+function spanOf(store: CanvasStore, name: string, field: Field, mention: string | undefined, siblings: Row | undefined) {
+  if (!mention || !field.spans) return null
+  const tool = store.tools.get().get(store.get(name)?.asset?.tool ?? "")
+  const group = (tool?.fields ?? []).find((held) => held.field === field.spans)
+  const rows = rowsIn(siblings ? siblings[field.spans] : store.valueOf(name, field.spans))
+  const total = group && totalOf(group, fullRows(group, rows))
+  const file = store.fileOf(mention, name)
+  if (!total || !file?.duration_ms) return null
+  const fps = file.fps ?? FPS
+  const range = rangeOf(mention)
+  const frames = (range?.to ?? framesIn(file.duration_ms, fps)) - (range?.from ?? 0)
+  const seconds = Math.round((frames / fps) * 10) / 10
+  const differs = Math.abs(seconds - total.sum) >= 0.5
+  const unit = total.member.unit ?? "s"
+  return { differs, says: differs ? `${field.label} is ${seconds} ${unit}, and the ${group.label.toLowerCase()} ${total.sum} ${unit}: the ${field.label.toLowerCase()} wins` : `${seconds} ${unit}` }
+}
+
+/** One row of a list, or a block: each member drawn by these same rules. */
+function Members({ name, group, bound, view, place, label }: { name: string; group: Field; bound: Bound; view: ElementView; place: string; label: string }) {
+  const members = group.members ?? []
+  const row = isRow(bound.value) ? bound.value : {}
+  const each = (member: Field) => (
+    <FieldControl
+      key={member.field}
+      name={name}
+      field={member}
+      bound={memberBound(bound, member.field)}
+      view={view}
+      place={`${place}.${member.field}`}
+      label={member.type === "prompt" || member.type === "words" ? label : `${label}'s ${member.label.toLowerCase()}`}
+      named={member.type === "group" || !(member.type === "prompt" || member.type === "words")}
+      siblings={row}
+    />
+  )
+  return (
+    <>
+      {members.filter((member) => member.type === "prompt" || member.type === "words").map(each)}
+      <div className="beat-time">{members.filter((member) => member.type !== "prompt" && member.type !== "words" && member.type !== "group").map(each)}</div>
+      {members.filter((member) => member.type === "group").map(each)}
+    </>
+  )
+}
+
+/** Rows, each its members, with + and × down to its least and up to its most, dragged by the grip to reorder. A file holding fewer shows them, to write in, and holds them once one's touched. */
+function ListGroup({ name, field, bound, view, place }: Drawn) {
+  const rows = fullRows(field, rowsIn(bound.value))
+  const called = field.label.replace(/s$/, "")
+  const least = field.min_items ?? 0
+  const total = totalOf(field, rows)
+  const list = useRef<HTMLDivElement>(null)
+  const [moving, setMoving] = useState<{ from: number; to: number } | null>(null)
+  const rowBound = (i: number): Bound => ({
+    value: rows[i],
+    draft: (next) => bound.draft(rows.map((other, at) => (at === i ? next : other))),
+    write: (next) => bound.write(rows.map((other, at) => (at === i ? next : other))),
+    unset: () => bound.write(rows.filter((_, at) => at !== i)),
+    save: bound.save,
+  })
+  const slotAt = (y: number) => {
+    const held = [...(list.current?.querySelectorAll<HTMLElement>(":scope > .beat") ?? [])]
+    const at = held.findIndex((el) => y < el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2)
+    return at < 0 ? held.length - 1 : at
+  }
+  const grip = (i: number) => ({
+    onPointerDown(event: PointerEvent<HTMLElement>) {
+      event.stopPropagation()
+      event.currentTarget.setPointerCapture(event.pointerId)
+      setMoving({ from: i, to: i })
+    },
+    onPointerMove(event: PointerEvent<HTMLElement>) {
+      if (moving) setMoving({ ...moving, to: slotAt(event.clientY) })
+    },
+    onPointerUp() {
+      if (moving && moving.to !== moving.from) {
+        const next = [...rows]
+        const [one] = next.splice(moving.from, 1)
+        next.splice(moving.to, 0, one)
+        bound.write(next)
+      }
+      setMoving(null)
+    },
+  })
+  const add = rows.length < (field.max_items ?? Infinity) && (
+    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => bound.write([...rows, newRow(field)])}>
+      + {called}
+    </button>
+  )
+  return (
+    <div className="beats-edit" role="group" aria-label={field.label} data-field={place} ref={list}>
+      {rows.map((_, i) => (
+        <div className={`beat ${rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} key={i}>
+          {rows.length > 1 && (
+            <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>
+              ⋮⋮
+            </span>
+          )}
+          <div className="beat-body">
+            <Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} />
+          </div>
+          {rows.length > least && (
+            <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => bound.write(rows.filter((_, at) => at !== i))}>
+              <Icon name="close" />
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="beats-last">
+        {total && (
+          <span className="total">
+            {total.sum} {total.member.unit ?? ""}
+          </span>
+        )}
+        {add}
+      </div>
+    </div>
+  )
+}
+
+/** A block of fields inside the box. One that may be absent is added with + and taken out with ×. */
+function BlockGroup({ name, field, bound, view, place, label }: Drawn) {
+  const present = isRow(bound.value)
+  if (!present && !field.required) {
+    return (
+      <div className="group-block absent" data-field={place}>
+        <button type="button" className="add-beat nodrag" onClick={() => bound.write(newRow(field))}>
+          + {field.label}
+        </button>
+      </div>
+    )
+  }
+  const held: Bound = present ? bound : { ...bound, value: newRow(field) }
+  return (
+    <div className="group-block" role="group" aria-label={label} data-field={place}>
+      <div className="group-head">
+        <span className="ctl-name">{field.label}</span>
+        {!field.required && (
+          <button type="button" className="iconb nodrag" aria-label={`Remove ${field.label.toLowerCase()}`} onClick={bound.unset}>
+            <Icon name="close" />
+          </button>
+        )}
+      </div>
+      <Members name={name} group={field} bound={held} view={view} place={place} label={label} />
+    </div>
+  )
+}
+
+/** One field, drawn by its type. */
+export function FieldControl(props: Drawn & { siblings?: Row }) {
+  switch (props.field.type) {
+    case "prompt":
+    case "words":
+      return <TextField {...props} />
     case "group":
-      return <GroupControl name={name} control={control} view={view} />
-    case "range":
-      return <RangeControl name={name} control={control} />
+      return props.field.list ? <ListGroup {...props} /> : <BlockGroup {...props} />
+    case "number":
+      return <NumberField {...props} />
     case "choice":
-      return <ChoiceControl name={name} control={control} />
+      return <ChoiceField {...props} />
     case "shape":
-      return <ShapeControl name={name} control={control} />
+      return <ShapeField {...props} />
     case "toggle":
-      return control.field === VARIANT ? <VariantControl name={name} control={control} view={view} /> : <ToggleControl name={name} control={control} />
-    case "file":
-      return <FileControl name={name} control={control} view={view} />
+      return <ToggleField {...props} />
+    case "slot":
+      return <SlotField {...props} />
+    case "seed":
+      return <SeedField {...props} />
     default:
       return null
   }
+}
+
+/** A field of the box itself. */
+export function ControlRow({ name, field, view, focus, named }: { name: string; field: Field; view: ElementView; focus: boolean; named: boolean }) {
+  const store = useCanvasStore()
+  return <FieldControl name={name} field={field} bound={topBound(store, name, field.field)} view={view} place={field.field} label={field.label} focus={focus} named={named} />
 }
 
 /** A text asset: only its words, which whatever mentions it reads. It has nothing to render, no takes and nothing to approve. */
@@ -366,27 +672,27 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   )
 }
 
-/** What goes in the frame while nothing's made to fill it, so you write on what you're making: its words, else the slot for its file. A tool with its own box draws all of that itself. */
-function framed(view: ElementView, controls: Control[], tool: Tool | undefined): Control | undefined {
+/** What goes in the frame while nothing's made to fill it, so you write on what you're making: its first prompt, else its first slot. A tool with its own box draws all of that itself. */
+function framed(view: ElementView, fields: Field[], tool: Tool | undefined): Field | undefined {
   if (!view.hereWords || tool?.ui) return undefined
-  return controls.find((control) => control.type === "text") ?? controls.find((control) => control.type === "file")
+  return fields.find((field) => field.type === "prompt" || field.type === "words") ?? fields.find((field) => field.type === "slot")
 }
 
 export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const control = view.asset && framed(view, controlsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
-  if (!control) return null
+  const field = view.asset && framed(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
+  if (!field) return null
   return (
     <div className="in-frame">
-      <ControlRow name={name} control={control} view={view} focus={store.focusing === name} named={false} />
+      <ControlRow name={name} field={field} view={view} focus={store.focusing === name} named={false} />
     </div>
   )
 }
 
 const plain = (value: unknown): string => (typeof value === "object" && value !== null ? Object.values(value).map(plain).join(" ") : String(value))
 
-/** What it holds that no control draws: only to see. */
+/** What it holds that no field declares: only to see. */
 function HeldLine({ field, value }: { field: string; value: unknown }) {
   const text = plain(value)
   return (
@@ -397,25 +703,28 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
   )
 }
 
-/** What beside Render is only a thing to set: the rest of what a box shows unasked wants a line. */
-const set = (control: Control) => control.type === "toggle" || control.type === "range" || control.type === "choice"
+/** What beside Render is only a thing to set: the rest of the face wants a line. */
+const small = (field: Field) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
-/** What a box asks and holds, under it. On its words: what a render can't go without and Render, each drawn from its tool's controls or by its package. On a take: what's done with that. Everything else is under More, if there's anything. */
+/** What a box asks and holds, under it. On its face: prompts, groups, what a render can't go without, a filled slot, and Render. Everything else is under More, expert settings in its Advanced. On a take: what's done with that. */
 export function AssetEdit({ name, view, editing, actions, children }: { name: string; view: ElementView; editing: boolean; actions: ReactNode; children: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
+  const [advanced, setAdvanced] = useState(false)
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
-  const controls = makes(view) ? controlsOf(view.asset, tools) : []
-  const inFrame = framed(view, controls, tool)
-  const first = controls.find((control) => control.type === "text")
-  const rest = controls.filter((control) => control !== inFrame && control.type !== "timeline")
-  const asked = editing ? shownControls(controls) : []
-  const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, controls)
-  const folded = rest.filter((control) => !asked.includes(control))
+  const fields = makes(view) ? fieldsOf(view.asset, tools) : []
+  const inFrame = framed(view, fields, tool)
+  const first = fields.find((field) => field.type === "prompt" || field.type === "words")
+  const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline")
+  const faced = editing ? rest.filter((field) => onFace(field, store.valueOf(name, field.field))) : []
+  const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
+  const folded = rest.filter((field) => !faced.includes(field))
+  const plainFolded = folded.filter((field) => !field.advanced)
+  const expert = folded.filter((field) => field.advanced)
   const described = store.valueOf(name, "description")
   const marksOf = (drawn: boolean) => [
-    ...(drawn ? folded.flatMap((control) => markOf(control, store.valueOf(name, control.field)) ?? []) : []),
+    ...(drawn ? folded.flatMap((field) => markOf(field, store.valueOf(name, field.field)) ?? []) : []),
     ...beyond.map(([field]) => fieldWords(field)),
     ...(typeof described === "string" && described ? ["Description"] : []),
   ]
@@ -423,17 +732,10 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
   // A caption is typed into its field, and shows until it's kept or dropped.
   const typing = view.drafts !== undefined && "description" in view.drafts
-  const shown = rest.filter((control) => asked.includes(control))
+  const row = (field: Field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
   return (
     <div className="edit-face">
-      <ToolBox
-        tool={tool}
-        name={name}
-        view={view}
-        shown={shown.filter((control) => !set(control))}
-        folded={folded}
-        row={(control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={store.focusing === name && control === first} named={folded.includes(control)} />}
-      >
+      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
           // A package's whole face holds what would be behind More, so nothing's hidden there.
           const marks = marksOf(more !== null)
@@ -443,7 +745,7 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
               {editing && lines && <div className="edit-shown">{lines}</div>}
               <div className="row actions">
                 {actions}
-                {more !== null && shown.filter(set).map((control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={false} named={false} />)}
+                {more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
                 {behind && (
                   <button type="button" className="more-toggle nodrag" aria-expanded={open} title={marks.join(", ") || undefined} onClick={() => store.setMore(name, !open)}>
                     {!open && marks.length > 0 && <span className="more-marks">{marks.join(", ")}</span>}
@@ -455,6 +757,14 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
                 (open || typing) && (
                   <div className="edit-more">
                     {open && more}
+                    {open && more !== null && expert.length > 0 && (
+                      <div className="advanced">
+                        <button type="button" className="advanced-toggle nodrag" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>
+                          Advanced
+                        </button>
+                        {advanced && expert.map(row)}
+                      </div>
+                    )}
                     {open && <AddOnRows name={name} />}
                     {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
                     {children}
@@ -471,3 +781,4 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
     </div>
   )
 }
+

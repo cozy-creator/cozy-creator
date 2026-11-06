@@ -1,18 +1,20 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { ApiError, type Client } from "../api/client"
 import { type Action, Outbox } from "../api/outbox"
-import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
+import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, Pickup, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
 import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
-import { controlsOf, fullRows } from "./controls"
+import { fieldsOf, fullRows } from "./controls"
+import { baseOf } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, shownOf, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, type Shown, shownOf, widthFor } from "./shown"
+import { rowsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
-import { isSelf, mentionFrom, numbersOf, SELF, versionOf } from "./versions"
+import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 
 export type ElementData = { name: string }
 export type ElementNode = Node<ElementData, "element" | "entity">
@@ -21,6 +23,8 @@ export type ElementNode = Node<ElementData, "element" | "entity">
 export interface DropTarget {
   over(names: string[], x: number, y: number): void
   drop(names: string[], x: number, y: number): void
+  /** Why it won't take these, said as they're carried over it and at the drop, or null when it will. */
+  whyNot?(names: string[]): string | null
 }
 
 export type MediaKind = "image" | "video" | "audio" | "file"
@@ -85,8 +89,8 @@ export interface ElementView {
   known?: string
   /** The file moved under the drafts. */
   conflict?: boolean
-  /** Its render waits for a machine, and what it keeps. */
-  waiting?: Keep
+  /** Its render waits for a machine, with its pickup if it has one. */
+  waiting?: { pickup?: Pickup }
   /** Seconds into a video, scrubbed to. */
   scrub?: number
   /** Its ratio while it's being reshaped. */
@@ -101,14 +105,12 @@ export interface ElementView {
   joining?: number
   /** It just arrived, and lands. */
   landing?: boolean
+  /** What its render has shown so far, the newest: kept, dimmed, if the render fails. */
+  glimpse?: { run: string; output: string; index: number; media: string; label?: string; sha256?: string }
+  /** Another box's take let go on it, to pick up from: that take, as a mention of it, and where it's from. */
+  pickingUp?: { take: string; from: string; number: number }
   /** The take that just landed, sliding in beside the last. */
   slid?: number
-}
-
-/** What a new take keeps of an old one. */
-export interface Keep {
-  take?: number
-  in_s?: number
 }
 
 /** A take or version carried out of its box. */
@@ -134,6 +136,9 @@ interface Gone {
 }
 
 export const CARD_WIDTH = 240
+
+/** A take carried out of its box: a drag's data can't be read before its drop, and a slot says as it's carried over whether it takes it. */
+export const carriedFile = signal<CarriedFile | null>(null)
 
 type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
@@ -207,6 +212,8 @@ export class CanvasStore {
   inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
   leaveHere: () => void = () => {}
+  /** Works on a box where it stands, as a click on it does. */
+  openHere: (name: string) => void = () => {}
   /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
   fitHere: (only?: boolean) => void = () => {}
   /** The box being worked on has another name now. */
@@ -409,7 +416,11 @@ export class CanvasStore {
     const owner = this.owners.get(run.number)
     if (!owner) return
     const making = this.get(owner)?.asset?.making ?? []
-    if (run.number === Math.min(...making)) this.patch(owner, { run })
+    if (run.number !== Math.min(...making)) return
+    const shown = [...(run.output ?? [])].reverse().find((item) => item.status === "completed" && /^(image|video)\//.test(item.media_type))
+    const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 }
+    const held = this.get(owner)?.glimpse
+    this.patch(owner, glimpse && JSON.stringify(glimpse) !== JSON.stringify(held) ? { run, glimpse } : { run })
   }
 
   private reconcile() {
@@ -464,7 +475,7 @@ export class CanvasStore {
           Object.assign(change, { asset: over ? { ...asset, ...over.row } : asset, landed: undefined })
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
-          if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
+          if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
@@ -767,7 +778,7 @@ export class CanvasStore {
    * A new take or version: the box says Queued now, and anything typed goes first. What Calcifer runs itself needs no machine; with none up for the rest, it asks
    * for one and goes when one is. Its key is made here, once, so however often this is tried it asks one render.
    */
-  run(name: string, keep?: Keep) {
+  run(name: string, also: { pickup?: Pickup } = {}) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     const asset = view?.asset
@@ -775,16 +786,16 @@ export class CanvasStore {
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
-      this.patch(key, { waiting: keep ?? {} })
+      this.patch(key, { waiting: also })
       this.askMachine()
       return
     }
-    this.patch(key, { waiting: undefined, scrub: undefined, asked: NOT_YET })
+    this.patch(key, { waiting: undefined, scrub: undefined, pickingUp: undefined, glimpse: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
     const once = `take-${crypto.randomUUID()}`
     this.act(key, {
-      send: async (served, signal) => ((await saved) ? this.client.render(this.projectId!, [served], on, once, keep, signal) : null),
+      send: async (served, signal) => ((await saved) ? this.client.render(this.projectId!, [served], on, once, also, signal) : null),
       done: (answer) => {
         settle(answer ? performance.now() : undefined)
         this.readAfter([id])
@@ -945,6 +956,12 @@ export class CanvasStore {
     const asset = this.views.get(key)?.asset
     if (!asset || asset.timeline || madeHere(asset.tool)) return false
     const own = file.from !== undefined && nameKey(file.from) === nameKey(key)
+    // Another box's take on one that picks up: from there, at a frame chosen on it.
+    if (!own && file.from && file.number && file.field === "video" && this.tools.get().get(asset.tool ?? "")?.pickup) {
+      this.patch(key, { pickingUp: { take: mentionFrom(key, file.from, file.number), from: file.from, number: file.number }, scrub: 0 })
+      this.openHere(key)
+      return true
+    }
     if (this.joins(key)) {
       if (!own) this.joinVersion(key, { sha256: file.sha256, field: file.field, path: "" }, file.sha256, file.name)
       return true
@@ -972,7 +989,7 @@ export class CanvasStore {
     if (!view?.asset) return
     void this.save(key)
     const word = this.tools.get().get(view.asset.tool ?? "")?.label ?? "Its tool"
-    const words = holdsPictures(view.asset) ? `Its pictures and words stay.` : `It's a text box now.`
+    const words = holdsPictures(view.asset) ? `What it held went with it. Its pictures stay.` : `It's a text box now.`
     this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
   }
 
@@ -1269,12 +1286,39 @@ export class CanvasStore {
   }
 
   /** What a mention in `asset`'s text names, as far as this page knows: a box, a version of it, and whether that's gone. */
-  mentionOf(mention: string, asset: string): { name: string; number?: number; gone?: boolean } | null {
+  mentionOf(said: string, asset: string): { name: string; number?: number; gone?: boolean } | null {
+    const mention = baseOf(said)
     const name = this.nameOf(mention)
     if (name) return { name }
     const version = versionOf(mention)
     const of = version && (this.nameOf(version.name) ?? (isSelf(version.name) ? this.resolveName(asset) : null))
     return of && version ? { name: of, number: version.number, gone: !numbersOf(this.get(of)?.asset).includes(version.number) } : null
+  }
+
+  /** The file a mention means, as this page knows it: a version's, else what the box shows. */
+  fileOf(mention: string, asset: string): Shown | null {
+    const said = this.mentionOf(mention, asset)
+    const view = said && this.get(said.name)
+    if (!view) return null
+    if (said.number === undefined) return shownOf(view)
+    const main = versionIn(view.asset, said.number)?.main
+    return main ? { ...main, number: said.number } : null
+  }
+
+  /** What a mention is: `image`, `video`, `audio` or `text`. A voice is a sound. */
+  kindOf(mention: string, asset: string): string | undefined {
+    if (/\.voice$/i.test(baseOf(mention))) return "audio"
+    const said = this.mentionOf(mention, asset)
+    const view = said && this.get(said.name)
+    if (!view) return undefined
+    return this.fileOf(mention, asset)?.field ?? view.asset?.kind
+  }
+
+  /** A take carried out of its box, as `asset`'s text would mention it. */
+  carriedVersion(asset?: string): string | null {
+    const held = carriedFile.get()
+    if (!held?.from || !held.number) return null
+    return asset === undefined ? held.from : mentionFrom(asset, held.from, held.number)
   }
 
   /** A text says where its caret takes a name. The first of a box is what a drop on the box means. */
@@ -1298,6 +1342,7 @@ export class CanvasStore {
       const part = at && this.dropTargets.get(at)
       if (part) {
         this.setHot(name)
+        this.overPart = at
         return part
       }
       // A box of pictures with no tool takes pictures, as its versions.
@@ -1312,6 +1357,22 @@ export class CanvasStore {
     }
     this.setHot(null)
     return null
+  }
+
+  private overPart: Element | null = null
+  /** What's carried over a part of a box that won't take it, and why: shown on that part until the drag moves off it. */
+  readonly refusing = signal<{ el: Element; why: string } | null>(null)
+
+  /** Carried over a point: what's there to take it, and why it won't. */
+  offered(x: number, y: number, names: string[], dragged: Element[]): { target: DropTarget | null; why: string | null } {
+    this.overPart = null
+    const target = this.dropTargetAt(x, y, dragged)
+    const why = target?.whyNot?.(names) ?? null
+    const el = why ? this.overPart : null
+    const now = this.refusing.get()
+    if (now?.el !== el || now?.why !== why) this.refusing.set(el && why ? { el, why } : null)
+    if (why) this.setHot(null)
+    return { target, why }
   }
 
   /** Boxes let go on a box of pictures: what each shows joins it, and they stay as they are. */
@@ -1331,7 +1392,7 @@ export class CanvasStore {
     if (!asset || !given.length) return
     const tags = given.map((name) => `<${name}>`)
     const asText = (held: unknown) => [typeof held === "string" ? held.trimEnd() : "", ...tags].filter(Boolean).join(" ")
-    const controls = controlsOf(asset, this.tools.get())
+    const fields = fieldsOf(asset, this.tools.get())
     if (asset.timeline) {
       const clips = asset.timeline.tracks[0]?.clips ?? []
       const taken = given.flatMap((name) => clipOf(this, name, asset.timeline?.fps ?? 24) ?? [])
@@ -1339,14 +1400,22 @@ export class CanvasStore {
       if (taken.length) void this.setFields(key, { timeline: wire([...clips, ...taken]) })
       return
     }
-    const control = controls.find((held) => held.type === "text" || held.type === "file" || (held.type === "group" && held.members?.some((member) => member.type === "text")))
-    if (!control) return
-    const value = this.valueOf(key, control.field)
-    if (control.type === "text") return void this.setFields(key, { [control.field]: asText(value) })
-    if (control.type === "file") return void this.setFields(key, { [control.field]: control.multiple ? [...(Array.isArray(value) ? value : []), ...tags] : tags.at(-1) })
-    const words = control.members!.find((member) => member.type === "text")!
-    const rows = fullRows(control, Array.isArray(value) ? value : [])
-    void this.setFields(key, { [control.field]: rows.map((row, i) => (i ? row : { ...row, [words.field]: asText(row[words.field]) })) })
+    // A mention goes in its first prompt, at the top or in its first row. Only a box with no prompt has a slot filled by a drop on it.
+    const isText = (field: { type: string }) => field.type === "prompt" || field.type === "words"
+    const text = fields.find(isText)
+    if (text) return void this.setFields(key, { [text.field]: asText(this.valueOf(key, text.field)) })
+    const group = fields.find((field) => field.type === "group" && field.list && field.members?.some(isText))
+    if (group) {
+      const words = group.members!.find(isText)!
+      const rows = fullRows(group, rowsIn(this.valueOf(key, group.field)))
+      return void this.setFields(key, { [group.field]: rows.map((row, i) => (i ? row : { ...row, [words.field]: asText(row[words.field]) })) })
+    }
+    const slot = fields.find((field) => field.type === "slot" && (field.multiple || !this.valueOf(key, field.field)))
+    if (!slot) return
+    const wrong = given.find((name) => slot.accept && this.kindOf(name, key) !== slot.accept)
+    if (wrong) return void say(`${slot.label} takes ${slot.accept === "image" ? "a picture" : slot.accept === "video" ? "a video" : "a sound"}, and ${wrong} isn't one`)
+    const held = this.valueOf(key, slot.field)
+    void this.setFields(key, { [slot.field]: slot.multiple ? [...(Array.isArray(held) ? held : []), ...tags] : tags.at(-1) })
   }
 
   private hot: string | null = null

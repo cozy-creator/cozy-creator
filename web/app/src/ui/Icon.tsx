@@ -14,7 +14,6 @@ const STROKES = {
 
 const FILLS = {
   play: "M6.5 4.3v11.4c0 .5.6.8 1 .5l8.8-5.7c.4-.3.4-.8 0-1L7.5 3.8c-.4-.3-1 0-1 .5z",
-  bolt: "M11 2.5L4.8 11h4.4l-.9 6.5L15.2 9h-4.5z",
 } as const
 
 export type IconName = keyof typeof STROKES | keyof typeof FILLS

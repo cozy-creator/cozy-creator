@@ -1,4 +1,5 @@
 import type {
+  Pickup,
   Account,
   Agreed,
   Approved,
@@ -289,8 +290,8 @@ export class Client {
     return this.write("POST", `${project(id)}/unpin`, { name }, undefined, { once })
   }
 
-  /** A new version of each of `names`, on these machines. `take` and `in_s` keep one video's start; `outdated`, with `all`, re-runs pins that are. */
-  render(id: string, names: string[], on: string[], key: string, also: { take?: number; in_s?: number; outdated?: boolean } = {}, once?: AbortSignal): Promise<Asked> {
+  /** A new version of each of `names`, on these machines. A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
+  render(id: string, names: string[], on: string[], key: string, also: { pickup?: Pickup; outdated?: boolean } = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
 

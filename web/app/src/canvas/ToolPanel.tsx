@@ -23,24 +23,8 @@ const GROUPS: { id: string; words: string; icon: IconName }[] = [
 ]
 
 /** What you're after. One that asks for a file and for no words changes what it's given; anything else makes something of its kind. */
-const groupOf = (tool: Tool) => tool.local ? "local" : (tool.controls.some((control) => control.type === "file" && control.required) && !tool.controls.some((control) => control.type === "text" || control.type === "group") ? "touch" : tool.kind)
-
-/** A function and its quick form are one row: `generate` and `generate_turbo` of a package. */
-function rowsOf(tools: Tool[]): { tool: Tool; quick?: Tool }[] {
-  const quick = new Map(tools.map((tool) => [`${tool.package}/${tool.function}`, tool]))
-  const taken = new Set<Tool>()
-  const rows = tools.map((tool) => {
-    // Two of a label are one box, its toggle starting on: `variantOf` flips it.
-    if (tools.some((other) => other.variant && other !== tool && other.package === tool.package && other.label === tool.label)) {
-      taken.add(tool)
-      return { tool }
-    }
-    const fast = quick.get(`${tool.package}/${tool.function}_turbo`)
-    if (fast) taken.add(fast)
-    return { tool, quick: fast }
-  })
-  return rows.filter((row) => !taken.has(row.tool))
-}
+const groupOf = (tool: Tool) =>
+  tool.local ? "local" : tool.fields.some((field) => field.type === "slot" && field.required) && !tool.fields.some((field) => field.type === "prompt" || field.type === "words" || field.type === "group") ? "touch" : tool.makes
 
 function dragged(event: DragEvent, tool: Tool) {
   event.stopPropagation()
@@ -66,7 +50,7 @@ function useRemove() {
   }
 }
 
-function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; place: (tool: Tool) => void; yours: boolean }) {
+function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => void; yours: boolean }) {
   const remove = useRemove()
   const store = useCanvasStore()
   const landed = () => {
@@ -74,25 +58,8 @@ function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; plac
     store.setHot(null)
   }
   return (
-    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.kind} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onDragEnd={landed} onClick={() => place(tool)}>
+    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.makes} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onDragEnd={landed} onClick={() => place(tool)}>
       <b>{tool.label}</b>
-      {quick && (
-        <span
-          className="tool quick"
-          draggable
-          role="button"
-          aria-label={quick.label}
-          title={quick.label}
-          data-kind={quick.kind}
-          onDragStart={(event) => dragged(event, quick)}
-          onClick={(event) => {
-            event.stopPropagation()
-            place(quick)
-          }}
-        >
-          <Icon name="bolt" />
-        </span>
-      )}
       {yours && !tool.local && !madeHere(tool.id) && (
         <button
           type="button"
@@ -101,7 +68,7 @@ function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; plac
           title="Take off your list"
           onClick={(event) => {
             event.stopPropagation()
-            remove([tool.id, ...(quick ? [quick.id] : [])])
+            remove([tool.id])
           }}
         >
           <Icon name="close" />
@@ -175,7 +142,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
           </ul>
         )}
         {GROUPS.map((group) => {
-          const rows = rowsOf(tools.filter((tool) => groupOf(tool) === group.id))
+          const rows = tools.filter((tool) => groupOf(tool) === group.id)
           if (!rows.length) return null
           return (
             <section key={group.id}>
@@ -184,8 +151,8 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
                 {group.words}
               </h4>
               <ul>
-                {rows.map((row) => (
-                  <ToolRow key={row.tool.id} tool={row.tool} quick={row.quick} place={place} yours={!q} />
+                {rows.map((tool) => (
+                  <ToolRow key={tool.id} tool={tool} place={place} yours={!q} />
                 ))}
               </ul>
             </section>

@@ -83,7 +83,7 @@ function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: 
   }, [store])
   const asset = view?.asset
   const tool = asset?.tool
-  const sameKind: Tool[] = [...tools.values()].filter((other) => other.kind === asset?.kind && other.id !== tool)
+  const sameKind: Tool[] = [...tools.values()].filter((other) => other.makes === asset?.kind && other.id !== tool)
   const edit = Boolean(asset?.timeline)
   const rendered = makes(view) && !edit
   const left = Math.min(x, window.innerWidth - 300)

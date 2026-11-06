@@ -2,21 +2,22 @@ import { useQuery } from "@tanstack/react-query"
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
-import { runsQuery } from "../api/queries"
+import { machinesQuery, runsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import type { MainFile, Run, Tool } from "../types"
+import type { Field, MainFile, Run, Snap } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
-import type { ElementNode, ElementView } from "./CanvasStore"
+import { AssetEdit, ControlRow, InFrame, RenderButton, TextAsset } from "./AssetEdit"
+import { carriedFile, type ElementNode, type ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
-import { controlsOf, shapesOf, snapped } from "./controls"
+import { fieldsOf, shapesOf, snapped } from "./controls"
 import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
 import { Media, Thumb, useWalk, WalkedFrames } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
+import { FPS, framesIn, timecode } from "./ranges"
 import { aspectOf, faceOf, madeHere, makes, shownOf } from "./shown"
-import { clock, noHash, piecesOf, rowsIn, took } from "./text"
+import { noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 
@@ -68,9 +69,11 @@ export function buttonsOnly(event: MouseEvent) {
 /** A take carried out: it lands as a box of its own, or as `<name.N>` in words. It's picked up from the big tile, and an Edit's from its row, as its big tile is its clips. */
 function takeOut(event: DragEvent, store: ReturnType<typeof useCanvasStore>, name: string, asset: NonNullable<ElementView["asset"]>, version: NonNullable<NonNullable<ElementView["asset"]>["prefixes"]>[number]) {
   const description = store.valueOf(name, "description")
-  const file = { sha256: version.main?.sha256, field: version.main?.field, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined, from: asset.name, number: version.number }
+  const file = { sha256: version.main?.sha256 ?? "", field: version.main?.field ?? "", name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined, from: asset.name, number: version.number }
   event.dataTransfer.setData(DRAGGED_FILE, JSON.stringify(file))
   event.dataTransfer.effectAllowed = "copy"
+  carriedFile.set(file)
+  event.currentTarget.addEventListener("dragend", () => carriedFile.set(null), { once: true })
 }
 
 /** An Edit's clips to choose from: a click puts one in, and one can be dragged to a place. A prompt reads pictures by name. */
@@ -219,51 +222,103 @@ function Approve({ view, name }: { view: ElementView; name: string }) {
   )
 }
 
-/** A take's frames a second. */
-const FPS = 24
-
-const frameCode = (frame: number) => `${clock((frame / FPS) * 1000)}.${String(frame % FPS).padStart(2, "0")}`
-
-/** The frame a new take really starts from, asked for `frame` of a take of `last` frames, as its tool declares. Null: not this early. */
-function cutAt(frame: number, last: number, cuts: Tool["cuts"]): number | null {
-  if (!cuts) return Math.min(frame, last)
-  if (frame < cuts.first) return null
-  return Math.min(last, cuts.offset + Math.round((frame - cuts.offset) / cuts.every) * cuts.every)
+/** The frame a pickup really lands on, asked for `frame` of a take of `last` frames, as its tool's grid says. Null: not this early. */
+function landsOn(frame: number, last: number, snap: Snap | undefined): number | null {
+  if (!snap) return Math.min(frame, last)
+  if (frame < snap.first) return null
+  return Math.min(last, Math.max(snap.first, snap.offset + Math.round((frame - snap.offset) / snap.every) * snap.every))
 }
 
-/** On a take of what can go on from one: scrub to a point, a frame at a time, and a new take holds all before where it can really cut and carries on from there. Its words stay as they are. */
-function FromHere({ view, name }: { view: ElementView; name: string }) {
+/** The machines still held, by name: a take's latents on any other went with it. */
+function useHeld(): Set<string> | null {
+  const { client } = useConnection()
+  const { data } = useQuery(machinesQuery(client))
+  return data ? new Set(data.machines.filter((machine) => machine.state !== "ended" && machine.state !== "ending").map((machine) => machine.name)) : null
+}
+
+/**
+ * Pick up from here: on one of its takes, or on another box's take let go on it. Scrub to a frame, and a render keeps that take up to where it can
+ * really cut, and makes the rest again from its words, which stay as they are. The pickup goes with that one render, and is never written.
+ */
+function PickUp({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const shown = shownOf(view)
+  const held = useHeld()
+  const [beatsFrom, setBeatsFrom] = useState<number | null>(null)
   const tool = tools.get(view.asset?.tool ?? "")
-  if (!makes(view) || !tool?.takes || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
-  const last = Math.round((shown.duration_ms / 1000) * FPS)
-  const frame = Math.min(last, Math.round((view.scrub ?? 0) * FPS))
-  const cut = cutAt(frame, last, tool.cuts)
+  const other = view.pickingUp
+  const own = shownOf(view)
+  const file = other ? store.fileOf(other.take, name) : own
+  if (!makes(view) || !tool?.pickup || (view.hereWords && !other) || file?.field !== "video" || !file.duration_ms) return null
+  const number = other ? other.number : own?.number
+  if (number === undefined) return null
+  const fps = file.fps ?? FPS
+  const last = framesIn(file.duration_ms, fps)
+  const frame = Math.min(last, Math.round((view.scrub ?? 0) * fps))
+  const cut = landsOn(frame, last, tool.pickup)
   const go = (to: number) => {
-    const held = Math.max(0, Math.min(last, to)) / FPS
-    store.patch(name, { scrub: held })
-    store.seek(name, held)
+    const at = Math.max(0, Math.min(last, to)) / fps
+    store.patch(name, { scrub: at })
+    if (!other) store.seek(name, at)
   }
-  const says = cut === null ? `From ${frameCode(tool.cuts?.first ?? 0)} on` : tool.cuts && cut !== frame ? `Cuts at ${frameCode(cut)}` : ""
+  const says = cut === null ? `From ${timecode(tool.pickup.first, fps)} on` : cut !== frame ? `Lands on ${timecode(cut, fps)}` : ""
+  const source = other ? store.get(other.from)?.asset : view.asset
+  const latents = source?.prefixes?.find((version) => version.number === number)?.latents
+  const gone = latents && held && !held.has(latents) ? latents : null
+  // On the beats' clock: unset, the cut's own time on this box's take, and 0 on another's.
+  const beats = tool.fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total))
+  const fromDefault = other ? 0 : Math.round(((cut ?? 0) / fps) * 10) / 10
+  const take = `<${other ? other.from : name}.${number}>`
   return (
-    <div className="from-here" style={{ "--kept": `${((cut ?? 0) / last) * 100}%` } as CSSProperties}>
-      <input className="nodrag nopan keeps" type="range" aria-label="Where to keep it up to" min={0} max={last} step={1} value={frame} onChange={(event) => go(Number(event.target.value))} />
+    <div className="from-here" style={{ "--kept": `${((cut ?? 0) / last) * 100}%` } as CSSProperties} role="group" aria-label="Pick up from here">
+      {other && (
+        <div className="row pickup-of">
+          <span className="muted">From {other.from}'s take {other.number}</span>
+          <span className="sp" />
+          <button type="button" className="iconb nodrag" aria-label="Not from that take" onClick={() => store.patch(name, { pickingUp: undefined, scrub: undefined })}>
+            <Icon name="close" />
+          </button>
+        </div>
+      )}
+      {other && <WalkedFrames sha256={file.sha256} cardWidth={360} at={frame / last} />}
+      <input className="nodrag nopan keeps" type="range" aria-label="Where to pick up" min={0} max={last} step={1} value={frame} onChange={(event) => go(Number(event.target.value))} />
       <div className="row">
         <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={frame <= 0} onClick={() => go(frame - 1)}>
           ‹
         </button>
-        <span className="tc-inline">{frameCode(frame)}</span>
+        <span className="tc-inline">{timecode(frame, fps)}</span>
         <button type="button" className="iconb nodrag" aria-label="A frame on" title="A frame on" disabled={frame >= last} onClick={() => go(frame + 1)}>
           ›
         </button>
         {says && <span className="muted cut-says">{says}</span>}
         <span className="sp" />
-        <button type="button" className="run nodrag" disabled={!cut} title={cut ? `Keep up to ${frameCode(cut)} and make the rest again` : undefined} onClick={() => cut && store.run(name, { take: shown.number, in_s: cut / FPS })}>
-          New take from here
+        <button
+          type="button"
+          className="run nodrag"
+          disabled={cut === null}
+          title={cut === null ? undefined : `Keep up to ${timecode(cut, fps)} and render the rest again`}
+          onClick={() => cut !== null && store.run(name, { pickup: { take, out_frame: cut, ...(beatsFrom === null ? {} : { beats_from: beatsFrom }) } })}
+        >
+          Pick up from here
         </button>
       </div>
+      {beats && (
+        <label className="slide beats-from">
+          <span className="ctl-name">{beats.label} from</span>
+          <input
+            className="field nodrag"
+            type="number"
+            aria-label={`${beats.label} from, in seconds`}
+            min={0}
+            step={0.1}
+            placeholder={String(fromDefault)}
+            value={beatsFrom ?? ""}
+            onChange={(event) => setBeatsFrom(event.target.value === "" ? null : Number(event.target.value))}
+          />
+          <span className="num">s</span>
+        </label>
+      )}
+      {gone && <div className="status ood">This take's latents went with {gone}: the join may show</div>}
     </div>
   )
 }
@@ -272,7 +327,7 @@ function FromHere({ view, name }: { view: ElementView; name: string }) {
 function Bar({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const group = view.asset && controlsOf(view.asset, tools).find((control) => control.members?.some((member) => member.total))
+  const group = view.asset && fieldsOf(view.asset, tools).find((field) => field.type === "group" && field.members?.some((member) => member.total))
   const total = group?.members?.find((member) => member.total)
   const rows = group ? rowsIn(view.asset?.fields?.[group.field]) : []
   if (total && rows.length) {
@@ -448,12 +503,15 @@ function Description({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
+/** A picture's voice: the sound `<name.voice>` gives whatever mentions it. */
+const VOICE: Field = { field: "voice", type: "slot", accept: "audio", label: "Voice" }
+
 /** The corner, pulled to size a box. A box whose tool has a shape takes it from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. */
 function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
   const store = useCanvasStore()
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
-  const control = view.asset && faceOf(view) === "edit" && (!view.here || view.hereWords) ? controlsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
+  const control = view.asset && faceOf(view) === "edit" && (!view.here || view.hereWords) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const from = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
@@ -510,9 +568,9 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
 function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const control = view.asset && controlsOf(view.asset, tools).find((held) => held.type === "shape")
+  const control = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!control || view.shape) return null
-  const held = store.valueOf(name, control.field) ?? control.default
+  const held = store.valueOf(name, control.field)
   return <span className="ratio-rest">{typeof held === "string" ? held : "Auto"}</span>
 }
 
@@ -656,7 +714,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           <div className="here-all">
             <Takes view={view} name={name} width={width} />
             {asset.timeline && editing && <Pictures name={name} />}
-            {!asset.timeline && !view.hereWords && <FromHere view={view} name={name} />}
+            {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
             {!editing && <Bar view={view} name={name} />}
             <AssetEdit
               name={name}
@@ -671,8 +729,10 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
               }
             >
               {editing && <Description name={name} view={view} />}
+              {editing && asset.kind === "image" && <ControlRow name={name} field={VOICE} view={view} focus={false} named />}
             </AssetEdit>
             {!editing && <Description name={name} view={view} />}
+            {!editing && asset.kind === "image" && <ControlRow name={name} field={VOICE} view={view} focus={false} named />}
             {view.warned && warned ? (
               <div className="warned-lines">
                 {view.warnings!.map((warning) => (

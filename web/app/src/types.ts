@@ -48,6 +48,8 @@ export interface MainFile {
   width?: number
   height?: number
   duration_ms?: number
+  /** A video's frames a second. */
+  fps?: number
   alpha?: boolean
   absent?: boolean
   machine?: string
@@ -68,6 +70,8 @@ export interface VersionPrefix {
   /** A cut's: what it was cut without, `<piece>: <why>` each. */
   without?: string[]
   kept?: Kept
+  /** The machine holding its latents, which a pickup of it joins on. */
+  latents?: string
   execution_ms?: number
   run?: number
   main?: MainFile
@@ -999,33 +1003,58 @@ export interface AssetDeleted {
   at?: Row
 }
 
-export type ControlType = "text" | "group" | "shape" | "range" | "choice" | "toggle" | "file" | "timeline"
+export type BoxType = "words" | "prompt" | "toggle" | "number" | "choice" | "shape" | "slot" | "group" | "seed" | "timeline"
 
-/** One thing a box asks for. A box is built from these, and nothing about any function. */
-export interface Control {
+/** What a picture, a video or a sound is. */
+export type Media = "image" | "video" | "audio"
+
+/** One field of a tool's box, as `Tool.fields` declares it (`tools.md`, On the wire). A box is built from these, and nothing about any function. */
+export interface Field {
   field: string
-  type: ControlType
+  type: BoxType
   label: string
-  options?: unknown[]
+  required?: boolean
+  default?: unknown
+  /** `| None` on a toggle or a number: Auto. */
+  auto?: boolean
+  /** An expert setting: under More, in its Advanced section. */
+  advanced?: boolean
+  placeholder?: string
+  /** prompt: what its mentions may send. None: any. */
+  takes?: Media[]
+  /** number. */
   min?: number
   max?: number
   step?: number
-  accept?: string
+  unit?: string
+  integer?: boolean
+  /** A number in a list group: the box shows its sum. */
+  total?: boolean
+  /** choice: what it can be, in order, its own words for some, and a line on each that makes it a dropdown, both by value. */
+  options?: unknown[]
+  words?: Record<string, string>
+  descriptions?: Record<string, string>
+  /** shape: the ratios it allows, or the bounds of any. */
+  ratios?: string[]
+  /** slot: what it takes. */
+  accept?: Media
+  /** slot: the file and its description. */
+  described?: boolean
   multiple?: boolean
-  /** `group`: a row's controls, and how few and how many rows. */
-  members?: Control[]
+  /** slot: the list group whose total its video's length matches. */
+  spans?: string
+  /** group: its fields, whether it's rows or one block, and how few and how many rows. */
+  members?: Field[]
+  list?: boolean
   min_items?: number
   max_items?: number
-  /** A group's member whose sum it shows. */
-  total?: boolean
-  /** What an empty text reads. */
-  placeholder?: string
-  /** What a number counts. */
-  unit?: string
-  default?: unknown
-  required?: boolean
-  /** On its box's default face. The rest folds away. */
-  face?: boolean
+}
+
+/** The frames a pickup can land on: `offset + k * every`, from `first` up. */
+export interface Snap {
+  every: number
+  offset: number
+  first: number
 }
 
 export interface Tool {
@@ -1033,24 +1062,29 @@ export interface Tool {
   package: string
   function: string
   release: string
-  /** What a new box of it is called, `shot_1`: its `Node`'s word or its package's. A Calcifer that doesn't say goes by `label`. */
+  /** What a new box of it is called, `shot_1`. A Calcifer that doesn't say goes by `label`. */
   name?: string
   label: string
-  kind: string
+  /** What a box of it is. */
+  makes: Media | "text"
   description?: string
   /** Local code a project's assets name. */
   local?: boolean
-  controls: Control[]
+  fields: Field[]
   /** The path in its package of a component that draws its box. */
   ui?: string
-  /** A new take can keep the start of one of its. */
-  takes?: boolean
-  /** Where a new take can start, in whole frames of the video: `offset + k * every`, from `first` up. None: any frame. */
-  cuts?: { every: number; offset: number; first: number }
-  /** With another tool of its package of the same label this is one box, and a toggle by this word turns it on. */
-  variant?: string
+  /** It takes a pickup: Pick up from here, landing on these frames. */
+  pickup?: Snap
   /** What a checkpoint dropped on its box goes on: the one model its function runs. */
   model?: { slot: string; default?: string; family?: string }
+}
+
+/** Pick up from here: a take kept up to `out_frame`, and the rest rendered again. Sent for one render, never written. */
+export interface Pickup {
+  /** Any box's version, as a mention: `<shot_1.3>`. */
+  take: string
+  out_frame: number
+  beats_from?: number
 }
 
 /** Where a tool's component is, for `import()`. */

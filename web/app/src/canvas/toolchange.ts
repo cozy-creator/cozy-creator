@@ -1,9 +1,10 @@
 import type { Asset, Tool } from "../types"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
+import { OWN } from "./controls"
 import { madeHere } from "./shown"
 
-// What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Calcifer does the same to the file (`with_tool`): attaching or detaching
-// changes only which instruction fields it has, and its pictures, numbers, approval, description and words stay. This holds no state.
+// What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Calcifer does the same to the file (`with_tool`). A tool coming
+// off takes its fields and what they held with it (Paul, 11-06), and Undo puts them back; its pictures, takes, approval and description stay. This holds no state.
 
 type Fields = Record<string, unknown>
 
@@ -20,8 +21,6 @@ export interface ToolStep {
   lost: string[]
 }
 
-/** What keeps its place whatever the tool: the platform's words about a box. */
-const OWN = ["description", "asset_type", "voice"]
 const WORDS = ["instructions", "summary"]
 const said = (value: unknown) => typeof value === "string" && value.trim() !== ""
 const wordsIn = (fields: Fields) => WORDS.find((field) => said(fields[field]))
@@ -54,7 +53,7 @@ function addOnsOn(fields: Fields, from: Tool | undefined, next: Tool): { kept: F
 /** `tool` going on `asset`, whatever it holds now. `fields` is what it says, what's typed included. */
 export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, tool: Tool): ToolStep {
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: {} as Fields }
-  const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.kind, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.kind) }
+  const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.makes, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.makes) }
   if (!asset.tool && !holdsPictures(asset)) {
     // Its words are the prompt.
     const { text, ...rest } = fields
@@ -70,12 +69,12 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
     return { row: { ...row, ...numbered, fields: { ...fields, ...words } }, tool: tool.id, fields: {}, back, lost: [] }
   }
   // A swap: what the new tool asks of keeps, and so do its words, in the field it reads them from.
-  const asks = new Set(tool.controls.map((control) => control.field))
+  const asks = new Set(tool.fields.map((field) => field.field))
   const { kept: addOns, lost } = addOnsOn(fields, from, tool)
   const words = wordsIn(fields)
-  const reads = tool.controls.find((control) => control.type === "text")?.field ?? "instructions"
+  const reads = tool.fields.find((field) => field.type === "prompt" || field.type === "words")?.field ?? "instructions"
   const send: Fields = {}
-  for (const field of Object.keys(fields)) if (!asks.has(field) && !OWN.includes(field) && field !== "lora" && field !== "models" && field !== "instructions") send[field] = null
+  for (const field of Object.keys(fields)) if (!asks.has(field) && !OWN.includes(field) && field !== "instructions") send[field] = null
   if (words && words !== reads) {
     send[words] = null
     send[reads] = fields[words]
@@ -87,13 +86,14 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
   return { row: { ...row, fields: shown }, tool: tool.id, fields: send, back, lost }
 }
 
-/** Its tool coming off: only that, unless it holds no pictures, when its words are all it is. */
+/** Its tool coming off, and its fields with it: the box's own words stay, and a box of no pictures keeps its first words as its text. */
 export function comingOff(asset: Asset, fields: Fields): ToolStep {
-  const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: {} as Fields }
-  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current" }, tool: "", fields: {}, back, lost: [] }
+  const own = Object.fromEntries(Object.entries(fields).filter(([field]) => OWN.includes(field)))
+  const gone = Object.keys(fields).filter((field) => !OWN.includes(field))
+  const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: Object.fromEntries(gone.map((field) => [field, fields[field]])) }
+  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current", fields: own }, tool: "", fields: {}, back, lost: [] }
   const words = wordsIn(fields)
-  const { [words ?? ""]: text, ...rest } = fields
-  return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...rest, text: text ?? "" } }, tool: "", fields: {}, back, lost: [] }
+  return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 
 /** A tool carried: dropped on a box it goes on, or takes the place of the one there. On open canvas it's a new box. */

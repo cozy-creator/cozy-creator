@@ -6,7 +6,7 @@ import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
-import { controlsOf } from "./controls"
+import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
@@ -334,7 +334,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const fraction = making ? (view.run?.status === "completed" ? 1 : view.run?.progress?.done_fraction) : undefined
   const here = shown && !shown.absent ? shown : null
   const tools = useSignal(store.tools)
-  const words = lineOf(asset?.fields, asset ? controlsOf(asset, tools) : [])
+  const words = lineOf(asset?.fields, asset ? fieldsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
   // An Edit with no film yet is its first clip, and with no clip, what it's for.
   const clips = asset?.timeline?.tracks[0]?.clips
@@ -383,6 +383,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
           <Icon name={glyph} />
         </span>
       )}
+      {view.glimpse && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {(making || view.queued || view.asked !== undefined) && view.viewed === undefined && <div className="media-making" />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {making && <Progress fraction={fraction} says={fraction === undefined ? undefined : leftWords(fraction, view.run?.progress?.eta_s)} />}
@@ -396,6 +397,27 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
         />
       )}
       {children}
+    </div>
+  )
+}
+
+/** What a render has shown so far, as it lands: over the box, and kept dimmed when it fails. */
+function Glimpse({ glimpse, failed }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean }) {
+  const { client } = useConnection()
+  const [src, setSrc] = useState<string>()
+  useEffect(() => {
+    let live = true
+    void client.transport.src(client.output(glimpse.run, glimpse.output, glimpse.index)).then((url) => {
+      if (live) setSrc(url)
+    })
+    return () => {
+      live = false
+    }
+  }, [client, glimpse.run, glimpse.output, glimpse.index])
+  return (
+    <div className={`glimpse ${failed ? "failed" : ""}`} data-label={glimpse.label ?? ""}>
+      {src && (glimpse.media === "video" ? <video src={src} muted loop autoPlay playsInline /> : <img src={src} alt="" draggable={false} />)}
+      {glimpse.label && <span className="glimpse-label">{glimpse.label}</span>}
     </div>
   )
 }

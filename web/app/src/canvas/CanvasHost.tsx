@@ -327,12 +327,16 @@ function Canvas({
     },
     [store, flow, fitHere],
   )
+  store.openHere = (name: string) => {
+    writeHere(name)
+    navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
+  }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
     if (!held) return
     store.inPlace = null
     void store.save(held.name)
-    store.patch(held.name, { here: undefined, hereWords: undefined })
+    store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
     store.view(held.name)
     returning.current = { view: held.back, until: performance.now() + HERE_MS }
     if (folded.current) {
@@ -409,7 +413,7 @@ function Canvas({
   // A click puts a box in the middle of what's visible, and `place` keeps it clear of what's there.
   const placeTool = useCallback(
     (tool: Tool) => {
-      const width = tool.controls.some((control) => control.type === "timeline") ? 720 : tool.kind === "video" ? 360 : 300
+      const width = tool.fields.some((field) => field.type === "timeline") ? 720 : tool.makes === "video" ? 360 : 300
       const { x, y } = visibleCentre()
       placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
     },
@@ -495,9 +499,10 @@ function Canvas({
   const dragging = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       const { clientX, clientY } = pointOf(event)
-      const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
-      target?.over(nodes.map((node) => node.data.name), clientX, clientY)
-      stage.current?.toggleAttribute("data-offering", Boolean(target))
+      const names = nodes.map((node) => node.data.name)
+      const { target, why } = store.offered(clientX, clientY, names, draggedEls(nodes))
+      if (!why) target?.over(names, clientX, clientY)
+      stage.current?.toggleAttribute("data-offering", Boolean(target) && !why)
     },
     [store],
   )
@@ -506,8 +511,10 @@ function Canvas({
       carrying(false)
       stage.current?.removeAttribute("data-offering")
       const { clientX, clientY } = pointOf(event)
-      const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
-      if (!target) {
+      const { target, why } = store.offered(clientX, clientY, nodes.map((node) => node.data.name), draggedEls(nodes))
+      store.refusing.set(null)
+      if (why) say(why)
+      if (!target || why) {
         store.setHot(null)
         return store.dragStopped(nodes)
       }

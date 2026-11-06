@@ -1,7 +1,7 @@
 // What the page reads of an asset's words. `text` is whatever a person or a pod wrote, so each read takes only the shape it wants and
 // nothing here is more than text.
 
-import type { Control } from "../types"
+import type { Field } from "../types"
 
 export type Row = Record<string, unknown>
 
@@ -20,10 +20,11 @@ export function piecesOf(text?: Record<string, unknown>): string[] {
   })
 }
 
-/** The words a card shows when it has nothing else to show. */
-export function lineOf(text: Record<string, unknown> | undefined, controls: Control[]): string | null {
-  const said = controls.flatMap((control) =>
-    control.type === "group" ? rowsIn(text?.[control.field]).flatMap((row) => (control.members ?? []).filter((member) => member.type === "text").map((member) => row[member.field])) : control.type === "text" ? [text?.[control.field]] : [],
+/** The words a card shows when it has nothing else to show: its first prompt's, at the top or in its rows, else its description. */
+export function lineOf(text: Record<string, unknown> | undefined, fields: Field[]): string | null {
+  const isText = (field: Field) => field.type === "prompt" || field.type === "words"
+  const said = fields.flatMap((field) =>
+    field.type === "group" ? rowsIn(text?.[field.field]).flatMap((row) => (field.members ?? []).filter(isText).map((member) => row[member.field])) : isText(field) ? [text?.[field.field]] : [],
   )
   return said.map(string).find((words) => words !== null) ?? string(text?.description)
 }

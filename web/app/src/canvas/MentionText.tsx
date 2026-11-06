@@ -2,20 +2,41 @@ import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback, u
 import { createPortal } from "react-dom"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
+import type { Media } from "../types"
+import type { CanvasStore } from "./CanvasStore"
+import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
+import { WANTED } from "./controls"
 import { DRAGGED_FILE } from "./drag"
 import { Thumb } from "./Media"
-import { shownOf } from "./shown"
+import { baseOf, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { mentionsIn, withMentions } from "./text"
-import { isSelf, mentionFrom, NO_BARE_SELF, versionIn } from "./versions"
+import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
-function chip(name: string, missing: boolean): HTMLElement {
+/** What a chip says: its name, and a range of a video as timecode. */
+function chipWords(store: CanvasStore, name: string, asset: string): string {
+  const range = rangeOf(name)
+  if (!range) return name
+  const file = store.fileOf(name, asset)
+  const fps = file?.fps ?? FPS
+  return `${range.base} ${timecode(range.from, fps)}–${timecode(range.to ?? framesIn(file?.duration_ms, fps), fps)}`
+}
+
+/** Why a mention in this text isn't sent, or null: words take only words, and a prompt only what it takes. A text box is always put in as its words. */
+function unsent(store: CanvasStore, name: string, asset: string, takes: Media[] | undefined): string | null {
+  const kind = store.kindOf(name, asset)
+  if (!takes || !kind || kind === "text" || takes.includes(kind as Media)) return null
+  if (!takes.length) return `${baseOf(name)} goes as its name: this takes words only`
+  return `${baseOf(name)} isn't sent: this takes ${takes.map((held) => WANTED[held]).join(" or ")} only`
+}
+
+function chip(name: string, words: string, missing: boolean, refused: string | null): HTMLElement {
   const el = document.createElement("span")
-  el.className = missing ? "chip missing" : "chip"
+  el.className = missing ? "chip missing" : refused ? "chip refused" : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
-  el.textContent = name
-  el.title = !missing ? name : isSelf(name) ? NO_BARE_SELF : `${name} is no longer here`
+  el.textContent = words
+  el.title = missing ? (isSelf(name) ? NO_BARE_SELF : `${baseOf(name)} is no longer here`) : (refused ?? name)
   return el
 }
 
@@ -54,6 +75,7 @@ export function MentionText({
   label,
   placeholder,
   missing,
+  takes,
   focus,
   onDraft,
   onSave,
@@ -65,6 +87,8 @@ export function MentionText({
   /** What it reads when it's empty, its label if nothing else. */
   placeholder?: string
   missing: string[]
+  /** What its mentions may send: none for words, any when it doesn't say. What else it mentions stays its name, marked. */
+  takes?: Media[]
   focus?: boolean
   onDraft: (text: string) => void
   onSave: () => void
@@ -85,17 +109,17 @@ export function MentionText({
     const nodes = withMentions(value).map((part) => {
       const inner = part.text.slice(1, -1)
       const said = part.mention ? store.mentionOf(inner, asset) : null
-      if (part.mention && (missing.includes(inner) || said?.gone || (isSelf(inner) && !said))) return chip(inner, true)
-      if (said) return chip(inner, false)
+      if (part.mention && (missing.includes(inner) || said?.gone || (isSelf(inner) && !said))) return chip(inner, chipWords(store, inner, asset), true, null)
+      if (said) return chip(inner, chipWords(store, inner, asset), false, unsent(store, inner, asset, takes))
       return document.createTextNode(part.text)
     })
-    const merged = (held: ChildNode[]) => held.reduce((said, node) => said + (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}\u0000` : node.textContent), "")
+    const merged = (held: ChildNode[]) => held.reduce((said, node) => said + (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}:${node.textContent}:${node.title}\u0000` : node.textContent), "")
     const trimmed = (said: string) => said.replace(/\s+$/, "")
     if (trimmed(merged([...el.childNodes])) === trimmed(merged(nodes))) return
     el.replaceChildren(...nodes)
     // What it pointed into is gone: a name dropped now goes at the end.
     caret.current = null
-  }, [value, missing, store, names, asset])
+  }, [value, missing, store, names, asset, takes])
 
   const emit = useCallback(() => {
     if (box.current) onDraft(read(box.current))
@@ -117,7 +141,7 @@ export function MentionText({
       const el = box.current
       if (!el) return
       const said = store.mentionOf(name, asset)
-      const made = chip(name, !said || Boolean(said.gone))
+      const made = chip(name, chipWords(store, name, asset), !said || Boolean(said.gone), said ? unsent(store, name, asset, takes) : null)
       const after = document.createTextNode(" ")
       if (at && el.contains(at.startContainer)) {
         at.deleteContents()
@@ -306,17 +330,35 @@ export function MentionText({
           </ul>,
           document.body,
         )}
-      <MentionThumbs text={value} besides={asset} />
+      <MentionThumbs
+        text={value}
+        besides={asset}
+        takes={takes}
+        onRange={(old, now) => {
+          onDraft(retext(box.current ? read(box.current) : value, old, now))
+          onSave()
+        }}
+      />
     </>
   )
 }
 
-function MentionThumb({ name, asset }: { name: string; asset: string }) {
+function MentionThumb({ name, asset, takes, onRange }: { name: string; asset: string; takes?: Media[]; onRange(old: string, now: string): void }) {
   const store = useCanvasStore()
   const said = store.mentionOf(name, asset)
-  const view = useElement(said?.name ?? name)
-  const shown = said?.number && view?.asset?.prefixes?.length ? versionIn(view.asset, said.number)?.main : view && shownOf(view)
-  if (!shown || shown.absent || shown.field === "audio") return null
+  useElement(said?.name ?? baseOf(name))
+  const shown = store.fileOf(name, asset)
+  if (!shown || shown.absent || shown.field === "audio" || unsent(store, name, asset, takes)) return null
+  if (shown.field === "video") {
+    const fps = shown.fps ?? FPS
+    const frames = framesIn(shown.duration_ms, fps)
+    const range = rangeOf(name)
+    return (
+      <span className="mention-clip" title={name}>
+        <ClipRange sha256={shown.sha256} frames={frames} fps={fps} from={range?.from ?? 0} to={range?.to ?? frames} width={240} label={baseOf(name)} onSet={(from, to) => onRange(name, ranged(baseOf(name), from, to, frames))} />
+      </span>
+    )
+  }
   return (
     <span className="mention-thumb" title={name}>
       <Thumb sha256={shown.sha256} cardWidth={120} />
@@ -324,14 +366,15 @@ function MentionThumb({ name, asset }: { name: string; asset: string }) {
   )
 }
 
-/** The pictures a text mentions, small, under it. */
-function MentionThumbs({ text, besides }: { text: string; besides: string }) {
+/** The pictures a text mentions, small, under it, and each video's frames with its in and out. */
+function MentionThumbs({ text, besides, takes, onRange }: { text: string; besides: string; takes?: Media[]; onRange(old: string, now: string): void }) {
   const mentioned = mentionsIn(text).filter((name) => name !== besides)
   if (!mentioned.length) return null
   return (
     <div className="mention-thumbs">
-      {mentioned.map((name) => (
-        <MentionThumb key={name} name={name} asset={besides} />
+      {/* By place and what it names: a new range is the same strip, and keeps its handle's focus. */}
+      {mentioned.map((name, i) => (
+        <MentionThumb key={`${i}:${baseOf(name)}`} name={name} asset={besides} takes={takes} onRange={onRange} />
       ))}
     </div>
   )

@@ -1,7 +1,7 @@
 import type { Client } from "../api/client"
 import type { Asset } from "../types"
 import type { CanvasStore, CarriedFile } from "./CanvasStore"
-import { controlsOf } from "./controls"
+import { fieldsOf } from "./controls"
 import type { Box } from "./graph"
 import { shownOf } from "./shown"
 import { lineOf } from "./text"
@@ -44,7 +44,7 @@ export function copyBoxes(store: CanvasStore, client: Client, names: string[], d
   if (!boxes.length) return false
   const said = (name: string) => {
     const asset = store.get(name)?.asset
-    return (asset && lineOf({ ...asset.fields, ...store.get(name)?.drafts }, controlsOf(asset, store.tools.get()))) || name
+    return (asset && lineOf({ ...asset.fields, ...store.get(name)?.drafts }, fieldsOf(asset, store.tools.get()))) || name
   }
   const words = names.map(said).join("\n\n")
   copied = { project: store.projectId, boxes, words }
