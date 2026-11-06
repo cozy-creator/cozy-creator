@@ -86,9 +86,11 @@ function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null
   const sizes = useRef<HTMLDivElement>(null)
   const tabs = tabsOf(order, id, count)
   const hidden = order.filter((row) => !tabs.includes(row))
-  const named = `${id} ${order.map((row) => `${row.id}:${row.name}`).join(" ")}`
   const saidOfFile = data ? warningsOf(data).ofProject : []
   const name = data?.path.split(/[/\\]/).filter(Boolean).pop()
+  // The open project before the list has it, or none.
+  const lone = order.some((row) => row.id === id) ? null : (name ?? (id ? "…" : "untitled"))
+  const named = `${id} ${lone} ${order.map((row) => `${row.id}:${row.name}`).join(" ")}`
 
   useLayoutEffect(() => {
     const held = strip.current
@@ -99,12 +101,13 @@ function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null
       const space = Math.min(held.getBoundingClientRect().width + room.getBoundingClientRect().width, Number.parseFloat(style.maxWidth) || Number.POSITIVE_INFINITY)
       const gap = Number.parseFloat(style.columnGap) || 0
       const widths = [...ghost.children].map((child) => child.getBoundingClientRect().width)
+      const alone = lone === null ? [] : [widths.pop() ?? 0]
       const more = widths.pop() ?? 0
       const width = new Map(order.map((row, at) => [row, widths[at]]))
       const plus = held.lastElementChild?.getBoundingClientRect().width ?? 0
       const fits = (n: number) => {
         const shown = tabsOf(order, id, n)
-        const items = [...shown.map((row) => width.get(row) ?? 0), ...(shown.length < order.length ? [more] : []), plus]
+        const items = [...shown.map((row) => width.get(row) ?? 0), ...alone, ...(shown.length < order.length ? [more] : []), plus]
         return Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight) + items.reduce((sum, each) => sum + each + gap, -gap) <= space
       }
       if (fits(order.length)) return order.length
@@ -133,7 +136,7 @@ function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null
             {tab.name}
           </Link>
         ))}
-        {!tabs.some((tab) => tab.id === id) && <span className="ptab on">{name ?? (id ? "…" : "untitled")}</span>}
+        {lone !== null && <span className="ptab on">{lone}</span>}
         {hidden.length > 0 && (
           <Link className="ptab more" to={to("projects")} state={{ first: hidden.map((row) => row.id) } satisfies ProjectsAsk} title="All projects">
             {hidden.length} more
@@ -150,6 +153,7 @@ function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null
           </span>
         ))}
         <span>{order.length} more</span>
+        {lone !== null && <span className="on">{lone}</span>}
       </div>
       {saidOfFile.length > 0 && (
         <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
