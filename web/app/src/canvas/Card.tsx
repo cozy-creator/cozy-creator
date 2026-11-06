@@ -571,20 +571,6 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             !
           </button>
         ) : null}
-        {here && (
-          <button
-            type="button"
-            className="iconb nodrag"
-            aria-label="More for this box"
-            title="More"
-            onClick={(event) => {
-              const at = event.currentTarget.getBoundingClientRect()
-              store.menu.set({ name, x: at.left, y: at.bottom, full: true })
-            }}
-          >
-            ⋯
-          </button>
-        )}
         {here ? (
           <button type="button" className="iconb nodrag" aria-label="Close" title="Close" onClick={store.leaveHere}>
             <Icon name="close" />
