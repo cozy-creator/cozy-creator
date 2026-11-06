@@ -143,6 +143,9 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i ${{ steps.py310.outputs.python-path }} ${{ steps.py311.outputs.python-path }}
       - uses: astral-sh/setup-uv@v6
+      # The container leaves dist root-owned, and the verify step writes beside its wheels.
+      - if: runner.os == 'Linux'
+        run: sudo chown -R "$(id -u):$(id -g)" dist
       - name: Verify and tag the complete Linux wheel
         if: runner.os == 'Linux'
         run: uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_2_28_$(uname -m)"
