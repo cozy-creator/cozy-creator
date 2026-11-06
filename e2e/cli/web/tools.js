@@ -24,7 +24,7 @@ function check(name, ok, detail) {
 }
 const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
-const fixture = join(__dirname, '..', 'project', 'boxes.py');
+const BOXES = join(__dirname, '..', 'project', 'boxes.py');
 
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
@@ -84,6 +84,9 @@ function linesOf(text, name) {
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
+  // The fixture as new code, so this machine has never installed it: what lists it before the install lands is PyPI's Runtime's reading.
+  const fixture = join(folder, 'boxes.py');
+  writeFileSync(fixture, `${readFileSync(BOXES, 'utf8')}\n# ${id}\n`);
   const yamlAt = join(folder, 'project.yaml');
   const yaml = () => readFileSync(yamlAt, 'utf8');
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
@@ -102,10 +105,16 @@ function linesOf(text, name) {
   await drop(page, [{ name: 'Coast.png', type: 'image/png', bytes: png(40) }, { name: 'Amy.png', type: 'image/png', bytes: png(160) }, { name: 'Walk.mp4', type: 'video/mp4', bytes: MP4 }, { name: 'Hum.wav', type: 'audio/wav', bytes: wav() }], 900, 300);
   for (const name of ['coast', 'amy', 'walk', 'hum']) await box(name).waitFor();
   await until('all four in the file', () => Promise.resolve(yaml()), (text) => ['coast', 'amy', 'walk', 'hum'].every((name) => text.includes(`  ${name}:`)));
+  // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
   replaceFile(yamlAt, `${yaml().trimEnd()}\n  shot:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
   await box('shot').waitFor();
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
+  // What the page listed before that is read again as it opens.
+  await page.reload();
+  await box('shot').waitFor();
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;
@@ -215,12 +224,21 @@ function linesOf(text, name) {
   await shot('groups');
 
   // Slots: what doesn't fit is refused as it's carried over, and at the drop, with why; a filled one is on the face, and × unsets it.
+  // A point of a box a person can reach: what floats over it, and the box being worked on, may cover the rest.
+  const reach = (name) => page.evaluate((name) => {
+    const at = document.querySelector(`.react-flow__node:has(.card[data-asset="${name}"])`).getBoundingClientRect();
+    for (let y = at.top + 4; y < Math.min(at.bottom, innerHeight); y += 8) for (let x = at.left + 4; x < Math.min(at.right, innerWidth); x += 8) {
+      if (document.elementFromPoint(x, y)?.closest('.react-flow__node')?.querySelector('.card')?.dataset.asset === name) return { x, y };
+    }
+    return null;
+  }, name);
   const carry = async (from, to, look) => {
-    const start = await box(from).locator('.nm').boundingBox();
+    await to.evaluate((el) => el.scrollIntoView({ block: 'nearest' }));
+    const start = await reach(from);
     const end = await to.boundingBox();
-    await page.mouse.move(start.x + 4, start.y + 4);
+    await page.mouse.move(start.x, start.y);
     await page.mouse.down();
-    await page.mouse.move(start.x + 12, start.y + 4);
+    await page.mouse.move(start.x + 8, start.y);
     await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 10 });
     await page.waitForTimeout(150);
     const said = look ? await look() : null;
@@ -344,7 +362,8 @@ function linesOf(text, name) {
     await render('other', 1);
     await open('other');
     await box('other').locator('.take[aria-label="take 1"]').click();
-    await box('other').locator('.take-out').dragTo(box('shot').locator('.media'));
+    const onto = await reach('shot');
+    await box('other').locator('.take-out').dragTo(page.locator('body'), { targetPosition: onto });
     await box('shot').locator('.from-here .pickup-of:has-text("other\'s take 1")').waitFor();
     check('another_take_offers_pick_up', (await box('shot').locator('.card.here').count()) === 1);
     await box('shot').locator('.from-here .keeps').fill('7');
