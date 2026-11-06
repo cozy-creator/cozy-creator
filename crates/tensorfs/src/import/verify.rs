@@ -26,7 +26,7 @@ pub struct Checked {
 }
 
 fn is_lora(tensors: &[&Planned]) -> bool {
-    !tensors.is_empty() && tensors.iter().all(|p| family::FACTORS.iter().any(|f| p.key.ends_with(f)))
+    !tensors.is_empty() && tensors.iter().all(|p| family::lora_key(&p.key))
 }
 
 pub struct Input<'a> {
