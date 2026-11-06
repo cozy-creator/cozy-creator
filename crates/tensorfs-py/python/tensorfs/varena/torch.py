@@ -111,10 +111,10 @@ def _bind_allocator() -> None:
             built = sorted((p.stem.removeprefix("_varena_torch-") for p in directory.glob("_varena_torch-*.so")),
                            key=lambda v: [int(n) for n in v.split("+")[0].split(".")])
             if not built:
-                raise RuntimeError(f"this TensorFS wheel has no Torch allocator shim for {platform.system()} {platform.machine()}")
+                raise RuntimeError(f"this TensorFS wheel has no Torch allocator shim for {platform.system()} {platform.machine()}: GPU work runs on Linux x86_64 or aarch64, so rent one with `cozy machine rent`")
             if runtime_torch not in built:
                 floor = ".".join(built[0].split(".")[:2])
-                raise RuntimeError(f"this package's environment has Torch {runtime_torch}, GPU work needs Torch {' or '.join(built)}: relax the package's torch pin to torch>={floor}")
+                raise RuntimeError(f"this package's environment has Torch {runtime_torch}, GPU work needs Torch {' or '.join(built)}: relax the package's torch pin to torch>={floor}, or update the machine to a TensorFS built for Torch {runtime_torch}")
             native = ctypes.CDLL(str(directory / f"_varena_torch-{runtime_torch}.so"))
             native.varena_torch_bind.argtypes = [ctypes.c_void_p]
             native.varena_torch_bind.restype = ctypes.c_int
