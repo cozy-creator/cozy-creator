@@ -24,7 +24,9 @@ SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.p
 SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
 CHECKS = [quality.check, lm.check, swap.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
-SLACK = {'execution_ms': 0.25, 'step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
+# Step 1 is judged as load + step 1 (the run's or call's start to step 1's end; agreed by the lead, 2026-11-06): v2 readies
+# weights on first use inside step 1, where v1 readied them in a load before it. step1_ms is kept, not judged.
+SLACK = {'execution_ms': 0.25, 'to_step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
 # And at least this much: a CUDA context's size moves between drivers (MiB); a sub-second CPU cell's time is its
 # host's scheduling (ms).
 FLOOR = {'vram_mb': 256, 'execution_ms': 250}
@@ -123,10 +125,12 @@ for name, target, number in cells:
         notes.append(f'{name}: step 1 {s[0] / 1000:.1f} s, of which {reads / 1000:.1f} s readying weights (judged in execution time)')
         s = [s[0] - reads] + s[1:]
     c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn, 'graphs': run.graphs,
-                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads),
+                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads), 'to_step1_ms': run.to_step1_ms,
                          'vram_mb': vram and vram['added'], 'host': {leg: legs[leg] for leg in HOST_LEGS if leg in legs},
                          'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
     for i, ms, ref, what in slow_steps(canonical(target), s):
+        if i == 1:
+            continue  # step 1 is judged as load + step 1 against the known-good (to_step1_ms)
         fails.append(f'{name}: step {i} {ms / 1000:.1f} s vs {what} {ref / 1000:.1f} s (at most {STEP_RATIO}x + {STEP_EXTRA_MS // 1000} s)')
 
 
@@ -272,7 +276,7 @@ print('VERDICT', 'FAIL' if fails else 'PASS', f'({len(cells)} cells)', '' if not
 if not fails or accept:
     label = open(os.path.join(out, 'label')).read().strip()
     for name, c in summary.items():
-        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'graphs', 'execution_ms', 'step1_ms', 'steady_ms', 'vram_mb', 'blocking', 'host')}
+        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'graphs', 'execution_ms', 'step1_ms', 'to_step1_ms', 'steady_ms', 'vram_mb', 'blocking', 'host')}
         entry.update(label=label, at=time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime()))
         base['cells'].setdefault(name, {'good': []})['good'].append(entry)
     json.dump(base, open(BASE, 'w'), indent=1)

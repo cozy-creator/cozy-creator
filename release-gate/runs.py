@@ -155,6 +155,19 @@ class Run:
         ms += max((((row.get('moved') or {}).get('bake') or {}).get('device_ns', 0) for row in native), default=0) / 1e6
         return min(ms, series[0][1])
 
+    @property
+    def to_step1_ms(self):
+        """Its start to the end of its step 1, in ms: load and step 1 together. v2 readies weights on first use, inside
+        step 1, where v1 readied them in a load before it, so this is the span that holds the same work on both."""
+        m, track = self._step_track()
+        series = (track or {}).get('series') or []
+        if not series:
+            return None
+        i = next((n for n, x in enumerate(self.measurements) if x is m), 0)
+        calls = self.record.get('calls') or []
+        start = self.record.get('started_at_ms') if i == 0 else (calls[i - 1] or {}).get('called_at_ms')
+        return round(series[0][0] - start) if start else None
+
     def stage_ms(self, name):
         return sum(((m.get('attribution') or {}).get('stages') or {}).get(name, {}).get('total_ms') or 0 for m in self.measurements)
 
