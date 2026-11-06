@@ -150,7 +150,12 @@ impl State {
 }
 
 impl Tier {
+    /// `cap` is held to half of what this process can reach, its cgroup's limit where that is tighter
+    /// than RAM: what the tier keeps leaves the page cache the rest of a streamed loop. Sized from
+    /// physical memory, a 26 GB cgroup on a 62 GB host let the tier take all but the headroom, and the
+    /// rest of Flux-2's loop read the disk every step.
     pub(super) fn new(device: i32, cap: u64, headroom: u64) -> Self {
+        let cap = host_memory::limit().map_or(cap, |limit| cap.min(limit / 2));
         let state = State { room: -1, ..State::default() };
         Self {
             device, cap, headroom: headroom as i64, state: Mutex::new(state),
