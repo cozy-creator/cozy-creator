@@ -769,6 +769,11 @@ fn parent_app(held: &HeldGeneration) -> App {
     (held.record.identity.clone(), held.record.application.clone())
 }
 
+/// What a GPU that drives a display keeps free at the driver beside a run: the outside-varena
+/// growth measured after a context's first sample (lazy kernel modules, library workspaces) and
+/// the display server's own growth. Its standing use is outside bytes varena samples already.
+pub const DISPLAY_RESERVE: u64 = 1 << 30;
+
 /// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
     let room = host_memory::read().available;
@@ -1349,6 +1354,20 @@ impl Pool {
                 .map(|member| parent_app(&member.held)).collect();
             self.end_idle_parents(|key| !members.contains(key));
         }
+    }
+    /// [`DISPLAY_RESERVE`] for each GPU of `lane` that drives a display now, in its order; empty
+    /// when none does (a pod).
+    fn display_reserve(&self, lane: &str) -> Vec<u64> {
+        let reserve: Vec<u64> = lane.split(',').map(|entry| {
+            let display = memory::row(entry.trim(), &self.config.inventory)
+                .and_then(|gpu| platform::gpu::Device::open(&gpu.device_uuid).and_then(|device| device.display_active()).ok())
+                .unwrap_or(false);
+            if display {
+                tracing::info!("GPU {entry} drives a display: its runs keep {} MiB free at the driver for it", DISPLAY_RESERVE >> 20);
+            }
+            if display { DISPLAY_RESERVE } else { 0 }
+        }).collect();
+        if reserve.iter().all(|&bytes| bytes == 0) { vec![] } else { reserve }
     }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
@@ -2904,6 +2923,7 @@ impl Pool {
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
                     shared: false,
+                    display_reserve: vec![],
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3336,6 +3356,7 @@ impl Pool {
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
                     shared: self.config.host.mode == HostMode::Shared,
+                    display_reserve: self.display_reserve(&lane),
                 }),
                 &mut callbacks,
             )?)?;
@@ -3880,11 +3901,35 @@ fn with_end(error: io::Error, ended: &device_executor::Ended) -> io::Error {
     if !channel_lost(&error) {
         return error;
     }
-    let why = format!("the executor ended on its own ({})", ended.status);
+    #[cfg(unix)]
+    let oom = ended.oom_killed && std::os::unix::process::ExitStatusExt::signal(&ended.status) == Some(libc::SIGKILL);
+    #[cfg(not(unix))]
+    let oom = false;
+    let why = match oom {
+        true => host_out_of_memory(),
+        false => format!("the executor ended on its own ({})", ended.status),
+    };
     match refused(&error) {
         Some(_) => error,
         None if undelivered(&error) => io::Error::other(Undelivered(why)),
+        None if oom => io::Error::other(Refused { code: "host_out_of_memory".into(), detail: why }),
         None => io::Error::other(why),
+    }
+}
+
+/// Why the kernel killed an executor for host memory, in this machine's numbers.
+fn host_out_of_memory() -> String {
+    let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    match platform::contain::budget() {
+        Some(budget) => format!(
+            "the computer ran out of memory for this run: the kernel stopped its executor at this machine's \
+             {:.1} GiB limit, which keeps {:.1} GiB for the computer's other programs",
+            gib(budget.max), gib(budget.reserve)
+        ),
+        None => format!(
+            "the host ran out of memory for this run: the kernel stopped its executor at {:.1} GiB",
+            gib(u64::try_from(host_memory::read().bound).unwrap_or(0))
+        ),
     }
 }
 

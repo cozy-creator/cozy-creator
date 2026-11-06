@@ -129,6 +129,11 @@ pub struct Start {
     /// The machine's mode: idle memory yields to foreign programs too. Peers donate either way.
     #[serde(default)]
     pub shared: bool,
+    /// Bytes each GPU of the session keeps free at the driver for the display it drives, in the
+    /// session's device order (0: it drives none); empty when none does. Its card's limit is
+    /// its total less these (`gpu_memory_limit` when lower).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_reserve: Vec<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

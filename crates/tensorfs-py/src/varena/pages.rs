@@ -2,6 +2,11 @@
 //! and no store read or bake. One per GPU. Process lifetime, never on disk, each page once, within
 //! half of the host's RAM and beyond a headroom. The tier follows use, not arrival: a page is
 //! worth its refills per request, and only pages worth less make room for it.
+//!
+//! Pinned pages are memory the kernel cannot take back, so on a person's computer (a shared
+//! machine) the headroom is what the computer keeps for its other programs
+//! (`host_memory::reserve`), and while the host stalls on memory nothing pins and the headroom
+//! doubles: the tier gives pages back, never what starves the computer.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -133,6 +138,10 @@ struct State {
     kept: HashMap<String, Kept>,
     bytes: u64,
     room: i64,
+    /// What stays free, as the last look decided it.
+    headroom: i64,
+    /// The host stalled on memory at the last look (a shared machine): `host_memory::Stall`.
+    pressed: bool,
     looked: Option<Instant>,
     off: Option<String>,
     wanted: HashMap<String, Wanted>,
@@ -155,7 +164,8 @@ struct State {
 pub(super) struct Tier {
     device: i32,
     cap: u64,
-    headroom: i64,
+    /// A person's computer: the headroom is its reserve, read at each look (`look`).
+    shared: bool,
     state: Mutex<State>,
     canceled: AtomicU64,
     failed: AtomicU64,
@@ -185,10 +195,10 @@ impl State {
 }
 
 impl Tier {
-    pub(super) fn new(device: i32, cap: u64, headroom: u64) -> Self {
-        let state = State { room: -1, ..State::default() };
+    pub(super) fn new(device: i32, cap: u64, headroom: u64, shared: bool) -> Self {
+        let state = State { room: -1, headroom: headroom as i64, ..State::default() };
         Self {
-            device, cap, headroom: headroom as i64, state: Mutex::new(state),
+            device, cap, shared, state: Mutex::new(state),
             canceled: AtomicU64::new(0), failed: AtomicU64::new(0), stores: Mutex::default(),
         }
     }
@@ -220,12 +230,13 @@ impl Tier {
             return Vec::new();
         }
         state.looked = Some(Instant::now());
+        self.look(state);
         let memory = host_memory::read();
         let own = if memory.bound == state.bound { memory.active.min(state.own) } else { 0 };
         let mut room = if memory.available < 0 { memory.available } else { memory.available + own };
         state.room = room;
         let mut gone = Vec::new();
-        if room >= self.headroom {
+        if room >= state.headroom {
             return gone;
         }
         for (page, _) in state.spare.drain(..) {
@@ -233,7 +244,7 @@ impl Tier {
             gone.push(Kept { page: Arc::new(page), set: String::new(), last: 0 });
         }
         for (_, _, key) in state.cheapest() {
-            if room >= self.headroom && room >= 0 {
+            if room >= state.headroom && room >= 0 {
                 break;
             }
             if let Some(kept) = state.remove(&key) {
@@ -247,8 +258,46 @@ impl Tier {
         gone
     }
 
+    /// What stays free now: a dedicated machine's headroom; on a shared one the host's reserve,
+    /// twice it while the host stalls on memory.
+    fn look(&self, state: &mut State) {
+        if !self.shared {
+            return;
+        }
+        state.pressed = host_memory::stall().pressed();
+        let reserve = i64::try_from(host_memory::reserve()).unwrap_or(i64::MAX);
+        state.headroom = if state.pressed { reserve.saturating_mul(2) } else { reserve };
+    }
+
     fn fits(&self, state: &State, bytes: i64) -> bool {
-        state.bytes as i64 + bytes <= self.cap as i64 && state.room - bytes >= self.headroom
+        !state.pressed && state.bytes as i64 + bytes <= self.cap as i64 && state.room - bytes >= state.headroom
+    }
+
+    /// Whether a page of `bytes` that is no weight (a retained region's) may pin now, within the
+    /// headroom and never while the host stalls. `shed`: a region's copy waits on it, and kept
+    /// weight pages, which the store refills, go first, the least worth first; a page made ahead
+    /// takes only free room. The pages that go come with the answer.
+    fn room_for(&self, bytes: usize, shed: bool) -> (bool, Vec<Kept>) {
+        let mut state = self.state();
+        let mut gone = self.trim(&mut state);
+        let bytes = bytes as i64;
+        if state.pressed {
+            return (false, gone);
+        }
+        for (_, _, key) in if shed { state.cheapest() } else { Vec::new() } {
+            if state.room - bytes >= state.headroom {
+                break;
+            }
+            if let Some(kept) = state.remove(&key) {
+                state.room += kept.page.len as i64;
+                gone.push(kept);
+            }
+        }
+        let fits = state.room - bytes >= state.headroom;
+        if fits {
+            state.room -= bytes;
+        }
+        (fits, gone)
     }
 
     /// Whether `key`, `bytes` of host RAM, enters the tier. Where there is no room it displaces
@@ -260,7 +309,11 @@ impl Tier {
             return (false, gone);
         }
         let bytes = bytes as i64;
+        if state.pressed {
+            return (false, gone);
+        }
         if self.fits(state, bytes) {
+            state.room -= bytes;
             return (true, gone);
         }
         let worth = state.worth(key);
@@ -278,7 +331,7 @@ impl Tier {
         for key in chosen {
             gone.extend(state.remove(&key));
         }
-        state.room += freed;
+        state.room += freed - bytes;
         (true, gone)
     }
 
@@ -382,13 +435,19 @@ impl Tier {
         };
         match spare {
             Some(page) => Ok(page),
-            None => self.new_page(len),
+            None => self.new_page(len, true),
         }
     }
 
     /// Faulted in first: the driver registers touched memory about nine times as fast, and
-    /// registering holds every other driver call of the process.
-    fn new_page(&self, len: usize) -> Result<Page, String> {
+    /// registering holds every other driver call of the process. Only within the headroom
+    /// (`room_for`): refused, the region stays on the card.
+    fn new_page(&self, len: usize, shed: bool) -> Result<Page, String> {
+        let (fits, gone) = self.room_for(len, shed);
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        if !fits {
+            return Err(format!("no host room for {} MiB beyond what the computer keeps free", len >> 20));
+        }
         let mut page = Page::new(len).map_err(|error| error.to_string())?;
         page.populate();
         while !page.registered() {
@@ -403,7 +462,7 @@ impl Tier {
         if self.state().spare.iter().any(|(page, _)| page.len >= len) {
             return;
         }
-        if let Ok(page) = self.new_page(len) {
+        if let Ok(page) = self.new_page(len, false) {
             self.spare(page);
         }
     }
@@ -416,9 +475,10 @@ impl Tier {
     /// pages and spares included, which yield to them.
     pub(super) fn retained_room(&self) -> i64 {
         let memory = host_memory::read();
-        let state = self.state();
+        let mut state = self.state();
+        self.look(&mut state);
         let spare: u64 = state.spare.iter().map(|(page, _)| page.len as u64).sum();
-        memory.available + state.bytes as i64 + spare as i64 - self.headroom
+        memory.available + state.bytes as i64 + spare as i64 - state.headroom
     }
 
     pub(super) fn row(&self, row: Row) {
@@ -552,8 +612,9 @@ pub(super) struct PyPages {
 #[pymethods]
 impl PyPages {
     #[new]
-    fn new(device: i32, cap: u64, headroom: u64) -> Self {
-        Self { tier: Arc::new(Tier::new(device, cap, headroom)) }
+    #[pyo3(signature = (device, cap, headroom, shared = false))]
+    fn new(device: i32, cap: u64, headroom: u64, shared: bool) -> Self {
+        Self { tier: Arc::new(Tier::new(device, cap, headroom, shared)) }
     }
     /// Whether pages wait for an idle executor to pin them.
     fn pending(&self, py: Python<'_>) -> bool {
@@ -581,9 +642,10 @@ impl PyPages {
             .map(|row| (row.set, row.block, row.bytes, row.origin, row.ahead, row.ns, row.at_ms)).collect()
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (pages, bytes, room, wanted, pin_failed, off) = {
+        let (pages, bytes, room, wanted, pin_failed, off, headroom, pressed) = {
             let state = self.tier.state();
-            (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone())
+            (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone(),
+                state.headroom, state.pressed)
         };
         let row = PyDict::new(py);
         row.set_item("scope", "the host tier: every streamed page's bytes, pinned")?;
@@ -591,6 +653,8 @@ impl PyPages {
         row.set_item("bytes", bytes)?;
         row.set_item("room", room)?;
         row.set_item("cap", self.tier.cap)?;
+        row.set_item("headroom", headroom)?;
+        row.set_item("pressed", pressed)?;
         row.set_item("pinned", off.is_none())?;
         row.set_item("refused", off)?;
         row.set_item("wanted", wanted)?;

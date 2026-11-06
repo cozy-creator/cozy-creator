@@ -11,7 +11,7 @@ use std::io;
 mod sys;
 
 #[cfg(target_os = "linux")]
-pub(crate) use sys::{cgroups, number};
+pub(crate) use sys::{available_above, cgroups, events, meminfo, number};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HostMemory {
@@ -34,6 +34,37 @@ pub struct HostMemory {
 /// Physical memory; -1 when unreadable.
 pub fn total() -> i64 {
     sys::total()
+}
+
+/// What a person's computer keeps for its own programs beside a shared machine: a quarter of its
+/// memory, from 4 to 16 GiB, plus what its free swap is short of a quarter of its swap (a full swap
+/// takes nothing those programs push out). Live: swap moves.
+pub fn reserve() -> u64 {
+    let total = u64::try_from(total()).unwrap_or(0);
+    let (swap, free) = sys::swap();
+    (total / 4).clamp(4 << 30, 16 << 30) + (swap / 4).saturating_sub(free)
+}
+
+/// The host stalling on memory now: PSI's `some avg10` above this (a tenth of the last 10 s with a
+/// task waiting on memory). Paul's laptop, swap full all day on 11-06, sampled at most 3.7.
+pub const STALLED: f32 = 10.0;
+
+/// How much this process waits on memory: PSI `some avg10`, percent, the most of the system's
+/// and of each limited cgroup v2 on its path (a limit stalls only what is under it). Limit events
+/// are no measure: page cache filling a limit counts one per reclaim. 0 where unreadable.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq)]
+pub struct Stall {
+    pub some_avg10: f32,
+}
+
+impl Stall {
+    pub fn pressed(&self) -> bool {
+        self.some_avg10 > STALLED
+    }
+}
+
+pub fn stall() -> Stall {
+    sys::stall()
 }
 
 /// The most this process's memory can reach: physical memory, or less where a limit on it is

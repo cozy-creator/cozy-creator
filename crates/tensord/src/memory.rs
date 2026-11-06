@@ -334,8 +334,23 @@ impl Host {
             let mut signalled: Option<u64> = None;
             // The processes and peaks the last note named: a note when they change.
             let mut noted: Vec<(u32, Option<u64>)> = vec![];
+            // The contained machine's limit the last note named.
+            let mut limit: Option<u64> = None;
             while pressure.wait().is_ok() {
                 looked.0.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
+                // A contained machine's limit follows the computer's other programs first: the
+                // budget read below is then the kernel's.
+                match platform::contain::follow(host_memory::reserve()) {
+                    Some(Ok(budget)) if limit != Some(budget.max) => {
+                        notes.note(serde_json::json!({"event": "host_limit", "budget": budget}));
+                        limit = Some(budget.max);
+                    }
+                    Some(Err(error)) if limit.is_some() => {
+                        notes.note(serde_json::json!({"event": "host_limit_unwritten", "why": error.to_string()}));
+                        limit = None;
+                    }
+                    _ => (),
+                }
                 let calls = host_calls(&running, &gpus);
                 let named: Vec<(u32, Option<u64>)> = calls.iter().map(|call| (call.pid, call.peak)).collect();
                 if named != noted {

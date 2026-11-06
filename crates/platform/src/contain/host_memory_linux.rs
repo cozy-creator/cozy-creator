@@ -11,7 +11,7 @@ pub(super) fn total() -> i64 {
     meminfo("MemTotal")
 }
 
-fn meminfo(field: &str) -> i64 {
+pub(crate) fn meminfo(field: &str) -> i64 {
     let Ok(file) = fs::File::open("/proc/meminfo") else {
         return -1;
     };
@@ -25,6 +25,42 @@ fn meminfo(field: &str) -> i64 {
         }
     }
     -1
+}
+
+/// (`SwapTotal`, `SwapFree`); 0 where unreadable.
+pub(super) fn swap() -> (u64, u64) {
+    let read = |field| u64::try_from(meminfo(field)).unwrap_or(0);
+    (read("SwapTotal"), read("SwapFree"))
+}
+
+pub(super) fn stall() -> super::Stall {
+    let avg10 = |path: &Path| -> Option<f32> {
+        let text = fs::read_to_string(path).ok()?;
+        let some = text.lines().find(|line| line.starts_with("some "))?;
+        some.split_whitespace().find_map(|field| field.strip_prefix("avg10="))?.parse().ok()
+    };
+    let limited = match cgroups() {
+        Some((path, limits, "memory.current")) => path
+            .into_iter()
+            .filter(|cgroup| tightest(std::slice::from_ref(cgroup), limits).is_some())
+            .map(|cgroup| cgroup.join("memory.pressure"))
+            .collect(),
+        _ => vec![],
+    };
+    let some_avg10 = std::iter::once(PathBuf::from("/proc/pressure/memory"))
+        .chain(limited)
+        .filter_map(|path| avg10(&path))
+        .fold(0.0, f32::max);
+    super::Stall { some_avg10 }
+}
+
+/// The sum of `names`' counts in a `memory.events`.
+pub(crate) fn events(text: &str, names: &[&str]) -> u64 {
+    text.lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter(|(name, _)| names.contains(name))
+        .filter_map(|(_, count)| count.trim().parse::<u64>().ok())
+        .sum()
 }
 
 pub(crate) fn number(path: &Path) -> Option<u64> {
@@ -160,6 +196,27 @@ pub(super) fn read() -> HostMemory {
         }
     }
     best
+}
+
+/// What the host has available outside `root`: `MemAvailable`, or less where a limited cgroup
+/// above `root` (a container, a unit's `MemoryMax`) has less room. -1 when unreadable.
+pub(crate) fn available_above(root: &Path) -> i64 {
+    let mut available = meminfo("MemAvailable");
+    let Some((path, limits, usage)) = cgroups() else {
+        return available;
+    };
+    for cgroup in path.iter().filter(|cgroup| !cgroup.starts_with(root)) {
+        let Some(bound) = tightest(std::slice::from_ref(cgroup), limits) else {
+            continue;
+        };
+        let used = number(&cgroup.join(usage)).unwrap_or(0);
+        let (cache, _, _) = stat(cgroup).unwrap_or((0, 0, 0));
+        let room = bound.saturating_sub(used.saturating_sub(cache)) as i64;
+        if available < 0 || room < available {
+            available = room;
+        }
+    }
+    available
 }
 
 /// `/proc/<pid>/status`: `RssAnon`, `RssFile`, `RssShmem` and `VmHWM`.

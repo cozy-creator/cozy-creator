@@ -47,7 +47,9 @@ class Start(_Wire):
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
     memo: MemoSettings | None
+    gpu_memory_limit: int | None
     shared: bool
+    display_reserve: list[int]
 
 class Adapter(_Wire):
     model_id: str
