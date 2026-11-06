@@ -870,6 +870,17 @@ video.preview.on {
   z-index: 5;
   animation: fade-in 120ms ease-out;
 }
+/* Dragged to scroll, by a mouse or a finger (dragScroll.ts), with no bar; an end with more to see fades. */
+.here-side {
+  scrollbar-width: none;
+  touch-action: none;
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent 100%);
+}
+.here-side::-webkit-scrollbar {
+  display: none;
+}
 .here-side > * {
   --text: 1;
   --hang: 1;
@@ -926,6 +937,18 @@ video.preview.on {
   border: 1px solid var(--ember);
   color: var(--ink);
   font-size: var(--title);
+}
+/* The take shown, as words mention it. */
+.take-name {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2, 6px);
+  margin-bottom: var(--s3, 8px);
+}
+.take-name .chip {
+  border: 0;
+  font: inherit;
+  cursor: copy;
 }
 /* What a box is, in its own words: a field of its own, under its label. */
 .desc-field {

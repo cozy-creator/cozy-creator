@@ -185,8 +185,9 @@ async function died(why) {
     await page.locator(`.card.here[data-asset="${name}"]`).first().waitFor();
   };
   await open('Ada');
-  const numbers = await until('its numbers', () => page.locator('.card[data-asset="Ada"] .take-no').allInnerTexts(), (held) => held.length === 3, 5000).catch((why) => String(why));
-  check('thumbnails_say_their_number', [...numbers].sort().join() === '1,2,3', numbers);
+  // A take's number is in its name, on hover, and not drawn on its thumbnail.
+  const numbers = await until('its numbers', () => page.locator('.card[data-asset="Ada"] .here-side .take[data-take]').evaluateAll((all) => all.map((one) => one.getAttribute('aria-label'))), (held) => held.length === 3, 5000).catch((why) => String(why));
+  check('thumbnails_say_their_number', Array.isArray(numbers) && [...numbers].map((label) => label.match(/\d+$/)?.[0]).sort().join() === '1,2,3' && (await page.locator('.card[data-asset="Ada"] .take-no').count()) === 0, numbers);
   await shot('numbers');
   // Open, its takes are a column beside the picture, the newest on top.
   const big = await page.locator('.card.here[data-asset="Ada"] .media').first().boundingBox();
@@ -194,28 +195,49 @@ async function died(why) {
   const take = (number) => page.locator(`.card[data-asset="Ada"] .take[data-take="${number}"]`).boundingBox();
   const [newest, middle, oldest] = [await take(3), await take(2), await take(1)];
   check('takes_beside_the_picture', column.x >= big.x + big.width - 1 && Math.abs(newest.x - oldest.x) < 2 && newest.y < middle.y && middle.y < oldest.y, { big, column, newest, oldest });
-  // Held down, the pointer slides along the column from take to take, the column staying under it.
-  await page.waitForTimeout(300);
-  const columnAt = async () => {
-    const { x, y } = await page.locator('.card[data-asset="Ada"] .takes').boundingBox();
-    return { x, y };
-  };
-  const from = (box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
-  const [start, end] = [from(newest), from(oldest)];
-  await page.mouse.move(start.x, start.y);
+  // The column scrolls by dragging it, a mouse's or a finger's, with no bar and a little carry after, its ends fading where there's more; a
+  // press that doesn't move picks a take. (Sliding the pointer from take to take is gone: it fought the drag.)
+  await imported('many', 50);
+  for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
+  await open('many');
+  const side = page.locator('.card.here[data-asset="many"] .here-side');
+  await side.locator('.take[data-take="1"]').waitFor();
+  const sideBox = await side.boundingBox();
+  const scrolled = () => side.evaluate((el) => el.scrollTop);
+  const across = sideBox.x + sideBox.width / 2;
+  await page.mouse.move(across, sideBox.y + sideBox.height - 12);
   await page.mouse.down();
-  const columnFrom = await columnAt();
-  let columnMoved = 0;
-  // At a hand's pace: each take it crosses is drawn large before it goes on.
-  for (let step = 1; step <= 10; step++) {
-    await page.mouse.move(start.x + ((end.x - start.x) * step) / 10, start.y + ((end.y - start.y) * step) / 10);
-    await page.waitForTimeout(100);
-    const now = await columnAt();
-    columnMoved = Math.max(columnMoved, Math.abs(now.x - columnFrom.x), Math.abs(now.y - columnFrom.y));
-  }
+  for (let step = 1; step <= 8; step++) await page.mouse.move(across, sideBox.y + sideBox.height - 12 - step * 18);
   await page.mouse.up();
-  const slid = await page.locator('.card[data-asset="Ada"] .take.on').getAttribute('data-take');
-  check('a_slide_reaches_each_take', slid === '1' && columnMoved < 2, { slid, columnMoved });
+  const byMouse = await scrolled();
+  await page.waitForTimeout(500);
+  const coasted = await scrolled();
+  const looks = await side.evaluate((el) => ({ bar: el.offsetWidth - el.clientWidth, mask: getComputedStyle(el).maskImage || getComputedStyle(el).webkitMaskImage, top: el.style.getPropertyValue('--fade-top'), bottom: el.style.getPropertyValue('--fade-bottom') }));
+  check('the_column_drags_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { byMouse, coasted, looks });
+  // Under the take shown, how words name it: approved, the box's own name leads.
+  const namedFirst = await page.locator('.card.here[data-asset="many"] .take-name .chip').allInnerTexts();
+  const pickedBefore = await side.locator('.take.on').getAttribute('data-take');
+  const another = side.locator(`.take[data-take]:not([data-take="${pickedBefore}"])`).first();
+  const anotherNumber = await another.getAttribute('data-take');
+  await another.click();
+  check('a_still_press_picks', (await side.locator('.take.on').getAttribute('data-take')) === anotherNumber, { pickedBefore, anotherNumber });
+  const takeName = page.locator('.card.here[data-asset="many"] .take-name .chip');
+  const namedThen = await takeName.allInnerTexts();
+  await takeName.last().click();
+  check('the_take_shown_is_named_to_mention', namedFirst.join() === `<Many>,<Many.${pickedBefore}>` && namedThen.join() === `<Many.${anotherNumber}>` && (await toast(`<many.${anotherNumber}>`)) === true, { namedFirst, namedThen });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const beforeFinger = await scrolled();
+  const touchFrom = { x: across, y: sideBox.y + sideBox.height - 12 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [touchFrom] });
+  for (let step = 1; step <= 6; step++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchFrom.x, y: touchFrom.y - step * 18 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.waitForTimeout(500);
+  const byFinger = await scrolled();
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await cdp.detach();
+  check('the_column_drags_with_a_finger', byFinger > beforeFinger + 40 && (await page.locator('.card.here[data-asset="many"]').count()) === 1, { beforeFinger, byFinger });
+  await open('Ada');
 
   // A double tap approves a take, and again unapproves it; on the big picture too, and Enter, and none opens it large. A click opens a box at once.
   const ada = page.locator('.card.here[data-asset="Ada"]');
