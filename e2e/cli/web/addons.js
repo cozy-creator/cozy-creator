@@ -2,13 +2,13 @@
 // carried shows what takes it; dropped where it can't go, a toast says why and nothing changes; dropped where it can, a chip stands under the box at once, follows it, leaves
 // its size alone, keeps other boxes clear of it, and stays near one size at any zoom. An X takes it off, strength is behind More, a hand-written `lora:` or `models:` is a chip, and
 // the file keeps every comment and `|`. It names no model: what it drops comes from `GET /v1/models` and `GET /v1/tools`.
-//   node addons.js <sign-in link from `cozy open --no-open`, or the address of a page that needs none>
+//   node addons.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $RENDER: a machine with a GPU, on which a box with a LoRA and a fine-tune
 // really renders, and what its run was asked and applied is read back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, until } = require('./page');
+const { calcifer, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -27,8 +27,7 @@ async function died(why) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
@@ -45,7 +44,7 @@ async function died(why) {
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {

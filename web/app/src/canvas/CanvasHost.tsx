@@ -1,7 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  Background,
-  BackgroundVariant,
   type Edge,
   type OnSelectionChangeParams,
   ReactFlow,
@@ -31,9 +29,8 @@ import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
 import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
-import { viewable } from "./Media"
 import { Placer } from "./place"
-import { Sheet } from "./Sheet"
+import { Dots, Sheet } from "./Sheet"
 import { madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
@@ -59,8 +56,6 @@ const UNDER_GAP = 8
 const NARROW = 760
 /** How long the canvas takes to draw in on a box, or go back. */
 const HERE_MS = 260
-/** How long a click on a picture waits to see if it's the first of two, which looks at it large: the press itself shows at once, and a box with no picture to look at doesn't wait. */
-const DOUBLE_CLICK_MS = 200
 
 /** The view of a box and what's under it, the two as large as they go together, and what's under it told how wide it is and how tall it may be. Null with no node to fit to. */
 function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: string, stage: HTMLElement) {
@@ -73,7 +68,10 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
   const wide = room.width - left - right
   const tall = room.height - top - bottom
   const under = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-under`)
+  const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side`)
   const scale = (zoom: number) => textScale(zoom) * zoom * Number(getComputedStyle(stage).getPropertyValue("--here"))
+  /** The takes beside it, in the canvas's own units at `zoom`, with their gap. */
+  const beside = (zoom: number) => (side ? ((side.offsetWidth + 8) * scale(zoom)) / zoom : 0)
   const most = tall * (1 - LEAST_BOX) - UNDER_GAP
   const across = (zoom: number) => Math.min(wide, Math.max(w * zoom, LEAST_UNDER * scale(zoom)))
   /** What's under it as it would be at `zoom`: as tall as what it holds, up to what it may have. */
@@ -82,18 +80,18 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
     under.style.setProperty("--here-width", `${across(zoom) / scale(zoom)}px`)
     return Math.min(most, ((under.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0) * scale(zoom))
   }
-  const zoomFor = (below: number) => Math.min(MOST_HERE, wide / w, (tall - below - (below && UNDER_GAP)) / h)
+  const zoomFor = (below: number, across: number) => Math.min(MOST_HERE, wide / (w + across), (tall - below - (below && UNDER_GAP)) / h)
   // How tall it is depends on how wide, which goes with the zoom, which depends on how tall: twice round settles it.
-  let zoom = zoomFor(most / 2)
-  zoom = zoomFor(height(zoom))
-  zoom = zoomFor(height(zoom))
+  let zoom = zoomFor(most / 2, 0)
+  zoom = zoomFor(height(zoom), beside(zoom))
+  zoom = zoomFor(height(zoom), beside(zoom))
   const below = height(zoom)
   under?.style.setProperty("--here-room", `${most / scale(zoom)}px`)
   const high = h * zoom + (below && below + UNDER_GAP)
   return {
     below,
     view: {
-      x: left + wide / 2 - (node.position.x + w / 2) * zoom,
+      x: left + wide / 2 - (node.position.x + (w + beside(zoom)) / 2) * zoom,
       y: top + Math.max(0, tall - high) / 2 - node.position.y * zoom,
       zoom,
     },
@@ -187,28 +185,18 @@ function useMachines(store: CanvasStore): string[] | null {
   return isPending ? null : names
 }
 
-/** Render all, and how many that is. Approved assets stay unless it's said. */
+/** Render all, and how many that is. Approved assets stay. */
 function RenderAll({ id }: { id: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { data } = useQuery(projectQuery(client, id))
-  const [outdated, setOutdated] = useState(false)
-  const assets = data?.assets ?? []
-  const fresh = assets.filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
-  const late = assets.filter((asset) => asset.pinned && asset.tool && asset.standing === "out_of_date").length
-  const also = outdated && late > 0
-  if (!fresh && !late) return null
+  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
+  if (!fresh) return null
   return (
     <span className="render-all">
-      <button type="button" className="tb primary" onClick={() => store.runAll(also)}>
-        Render all {fresh + (also ? late : 0)}
+      <button type="button" className="tb primary" onClick={() => store.runAll()}>
+        Render all {fresh}
       </button>
-      {late > 0 && (
-        <label>
-          <input type="checkbox" checked={outdated} onChange={(event) => setOutdated(event.target.checked)} />
-          Also re-render {late} out of date
-        </label>
-      )}
     </span>
   )
 }
@@ -347,6 +335,7 @@ function Canvas({
     navigate(`/projects/${store.projectId}`)
   }, [store, navigate, stopWriting])
   store.leaveHere = leaveHere
+  store.openHere = (name) => navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
   store.hereRenamed = (name) => navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`, { replace: true })
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
@@ -354,7 +343,6 @@ function Canvas({
   }, [opened, stopWriting])
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const firstClick = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store)
@@ -518,7 +506,7 @@ function Canvas({
     [store],
   )
 
-  /** On a box's picture, the arrows walk its row one take at a time, and Enter approves the one showing. */
+  /** On a box's picture, the arrows walk its row one take at a time, and Enter approves the one showing, or unapproves it. */
   const stepTakes = useCallback(
     (name: string, event: KeyboardEvent) => {
       const view = store.get(name)
@@ -529,12 +517,12 @@ function Canvas({
       if (at < 0) return false
       event.preventDefault()
       if (event.key === "Enter") {
-        store.pin(name, row[at].number)
+        store.toggleApproved(name, row[at].number)
         return true
       }
       const next = row[at + (event.key === "ArrowLeft" ? -1 : 1)]
       if (next) {
-        store.view(name, next.number === asset.version ? undefined : next.number)
+        store.pickTake(name, next.number)
         requestAnimationFrame(() => document.querySelector(".card.here .take.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }))
       }
       return true
@@ -632,24 +620,20 @@ function Canvas({
   const nodeClicked = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
-      clearTimeout(firstClick.current)
       const { name } = node.data
-      const looks = viewable(store.get(name))
-      if (event.detail > 1 && looks && (event.target as Element).closest(".media")) return store.viewing.set(name)
-      if (store.inPlace?.name === name && store.get(name)?.here) return
+      const view = store.get(name)
+      // A double tap on its picture approves the take showing, or unapproves it.
+      const shown = view?.asset?.prefixes?.length ? shownOf(view)?.number : undefined
+      if (event.detail > 1 && shown !== undefined && (event.target as Element).closest(".media")) return store.toggleApproved(name, shown)
+      if (store.inPlace?.name === name && view?.here) return
       // A click opens: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
-      const go = () => {
-        writeHere(name)
-        navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
-      }
-      if (looks) firstClick.current = setTimeout(go, DOUBLE_CLICK_MS)
-      else go()
+      writeHere(name)
+      navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
     },
     [store, flow, writeHere, navigate],
   )
   const paneClicked = useCallback(() => {
-    clearTimeout(firstClick.current)
     leaveHere()
   }, [leaveHere])
   const nodeMenu = useCallback(
@@ -683,6 +667,22 @@ function Canvas({
     set(flowStore.getState().transform[2])
     return flowStore.subscribe((state) => set(state.transform[2]))
   }, [flowStore])
+  // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
+  useLayoutEffect(() => {
+    let [held, settle] = [flowStore.getState().transform[2], 0]
+    const settled = () => stage.current?.toggleAttribute("data-zooming", false)
+    const stop = flowStore.subscribe(({ transform: [, , zoom] }) => {
+      if (zoom === held) return
+      held = zoom
+      stage.current?.toggleAttribute("data-zooming", true)
+      cancelAnimationFrame(settle)
+      settle = requestAnimationFrame(() => (settle = requestAnimationFrame(settled)))
+    })
+    return () => {
+      stop()
+      cancelAnimationFrame(settle)
+    }
+  }, [flowStore])
   const accepted = useCallback((event: DragEvent) => [DRAGGED_TOOL, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_CHECKPOINT].some((type) => event.dataTransfer.types.includes(type)), [])
 
   // The list a box's controls come from, whatever the panel is searching.
@@ -707,6 +707,7 @@ function Canvas({
       <div
         ref={stage}
         className="stage"
+        data-layered={LAYERED ? "" : undefined}
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
         onPointerMove={(event) => {
@@ -761,7 +762,7 @@ function Canvas({
           onSelectionDrag={selectionDrag}
           onSelectionDragStop={selectionDragStop}
         >
-          <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
+          <Dots />
           {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
         </ReactFlow>
         {veil && <div className="dropveil" />}
@@ -775,6 +776,13 @@ function Canvas({
     </CanvasStoreProvider>
   )
 }
+
+/**
+ * WebKit draws again all that a transform moves, each frame it moves, so there the boxes are on a layer of their own: 300 of them panned at
+ * 214–590 ms a frame on macOS, and 16 ms on one. Chrome and Firefox move them as drawn already, and Chrome rasters a layer at its whole size:
+ * 5,000 fitted were many windows of it, and every frame took 1.5 s.
+ */
+const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.test(navigator.userAgent)
 
 /** How much a box's words are scaled against the canvas, so they read at nearly one size at any zoom: in steps, so a zoom sets it only as it crosses one. */
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20

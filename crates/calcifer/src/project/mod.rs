@@ -77,6 +77,7 @@ use jobs::{Going, Jobs};
 use walker::{End, Frozen, Graph, Kind as JobKind, Named, Node, Turn};
 use tools::Canvas;
 pub use upgrade::{Upgraded, upgrade};
+pub(crate) use thumbs::previews;
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
 /// project), and its index of every folder it opened, kept in `projects.json`.
@@ -2670,6 +2671,9 @@ impl Walk {
             let stand = doc.stand(&lock);
             self.say_cuts(&doc, &stand).await?;
         }
+        // Under `walking`, as an ask keeps its words and joins: one asked now of the same words keeps them.
+        let _walking = self.project.walking.lock().expect("walking lock");
+        let asks = self.folder().walk_now()?.walk.asks;
         if let Some(digest) = asks.iter().find(|ask| ask.id == id).map(|ask| &ask.digest) {
             if !asks.iter().any(|ask| ask.id != id && &ask.digest == digest) {
                 self.project.walker.lock().expect("walker lock").readings.remove(digest);
@@ -2793,8 +2797,9 @@ impl Walk {
             self.sync();
             self.ahead_unneeded();
             if work.is_empty() {
-                // What is going with nothing following it has ended.
-                {
+                // What is going with nothing following it has ended. What this walker took in is done; an ask that came since is
+                // the next turn's, so `over` finds it and the walk goes on.
+                let done = {
                     let mut walker = self.project.walker.lock().expect("walker lock");
                     let going: Vec<usize> = (0..walker.graph.jobs.len()).filter(|&id| walker.graph.jobs[id].state == walker::State::Going).collect();
                     going.into_iter().for_each(|id| {
@@ -2807,8 +2812,9 @@ impl Walk {
                     for id in walker.graph.open_jobs() {
                         warn!("{}: nothing is going, and it still waits for {:?}", walker.graph.jobs[id].asset, walker.graph.waits_for(id));
                     }
-                }
-                for ask in self.folder().walk_now()?.walk.asks {
+                    walker.joined.clone()
+                };
+                for ask in self.folder().walk_now()?.walk.asks.into_iter().filter(|ask| done.contains(&ask.id)) {
                     self.finish(&ask.id).await?;
                 }
                 if self.over()? {
@@ -4051,7 +4057,8 @@ impl Walk {
                 None => format!("{name}: {status}"),
             };
             let code = if run.status == RunStatus::Canceled { CANCELED } else { "version_failed" };
-            return Err(Error::new(Kind::Unavailable, code, said).next(format!("cozy run show {}", run.number)));
+            let next = run.reason.iter().flat_map(|reason| reason.next.iter().cloned()).chain([format!("cozy run show {}", run.number)]);
+            return Err(next.fold(Error::new(Kind::Unavailable, code, said), Error::next));
         }
         let mut version = pending.version.clone();
         // Where its function kept the other take up to, exactly: the time asked lands on its own grid.

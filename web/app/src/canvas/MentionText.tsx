@@ -6,7 +6,7 @@ import { useCanvasStore, useElement } from "./context"
 import { DRAGGED_FILE } from "./drag"
 import { Thumb } from "./Media"
 import { shownOf } from "./shown"
-import { mentionsIn, withMentions } from "./text"
+import { chipWords, mentionsIn, withMentions } from "./text"
 import { isSelf, mentionFrom, NO_BARE_SELF, versionIn } from "./versions"
 
 function chip(name: string, missing: boolean): HTMLElement {
@@ -14,7 +14,7 @@ function chip(name: string, missing: boolean): HTMLElement {
   el.className = missing ? "chip missing" : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
-  el.textContent = name
+  el.textContent = chipWords(name)
   el.title = !missing ? name : isSelf(name) ? NO_BARE_SELF : `${name} is no longer here`
   return el
 }

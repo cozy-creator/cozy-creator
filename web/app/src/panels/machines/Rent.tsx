@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useState } from "react"
+import { Fragment, useEffect, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { rentalSkusQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
@@ -69,6 +69,11 @@ function Order({ machines }: { machines: Machine[] }) {
   const to = useTo()
   const now = useSignal(order)
   const pending = machines.find(ordering)
+  const here = useRef<HTMLDivElement>(null)
+  const shown = now.state !== "idle"
+  useEffect(() => {
+    if (shown) here.current?.scrollIntoView({ block: "nearest" })
+  }, [shown])
 
   const go = async () => {
     const rented = await place(client)
@@ -81,7 +86,7 @@ function Order({ machines }: { machines: Machine[] }) {
   if (now.state === "idle") return null
   const line = (held: { sku: string; gpus?: number }, price: number) => `${held.gpus ?? 1}× ${held.sku.toUpperCase()} at ${usd(price)}/h`
   return (
-    <div className="order" aria-live="polite">
+    <div className="order" aria-live="polite" ref={here}>
       {now.state === "quoting" && <p className="muted">Asking the Hub its price for {now.order.gpus ?? 1}× {now.order.sku}…</p>}
       {now.state === "quoted" && (
         <>
@@ -165,11 +170,17 @@ export function Rent({ machines, signedIn }: { machines: Machine[]; signedIn: bo
       <Failure error={error} lead="The Hub didn't list its machines" />
       <ul className="rows">
         {skus?.map((sku) => (
-          <Sku key={sku.name} sku={sku} disabled={asking || !signedIn} onPick={pick} />
+          <Fragment key={sku.name}>
+            <Sku sku={sku} disabled={asking || !signedIn} onPick={pick} />
+            {now.state !== "idle" && now.order.sku === sku.name && (
+              <li className="order-row">
+                <Order machines={machines} />
+              </li>
+            )}
+          </Fragment>
         ))}
       </ul>
       {skus && !skus.length && <p className="muted">No machine is for rent on this Hub right now.</p>}
-      <Order machines={machines} />
       <details className="sect">
         <summary>Log in over SSH</summary>
         <input

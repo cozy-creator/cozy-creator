@@ -2,7 +2,7 @@
 // words, with no command to run. Asked too soon, it moves on to the code already out. Either email's code works. The account shows, a reload
 // finds it, nothing of the Hub's is in the browser, and it signs out. Deleted, its code reaches AuthKit's restore screen, which says when it
 // goes for good, and Restore signs in.
-//   node signin.js <sign-in link from `cozy open --no-open`>
+//   node signin.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser. $HUB_LOG: a development Hub's log to read codes from, with Calcifer already
 // pointed at that Hub. Without it a stand-in Hub runs here, since a runner can't reach AuthKit; $TO_HUB (a shell command, @HUB@ for its origin)
 // points Calcifer at it and $RESTART points it back.
@@ -12,7 +12,7 @@ const { exec } = require('child_process');
 const { createPublicKey, randomBytes, randomUUID, verify } = require('crypto');
 const { readFileSync } = require('fs');
 const http = require('http');
-const { STEP_MS, lastLook, launch, lookAt, noStall, until } = require('./page');
+const { calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -151,8 +151,7 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
 });
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const email = `web-signin-${Date.now()}@scratch.test`;
   const hub = process.env.HUB_LOG ? null : await standIn();
   const mailed = hub ? hub.mailed : logged(email);
@@ -172,7 +171,7 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   page.on('request', (request) => {
     if (new URL(request.url()).origin !== base && !request.url().startsWith('data:') && !request.url().startsWith('blob:')) elsewhere.push(request.url());
   });
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   // After the link: a restart loses a code not yet redeemed, and keeps a session.
   if (hub) await shell(process.env.TO_HUB.replaceAll('@HUB@', hub.origin));

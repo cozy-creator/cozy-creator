@@ -792,17 +792,17 @@ impl Lock {
         self.named(|_| true).into_iter().chain(discarded).chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
     }
 
-    /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that.
-    pub fn untombstone(&mut self, name: &str) {
+    /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that. Whether one came back.
+    pub fn untombstone(&mut self, name: &str) -> bool {
         let key = name_key(name);
         if self.assets.contains_key(&key) {
-            return;
+            return false;
         }
         let prefix = format!("{key}{TOMBSTONE}");
         let latest = self.assets.keys().filter(|at| at.starts_with(&prefix)).max_by_key(|at| at[prefix.len()..].parse::<u32>().unwrap_or(0)).cloned();
-        if let Some(held) = latest.and_then(|at| self.assets.remove(&at)) {
-            self.assets.insert(key, held);
-        }
+        let Some(held) = latest.and_then(|at| self.assets.remove(&at)) else { return false };
+        self.assets.insert(key, held);
+        true
     }
 
     /// `sha256` is on `machine`, and not here: for good, or with `name`, on its way here as the file that makes.
@@ -1387,6 +1387,10 @@ impl Folder {
         for (sha256, probed) in &measured {
             if let Some(file) = lock.files.get_mut(sha256) {
                 (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms) = (probed.width, probed.height, probed.fps, probed.frames, probed.alpha, probed.duration_ms);
+                // A video that landed: the page plays its preview on a hover.
+                if file.field() == "video" && file.width > 0 {
+                    super::thumbs::landed(self.dir.join(&file.path), sha256, file.lasts_ms() as f64 / 1000.0);
+                }
             }
         }
         self.rewrite(&self.dir.join(MEASURED), |text| {

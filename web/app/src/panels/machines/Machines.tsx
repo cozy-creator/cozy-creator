@@ -159,8 +159,12 @@ export function Machines() {
 
   const machines = data?.machines.filter((machine) => machine.state !== "ended") ?? []
   const now = useNow(machines.some((machine) => machine.state !== "stopped"))
-  const rentals = machines.filter((machine) => machine.rental)
-  const hourly = rentals.reduce((sum, machine) => sum + (machine.rental?.usd_micros_per_hour ?? 0), 0)
+  // This computer's, and apart, what other computers rented on the same account.
+  const mine = machines.filter((machine) => machine.ordered !== false)
+  const others = machines.filter((machine) => machine.ordered === false)
+  const hourlyOf = (list: Machine[]) => list.reduce((sum, machine) => sum + (machine.rental?.usd_micros_per_hour ?? 0), 0)
+  const rentals = mine.filter((machine) => machine.rental)
+  const hourly = hourlyOf(rentals)
   const signedIn = useSignedIn() && !data?.signed_out?.length
   const renting = !remote && !client.transport.channel
 
@@ -179,10 +183,22 @@ export function Machines() {
         </p>
       ))}
       <ul className="rows">
-        {machines.map((machine) => (
+        {mine.map((machine) => (
           <MachineRow key={machine.name} machine={machine} now={now} />
         ))}
       </ul>
+      {others.length > 0 && (
+        <details className="sect">
+          <summary>
+            {others.length} rented from other computers, {usd(hourlyOf(others))}/h
+          </summary>
+          <ul className="rows">
+            {others.map((machine) => (
+              <MachineRow key={machine.name} machine={machine} now={now} />
+            ))}
+          </ul>
+        </details>
+      )}
       {data && !machines.length && (
         <p className="muted">
           Renders run on a machine.{" "}

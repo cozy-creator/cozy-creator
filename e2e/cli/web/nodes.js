@@ -3,14 +3,14 @@
 // and one beat, with all else behind More; controls from what it holds; reshaping; beats; conflicts; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
 // Undo brings it back. Takes side by side, one dragged out, a new take from here, Render all.
-//   node nodes.js <sign-in link from `cozy open --no-open`>
+//   node nodes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
+const { calcifer, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -41,8 +41,7 @@ function linesOf(text, name) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
@@ -69,7 +68,7 @@ function linesOf(text, name) {
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
@@ -273,6 +272,11 @@ function linesOf(text, name) {
   await until('it went back', () => box('source-b').locator('.nm').boundingBox(), (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
   await open('Sheet');
   await until('chips', () => sheetText.locator('.chip').count(), (n) => n === 2);
+  // A mention reads as it's written, in its brackets, its first letter up; the file keeps it as typed.
+  const chipWords = await sheetText.locator('.chip').allInnerTexts();
+  check('chips_read_as_written', chipWords.join() === '<Source-a>,<Source-b>', chipWords);
+  const thumbs = await until('the pictures it mentions, small', () => box('Sheet').locator('.mention-thumb').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
+  check('mentions_shown_small', Array.isArray(thumbs), thumbs);
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
@@ -316,9 +320,11 @@ function linesOf(text, name) {
   check('coming_apart_changes_no_input', JSON.stringify((await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing])) === JSON.stringify(asItStood));
   await page.evaluate(() => { window.notReloaded = true; });
 
-  // A description, on anything, as text whatever it says.
+  // A description, on anything, as text whatever it says: always open, under its label, and nothing asks a model for it.
   await open('source-a');
-  await box('source-a').locator('.desc-line').click();
+  const described = box('source-a').locator('.desc-field');
+  check('description_is_a_labelled_field', (await described.locator('.block-label').innerText()) === 'Description' && (await described.locator('.mention-text').count()) === 1 && (await box('source-a').locator('button:text-is("Caption"), .desc-line').count()) === 0, await box('source-a').innerText());
+  await described.locator('.mention-text').click();
   await page.keyboard.type('A sea <b>bold</b> <img src=x onerror=window.pwned=1> and more');
   await page.mouse.click(1500, 1000);
   await until('its description in the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), (lines) => lines?.includes('description: '));
@@ -327,19 +333,20 @@ function linesOf(text, name) {
   check('description_on_the_wire', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
-  // Controls from what it holds: its words and its beats shown, whatever the alphabet says of `style` and `summary`, and what else it holds behind More, saying so. Each writes one field and moves nothing else.
+  // Controls from what it holds: its words and its beats shown, whatever the alphabet says of `style` and `summary`, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
   replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    style: wash\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
   await box('knobs').waitFor();
   await open('knobs');
   const knobs = box('knobs');
   const field = async (re) => (linesOf(yaml(), 'knobs') ?? '').match(re)?.[1];
   check('summary_is_its_prompt', (await knobs.locator('.in-frame .mention-text').getAttribute('data-field')) === 'summary');
-  check('words_and_beats_shown', (await knobs.locator('.mention-text').count()) === 2 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=megapixels]').count()) === 0, await knobs.innerText());
-  const marked = await knobs.locator('.more-marks').textContent();
-  check('what_it_holds_says_so', ['megapixels 1', 'turbo on', 'style'].every((word) => marked.includes(word)), marked);
+  // Its description has a field of its own, always open.
+  check('words_and_beats_shown', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field .mention-text').count()) === 1 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=megapixels]').count()) === 0, await knobs.innerText());
+  check('no_line_beside_more', (await knobs.locator('.more-marks').count()) === 0 && (await knobs.locator('.more-toggle').innerText()).trim() === 'More', await knobs.locator('.more-toggle').innerText());
   await more('knobs');
+  check('what_it_holds_behind_more', (await knobs.locator('input[aria-label=megapixels]').inputValue()) === '1' && (await knobs.locator('label:has-text("turbo") input').isChecked()), await knobs.locator('.edit-more').innerText());
   check('its_style_behind_more', (await knobs.locator('.mention-text[data-field=style]').textContent()).includes('wash'));
-  check('a_shape_is_a_choice', (await knobs.locator('select[aria-label="Shape"]').count()) === 1);
+  check('no_shape_field', (await knobs.locator('select[aria-label="Shape"], [data-field=aspect_ratio], [aria-label="Aspect ratio"]').count()) === 0, await knobs.innerText());
   await knobs.locator('input[aria-label=megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field(/megapixels: (\S+)/), (value) => value === '2');
@@ -353,23 +360,33 @@ function linesOf(text, name) {
   check('a_control_keeps_the_comment', (await field(/(# Stays\.)/)) === '# Stays.' && (await field(/(# how)/)) === '# how', linesOf(yaml(), 'knobs'));
   check('text_stays_block', (linesOf(yaml(), 'knobs') ?? '').includes('summary: |'), linesOf(yaml(), 'knobs'));
 
-  // Its shape is a choice in the box, and writes what it makes. Width is only layout, from its corner on the canvas.
-  await more('knobs');
-  const widthBefore = (await rows()).knobs.w;
-  await knobs.locator('select[aria-label="Shape"]').selectOption('3:4');
-  await until('the ratio written', () => field(/aspect_ratio: (\S+)/), (value) => value === '"3:4"');
-  check('reshape_writes_the_shape', true);
+  // Its shape is the box's own, with no field for it: with no picture, its corner pulls a new one, at rest or open, which writes what it makes; open, the
+  // shape set has an × back to Auto. Width is only layout.
   await away();
+  check('its_shape_by_its_corner', (await knobs.locator('.ratio-rest').innerText()) === '3:2', await knobs.locator('.ratio-rest').innerText());
+  const widthBefore = (await rows()).knobs.w;
+  const pull = async (dx, dy) => {
+    const corner = await knobs.locator('.corner').boundingBox();
+    await page.mouse.move(corner.x + 6, corner.y + 6);
+    await page.mouse.down();
+    await page.mouse.move(corner.x + 6 + dx, corner.y + 6 + dy, { steps: 6 });
+    await page.mouse.up();
+  };
   await knobs.locator('.nm').hover();
-  const corner = await knobs.locator('.corner').boundingBox();
-  await page.mouse.move(corner.x + 6, corner.y + 6);
-  await page.mouse.down();
-  await page.mouse.move(corner.x + 60, corner.y + 6, { steps: 6 });
-  await page.mouse.up();
+  await pull(60, 0);
   await until('the width written', rows, (now) => now.knobs.w && now.knobs.w !== widthBefore);
   // Pulled wider, it takes the nearest shape its tool makes (2a50453b1), and its width with it.
-  check('corner_takes_its_shape', (await field(/aspect_ratio: (\S+)/)) !== '"3:4"', await field(/aspect_ratio: (\S+)/));
+  const wider = await until('its shape written', () => field(/aspect_ratio: (\S+)/), (value) => value && value !== '"3:2"').catch(() => field(/aspect_ratio: (\S+)/));
+  check('corner_takes_its_shape', wider && wider !== '"3:2"', wider);
   seen.width_before_reshape = widthBefore;
+  await open('knobs');
+  await pull(-40, 120);
+  const taller = await until('reshaped open', () => field(/aspect_ratio: (\S+)/), (value) => value !== wider).catch(() => field(/aspect_ratio: (\S+)/));
+  check('reshapes_while_open', taller && taller !== wider && (await page.locator('.card.here[data-asset="knobs"]').count()) === 1, { wider, taller });
+  check('its_shape_says_so_open', (await knobs.locator('.ratio-rest').innerText()).trim() === taller?.replaceAll('"', ''), await knobs.locator('.ratio-rest').innerText());
+  await knobs.locator('.ratio-rest .ratio-clear').click();
+  await until('back to Auto', () => Promise.resolve(linesOf(yaml(), 'knobs') ?? ''), (lines) => !lines.includes('aspect_ratio'));
+  check('its_x_is_auto', true);
 
   // Beats: one text and a duration slider each; add, remove, down to the one that always stays; what else a beat holds stays.
   await open('knobs');
@@ -459,9 +476,9 @@ function linesOf(text, name) {
 
     await place('still');
     const still = box('still_1');
-    await until('one prompt', () => still.locator('.mention-text').count(), (n) => n === 1);
+    await until('one prompt', () => still.locator('.mention-text:not([data-field=description])').count(), (n) => n === 1);
     check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.here-all input, .here-all select, .beat, .edit-more').count()) === 0, await still.innerText());
-    check('fresh_box_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
+    check('fresh_box_marks_nothing', (await still.locator('.more-marks').count()) === 0 && (await still.locator('.more-toggle').innerText()).trim() === 'More', await still.innerText());
     await shot('fresh-prompt');
     await more('still_1');
     await still.locator('input[aria-label=Count]').waitFor();
@@ -469,12 +486,13 @@ function linesOf(text, name) {
     await until('the choice in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'noise');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
-    await until('marked', () => still.locator('.more-marks').count(), (n) => n === 1);
-    check('a_set_value_is_marked', (await still.locator('.more-marks').textContent()).includes('Style noise'), await still.locator('.more-marks').textContent());
+    // Set, it's behind More with no word of it beside: opened, it's there.
+    check('a_set_value_has_no_line', (await still.locator('.more-marks').count()) === 0 && (await still.locator('.more-toggle').innerText()).trim() === 'More', await still.locator('.more-toggle').innerText());
     await shot('fresh-marked');
     await open('still_1');
     check('shut_stays_shut', (await still.locator('.edit-more').count()) === 0);
     await more('still_1');
+    check('a_set_value_behind_more', (await still.locator('select[aria-label=Style] option:checked').innerText()) === 'noise', await still.locator('.edit-more').innerText());
     await open('still_1');
     check('open_stays_open', (await still.locator('.edit-more').count()) === 1);
     await reload();
@@ -489,7 +507,7 @@ function linesOf(text, name) {
     await place('told');
     const told = box('told_1');
     await until('a prompt and a beat', () => told.locator('.beat').count(), (n) => n === 1);
-    check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text').count()) === 2 && (await told.locator('input[type=range]').count()) === 1 && (await told.locator('.edit-more').count()) === 0, await told.innerText());
+    check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text:not([data-field=description])').count()) === 2 && (await told.locator('input[type=range]').count()) === 1 && (await told.locator('.edit-more').count()) === 0, await told.innerText());
     check('fresh_beat_cannot_go', (await told.locator('[aria-label^="Remove beat"]').count()) === 0);
     await until('its beat in the status', async () => statusOf('told_1').fields?.beats?.length, (n) => n === 1);
     check('its_beat_has_a_length', statusOf('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), statusOf('told_1').fields);
@@ -518,8 +536,7 @@ function linesOf(text, name) {
     const versions = async (name) => (await of(name))?.prefixes?.length ?? 0;
     const render = async (name, count) => {
       await open(name);
-      // Render is with its words, and it may be showing what it made.
-      if (await box(name).locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box(name).locator('.take.add[aria-label="Its words"]').click();
+      // Render is with its words, whatever it's showing.
       await box(name).locator('button[aria-label=Render]').click();
       await until(`${name}'s ${count}`, () => versions(name), (n) => n === count, FIRST_RUN_MS);
     };
@@ -541,20 +558,20 @@ function linesOf(text, name) {
     }, (text) => text === '1/2');
     check('looking_is_only_this_page', yaml() === fileBefore);
 
-    // Approve: it becomes that file, and flips back.
-    await box('Sheet').locator('button:has-text("Approve")').click();
+    // Approve, by a double tap on the take: it becomes that file, and again flips back. No button says so, and the words stay with Render, beside no "Its words".
+    await box('Sheet').locator('.take[aria-label="version 1"]').dblclick();
     await until('approved in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => /approved: "?[0-9a-f]{6,}/.test(lines));
     const approved = await of('Sheet');
     check('approved_is_that_version', approved.approved === 1 && approved.pinned, approved.approved);
     await open('Sheet');
-    await box('Sheet').locator('.take.add[aria-label="Its words"]').waitFor();
-    check('approved_shows_its_file', (await box('Sheet').locator('.in-frame').count()) === 0);
+    await box('Sheet').locator('.here-side .take.approved').waitFor();
+    check('approved_shows_its_file', (await box('Sheet').locator('.in-frame').count()) === 0 && (await box('Sheet').locator('.edit-shown .mention-text[data-field=instructions]').count()) === 1);
+    check('its_words_only_on_an_edit', (await box('Sheet').locator('.take.add').count()) === 0 && (await box('Sheet').locator('button:text-is("Approve"), button:text-is("Unapprove")').count()) === 0, await box('Sheet').innerText());
     check('no_word_says_pin', !/\bpin|accept/i.test(await box('Sheet').innerText()), await box('Sheet').innerText());
-    await box('Sheet').locator('button:has-text("Unapprove")').click();
+    await box('Sheet').locator('.take.approved').dblclick();
     await until('unapproved', () => of('Sheet'), (held) => !held.pinned);
-    await box('Sheet').locator('button:text-is("Approve")').waitFor();
-    await box('Sheet').locator('button:has-text("Approve")').click();
-    await until('approved again', () => of('Sheet'), (held) => held.pinned);
+    await box('Sheet').locator('.take[aria-label="version 1"]').dblclick();
+    await until('approved again', () => of('Sheet'), (held) => held.pinned && held.approved === 1);
 
     // One discarded: off the strip at once, Undo brings it back, and what's approved going says so and stands on the newest.
     const strip = () => box('Sheet').locator('.take[aria-label^="version"]').count();
@@ -594,6 +611,10 @@ function linesOf(text, name) {
     // Read with this machine's Runtime, as tool.py is above.
     execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
+    // Render kept Other open, and drawn in on a box the canvas draws only what's near it: a new one is seen at rest, all of it in view.
+    await away();
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
     await box('sounded').waitFor();
     await open('sounded');
     const sounded = box('sounded');
@@ -658,12 +679,13 @@ function linesOf(text, name) {
     check('a_default_isnt_written', !(linesOf(yaml(), 'asker') ?? '').includes('bright'), linesOf(yaml(), 'asker'));
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
+    // A box with takes opens on its take, its description open under its label after its tool's fields and a rule, with nothing to ask a model.
     await open('Other');
-    // A caption is of what's been made: it's with the take, which is what a box with takes opens on.
-    await box('Other').locator('button:text-is("Caption")').click();
-    const typed = box('Other').locator('.desc-open .mention-text');
-    await typed.waitFor({ timeout: FIRST_RUN_MS });
-    await until('its description in the file', async () => (await of('Other')).fields?.description ?? '', (text) => text.includes('THE-PACKAGE-ASKS'));
+    const otherDescribed = box('Other').locator('.desc-field');
+    await otherDescribed.waitFor();
+    check('description_after_a_rule', (await otherDescribed.locator('hr.here-rule').count()) === 1 && (await otherDescribed.locator('.block-label').innerText()) === 'Description' && (await box('Other').locator('button:text-is("Caption")').count()) === 0, await box('Other').innerText());
+    const order = await box('Other').locator('.here-all').evaluate((all) => [...all.querySelectorAll('.tool-head, .field-block .block-label, button[aria-label=Render], hr.here-rule, .desc-field .block-label')].map((one) => one.matches('.tool-head') ? 'tool' : one.matches('hr') ? 'rule' : one.matches('button') ? 'Render' : one.textContent));
+    check('open_box_reads_tool_words_render_description', order.join() === 'tool,Instructions,Render,rule,Description', order);
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 
@@ -689,21 +711,24 @@ function linesOf(text, name) {
     await open('Sheet');
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
-    await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
     await box('Sheet').locator('.chip.missing:has-text("source-a")').waitFor();
-    check('missing_chip_on_edit', true);
+    check('missing_chip_on_edit', (await box('Sheet').locator('.chip.missing').innerText()) === '<Source-a>', await box('Sheet').locator('.chip.missing').innerText());
     await shot('missing');
 
     // Rendering it again fails, naming what's gone, and the rest goes on.
     await box('Sheet').locator('button[aria-label=Render]').click();
     const failed = await until('it says why', () => of('Sheet'), (held) => held.failure);
     check('fails_naming_it', failed.failure.code === 'input_missing' && failed.failure.message.includes('<source-a> is no longer in the project'), failed.failure);
-    // Render leaves the box: the failure is a toast, and an approved box's is on its words, its picture standing.
+    // The failure is a toast with its next steps, the box open and its picture standing, and no line on the box says it.
     await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render") && line.includes('no longer in the project')));
-    await open('Sheet');
-    if (await box('Sheet').locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
-    await box('Sheet').locator('.status.bad:has-text("no longer in the project")').waitFor();
-    check('its_next_steps_as_text', (await box('Sheet').locator('.status.bad .next-line').count()) > 0, await box('Sheet').locator('.status.bad').innerText());
+    const toastSteps = page.locator('.note:has-text("Sheet didn\'t render")').first();
+    check('its_next_steps_as_text', (await toastSteps.locator('.remedy, .copyable').count()) > 0, await toastSteps.innerText());
+    check('render_keeps_it_open_saying_nothing', (await page.locator('.card.here[data-asset="Sheet"]').count()) === 1 && (await box('Sheet').locator('.status').count()) === 0, await box('Sheet').innerText());
+    // The same failure again is said again, naming its box once.
+    await page.locator('.note [aria-label=Dismiss]').evaluateAll((all) => all.forEach((one) => one.click()));
+    await box('Sheet').locator('button[aria-label=Render]').click();
+    const again = await until('it says so again', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render")));
+    check('failed_again_said_again', again.every((line) => !line.includes('Sheet: ')), again);
     check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
     await render('Other', 2);
     check('the_rest_goes_on', true);
@@ -734,12 +759,13 @@ function linesOf(text, name) {
     check('orphan_is_listed', (await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
     await page.locator('.note:has-text("Other") button:has-text("Undo")').click();
     await box('Other').waitFor();
-    check('undo_brings_its_versions', (await versions('Other')) === takes, await versions('Other'));
+    // The box is back as it's asked for, ahead of the file and its versions.
+    const restored = await until('its versions back', () => versions('Other'), (n) => n === takes).catch(() => versions('Other'));
+    check('undo_brings_its_versions', restored === takes, restored);
 
     // What hasn't been approved when its source goes is worth a plain note, with no dialog, and Undo stays.
     await open('Other');
-    // A box with takes opens on its take: + gives its words.
-    if (await box('Other').locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box('Other').locator('.take.add[aria-label="Its words"]').click();
+    // A box with takes opens on its take, its words under it.
     await box('Other').locator('.mention-text[data-field=instructions]').click();
     await page.keyboard.type('From <source-b>');
     await page.mouse.click(1500, 1000);
@@ -756,7 +782,6 @@ function linesOf(text, name) {
     // Render on what's approved: another to look at, and the approval stays.
     const nowHeld = (await of('Sheet')).sha256;
     await open('Sheet');
-    await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
     await box('Sheet').locator('button[aria-label=Render]').click();
     await until('another to look at', () => versions('Sheet'), (n) => n === 3, FIRST_RUN_MS);
     check('approved_stays', (await of('Sheet')).pinned && (await of('Sheet')).sha256 === nowHeld, await of('Sheet'));
@@ -785,6 +810,8 @@ function linesOf(text, name) {
     await render('Clip', 1);
     await until('its length measured', () => of('Clip'), (held) => held.prefixes?.[0]?.main?.duration_ms > 0);
     await open('Clip');
+    // Rendered from its words, it's still on them: its take, pressed, is what's kept from.
+    await box('Clip').locator('.take[aria-label="take 1"]').click();
     const clipFile = linesOf(yaml(), 'Clip');
     await more('Clip');
     await box('Clip').locator('.from-here .keeps').fill('12');

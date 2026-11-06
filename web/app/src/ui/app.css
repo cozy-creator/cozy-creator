@@ -231,6 +231,31 @@ code {
   transform: scale(1.03);
 }
 
+/* The dots, and in WebKit the boxes (`data-layered`), are on layers of their own, so a pan draws none of them again. Not while the canvas zooms: a layer
+   keeps the scale it was drawn at, so they'd blur, and Chrome draws the dots slower on one. Two frames after a zoom they're back (CanvasHost.tsx). */
+.stage[data-layered] .react-flow__viewport,
+.canvas-dots {
+  will-change: transform;
+}
+.stage[data-zooming] .react-flow__viewport,
+.stage[data-zooming] .canvas-dots {
+  will-change: auto;
+}
+/* Over the paper and under the boxes (Sheet.tsx). */
+.canvas-dots {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc(100% + 96px);
+  height: calc(100% + 96px);
+  z-index: -1;
+  fill: var(--dot);
+  pointer-events: none;
+}
+.stage[data-lod="2"] .canvas-dots {
+  display: none;
+}
+
 /* The canvas never scrolls. What a browser would scroll to reveal something (a focus, say), React Flow scrolls back a moment later, with the pointer left over another box, which opens as this one closes. */
 /* !important: React Flow sets its own inline. */
 .stage .react-flow {
@@ -406,7 +431,7 @@ code {
 .media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
-  background-size: 14px 14px;
+  background-size: 18px 18px;
 }
 /* Nothing made yet: the marks of a viewfinder, on the canvas itself. The corner still reshapes it. */
 .media.blank {
@@ -559,6 +584,22 @@ code {
   max-width: none;
   object-fit: fill;
 }
+/* A video's preview, over its poster from its first frame, which is the poster's. */
+video.preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  opacity: 0;
+}
+video.preview.on {
+  opacity: 1;
+}
+.take video.preview {
+  object-fit: cover;
+}
 /* Words in the frame, at rest and while they're typed, so opening a box moves nothing. */
 .words,
 .in-frame .mention-text {
@@ -567,14 +608,12 @@ code {
   font-size: calc(22px * var(--text, 1));
   line-height: calc(30px * var(--text, 1));
 }
+/* As many lines as the box holds at this zoom. */
 .words {
   margin: 0;
   align-self: flex-start;
   width: 100%;
   max-height: 100%;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 7;
   overflow: hidden;
   overflow-wrap: anywhere;
 }
@@ -712,6 +751,86 @@ code {
 .here-under > * {
   --text: 1;
 }
+/* A box worked on: its takes in a column beside the picture, the newest on top. */
+.here-side {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 8px * var(--text, 1));
+  width: var(--side-width, 132px);
+  height: calc(100% / (var(--text, 1) * var(--here)));
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  transform: scale(calc(var(--text, 1) * var(--here)));
+  transform-origin: top left;
+  z-index: 5;
+  animation: fade-in 120ms ease-out;
+}
+.here-side > * {
+  --text: 1;
+}
+.here-side .takes {
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px;
+  overflow: visible;
+}
+.here-side .take {
+  flex: none;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+}
+.here-side .take.on {
+  outline: 4px solid var(--ember);
+  outline-offset: 2px;
+}
+.here-side .take.making {
+  background: var(--card);
+  border: 1px solid var(--ember);
+  color: var(--ink);
+  font-size: 22px;
+}
+/* What a box is, in its own words: a field of its own, under its label. */
+.desc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.block-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mute);
+}
+.field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field-block .mention-text {
+  font-size: 15px;
+}
+.tool-head {
+  display: flex;
+  padding: 2px 0 4px;
+}
+.tool-head .add-ons {
+  position: static;
+}
+.here-rule {
+  width: 100%;
+  margin: 8px 0 6px;
+  border: 0;
+  border-top: 1px solid var(--line2);
+}
+.desc-field .mention-text {
+  min-height: 3.5em;
+  padding: 8px 10px;
+  border: 1px solid var(--line2);
+  border-radius: var(--round);
+  background: var(--card);
+  font-size: 13px;
+  line-height: 1.4;
+}
 .here-all {
   display: flex;
   flex-direction: column;
@@ -805,7 +924,8 @@ code {
 .here-under .take.add.on {
   border-color: var(--ember);
 }
-.here-under .take-off {
+.here-under .take-off,
+.here-side .take-off {
   display: inline-flex;
   top: 3px;
   right: 3px;
@@ -813,7 +933,8 @@ code {
   height: 20px;
   color: #fff;
 }
-.here-under .take-off .icon {
+.here-under .take-off .icon,
+.here-side .take-off .icon {
   width: 12px;
   height: 12px;
 }
@@ -842,10 +963,10 @@ code {
 .picture:hover {
   border-color: var(--ember);
 }
-.in-frame .mention-thumbs {
-  padding: 0 12px 10px;
-}
 .mention-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   padding: 0 12px 10px;
 }
 .mention-thumbs:empty {
@@ -874,6 +995,38 @@ code {
   font: calc(20px * var(--text, 1)) / 1.25 var(--mono);
   white-space: nowrap;
   pointer-events: none;
+}
+/* Open, it's on the frame beside the corner, and what's set has its ×. */
+.card.here .ratio-rest {
+  top: auto;
+  bottom: calc(6px * var(--text, 1));
+  right: calc(30px * var(--text, 1));
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  padding: 0.05em 0.4em;
+  border-radius: 0.3em;
+  background: #000b;
+  color: #fff;
+  font-size: calc(16px * var(--text, 1));
+}
+.ratio-clear {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.ratio-clear .icon {
+  width: 1em;
+  height: 1em;
+}
+.ratio-clear:hover {
+  color: var(--ember);
 }
 .ratio-live {
   position: absolute;
@@ -1006,11 +1159,6 @@ code {
   inset: 0;
   overflow: hidden;
 }
-.take img.strip {
-  width: 800%;
-  max-width: none;
-  object-fit: fill;
-}
 .take.add:hover {
   color: var(--ink);
   border-color: var(--ember);
@@ -1124,7 +1272,7 @@ code {
 .slot-media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
-  background-size: 14px 14px;
+  background-size: 18px 18px;
 }
 .slot-media img {
   position: absolute;
@@ -1167,6 +1315,11 @@ code {
 .stage[data-lod="1"] .beats,
 .stage[data-lod="2"] .beats {
   display: none;
+}
+/* An open box shows its takes however far out. */
+.stage[data-lod] .here-side .takes,
+.stage[data-lod] .here-under .takes {
+  display: flex;
 }
 .stage[data-lod="2"] .dot {
   width: 18px;
@@ -2137,13 +2290,6 @@ a.tab:hover {
 .more-toggle:hover {
   color: var(--ink);
 }
-.more-marks {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--mute);
-}
 .more-word {
   flex: none;
 }
@@ -2185,7 +2331,7 @@ a.tab:hover {
   border-radius: 4px;
   background: color-mix(in srgb, var(--ember) 13%, transparent);
   color: var(--ember2);
-  font: 1.08em var(--mono);
+  font: 600 1.08em var(--mono);
   white-space: nowrap;
 }
 .chip.missing {
@@ -2244,6 +2390,9 @@ input[type="checkbox"] {
 .beat {
   position: relative;
 }
+.beat .mention-text {
+  font-size: 15px;
+}
 .beat.can-go .mention-text {
   padding-right: 22px;
 }
@@ -2264,18 +2413,23 @@ input[type="checkbox"] {
 }
 .add-beat {
   flex: none;
-  font-size: 11px;
-  color: var(--faint);
+  padding: 6px 14px;
+  border: 1px dashed var(--line2);
+  border-radius: var(--round);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
 }
 .add-beat:hover {
-  color: var(--ink);
+  border-style: solid;
+  background: var(--card);
 }
 .beats-last {
   display: flex;
-  justify-content: flex-end;
-  align-items: baseline;
+  justify-content: space-between;
+  align-items: center;
   gap: 10px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--mute);
 }
 .slot-control {
@@ -2553,7 +2707,7 @@ input[type="checkbox"] {
   font-size: calc(12px * var(--ui));
 }
 
-/* Each project a tab, top left: one click to any, and the rest behind +. */
+/* Each project a tab, top left, as many as fit: one click to any, the rest behind "N more", and + for a new one. */
 .ptabs {
   display: flex;
   align-items: stretch;
@@ -2564,7 +2718,8 @@ input[type="checkbox"] {
   border-radius: calc(var(--round) * var(--ui));
   background: var(--float);
 }
-.ptab {
+.ptab,
+.ptabs-ghost > span {
   display: inline-flex;
   align-items: center;
   max-width: calc(150px * var(--ui));
@@ -2586,7 +2741,24 @@ input[type="checkbox"] {
 }
 .ptab.more {
   flex: none;
+}
+.ptab.new {
+  flex: none;
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));
+}
+/* What each tab takes at its full width, laid out where no one sees it. */
+.ptabs-ghost {
+  position: absolute;
+  display: flex;
+  width: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.ptabs-ghost > span {
+  flex: none;
+}
+.ptabs-ghost > .on {
+  font-weight: 600;
 }
 
 /* Each rental, top right: its name, then running / all it holds. */
@@ -2757,6 +2929,15 @@ input[type="checkbox"] {
   }
 }
 
+/* All projects: a search, and a line under those with no tab. */
+.field.find {
+  margin-top: 8px;
+}
+.list .tabbed {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
 /* Where a project is, so a person can find it. */
 .project-path {
   display: block;

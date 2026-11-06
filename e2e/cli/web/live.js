@@ -4,7 +4,7 @@
 // screen and lands. A render from the CLI shows progress on its card and lands, on the fixture tool. What's typed and unsaved stays when the
 // CLI changes that field, and the page shows the conflict. What the page does reads back in the CLI. 200 edits as fast as they go: right at the
 // end, shown as it goes, only what changed read, frames sampled. And the stream made to fall behind for real, so `resync` runs: nothing's lost.
-//   node live.js <sign-in link from `cozy open --no-open`>
+//   node live.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -12,7 +12,7 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -151,8 +151,7 @@ function linesOf(text, name) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
   const page = await context.newPage();
@@ -174,7 +173,7 @@ function linesOf(text, name) {
   await page.addInitScript(WATCH);
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
@@ -507,13 +506,15 @@ function linesOf(text, name) {
     check('approve_a_take_in_the_status', (await held('live_shot')).approved === 2);
     await project('unapprove', 'live_shot');
 
-    // A text asset's words stand wherever it's mentioned: changed by a command, what mentions it is out of date on the open canvas.
+    // A text asset's words stand wherever it's mentioned: changed by a command, they're on the open canvas, and what mentions them is out of date,
+    // which no dot or line says at rest (Paul, 11-05).
     place = await spot();
     await project('add', 'text', 'live_mood', 'text=Soft morning light.');
     await project('add', `${TOOL}/still`, 'live_styled', `at=${place.x},${place.y},260`, 'instructions=A still in <live_mood>.');
     await project('render', 'live_styled', '--on', 'local');
     await shows({ name: 'live_styled', dot: 's-current' });
-    await timed('text_asset_outdates', { name: 'live_styled', dot: 's-ood' }, () => project('set', 'live_mood', 'text=Hard evening light.'));
+    await timed('text_asset_outdates', { all: [{ name: 'live_mood', has: 'Hard evening light.' }, { name: 'live_styled', dot: 's-current' }] }, () => project('set', 'live_mood', 'text=Hard evening light.'));
+    check('what_mentions_it_is_out_of_date', (await held('live_styled')).standing === 'out_of_date', await held('live_styled'));
     await project('delete', 'live_styled', 'live_mood');
 
     // What waits its turn says so, and when it has landed no longer does: what's said of the project besides its assets goes when it's over.

@@ -28,3 +28,49 @@ export function Sheet() {
   }, [flow])
   return <div ref={sheet} className="paper-world" aria-hidden="true" />
 }
+
+/** The dots' step and size at a zoom of 1. The layer is a step at the most zoom (4) wider and taller than the window: `.canvas-dots`. */
+const GAP = 24
+const DOT = 2
+
+/**
+ * The dots on the paper, on a layer of their own that a pan moves by less than a step, so a pan draws none of them: React Flow's own
+ * background draws them all again each frame, which in WebKit is most of a pan's frame far out. A zoom draws them again. Further out
+ * than `data-lod` 2 they're too small to see, and none is drawn.
+ */
+export function Dots() {
+  const flow = useStoreApi()
+  const layer = useRef<SVGSVGElement>(null)
+  const cell = useRef<SVGPatternElement>(null)
+  const dot = useRef<SVGCircleElement>(null)
+  useEffect(() => {
+    let [last, step] = [flow.getState().transform, 0]
+    const place = ([x, y, zoom]: typeof last) => {
+      if (!layer.current || !cell.current || !dot.current) return
+      const gap = GAP * zoom
+      if (gap !== step) {
+        step = gap
+        cell.current.setAttribute("width", String(gap))
+        cell.current.setAttribute("height", String(gap))
+        for (const at of ["cx", "cy", "r"]) dot.current.setAttribute(at, String((DOT * zoom) / 2))
+      }
+      const wrap = (value: number) => (((value % gap) + gap) % gap) - gap
+      // Where React Flow's `<Background>` put them, to the pixel.
+      layer.current.style.transform = `translate3d(${wrap(x - gap / 2)}px, ${wrap(y - gap / 2)}px, 0)`
+    }
+    place(last)
+    return flow.subscribe(({ transform }) => {
+      if (transform === last) return
+      last = transform
+      place(transform)
+    })
+  }, [flow])
+  return (
+    <svg ref={layer} className="canvas-dots" aria-hidden="true">
+      <pattern ref={cell} id="canvas-dots" patternUnits="userSpaceOnUse">
+        <circle ref={dot} />
+      </pattern>
+      <rect width="100%" height="100%" fill="url(#canvas-dots)" />
+    </svg>
+  )
+}

@@ -409,8 +409,17 @@ impl LocalSources {
                 let (env, distribution) = (dir.join("env"), published::distribution(&pyproject)?);
                 let python = platform::paths::venv_python(&env);
                 let stop = job.stop.as_ref();
-                let (interface, closures) = environment::describe_project(&python, &project, stop)?;
-                let callees = environment::describe_environment(&python, &distribution, &manifest.callees, false, stop)?.callees;
+                // Its lock's Runtime too old for its code: re-locked in its folder, named when it is on this computer.
+                let relock = match manifest.path.is_empty() {
+                    true => "cozy package lock --upgrade-package cozy-runtime".to_owned(),
+                    false => match project.display().to_string() {
+                        dir if dir.contains(char::is_whitespace) => format!("cozy package lock -p '{dir}' --upgrade-package cozy-runtime"),
+                        dir => format!("cozy package lock -p {dir} --upgrade-package cozy-runtime"),
+                    },
+                };
+                let unread = |failure: published::Failure| built.unread(failure, &env, &manifest.package, &relock);
+                let (interface, closures) = environment::describe_project(&python, &project, stop).map_err(&unread)?;
+                let callees = environment::describe_environment(&python, &distribution, &manifest.callees, false, stop).map_err(&unread)?.callees;
                 let described = environment::Described { source_digest: manifest.source_digest(), callees, closures };
                 let record = built.record((&identity, &built_from), (&distribution, &manifest.release), &env, &interface,
                     &self.publisher.sdk.runtime_build, described)?;

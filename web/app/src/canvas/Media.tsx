@@ -10,11 +10,13 @@ import { controlsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
-import { clock, lineOf, withMentions } from "./text"
+import { chipWords, clock, lineOf, withMentions } from "./text"
 import { isSelf } from "./versions"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
+/** How long the pointer rests on a video before its preview plays: one passing over on its way somewhere starts nothing. */
+const PREVIEW_AFTER_MS = 250
 
 /**
  * At most two thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
@@ -123,18 +125,99 @@ export function Thumb({
   )
 }
 
-/** Where the pointer is across what's under it, 0 to 1, for walking a video's frames. A finger has nothing to follow, and a held button is a drag. */
-export function useWalk() {
-  const [at, setAt] = useState<number | null>(null)
-  return {
-    at,
-    walk(event: PointerEvent<HTMLElement>) {
-      if (event.pointerType === "touch" || event.buttons) return
-      const box = event.currentTarget.getBoundingClientRect()
-      setAt(Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)))
-    },
-    stop: () => setAt(null),
+/**
+ * Whether a video's preview plays: once the pointer has rested on it a moment. Only a pointer that moves counts, as a pan slides tiles under
+ * one that doesn't; a finger has nothing to rest, and a held button is a drag. A wheel ends it, and so does a press, until the pointer leaves.
+ */
+export function usePreview(video: boolean) {
+  const [on, setOn] = useState(false)
+  const resting = useRef<number | undefined>(undefined)
+  const pressed = useRef(false)
+  useEffect(() => () => clearTimeout(resting.current), [])
+  const end = () => {
+    if (resting.current === undefined) return
+    clearTimeout(resting.current)
+    resting.current = undefined
+    setOn(false)
   }
+  const leave = {
+    onPointerLeave() {
+      pressed.current = false
+      end()
+    },
+  }
+  if (!video) return { on: false, hover: leave }
+  return {
+    on,
+    hover: {
+      ...leave,
+      onPointerMove(event: PointerEvent<HTMLElement>) {
+        if (event.pointerType === "touch" || event.buttons || pressed.current || resting.current !== undefined) return
+        resting.current = window.setTimeout(() => setOn(true), PREVIEW_AFTER_MS)
+      },
+      onPointerDown() {
+        pressed.current = true
+        end()
+      },
+      // Seen on the way down: the canvas's pan takes the wheel before it could come back up.
+      onWheelCapture: end,
+    },
+  }
+}
+
+/** Previews that can't play, by hash: a hover doesn't ask again. */
+const unpreviewable = new Set<string>()
+
+/**
+ * A video's preview over its poster: a few seconds from the poster's frame on, silent and looping, which Calcifer made once as the file
+ * landed. Nothing loads before the hover, it shows from its first frame, and it goes with the hover or with its tile.
+ */
+export function Preview({ sha256 }: { sha256: string }) {
+  const { client } = useConnection()
+  const store = useCanvasStore()
+  const [src, setSrc] = useState<string>()
+  const [playing, setPlaying] = useState(false)
+  const element = useRef<HTMLVideoElement>(null)
+  const projectId = store.projectId
+  useEffect(() => {
+    if (!projectId || unpreviewable.has(sha256)) return
+    let live = true
+    void client.transport.src(client.preview(projectId, sha256)).then((url) => {
+      if (live) setSrc(url)
+    })
+    return () => {
+      live = false
+    }
+  }, [client, projectId, sha256])
+  // Its bytes and decoder go with it, not when it's collected.
+  useEffect(() => {
+    const el = element.current
+    if (!el || !src) return
+    el.src = src
+    el.play().catch(() => {})
+    return () => {
+      el.removeAttribute("src")
+      el.load()
+    }
+  }, [src])
+  if (!src) return null
+  return (
+    <video
+      ref={element}
+      className={`preview ${playing ? "on" : ""}`}
+      aria-hidden
+      muted
+      loop
+      playsInline
+      disablePictureInPicture
+      onPlaying={() => setPlaying(true)}
+      onError={(event) => {
+        if (event.currentTarget.error?.code === MediaError.MEDIA_ERR_NETWORK) return
+        unpreviewable.add(sha256)
+        setSrc(undefined)
+      }}
+    />
+  )
 }
 
 /** A video's frames walked across, one picture from Calcifer, so no `<video>` opens until it's clicked. */
@@ -142,14 +225,14 @@ export function WalkedFrames({ sha256, cardWidth, at }: { sha256: string; cardWi
   return <Thumb sha256={sha256} cardWidth={cardWidth} strip={STRIP_FRAMES} frame={Math.min(STRIP_FRAMES - 1, Math.floor(at * STRIP_FRAMES))} className="strip" />
 }
 
-/** A video's poster, and its frames under the pointer. */
-function Poster({ shown, cardWidth, name, scrubbed, hover }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number; hover: number | null }) {
+/** A video's poster, its preview on a hover, and the frame a scrub is at. */
+function Poster({ shown, cardWidth, name, scrubbed, previewing }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number; previewing: boolean }) {
   const store = useCanvasStore()
-  const at = hover ?? (scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null)
+  const at = scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null
   return (
     <div className="scrub">
       <Thumb sha256={shown.sha256} cardWidth={cardWidth} onSize={(aspect) => store.setAspect(name, aspect)} onShown={() => store.showThumb(name)} />
-      {at !== null && <WalkedFrames sha256={shown.sha256} cardWidth={cardWidth} at={at} />}
+      {at !== null ? <WalkedFrames sha256={shown.sha256} cardWidth={cardWidth} at={at} /> : previewing && <Preview sha256={shown.sha256} />}
       {at !== null && shown.duration_ms ? <span className="tc">{clock(at * shown.duration_ms)}</span> : null}
     </div>
   )
@@ -325,7 +408,6 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const { asset, placing, preview } = view
   // Being worked on, a take can be played and scrubbed, unless its words are over it.
   const open = Boolean(view.here && !view.hereWords)
-  const { at: hover, walk, stop } = useWalk()
   const shown = shownOf(view)
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
@@ -333,6 +415,8 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   // A run that ended says no more of how far: it's all there, on its way here.
   const fraction = making ? (view.run?.status === "completed" ? 1 : view.run?.progress?.done_fraction) : undefined
   const here = shown && !shown.absent ? shown : null
+  // On the canvas: an opened box plays the file itself.
+  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
   const tools = useSignal(store.tools)
   const words = lineOf(asset?.fields, asset ? controlsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
@@ -344,10 +428,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const blank = !preview && !shown && !firstClip
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
-    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })}
-      onPointerMove={field === "video" && !view.hereWords ? walk : undefined}
-      onPointerLeave={stop}
-    >
+    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       {preview && (
         <img
           src={preview}
@@ -359,7 +440,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
           }}
         />
       )}
-      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} hover={hover} />}
+      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
       {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
@@ -368,7 +449,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
           {withMentions(words).map((part, i) =>
             part.mention ? (
               <span key={i} className={`chip ${asset?.missing?.includes(part.text.slice(1, -1)) || (store.mentionOf(part.text.slice(1, -1), name)?.gone ?? isSelf(part.text.slice(1, -1))) ? "missing" : ""}`}>
-                {part.text.slice(1, -1)}
+                {chipWords(part.text.slice(1, -1))}
               </span>
             ) : (
               part.text

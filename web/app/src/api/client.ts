@@ -25,7 +25,6 @@ import type {
   AssetDeleted,
   AssetMade,
   AssetPatched,
-  Captioned,
   Opened,
   OrgClaim,
   PackageDetail,
@@ -310,11 +309,6 @@ export class Client {
     return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {}, undefined, { once })
   }
 
-  /** Its description as a package would say it, from what it shows: a run on a machine that's up. Nothing is written. */
-  caption(id: string, name: string, on: string | undefined, key: string, once?: AbortSignal): Promise<Captioned> {
-    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/caption`, on ? { on } : {}, key, { once })
-  }
-
   /** What deleting it answered, back under its name. */
   putAssetBack(id: string, name: string, text: string, at?: Row, once?: AbortSignal): Promise<AssetMade> {
     return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at }, undefined, { once })
@@ -387,6 +381,11 @@ export class Client {
   /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */
   thumb(id: string, sha256: string, w: number, strip?: number): string {
     return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}`
+  }
+
+  /** A video's preview: a few seconds of it, small and silent. */
+  preview(id: string, sha256: string): string {
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?preview=true`
   }
 
   file(id: string, file: string): string {

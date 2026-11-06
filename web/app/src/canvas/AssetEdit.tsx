@@ -6,7 +6,7 @@ import { AddOnRows } from "./AddOns"
 import { addOnsOf } from "./checkpoints"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
+import { controlsOf, fieldWords, fullRows, heldBeyond, newRow, shownControls, VARIANT, variantOf } from "./controls"
 import { MentionText } from "./MentionText"
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
@@ -29,7 +29,13 @@ function TextControl({ name, control, view, focus, named }: { name: string; cont
       onSave={() => void store.save(name)}
     />
   )
-  if (!named) return text
+  if (!named)
+    return (
+      <div className="field-block">
+        <span className="block-label">{control.label}</span>
+        {text}
+      </div>
+    )
   return (
     <div className="slide text-row">
       <span className="ctl-name">{control.label}</span>
@@ -111,7 +117,6 @@ function GroupControl({ name, control, view }: { name: string; control: Control;
             {members.filter((member) => member.type === "text").map(each)}
             <div className="beat-time">
               {members.filter((member) => member.type !== "text").map(each)}
-              {rows.length === 1 && add}
             </div>
             {rows.length > least && (
               <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
@@ -124,12 +129,10 @@ function GroupControl({ name, control, view }: { name: string; control: Control;
           </div>
         )
       })}
-      {rows.length !== 1 && (
-        <div className="beats-last">
-          {total && <span>{sum} {total.unit ?? ""}</span>}
-          {add}
-        </div>
-      )}
+      <div className="beats-last">
+        {add}
+        {total && rows.length > 1 && <span>{sum} {total.unit ?? ""} in all</span>}
+      </div>
     </div>
   )
 }
@@ -243,28 +246,6 @@ function FileControl({ name, control, view }: { name: string; control: Control; 
   )
 }
 
-/** What shape it makes. */
-function ShapeControl({ name, control }: { name: string; control: Control }) {
-  const store = useCanvasStore()
-  const held = store.valueOf(name, control.field) ?? control.default
-  const shapes = shapesOf(control)
-  return (
-    <label className="slide">
-      <span className="ctl-name">{control.label}</span>
-      <select className="field nodrag" aria-label={control.label} value={typeof held === "string" ? held : ""} onChange={(event) => void store.setField(name, control.field, event.target.value)}>
-        <option value="" disabled hidden>
-          Auto
-        </option>
-        {shapes.map((shape) => (
-          <option key={shape} value={shape}>
-            {shape}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
 /** A toggle like any, flipping which of its package's two functions makes the box. Everything else it holds stays. */
 function VariantControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
   const store = useCanvasStore()
@@ -289,8 +270,6 @@ export function ControlRow({ name, control, view, focus, named }: { name: string
       return <RangeControl name={name} control={control} />
     case "choice":
       return <ChoiceControl name={name} control={control} />
-    case "shape":
-      return <ShapeControl name={name} control={control} />
     case "toggle":
       return control.field === VARIANT ? <VariantControl name={name} control={control} view={view} /> : <ToggleControl name={name} control={control} />
     case "file":
@@ -341,24 +320,14 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   const store = useCanvasStore()
   // An Edit's film is only a moment's work here, and has no run to cancel.
   if (view.asset?.rendering !== undefined) return null
-  if (view.asset?.standing === "making") {
-    return (
-      <button type="button" className="act nodrag" onClick={() => store.cancelRender(name)}>
-        Cancel
-      </button>
-    )
-  }
+  // Render while it's making queues one more: each take in the row has its own ×.
   return (
     <button
       type="button"
       className="run nodrag"
       aria-label="Render"
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
-      onClick={() => {
-        // Left first, so what a render asks of the page stands. With a conflict nothing goes, and it stays to be seen.
-        if (!view.conflict) store.leaveHere()
-        store.run(name)
-      }}
+      onClick={() => store.run(name)}
     >
       <Icon name="play" />
       Render
@@ -401,7 +370,7 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 const set = (control: Control) => control.type === "toggle" || control.type === "range" || control.type === "choice"
 
 /** What a box asks and holds, under it. On its words: what a render can't go without and Render, each drawn from its tool's controls or by its package. On a take: what's done with that. Everything else is under More, if there's anything. */
-export function AssetEdit({ name, view, editing, actions, children }: { name: string; view: ElementView; editing: boolean; actions: ReactNode; children: ReactNode }) {
+export function AssetEdit({ name, view, editing, head, actions, children }: { name: string; view: ElementView; editing: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
@@ -409,23 +378,17 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
   const controls = makes(view) ? controlsOf(view.asset, tools) : []
   const inFrame = framed(view, controls, tool)
   const first = controls.find((control) => control.type === "text")
-  const rest = controls.filter((control) => control !== inFrame && control.type !== "timeline")
+  // The box's own shape is its shape: its corner sets it.
+  const rest = controls.filter((control) => control !== inFrame && control.type !== "timeline" && control.type !== "shape")
   const asked = editing ? shownControls(controls) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, controls)
   const folded = rest.filter((control) => !asked.includes(control))
-  const described = store.valueOf(name, "description")
-  const marksOf = (drawn: boolean) => [
-    ...(drawn ? folded.flatMap((control) => markOf(control, store.valueOf(name, control.field)) ?? []) : []),
-    ...beyond.map(([field]) => fieldWords(field)),
-    ...(typeof described === "string" && described ? ["Description"] : []),
-  ]
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
-  // A caption is typed into its field, and shows until it's kept or dropped.
-  const typing = view.drafts !== undefined && "description" in view.drafts
   const shown = rest.filter((control) => asked.includes(control))
   return (
     <div className="edit-face">
+      {head && <div className="tool-head">{head}</div>}
       <ToolBox
         tool={tool}
         name={name}
@@ -435,24 +398,21 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
         row={(control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={store.focusing === name && control === first} named={folded.includes(control)} />}
       >
         {(lines, more) => {
-          // A package's whole face holds what would be behind More, so nothing's hidden there.
-          const marks = marksOf(more !== null)
           const behind = (more !== null && folded.length > 0) || addOns || beyond.length > 0
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
               <div className="row actions">
-                {actions}
                 {more !== null && shown.filter(set).map((control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={false} named={false} />)}
+                {actions}
                 {behind && (
-                  <button type="button" className="more-toggle nodrag" aria-expanded={open} title={marks.join(", ") || undefined} onClick={() => store.setMore(name, !open)}>
-                    {!open && marks.length > 0 && <span className="more-marks">{marks.join(", ")}</span>}
+                  <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}>
                     <span className="more-word">{open ? "Less" : "More"}</span>
                   </button>
                 )}
               </div>
               {behind ? (
-                (open || typing) && (
+                open && (
                   <div className="edit-more">
                     {open && more}
                     {open && <AddOnRows name={name} />}

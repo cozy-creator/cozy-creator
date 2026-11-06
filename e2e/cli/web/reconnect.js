@@ -1,14 +1,14 @@
 // One stream across tabs, and across a restart of Calcifer (web-ui.md §3): tabs share one `GET /v1/events`, closing the tab that holds
 // it hands it on, and `kill -9` on Calcifer shows reconnecting and recovers with no reload, the session intact. A reload after the
 // restart must not hang, which it did in the shelved build.
-//   node reconnect.js <sign-in link from `cozy open --no-open`>
+//   node reconnect.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $RESTART: a shell command that kills this Calcifer with -9 and
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, drop, png, noStall, until } = require('./page');
+const { calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -37,8 +37,7 @@ const row = (folder, name) => {
 };
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1400, height: 800 } });
   context.setDefaultTimeout(STEP_MS);
@@ -48,12 +47,12 @@ const row = (folder, name) => {
   const open = async (url) => {
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(url);
+    await (url ? page.goto(url) : signIn(page));
     return page;
   };
 
   // A project of its own with one element on it.
-  const first = await open(link);
+  const first = await open();
   await first.waitForSelector('.top');
   await first.goto(`${base}/#/projects`);
   await first.fill('input[aria-label="New project\'s name"]', `web-reconnect-${Date.now()}`);

@@ -12,15 +12,15 @@ import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { controlsOf, shapesOf, snapped } from "./controls"
 import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
-import { Media, Thumb, useWalk, WalkedFrames } from "./Media"
+import { Media, Preview, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, madeHere, makes, shownOf } from "./shown"
+import { aspectOf, faceOf, madeHere, makes, reshapes, shownOf } from "./shown"
 import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 
-const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
+const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
 const WIDEST = 1600
 const NARROWEST = 160
 const LOWEST = 90
@@ -38,11 +38,20 @@ function kindOf(view: ElementView): string {
 
 const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
 
-/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. */
+/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. An Edit rendered here says how far it is. */
 function Waiting({ view }: { view: ElementView }) {
   const { client } = useConnection()
   const going = useQuery(runsQuery(client, { status: "in_progress" }, 100))
   const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
+  const rendering = view.asset?.rendering
+  if (rendering !== undefined) {
+    const done = Math.round(rendering * 100)
+    return (
+      <div className="status mak" role="progressbar" aria-label="Rendering" aria-valuenow={done}>
+        Rendering {done}%
+      </div>
+    )
+  }
   const said = view.run?.waiting
   if (said) return <div className="status mak">{said[0].toUpperCase() + said.slice(1)}</div>
   const machine = [...(going.data?.runs ?? []), ...(queued.data?.runs ?? [])].find(settingUp)?.machine
@@ -108,18 +117,18 @@ function Pictures({ name }: { name: string }) {
   )
 }
 
-/** A take on the row: a video's frames walk by under the pointer. */
+/** A take on the row: a video's preview plays while the pointer rests on it. */
 function TakeThumb({ main, width }: { main: MainFile; width: number }) {
-  const { at, walk, stop } = useWalk()
+  const { on, hover } = usePreview(main.field === "video")
   return (
-    <span className="take-thumb" onPointerMove={main.field === "video" ? walk : undefined} onPointerLeave={stop}>
+    <span className="take-thumb" {...hover}>
       <Thumb sha256={main.sha256} cardWidth={width} />
-      {at !== null && <WalkedFrames sha256={main.sha256} cardWidth={width} at={at} />}
+      {on && <Preview sha256={main.sha256} />}
     </span>
   )
 }
 
-/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, and held down the pointer slides between them. + at the far left goes back to its words. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
+/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, a double tap approves it or, approved, unapproves it, and held down the pointer slides between them. + at the far left goes back to its words. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
 function Takes({ view, name, width }: { view: ElementView; name: string; width: number }) {
   const store = useCanvasStore()
   const asset = view.asset!
@@ -128,14 +137,14 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const versions = [...(asset.prefixes ?? [])].reverse()
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
-  const adds = asset.tool && shownOf(view) && !(asset.timeline && faceOf(view) === "edit")
+  const adds = asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit"
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
     store.focusing = name
     store.patch(name, { hereWords: true })
   }
   const pick = (number: number) => {
-    store.view(name, number === asset.version ? undefined : number)
+    store.pickTake(name, number)
     if (onWords) store.patch(name, { hereWords: undefined })
   }
   return (
@@ -158,13 +167,23 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
         </button>
       )}
       {waiting && (
-        <span className="take making" title="Queued">
-          …
+        <span className="take-at">
+          <span className="take making" title="Queued">
+            …
+          </span>
+          <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
+            <Icon name="close" />
+          </button>
         </span>
       )}
       {making.map((run) => (
-        <span key={run} className="take making" title={`Run ${run}`}>
-          {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
+        <span key={run} className="take-at">
+          <span className="take making" title={`Run ${run}`}>
+            {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
+          </span>
+          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(run)}>
+            <Icon name="close" />
+          </button>
         </span>
       ))}
       {versions.map((version) => (
@@ -179,6 +198,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             onDragStart={(event) => version.main && takeOut(event, store, name, asset, version)}
             onPointerDown={() => pick(version.number)}
             onClick={() => pick(version.number)}
+            onDoubleClick={() => store.toggleApproved(name, version.number)}
           >
             {version.main && !version.main.absent ? <TakeThumb main={version.main} width={width} /> : null}
             <span className="take-no">{version.number}</span>
@@ -198,26 +218,6 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
 }
 
 /** The one thing to do with what's being looked at: approve it, or unapprove what's approved. */
-function Approve({ view, name }: { view: ElementView; name: string }) {
-  const store = useCanvasStore()
-  const asset = view.asset
-  if (!asset || (!asset.tool && !asset.prefixes?.length)) return null
-  const shown = shownOf(view)
-  const approved = Boolean(asset.pinned) && (asset.approved === undefined ? view.viewed === undefined : shown?.number === asset.approved)
-  if (approved) {
-    return (
-      <button type="button" className="act nodrag" onClick={() => store.unpin(name)}>
-        Unapprove
-      </button>
-    )
-  }
-  if (shown?.number === undefined) return null
-  return (
-    <button type="button" className="act nodrag" onClick={() => store.pin(name, shown.number!)}>
-      Approve
-    </button>
-  )
-}
 
 /** A take's frames a second. */
 const FPS = 24
@@ -337,7 +337,6 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   if (will) return <div className="status">Will be {will}</div>
   const asset = view.asset
   if (!asset) return null
-  const askable = Boolean(asset.tool)
   if (view.waiting) {
     return (
       <div className="status mak">
@@ -362,111 +361,59 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     return <Waiting view={view} />
   }
   if (view.queued || view.asked !== undefined) return <Waiting view={view} />
-  const approvedFace = asset.pinned && faceOf(view) === "media"
-  if (asset.failure && !approvedFace) {
-    const reason = noHash(asset.failure.message).replace(`${asset.name}: `, "")
-    return (
-      <div className="status bad">
-        {reason} {askable && <Act label="Try again" onClick={() => store.run(name)} />}
-        {asset.failure.remedy && <div className="next-line">{noHash(asset.failure.remedy)}</div>}
-        {asset.failure.next?.map((line) => (
-          <div className="next-line" key={line}>
-            {noHash(line)}
-          </div>
-        ))}
-      </div>
-    )
-  }
+  // What's at rest says nothing here: a failure is its toast, and a file that isn't here can be pulled.
   const shown = shownOf(view)
   if (shown?.absent && !shown.machine) return <Pull />
-  if (view.viewed !== undefined) {
-    const version = asset.prefixes?.find((held) => held.number === view.viewed)
-    return (
-      <div className="status">
-        {asset.noun} {view.viewed}
-        {version?.execution_ms ? `, ${took(version.execution_ms)}` : ""} <Act label="Back" onClick={() => store.view(name)} />
-      </div>
-    )
-  }
-  if (asset.standing === "out_of_date") {
-    const changed = asset.changed?.length ? `Out of date: ${asset.changed.join(", ")} changed` : noHash(asset.status)
-    return (
-      <div className="status ood">
-        {changed} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
-      </div>
-    )
-  }
-  if (asset.standing === "missing" && !makes(view)) {
-    return (
-      <div className="status">
-        {noHash(asset.status)} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
-      </div>
-    )
-  }
   return null
 }
 
-/** What this asset is, in words of its own, whichever way it was made. It reaches what mentions it. It opens on a click, so a small picture isn't crowded; a caption opens it too, and writes itself like anything typed. */
+/** What this asset is, in words of its own: it reaches what mentions it. Always open, under its label. */
 function Description({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
-  const [open, setOpen] = useState(false)
   const held = store.valueOf(name, "description")
-  const text = typeof held === "string" ? held : ""
-  const typed = view.drafts !== undefined && "description" in view.drafts
   if (!view.asset) return null
-  if (!open && !typed) {
-    const shown = shownOf(view)
-    return (
-      <div className="desc-row">
-        <button type="button" className={`desc-line nodrag ${text ? "" : "empty"}`} title={text || "Say what this is"} onClick={() => setOpen(true)}>
-          {text || "Describe"}
-        </button>
-        {shown && !shown.absent && shown.field !== "audio" && (
-          <button type="button" className={`act nodrag ${view.captioning ? "going" : ""}`} disabled={view.captioning} title="Ask a model what this is" onClick={() => store.caption(name)}>
-            {view.captioning ? "Captioning" : "Caption"}
-          </button>
-        )}
-      </div>
-    )
-  }
   return (
-    <div className="desc-open">
+    <div className="desc-field">
+      {view.asset.tool && <hr className="here-rule" />}
+      <span className="block-label">Description</span>
       <MentionText
         asset={name}
         place="description"
-        value={text}
-        label="What this is"
+        value={typeof held === "string" ? held : ""}
+        label="Description"
         missing={[]}
-        focus={open}
+        focus={false}
         onDraft={(words) => store.setDraft(name, "description", words)}
-        onSave={() => {
-          if (open) void store.save(name)
-          setOpen(false)
-        }}
+        onSave={() => void store.save(name)}
       />
     </div>
   )
 }
 
-/** The corner, pulled to size a box. A box whose tool has a shape takes it from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. */
+/** The corner, pulled to size a box. Showing no picture, or its words, a box takes its tool's shape from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. Showing a picture, it only scales. */
 function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
   const store = useCanvasStore()
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
-  const control = view.asset && faceOf(view) === "edit" && (!view.here || view.hereWords) ? controlsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
+  const control = view.asset && reshapes(view) ? controlsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const from = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const moved = (event: PointerEvent) => {
     if (!from.current) return
     const zoom = flow.getZoom()
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + (event.clientX - from.current.x) / zoom))
-    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + (event.clientY - from.current.y) / zoom))
+    const dx = (event.clientX - from.current.x) / zoom
+    const dy = (event.clientY - from.current.y) / zoom
+    if (!control) {
+      const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w * Math.max(1 + dx / from.current.w, 1 + dy / from.current.h)))
+      pulled.current = { w, h: w / aspectOf(view) }
+      return store.setWidth(name, w, false)
+    }
+    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + dx))
+    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + dy))
     pulled.current = { w, h }
-    if (control) {
-      store.drawShape(name, w, h)
-      setNearest(snapped(w / h, shapesOf(control)))
-    } else store.setWidth(name, w, false)
+    store.drawShape(name, w, h)
+    setNearest(snapped(w / h, shapesOf(control)))
   }
   const done = () => {
     if (!from.current) return
@@ -474,10 +421,11 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
     const size = pulled.current
     pulled.current = null
     setNearest(null)
-    if (store.inPlace) store.inPlace.pulled = false
-    if (!size) return
-    if (control) store.setShape(name, control.field, size.w, snapped(size.w / size.h, shapesOf(control)))
-    else store.setWidth(name, size.w)
+    if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+    else if (size) store.setWidth(name, size.w)
+    if (!store.inPlace) return
+    store.inPlace.pulled = false
+    requestAnimationFrame(() => store.fitHere(true))
   }
   return (
     <>
@@ -506,14 +454,24 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   )
 }
 
-/** The shape a box makes, under its corner, in the words of its name. Being pulled, the middle says it. */
+/** The shape a box makes, by its corner: the one set, else Auto. Open, the one set has an × that takes it back to Auto. Being pulled, the middle says it. */
 function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const control = view.asset && controlsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!control || view.shape) return null
-  const held = store.valueOf(name, control.field) ?? control.default
-  return <span className="ratio-rest">{typeof held === "string" ? held : "Auto"}</span>
+  const held = store.valueOf(name, control.field)
+  if (typeof held !== "string" || !held) return <span className="ratio-rest">Auto</span>
+  return (
+    <span className="ratio-rest">
+      {held}
+      {view.here && (
+        <button type="button" className="ratio-clear nodrag" aria-label="Auto shape" title="Back to its auto shape" onClick={() => store.unshape(name, control.field)}>
+          <Icon name="close" />
+        </button>
+      )}
+    </span>
+  )
 }
 
 const CardBody = memo(function CardBody({ name, width }: { name: string; width: number }) {
@@ -557,7 +515,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const face = faceOf(view)
   const canFlip = makes(view)
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
-  const editing = here && (asset?.timeline ? face === "edit" : Boolean(view.hereWords))
+  const editing = here && (asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
   return (
@@ -645,16 +603,21 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!here && !lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
+      {!lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
       {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
         <div className="rest-waiting">
           <Waiting view={view} />
         </div>
       )}
+      {here && asset && asset.kind !== "text" && !asset.timeline && (
+        <div className="here-side nodrag nopan nowheel">
+          <Takes view={view} name={name} width={width} />
+        </div>
+      )}
       {here && asset && asset.kind !== "text" && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
-            <Takes view={view} name={name} width={width} />
+            {asset.timeline && <Takes view={view} name={name} width={width} />}
             {asset.timeline && editing && <Pictures name={name} />}
             {!asset.timeline && !view.hereWords && <FromHere view={view} name={name} />}
             {!editing && <Bar view={view} name={name} />}
@@ -662,17 +625,10 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
               name={name}
               view={view}
               editing={editing}
-              actions={
-                <>
-                  {editing && <RenderButton name={name} view={view} />}
-                  {(!view.hereWords || asset.timeline) && <Approve view={view} name={name} />}
-                  <Stack name={name} />
-                </>
-              }
-            >
-              {editing && <Description name={name} view={view} />}
-            </AssetEdit>
-            {!editing && <Description name={name} view={view} />}
+              head={<Stack name={name} />}
+              actions={editing && <RenderButton name={name} view={view} />}
+            />
+            <Description name={name} view={view} />
             {view.warned && warned ? (
               <div className="warned-lines">
                 {view.warnings!.map((warning) => (

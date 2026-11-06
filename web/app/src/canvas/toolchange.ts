@@ -2,8 +2,8 @@ import type { Asset, Tool } from "../types"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
 import { madeHere } from "./shown"
 
-// What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Calcifer does the same to the file (`with_tool`): attaching or detaching
-// changes only which instruction fields it has, and its pictures, numbers, approval, description and words stay. This holds no state.
+// What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Its pictures, numbers, approval and description stay; a tool
+// coming off takes its fields and their values with it. This holds no state.
 
 type Fields = Record<string, unknown>
 
@@ -87,16 +87,20 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
   return { row: { ...row, fields: shown }, tool: tool.id, fields: send, back, lost }
 }
 
-/** Its tool coming off: only that, unless it holds no pictures, when its words are all it is. */
+/** Its tool coming off, and its fields with it. A box of no pictures keeps its words, as its text. */
 export function comingOff(asset: Asset, fields: Fields): ToolStep {
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: {} as Fields }
-  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current" }, tool: "", fields: {}, back, lost: [] }
-  const words = wordsIn(fields)
-  const { [words ?? ""]: text, ...rest } = fields
-  return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...rest, text: text ?? "" } }, tool: "", fields: {}, back, lost: [] }
+  const pictures = holdsPictures(asset)
+  const words = pictures ? undefined : wordsIn(fields)
+  const gone = Object.keys(fields).filter((field) => !OWN.includes(field) && field !== words)
+  back.fields = Object.fromEntries(gone.map((field) => [field, fields[field] ?? null]))
+  const send = Object.fromEntries(gone.map((field) => [field, null]))
+  const kept = Object.fromEntries(Object.entries(fields).filter(([field]) => OWN.includes(field)))
+  if (pictures) return { row: { tool: undefined, standing: "current", fields: kept }, tool: "", fields: send, back, lost: [] }
+  return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...kept, text: (words && fields[words]) ?? "" } }, tool: "", fields: send, back, lost: [] }
 }
 
-/** A tool carried: dropped on a box it goes on, or takes the place of the one there. On open canvas it's a new box. */
+/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens. On open canvas it's a new box. */
 export const carryingTool = (tool: Tool): Carried => ({
   canvas: true,
   whyNot(name, view) {
@@ -104,5 +108,8 @@ export const carryingTool = (tool: Tool): Carried => ({
     if (madeHere(view.asset.tool)) return `${name} is made here, so ${tool.label} can't go on it`
     return view.asset.tool === tool.id ? `${tool.label} is on ${name} already` : null
   },
-  put: (store, name) => store.putTool(name, tool),
+  put: (store, name) => {
+    store.putTool(name, tool)
+    store.openHere(name)
+  },
 })
