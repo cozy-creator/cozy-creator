@@ -417,10 +417,11 @@ async function died(why) {
     const version = (name, number) => asset(name).then((row) => row.prefixes.find((take) => take.number === number).main.sha256);
     const own = await ran('seeded');
     seen.self_input = own;
-    check('self_reaches_its_function', own?.pictures?.[0]?.image?.includes(await version('seeded', 1)) && own.prompt === '<self 1>', own);
+    const [mine] = own?.instructions?.references ?? [];
+    check('self_reaches_its_function', own?.instructions?.references?.length === 1 && mine.file === (await version('seeded', 1)) && own.instructions.text === `<${mine.key}>`, own);
     const theirs = await ran('second');
     seen.version_input = theirs;
-    check('a_version_reaches_its_function', theirs?.pictures?.[0]?.image?.includes(await version('Ada', 2)) && theirs.prompt === '<Ada 2> as it was', theirs);
+    check('a_version_reaches_its_function', theirs?.instructions?.references?.length === 1 && theirs.instructions.references[0].key === 'Ada.2' && theirs.instructions.references[0].file === (await version('Ada', 2)) && theirs.instructions.text === '<Ada.2> as it was', theirs);
   } else seen.skipped_render = 'no free tool runs here';
 
   await shut();

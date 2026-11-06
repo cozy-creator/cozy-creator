@@ -58,8 +58,8 @@ class ShotInput(msgspec.Struct, kw_only=True):
     summary: Prompt = Prompt()
     beats: Annotated[list[Beat], Count(min=1, max=8)]
     turbo: bool = True
-    soundscape: Annotated[str, Placeholder("N/A (silent)")] = ""
-    music: Annotated[str, Placeholder("N/A (silent)")] = ""
+    soundscape: Annotated[Prompt, Placeholder("N/A (silent)")] = Prompt()
+    music: Annotated[Prompt, Placeholder("N/A (silent)")] = Prompt()
     aspect_ratio: Annotated[AspectRatio, Ratios("16:9")] | None = None
     first_frame: ImageFile | None = None
     last_frame: ImageFile | None = None
