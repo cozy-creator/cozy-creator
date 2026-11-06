@@ -2322,12 +2322,19 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     let (unbacked, total) = owner.lock()?.segments.values().filter(|s| s.pool == Some(pool))
         .fold((0, 0), |(unbacked, total), s| (unbacked + s.unbacked(), total + s.bytes));
     let need = wanted + unbacked;
+    // A recording in no request, an idle period's, is a guess: it takes only room already free,
+    // its own completed pages included, and asks nobody. Refused, the call stays eager.
+    #[cfg(target_os = "linux")]
+    let guess = crate::cooperative::in_request(device) == Some(false);
+    #[cfg(not(target_os = "linux"))]
+    let guess = false;
     // Its new pages take completed free working pages' place first, whatever the card has free: a
     // recorded program is what runs from now on, and mapped beside them its pool summed with
-    // them (SDXL uncapped on a 4090: a 2.7 GiB pool beside 3.7 GiB of eager pages, 11.6 GiB).
+    // them (SDXL uncapped on a 4090: a 2.7 GiB pool beside 3.7 GiB of eager pages, 11.6 GiB). At
+    // idle no call is running that would reuse any of them, so they all go.
     let fresh = unbacked + wanted.saturating_sub(total);
     if bytes != 0 && fresh != 0 {
-        release_completed(device, fresh, usize::MAX, Some(pool))?;
+        release_completed(device, if guess { usize::MAX } else { fresh }, usize::MAX, Some(pool))?;
     }
     let reserve = || {
         let gate = crate::gate(device)?;
@@ -2343,12 +2350,6 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     };
-    // A recording in no request, an idle period's, is a guess: it takes only room already free,
-    // its own completed pages included, and asks nobody. Refused, the call stays eager.
-    #[cfg(target_os = "linux")]
-    let guess = crate::cooperative::in_request(device) == Some(false);
-    #[cfg(not(target_os = "linux"))]
-    let guess = false;
     let mapped = if guess {
         match reserve() {
             Ok(mapped) => mapped,
