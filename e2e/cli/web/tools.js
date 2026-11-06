@@ -2,7 +2,7 @@
 // The wire's `Tool.fields` by type; the face and More, its Advanced shut; segments up to four, a menu past that, a dropdown for options that say
 // what they are; Auto and reset, which takes the key out of the file; Random or a kept seed. Groups: rows added, taken out and dragged into a new
 // order, their sum, a block that may be absent, and rows two deep. Slots: what doesn't fit is refused as it's carried and at the drop, with why;
-// a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk@in-out>` and shown as
+// a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
 // Pick up from here on its own take and from another box's take let go on it, landing on the tool's frames, with nothing written.
 //   node tools.js <sign-in link from `cozy open --no-open`>
@@ -284,19 +284,19 @@ function linesOf(text, name) {
   const frames = Number(await range.locator('[aria-label="walk: out"]').getAttribute('aria-valuemax'));
   await range.locator('[aria-label="walk: in"]').focus();
   for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
-  await until('an in point', () => fieldsOf('shot'), (fields) => fields.summary?.includes('<walk@3->'));
+  await until('an in point', () => fieldsOf('shot'), (fields) => fields.summary?.includes('<walk:3->'));
   await range.locator('[aria-label="walk: out"]').focus();
   for (let i = 0; i < 2; i++) await page.keyboard.press('ArrowLeft');
-  const ranged = await until('an out point', () => fieldsOf('shot'), (fields) => fields.summary?.includes(`<walk@3-${frames - 2}>`));
-  check('a_range_is_written_in_frames', ranged.summary.includes(`<walk@3-${frames - 2}>`), ranged.summary);
-  const chip = (await shotBox.locator(`.mention-text[data-field=summary] .chip[data-mention="walk@3-${frames - 2}"]`).textContent()) ?? '';
+  const ranged = await until('an out point', () => fieldsOf('shot'), (fields) => fields.summary?.includes(`<walk:3-${frames - 2}>`));
+  check('a_range_is_written_in_frames', ranged.summary.includes(`<walk:3-${frames - 2}>`), ranged.summary);
+  const chip = (await shotBox.locator(`.mention-text[data-field=summary] .chip[data-mention="walk:3-${frames - 2}"]`).textContent()) ?? '';
   check('a_range_shows_timecode', /^walk 0:00\.03–0:0\d\.\d\d$/.test(chip), chip);
   // On the plate, the same, and its length against the beats'.
   const plate = field('shot', 'plate');
   check('a_plate_against_its_beats', (await plate.locator('.spans.warn').textContent()).includes('the beats 5 s'), await plate.locator('.spans').textContent());
   await plate.locator('.clip-range [aria-label$=": in"]').focus();
   await page.keyboard.press('ArrowRight');
-  await until('the plate ranged', () => fieldsOf('shot'), (fields) => fields.plate === '<walk@1->');
+  await until('the plate ranged', () => fieldsOf('shot'), (fields) => fields.plate === '<walk:1->');
   check('a_plate_takes_a_range', true);
   await shot('ranges');
   await closeBox(page);
