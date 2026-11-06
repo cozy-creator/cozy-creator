@@ -836,15 +836,15 @@ video.preview.on {
 .card.here .media {
   user-select: text;
 }
-/* At rest, its × and its state are drawn with its name: one size on screen, down to --hang. */
+/* At rest, its × and its state are drawn with its name: one size on screen, down to --hang. The × is always there, big enough to hit. */
 .card .head .iconb {
-  width: calc(22px * var(--hang, 1));
-  height: calc(22px * var(--hang, 1));
-  border-radius: calc(5px * var(--hang, 1));
+  width: calc(30px * var(--hang, 1));
+  height: calc(30px * var(--hang, 1));
+  border-radius: calc(6px * var(--hang, 1));
 }
 .card .head .iconb .icon {
-  width: calc(14px * var(--hang, 1));
-  height: calc(14px * var(--hang, 1));
+  width: calc(20px * var(--hang, 1));
+  height: calc(20px * var(--hang, 1));
 }
 .card .head .dot {
   width: calc(7px * var(--hang, 1));
@@ -3187,12 +3187,10 @@ input[type="checkbox"] {
   margin: 8px 4px 2px;
 }
 
-/* On the canvas a box shows its X and its corner only under the pointer, with nothing else opening. */
-.card .on-hover,
+/* On the canvas a box shows its corner only under the pointer, with nothing else opening. */
 .card:not(.here) .corner {
   visibility: hidden;
 }
-.card:hover .on-hover,
 .card:hover .corner {
   visibility: visible;
 }
