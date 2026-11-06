@@ -351,6 +351,23 @@ code {
   position: relative;
   user-select: none;
 }
+/* Where a box draws nothing, the pointer finds the canvas and a drag there pans it: its name row between its name and its ×, its takes column
+   past its takes, its add-ons' row past them (Paul, 11-06). !important: React Flow sets its own inline. */
+.react-flow__node:has(> .card:not(.entity)) {
+  pointer-events: none !important;
+}
+/* Of no weight, so what sets its own (.ratio-rest at rest) keeps it. */
+:where(.react-flow__node > .card) > :where(:not(.head, .here-side)),
+:where(.react-flow__node > .card > .head) > :where(:not(.sp)),
+:where(.here-side, .add-ons) > * {
+  pointer-events: auto;
+}
+.react-flow__attribution {
+  pointer-events: none;
+}
+.react-flow__attribution a {
+  pointer-events: auto;
+}
 .card.entity {
   background: var(--card);
   border: 1px solid var(--line);
