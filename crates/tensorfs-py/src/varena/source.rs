@@ -183,10 +183,10 @@ impl Inner {
                     let plain = !changed && self.stored.is_some();
                     self.plain.store(plain, Ordering::Release);
                     if let Some(key) = &self.page {
-                        match plain {
-                            true => self.tier.want(key, &self.set, this, region),
-                            false => self.tier.keep_behind(key, &self.set, region, self.bytes),
+                        if plain {
+                            self.tier.want(key, &self.set, this, region.clone());
                         }
+                        self.tier.keep_behind(key, &self.set, region, self.bytes);
                     }
                     Ok(pin)
                 }
@@ -279,10 +279,13 @@ impl varena::Source for PageSource {
         if let (Some(derive), Some(consumer)) = (derive, consumer) {
             return this.derive(derive, fill, consumer, weak).map(Some);
         }
+        let region = Arc::downgrade(fill.target());
+        let pin = publish(fill, consumer)?;
         if let Some(key) = &this.page {
-            this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
+            this.tier.want(key, &this.set, weak, region.clone());
+            this.tier.keep_behind(key, &this.set, region, this.bytes);
         }
-        publish(fill, consumer)
+        Ok(pin)
     }
 }
 
