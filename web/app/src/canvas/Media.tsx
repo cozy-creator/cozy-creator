@@ -1,6 +1,8 @@
-import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
+import { runFullQuery, runQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
@@ -13,8 +15,8 @@ import type { ElementView } from "./CanvasStore"
 import { controlsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { aspectOf, faceOf, fieldsOf, type Shown, shownOf } from "./shown"
-import { chipWords, clock, lineOf, withMentions } from "./text"
+import { aspectOf, faceOf, fieldsOf, makes, makingRun, type Shown, shownOf, valueIn } from "./shown"
+import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
@@ -428,7 +430,12 @@ const installsOf = (tool?: Tool) => tool && (tool.installs ?? tool.package)
 /** A render on its way: its package installing and its weights arriving say so, from what its machine lists, and the veil after them is
  *  its own work's. That says where it is once it's worth it: `Generating image 3 / 8, 25 s left`. Before its run is sent, local code
  *  installing for it says so too. */
-function Making({ run, pkg, making, waits }: { run?: Run; pkg?: string; making: boolean; waits: string | null }) {
+function Making({ run: first, number, pkg, making, waits }: { run?: Run; number?: number; pkg?: string; making: boolean; waits: string | null }) {
+  const { client } = useConnection()
+  // The take looked at may be one asked after the first going: how far that one is, as its words are.
+  const later = number !== undefined && number !== first?.number
+  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
+  const run = later ? data : first
   const on = useWaitsOn(run)
   // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
   const installing = useInstalling(run || waits ? undefined : pkg)
@@ -477,6 +484,77 @@ function WaitsFor({ name }: { name: string }) {
   return <Progress fraction={run?.progress?.done_fraction} says={`Waits for <${name}>${words ? `: ${words}` : ""}`} />
 }
 
+/** Words as a frame draws them, read only: each mention a chip, struck through when it names nothing. */
+function Said({ words, view, name }: { words: string; view: ElementView; name: string }) {
+  const store = useCanvasStore()
+  return (
+    <p className="words">
+      {withMentions(words).map((part, i) =>
+        part.mention ? (
+          <span key={i} className={`chip ${view.asset?.missing?.includes(part.text.slice(1, -1)) || (store.mentionOf(part.text.slice(1, -1), name)?.gone ?? isSelf(part.text.slice(1, -1))) ? "missing" : ""}`}>
+            {chipWords(part.text.slice(1, -1))}
+          </span>
+        ) : (
+          part.text
+        ),
+      )}
+    </p>
+  )
+}
+
+/** Behind its words, faded, the pictures they mention, or `mentions`: one fills the frame, up to four tile it 2×2, up to nine 3×3. */
+export function Ghosts({ name, view, mentions, cardWidth = 960 }: { name: string; view: ElementView; mentions?: string[]; cardWidth?: number }) {
+  const store = useCanvasStore()
+  useSignal(store.names)
+  useSignal(store.tools)
+  const pictures = view.asset ? store.mentionedPictures(name, mentions) : []
+  if (!pictures.length) return null
+  const side = Math.ceil(Math.sqrt(pictures.length))
+  return (
+    <div className="ghosts" style={{ "--side": side } as CSSProperties} aria-hidden>
+      {pictures.map((ghost) =>
+        ghost.sha256 ? (
+          <Thumb key={ghost.mention} sha256={ghost.sha256} cardWidth={cardWidth / side} />
+        ) : (
+          <svg key={ghost.mention} className={`ghost-blank ${ghost.making ? "making" : ""}`} data-mention={ghost.mention} viewBox={`0 0 ${100 * (ghost.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
+            <rect x="2" y="2" width={100 * (ghost.shape ?? 1) - 4} height="96" rx="3" />
+          </svg>
+        ),
+      )}
+    </div>
+  )
+}
+
+/** A run's words in a box's text field: its function may call `instructions` `prompt` (tool.rs `text_input`), and it read each `<a.b>` as
+ *  `<a b>` (direct.rs `spoken`), which goes back. */
+function askedIn(input: Record<string, unknown> | undefined, field: string): string | null {
+  const said = input?.[field] ?? (field === "instructions" ? input?.prompt : undefined)
+  return typeof said === "string" ? said.replace(/<([^<>\s]+(?: [^<>\s]+)+)>/g, (_, mention: string) => `<${mention.replaceAll(" ", ".")}>`) : null
+}
+
+/** A take being made, with nothing of it yet: where its picture will be, the words its run was asked, read only, as they were written in its
+ *  frame, over what they mention, until it lands. Asked and not sent yet, it has no run: the box's own words are what's sent. */
+function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: string; run?: number; cardWidth: number }) {
+  const { client } = useConnection()
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  const { data, isError } = useQuery({ ...runFullQuery(client, run ?? 0, 0), enabled: run !== undefined })
+  const control = view.asset && controlsOf(view.asset, tools).find((held) => held.type === "text")
+  if (!control) return null
+  const own = valueIn(view, control.field)
+  const words = run === undefined || isError ? (typeof own === "string" ? own : null) : askedIn(data?.request?.input, control.field)
+  if (!words?.trim()) return null
+  // What they mention under how far it's got, and the words over it.
+  return (
+    <>
+      <Ghosts name={name} view={view} mentions={mentionsIn(words)} cardWidth={cardWidth} />
+      <div className="made-from">
+        <Said words={words} view={view} name={name} />
+      </div>
+    </>
+  )
+}
+
 export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
   const { client } = useConnection()
   const store = useCanvasStore()
@@ -487,6 +565,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
+  const busy = making || Boolean(view.queued) || view.asked !== undefined
+  const run = busy ? makingRun(view) : undefined
   const here = shown && !shown.absent ? shown : null
   // On the canvas: an opened box plays the file itself.
   const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
@@ -499,6 +579,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
+  // Its take being made, with nothing of it yet: its frame says what it's made from.
+  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
     <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
@@ -517,19 +599,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} cardWidth={cardWidth} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
-      {blank && words && (
-        <p className="words">
-          {withMentions(words).map((part, i) =>
-            part.mention ? (
-              <span key={i} className={`chip ${asset?.missing?.includes(part.text.slice(1, -1)) || (store.mentionOf(part.text.slice(1, -1), name)?.gone ?? isSelf(part.text.slice(1, -1))) ? "missing" : ""}`}>
-                {chipWords(part.text.slice(1, -1))}
-              </span>
-            ) : (
-              part.text
-            ),
-          )}
-        </p>
-      )}
+      {blank && words && !madeFrom && <Said words={words} view={view} name={name} />}
       {blank && !words && clips && <span className="media-note">Drag videos and stills here</span>}
       {blank && !words && field === "file" && <span className="media-note">A file</span>}
       {glyph && (
@@ -537,9 +607,10 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {(making || view.queued || view.asked !== undefined) && view.viewed === undefined && <div className="media-making" />}
+      {busy && view.viewed === undefined && <div className="media-making" />}
+      {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
-      {(making || view.queued || view.asked !== undefined) && <Making run={view.run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} waits={making ? null : store.waitsFor(name)} />}
+      {busy && <Making run={view.run} number={run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} waits={making ? null : store.waitsFor(name)} />}
       {open && source && field && store.projectId && (
         <Player
           key={JSON.stringify(source)}

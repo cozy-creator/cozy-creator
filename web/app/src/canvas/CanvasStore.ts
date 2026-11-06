@@ -441,12 +441,12 @@ export class CanvasStore {
     return heldTo(control, ratioOf(control.default) ?? 1)
   }
 
-  /** The pictures a box's words mention, in order: the version named, else what each shows. */
-  mentionedPictures(name: string): Ghost[] {
+  /** The pictures a box's words mention, or `mentions` of it, in order: the version named, else what each shows. */
+  mentionedPictures(name: string, mentions?: string[]): Ghost[] {
     const view = this.get(name)
     if (!view) return []
     const seen = new Set<string>()
-    return this.mentionsOf(view).flatMap((mention): Ghost[] => {
+    return (mentions ?? this.mentionsOf(view)).flatMap((mention): Ghost[] => {
       // The box by its exact name first, as Calcifer reads it: `<kyogre.primordial>` is that box, not a take of `kyogre`.
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined

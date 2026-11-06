@@ -830,6 +830,21 @@ video.preview.on {
 .card.here .words {
   visibility: hidden;
 }
+/* A take being made with nothing of it yet: the words it's made from, as they were written in its frame, read only, until it lands. How far
+   it's got moves under them, and they stop short of what says so. */
+.made-from {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 3;
+  pointer-events: none;
+  /* What says so: at rest .rest-waiting, at --hang, and open .prog b. */
+  padding-bottom: max(calc(var(--hang, 1) * (var(--s3) + 1.4 * var(--t-small) * var(--ui) + 2px)), calc(10px + 1.4 * var(--small)));
+}
+.card .made-from .words {
+  visibility: visible;
+}
 .card.here .in-frame {
   background: var(--card);
 }

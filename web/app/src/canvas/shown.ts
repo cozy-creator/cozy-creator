@@ -110,6 +110,13 @@ export function watched(view: ElementView): { run?: number; number?: number } | 
   return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
 }
 
+/** The run making the take a box's frame is on while it's made: the one it looks at, else the first going. None: not sent yet. */
+export function makingRun(view: ElementView): number | undefined {
+  const watch = watched(view)
+  const making = view.asset?.making ?? []
+  return watch ? watch.run : making.length ? Math.min(...making) : undefined
+}
+
 /** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */
 export const paints = (view: ElementView, tools: Map<string, Tool>) => makes(view) && !view.asset?.timeline && tools.get(view.asset?.tool ?? "")?.kind === "image"
 

@@ -758,8 +758,16 @@ async function died(why) {
     // Render from its words looks at the take being made: its tile is the one picked, and + goes back to the words, still there.
     const pickedFirst = await until('its tile picked', () => slow.locator('.here-side .take.making.on').getAttribute('title').catch(() => null), (title) => title === `Run ${firstMaking.making[0]}`).catch(() => null);
     check('render_picks_the_take_being_made', (await slow.count()) === 1 && pickedFirst === `Run ${firstMaking.making[0]}` && (await slow.locator('.here-side .take.add.on').count()) === 0, await slow.innerText());
+    // Until it lands, its frame says the words it's made from, read only, over how far it's got.
+    const madeFrom = async () => (await slow.locator('.media .made-from').count()) && (await slow.locator('.media .made-from').innerText()).replace(/\s+/g, ' ').trim();
+    const saysFirst = await until('the words it is made from', madeFrom, (text) => text === 'Slowly.').catch((why) => String(why));
+    check('a_take_being_made_says_its_words', saysFirst === 'Slowly.' && !(await slow.locator('.media .made-from [contenteditable]').count()), saysFirst);
     const renderButton = await renderOf(page, 'slow');
     check('plus_goes_back_to_its_words', (await slow.locator('.in-frame').innerText()).includes('Slowly.') && (await renderButton.innerText()).trim() === 'Render', await slow.locator('.in-frame').innerText());
+    // The next take's own words: each take being made says its own, whatever the box's say now.
+    await slow.locator('.in-frame .mention-text').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' Then <ada.2>.');
     await renderButton.click();
     const both = await until('two making', () => asset('slow'), (row) => row?.making?.length === 2, 2 * STEP_MS).catch((why) => String(why));
     const pickedNewest = await until('the newest picked', () => slow.locator('.here-side .take.making.on').getAttribute('title').catch(() => null), (title) => title === `Run ${Math.max(...(both?.making ?? [0]))}`).catch(() => null);
@@ -773,6 +781,10 @@ async function died(why) {
     await slow.locator(`.here-side .take.making[title="Run ${older}"]`).click();
     const pickedOlder = await until('the older picked', () => slow.locator('.here-side .take.making.on').getAttribute('title').catch(() => null), (title) => title === `Run ${older}`).catch(() => null);
     check('a_take_being_made_is_picked_by_its_tile', pickedOlder === `Run ${older}` && (await slow.locator('.here-side .take.on').count()) === 1 && (await slow.locator('.media .media-making').count()) === 1, { pickedOlder, on: await slow.locator('.here-side .take.on').count() });
+    const saysOlder = await until('the older one\'s words', madeFrom, (text) => text === 'Slowly.').catch((why) => String(why));
+    await slow.locator(`.here-side .take.making[title="Run ${newer}"]`).click();
+    const saysNewer = await until('the newer one\'s words', madeFrom, (text) => text.startsWith('Slowly. Then <Ada.2>')).catch((why) => String(why));
+    check('each_take_being_made_says_its_own_words', saysOlder === 'Slowly.' && saysNewer.startsWith('Slowly. Then <Ada.2>') && (await slow.locator('.media .made-from .chip').innerText()) === '<Ada.2>', { saysOlder, saysNewer });
     const runState = async (number) => (await api(`/v1/runs/${number}`)).body?.status;
     await slow.locator(`.take-off[aria-label="Cancel run ${newer}"]`).click();
     const canceled = await until('the newer canceled', () => runState(newer), (status) => status === 'canceled', 2 * STEP_MS).catch((why) => String(why));
