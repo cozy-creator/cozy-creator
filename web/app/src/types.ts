@@ -997,7 +997,40 @@ export type ServerEvent =
   | { type: "machine.removed"; name: string }
   | { type: "project.changed"; id: string; rev: string; assets?: string[]; gone?: string[]; head?: boolean }
   | { type: "canvas"; id: string; etag: string; cards: Record<string, Row | null> }
+  | { type: "history"; id: string; undo?: HistoryEntry; redo?: HistoryEntry }
   | { type: "resync" }
+
+/** Who made an edit: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client. */
+export interface By {
+  via: "page" | "cli" | "file" | "api"
+  client?: string
+}
+
+/** One edit of a project, as its history keeps it (`GET /v1/projects/{id}/history`). */
+export interface HistoryEntry {
+  id: number
+  at_ms: number
+  by: By
+  words: string
+  names?: string[]
+  /** The page's own ids for it (`Cozy-Edit`). */
+  edits?: string[]
+  undone?: { at_ms: number; by: By }
+}
+
+export interface History {
+  entries: HistoryEntry[]
+  undo?: number
+  redo?: number
+}
+
+export interface HistoryStepped {
+  entries: HistoryEntry[]
+  already?: boolean
+  stopped?: ErrorBody
+  undo?: number
+  redo?: number
+}
 
 export interface AssetMade {
   name: string

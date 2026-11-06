@@ -14,6 +14,7 @@
   .ptabs,
   .tools,
   .main-menu nav,
+  .history-list,
   .zoom-menu,
   .asset-menu {
     background: linear-gradient(#f6ebd0, #f6ebd0) center / calc(100% - 10px) calc(100% - 10px) no-repeat;

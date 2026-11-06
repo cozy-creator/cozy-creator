@@ -19,6 +19,9 @@ export interface Transport {
  * This origin's Calcifer. `base` reaches another one through it (`/v1/machines/<name>/calcifer`). A remote Calcifer's answers are
  * hostile, so only a relative API path under `base` is ever followed.
  */
+/** This tab, as a project's history says who made an edit. */
+export const TAB = crypto.randomUUID().slice(0, 4)
+
 export function sameOrigin(session: () => Session | null, base = ""): Transport {
   const resolve = (path: string) => {
     const url = new URL(base + path, location.origin)
@@ -37,6 +40,7 @@ export function sameOrigin(session: () => Session | null, base = ""): Transport 
       const headers = new Headers(init.headers)
       const token = session()?.token
       if (token) headers.set("Authorization", `Bearer ${token}`)
+      headers.set("Cozy-Client", `page ${TAB}`)
       return fetch(resolve(path), { ...init, headers })
     },
     src: async (path) => media(path),

@@ -30,6 +30,7 @@ import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
 import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
+import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
 import { HANG, madeHere, shownOf } from "./shown"
@@ -114,6 +115,9 @@ const MULTI = ["Shift", "Meta", "Control"]
 const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes("Files")
 const typing = (target: EventTarget | null) =>
   target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+/** A field with words in it, which keeps its own undo. */
+const words = (target: EventTarget | null) =>
+  target instanceof HTMLElement && (target.isContentEditable || target.tagName === "TEXTAREA" || (target instanceof HTMLInputElement && ["text", "search", "url", "email", "number", "password", "tel"].includes(target.type)))
 
 /** Project state and rows into the store; nothing here renders. */
 function ProjectSync({ id }: { id: string }) {
@@ -156,14 +160,17 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
-  useEffect(
-    () =>
-      stream.subscribe((event) => {
-        if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
-        if (event.type === "resync" || event.type === "hello") store.fellBehind()
-      }),
-    [stream, store, id],
-  )
+  useEffect(() => {
+    store.history.read()
+    return stream.subscribe((event) => {
+      if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
+      if (event.type === "history" && event.id === id) store.history.read()
+      if (event.type === "resync" || event.type === "hello") {
+        store.fellBehind()
+        store.history.read()
+      }
+    })
+  }, [stream, store, id])
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
   useEffect(() => {
     store.readAgain = (names) => bridge.changed(id, { assets: names, head: true })
@@ -259,10 +266,12 @@ function Empty({ choose }: { choose: () => void }) {
 function Canvas({
   projectId,
   slot,
+  history,
   onAdopt,
 }: {
   projectId: string | null
   slot: HTMLElement | null
+  history: HTMLElement | null
   onAdopt: (id: string) => void
 }) {
   const connection = useConnection()
@@ -599,6 +608,14 @@ function Canvas({
       if (store.viewing.get()) return
       const here = store.inPlace?.name
       if (event.key === "Escape" && here && !store.menu.get() && store.get(here)?.draft === undefined) return leaveHere()
+      // Undo and redo are the project's, but in a field with words in it, which keeps its own.
+      const letter = event.key.toLowerCase()
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && (letter === "z" || letter === "y") && !words(event.target)) {
+        event.preventDefault()
+        if (letter === "y" || event.shiftKey) store.redo()
+        else store.undo()
+        return
+      }
       if (typing(event.target)) return
       if (here && stepTakes(here, event)) return
       const command = event.metaKey || event.ctrlKey
@@ -840,6 +857,7 @@ function Canvas({
       <Viewer />
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
+      {history && projectId && createPortal(<HistoryControls />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
   )
@@ -856,7 +874,7 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; onAdopt: (id: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />
