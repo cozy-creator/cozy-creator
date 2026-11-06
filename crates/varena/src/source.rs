@@ -62,21 +62,22 @@ fn next(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
 /// blocks (a LoRA's beside a DiT's) must not leave the one that matters a moment's notice.
 const HORIZON: usize = 4;
 
-/// The nearest absent Region after `region` that needs no caller: a cast comes before the stored
-/// bytes it reads, and a resident Region before one that isn't.
+/// The nearest absent Region after `region`, past resident ones, if it needs no caller. Never one
+/// past it: that one's demand evicts a fill ahead first, so the guess is read twice (H3 Turbo at
+/// 8 GiB on a 4090: 22 GB a call).
 fn upcoming(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
     let mut at = Arc::clone(region);
     for _ in 0..HORIZON {
         let Some(next) = next(&at)? else { return Ok(None) };
-        if next.uses.state() == Contents::Cold && !next.uses.unused.load(Ordering::Relaxed) && next.source.ahead() {
-            return Ok(Some(next));
+        if next.uses.state() == Contents::Cold {
+            return Ok((!next.uses.unused.load(Ordering::Relaxed) && next.source.ahead()).then_some(next));
         }
         at = next;
     }
     Ok(None)
 }
 
-/// A use of `region` happened: fill what comes next, if it is absent.
+/// A use of `region` happened, or its demand fill is about to run: fill what comes next, if absent.
 pub(crate) fn after_use(region: &Arc<Region>) -> Result<()> {
     if let Some(next) = upcoming(region)? {
         want(region.gpu, next, false)?;
