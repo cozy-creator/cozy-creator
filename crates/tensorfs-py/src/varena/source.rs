@@ -117,6 +117,13 @@ impl Inner {
     pub(super) fn bytes(&self) -> usize {
         self.bytes
     }
+    pub(super) fn set(&self) -> &str {
+        &self.set
+    }
+    /// Its derive's bytes are kept: none are known to be the stored ones.
+    pub(super) fn keeps(&self) -> bool {
+        self.page.is_some() && self.derive.is_some() && !self.plain.load(Ordering::Acquire)
+    }
     pub(super) fn region(&self) -> Weak<varena::Region> {
         self.region.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -165,7 +172,10 @@ impl Inner {
     }
 
     fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>) -> PyResult<()> {
-        let Some(page) = self.tier.reserve(key, self.bytes)? else { return Ok(()) };
+        let began = Instant::now();
+        let page = py.detach(|| self.tier.reserve(key, self.bytes))?;
+        self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let Some(page) = page else { return Ok(()) };
         // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
         let host = unsafe {
             Bound::from_owned_ptr_or_err(py, ffi::PyMemoryView_FromMemory(page.ptr().cast(), self.bytes as isize, ffi::PyBUF_WRITE))
@@ -179,6 +189,7 @@ impl Inner {
             kept.get_item(&window)?.call_method1("copy_", (view.get_item(&window)?,))?;
         }
         self.tier.insert(key, &self.set, page);
+        self.tier.keep_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         Ok(())
     }
 
@@ -206,6 +217,7 @@ impl Inner {
                     if !changed && self.stored.is_some() {
                         self.plain.store(true, Ordering::Release);
                         if let Some(key) = &self.page {
+                            py.detach(|| self.tier.unreserve(key));
                             self.tier.want(key, &self.set, this, region);
                         }
                     }
@@ -276,6 +288,9 @@ impl varena::Source for PageSource {
         if ahead && (derive.is_some() || this.stored.is_none()) {
             decline(fill); // Its page went since the core asked: this one needs its caller.
             return Err(varena::Error::Busy);
+        }
+        if let (Some(key), Some(_)) = (&this.page, derive) {
+            this.tier.expect(key.clone(), this);
         }
         if let Some(stored) = &this.stored {
             match this.read(stored, &fill, ahead) {
