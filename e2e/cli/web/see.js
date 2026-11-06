@@ -541,7 +541,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     tab.setDefaultTimeout(STEP_MS);
     const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
     await tab.setViewportSize({ width: 1000, height: 800 });
-    await tab.goto(`${base}/#/projects/${ours.find((row) => row.name === 'spruce').id}`);
+    const spruce = `${base}/#/projects/${ours.find((row) => row.name === 'spruce').id}`;
+    await tab.goto(spruce);
     await tab.waitForSelector('nav.ptabs a.ptab.on');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
     await tab.evaluate(() => {
@@ -582,6 +583,15 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     }
     check('tabs_still_while_resizing', frames.length >= 40 && moved.length === 0, { frames: frames.length, moved: moved.slice(0, 5) });
     check('tabs_back_when_narrower', (await bar()).tabs.join() === narrow.tabs.join(), { narrow, now: await bar() });
+
+    // With no project open its "untitled" tab is measured too, so what has a tab keeps its width.
+    await tab.goto(`${base}/#/projects`);
+    await tab.waitForSelector('nav.ptabs span.ptab.on');
+    const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ id: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
+    const squeezed = untitled.filter((one) => first.has(one.id) && !first.get(one.id).on && Math.abs(first.get(one.id).width - one.width) > 0.5);
+    check('tabs_untitled_measured', untitled.length > 0 && squeezed.length === 0, { untitled, squeezed });
+    await tab.goto(spruce);
+    await tab.waitForSelector('nav.ptabs a.ptab.on');
 
     // "N more": All projects, those with no tab first.
     await tab.click('nav.ptabs .ptab.more');
