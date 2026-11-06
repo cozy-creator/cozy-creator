@@ -158,13 +158,23 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
         </button>
       )}
       {waiting && (
-        <span className="take making" title="Queued">
-          …
+        <span className="take-at">
+          <span className="take making" title="Queued">
+            …
+          </span>
+          <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
+            <Icon name="close" />
+          </button>
         </span>
       )}
       {making.map((run) => (
-        <span key={run} className="take making" title={`Run ${run}`}>
-          {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
+        <span key={run} className="take-at">
+          <span className="take making" title={`Run ${run}`}>
+            {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
+          </span>
+          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(run)}>
+            <Icon name="close" />
+          </button>
         </span>
       ))}
       {versions.map((version) => (

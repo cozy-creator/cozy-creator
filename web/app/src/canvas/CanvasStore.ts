@@ -1032,6 +1032,11 @@ export class CanvasStore {
     this.over(name, { pinned: false, approved: undefined }, (served, once) => this.client.unpin(this.projectId!, served, once), "unapprove")
   }
 
+  /** Stops one run, and the box's others go on. */
+  cancelRun(run: number) {
+    this.client.cancelRun(String(run)).catch((error) => say(`Couldn't cancel run ${run}`, error))
+  }
+
   cancelRender(name: string) {
     this.patch(name, { asked: undefined })
     this.act(name, {

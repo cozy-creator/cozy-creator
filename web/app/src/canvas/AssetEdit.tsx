@@ -347,24 +347,14 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   const store = useCanvasStore()
   // An Edit's film is only a moment's work here, and has no run to cancel.
   if (view.asset?.rendering !== undefined) return null
-  if (view.asset?.standing === "making") {
-    return (
-      <button type="button" className="act nodrag" onClick={() => store.cancelRender(name)}>
-        Cancel
-      </button>
-    )
-  }
+  // Render while it's making queues one more: each take in the row has its own ×.
   return (
     <button
       type="button"
       className="run nodrag"
       aria-label="Render"
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
-      onClick={() => {
-        // Left first, so what a render asks of the page stands. With a conflict nothing goes, and it stays to be seen.
-        if (!view.conflict) store.leaveHere()
-        store.run(name)
-      }}
+      onClick={() => store.run(name)}
     >
       <Icon name="play" />
       Render
