@@ -1219,7 +1219,9 @@ impl Region {
             match unsafe { self.prepare_on(consumer) } {
                 Ok(async_fill::StreamPreparation::Ready(pin) | async_fill::StreamPreparation::Ordered(pin)) => break pin,
                 Ok(async_fill::StreamPreparation::Fill(fill)) => {
-                    source::yield_to(self);
+                    if self.source.reads() {
+                        source::yield_to(self);
+                    }
                     // The worker takes up what comes next while this thread reads: asked only after the
                     // read, it lost the race to this thread's next use every time.
                     let _ = source::after_use(self);

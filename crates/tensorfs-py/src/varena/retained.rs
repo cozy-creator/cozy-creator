@@ -41,29 +41,60 @@ impl varena::Source for RetainedSource {
         lock(&self.0.host).is_some()
     }
 
+    /// A demand fill copies on the consumer's stream, never through the reads ahead.
+    fn reads(&self) -> bool {
+        false
+    }
+
     fn fill(&self, fill: varena::Fill, consumer: Option<u64>) -> varena::Result<Option<varena::Pin>> {
         let host = lock(&self.0.host).clone();
-        if let Some(page) = host {
-            if let Err(error) = refill(&fill, &page) {
-                return Err(source::abort(fill, varena::Error::Callback(error.to_string())));
+        match (host, consumer) {
+            (Some(page), Some(consumer)) => {
+                let len = fill.len();
+                let copies: Vec<_> = page.windows().take_while(|(at, _)| *at < len)
+                    .map(|(at, window)| Part::Host(at as u64, page.ptr() as u64 + at as u64, window.min(len - at))).collect();
+                stream_fill(fill, consumer, &copies, Box::new(Holds(page))).map(Some)
             }
-            return source::publish(fill, consumer);
+            (Some(page), None) => {
+                if let Err(error) = refill(&fill, &page) {
+                    return Err(source::abort(fill, varena::Error::Callback(error.to_string())));
+                }
+                source::publish(fill, None)
+            }
+            (None, Some(consumer)) => {
+                let Some(writes) = lock(&self.0.writes).take() else {
+                    source::decline(fill);
+                    return Err(varena::Error::Invalid("a retained region's bytes are gone"));
+                };
+                let copies: Vec<_> = writes.iter().map(|&(at, from, len)| Part::Device(at, from, len)).collect();
+                let pin = stream_fill(fill, consumer, &copies, Box::new(Holds(())))?;
+                spill(&self.0, pin.try_clone()?, consumer);
+                Ok(Some(pin))
+            }
+            (None, None) => {
+                source::decline(fill);
+                Err(varena::Error::Busy)
+            }
         }
-        let Some(consumer) = consumer else {
-            source::decline(fill);
-            return Err(varena::Error::Busy);
-        };
-        let Some(writes) = lock(&self.0.writes).take() else {
-            source::decline(fill);
-            return Err(varena::Error::Invalid("a retained region's bytes are gone"));
-        };
-        let pin = write(fill, consumer, &writes)?;
-        spill(&self.0, pin.try_clone()?, consumer);
-        Ok(Some(pin))
     }
 }
 
-/// One DMA per registered window of its host copy.
+/// What a stream-ordered fill's copies read, held until they complete.
+struct Holds<T: Send + 'static>(T);
+// SAFETY: retiring drops only host memory or nothing; the core retires it after its producers.
+unsafe impl<T: Send + 'static> varena::FillResource for Holds<T> {
+    fn retire(&mut self) -> varena::Result<varena::FillRetirement> {
+        Ok(varena::FillRetirement::Complete)
+    }
+}
+
+/// One copy into the region at an offset: from the card or from a registered host page.
+enum Part {
+    Device(u64, u64, usize),
+    Host(u64, u64, usize),
+}
+
+/// The ahead worker's refill: one DMA per registered window of its host copy.
 fn refill(fill: &varena::Fill, page: &Page) -> Result<(), io::Error> {
     let len = fill.len();
     let copies: Vec<_> = page.windows().take_while(|(at, _)| *at < len).map(|(at, window)| io::Copy {
@@ -75,20 +106,28 @@ fn refill(fill: &varena::Fill, page: &Page) -> Result<(), io::Error> {
     unsafe { io::read(&copies, &ReadOpts::default()) }.map(drop)
 }
 
-/// The caller's tensors into the region on its stream, published in that stream's order.
-fn write(fill: varena::Fill, consumer: u64, writes: &[(u64, u64, usize)]) -> varena::Result<varena::Pin> {
+/// `copies` into the region on the consumer's stream, published in that stream's order: the
+/// caller's thread waits for nothing.
+fn stream_fill(fill: varena::Fill, consumer: u64, copies: &[Part], holds: Box<dyn varena::FillResource>) -> varena::Result<varena::Pin> {
     let device = fill.device();
-    // SAFETY: the consumer stream is the one writer, and the caller's tensors are ordered on it.
-    let mut session = unsafe { fill.into_async(varena::FillOwners::new(vec![consumer], Vec::new())) };
+    // SAFETY: the consumer stream is the one writer; `holds` keeps the host source until it is done.
+    let mut session = unsafe { fill.into_async(varena::FillOwners::new(vec![consumer], vec![holds])) };
     let destination = session.begin()?;
     let copied = (|| -> cuda::Result<()> {
         let driver = cuda::driver()?;
         let _context = cuda::CtxGuard::enter(spiller(device)?.context as cuda::CUcontext)?;
-        for &(at, from, len) in writes {
-            // SAFETY: live device spans of this context; the fill owns the destination.
-            cuda::check("cuMemcpyDtoDAsync", unsafe {
-                (driver.memcpy_dtod_async)(destination.ptr + at, from, len, consumer as cuda::CUstream)
-            })?;
+        let stream = consumer as cuda::CUstream;
+        for copy in copies {
+            // SAFETY: live device spans of this context, or a registered host page `holds` keeps;
+            // the fill owns the destination.
+            match *copy {
+                Part::Device(at, from, len) => cuda::check("cuMemcpyDtoDAsync", unsafe {
+                    (driver.memcpy_dtod_async)(destination.ptr + at, from, len, stream)
+                })?,
+                Part::Host(at, from, len) => cuda::check("cuMemcpyHtoDAsync", unsafe {
+                    (driver.memcpy_htod_async)(destination.ptr + at, from as *const std::ffi::c_void, len, stream)
+                })?,
+            }
         }
         Ok(())
     })();
@@ -98,7 +137,7 @@ fn write(fill: varena::Fill, consumer: u64, writes: &[(u64, u64, usize)]) -> var
         let _ = unsafe { session.abort(cause.clone()) };
         return Err(cause);
     }
-    // SAFETY: every declared byte is enqueued on the consumer, and nothing else writes.
+    // SAFETY: every byte is enqueued on the consumer, and nothing else writes.
     unsafe { session.publish_to(consumer) }
 }
 
