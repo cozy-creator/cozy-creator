@@ -21,9 +21,10 @@ pub(crate) const CONTENTLESS: u8 = 0;
 pub(crate) const PREFETCHED: u8 = 1;
 pub(crate) const UNPLANNED: u8 = 2;
 pub(crate) const LATER_PHASE: u8 = 3;
-pub(crate) const PHASE_USED: u8 = 4;
-pub(crate) const PHASE_NEXT: u8 = 5;
-pub(crate) const HIGH: u8 = 6;
+pub(crate) const PHASE_FRESH: u8 = 4;
+pub(crate) const PHASE_USED: u8 = 5;
+pub(crate) const PHASE_NEXT: u8 = 6;
+pub(crate) const HIGH: u8 = 7;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wait {
@@ -180,7 +181,7 @@ impl<'a> Sequence<'a> {
             }
             Step::Weights => {
                 // A guess takes no other guess and no region this phase still needs.
-                let classes = if self.protect.speculative { UNPLANNED..=PHASE_USED } else { PREFETCHED..=PHASE_NEXT };
+                let classes = if self.protect.speculative { UNPLANNED..=PHASE_FRESH } else { PREFETCHED..=PHASE_NEXT };
                 self.weights(want, classes, waiting, waiting)
             }
             Step::PendingWorking if waiting => {
@@ -416,7 +417,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
         let idle = state.entries.iter()
             .filter(|(id, entry)| {
                 let class = state.rank(**id, entry, &order).0;
-                entry.idle() && (UNPLANNED..=PHASE_USED).contains(&class) && !group.contains(id)
+                entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
                     && gpu.completion(&state, **id) == Completion::Done
             })
             .map(|(_, entry)| entry.bytes)
