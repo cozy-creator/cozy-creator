@@ -263,7 +263,7 @@ export function Shell() {
         )}
         <Connectivity />
         <span className="gap" ref={setRoom} />
-        <MachineTabs to={to} />
+        <MachineTabs to={to} projectId={id} />
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>

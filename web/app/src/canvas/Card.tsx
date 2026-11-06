@@ -4,6 +4,7 @@ import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { runsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
+import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Run, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
@@ -57,6 +58,15 @@ function Waiting({ view }: { view: ElementView }) {
   const machine = [...(going.data?.runs ?? []), ...(queued.data?.runs ?? [])].find(settingUp)?.machine
   if (machine) return <div className="status mak">Getting {machine} ready</div>
   return view.queued || view.asked !== undefined ? <div className="status mak">Queued</div> : null
+}
+
+/** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
+function TakeProgress({ view, run }: { view: ElementView; run: number }) {
+  const mine = view.run?.number === run ? view.run : undefined
+  const on = useWaitsOn(mine)
+  if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
+  const fraction = mine?.progress?.done_fraction
+  return <>{fraction === undefined ? "…" : `${Math.round(fraction * 100)}%`}</>
 }
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
@@ -179,7 +189,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       {making.map((run) => (
         <span key={run} className="take-at">
           <span className="take making" title={`Run ${run}`}>
-            {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
+            <TakeProgress view={view} run={run} />
           </span>
           <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(run)}>
             <Icon name="close" />
