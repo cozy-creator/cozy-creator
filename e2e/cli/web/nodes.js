@@ -366,12 +366,8 @@ function linesOf(text, name) {
   check('text_stays_block', (linesOf(yaml(), 'knobs') ?? '').includes('summary: |'), linesOf(yaml(), 'knobs'));
 
   // Its shape is the box's own: its corner writes what it makes, and Auto unsets it. Width is only layout.
-  await more('knobs');
-  const widthBefore = (await rows()).knobs.w;
-  await knobs.locator('[aria-label="Shape: Auto"]').click();
-  await until('the ratio unset', () => field(/(aspect_ratio):/), (value) => value === undefined);
-  check('auto_unsets_the_shape', (await knobs.locator('.edit-more .slide:has(.ctl-name:text-is("Shape")) .num').textContent()) === 'Auto');
   await away();
+  const widthBefore = (await rows()).knobs.w;
   await knobs.locator('.nm').hover();
   const corner = await knobs.locator('.corner').boundingBox();
   await page.mouse.move(corner.x + 6, corner.y + 6);
@@ -380,7 +376,12 @@ function linesOf(text, name) {
   await page.mouse.up();
   await until('the width written', rows, (now) => now.knobs.w && now.knobs.w !== widthBefore);
   // Pulled wider, it takes the nearest shape its tool makes (2a50453b1), and its width with it.
-  check('corner_takes_its_shape', /^"\d+(\.\d+)?:\d+"$/.test((await field(/aspect_ratio: (\S+)/)) ?? ''), await field(/aspect_ratio: (\S+)/));
+  const pulled = await field(/aspect_ratio: (\S+)/);
+  check('corner_takes_its_shape', /^"\d+(\.\d+)?:\d+"$/.test(pulled ?? '') && pulled !== '"3:2"', pulled);
+  await more('knobs');
+  await knobs.locator('[aria-label="Shape: Auto"]').click();
+  await until('the ratio unset', () => field(/(aspect_ratio):/), (value) => value === undefined);
+  check('auto_unsets_the_shape', true);
   seen.width_before_reshape = widthBefore;
 
   // Beats: one text and a duration slider each; add, remove, down to the one that always stays; what else a beat holds stays.

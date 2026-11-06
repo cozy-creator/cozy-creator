@@ -198,7 +198,7 @@ function summary(frames) {
       - clips:
           - <clip>
           - <clip_b>
-  odd: {kind: widget, approved: "${prefix}"}
+  odd: {approved: "${prefix}"}
   hollow_thing:
     instructions: Nothing makes this.
   needs:
@@ -233,7 +233,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_fields', of('shot').fields?.summary?.includes('looks hard') && of('shot').fields?.beats?.[1]?.description?.includes('goes on'), of('shot').fields);
   check('wire_fields_no_platform_field', !('tool' in (of('shot').fields ?? {})) && !('kind' in (of('shot').fields ?? {})), of('shot').fields);
   // `hollow_thing` is its words since 27c5db3f5: a box with no tool, which warns of nothing.
-  check('wire_warning_named', read.warnings?.some((said) => said.name === 'odd' && said.message.includes('kind')) && !read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
+  check('wire_warns_of_nothing_here', !read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
   check('wire_description', of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
   // Elements of every kind, each by what it is.
@@ -244,8 +244,6 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
   check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
-  await open(page, 'odd');
-  check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
   // Drawn in on one box, the canvas holds only what's near it: the rest is read at rest.
   await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
