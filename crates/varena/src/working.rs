@@ -798,25 +798,76 @@ impl Device {
             if class > LARGE {
                 return None;
             }
-            Self::reslab(state, class)?;
+            Self::reslab(state, class, stream)?;
         }
         Self::take_class(state, class, requested, stream, None)
     }
 
-    /// A wholly free completed slab page of another class becomes this class's: it is one handle.
-    fn reslab(state: &mut State, class: usize) -> Option<()> {
+    /// A wholly free slab page of another class becomes this class's: it is one handle. A completed
+    /// page serves first; else one whose frees are still running on this stream alone, which this
+    /// stream may reuse in order, so its new blocks keep that ordering and their waits.
+    fn reslab(state: &mut State, class: usize, stream: u64) -> Option<()> {
+        let mut ordered = None;
         let (base, bytes) = state.segments.iter()
             .filter(|(_, segment)| segment.pool.is_none() && segment.size_class <= LARGE && segment.size_class != class && segment.backed())
-            .find(|(base, segment)| state.blocks.range(**base..**base + segment.bytes as u64)
-                .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none()))
-            .map(|(base, segment)| (*base, segment.bytes))?;
-        let old: Vec<_> = state.blocks.range(base..base + bytes as u64).map(|(ptr, block)| (*ptr, block.capacity)).collect();
-        for (ptr, capacity) in old {
-            state.blocks.remove(&ptr);
-            state.unlist((None, capacity, None), ptr);
+            .find(|(base, segment)| {
+                // Pending blocks of one phase only, as a run's joins require: their charge keeps its tag.
+                let mut pending: Option<Option<u64>> = None;
+                let free = state.blocks.range(**base..**base + segment.bytes as u64).all(|(_, block)| {
+                    block.life == Life::Ready && match block.reusable_on {
+                        None => true,
+                        Some(on) => on == stream && *pending.get_or_insert(block.phase) == block.phase,
+                    }
+                });
+                if free && pending.is_some() && ordered.is_none() {
+                    ordered = Some((**base, segment.bytes));
+                }
+                free && pending.is_none()
+            })
+            .map(|(base, segment)| (*base, segment.bytes))
+            .or(ordered)?;
+        let old: Vec<_> = state.blocks.range(base..base + bytes as u64).map(|(ptr, _)| *ptr).collect();
+        let (mut waits, mut fenced, mut tagged) = (Vec::new(), BTreeSet::new(), None);
+        for ptr in old {
+            let block = state.blocks.remove(&ptr).expect("free slab block");
+            state.unlist((None, block.capacity, block.reusable_on), ptr);
+            if block.fenced {
+                fenced.insert(ptr);
+            }
+            if block.reusable_on.is_some() {
+                tagged = tagged.or(block.phase);
+                for &(id, sequence) in &block.waits {
+                    match waits.iter_mut().find(|wait: &&mut (u64, u64)| wait.0 == id) {
+                        Some(wait) => wait.1 = wait.1.max(sequence),
+                        None => waits.push((id, sequence)),
+                    }
+                }
+            }
+            if block.charge() != 0 {
+                state.phase_changed(block.charge(), 0, block.phase, block.phase, base);
+            }
         }
         state.segments.get_mut(&base).expect("free slab").size_class = class;
-        Self::slab(state, base, bytes, class);
+        if waits.is_empty() {
+            Self::slab(state, base, bytes, class);
+            return Some(());
+        }
+        for offset in (0..=bytes - class).step_by(class) {
+            let address = base + offset as u64;
+            let mut block = Block::free(base, class);
+            block.stream = stream;
+            block.streams.insert(stream);
+            block.waits = waits.clone();
+            block.reusable_on = Some(stream);
+            block.phase = tagged;
+            block.fenced = true;
+            if !fenced.contains(&address) {
+                state.fenced.push(address);
+            }
+            state.blocks.insert(address, block);
+            state.list((None, class, Some(stream)), address);
+            state.phase_changed(0, class, None, tagged, base);
+        }
         Some(())
     }
 
