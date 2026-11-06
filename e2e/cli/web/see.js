@@ -254,6 +254,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
+  const checker = await element(page, 'hero_art').locator('.media.alpha').evaluate((el) => ({ under: getComputedStyle(el).backgroundColor, over: getComputedStyle(el).getPropertyValue('--check2').trim() }));
+  check('checkerboard_white_and_light_grey', checker.under === 'rgb(255, 255, 255)' && checker.over === '#ececec', checker);
   check('no_checkerboard_without_alpha', (await element(page, 'older_art').locator('.media.alpha').count()) === 0);
   const thumbUp = (name) => until(`${name}'s thumbnail`, () => element(page, name).locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await thumbUp('sea_sound');
@@ -286,8 +288,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await away(page);
   const numberBefore = Math.max(0, ...((await asset('picture')).prefixes ?? []).map((version) => version.number));
   await open(page, 'picture');
-  // Render is with its words: + goes to them when it shows a take.
-  if (await picture.locator('.take.add').count()) await picture.locator('.take.add').click();
+  // Render is with its words, whatever it shows.
   await picture.locator('button[aria-label=Render]').click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
@@ -333,36 +334,34 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await away(page);
   await until('none playing', () => page.locator('video').count(), (n) => n === 0);
 
-  // A failure is named and stays: this asks for no run, as what it reads can never be made.
+  // A failure is named in a toast, and its mark stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
   await open(page, 'needs');
-  if (await needs.locator('.take.add').count()) await needs.locator('.take.add').click();
   await needs.locator('button[aria-label=Render]').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
-  // Render ends working on it, and the view goes back: no other box is taken up under the pointer.
+  const said = await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("needs didn't render") && line.includes('cannot render'))).catch((why) => String(why));
+  check('failure_is_a_toast', Array.isArray(said), said);
+  // Render stays Render, and the box stays open, saying nothing at rest of what failed.
   await page.waitForTimeout(300);
-  check('render_leaves_the_box', (await page.locator('.card.here').count()) === 0, await boxLog(page));
-  await until('its reason shows', async () => {
-    await open(page, 'needs');
-    return needs.locator('.status.bad').count();
-  }, (n) => n === 1);
-  check('failed_dot', (await needs.locator('.dot.s-failed').count()) === 1);
-  check('try_again_offered', (await needs.locator('.status.bad .act').textContent()) === 'Try again');
+  check('render_keeps_the_box', (await page.locator('.card.here[data-asset="needs"]').count()) === 1 && (await needs.locator('button[aria-label=Render]').innerText()).trim() === 'Render', await boxLog(page));
+  await until('its dot', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  check('failed_dot', true);
+  check('no_line_at_rest', (await needs.locator('.status').count()) === 0, await needs.innerText());
   const told = spawnSync(COZY, ['project', '-p', folder, 'status'], { encoding: 'utf8' });
   check('terminal_hears_the_failure', `${told.stdout}${told.stderr}`.includes('cannot render'), `${told.stdout}${told.stderr}`.slice(0, 400));
   await page.reload();
   await page.waitForSelector('.react-flow__node');
   await page.evaluate(() => { window.notReloaded = true; });
   await open(page, 'needs');
-  await until('still there after a reload', () => needs.locator('.status.bad').textContent(), (text) => text.includes('cannot render'));
-  check('failure_survives_reload', true);
+  await until('still marked after a reload', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  check('failure_survives_reload', (await asset('needs')).failure?.message.includes('cannot render'), (await asset('needs')).failure);
   const afterReload = await cards();
   check('rows_stand_after_reload', named.every((name) => afterReload[name].x === rows[name].x && afterReload[name].y === rows[name].y), afterReload);
   // Its text changes: the old reason no longer stands, with no reload.
   replaceFile(yamlAt, readFileSync(yamlAt, 'utf8').replace('video: <hollow_thing>', 'video: <clip>'));
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
-  await until('and from the card', () => needs.locator('.status.bad').count(), (n) => n === 0);
+  await until('and from the card', () => needs.locator('.dot.s-failed').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
   await away(page);
   await page.keyboard.press('f');
@@ -402,7 +401,6 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const versions = async () => (await asset('card')).prefixes?.length ?? 0;
     const take = async (count) => {
       await open(page, 'card');
-      if (await card.locator('.take.add').count()) await card.locator('.take.add').click();
       await card.locator('button[aria-label=Render]').click();
       await until(`version ${count}`, versions, (n) => n === count, FIRST_RUN_MS);
     };
@@ -415,13 +413,14 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await card.locator('.take[aria-label$=" 1"]').click();
     await until('looking at the first', () => card.locator('.count').textContent(), (text) => text === '1/2');
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
-    await card.locator('button:has-text("Approve")').click();
+    // A double tap on it approves it, and again unapproves it.
+    await card.locator('.take[aria-label$=" 1"]').dblclick();
     // On one of card's own lines: hero has an `approved` of its own further down.
     await until('pinned in the file', () => Promise.resolve(readFileSync(yamlAt, 'utf8')), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}approved: "?[0-9a-f]/.test(text));
     await open(page, 'card');
-    await until('it can be unapproved', () => card.locator('button:has-text("Unapprove")').count(), (n) => n === 1);
+    await until('it shows approved', () => card.locator('.take.approved').count(), (n) => n === 1);
     check('approved_is_that_version', (await asset('card')).approved === made.prefixes[0].number, (await asset('card')).approved);
-    await card.locator('button:has-text("Unapprove")').click();
+    await card.locator('.take.approved').dblclick();
     await until('unpinned', () => asset('card'), (held) => !held.pinned);
     check('landed_real_with_no_reload', await notReloaded());
     await shot('versions');

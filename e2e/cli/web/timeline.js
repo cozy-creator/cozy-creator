@@ -286,15 +286,17 @@ function plate(path, color, seconds, hz) {
   const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
-  // Approved, that version is what the Edit is, and its film follows.
+  // Approved by a double tap, that version is what the Edit is, and its film follows.
   await openBox(page, 'Edit');
-  await card('Edit').locator('.take[aria-label$=" 2"]').click();
-  await card('Edit').locator('button:text-is("Approve")').click();
+  await card('Edit').locator('.take[aria-label$=" 2"]').dblclick();
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));
   await openBox(page, 'Edit');
+  // Approved, it shows its film, and only an Edit has + for its words.
+  check('an_edit_has_its_words', (await card('Edit').locator('.take.add[aria-label="Its words"]').count()) === 1, await card('Edit').innerText());
   // Unapproved, it has no film of what it holds now, so it's cut there and then, and the call answers when that's done: what's counted below is what's asked below.
-  await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Edit').locator('button:text-is("Unapprove")').click()]);
+  // Again on it, unapproved.
+  await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Edit').locator('.take.approved').dblclick()]);
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
   await openEdit();
 
