@@ -340,15 +340,12 @@ impl Ask {
         encoded.chain(first(&TABLE.plain, None)).map(String::as_str).collect()
     }
 
-    /// Why a lane of profile `p` is not one the machine picks by itself, or `None`: encoded weights
-    /// where none are taken, narrower than `min_bits`, or an encoding the GPUs do not run.
+    /// Why a lane of profile `p` does not serve here, or `None`: encoded weights where none are
+    /// taken, or an encoding the GPUs do not run.
     fn refusal(&self, p: &Profile, gpus: &Gpus) -> Option<String> {
         let encoded: Vec<&str> = p.kinds.iter().map(String::as_str).filter(|kind| matches!(Dtype::parse(kind), Dtype::Other(_))).collect();
         if self.plain && !encoded.is_empty() {
             return Some(format!("holds encoded {}", encoded.join(", ")));
-        }
-        if p.bits > 0 && p.bits < self.min_bits {
-            return Some(format!("is {}-bit, under min_bits {}", p.bits, self.min_bits));
         }
         let unrun: Vec<String> = encoded.iter().filter(|kind| !runs(kind, gpus)).map(|kind| format!("{} for {kind}", needs(kind))).collect();
         (!unrun.is_empty()).then(|| format!("needs {}", unrun.join(" and ")))
@@ -387,11 +384,12 @@ fn gb(bytes: u64) -> String {
 /// The lane of `model`'s release `release` (of `lanes`) this machine serves for `ask` on `gpus`
 /// (design lane-choice, "New flow"; Paul 11-06: the fastest within the quality floor), and why it
 /// is not the one the rule wanted first. A pin serves its lane. Otherwise, of the lanes the GPUs
-/// run (plain ones only for a plain slot; held ones only offline), none narrower than `min_bits`,
-/// weight-only ones only when no native one runs (a decode loop is bytes-bound: it keeps them):
-/// the first in the order for its width, which is 16 at `min_bits` 16; 8 at 8; and at 4, 4 for a
-/// decode loop, on FP4 tensor cores, or when the 8-bit lane is larger than the smallest GPU, else
-/// 8. Held breaks ties only. Memory never lowers a lane otherwise: paging fits weights (10-22).
+/// run (plain ones only for a plain slot; held ones only offline), none narrower than `min_bits`
+/// while one meets it (else the widest, warned: a floor is a preference, 11-03), weight-only ones
+/// only when no native one runs (a decode loop is bytes-bound: it keeps them): the first in the
+/// order for its width, which is 16 at `min_bits` 16; 8 at 8; and at 4, 4 for a decode loop, on
+/// FP4 tensor cores, or when the 8-bit lane is larger than the smallest GPU, else 8. Held breaks
+/// ties only. Memory never lowers a lane otherwise: paging fits weights (10-22).
 pub fn choose(model: &str, release: &str, lanes: &[Lane], gpus: &Gpus, ask: &Ask) -> Result<Chosen> {
     let named = if release.is_empty() { model.to_owned() } else { format!("{model}@{release}") };
     let chosen = |lane: &Lane, reasons: Vec<String>| -> Result<Chosen> { Ok(Chosen { release: release.to_owned(), lane: lane.clone(), reasons }) };
@@ -415,8 +413,12 @@ pub fn choose(model: &str, release: &str, lanes: &[Lane], gpus: &Gpus, ask: &Ask
     if runs.is_empty() {
         let each: Vec<String> = candidates.iter().map(|l| format!("{} {}", l.shown(), ask.refusal(&l.profile, gpus).unwrap_or_default())).collect();
         return refuse(Code::CAPABILITY_UNQUALIFIED, format!(
-            "{named} has no lane the machine picks on {} at min_bits {}: {}; pin one with --lane <label>", gpus.name, ask.min_bits, each.join("; ")));
+            "{named} has no lane that runs on {}: {}; pin one with --lane <label>", gpus.name, each.join("; ")));
     }
+    // The floor holds while a lane meets it; else the widest that runs serves.
+    let below = |l: &&Lane| l.profile.bits > 0 && l.profile.bits < ask.min_bits;
+    let short = runs.iter().all(below).then(|| runs.iter().map(|l| l.profile.bits).max().unwrap_or_default());
+    runs.retain(|l| short.map_or(!below(l), |widest| l.profile.bits == widest));
     if !ask.decode && runs.iter().any(|l| !weight_only(&l.profile, gpus)) {
         runs.retain(|l| !weight_only(&l.profile, gpus));
     }
@@ -436,10 +438,11 @@ pub fn choose(model: &str, release: &str, lanes: &[Lane], gpus: &Gpus, ask: &Ask
         }),
         _ => None,
     };
-    let width = match ask.min_bits {
+    let width = match (ask.min_bits, short) {
         // An Apple GPU's only width is 16 bits, until Metal kernels exist.
         _ if gpus.has("apple") => 16,
-        16 => 16,
+        (_, Some(widest)) => widest,
+        (16, _) => 16,
         _ if four.is_some() => 4,
         _ => 8,
     };
@@ -447,6 +450,9 @@ pub fn choose(model: &str, release: &str, lanes: &[Lane], gpus: &Gpus, ask: &Ask
     let shown = served.shown();
     let family = served.profile.family.as_str();
     let mut reasons = vec![];
+    if short.is_some() {
+        reasons.push(format!("no lane meets min_bits {}; served {shown}", ask.min_bits));
+    }
     if let (Some(why), 4) = (&four, served.profile.bits) {
         reasons.push(format!("served {shown}: min_bits 4, {why}"));
     }

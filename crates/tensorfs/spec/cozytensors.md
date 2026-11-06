@@ -724,15 +724,16 @@ The endpoint lists the release's lanes with their profiles (distribution.md §2)
 `phase`), and nothing else:
 
 - Candidates are the lanes every GPU runs (the family's `needs`; the CPU decodes all), plain ones only for a consumer
-  that takes no encoded tensors, none narrower than `min_bits`. Weight-only lanes (matmuls at 16 bits here) drop when
-  a native one runs, except for a decode loop, which bytes bound.
+  that takes no encoded tensors, none narrower than `min_bits` while one meets it (else the widest, with a warning:
+  the floor is a preference). Weight-only lanes (matmuls at 16 bits here) drop when a native one runs, except for a
+  decode loop, which bytes bound.
 - The width is 16 at `min_bits` 16 and 8 at 8. At 4 it is 4 for a decode loop, on FP4 tensor cores, or when the
   lane served at 8 is larger than the smallest GPU's memory (the card's, or the machine's cap; never what is free),
   else 8. An Apple GPU's is 16.
 - Rank, first wins: place in the first `order` row for the width, the slot and the GPUs' features, then `plain`; not
   narrower than the width; native; held whole in the store; fewer bytes; label. Being held only breaks ties.
-- The machine names what the order wanted that the release lacks, weight-only and fp16-without-bf16 lanes served,
-  and why a 4-bit lane was served. With the endpoint unreachable it serves the best lane it holds of what it recorded,
+- The machine names what the order wanted that the release lacks, a lane served under `min_bits`, weight-only and
+  fp16-without-bf16 lanes served, and why a 4-bit lane was served. With the endpoint unreachable it serves the best lane it holds of what it recorded,
   and says so.
 
 **Closure.** A header's closure is the header and every object it cites, its `chunks` and each component's assets. A
