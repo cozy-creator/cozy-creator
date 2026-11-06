@@ -285,6 +285,8 @@ struct Entry {
     // Filled ahead of demand and not yet used: the first to go.
     prefetched: bool,
     last_use: u64,
+    // The clock when its contents were filled: one filled this pass is what the loop streams.
+    filled: u64,
     // Its owner ranks it above rebuilding a cache: `reclaim::HIGH`.
     high: bool,
 }
@@ -339,7 +341,10 @@ impl State {
 
     /// Eviction order for idle regions, lowest first. With a plan, the furthest next use goes
     /// first; in a phase's loop that is most recently used first, as the loop reaches its
-    /// oldest use next.
+    /// oldest use next, and of those what this pass filled before what stayed through it: the
+    /// loop streams the same regions each pass, so the bytes it reads back fit the page cache.
+    /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
+    /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
     fn rank(&self, id: u64, entry: &Entry, order: &plan::Order) -> (u8, u64) {
         if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
             return (reclaim::CONTENTLESS, entry.last_use);
@@ -354,10 +359,14 @@ impl State {
         }
         let touched = self.phase_boundary.is_some_and(|boundary| entry.last_use > boundary);
         let looping = self.plan_phase.as_ref().is_none_or(PlanPhase::loops);
+        let used = match self.phase_boundary.is_some_and(|boundary| entry.filled > boundary) {
+            true => reclaim::PHASE_FRESH,
+            false => reclaim::PHASE_USED,
+        };
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
-            None => (reclaim::PHASE_USED, u64::MAX - entry.last_use),
-            Some((0, _)) if touched && looping => (reclaim::PHASE_USED, u64::MAX - entry.last_use),
+            None => (used, u64::MAX - entry.last_use),
+            Some((0, _)) if touched && looping => (used, u64::MAX - entry.last_use),
             Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
             // A single pass uses what it used next in a later phase, else next cycle, as late as what no
             // plan names; most recent first, so the next pass finds its start. Ranked as a loop's, Qwen
@@ -692,6 +701,7 @@ impl Device {
                     period: 0,
                     prefetched: false,
                     last_use: 0,
+                    filled: 0,
                     high: false,
                 },
             );
@@ -1301,7 +1311,10 @@ impl Region {
             state.used(self.id, self.gpu.next_use());
         }
         let pin = self.pin_locked(state)?;
-        state.entries.get_mut(&self.id).expect("live region").prefetched = prefetched;
+        let filled = self.gpu.clock.load(Ordering::Relaxed);
+        let entry = state.entries.get_mut(&self.id).expect("live region");
+        entry.prefetched = prefetched;
+        entry.filled = filled;
         self.uses.set(Contents::Loading);
         Ok(Some(Preparation::Fill(Fill { pin: Some(pin) })))
     }
