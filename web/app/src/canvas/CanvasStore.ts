@@ -275,6 +275,9 @@ export class CanvasStore {
   private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
   private moving = new Map<string, Row>()
+  /** Of those, what this page worked one out from, where it's this page's own doing: written only if Calcifer still has it, so it can't
+   * clobber another writer's newer row. A person's move has none: it's newest. */
+  private movingFrom = new Map<string, Row | null>()
   private movesOwed = false
   private renames = new Map<string, string>()
   private adding = 0
@@ -699,7 +702,8 @@ export class CanvasStore {
     const homes = this.homes(left)
     for (const [name, row] of homes) rows.set(name, row)
     this.addNodes(left.map((element) => ({ element, row: homes.get(element.name)! })))
-    for (const [name, row] of homes) this.move(name, row)
+    // Each where there's room, if it's still without a row: one another writer gave it meanwhile stands.
+    for (const [name, row] of homes) this.move(name, row, null)
     if (nothingYet) this.onPlaced?.()
   }
 
@@ -893,7 +897,7 @@ export class CanvasStore {
     this.glide(name, resized ? row : { x: row.x, y: row.y })
     if (resized) this.reshape(name)
     if (this.views.get(name)?.placing) this.rows?.set(name, row)
-    else this.move(name, row)
+    else this.move(name, row, this.rows?.get(name) ?? null)
   }
 
   private nudge(field: Field, nudged: Map<string, Box>) {
@@ -1971,10 +1975,14 @@ export class CanvasStore {
   }
 
   /** The newest position of each box, in one write when its turn comes, and only those Calcifer has answered for: the rest go after. */
-  private move(name: string, row: Row) {
+  /** Its row, written in its turn. `from`: the page's own doing, worked out from that row (null: none), which it's written over only if
+   * Calcifer still has it. A person's move, with none, is written whatever, and one pending makes what follows it so too. */
+  private move(name: string, row: Row, from?: Row | null) {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
     if (!id) return
+    if (from === undefined) this.movingFrom.delete(id)
+    else if (!this.moving.has(id)) this.movingFrom.set(id, from)
     this.masks.set(key, row)
     this.rows?.set(key, row)
     this.moving.set(id, row)
@@ -1990,21 +1998,31 @@ export class CanvasStore {
     this.outbox.add({
       send: (once) => {
         sent = new Map([...this.moving].filter(([id]) => answered(id)))
-        const cards = [...sent].flatMap(([id, row]): [string, Row][] => {
+        const cards = [...sent].flatMap(([id, row]): [string, Row, Row | null | undefined][] => {
           const name = this.served.get(id)
-          return name && this.namesById.has(id) ? [[name, row]] : []
+          return name && this.namesById.has(id) ? [[name, row, this.movingFrom.get(id)]] : []
         })
-        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards), once) : Promise.resolve(null)
+        const was = Object.fromEntries(cards.flatMap(([name, , from]) => (from === undefined ? [] : [[name, from]])))
+        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards.map(([name, row]) => [name, row])), was, once) : Promise.resolve(null)
       },
-      done: () => {
+      done: (answer) => {
         this.movesOwed = false
         const at = performance.now()
+        const kept = answer?.kept ?? {}
         for (const [id, row] of sent) {
           const name = this.namesById.get(id) ?? ""
           if (this.moving.get(id) === row) {
             this.moving.delete(id)
-            this.movedAt.set(name, at)
+            this.movingFrom.delete(id)
+            if (!((this.served.get(id) ?? name) in kept)) this.movedAt.set(name, at)
           }
+        }
+        // Another writer's row came first: it stands, as that writer's move of it would have.
+        for (const [served, row] of Object.entries(kept)) {
+          const name = this.resolveName(served)
+          this.masks.delete(name)
+          this.movedAt.delete(name)
+          if (row) this.applyRows({ [name]: row })
         }
         if ([...this.moving.keys()].some(answered)) this.sendMoves()
       },
@@ -2013,6 +2031,7 @@ export class CanvasStore {
         say("A move didn't save", error)
         for (const id of sent.keys()) {
           this.moving.delete(id)
+          this.movingFrom.delete(id)
           this.masks.delete(this.namesById.get(id) ?? "")
           this.movedAt.delete(this.namesById.get(id) ?? "")
         }

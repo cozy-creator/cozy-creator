@@ -192,7 +192,7 @@ pub(super) async fn set(ctx: &Context, at: Option<&PathBuf>, args: Set) -> Resul
     if let Some(card) = card {
         // A row only under the name the project has for it: one of nothing would wait for it for ever.
         let held: AssetVersions = calcifer.get(&path).await?;
-        let ask = CanvasPatch { cards: BTreeMap::from([(held.asset.name, Some(card))]) };
+        let ask = CanvasPatch { cards: BTreeMap::from([(held.asset.name, Some(card))]), was: BTreeMap::new() };
         let _: CanvasPatched = calcifer.patch(&route(&["v1", "projects", &opened.id, "canvas"]), &ask).await?;
     }
     let patched: Option<AssetPatched> = match fields.is_empty() && tool.is_none() {
