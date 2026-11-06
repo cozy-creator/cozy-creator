@@ -58,8 +58,8 @@
   background-color: var(--box);
 }
 
-/* Warm cream around a picture skews how it reads, so a box being worked on shows it on neutral grey. */
-.card.here > .media:not(.blank) {
+/* Warm cream around a picture skews how it reads, so a box being worked on shows it on neutral grey; a transparent one keeps its soft check. */
+.card.here > .media:not(.blank):not(.alpha) {
   background-color: var(--stage);
 }
 .output video,
