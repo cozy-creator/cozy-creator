@@ -5,11 +5,11 @@ import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, Co
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
-import { clearSpot, Field, GLIDE_MS } from "./clear"
+import { Field, fit, type Give, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, paints, ratioOf, refusal, reshapes, sentShape, shownOf, valueIn, watched, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, shownOf, valueIn, watched, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -260,8 +260,11 @@ export class CanvasStore {
   /** A position of ours that the stream hasn't echoed: it wins until then. */
   private masks = new Map<string, Row>()
   private gliding = new Map<string, ReturnType<typeof setTimeout>>()
-  /** Boxes to clear of what they lie on, as soon as this turn's changes are in. */
-  private unsettled = new Set<string>()
+  /** Boxes to clear of what they lie on, as soon as this turn's changes are in: true for one whose size is its own, which doesn't shrink. */
+  private unsettled = new Map<string, boolean>()
+  /** What this page's last act put down, by node id: the next one doesn't nudge it. */
+  private justPut = new Set<string>()
+  private putting = false
   /** When each of this page's moves was answered, by name. */
   private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
@@ -778,7 +781,7 @@ export class CanvasStore {
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
     this.flow?.updateNode(id, { measured: { width, height } })
-    this.unsettle(key)
+    this.unsettle(key, true)
   }
 
   // Keeping clear: no box lies on another
@@ -807,9 +810,12 @@ export class CanvasStore {
     return held ? { ...box, h: box.h + STACK_GAP + held * ADD_ON_HEIGHT } : box
   }
 
-  /** Where a block of boxes goes to lie on nothing: there if it can. */
+  /** Where a block of boxes goes to lie on nothing: there if it can, with what it lies on nudged aside if that's cheaper. */
   clearFor(box: Box): { x: number; y: number } {
-    return clearSpot(box, this.field())
+    const field = this.field()
+    const fitted = fit(box, field, { nudges: this.nudgeable(new Set(), true) })
+    this.nudge(field, fitted.nudged)
+    return fitted
   }
 
   /** Its place and size, from what every tab holds alike. */
@@ -833,40 +839,92 @@ export class CanvasStore {
     return field
   }
 
+  /** Its height at a width, stack and all, when what it shows keeps its shape as it narrows: a box that may shrink to fit. */
+  private tallOf(name: string): ((w: number) => number) | undefined {
+    const view = this.views.get(name)
+    if (!view) return undefined
+    const tall = (w: number) => this.laid(name, { x: 0, y: 0, w, h: heightFor(view, w) }).h
+    return tall(NARROWEST) < tall(NARROWEST * 2) ? tall : undefined
+  }
+
+  /** What may be nudged aside: not what settles with it, what's held, what's still being made, nor, for this page's own act, what it just put down. */
+  private nudgeable(besides: Set<string>, ours = false) {
+    return (name: string) => {
+      const view = this.views.get(name)
+      const id = this.ids.get(name)
+      return Boolean(view && id) && !besides.has(name) && !this.dragging.has(name) && !view!.placing && view!.pending !== NOT_YET && !(ours && this.justPut.has(id!))
+    }
+  }
+
+  /** What this act put down, together: the next act gives way to it. */
+  private putDown(names: string[]) {
+    if (!this.putting) {
+      this.justPut.clear()
+      this.putting = true
+      queueMicrotask(() => (this.putting = false))
+    }
+    for (const name of names) {
+      const id = this.ids.get(name)
+      if (id) this.justPut.add(id)
+    }
+  }
+
   /** Slides there, briefly. */
-  private glide(name: string, at: { x: number; y: number }) {
+  private glide(name: string, at: { x: number; y: number; w?: number }) {
     const id = this.ids.get(name)
     if (!id) return
     clearTimeout(this.gliding.get(id))
-    this.flow?.updateNode(id, { position: at, className: "glide" })
+    this.flow?.updateNode(id, { position: { x: at.x, y: at.y }, ...(at.w === undefined ? {} : { width: at.w }), className: "glide" })
     this.gliding.set(id, setTimeout(() => this.flow?.updateNode(id, { className: undefined }), GLIDE_MS))
   }
 
-  private toClear(name: string, field: Field, box: Box) {
-    const spot = clearSpot(box, field)
-    if (spot.x === box.x && spot.y === box.y) return box
-    this.glide(name, spot)
-    const row = { x: Math.round(spot.x), y: Math.round(spot.y), w: this.rows?.get(name)?.w ?? box.w }
+  /** Slides to `to`, at its width, and that's its row: a shrink sticks as a pulled corner does. */
+  private slide(name: string, to: Box) {
+    const id = this.ids.get(name)
+    if (!id) return
+    const row = { x: Math.round(to.x), y: Math.round(to.y), w: Math.round(to.w) }
+    const resized = this.flow?.getNode(id)?.width !== row.w
+    this.glide(name, resized ? row : { x: row.x, y: row.y })
+    if (resized) this.reshape(name)
     if (this.views.get(name)?.placing) this.rows?.set(name, row)
     else this.move(name, row)
-    return { ...box, ...spot }
   }
 
-  private unsettle(name: string) {
+  private nudge(field: Field, nudged: Map<string, Box>) {
+    for (const [name, to] of nudged) {
+      field.add(name, to)
+      this.slide(name, to)
+    }
+  }
+
+  /** It gives way: moved, shrunk, or what it lies on nudged aside, whichever costs least. Where it is now. */
+  private giveWay(name: string, field: Field, box: Box, give: Give): Box {
+    const { nudged, ...fitted } = fit(box, field, give)
+    this.nudge(field, nudged)
+    if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
+    this.slide(name, fitted)
+    return fitted
+  }
+
+  private unsettle(name: string, sized = false) {
     if (!this.seen) return
     if (!this.unsettled.size) queueMicrotask(() => this.settle())
-    this.unsettled.add(name)
+    this.unsettled.set(name, sized || Boolean(this.unsettled.get(name)))
   }
 
-  /** What arrived or changed its size lying on something goes to the nearest clear place, by name order, so every tab does the same. What's held in a drag waits for its drop. */
+  /**
+   * What arrived lying on something gives way, by name order, so every tab does the same: it moves or shrinks. What changed its size
+   * keeps it: it moves, or nudges aside what it lies on. What's held in a drag waits for its drop.
+   */
   private settle() {
-    const names = [...this.unsettled].filter((name) => this.ids.has(name) && !this.dragging.has(name)).sort()
+    const batch = [...this.unsettled].filter(([name]) => this.ids.has(name) && !this.dragging.has(name)).sort(([a], [b]) => (a < b ? -1 : 1))
     this.unsettled.clear()
-    if (!names.length) return
-    const field = this.field(new Set(names))
-    for (const name of names) {
+    if (!batch.length) return
+    const names = new Set(batch.map(([name]) => name))
+    const field = this.field(names)
+    for (const [name, sized] of batch) {
       const box = this.boxOf(name)
-      if (box) field.add(name, this.toClear(name, field, box))
+      if (box) field.add(name, this.giveWay(name, field, box, sized ? { nudges: this.nudgeable(names) } : { tall: this.tallOf(name) }))
     }
   }
 
@@ -876,8 +934,8 @@ export class CanvasStore {
     for (const name of [...this.ids.keys()].sort()) {
       const box = this.boxOf(name)
       if (!box) continue
-      field.remove(name, box)
-      if ([...field.under(box).keys()].some((other) => other < name)) field.add(name, this.toClear(name, field, box))
+      field.remove(name)
+      if ([...field.under(box).keys()].some((other) => other < name)) field.add(name, this.giveWay(name, field, box, {}))
       else field.add(name, box)
     }
   }
@@ -1653,14 +1711,18 @@ export class CanvasStore {
     const row = this.clearOf(key, at)
     this.rows?.set(key, row)
     this.flow?.addNodes(this.node(key, row))
+    this.putDown([key])
   }
 
-  /** `at`, or the nearest place to it that's clear, for a box not on the canvas yet. Asked for, it stays where it can be seen. */
-  private clearOf(key: string, at: Row, inside?: Box): Row {
+  /** `at` for a box not on the canvas yet, or where it gives way to what's there: moved, shrunk, or with what it lies on nudged aside. */
+  private clearOf(key: string, at: Row): Row {
     const view = this.views.get(key)
     if (!view) return at
     const w = at.w ?? widthFor(view)
-    return { ...at, ...clearSpot({ x: at.x, y: at.y, w, h: heightFor(view, w) }, this.field(), inside) }
+    const field = this.field()
+    const { nudged, x, y, w: fitted } = fit(this.laid(key, { x: at.x, y: at.y, w, h: heightFor(view, w) }), field, { tall: this.tallOf(key), nudges: this.nudgeable(new Set([key]), true) })
+    this.nudge(field, nudged)
+    return { x, y, w: fitted }
   }
 
   /** The name it will get, as far as this page can tell: placing elements take theirs in the order they were dropped. */
@@ -1760,10 +1822,11 @@ export class CanvasStore {
     }
   }
 
-  /** Let go: each lands where it was let go, or if that's on another box, at the nearest clear place, and the other doesn't move. */
+  /** Let go: each lands where it was let go, or if that's on another box, it gives way: moved a little, shrunk a little, or what it lies on nudged aside a little. */
   dragStopped(nodes: ElementNode[]) {
     const names = nodes.map((node) => node.data.name)
-    const field = this.field(new Set(names))
+    const held = new Set(names)
+    const field = this.field(held)
     for (const node of [...nodes].sort((a, b) => (a.data.name < b.data.name ? -1 : 1))) {
       const name = node.data.name
       this.dragging.delete(name)
@@ -1774,8 +1837,9 @@ export class CanvasStore {
       const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
       if (view.placing) this.rows?.set(name, row)
       else this.move(name, row)
-      field.add(name, this.toClear(name, field, box))
+      field.add(name, this.giveWay(name, field, box, { tall: this.tallOf(name), nudges: this.nudgeable(held, true) }))
     }
+    this.putDown(names)
   }
 
   /** They were dropped into a box: each goes back where it started, and no move is saved. */
@@ -1800,7 +1864,7 @@ export class CanvasStore {
     if (!keep) return
     this.move(key, { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) })
     this.reshape(key)
-    this.unsettle(key)
+    this.unsettle(key, true)
   }
 
   /** Its shape under the pointer: drawn, and nothing kept yet. */
@@ -1863,6 +1927,7 @@ export class CanvasStore {
     this.rows?.set(name, at)
     const node = this.node(name, at)
     this.flow?.addNodes(node)
+    this.putDown([name])
     const left = () => {
       this.adding -= 1
       if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()

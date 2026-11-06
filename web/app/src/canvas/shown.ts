@@ -43,6 +43,9 @@ export const madeHere = (tool: string | undefined) => tool === "cozy" || Boolean
 /** A box that makes something is what it's asked for; approved, it's that file, until its words are asked for. */
 export const faceOf = (view: ElementView): "edit" | "media" => (makes(view) && (view.hereWords || !view.asset?.pinned) ? "edit" : "media")
 
+/** No box is narrower: its corner stops here, and nothing shrinks one past it. */
+export const NARROWEST = 160
+
 export const widthFor = (view: ElementView | undefined): number => (view?.asset?.timeline ? 720 : view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
 
 /** `16:9` as a number, if it's one. */

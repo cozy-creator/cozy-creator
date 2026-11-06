@@ -16,14 +16,13 @@ import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
 import { Media, Preview, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, fieldsOf, madeHere, makes, paints, reshapes, shownOf, watched } from "./shown"
+import { aspectOf, faceOf, fieldsOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, watched } from "./shown"
 import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
 const WIDEST = 1600
-const NARROWEST = 160
 const LOWEST = 90
 /** How wide a picture is asked for while the canvas is drawn in on it. */
 const HERE_THUMB = 960

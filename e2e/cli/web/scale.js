@@ -1,5 +1,6 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project in the file format as it stands, a real Calcifer, the real CLI, a real
-// Chrome. How long `cozy project status` takes, opening it in the page, one edit to show, what's read for it, a render landing, panning, memory.
+// Chrome. How long `cozy project status` takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand,
+// a render landing, panning, memory.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
 //   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
@@ -39,6 +40,8 @@ const BARS = {
   open_boxes_s: 5,
   open_settled_s: 10,
   edit_shows_ms: 1500,
+  // A box let go on others gives way before the next frame or two: from the pointer's release to its slide, with all 5,000 in the field.
+  drop_ms: 100,
   // A person's write, flushed to disk and answered, the middle of nine. "Under 100-ms is pretty much fast enough for most operations" (Paul, 11-05).
   write_ms: 100,
   landing_shows_ms: 1500,
@@ -241,7 +244,7 @@ function calciferMb() {
   await page.addInitScript(() => {
     window.violations = [];
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
-    window.boxOf = (name) => [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
+    window.boxOf = (name) => document.querySelector(`.card[data-asset="${CSS.escape(name)}"]`)?.closest('.react-flow__node');
     window.placedAt = (name, x, y) => new Promise((done) => {
       const look = () => {
         const node = window.boxOf(name);
@@ -466,6 +469,52 @@ function calciferMb() {
   numbers.move_shows_ms = (await shownMove) - move.at;
   check('a_move_shows_live', numbers.move_shows_ms <= BARS.edit_shows_ms, numbers.move_shows_ms);
   check('a_move_reads_nothing', reads.whole === moving.whole && reads.assets === moving.assets, { moving, reads });
+
+  // A box let go by hand on the crowd, its middle in the gutter between two and on both (Paul, 11-06): nothing near has room, even shrunk,
+  // so it gives way by a move, at once, and lies on nothing.
+  const crowd = await page.evaluate(() => {
+    const shown = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.card')?.dataset.asset, rect: node.querySelector('.card').getBoundingClientRect() }))
+      .filter(({ name, rect }) => name?.startsWith('shot_') && rect.left > 240 && rect.top > 72 && rect.right < innerWidth && rect.bottom < innerHeight);
+    for (const a of shown) {
+      const b = shown.find((other) => other.rect.left > a.rect.right && other.rect.left - a.rect.right < a.rect.width / 2 && Math.abs(other.rect.top - a.rect.top) < 2);
+      const carried = b && shown.find((other) => other !== a && other !== b && other.rect.top > a.rect.bottom);
+      if (carried) return { carried: carried.name, x: (a.rect.right + b.rect.left) / 2, y: (a.rect.top + a.rect.bottom) / 2 };
+    }
+    return null;
+  });
+  check('a_crowd_on_screen', Boolean(crowd), crowd);
+  if (crowd) {
+    const media = await box(crowd.carried).locator('.media').first().boundingBox();
+    const [fromX, fromY] = [media.x + media.width / 2, media.y + media.height / 2];
+    await page.mouse.move(fromX, fromY);
+    await page.mouse.down();
+    await page.mouse.move(fromX, fromY - 3);
+    await page.mouse.move(crowd.x, crowd.y, { steps: 10 });
+    await page.evaluate((name) => {
+      const node = window.boxOf(name);
+      const held = node.style.transform;
+      window.gaveWay = new Promise((done) => {
+        let up = 0;
+        document.addEventListener('pointerup', () => { up = performance.now(); }, { capture: true, once: true });
+        new MutationObserver((_, watching) => {
+          if (up && node.style.transform !== held) {
+            watching.disconnect();
+            done(performance.now() - up);
+          }
+        }).observe(node, { attributes: true, attributeFilter: ['style'] });
+      });
+    }, crowd.carried);
+    await page.mouse.up();
+    numbers.drop_ms = +(await within('it gave way', page.evaluate(() => window.gaveWay))).toFixed(1);
+    check('a_drop_on_a_crowd_gives_way_at_once', numbers.drop_ms <= BARS.drop_ms, numbers.drop_ms);
+    await page.waitForTimeout(400);
+    const lying = await page.evaluate((name) => {
+      const mine = window.boxOf(name).querySelector('.card').getBoundingClientRect();
+      return [...document.querySelectorAll('.react-flow__node .card')].filter((card) => card.dataset.asset !== name).map((card) => ({ name: card.dataset.asset, rect: card.getBoundingClientRect() }))
+        .filter(({ rect }) => rect.left < mine.right - 0.5 && mine.left < rect.right - 0.5 && rect.top < mine.bottom - 0.5 && mine.top < rect.bottom - 0.5).map(({ name: other }) => other);
+    }, crowd.carried);
+    check('a_drop_on_a_crowd_lies_on_nothing', lying.length === 0, lying);
+  }
 
   // Forty more, as fast as they go: few reads, and right at the end.
   const startBurst = { ...reads };
