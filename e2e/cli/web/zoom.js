@@ -140,7 +140,9 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     seen.menu = items;
     const keyOf = Object.fromEntries(items.map(([label, keys]) => [label, keys]));
     check('menu_items', ['Zoom in', 'Zoom out', 'Zoom to fit', 'Zoom to selection', 'Zoom to 50%', 'Zoom to 100%', 'Zoom to 200%'].every((label) => label in keyOf), items);
-    check('menu_shortcuts', keyOf['Zoom to fit'] === 'Shift 1' && keyOf['Zoom to selection'] === 'Shift 2' && keyOf['Zoom to 100%'] === 'Shift 0' && /\+$/.test(keyOf['Zoom in']), keyOf);
+    // A Mac writes them in its symbols, run together; others in words.
+    const shift = (key) => (process.platform === 'darwin' ? `⇧${key}` : `Shift ${key}`);
+    check('menu_shortcuts', keyOf['Zoom to fit'] === shift(1) && keyOf['Zoom to selection'] === shift(2) && keyOf['Zoom to 100%'] === shift(0) && /\+$/.test(keyOf['Zoom in']), keyOf);
     check('menu_focused', await tab.evaluate(() => document.activeElement?.getAttribute('role') === 'menuitem'));
     // Once it has opened: it fades in.
     await tab.waitForTimeout(200);
