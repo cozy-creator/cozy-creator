@@ -326,10 +326,15 @@ impl Binder<'_> {
             let said = mentions(text);
             if said.is_empty() {
                 let text = text.trim();
+                if text.is_empty() {
+                    continue;
+                }
                 match self.call.lock.matching(&text.trim_start_matches("sha256:").to_ascii_lowercase()).as_slice() {
-                    [file] => found.push(Named { key: String::new(), kind: file.media().unwrap_or("file").to_owned(), file: file.sha256.clone(), files: Files::new(), description: String::new(), made_by: String::new(), own: false }),
-                    _ if !text.is_empty() => found.push(Named { key: String::new(), kind: kind.to_owned(), file: text.to_owned(), files: Files::new(), description: String::new(), made_by: String::new(), own: false }),
-                    _ => {}
+                    [file] if kind != "file" && file.media().is_some_and(|media| media != kind) => {
+                        self.warn(format!("{}'s {at} takes {}, and {text} is {}: it's left empty", self.call.name, a(kind), a(file.media().unwrap_or_default())));
+                    }
+                    [file] => found.push(Named { key: String::new(), kind: file.media().unwrap_or(kind).to_owned(), file: file.sha256.clone(), files: Files::new(), description: String::new(), made_by: String::new(), own: false }),
+                    _ => found.push(Named { key: String::new(), kind: kind.to_owned(), file: text.to_owned(), files: Files::new(), description: String::new(), made_by: String::new(), own: false }),
                 }
                 continue;
             }
