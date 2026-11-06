@@ -39,8 +39,9 @@ diff_copy() {
   esac
   grep -q "^ARM: dict\[str, bool\] = dict($3)" "$to"
 }
-diff_run() {  # diff_run <cell> <arm> <package> <function> <args...>
+diff_run() {  # diff_run <cell> <arm> <package> <function> <args...>: H3's text and length as one beat (gate.sh's one_beat)
   local name=$1 arm=$2 package=$3 function=$4; shift 4
+  [ "$package/$function" != minimax-h3/generate ] || { one_beat "$@"; set -- "${BEAT[@]}"; }
   run_cell "$OUT" "$name" "./differential/$arm/$package/$function" --on "$M" "$@"
   log "$name run $(cat "$name.number" 2>/dev/null) $(run_get "$OUT" "$name" .status)"
 }
