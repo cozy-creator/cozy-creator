@@ -1638,6 +1638,38 @@ fn film_renamed(folder: &Folder, from: &str, to: &str) {
 }
 
 /// project.lock with asset `from` called `to`: its row, what is pending or owed of it, and what a cut's versions say of it.
+/// Boxes renamed by hand in project.yaml (decision 6): a name with no versions takes the row of a name gone from the file when exactly that
+/// row holds a version of the same content, by its name-blind key or the file it approves, and no other new name claims that row. Its
+/// versions, approval and canvas row move with it. Whether any moved.
+pub(super) fn adopt_renames(folder: &Folder, doc: &Doc) -> Result<bool, Error> {
+    let lock = folder.lock()?;
+    let gone: Vec<(&String, &folder::Asset)> = lock.assets.iter().filter(|(key, held)| !key.contains(folder::TOMBSTONE) && doc.find(key).is_none() && !held.versions.is_empty()).collect();
+    if gone.is_empty() {
+        return Ok(false);
+    }
+    let stand = doc.stand(&lock);
+    let same = |i: usize, held: &folder::Asset| {
+        let key = stand[i].inputs.as_deref().filter(|key| !key.is_empty());
+        let pin = doc.assets[i].pin.as_ref();
+        held.versions.iter().any(|version| key.is_some_and(|key| version.inputs == key) || pin.is_some_and(|pin| version.main() == Some(pin)))
+    };
+    let fresh = (0..doc.assets.len()).filter(|&i| doc.makes(i) || doc.assets[i].pin.is_some()).filter(|&i| lock.asset(&doc.assets[i].name).is_none_or(|held| held.versions.is_empty()));
+    let claims: Vec<(usize, &String)> = fresh.filter_map(|i| match gone.iter().filter(|(_, held)| same(i, held)).collect::<Vec<_>>().as_slice() {
+        [(key, _)] => Some((i, *key)),
+        _ => None,
+    }).collect();
+    let moves: Vec<(String, String)> = (claims.iter())
+        .filter(|(_, key)| claims.iter().filter(|(_, other)| other == key).count() == 1)
+        .map(|(i, key)| (Some(&lock.assets[*key].name).filter(|name| !name.is_empty()).unwrap_or(key).clone(), doc.assets[*i].name.clone()))
+        .collect();
+    if moves.is_empty() {
+        return Ok(false);
+    }
+    folder.update_lock(|lock| moves.iter().for_each(|(from, to)| renamed(lock, from, to)))?;
+    canvas::all_renamed(folder, |name| moves.iter().find(|(from, _)| name_key(from) == name_key(name)).map(|(_, to)| to.clone()))?;
+    Ok(true)
+}
+
 pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
     lock.untombstone(from);
     let key = name_key(from);
@@ -1715,6 +1747,8 @@ async fn runs(
     // What this render uses: the file as it is now. One that doesn't read refuses it, and only it.
     let text = project.folder.text().map_err(Refusal)?;
     let doc = Doc::read(&project.folder, &text).map_err(Refusal)?;
+    // A box renamed by hand keeps its versions, before what the file lost is set aside.
+    adopt_renames(&project.folder, &doc).map_err(Refusal)?;
     let digest = hex::encode(Sha256::digest(text.as_bytes()));
     let target = Target { on: asked.on, hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));

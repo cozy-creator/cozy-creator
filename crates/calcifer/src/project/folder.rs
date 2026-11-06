@@ -47,7 +47,7 @@ pub(super) const MEASURED: &str = ".measured.json";
 const BROKEN: &str = "project.lock.broken";
 const UNREADABLE: &str = "lock_unreadable";
 /// What marks a row whose name the file has lost: no name can hold it.
-const TOMBSTONE: char = '#';
+pub(super) const TOMBSTONE: char = '#';
 /// The lock's format.
 pub(super) const FORMAT: u32 = 3;
 

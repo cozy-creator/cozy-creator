@@ -77,6 +77,15 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let text = folder.text()?;
     let lock = folder.lock()?;
     let doc = Doc::of(folder, &text, &lock)?;
+    // A box renamed by hand keeps what it had: then read again.
+    let (lock, doc) = match super::adopt_renames(folder, &doc)? {
+        true => {
+            let lock = folder.lock()?;
+            let doc = Doc::of(folder, &text, &lock)?;
+            (lock, doc)
+        }
+        false => (lock, doc),
+    };
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
     warnings.extend(doc.said_of_known(&lock));
