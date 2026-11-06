@@ -441,7 +441,8 @@ impl Calcifer {
                 fetch_file(link, &target, item, &dest, appended, &moved).await?
             };
             let measured = self.measured(item, &staged).await;
-            self.land(run, item, &staged, &dest, measured)
+            // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
+            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured))
         };
         tokio::pin!(work);
         let done = loop {
@@ -546,13 +547,12 @@ impl Calcifer {
                 }
             }
             let rename_ms = rename_began.elapsed().as_secs_f64() * 1000.0;
-            let sync_began = Instant::now();
+            // Its bytes reached the disk before its name (`check`): the name is durable soon, and no landing waits on everyone's write-back.
             if let Some(directory) = dest.parent() {
-                let _ = platform::durable::sync_dir(directory);
+                platform::durable::soon(directory);
             }
-            let directory_sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0;
             let (id, name, index, rev) = (run.id.as_str(), &item.name, item.index, item.rev);
-            let store_began = Instant::now();
+            let project_began = Instant::now();
             let mut unlisted = None;
             let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
                 Some(project) => {
@@ -571,6 +571,8 @@ impl Calcifer {
                 }
                 None => dest.to_owned(),
             };
+            let project_ms = project_began.elapsed().as_secs_f64() * 1000.0;
+            let store_began = Instant::now();
             let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
             if let Some(said) = unlisted {
                 warn!(run = %run.id, output = %name, "{said}");
@@ -582,14 +584,14 @@ impl Calcifer {
             (
                 lock_ms,
                 rename_ms,
-                directory_sync_ms,
+                project_ms,
                 store_ms,
                 publish_began.elapsed().as_secs_f64() * 1000.0,
             )
         };
-        let (lock_ms, rename_ms, directory_sync_ms, store_ms, publish_ms) = timings;
+        let (lock_ms, rename_ms, project_ms, store_ms, publish_ms) = timings;
         info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
-            phase = "output_land", lock_ms, rename_ms, directory_sync_ms, store_ms, publish_ms,
+            phase = "output_land", lock_ms, rename_ms, project_ms, store_ms, publish_ms,
             elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
         remove(&old);
         Ok(())
@@ -914,7 +916,7 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64) -> std::io::Result<
     file.set_len(length)
 }
 
-/// Whether `path` holds exactly `length` bytes with `digest`; they are synced to disk if so.
+/// Whether `path` holds exactly `length` bytes with `digest`; they are on the disk if so, before any name is.
 async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
     let (path, digest) = (path.to_owned(), digest.to_owned());
     let reported_path = path.clone();
@@ -943,7 +945,7 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
             ))));
         }
         let sync_began = Instant::now();
-        file.sync_all()?;
+        platform::durable::ordered(&file)?;
         info!(path = %path.display(), phase = "output_check", bytes = held,
             blocking_queue_ms, hash_ms, sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0);
         Ok(Ok(()))

@@ -7,8 +7,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io::Read,
     path::{Path, PathBuf},
-    sync::{LazyLock, Mutex},
-    time::Duration,
+    cell::Cell,
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use infer::MatcherType;
@@ -20,7 +21,7 @@ use protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use tracing::warn;
+use tracing::{info, warn};
 use tensorfs::err::{Code, Refusal};
 
 
@@ -859,17 +860,67 @@ impl Lock {
     }
 }
 
-/// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
-static WRITING: Mutex<()> = Mutex::new(());
-/// Held while a file is kept and while files are deleted, so one isn't deleted between.
-static COLLECTING: Mutex<()> = Mutex::new(());
+/// What this Calcifer holds of one project folder, whichever `Folder` names it.
+#[derive(Default)]
+struct Shared {
+    /// Held across each write's read and swap, so no two of this Calcifer's writes to it lose one. Nothing under it waits on the
+    /// disk's write-back, and nothing that reads takes it.
+    writing: Mutex<()>,
+    /// Held while a file is kept and while files are deleted, so one isn't deleted between.
+    collecting: Mutex<()>,
+    /// project.lock as last read, and how what it was read from stood then, so it is read again only when that changes.
+    held: Mutex<Option<(Stamp, Lock)>>,
+}
 
+static SHARED: LazyLock<Mutex<HashMap<PathBuf, Arc<Shared>>>> = LazyLock::new(Mutex::default);
+
+fn shared(dir: &Path) -> Arc<Shared> {
+    let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+    SHARED.lock().unwrap_or_else(|e| e.into_inner()).entry(dir).or_default().clone()
+}
+
+/// A write that took this long, waiting and held, is said, with how long each took.
+const SLOW_MS: f64 = 5.0;
+
+thread_local! {
+    /// What this thread's writes spent replacing their files, since its turn began.
+    static REPLACE_MS: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// One write's turn at its project's `writing`.
+struct Turn<'a> {
+    _held: MutexGuard<'a, ()>,
+    file: &'static str,
+    began: Instant,
+    wait_ms: f64,
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let (wait_ms, held_ms, replace_ms) = (self.wait_ms, ms(self.began), REPLACE_MS.get());
+        if wait_ms + held_ms >= SLOW_MS {
+            info!(file = self.file, phase = "project_write", wait_ms, held_ms, replace_ms);
+        }
+    }
+}
+
+fn ms(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Replaced at once, and durable soon after: no write of a project waits on anyone else's bytes reaching the disk. A crash of the
+/// machine in between keeps the file before, whole, and the order of these: what it can lose is the last moment of edits.
+fn replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let began = Instant::now();
+    let done = durable::replace_soon(path, bytes, 0o644).map_err(io);
+    REPLACE_MS.set(REPLACE_MS.get() + ms(began));
+    done
+}
 pub struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
-    /// project.lock as last read, and how what it was read from stood then, so it is read again only when that changes.
-    held: Mutex<Option<(Stamp, Lock)>>,
+    shared: Arc<Shared>,
     /// Why what's landing can't go in just now. It's owed in the walk's file, and said as a warning until it has.
     unsaved: Mutex<Option<String>>,
 }
@@ -880,7 +931,7 @@ type Stamp = [String; 3];
 impl Folder {
     /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
     pub fn at(dir: &Path) -> Self {
-        Self { dir: dir.to_owned(), tools: PathBuf::new(), held: Mutex::default(), unsaved: Mutex::default() }
+        Self { dir: dir.to_owned(), tools: PathBuf::new(), shared: shared(dir), unsaved: Mutex::default() }
     }
 
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
@@ -893,7 +944,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools(), held: Mutex::default(), unsaved: Mutex::default() })
+        Ok(Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -922,7 +973,7 @@ impl Folder {
     /// `seen` of project.lock as the file says, with no copy of it made. What the walk owes isn't in it.
     pub fn reading_lock<R>(&self, seen: impl FnOnce(&Lock) -> R) -> Result<R, Error> {
         let stamp = self.stamp();
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, lock)) = held.as_ref().filter(|(at, _)| *at == stamp) {
             return Ok(seen(lock));
         }
@@ -938,6 +989,13 @@ impl Folder {
         let answer = seen(&lock);
         *held = Some((stamp, lock));
         Ok(answer)
+    }
+
+    fn turn(&self, file: &'static str) -> Turn<'_> {
+        let asked = Instant::now();
+        let held = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        REPLACE_MS.set(0.0);
+        Turn { _held: held, file, began: Instant::now(), wait_ms: ms(asked) }
     }
 
     fn stamp(&self) -> Stamp {
@@ -1065,7 +1123,7 @@ impl Folder {
         }
         walk.bound = self.bound();
         std::fs::create_dir_all(self.dir.join(RUNS)).map_err(|e| io_at(&path, e))?;
-        durable::replace(&path, serde_json::to_string(walk).expect("a walk serializes").as_bytes(), 0o644).map_err(io)
+        replace(&path, serde_json::to_string(walk).expect("a walk serializes").as_bytes())
     }
 
     /// The text render `ask` was asked with: kept apart, so what the walk owes stays small.
@@ -1079,7 +1137,7 @@ impl Folder {
     pub fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
         let dir = self.dir.join(RUNS).join("asked");
         std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
-        durable::replace(&dir.join(digest), text.as_bytes(), 0o644).map_err(io)
+        replace(&dir.join(digest), text.as_bytes())
     }
 
     pub fn drop_text(&self, digest: &str) {
@@ -1102,17 +1160,17 @@ impl Folder {
 
     /// Keeps what `key` answered.
     pub fn keep_key(&self, key: &str, digest: &str, name: &str, answer: Option<protocol::project::Imported>) -> Result<(), Error> {
-        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = self.turn(KEYS);
         let mut keys = self.keys();
         let at_ms = super::now_ms();
         keys.retain(|_, row| at_ms - row.at_ms < KEY_KEPT_MS);
         keys.insert(key.to_owned(), Keyed { digest: digest.to_owned(), at_ms, name: name.to_owned(), answer });
-        durable::replace(&self.dir.join(KEYS), serde_json::to_string(&keys).expect("keys serialize").as_bytes(), 0o644).map_err(io)
+        replace(&self.dir.join(KEYS), serde_json::to_string(&keys).expect("keys serialize").as_bytes())
     }
 
     /// Applies `change` to what the walk owes, touching nothing of what the project is.
     pub fn update_walk(&self, change: impl Fn(&mut WalkFile)) -> Result<(), Error> {
-        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = self.turn(WALK);
         let mut walk = self.walk_kept()?.unwrap_or_default();
         change(&mut walk);
         self.keep_walk(&mut walk)
@@ -1120,14 +1178,14 @@ impl Folder {
 
     /// Applies `change` to project.lock as it is now, what the walk owes among it.
     pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
-        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = self.turn(LOCK);
         let moved = std::cell::RefCell::new(None);
         let wrote = std::cell::RefCell::new(None);
         // What this wrote it needn't read back.
         let held = || {
             if let Some(mut lock) = wrote.take() {
                 self.fill(&mut lock);
-                *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.stamp(), lock));
+                *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.stamp(), lock));
             }
         };
         self.rewrite_held(&self.dir.join(LOCK), |_| {
@@ -1176,7 +1234,7 @@ impl Folder {
 
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
     pub fn keep(&self, source: &Path) -> Result<String, Error> {
-        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
         self.store(&path, |part| std::fs::copy(source, part).map(drop))?;
@@ -1186,7 +1244,7 @@ impl Folder {
     /// A file a run is given, of `sha256`, kept in `files/` unless it's here, and in the lock's table, under what its bytes say it is
     /// else its own extension: a hard link with `link`, else a copy.
     pub fn keep_given(&self, source: &Path, sha256: &str, link: bool) -> Result<(), Error> {
-        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         if self.lock()?.files.get(sha256).is_some_and(|file| self.path(&file.path).is_file()) {
             return Ok(());
         }
@@ -1202,7 +1260,7 @@ impl Folder {
 
     /// `source`, a file Calcifer made beside the project, moved into `files/` under its hash, and in the lock's table.
     pub fn take(&self, source: &Path) -> Result<String, Error> {
-        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
         if !self.store(&path, |part| std::fs::rename(source, part))? {
@@ -1216,14 +1274,17 @@ impl Folder {
     /// isn't listed: paid-for bytes are kept whatever the project can say of them.
     pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<(PathBuf, Option<Error>), Error> {
         let (path, old, unlisted) = {
-            let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+            let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
                 match std::fs::hard_link(dest, &at) {
-                    Ok(()) => sealed(&at),
+                    Ok(()) => {
+                        sealed(&at);
+                        durable::soon(&at);
+                    }
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
             }
@@ -1316,7 +1377,7 @@ impl Folder {
         field: &'static str,
         write: impl Fn(&Path) -> std::io::Result<()>,
     ) -> Result<Kept, String> {
-        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(kept) = self.own(&sha256).filter(|kept| self.path(&kept.file.path).is_file()) {
             return Ok(kept);
         }
@@ -1336,6 +1397,7 @@ impl Folder {
         let _ = std::fs::remove_file(&part);
         write(&part).and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))?;
         sealed(&at);
+        durable::soon(&at);
         Ok(true)
     }
 
@@ -1407,7 +1469,7 @@ impl Folder {
     /// of them nothing has a record of. With `delete` those on record go, from disk and from the table: what `reclaim --yes` frees. One with no
     /// record may be all that's left of a take, so it's said and it stays.
     pub fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64), Error> {
-        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
         let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
@@ -1449,7 +1511,7 @@ impl Folder {
 
     /// Deletes those of `sha256s` nothing in the lock names any more: a tool's old version, free to make again.
     pub fn drop_unused(&self, sha256s: &[String]) -> Result<(), Error> {
-        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
         let named = lock.recorded();
         for sha256 in sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())) {
@@ -1548,16 +1610,15 @@ impl Folder {
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
     fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
-        self.rewrite_then(path, change, || {})
+        let _turn = self.turn(match path.file_name().and_then(|name| name.to_str()) {
+            Some(PROJECT) => PROJECT,
+            Some(CANVAS) => CANVAS,
+            _ => MEASURED,
+        });
+        self.rewrite_held(path, change, || {})
     }
 
-    /// `rewrite`, and `wrote` once it has replaced the file, before any other write can.
-    fn rewrite_then(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<String, Error> {
-        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-        self.rewrite_held(path, change, wrote)
-    }
-
-    /// As `rewrite_then`, with `WRITING` held.
+    /// As `rewrite`, its turn taken.
     fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<String, Error> {
         loop {
             let before = match path.exists() {
@@ -1573,7 +1634,7 @@ impl Folder {
                 false => String::new(),
             };
             if now == before {
-                durable::replace(path, after.as_bytes(), 0o644).map_err(io)?;
+                replace(path, after.as_bytes())?;
                 wrote();
                 crate::events::project_changed(&self.dir);
                 return Ok(after);

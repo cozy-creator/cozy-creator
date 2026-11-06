@@ -102,6 +102,43 @@ fn classify(magic: u64) -> Filesystem {
     Filesystem { class, kind }
 }
 
+/// Whether a rename over a file in `dir` reaches the disk only after the new file's bytes do, with
+/// no flush asked: ext4 in its default ordered mode, whose `auto_da_alloc` writes a file renamed
+/// over another before the rename commits, and anything a crash erases. Elsewhere a writer flushes
+/// first (`ordered`).
+#[cfg(target_os = "linux")]
+pub fn renames_after_data(dir: &Path) -> bool {
+    use std::{collections::HashMap, os::unix::fs::MetadataExt, sync::Mutex};
+    static SEEN: Mutex<Option<HashMap<u64, bool>>> = Mutex::new(None);
+    let fs = filesystem(dir);
+    if fs.class == DiskClass::Ephemeral {
+        return true;
+    }
+    let Some(dev) = std::fs::metadata(dir).ok().map(|meta| meta.dev()).filter(|_| fs.kind == "ext4") else {
+        return false;
+    };
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *seen.get_or_insert_with(HashMap::new).entry(dev).or_insert_with(|| ordered_ext4(dev))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn renames_after_data(_dir: &Path) -> bool {
+    false
+}
+
+/// Whether device `dev`'s ext4 orders data before a rename: neither `noauto_da_alloc` nor
+/// `data=writeback` among its mount's options (`/proc/self/mountinfo`).
+#[cfg(target_os = "linux")]
+fn ordered_ext4(dev: u64) -> bool {
+    let (major, minor) = (((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff), (dev & 0xff) | ((dev >> 12) & !0xff));
+    let Ok(mounts) = std::fs::read_to_string("/proc/self/mountinfo") else { return false };
+    let named = format!("{major}:{minor}");
+    mounts.lines().filter(|line| line.split(' ').nth(2) == Some(named.as_str())).any(|line| {
+        let options = line.split(" - ").nth(1).and_then(|rest| rest.split(' ').nth(2)).unwrap_or_default();
+        !options.split(',').any(|option| option == "noauto_da_alloc" || option == "data=writeback")
+    })
+}
+
 /// A second description of `file`'s inode that bypasses the page cache, or `None` where the
 /// filesystem refuses it. Linux reopens through `/proc/self/fd` with `O_DIRECT`; elsewhere no
 /// direct read is offered and callers read buffered.
