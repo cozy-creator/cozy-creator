@@ -157,7 +157,7 @@ export function MentionText({
       }
       emit()
     },
-    [emit],
+    [emit, store, asset, takes],
   )
 
   // A drop, or anything else asking this text to take a name, goes where its caret last was.

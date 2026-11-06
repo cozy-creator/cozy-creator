@@ -280,7 +280,11 @@ function PickUp({ view, name }: { view: ElementView; name: string }) {
           </button>
         </div>
       )}
-      {other && <WalkedFrames sha256={file.sha256} cardWidth={360} at={frame / last} />}
+      {other && (
+        <div className="pickup-frame" style={{ aspectRatio: file.width && file.height ? file.width / file.height : 16 / 9 }}>
+          <WalkedFrames sha256={file.sha256} cardWidth={360} at={frame / last} />
+        </div>
+      )}
       <input className="nodrag nopan keeps" type="range" aria-label="Where to pick up" min={0} max={last} step={1} value={frame} onChange={(event) => go(Number(event.target.value))} />
       <div className="row">
         <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={frame <= 0} onClick={() => go(frame - 1)}>

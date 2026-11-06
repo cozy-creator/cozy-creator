@@ -2550,6 +2550,21 @@ input[type="checkbox"] {
 .beats-from input {
   width: 72px;
 }
+.pickup-frame {
+  position: relative;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--well);
+}
+.pickup-frame img.strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 800%;
+  max-width: none;
+  object-fit: fill;
+}
 .desc-row {
   display: flex;
   align-items: center;

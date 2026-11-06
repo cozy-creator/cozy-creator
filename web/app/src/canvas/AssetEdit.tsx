@@ -53,6 +53,9 @@ function memberBound(parent: Bound, field: string): Bound {
 
 const said = (value: unknown): string => (typeof value === "string" ? value : "")
 
+/** What words take of a mention: nothing but words. */
+const WORDS_ONLY: Media[] = []
+
 interface Drawn {
   name: string
   field: Field
@@ -87,7 +90,7 @@ function TextField({ name, field, bound, view, place, label, focus, named }: Dra
       label={label}
       placeholder={field.placeholder}
       missing={view.asset?.missing ?? []}
-      takes={field.type === "words" ? [] : field.takes}
+      takes={field.type === "words" ? WORDS_ONLY : field.takes}
       focus={focus}
       onDraft={bound.draft}
       onSave={bound.save}
