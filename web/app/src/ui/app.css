@@ -2390,6 +2390,9 @@ input[type="checkbox"] {
 .beat {
   position: relative;
 }
+.beat .mention-text {
+  font-size: 15px;
+}
 .beat.can-go .mention-text {
   padding-right: 22px;
 }
@@ -2410,18 +2413,23 @@ input[type="checkbox"] {
 }
 .add-beat {
   flex: none;
-  font-size: 11px;
-  color: var(--faint);
+  padding: 6px 14px;
+  border: 1px dashed var(--line2);
+  border-radius: var(--round);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
 }
 .add-beat:hover {
-  color: var(--ink);
+  border-style: solid;
+  background: var(--card);
 }
 .beats-last {
   display: flex;
-  justify-content: flex-end;
-  align-items: baseline;
+  justify-content: space-between;
+  align-items: center;
   gap: 10px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--mute);
 }
 .slot-control {

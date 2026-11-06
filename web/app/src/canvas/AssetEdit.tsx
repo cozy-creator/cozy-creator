@@ -117,7 +117,6 @@ function GroupControl({ name, control, view }: { name: string; control: Control;
             {members.filter((member) => member.type === "text").map(each)}
             <div className="beat-time">
               {members.filter((member) => member.type !== "text").map(each)}
-              {rows.length === 1 && add}
             </div>
             {rows.length > least && (
               <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
@@ -130,12 +129,10 @@ function GroupControl({ name, control, view }: { name: string; control: Control;
           </div>
         )
       })}
-      {rows.length !== 1 && (
-        <div className="beats-last">
-          {total && <span>{sum} {total.unit ?? ""}</span>}
-          {add}
-        </div>
-      )}
+      <div className="beats-last">
+        {add}
+        {total && rows.length > 1 && <span>{sum} {total.unit ?? ""} in all</span>}
+      </div>
     </div>
   )
 }
