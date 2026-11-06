@@ -2321,7 +2321,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     }
     let need = wanted + owner.lock()?.segments.values().filter(|s| s.pool == Some(pool))
         .map(Segment::unbacked).sum::<usize>();
-    let mapped = reclaim::acquire(device, need, Wait::Yes, keep, || {
+    let reserve = || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
@@ -2334,7 +2334,25 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
             Ok(have.max(wanted))
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
-    })?;
+    };
+    // A recording in no request, an idle period's, is a guess: it takes only room already free,
+    // its own completed pages included, and asks nobody. Refused, the call stays eager.
+    #[cfg(target_os = "linux")]
+    let guess = crate::cooperative::in_request(device) == Some(false);
+    #[cfg(not(target_os = "linux"))]
+    let guess = false;
+    let mapped = if guess {
+        match reserve() {
+            Ok(mapped) => mapped,
+            Err(failure) if failure.is_oom() => {
+                release_completed(device, need, usize::MAX, Some(pool))?;
+                reserve()?
+            }
+            Err(failure) => return Err(failure.into()),
+        }
+    } else {
+        reclaim::acquire(device, need, Wait::Yes, keep, reserve)?
+    };
     if scramble {
         checks::scramble(owner, pool)?;
     }
