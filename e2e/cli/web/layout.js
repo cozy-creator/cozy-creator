@@ -71,7 +71,7 @@ function replaceFile(at, text) {
 
 /** What's wrong with how `scope` is laid out, in the page: each finding a rule, where, and what. A rule is one person's eye on it, measured.
  *  Self-contained: it runs in the page. */
-function audit({ floor, hangZoom }) {
+function audit({ floor, hangZoom, fitted = true }) {
   const found = [];
   const R = (el) => el.getBoundingClientRect();
   const zoom = Number(document.querySelector('.react-flow__viewport')?.style.transform.match(/scale\(([\d.]+)\)/)?.[1] ?? 1);
@@ -237,12 +237,12 @@ function audit({ floor, hangZoom }) {
     }
   }
   // What floats over the canvas, on nothing else that floats.
-  const floats = ['.top .ptabs', '.top .mtabs', '.top .canvas-controls', '.top .main-menu > summary', '.top .pill', '.tools', '.zoom', '.notes'].flatMap((s) => [...document.querySelectorAll(s)]).filter(visible);
+  const floats = ['.top .history', '.top .ptabs', '.top .mtabs', '.top .canvas-controls', '.top .main-menu > summary', '.top .pill', '.tools', '.zoom', '.notes'].flatMap((s) => [...document.querySelectorAll(s)]).filter(visible);
   for (let i = 0; i < floats.length; i++) for (let j = i + 1; j < floats.length; j++) if (meet(R(floats[i]), R(floats[j]))) say('chrome-overlap', floats[i], `on ${where(floats[j])}`);
-  // A box being worked on isn't under what floats.
-  for (const el of document.querySelectorAll('.card.here > .media, .card.here > .tl, .card.here > .head, .here-under, .here-side')) {
+  // A box being worked on, as the canvas fits it, isn't under what floats: zoomed in past that by hand, it's as near as was asked.
+  for (const el of fitted ? document.querySelectorAll('.card.here > .media, .card.here > .tl, .card.here > .head, .here-under, .here-side') : []) {
     if (!visible(el)) continue;
-    for (const over of document.querySelectorAll('.top .ptabs, .top .mtabs, .top .main-menu > summary, .tools, .zoom')) if (visible(over) && meet(R(el), R(over), 2)) say('under-chrome', el, `under ${where(over)}`);
+    for (const over of document.querySelectorAll('.top .history, .top .ptabs, .top .mtabs, .top .main-menu > summary, .tools, .zoom')) if (visible(over) && meet(R(el), R(over), 2)) say('under-chrome', el, `under ${where(over)}`);
   }
   // A shadow or fill that's square under a drawn edge, or a tint where there's nothing.
   for (const el of document.querySelectorAll('.here-under *, .drawer *, .tools *, .top *')) {
@@ -552,7 +552,7 @@ ${local ? `  card:
     const look = async (state, keep) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
       await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
-      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM });
+      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted: !/^zoom-.*-in$/.test(state) });
       // The pointer where nothing's drawn, around a box worked on or all over.
       if (state === 'rest' || /^(open|writing|zoom)-/.test(state)) {
         const block = await page.evaluate(() => {
