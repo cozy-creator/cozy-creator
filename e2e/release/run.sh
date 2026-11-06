@@ -2,7 +2,8 @@
 # The `cli-release` suite: cozy's signed-in commands before a release (e2e/coverage.toml's `release` tier), on Linux,
 # macOS or Windows. Signed in with the CI key (or, by hand with --installed, as this computer is), it reads the
 # account's balance and checks its buy page answers, then rents ONE machine of --sku (default: the catalog's cheapest
-# GPU; nothing dearer than --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
+# 1-GPU offer; out of stock, the cheapest in stock with at least its VRAM and compute capability; nothing dearer than
+# --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
 # it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
 # rental, which first takes --pod-tensord (the candidate's Linux TensorD). On the rental: package install and list,
@@ -87,9 +88,25 @@ J --arg hub "${COZY_HUB_URL:-https://tensorhub.com}" '(.billing | length > 0) an
 curl -fsS -o /dev/null "$(jq -r .buy_credits "$OUT/whoami.json")" || check "whoami: the buy page $(jq -r .buy_credits "$OUT/whoami.json") does not answer"
 
 step "the rental's quote"
-[ -n "$SKU" ] || SKU=$(cozy --json machine rent | jq -r '[.[] | select(.vram_gb > 0)][0].name // empty') || true
+# In stock: the catalog offers it with 1 GPU, at that price.
+one='def one: [.widths[] | select(.accelerator_count == 1) | .price_usd_micros_per_hour] | min;
+  def cc: .compute_capability | split(".") | map(tonumber) | .[0] * 100 + .[1];'
+cozy --json machine rent > "$OUT/catalog.json" 2>&1 || fail "machine rent: no catalog: $(head -c 300 "$OUT/catalog.json")"
+[ -n "$SKU" ] || SKU=$(jq -r "$one"'[.[] | select(.vram_gb > 0 and one != null)] | sort_by(one)[0].name // empty' "$OUT/catalog.json")
 [ -n "$SKU" ] || fail "machine rent: the catalog lists no GPU"
-code=0; cozy --json machine rent "$SKU" --disk-gb 60 > "$OUT/quote.ndjson" 2>&1 || code=$?
+quote() { code=0; cozy --json machine rent "$SKU" --disk-gb 60 > "$OUT/quote.ndjson" 2>&1 || code=$?; }
+quote
+# Out of stock: the cheapest in-stock SKU with at least its VRAM and compute capability.
+if [ "$code" != 2 ] && grep -q sku_out_of_stock "$OUT/quote.ndjson"; then
+  read -r sub floor < <(jq -r --arg s "$SKU" "$one"'(map(select(.name == $s))[0]) as $c
+    | if $c == null or $c.vram_gb == 0 then "- -" else ($c | {v: .vram_gb, k: cc, f: "≥\(.vram_gb) GB, sm_\(.compute_capability | sub("\\."; ""))+"}) as $f
+      | ([.[] | select(.name != $s and .compute_capability != "" and .vram_gb >= $f.v and cc >= $f.k and one != null)]
+         | sort_by(one)[0].name // "-") + " " + $f.f end' "$OUT/catalog.json") || fail "machine rent: the catalog does not parse"
+  [ "$floor" != - ] || fail "sku $SKU is out of stock and the catalog lists no GPU floor for it"
+  [ "$sub" != - ] || fail "sku $SKU is out of stock and nothing in stock has $floor"
+  echo "sku $SKU is out of stock; using $sub (cheapest in stock with $floor)"
+  SKU=$sub; quote
+fi
 hourly=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote.ndjson" 2> /dev/null | head -1) || true
 [ "$code" = 2 ] && grep -q quote_unagreed "$OUT/quote.ndjson" && [ -n "$hourly" ] \
   || fail "machine rent $SKU without --yes: exit $code, not its quote alone: $(head -c 400 "$OUT/quote.ndjson")"
