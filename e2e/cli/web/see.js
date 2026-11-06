@@ -503,6 +503,29 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === 0, seen.scale.pan_11);
     await tab.close();
 
+    // Far out, words stay near one size and in their own box (Paul, 11-06): at 15%, no name, chip, ratio or wait lies outside its box or on another.
+    tab = await openTab(0.15, 800);
+    const strays = await tab.evaluate(() => {
+      const boxes = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ node, at: node.getBoundingClientRect(), name: node.querySelector('.card')?.dataset.asset }));
+      const inside = (a, b) => a.left >= b.left - 1 && a.right <= b.right + 1 && a.top >= b.top - 1 && a.bottom <= b.bottom + 1;
+      const meets = (a, b) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+      const out = [];
+      let labels = 0;
+      for (const { node, at, name } of boxes) {
+        for (const label of node.querySelectorAll('.nm, .add-on:not(.away), .ratio-rest, .rest-waiting, .dot')) {
+          const seen = label.getBoundingClientRect();
+          if (!seen.width || !seen.height || getComputedStyle(label).visibility === 'hidden') continue;
+          labels += 1;
+          if (!inside(seen, at)) out.push({ name, label: label.className, outside: true });
+          for (const other of boxes) if (other.node !== node && meets(seen, other.at)) out.push({ name, label: label.className, on: other.name });
+        }
+      }
+      return { zoom: new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a, labels, count: out.length, out: out.slice(0, 8) };
+    });
+    seen.scale.labels_at_15 = { zoom: strays.zoom, labels: strays.labels };
+    check('far_words_stay_in_their_box', Math.abs(strays.zoom - 0.15) < 0.01 && strays.labels >= COUNT && strays.count === 0, strays);
+    await tab.close();
+
     tab = await openTab(0.7, 40);
     const name = element(tab, 'n39').locator('.nm');
     const box = await name.boundingBox();

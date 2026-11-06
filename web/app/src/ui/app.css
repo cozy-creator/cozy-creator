@@ -280,7 +280,7 @@ code {
   height: var(--head);
 }
 .nm {
-  flex: none;
+  flex: 0 1 auto;
   max-width: 100%;
   color: var(--ink);
   font: calc(20px * var(--text, 1)) / 1.25 var(--mono);
@@ -289,6 +289,17 @@ code {
   text-overflow: ellipsis;
   min-width: 0;
   cursor: text;
+}
+/* Small on screen, a name taller than its head is drawn inside its box, over the top of its picture, cut to its width. */
+.stage[data-small] .react-flow__node:not(:has(.card.here)) .head {
+  position: relative;
+  z-index: 2;
+  align-items: flex-start;
+}
+.stage[data-small] .react-flow__node:not(:has(.card.here)) .nm {
+  padding: 0 calc(3px * var(--text, 1));
+  border-radius: calc(4px * var(--text, 1));
+  background: var(--float);
 }
 .card.here .nm,
 .react-flow__node.selected .nm {
@@ -671,10 +682,14 @@ code {
 .card.here .tc {
   font-size: calc(15px * var(--text, 1));
 }
+/* Inside the box, under its name: what it waits for, cut to its width. */
 .rest-waiting {
   position: absolute;
-  top: calc(100% + 4px);
+  top: var(--head);
   left: 0;
+  max-width: calc(100% / var(--text, 1));
+  overflow: hidden;
+  text-overflow: ellipsis;
   transform: scale(var(--text, 1));
   transform-origin: top left;
   white-space: nowrap;
@@ -887,11 +902,12 @@ code {
   object-fit: cover;
 }
 .ratio-rest {
-  position: absolute;
-  top: 100%;
-  right: 2px;
+  margin-left: auto;
+  padding: 0 calc(5px * var(--text, 1));
+  border-radius: calc(4px * var(--text, 1));
+  background: var(--float);
   color: var(--ink);
-  font: calc(20px * var(--text, 1)) / 1.25 var(--mono);
+  font: calc(13px * var(--text, 1)) / 1.5 var(--mono);
   white-space: nowrap;
   pointer-events: none;
 }

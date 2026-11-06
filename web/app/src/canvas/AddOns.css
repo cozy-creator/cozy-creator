@@ -7,32 +7,59 @@
   pointer-events: none;
 }
 
-/* Under a box at its left, as many as it holds, in the room it holds clear of others: its words stay near one size at any zoom. The ratio has the right. */
-.add-ons {
+/* Inside a box along its foot, one row in its width: its stack at the left, as many as fit and "+N", and its shape at the right while there's
+   room, which wraps out of sight when there isn't. Their words stay near one size at any zoom, and nothing is drawn on another box. */
+.foot {
   position: absolute;
   left: 0;
-  top: calc(100% + 4px);
-  width: 72%;
+  right: 0;
+  bottom: 0;
+  height: calc(24px * var(--text, 1));
+  padding: 0 calc(3px * var(--text, 1)) calc(3px * var(--text, 1));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  column-gap: calc(4px * var(--text, 1));
+  overflow: hidden;
+  pointer-events: none;
+}
+.foot > * {
+  pointer-events: auto;
+}
+.add-ons {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   padding: 0;
   list-style: none;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: calc(4px * var(--text, 1));
 }
-/* Below what a waiting box says there. */
-.react-flow__node:has(.rest-waiting) .add-ons {
-  top: calc(100% + 30px * var(--text, 1));
+.add-on.away {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
 }
-/* On a box being worked on, it's a row among the rest. */
+.add-on.more {
+  flex: none;
+  color: var(--mute);
+}
+/* On a box being worked on, it's a row among the rest, all of it. */
 .here-all .add-ons {
-  position: static;
-  width: auto;
-  flex-direction: row;
   flex-wrap: wrap;
 }
+.here-all .add-on.away {
+  position: static;
+  visibility: visible;
+  pointer-events: auto;
+}
+.here-all .add-on.more {
+  display: none;
+}
 .add-on {
+  flex: none;
   max-width: 100%;
   display: flex;
   align-items: center;

@@ -567,16 +567,6 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   )
 }
 
-/** The shape a box makes, under its corner, in the words of its name. Being pulled, the middle says it. */
-function ShapeLine({ name, view }: { name: string; view: ElementView }) {
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  const control = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
-  if (!control || view.shape) return null
-  const held = store.valueOf(name, control.field)
-  return <span className="ratio-rest">{typeof held === "string" ? held : "Auto"}</span>
-}
-
 const CardBody = memo(function CardBody({ name, width }: { name: string; width: number }) {
   const store = useCanvasStore()
   const view = useElement(name)
@@ -706,7 +696,6 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!here && !lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
       {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
         <div className="rest-waiting">
           <Waiting view={view} />

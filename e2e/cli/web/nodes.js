@@ -324,6 +324,21 @@ function linesOf(text, name) {
   check('description_on_the_wire', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
+  // A click opens a picture's box at once, with no wait for a second (Paul, 11-06, as Figma does); a second, within the system's double-click time, shows
+  // its file large over the open box, and Esc goes back to the open box.
+  await away();
+  const pressed = await box('source-a').locator('.media').boundingBox();
+  await page.mouse.click(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
+  check('a_click_opens_at_once', await page.evaluate(() => Boolean(document.querySelector('.card.here[data-asset="source-a"]'))));
+  await away();
+  await page.mouse.dblclick(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
+  await page.locator('.viewer').waitFor();
+  check('a_double_click_looks_large', (await box('source-a').locator('.card.here').count()) === 1);
+  await page.keyboard.press('Escape');
+  await page.locator('.viewer').waitFor({ state: 'detached' });
+  check('esc_goes_back_to_the_open_box', (await box('source-a').locator('.card.here').count()) === 1);
+  await away();
+
   // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, its beats shown, and what else it holds behind More, saying so. Each writes one field and moves nothing else.
   replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    style: wash\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
   await box('knobs').waitFor();

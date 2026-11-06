@@ -4,7 +4,6 @@ import { type Action, Outbox } from "../api/outbox"
 import type { Entity, Fit, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, Pickup, ProjectState, RentFor, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
-import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
 import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { fieldsOf, fullRows } from "./controls"
@@ -186,7 +185,6 @@ export class CanvasStore {
   private subscribers = new Map<string, Set<() => void>>()
   private shapes = new Map<string, string>()
   /** Each view's stack, by the view: a change is a new view. */
-  private stacks = new WeakMap<ElementView, number>()
   private pauses = new Map<string, ReturnType<typeof setTimeout>>()
   private asked = new Set<number>()
   /** What's been said of a render that never reached a machine. */
@@ -631,7 +629,7 @@ export class CanvasStore {
     const view = this.views.get(name)!
     const width = row.w ?? widthFor(view)
     const height = heightFor(view, width)
-    this.shapes.set(name, this.shapeOf(name, width, height))
+    this.shapes.set(name, this.shapeOf(width, height))
     return {
       id,
       type: view.entity ? "entity" : "element",
@@ -659,7 +657,7 @@ export class CanvasStore {
     if (!id || !view || !node) return
     const width = node.width ?? widthFor(view)
     const height = heightFor(view, width)
-    const shape = this.shapeOf(key, width, height)
+    const shape = this.shapeOf(width, height)
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
     this.flow?.updateNode(id, { measured: { width, height } })
@@ -669,27 +667,8 @@ export class CanvasStore {
   // Keeping clear: no box lies on another
 
   /** What a box takes on the canvas, as one key: the same from its first node on, so only a real change moves anything. */
-  private shapeOf(name: string, width: number, height: number) {
-    return `${width}:${height}:${this.stacked(name)}`
-  }
-
-  /** How many are in the stack under it: its tool and what's on that. Read once per view, as every box's is read wherever one moves. */
-  stacked(name: string): number {
-    const view = this.get(name)
-    if (!view) return 0
-    let held = this.stacks.get(view)
-    if (held === undefined) {
-      const tool = view.asset?.tool
-      held = addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
-      this.stacks.set(view, held)
-    }
-    return held
-  }
-
-  /** A box and the stack under it, which nothing else lies on. With none it's only the box. */
-  private laid(name: string, box: Box): Box {
-    const held = this.stacked(name)
-    return held ? { ...box, h: box.h + STACK_GAP + held * ADD_ON_HEIGHT } : box
+  private shapeOf(width: number, height: number) {
+    return `${width}:${height}`
   }
 
   /** Where a block of boxes goes to lie on nothing: there if it can. */
@@ -706,7 +685,7 @@ export class CanvasStore {
     if ((!node && !row) || !view) return null
     // A row is what the page last said of it, and a node may not have heard yet.
     const w = row?.w ?? node?.width ?? widthFor(view)
-    return this.laid(name, { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) })
+    return { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) }
   }
 
   private field(besides?: Set<string>): Field {
@@ -1049,7 +1028,7 @@ export class CanvasStore {
     const view = this.views.get(key)
     if (!view?.asset || view.asset.tool === tool.id) return
     void this.save(key)
-    const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool)
+    const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} runs ${tool.label} now, which can't take ${step.lost.join(" or ")}` : undefined)
   }
 
@@ -1707,7 +1686,7 @@ export class CanvasStore {
       const view = this.views.get(name)
       if (!view) continue
       const row = toRow(node)
-      const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
+      const box = { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) }
       if (!view.placing) this.move(name, row)
       field.add(name, this.toClear(name, field, box))
     }

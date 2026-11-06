@@ -50,8 +50,8 @@ function addOnsOn(fields: Fields, from: Tool | undefined, next: Tool): { kept: F
   return { kept: { lora: lora ?? null, models: models ?? null }, lost }
 }
 
-/** `tool` going on `asset`, whatever it holds now. `fields` is what it says, what's typed included. */
-export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, tool: Tool): ToolStep {
+/** `tool` going on `asset`, whatever it holds now. `fields` is what it says, what's typed included, and `looked` the version being looked at. */
+export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, tool: Tool, looked?: number): ToolStep {
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: {} as Fields }
   const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.makes, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.makes) }
   if (!asset.tool && !holdsPictures(asset)) {
@@ -59,11 +59,12 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
     const { text, ...rest } = fields
     return { row: { ...row, standing: "missing", fields: { ...rest, instructions: text ?? "" } }, tool: tool.id, fields: {}, back, lost: [] }
   }
+  // On pictures: its prompt starts from the version shown, and what's approved stays as it was (Paul, 11-06). A lone file is its version 1.
   if (!asset.tool) {
     const first = asset.prefixes?.length ? undefined : 1
-    const number = first ?? asset.approved ?? asset.prefixes?.at(-1)?.number
+    const number = first ?? looked ?? asset.version ?? asset.prefixes?.at(-1)?.number
     const main = first && asset.sha256 && asset.path && asset.field ? { output: asset.field, path: asset.path, sha256: asset.sha256, field: asset.field, width: asset.width, height: asset.height, duration_ms: asset.duration_ms, alpha: asset.alpha } : undefined
-    const numbered: Partial<Asset> = main ? { prefixes: [{ number: 1, prefix: main.sha256.slice(0, 12), main }], versions: 1, version: 1, approved: 1 } : {}
+    const numbered: Partial<Asset> = main ? { prefixes: [{ number: 1, prefix: main.sha256.slice(0, 12), main }], versions: 1, version: 1, ...(asset.pinned ? { approved: 1 } : {}) } : {}
     const words = fields.instructions === undefined ? { instructions: `<self.${number}>` } : {}
     back.fields = "instructions" in words ? { instructions: null } : {}
     return { row: { ...row, ...numbered, fields: { ...fields, ...words } }, tool: tool.id, fields: {}, back, lost: [] }

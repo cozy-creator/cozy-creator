@@ -35,7 +35,7 @@ import { EntityCard } from "./EntityCard"
 import { viewable } from "./Media"
 import { Placer } from "./place"
 import { Sheet } from "./Sheet"
-import { madeHere, shownOf } from "./shown"
+import { HEAD, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
@@ -60,8 +60,6 @@ const UNDER_GAP = 8
 const NARROW = 760
 /** How long the canvas takes to draw in on a box, or go back. */
 const HERE_MS = 260
-/** How long a click on a picture waits to see if it's the first of two, which looks at it large: the press itself shows at once, and a box with no picture to look at doesn't wait. */
-const DOUBLE_CLICK_MS = 200
 
 /** The view of a box and what's under it, the two as large as they go together, and what's under it told how wide it is and how tall it may be. Null with no node to fit to. */
 function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: string, stage: HTMLElement) {
@@ -363,7 +361,6 @@ function Canvas({
   }, [opened, stopWriting])
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const firstClick = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store)
@@ -648,26 +645,25 @@ function Canvas({
   const nodeClicked = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
-      clearTimeout(firstClick.current)
       const { name } = node.data
-      const looks = viewable(store.get(name))
-      if (event.detail > 1 && looks && (event.target as Element).closest(".media")) return store.viewing.set(name)
       if (store.inPlace?.name === name && store.get(name)?.here) return
-      // A click opens: only Shift selects.
+      // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
-      const go = () => {
-        writeHere(name)
-        navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
-      }
-      if (looks) firstClick.current = setTimeout(go, DOUBLE_CLICK_MS)
-      else go()
+      writeHere(name)
+      navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
     },
     [store, flow, writeHere, navigate],
   )
-  const paneClicked = useCallback(() => {
-    clearTimeout(firstClick.current)
-    leaveHere()
-  }, [leaveHere])
+  // A second click, within the system's own double-click time, looks at its file large, over the open box: not on its name or a control.
+  const nodeDoubleClicked = useCallback(
+    (event: ReactMouseEvent, node: ElementNode) => {
+      if (node.type !== "element" || event.shiftKey || event.metaKey || event.ctrlKey) return
+      if ((event.target as Element).closest(".head, button, input, select, textarea, .mention-text, .here-under")) return
+      if (viewable(store.get(node.data.name))) store.viewing.set(node.data.name)
+    },
+    [store],
+  )
+  const paneClicked = useCallback(() => leaveHere(), [leaveHere])
   const nodeMenu = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element") return
@@ -695,6 +691,8 @@ function Canvas({
       if (text === held) return
       held = text
       stage.current?.style.setProperty("--text", String(text))
+      // A name taller than a box's head goes inside the box.
+      stage.current?.toggleAttribute("data-small", text * NAME_LINE > HEAD)
     }
     set(flowStore.getState().transform[2])
     return flowStore.subscribe((state) => set(state.transform[2]))
@@ -768,6 +766,7 @@ function Canvas({
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onNodeClick={nodeClicked}
+          onNodeDoubleClick={nodeDoubleClicked}
           onPaneClick={paneClicked}
           onNodeContextMenu={nodeMenu}
           onNodeDragStart={nodeDragStart}
@@ -791,6 +790,9 @@ function Canvas({
     </CanvasStoreProvider>
   )
 }
+
+/** A name's line at the canvas's own size, against its head's height (`--head`). */
+const NAME_LINE = 25
 
 /** How much a box's words are scaled against the canvas, so they read at nearly one size at any zoom: in steps, so a zoom sets it only as it crosses one. */
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
