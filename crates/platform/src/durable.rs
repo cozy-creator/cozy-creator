@@ -148,6 +148,58 @@ pub fn ordered(file: &File) -> io::Result<()> {
     file.sync_data()
 }
 
+/// Paces a bulk writer to the disk: each `Paced::WINDOW` it writes starts for the disk at once,
+/// and the one before it is waited for, so at most two of its windows are ever unwritten. ext4
+/// commits its journal with every file's data in it: unpaced, a download leaves gigabytes for any
+/// fsync to wait behind, and its own last flush takes as long. Linux only; elsewhere nothing.
+#[derive(Default)]
+pub struct Paced {
+    /// Written, not yet started.
+    open: Option<(u64, u64)>,
+    /// Started, not yet waited for.
+    started: Option<(u64, u64)>,
+}
+
+impl Paced {
+    pub const WINDOW: u64 = 8 << 20;
+
+    /// `len` bytes were just written to `file` at `offset`.
+    pub fn wrote(&mut self, file: &File, offset: u64, len: u64) {
+        let start = match self.open {
+            Some((start, end)) if end == offset => start,
+            _ => {
+                self.start(file);
+                offset
+            }
+        };
+        self.open = Some((start, offset + len));
+        if offset + len - start >= Self::WINDOW {
+            self.start(file);
+        }
+    }
+
+    fn start(&mut self, file: &File) {
+        let Some(open) = self.open.take() else { return };
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let range = |(start, end): (u64, u64)| (start as libc::off64_t, (end - start) as libc::off64_t);
+            let (fd, write) = (file.as_raw_fd(), libc::SYNC_FILE_RANGE_WRITE);
+            let wait = libc::SYNC_FILE_RANGE_WAIT_BEFORE | write | libc::SYNC_FILE_RANGE_WAIT_AFTER;
+            let ((at, len), before) = (range(open), self.started.replace(open).map(range));
+            // SAFETY: a descriptor the caller holds, and scalars. Pacing is advice: a failure changes nothing written.
+            unsafe {
+                libc::sync_file_range(fd, at, len, write);
+                if let Some((at, len)) = before {
+                    libc::sync_file_range(fd, at, len, wait);
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (file, self.started.replace(open));
+    }
+}
+
 /// Makes the entries of `dir` (a create, rename or unlink in it) survive a crash.
 pub fn sync_dir(dir: &Path) -> Result<()> {
     #[cfg(unix)]

@@ -149,13 +149,15 @@ impl VolumeOrigin {
                 .create_new(true)
                 .mode(0o444)
                 .open(&temp)?;
-            let mut buffer = vec![0; STEP];
+            let (mut buffer, mut paced, mut at) = (vec![0; STEP], platform::durable::Paced::default(), 0);
             loop {
                 let read = source.read(&mut buffer)?;
                 if read == 0 {
                     break;
                 }
                 file.write_all(&buffer[..read])?;
+                paced.wrote(&file, at, read as u64);
+                at += read as u64;
             }
             file.sync_all()?;
             fs::rename(&temp, path)
