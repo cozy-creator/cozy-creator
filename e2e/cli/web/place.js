@@ -241,7 +241,7 @@ const constants = (folder) => {
   const picturesUp = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => [...node.querySelectorAll('.media img')].some((img) => img.naturalWidth > 0)).map((node) => node.querySelector('.nm')?.textContent).sort());
   check('elements_are_its_files_and_its_words', JSON.stringify(namesBefore) === JSON.stringify([...withFiles, 'coast'].sort()), { namesBefore, withFiles });
   // Its text was written with no version line, so that's the one thing said of the file, and the top bar says it.
-  check('warning_is_the_missing_version', ((await page.getAttribute('.top .sum.ood', 'title')) ?? '').includes('version: 3'), await page.getAttribute('.top .sum.ood', 'title'));
+  check('warning_is_the_missing_version', ((await page.getAttribute('.top .sum.ood', 'title')) ?? '').includes('version: 4'), await page.getAttribute('.top .sum.ood', 'title'));
   const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform]).sort()));
   const placesBefore = await places();
   await new Promise((done) => setTimeout(done, 300));

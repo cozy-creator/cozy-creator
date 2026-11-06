@@ -1376,9 +1376,8 @@ export class CanvasStore {
     return main ? { ...main, number: said.number } : null
   }
 
-  /** What a mention is: `image`, `video`, `audio` or `text`. A voice is a sound. */
+  /** What a mention is: `image`, `video`, `audio` or `text`. */
   kindOf(mention: string, asset: string): string | undefined {
-    if (/\.voice$/i.test(baseOf(mention))) return "audio"
     const said = this.mentionOf(mention, asset)
     const view = said && this.get(said.name)
     if (!view) return undefined

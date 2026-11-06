@@ -75,7 +75,7 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
       if (error.code !== 'EEXIST') copyFileSync(seedFile, at);
     }
   };
-  const lines = ['version: 3', 'assets:'];
+  const lines = ['version: 4', 'assets:'];
   // Each measured as it landed, as a person's are.
   const measured = {};
   const made = file;

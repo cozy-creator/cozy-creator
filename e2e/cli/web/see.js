@@ -458,7 +458,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const hash = (name) => held.assets.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    let text = 'version: 3\nassets:\n';
+    let text = 'version: 4\nassets:\n';
     let rowsText = '# Where cards sit. Only the page reads this. Nothing here is an input.\nversion: 1\ncards:\n';
     for (let i = 0; i < COUNT; i++) {
       const reads = [1 + (i % 7), perRow + (i % 3)].filter((back) => i - back >= 0).map((back) => `<n${i - back}>`);

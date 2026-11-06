@@ -123,7 +123,7 @@ function linesOf(text, name) {
   await page.evaluate(() => { window.notReloaded = true; });
 
   // A file a person wrote: every comment and `|` of it outlasts all of this.
-  const head = '# Mine, and kept.\nversion: 3\n\nassets:\n  # A note on what follows.\n  kept_words:\n    # Inside it.\n    description: |\n      Written\n      by hand.\n';
+  const head = '# Mine, and kept.\nversion: 4\n\nassets:\n  # A note on what follows.\n  kept_words:\n    # Inside it.\n    description: |\n      Written\n      by hand.\n';
   // Local code is a tool once something in the project names it. A real render needs no GPU this way.
   writeFileSync(yamlAt, local ? `${head}  named_here:\n    tool: ${drawer}/draw\n` : head);
   await box('kept_words').waitFor();

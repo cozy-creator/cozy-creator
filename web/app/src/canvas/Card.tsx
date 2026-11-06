@@ -4,10 +4,10 @@ import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { machinesQuery, runsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import type { Field, MainFile, Run, Snap } from "../types"
+import type { MainFile, Run, Snap } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { AssetEdit, ControlRow, InFrame, RenderButton, TextAsset } from "./AssetEdit"
+import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import { carriedFile, type ElementNode, type ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
@@ -509,9 +509,6 @@ function Description({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-/** A picture's voice: the sound `<name.voice>` gives whatever mentions it. */
-const VOICE: Field = { field: "voice", type: "slot", accept: "audio", label: "Voice" }
-
 /** The corner, pulled to size a box. A box whose tool has a shape takes it from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. */
 function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
   const store = useCanvasStore()
@@ -740,10 +737,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
               }
             >
               {editing && <Description name={name} view={view} />}
-              {editing && asset.kind === "image" && <ControlRow name={name} field={VOICE} view={view} focus={false} named />}
             </AssetEdit>
             {!editing && <Description name={name} view={view} />}
-            {!editing && asset.kind === "image" && <ControlRow name={name} field={VOICE} view={view} focus={false} named />}
             {view.warned && warned ? (
               <div className="warned-lines">
                 {view.warnings!.map((warning) => (

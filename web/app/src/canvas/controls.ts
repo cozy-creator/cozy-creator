@@ -36,7 +36,7 @@ function fromFields(fields: Record<string, unknown>): Field[] {
 }
 
 /** The platform's words on any box, whatever made it: no tool asks for them. */
-export const OWN = ["description", "voice", "models", "lora"]
+export const OWN = ["description", "models", "lora"]
 
 /** What a box asks for: its tool's fields, or what its fields hold. Nothing here knows any function. */
 export function fieldsOf(asset: Asset, tools: Map<string, Tool>): Field[] {

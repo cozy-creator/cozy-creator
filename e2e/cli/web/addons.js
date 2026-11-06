@@ -87,7 +87,7 @@ async function died(why) {
 
   const comments = ['# Mine, and kept.', '  # What other makes.', '    # Its look.', '    instructions: |', '      A small boat,', '      on still water.'];
   writeFileSync(yamlAt, `# Mine, and kept.
-version: 3
+version: 4
 
 assets:
   # What other makes.
