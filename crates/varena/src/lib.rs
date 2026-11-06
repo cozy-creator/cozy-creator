@@ -427,9 +427,11 @@ impl PlanPhase {
         self.recurred || self.looped != Some(false)
     }
 
-    /// For keeping working pages: once seen looping.
+    /// For keeping working pages: once a region came back in this pass, so its first pass maps its
+    /// working set in the plain order. Kept from the start, H3 Turbo's warm VAE decode at 8 GiB on a
+    /// 4090 took 28 s for its first tile and 1.0 s for each after (run 39180).
     pub(crate) fn keeps(&self) -> bool {
-        self.recurred || self.looped == Some(true)
+        self.recurred
     }
 }
 
