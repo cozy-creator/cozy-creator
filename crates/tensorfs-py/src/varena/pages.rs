@@ -181,7 +181,11 @@ impl Tier {
     }
 
     /// The host RAM this process can still take, re-read at most every `LOOK`, after kept pages
-    /// go, the least worth first, while it is under the headroom. Unreadable: they all go. Active
+    /// go, the least worth first, once it is under half the headroom and until it is back over it:
+    /// a page admitted at the headroom and dropped at the next dip unregisters on the fill path,
+    /// which waits on the device (run 38251, steps 3-4 at 8.6 and 4.8 s against 3.2). Half the
+    /// headroom is still free or clean page cache the kernel takes back before it kills. Unreadable:
+    /// they all go. Active
     /// page cache up to `own` is room: the loop's store reads keep it active, so yielding to it
     /// only feeds a cache the loop's own refills fill.
     fn trim(&self, state: &mut State) -> Vec<Kept> {
@@ -194,7 +198,7 @@ impl Tier {
         let mut room = if memory.available < 0 { memory.available } else { memory.available + own };
         state.room = room;
         let mut gone = Vec::new();
-        if room >= self.headroom {
+        if room >= self.headroom / 2 {
             return gone;
         }
         for (_, _, key) in state.cheapest() {
