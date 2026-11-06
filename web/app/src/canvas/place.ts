@@ -59,12 +59,14 @@ export class Placer {
     })
   }
 
-  /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes, called what its tool says. */
+  /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says. A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
   addTool(tool: Tool, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    this.store.focusing = this.box(asName(tool.name ?? tool.label), { kind: tool.kind, tool: text ? undefined : tool.id, fields: text ? { text: "" } : startingFields(tool), timeline }, at, `Couldn't place ${tool.label}`)
+    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.kind, tool: text ? undefined : tool.id, fields: text ? { text: "" } : startingFields(tool), timeline }, at, `Couldn't place ${tool.label}`)
+    this.store.focusing = name
+    if (!text && !timeline) this.store.openHere(name)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */

@@ -318,6 +318,20 @@ async function died(why) {
     };
     const lines = (name) => yaml().match(new RegExp(`^  ${name}:(.*(?:\n(?:    .*|\\s*))*)`, 'm'))?.[1] ?? '';
 
+    // On open canvas a picture tool's box opens as it lands, on its words, the caret in them, its shape Auto, and no name asked.
+    const namesThen = (await state()).assets.map((held) => held.name);
+    await row.dragTo(page.locator('.stage'), { targetPosition: { x: 1300, y: 860 } });
+    const dropped = await until('a box of it', async () => (await state()).assets.find((held) => !namesThen.includes(held.name)), Boolean).catch(() => null);
+    const droppedOpen = page.locator(`.card.here[data-asset="${dropped?.name}"]`);
+    const caretOnIt = await until('the caret in its words', () => droppedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
+    const droppedShape = await droppedOpen.locator('.ratio-rest').innerText().then((text) => text.trim(), () => null);
+    check('a_dropped_tool_opens_on_its_words', Boolean(dropped) && caretOnIt === true && droppedShape === 'Auto' && (await page.locator('.nm-field').count()) === 0, { dropped: dropped?.name, caretOnIt, droppedShape });
+    if (dropped) {
+      await api(`${at}/assets/${encodeURIComponent(dropped.name)}`, { method: 'DELETE' });
+      await until('that box gone', () => box(dropped.name).count(), (n) => n === 0);
+    }
+    await shut();
+
     // On a text box its words are the prompt, at once, and the box opens.
     await box('words').waitFor();
     await carry('words');

@@ -167,17 +167,25 @@ function linesOf(text, name) {
   // A box is called what its tool's published node says, `image_1` for Qwen Image 2, else its package's word, numbered up from there.
   const dragged = await firstTool.getAttribute('data-tool');
   const boxName = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.id === dragged)?.name;
+  // Where the drop lands on the canvas, before the box opens and the canvas draws in on it.
+  const place = await page.evaluate(({ x, y }) => {
+    const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+    return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
+  }, { x: 1300, y: 900 });
   const made = await dragOut(firstTool, 1300, 900);
+  // A picture tool's box opens as it lands, on its words, the caret in them and its shape Auto, with no name asked. The Edit stays shut.
+  if (kind === 'image') {
+    const landedOpen = page.locator(`.card.here[data-asset="${made.name}"]`);
+    const caretIn = await until('the caret in its words', () => landedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
+    const shapeSaid = await landedOpen.locator('.ratio-rest').innerText().then((text) => text.trim(), () => null);
+    check('a_dropped_tool_opens_on_its_words', caretIn === true && shapeSaid === 'Auto' && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid });
+  } else seen.dropped_kind = kind;
   seen.tool_dragged = made.name;
   const word = (name) => name?.replace(/_\d+$/, '');
   check('tool_named_as_its_node_says', Boolean(boxName) && word(made.name) === word(boxName), { tool: dragged, said: boxName, name: made.name });
   check('tool_kind_from_its_output', made.kind === kind, { kind, made: made.kind });
   check('tool_written_as_a_function', made.tool?.includes('/'), made.tool);
   const home = await until('its row', async () => (await rows())[made.name], Boolean);
-  const place = await page.evaluate(({ x, y }) => {
-    const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-    return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
-  }, { x: 1300, y: 900 });
   check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
   await until('that box gone', () => box(made.name).count(), (n) => n === 0);
