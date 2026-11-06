@@ -1001,7 +1001,7 @@ impl Pool {
             for (index, table) in devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
                 let pool = pool.clone();
                 let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
-                    .spawn(move || table.supervise(|| pool.upgrade().map(|pool| pool.end_idle_on(index))));
+                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
                 if let Err(error) = watching {
                     tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
                 }
@@ -1108,13 +1108,16 @@ impl Pool {
     }
 
     /// An asker on GPU `index` stays short after every peer trimmed. Only an exit returns a CUDA
-    /// context: end the least recently used idle executor there, warm sets last. Whether one ended.
+    /// context: end the least recently used idle executor there, warm sets last, never an asker's
+    /// own (an idle executor recording a graph asked, and the supervisor ended it: every SDXL call on an
+    /// 8 GB card started a new process, 35140-35161). Whether one ended.
     #[cfg(target_os = "linux")]
-    fn end_idle_on(&self, index: usize) -> bool {
+    fn end_idle_on(&self, index: usize, askers: &[u32]) -> bool {
         let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
         let key = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.degree != 0 && session.lane().contains(&index))
+            .filter(|(_, session)| !executor_births(&session.executor.birth, &session.followers).iter().any(|birth| askers.contains(&birth.pid)))
             .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.used))
             .map(|(key, _)| key.clone());
         key.is_some_and(|key| self.end_session(&key))
