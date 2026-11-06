@@ -208,6 +208,11 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   computer's device key, reads `ordered: false` and takes no run that doesn't name it.
   `refresh` lists every Hub again first. `rentals` sums the live rentals: count, `usd_micros_per_hour`, and
   `accrued_usd_micros` on its weakest `accrued_basis` (`accrued_floor` when some Hub said nothing).
+  A machine's `status.activity` is what it does for this computer's runs besides their own work, as its Status says,
+  and moves on `machine.updated`: each `Operation {id, kind: download|install, subject, stage?, bytes_done, bytes_total,
+  bytes_here, bytes_per_s?, eta_s?, started_at_ms, runs}` once, however many runs wait on it. `subject` is the model's
+  repository (or provider source), or the package; a download's bytes are what it fetches, and
+  `bytes_here` what of it was here already; `runs` are the run numbers waiting on it. An older machine says none.
 - `GET /v1/machines/{name}[?fresh=true]`: `Machine`. A rental rented with an SSH key has `ssh {args, line}`: the command that logs in, with a known-hosts file of its own, as an argument list and as a line to paste. `fresh` reads its Status now, or refuses
   `machine_unavailable`.
 - `POST /v1/machines` (`NewMachine`):

@@ -782,6 +782,33 @@ pub struct StatusFrame {
     /// held until it exits.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stuck: Vec<StuckProcess>,
+    /// What it does for the caller's runs besides their own work, each once however many wait on it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<Operation>,
+}
+
+/// Weights arriving or a package's environment built for runs: one per repository or package, whichever runs wait on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Operation {
+    /// The same for as long as it lasts: its kind and subject.
+    pub id: String,
+    /// `download` or `install`.
+    pub kind: String,
+    /// The model's repository (or provider source), or the package.
+    pub subject: String,
+    /// Where it is, in words; empty when only its bytes say.
+    pub stage: String,
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// What of it was here already (shared with another model, or pulled before).
+    pub bytes_here: u64,
+    /// Its bytes a second over its last 10 s, once a second of them is seen.
+    pub bytes_per_s: f64,
+    pub started_at_unix_ms: i64,
+    /// The runs waiting on it, by the caller's ids.
+    pub runs: Vec<String>,
 }
 
 /// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network

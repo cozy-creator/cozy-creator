@@ -388,6 +388,7 @@ impl LocalSources {
                 skip: &[],
                 editable: true,
                 indexes: &manifest.indexes,
+                package: &manifest.package,
                 label: &label,
                 stage: &stage,
                 fetch: None,

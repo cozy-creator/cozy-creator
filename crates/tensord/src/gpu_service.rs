@@ -2882,11 +2882,13 @@ impl Pool {
     fn import_only(&self, held: &HeldGeneration) -> ZygoteState {
         let started = (|| {
             let (root, socket, directory) = self.executor_endpoint()?;
+            let spawned = Instant::now();
             let mut executor = DeviceExecutor::spawn_owned(
                 self.executor_config(held, root, socket, 0, self.devices.len().min(1) as u32)?,
                 &self.launcher,
                 |_, _| Ok(()),
             )?;
+            let hello = spawned.elapsed();
             executor.retain_until_exit(directory);
             let interface = self.interface_file(&executor, held)?;
             let reply = executor.command(
@@ -2912,6 +2914,7 @@ impl Pool {
                     reply.code, reply.detail
                 )));
             }
+            crate::machine::speed::imported(hello, &serde_json::from_value::<Vec<(String, f64)>>(reply.stages).unwrap_or_default());
             io::Result::Ok(ZygoteState::Ready(Box::new(executor)))
         })();
         started
@@ -3339,6 +3342,9 @@ impl Pool {
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
+            if session.launch.mode == "spawn" {
+                crate::machine::speed::imported(std::time::Duration::from_secs_f64(session.launch.ms / 1e3), &session.launch.start);
+            }
             if started.follower_pids.len() + 1 != ranks as usize {
                 return Err(io::Error::other(Refused {
                     code: "group_unformed".into(),

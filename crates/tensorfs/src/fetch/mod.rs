@@ -195,6 +195,9 @@ pub struct Stats {
     pub requests: u64,
     pub retries: u64,
     pub steals: u64,
+    /// Bytes received from the origin, over the time any of them was arriving.
+    pub received: u64,
+    pub receiving: std::time::Duration,
     /// Answers that were not 2xx, by status.
     pub statuses: std::collections::BTreeMap<u16, u64>,
     pub volume_written: u64,
@@ -237,6 +240,8 @@ impl Fetcher {
             requests: counters.requests.load(Ordering::Relaxed),
             retries: counters.retries.load(Ordering::Relaxed),
             steals: counters.steals.load(Ordering::Relaxed),
+            received: counters.received.load(Ordering::Relaxed),
+            receiving: std::time::Duration::from_millis(counters.receiving_ms.load(Ordering::Relaxed)),
             statuses: counters.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
             volume_written: counters.volume_written.load(Ordering::Relaxed),
             volume_skipped: counters.volume_skipped.load(Ordering::Relaxed),

@@ -23,6 +23,13 @@ export function span(s: number): string {
   return `${Math.floor(whole / 86400)}d${Math.floor((whole % 86400) / 3600)}h`
 }
 
+/** Time still to go, as a person says it: `40 s left`, `6 min left`, `2 h 5 min left`. */
+export function leftWords(s: number): string {
+  if (s < 90) return `${Math.max(1, Math.round(s))} s left`
+  const minutes = Math.round(s / 60)
+  return minutes < 90 ? `${minutes} min left` : `${Math.floor(minutes / 60)} h ${minutes % 60} min left`
+}
+
 /** A short time: milliseconds, tenths of a second under a minute, then a span. */
 export const ms = (value: number) => (value < 1000 ? `${Math.round(value)} ms` : value < 60_000 ? `${(value / 1000).toFixed(1)}s` : span(value / 1000))
 

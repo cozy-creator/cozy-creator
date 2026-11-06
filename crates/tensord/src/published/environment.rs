@@ -32,6 +32,8 @@ pub(crate) struct Project<'a> {
     pub editable: bool,
     /// Indexes an unlocked project's sources name without declaring (name → URL).
     pub indexes: &'a BTreeMap<String, String>,
+    /// Its package, which the machine lists installing (`activity`).
+    pub package: &'a str,
     /// `{package} {release}`, as a person reads it.
     pub label: &'a str,
     /// What the person sees while it is built; its steps are counted after it.
@@ -87,6 +89,7 @@ impl Publisher {
     /// declares a Torch range the layer misses does it install its own, with a warning: rare by
     /// design, since packages declare a minimum and machines run the newest Torch.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
+        let _install = job.within(crate::activity::Kind::Install, project.package);
         let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,

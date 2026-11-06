@@ -196,13 +196,24 @@ pub(crate) struct Job {
     /// (`Engine::waiting`).
     pub(crate) caller: String,
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
+    /// What the machine lists it doing now for its run (`activity`), which its stages move.
+    pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
 }
 impl Job {
     fn set(&self, stage: String, moved: u64, total: u64) {
         if let Some(observe) = &self.observer {
             observe(&stage, moved, total);
         }
+        if let Some(within) = &*self.within.lock().unwrap() {
+            within.moved(&stage, moved, total);
+        }
         *self.stage.lock().unwrap() = stage;
+    }
+    /// Its stages move the machine's `kind` of `subject` for its run until what this answers drops.
+    pub(crate) fn within(&self, kind: crate::activity::Kind, subject: &str) -> Within<'_> {
+        let wait = crate::activity::wait(kind, subject, &self.caller);
+        wait.moved(&self.stage.lock().unwrap(), 0, 0);
+        Within(self, self.within.lock().unwrap().replace(wait))
     }
     fn waiting(&self, reason: Option<String>) {
         if let Some(waiting) = &self.waiting {
@@ -213,9 +224,21 @@ impl Job {
         self.set(stage, 0, 0);
     }
     fn bytes(&self, moved: u64, total: u64) {
+        let stage = self.stage.lock().unwrap().clone();
         if let Some(observe) = &self.observer {
-            observe(&self.stage.lock().unwrap(), moved, total);
+            observe(&stage, moved, total);
         }
+        if let Some(within) = &*self.within.lock().unwrap() {
+            within.moved(&stage, moved, total);
+        }
+    }
+}
+
+/// A job within one operation, until this drops: then within what it was before.
+pub(crate) struct Within<'a>(&'a Job, Option<crate::activity::Waiting>);
+impl Drop for Within<'_> {
+    fn drop(&mut self) {
+        *self.0.within.lock().unwrap() = self.1.take();
     }
 }
 
@@ -457,9 +480,12 @@ impl Publisher {
                 format!("{path} names a source and a catalog checkpoint"),
             ));
         }
+        let import = crate::activity::Import::new(&choice.source, &job.caller);
         let made = self.make(&choice.source, &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
+            import.moved(stage, moved, total);
             job.set(format!("{stage} for {path}"), moved, total)
         })?;
+        drop(import);
         job.stage(format!("{} for {path}", made.format));
         Ok(ModelGrant {
             package: installation.package.clone(),
@@ -1054,6 +1080,7 @@ impl Publisher {
                 Some(run) => format!("waiting for run {run} to install {package} {release}"),
                 None => format!("waiting for another run's install of {package} {release}"),
             }));
+            let _install = crate::activity::wait(crate::activity::Kind::Install, package, &job.caller);
             lock.lock().map_err(io_failure)?;
             job.waiting(None);
         }
@@ -1081,6 +1108,7 @@ impl Publisher {
             skip: &locked.git,
             editable: false,
             indexes: &BTreeMap::new(),
+            package,
             label: &label,
             stage,
             fetch: (!files.is_empty()).then_some(&fetch as &dyn Fn() -> Result<(), Failure>),
@@ -1591,13 +1619,17 @@ fn apply_adapters(
                 ..Named::default()
             })?;
             // An adapter is small and its view composes from all of it: it comes whole.
+            let _download = job.within(crate::activity::Kind::Download, &adapter.model);
             publisher.ensure(source, &named, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
             named.header()?.id()
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
+            let import = crate::activity::Import::new(&adapter.source, &job.caller);
             let made = publisher.make(&adapter.source, &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
+                import.moved(stage, moved, total);
                 job.set(format!("{stage} for an adapter of {}", grant.slot), moved, total)
             })?;
+            drop(import);
             job.stage(format!("{} for an adapter of {}", made.format, grant.slot));
             made.header.id()
         };

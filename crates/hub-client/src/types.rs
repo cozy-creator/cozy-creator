@@ -137,6 +137,30 @@ pub struct WorkerEndpointReport {
     pub ports: BTreeMap<String, u16>,
 }
 
+/// What a rental's machine measured of its own host (`POST /v1/worker/rental/speed`).
+#[derive(Debug, Default, Serialize)]
+pub struct WorkerSpeedReport {
+    pub worker_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download: Option<WorkerDownload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<WorkerProbe>,
+}
+
+/// One transfer into the machine, all its streams together.
+#[derive(Debug, Serialize)]
+pub struct WorkerDownload {
+    pub bytes: u64,
+    pub seconds: f64,
+}
+
+/// A fixed probe's wall time, the same work on every host.
+#[derive(Debug, Serialize)]
+pub struct WorkerProbe {
+    pub probe: String,
+    pub seconds: f64,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ModelSearch {
     #[serde(default, deserialize_with = "null_is_empty")]

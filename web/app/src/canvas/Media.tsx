@@ -4,6 +4,10 @@ import type { Client } from "../api/client"
 import { holdMedia, playingHere } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
+import { leftWords } from "../panels/format"
+import { fractionOf, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
+import { long, workWords } from "../panels/runs/words"
+import type { Run, Tool } from "../types"
 import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { controlsOf } from "./controls"
@@ -389,17 +393,35 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
 
 const GLYPHS: Record<string, IconName> = { image: "picture", video: "video", audio: "sound" }
 
-const leftWords = (fraction: number, seconds?: number) =>
-  `${Math.round(fraction * 100)}%${seconds === undefined ? "" : `, ${seconds < 90 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`} left`}`
-
 /** How far it's got, on the picture: a veil that moves and never reflows, and the number or the stage. */
-function Progress({ fraction, says }: { fraction?: number; says?: string }) {
+function Progress({ fraction, says, phase }: { fraction?: number; says?: string; phase?: string }) {
   return (
-    <div className={`prog ${fraction === undefined ? "unknown" : ""}`}>
+    <div className={`prog ${fraction === undefined ? "unknown" : ""} ${phase ?? ""}`}>
       <i style={fraction === undefined ? undefined : { transform: `translateX(${Math.round(fraction * 100) - 100}%)` }} />
       {says && <b>{says}</b>}
     </div>
   )
+}
+
+const installsOf = (tool?: Tool) => tool && (tool.installs ?? tool.package)
+
+/** A render on its way: its package installing and its weights arriving say so, from what its machine lists, and the veil after them is
+ *  its own work's. That says where it is once it's worth it: `Generating image 3 / 8, 25 s left`. Before its run is sent, local code
+ *  installing for it says so too. */
+function Making({ run, pkg, making }: { run?: Run; pkg?: string; making: boolean }) {
+  const on = useWaitsOn(run)
+  const installing = useInstalling(run ? undefined : pkg)
+  const before = on ?? installing
+  if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} />
+  if (before?.kind === "download") {
+    const fraction = fractionOf(before)
+    const left = before.eta_s === undefined ? "" : `, ${leftWords(before.eta_s)}`
+    return <Progress phase="download" fraction={fraction} says={`Waiting on download… ${fraction === undefined ? "" : `${Math.round(fraction * 100)}%`}${left}`} />
+  }
+  if (!making) return null
+  // A run that ended says no more of how far: it's all there, on its way here.
+  if (!run || run.status === "completed") return <Progress fraction={run ? 1 : undefined} />
+  return <Progress fraction={run.progress?.done_fraction} says={long(run, Date.now()) ? workWords(run) || run.waiting : undefined} />
 }
 
 export function Media({ view, name, cardWidth, children }: { view: ElementView; name: string; cardWidth: number; children?: ReactNode }) {
@@ -412,8 +434,6 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  // A run that ended says no more of how far: it's all there, on its way here.
-  const fraction = making ? (view.run?.status === "completed" ? 1 : view.run?.progress?.done_fraction) : undefined
   const here = shown && !shown.absent ? shown : null
   // On the canvas: an opened box plays the file itself.
   const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
@@ -466,7 +486,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
       )}
       {(making || view.queued || view.asked !== undefined) && view.viewed === undefined && <div className="media-making" />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
-      {making && <Progress fraction={fraction} says={fraction === undefined ? undefined : leftWords(fraction, view.run?.progress?.eta_s)} />}
+      {(making || view.queued || view.asked !== undefined) && <Making run={view.run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} />}
       {open && source && field && store.projectId && (
         <Player
           key={JSON.stringify(source)}
