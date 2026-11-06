@@ -591,7 +591,12 @@ impl Runs {
             (folder.header.clone(), Some(folder.tree.clone()), row)
         } else if !choice.source.is_empty() {
             let source = self.written_source(actor, &choice.source)?;
-            let made = publisher.make_source(&source, &choice.profiles, &choice.trained_on, &spec.providers, stop, observe)?;
+            let import = crate::activity::Import::new(&choice.source, &self.service.engine.caller_id(id));
+            let made = publisher.make_source(&source, &choice.profiles, &choice.trained_on, &spec.providers, stop, &|stage, done, total| {
+                import.moved(stage, done, total);
+                observe(stage, done, total)
+            })?;
+            drop(import);
             let row = json!({"parameter": choice.parameter, "source": choice.source,
                 "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
                 "trigger": made.trigger.join(", "), "repository": made.repository, "checkpoint": made.header.id()});
@@ -634,11 +639,15 @@ impl Runs {
                 .map_err(|(code, message)| refused(code, message))?;
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.repository), format!("saving {}", choice.repository));
+            let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.repository, &self.service.engine.caller_id(id));
             let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, &spec.catalog_revision, structure, stop, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
-                observe(if total >= 1 << 20 && done >= total { &saving } else { &stage }, done, total)
+                let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
+                wait.moved(now, done, total);
+                observe(now, done, total)
             })?;
+            drop(wait);
             for reason in &named.reasons {
                 let warning = format!("{}: {reason}", named.repository);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
@@ -873,7 +882,8 @@ impl Runs {
                         false => Ok(()),
                     }
                 };
-                moved = self.download(hub.clone(), &shared_of(&each), fits, &*observe, stoppable)?;
+                let weights = format!("{}'s weights", installation.package);
+                moved = self.download(hub.clone(), &shared_of(&each), fits, &*observe, stoppable, &weights, &self.service.engine.caller_id(id))?;
             }
             // The installed release, its interface and the installation a call may name, in the
             // warm run's result.
@@ -960,12 +970,17 @@ impl Runs {
     }
 
     /// Every chunk of `selected` (header, components) here from `hub`, its bytes the warm run's
-    /// progress; `room` is asked for those absent first.
+    /// progress and the machine's download of `weights` for run `caller`; `room` is asked for those absent first.
+    #[allow(clippy::too_many_arguments)]
     fn download(&self, hub: Option<hub::Source>, selected: &[(String, Vec<String>)], room: impl FnOnce(u64) -> Result<(), Refused>,
-        observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable) -> Result<tensorfs::fetch::Landed, Refused> {
+        observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable, weights: &str, caller: &str) -> Result<tensorfs::fetch::Landed, Refused> {
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX);
         room(fetch.absent(selected)?)?;
-        let report = |done, total| observe("downloading its weights", done, total);
+        let wait = crate::activity::wait(crate::activity::Kind::Download, weights, caller);
+        let report = |done, total| {
+            wait.moved("", done, total);
+            observe("downloading its weights", done, total)
+        };
         fetch.download(selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
             true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
             false => {
@@ -1124,7 +1139,8 @@ impl Runs {
                 if let (Level::Downloaded, Some(plan)) = (item.level, &plan) {
                     let room = |absent| self.service.room_for(id, absent)
                         .map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")));
-                    self.download(hub.clone(), &plan.read(), room, &**observe, stoppable)?;
+                    let weights = format!("{}'s weights", installation.package);
+                    self.download(hub.clone(), &plan.read(), room, &**observe, stoppable, &weights, &self.service.engine.caller_id(id))?;
                 }
                 kept.push(serde_json::to_string(&KeptMember {
                     installation: installation.alias.clone(),

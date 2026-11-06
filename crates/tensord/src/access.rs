@@ -133,12 +133,31 @@ pub struct Fetch {
     held: Mutex<Vec<Checkpoint>>,
     /// What fetched for this call before it started: ended with it.
     replaced: Mutex<Option<Arc<Fetch>>>,
-    /// Each wanted checkpoint not all here when it was wanted: its repository and where it comes
-    /// from, its bytes, and its objects still absent.
-    arriving: Mutex<Vec<(String, Remote, u64, Vec<ObjectRef>)>>,
+    /// Each wanted checkpoint not all here when it was wanted.
+    arriving: Mutex<Vec<Arriving>>,
     /// The same of its on-demand models, which a step reads when it comes to them.
-    behind: Mutex<Vec<(String, Remote, u64, Vec<ObjectRef>)>>,
+    behind: Mutex<Vec<Arriving>>,
     required: Mutex<Required>,
+}
+
+/// A checkpoint not all here when it was wanted: its repository and where it comes from, the bytes it had to fetch and those it held
+/// already, and its objects still absent.
+struct Arriving {
+    repository: String,
+    remote: Remote,
+    fetch: u64,
+    here: u64,
+    absent: Vec<ObjectRef>,
+}
+
+/// A repository's checkpoints arriving: the bytes fetched of those to fetch, those that were here, and whether any is still absent.
+#[derive(Clone, Debug, Default)]
+pub struct Repository {
+    pub repository: String,
+    pub done: u64,
+    pub total: u64,
+    pub here: u64,
+    absent: bool,
 }
 
 impl Fetch {
@@ -389,14 +408,14 @@ impl Fetch {
             }
             let pulled = Pulled::of(self.store(), checkpoint.id())?;
             let repository = pulled.as_ref().map_or_else(|| header.clone(), |p| p.repository.clone());
-            let (mut absent_all, mut bytes_all) = (vec![], 0);
+            let (mut absent_all, mut here_all) = (vec![], 0);
             for component in components {
                 let objects = storage::chunks(&checkpoint, std::slice::from_ref(component));
                 let bytes: u64 = objects.iter().map(|o| o.length).sum();
-                bytes_all += bytes;
                 // Only absent chunks are wanted: a chunk on disk needs no download, and a component
                 // whole here needs no want at all, so its run never waits on the downloader for it.
                 let absent: Vec<ObjectRef> = objects.into_iter().filter(|o| !self.store().holds(o)).collect();
+                here_all += bytes - absent.iter().map(|o| o.length).sum::<u64>();
                 if absent.is_empty() {
                     continue;
                 }
@@ -404,8 +423,10 @@ impl Fetch {
                 wanted.push(Wanted { bytes, remote: remote.clone(), objects: absent, label: format!("{repository} {component}") });
             }
             if let (false, Some(pulled)) = (absent_all.is_empty(), pulled) {
+                // What it has to fetch, never what was here already (shared with another model, or an earlier pull's).
+                let fetch = absent_all.iter().map(|o| o.length).sum();
                 let list = if metered { &self.arriving } else { &self.behind };
-                list.lock().unwrap().push((pulled.repository, remote.clone(), bytes_all, absent_all));
+                list.lock().unwrap().push(Arriving { repository: pulled.repository, remote: remote.clone(), fetch, here: here_all, absent: absent_all });
             }
             self.held.lock().unwrap().push(checkpoint);
         }
@@ -462,34 +483,42 @@ impl Fetch {
     }
 
     /// The weights it wants that are not all here yet, while any are not: those its run waits on,
-    /// then its on-demand ones.
-    pub fn arriving(&self) -> Option<Weights> {
-        self.counted(&self.arriving, false).or_else(|| self.counted(&self.behind, true))
+    /// then its on-demand ones; and each repository its run waits on.
+    pub fn arriving(&self) -> (Option<Weights>, Vec<Repository>) {
+        let waited = self.each(&self.arriving);
+        let weights = counted(&waited, false).or_else(|| counted(&self.each(&self.behind), true));
+        (weights, waited.into_iter().filter(|each| each.absent).collect())
     }
 
-    /// `list`'s repositories not all here, and the bytes here of all it found absent, an object
-    /// still arriving counted to the byte it reached. An object here stays: its checkpoint is held.
-    fn counted(&self, list: &Mutex<Vec<(String, Remote, u64, Vec<ObjectRef>)>>, behind: bool) -> Option<Weights> {
+    /// Each of `list`'s repositories, its bytes fetched (an object still arriving counted to the byte it reached) of those it
+    /// found absent. An object here stays: its checkpoint is held.
+    fn each(&self, list: &Mutex<Vec<Arriving>>) -> Vec<Repository> {
         let mut arriving = list.lock().unwrap();
-        let (mut models, mut done, mut total) = (vec![], 0, 0);
-        for (repository, remote, bytes, absent) in arriving.iter_mut() {
+        let mut each: Vec<Repository> = vec![];
+        for Arriving { repository, remote, fetch, here, absent } in arriving.iter_mut() {
             // Each download as it stands, read before the store: one landing meanwhile counts whole.
             let mut states = self.machine.fetching(remote, absent).into_iter();
             let mut missing = 0;
             absent.retain(|object| {
                 let reached = states.next().flatten().map_or(0, |state| state.reached);
-                let here = self.store().holds(object);
-                if !here {
+                let held = self.store().holds(object);
+                if !held {
                     missing += object.length - reached.min(object.length);
                 }
-                !here
+                !held
             });
-            if !absent.is_empty() && !models.contains(repository) {
-                models.push(repository.clone());
-            }
-            (done, total) = (done + *bytes - missing, total + *bytes);
+            let at = match each.iter().position(|seen| seen.repository == *repository) {
+                Some(at) => at,
+                None => {
+                    each.push(Repository { repository: repository.clone(), ..Repository::default() });
+                    each.len() - 1
+                }
+            };
+            let row = &mut each[at];
+            (row.done, row.total, row.here) = (row.done + *fetch - missing, row.total + *fetch, row.here + *here);
+            row.absent |= !absent.is_empty();
         }
-        (!models.is_empty()).then(|| Weights { models: models.join(" and "), done, total, behind })
+        each
     }
 
     /// Whether it ended (`end`).
@@ -510,6 +539,13 @@ impl Fetch {
     }
 }
 
+/// The repositories of `each` not all here, and the bytes fetched of all they had to fetch.
+fn counted(each: &[Repository], behind: bool) -> Option<Weights> {
+    let models: Vec<&str> = each.iter().filter(|each| each.absent).map(|each| each.repository.as_str()).collect();
+    let (done, total) = each.iter().fold((0, 0), |(done, total), each| (done + each.done, total + each.total));
+    (!models.is_empty()).then(|| Weights { models: models.join(" and "), done, total, behind })
+}
+
 /// While what `fetch` wants is not all here, run `id`'s progress says which weights it waits on
 /// and how many of their bytes are here, from a quarter-second look at the store; once they are,
 /// or the fetch ends, its own stage shows again. On-demand weights arriving show beside its stage,
@@ -523,9 +559,18 @@ pub fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     let (store, fetch, began) = (fetch.store().clone(), Arc::downgrade(fetch), std::time::Instant::now());
     let started = std::thread::Builder::new().name("weights-meter".into()).spawn(move || {
         let (mut last, mut said, mut shown) = (None, String::new(), None::<String>);
+        // What its run waits on, as this machine lists it (`activity`), by repository.
+        let caller = engine.caller_id(&id);
+        let mut waits: std::collections::HashMap<String, crate::activity::Waiting> = Default::default();
         loop {
             let live = fetch.upgrade().filter(|f| !f.ended());
-            let weights = live.as_ref().and_then(|f| f.arriving());
+            let (weights, waited) = live.as_ref().map(|f| f.arriving()).unwrap_or_default();
+            waits.retain(|repository, _| waited.iter().any(|each| each.repository == *repository));
+            for each in &waited {
+                let wait = waits.entry(each.repository.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &each.repository, &caller));
+                wait.here(each.here);
+                wait.moved("", each.done, each.total);
+            }
             if let Err(error) = engine.observe_weights(&id, weights.clone()) {
                 tracing::warn!("run {id}: its weights' progress: {error}");
                 return;

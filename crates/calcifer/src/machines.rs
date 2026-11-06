@@ -673,7 +673,7 @@ impl Machines {
         {
             machine.offline = Some(reason);
         }
-        let mut held = vec![];
+        let (mut held, mut activity) = (vec![], vec![]);
         if let Some(seen) = lock(&self.seen).get(&row.name) {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
@@ -687,6 +687,7 @@ impl Machines {
                 status
             });
             held = seen.frame.as_ref().map(|f| f.runs.clone()).unwrap_or_default();
+            activity = seen.frame.as_ref().map(|f| f.activity.clone()).unwrap_or_default();
             machine.unreachable.clone_from(&seen.unreachable);
             machine.unreachable_since_ms = seen.since;
             machine.boot.clone_from(&seen.boot);
@@ -694,6 +695,7 @@ impl Machines {
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().map(|run| self.held(run)).collect();
+            status.activity = activity.iter().map(|operation| self.operation(operation)).collect();
         }
         let asked = match row.kind {
             MachineKind::Rental => store.rent_ask(&row.name).map_err(internal)?,
@@ -736,6 +738,26 @@ impl Machines {
             id: run.id,
             state: run.state,
             waiting: run.waiting,
+        }
+    }
+
+    /// What a machine does for runs, its waiters by this controller's run numbers: a run it keeps no record of isn't one.
+    fn operation(&self, operation: &v1::Operation) -> wire::Operation {
+        let runs = (operation.runs.iter()).filter_map(|id| Some(self.store().run(id).ok()??.number)).collect();
+        let rate = Some(operation.bytes_per_s).filter(|rate| *rate >= 1.0);
+        let left = operation.bytes_total.saturating_sub(operation.bytes_done);
+        wire::Operation {
+            id: operation.id.clone(),
+            kind: operation.kind.clone(),
+            subject: operation.subject.clone(),
+            stage: operation.stage.clone(),
+            bytes_done: operation.bytes_done,
+            bytes_total: operation.bytes_total,
+            bytes_here: operation.bytes_here,
+            bytes_per_s: rate,
+            eta_s: rate.filter(|_| left > 0).map(|rate| (left as f64 / rate) as i64),
+            started_at_ms: operation.started_at_unix_ms,
+            runs,
         }
     }
 
@@ -1686,6 +1708,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         disk_runtime_bytes: frame.disk.as_ref().map_or(0, |d| d.runtime_bytes),
         disk_runs_bytes: frame.disk.as_ref().map_or(0, |d| d.runs_bytes),
         runs: vec![],
+        activity: vec![],
         models: frame
             .models
             .iter()

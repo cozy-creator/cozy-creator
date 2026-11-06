@@ -213,6 +213,7 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
         tools.extend(tool::tools_of(&package, "local", &interface).into_iter().map(|tool| Tool {
             id: format!("{written}/{}", tool.function),
             package: written.clone(),
+            installs: Some(package.clone()),
             local: true,
             ..tool
         }));

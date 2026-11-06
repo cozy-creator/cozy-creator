@@ -1015,6 +1015,41 @@ pub struct MachineStatus {
     /// Killed processes stuck in the kernel there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stuck: Vec<crate::machine::StuckProcess>,
+    /// What it does for this controller's runs besides their own work, each once however many wait on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<Operation>,
+}
+
+/// Weights arriving or a package's environment built on a machine (`machine::Operation`), and the runs waiting on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Operation {
+    /// The same for as long as it lasts.
+    pub id: String,
+    /// `download` or `install`.
+    pub kind: String,
+    /// The model's repository (or provider source), or the package.
+    pub subject: String,
+    /// Where it is, in words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    #[serde(default)]
+    pub bytes_done: u64,
+    #[serde(default)]
+    pub bytes_total: u64,
+    /// What of it was here already (shared with another model, or pulled before).
+    #[serde(default)]
+    pub bytes_here: u64,
+    /// Its bytes a second over its last 10 s, once a second of them is seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_per_s: Option<f64>,
+    /// The seconds its bytes still take at that rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_s: Option<i64>,
+    pub started_at_ms: i64,
+    /// The runs waiting on it, by number.
+    #[serde(default)]
+    pub runs: Vec<u64>,
 }
 
 /// A run a machine holds for this controller, beside this controller's record of it.
