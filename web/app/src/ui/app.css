@@ -44,11 +44,6 @@
   animation-timeline: scroll(self), scroll(self);
   animation-range: 0 24px, calc(100% - 24px) 100%;
 }
-/* A drawer's list can be long: a thin bar inside its edge says where in it you are, and is dragged to go far. */
-.drawer-body {
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
-}
 /* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
    by --here, and a box's insides scale with the canvas, so each sets --m. Its name, its words and what's said around them read the
    same at any zoom: --on. */
@@ -1084,6 +1079,7 @@ video.preview.on {
   gap: 6px;
   min-height: 0;
   padding: 8px 10px 10px;
+  border-radius: inherit;
   overflow: hidden auto;
   overscroll-behavior: contain;
 }
