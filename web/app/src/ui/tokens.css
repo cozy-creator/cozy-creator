@@ -64,6 +64,16 @@
   --round2: 10px;
   /* How much larger the frame around the canvas is drawn: the top bar and the tools. Nudge this one number. */
   --ui: 1.35;
+  /* One type scale, five steps (web-ui-library.md). Each reads the same size on screen wherever it is: a surface drawn larger or
+     smaller than the frame sets --m (app.css). A label is never larger than what it labels. */
+  --t-title: 15.5px;
+  --t-heading: 12.5px;
+  --t-body: 12.5px;
+  --t-small: 10.5px;
+  --t-tiny: 9px;
+  --w-title: 700;
+  --w-heading: 600;
+  --m: var(--ui);
   --top: calc(44px * var(--ui));
   --head: 32px;
   color-scheme: light;
