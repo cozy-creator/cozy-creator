@@ -560,8 +560,9 @@ J '[.said[] | select(contains("poster mentions <coast.1>"))] | length == 1' "$OU
 J '([.said[] | select(contains("hero, hero_old are now a picture reference like any other"))] | length == 1) and ([.said[] | select(contains("hero.old is hero_old"))] | length == 1)' "$OUT/upgraded.json" || check "upgrade: what format 4 reads another way wasn't said once: $(jq -c .said "$OUT/upgraded.json")"
 render "$U" all --missing > /dev/null 2>&1 || true
 [ "$(status "$U" | jq '[.assets[] | select(.name != "poster") | .prefixes[]?.run // empty] | length')" = "$((before - 1))" ] || check "upgrade: something ran: $(runs "$U") runs, was $before"
+was=$(sha256sum "$U/project.yaml" "$U/project.lock")
 code=0; cozy project -p "$U" upgrade > "$OUT/upgraded-twice.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'format 4 already' "$OUT/upgraded-twice.txt"; } || check "upgrade: a second one: exit $code: $(tail -c 300 "$OUT/upgraded-twice.txt")"
+{ [ "$code" = 0 ] && grep -q 'format 4 already: nothing to upgrade' "$OUT/upgraded-twice.txt" && [ "$(sha256sum "$U/project.yaml" "$U/project.lock")" = "$was" ]; } || check "upgrade: a second one is a no-op: exit $code: $(tail -c 300 "$OUT/upgraded-twice.txt")"
 
 step "a project: cozy project upgrade: \`defaults\` go, a style and a soundscape are text assets, each mentioned where it was used"
 local W=$OUT/upgrade-defaults

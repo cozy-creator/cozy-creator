@@ -45,6 +45,8 @@ pub struct Upgraded {
     pub assets: Vec<Row>,
     /// What it couldn't carry over by itself, and what the file says now.
     pub said: Vec<String>,
+    /// It was of this format already: nothing moved.
+    pub current: bool,
 }
 
 /// An asset before and after: `current`, `out_of_date`, `missing`; `new` for what had no row.
@@ -702,7 +704,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     let top = to_json_keeping(&text, names_a_file_then).map_err(|why| refused("project_yaml", format!("{}: {why}", folder::PROJECT)))?;
     let Some(top) = top.as_object() else { return Err(refused("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))) };
     match top.get("version").and_then(Value::as_u64) {
-        Some(FORMAT) => return Err(refused("project_format", format!("{} is format {FORMAT} already", folder::PROJECT))),
+        Some(FORMAT) => return Ok(Upgraded { assets: vec![], said: vec![format!("{} is format {FORMAT} already: nothing to upgrade", folder::PROJECT)], current: true }),
         Some(3) => return tools(&dir),
         Some(2) | None => {}
         Some(other) => return Err(refused("project_format", format!("{} is format {other}, and this moves format 2", folder::PROJECT)).next("cozy project new")),
@@ -914,7 +916,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         let before = row_of(&row.name).and_then(|held| held["standing"].as_str()).unwrap_or("new").to_owned();
         Row { was: then.unwrap_or_default(), before, ..row }
     });
-    Ok(Upgraded { assets: assets.collect(), said })
+    Ok(Upgraded { assets: assets.collect(), said, current: false })
 }
 
 /// Each of H3's edits: the LoRA that is it, and the word its prompt opened with (H3's `EDITS`).
@@ -1027,7 +1029,7 @@ pub fn tools(dir: &Path) -> Result<Upgraded, Error> {
         let was = renames.get(&old).map(|_| was.assets.iter().find(|asset| name_key(&asset.name) == old).map_or(old.clone(), |asset| asset.name.clone())).unwrap_or_default();
         Row { was, before, after: word_of(&now[i].state).to_owned(), version: now[i].version(), name }
     });
-    Ok(Upgraded { assets: rows.collect(), said })
+    Ok(Upgraded { assets: rows.collect(), said, current: false })
 }
 
 /// A format 3 box's tool and fields as format 4's: Qwen's two functions one tool with Turbo, a shot with a plate an Edit, what's no longer

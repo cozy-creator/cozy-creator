@@ -445,6 +445,10 @@ fn upgrade(ctx: &Context, at: Option<&PathBuf>, status: Option<&PathBuf>) -> Res
     };
     let said = status.map(|file| std::fs::read_to_string(file).map_err(|e| Error::new(Kind::Usage, "status_unreadable", format!("{}: {e}", file.display())))).transpose()?;
     let done = calcifer::project::upgrade(&dir, said.as_deref())?;
+    if done.current && !ctx.json {
+        done.said.iter().for_each(|line| output::say(ctx, line));
+        return Ok(ExitCode::SUCCESS);
+    }
     if ctx.json {
         output::json(&done);
     } else {
