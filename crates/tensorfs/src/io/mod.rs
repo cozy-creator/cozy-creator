@@ -255,7 +255,7 @@ pub struct ReadOpts {
     pub request: usize,
     /// Copy streams per device (device destinations).
     pub streams: usize,
-    /// Read what the page cache lacks with O_DIRECT, where the filesystem allows.
+    /// Read a range the page cache mostly lacks with O_DIRECT, where the filesystem allows.
     pub direct: bool,
     /// Told of each copy as it lands, before the read returns; `None` costs nothing.
     pub landed: Option<Landed>,
@@ -320,8 +320,8 @@ pub fn drain(device: i32) -> cuda::Result<()> {
 }
 
 /// Every copy, at once: reads on `opts.threads` threads, each cut on the `opts.request` grid,
-/// O_DIRECT for what the page cache lacks (straight into the destination where it is aligned
-/// with the file, else through a bounce buffer), buffered for what it holds.
+/// O_DIRECT for a range the page cache mostly lacks (straight into the destination where it is
+/// aligned with the file, else through a bounce buffer), buffered for one it mostly holds.
 ///
 /// # Safety
 /// Each destination is valid for writes of its length, the destinations do not overlap, and
@@ -385,6 +385,7 @@ unsafe fn read_impl(
             });
         }
     }
+    let cold = cold(copies, opts);
     let (host, devices): (Vec<_>, Vec<_>) =
         copies.iter().copied().enumerate().partition(|(_, c)| {
             !matches!(c.src, Src::Device { .. }) && !matches!(c.dst, Dst::Device { .. })
@@ -395,8 +396,9 @@ unsafe fn read_impl(
     } else {
         #[cfg(unix)]
         let host_start = Instant::now();
+        let host_cold: Vec<bool> = host.iter().map(|&(i, _)| cold[i]).collect();
         // SAFETY: host copies keep `read`'s contract.
-        let stats = unsafe { host::fill(&host_copies, opts, cancel) }.map_err(|e| Error {
+        let stats = unsafe { host::fill(&host_copies, &host_cold, opts, cancel) }.map_err(|e| Error {
             copy: host[e.copy].0,
             source: e.source,
         })?;
@@ -410,7 +412,7 @@ unsafe fn read_impl(
     #[cfg(feature = "cuda")]
     {
         // SAFETY: device copies keep `read`'s contract.
-        let device = unsafe { device::fill(&devices, opts, staged_host, issued, cancel) }?;
+        let device = unsafe { device::fill(&devices, &cold, opts, staged_host, issued, cancel) }?;
         stats.direct += device.direct;
         stats.cached += device.cached;
         stats.bounced += device.bounced;
@@ -430,6 +432,19 @@ unsafe fn read_impl(
     stats.bytes = copies.iter().map(|c| c.dst.len() as u64).sum();
     stats.ns = start.elapsed().as_nanos() as u64;
     Ok(stats)
+}
+
+/// Whether each copy reads past the page cache: a file range the cache holds under half of, where
+/// `opts.direct` allows. Sampled once a read, never per piece: what the cache mostly holds costs
+/// the disk only its holes, which then stay cached; what it lacks stays out, so a cold read pushes
+/// nothing out of it.
+fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
+    copies.iter().map(|c| match c.src {
+        Src::File(f, at) if opts.direct && !c.dst.is_empty() => {
+            platform::durable::cached_pages(f, at, c.dst.len() as u64).is_none_or(|(held, of)| held * 2 < of)
+        }
+        _ => false,
+    }).collect()
 }
 
 /// Logs the file reads among `copies` as one disk run (`metrics`).
