@@ -47,15 +47,22 @@ refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything els
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
-3. Runs the chosen suites' cells, each once, with new prompts and seeds. A slow run goes on; a hung one stops: when no run
-   on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in 786 real cells was
-   7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while they move.
+3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, `--warm downloaded`
+   puts all its weights on the disk, its on-demand models' too (an upsampler), and `--warm off` takes it out of the warm
+   set: a cell times what a user who has used the function sees, never a download (cl-790). A slow run goes on; a hung one
+   stops: when no run on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in
+   786 real cells was 7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while
+   they move. A download that can't land before the job's cap (`--cap`, the workflow's `cap_minutes`) at the rate it has
+   kept 4 to 8 minutes in fails the host, `host too slow: X MB/s, N GiB needs M min`: the pod ends, its files go to
+   `slow-<machine>/`, and the gate starts over on another host, at most 5, one already found slow ended at once (th-364).
 4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. Any GPU fault in the machine's log or kernel probe crash in its record fails the gate, whatever the
    cells did. A cell passes when it completed, did not report `passed: false`, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
    driver's: TensorD reads each GPU's bytes in use (NVML) every 100 ms over a call into the record's `memory.driver`,
    and `runs.py` reads what the cell added at its fullest (caps judge everything in use). A GPU cell without it fails.
+   Each executor's package import and CUDA init are held against the same cells' known-good: twice those or more is a
+   slow host, which the verdict names, and its time fails read `(slow host)`, not a regression.
 
 ## Baselines
 
