@@ -135,7 +135,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
     store.patch(name, { hereWords: true })
   }
   const pick = (number: number) => {
-    store.view(name, number === asset.version ? undefined : number)
+    store.pickTake(name, number)
     if (onWords) store.patch(name, { hereWords: undefined })
   }
   return (

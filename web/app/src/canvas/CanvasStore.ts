@@ -761,6 +761,19 @@ export class CanvasStore {
     this.reshape(name)
   }
 
+  /** Looks at take `number`, and the first `<self.N>` its words edit becomes that take. */
+  pickTake(name: string, number: number) {
+    const asset = this.get(name)?.asset
+    if (!asset) return
+    this.view(name, number === asset.version ? undefined : number)
+    if (!asset.tool || asset.timeline) return
+    const field = this.tools.get().get(asset.tool)?.controls.find((control) => control.type === "text")?.field ?? "instructions"
+    const words = this.valueOf(name, field)
+    if (typeof words !== "string") return
+    const next = words.replace(/<(self)\.\d+>/i, (_, self) => `<${self}.${number}>`)
+    if (next !== words) this.setDraft(name, field, next)
+  }
+
   seek(name: string, at: number) {
     const held = this.get(name)
     if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })

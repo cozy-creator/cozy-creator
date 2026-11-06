@@ -524,7 +524,7 @@ function Canvas({
       }
       const next = row[at + (event.key === "ArrowLeft" ? -1 : 1)]
       if (next) {
-        store.view(name, next.number === asset.version ? undefined : next.number)
+        store.pickTake(name, next.number)
         requestAnimationFrame(() => document.querySelector(".card.here .take.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }))
       }
       return true
