@@ -38,11 +38,20 @@ function kindOf(view: ElementView): string {
 
 const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
 
-/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. */
+/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. An Edit rendered here says how far it is. */
 function Waiting({ view }: { view: ElementView }) {
   const { client } = useConnection()
   const going = useQuery(runsQuery(client, { status: "in_progress" }, 100))
   const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
+  const rendering = view.asset?.rendering
+  if (rendering !== undefined) {
+    const done = Math.round(rendering * 100)
+    return (
+      <div className="status mak" role="progressbar" aria-label="Rendering" aria-valuenow={done}>
+        Rendering {done}%
+      </div>
+    )
+  }
   const said = view.run?.waiting
   if (said) return <div className="status mak">{said[0].toUpperCase() + said.slice(1)}</div>
   const machine = [...(going.data?.runs ?? []), ...(queued.data?.runs ?? [])].find(settingUp)?.machine
