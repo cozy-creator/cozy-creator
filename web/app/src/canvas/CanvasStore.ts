@@ -4,12 +4,12 @@ import { type Action, lost, type Outbox } from "../api/outbox"
 import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, Control, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
-import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
+import { addOnsOf } from "./checkpoints"
 import { Field, fit, type Give, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, shownOf, valueIn, watched, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, shownOf, underOf, valueIn, watched, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -169,6 +169,12 @@ export function toRow(node: ElementNode): Row {
 type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "warnings">
 
 const viewOf = (element: Placed): ElementView => ({ ...element })
+
+/** Its stack's chips: its tool's, and each add-on on that. */
+const chipsOf = (view: ElementView) => {
+  const tool = view.asset?.tool
+  return addOnsOf(valueIn(view, "lora"), valueIn(view, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
+}
 
 function linksOf(entity: Entity): string[] {
   return [...Object.values(entity.links ?? {}), ...(entity.subs ?? []).flatMap(linksOf)]
@@ -706,12 +712,12 @@ export class CanvasStore {
       const view = this.views.get(name)
       if ((!node && !row) || !view) continue
       const w = node?.width ?? row?.w ?? widthFor(view)
-      boxes.set(name, { x: node?.position.x ?? row!.x, y: node?.position.y ?? row!.y, w, h: node?.measured?.height ?? heightFor(view, w) })
+      boxes.set(name, this.laid(name, { x: node?.position.x ?? row!.x, y: node?.position.y ?? row!.y, w, h: node?.measured?.height ?? heightFor(view, w) }))
     }
     const sizes = new Map(left.map((element) => {
       const view = viewOf(element)
       const w = widthFor(view)
-      return [element.name, { w, h: heightFor(view, w) }]
+      return [element.name, { w, h: heightFor(view, w) + underOf(view, chipsOf(view)) }]
     }))
     const names = left.map((element) => element.name)
     return homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
@@ -797,17 +803,16 @@ export class CanvasStore {
     if (!view) return 0
     let held = this.stacks.get(view)
     if (held === undefined) {
-      const tool = view.asset?.tool
-      held = addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
+      held = chipsOf(view)
       this.stacks.set(view, held)
     }
     return held
   }
 
-  /** A box and the stack under it, which nothing else lies on. With none it's only the box. */
+  /** A box and the room it keeps under it, which nothing else lies on: what hangs from it, and what the name of a box below rises into. */
   private laid(name: string, box: Box): Box {
-    const held = this.stacked(name)
-    return held ? { ...box, h: box.h + STACK_GAP + held * ADD_ON_HEIGHT } : box
+    const view = this.get(name)
+    return view ? { ...box, h: box.h + underOf(view, this.stacked(name)) } : box
   }
 
   /** Where a block of boxes goes to lie on nothing: there if it can, with what it lies on nudged aside if that's cheaper. */
@@ -818,8 +823,8 @@ export class CanvasStore {
     return fitted
   }
 
-  /** Its place and size, from what every tab holds alike. */
-  boxOf(name: string): Box | null {
+  /** Its place and size, from what every tab holds alike, and the room it keeps under it unless `bare`. */
+  boxOf(name: string, bare = false): Box | null {
     const id = this.ids.get(name)
     const view = this.views.get(name)
     const node = id ? this.flow?.getNode(id) : undefined
@@ -827,13 +832,14 @@ export class CanvasStore {
     if ((!node && !row) || !view) return null
     // A row is what the page last said of it, and a node may not have heard yet.
     const w = row?.w ?? node?.width ?? widthFor(view)
-    return this.laid(name, { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) })
+    const box = { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) }
+    return bare ? box : this.laid(name, box)
   }
 
-  private field(besides?: Set<string>): Field {
+  private field(besides?: Set<string>, bare = false): Field {
     const field = new Field()
     for (const name of this.ids.keys()) {
-      const box = besides?.has(name) ? null : this.boxOf(name)
+      const box = besides?.has(name) ? null : this.boxOf(name, bare)
       if (box) field.add(name, box)
     }
     return field
@@ -928,11 +934,14 @@ export class CanvasStore {
     }
   }
 
-  /** Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes, so nothing goes out of date. */
+  /**
+   * Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes, so nothing goes out of date.
+   * Only boxes themselves: the room each keeps around it is for placing and settling, so a project laid out closer than that stays as it is.
+   */
   private separate() {
-    const field = this.field()
+    const field = this.field(undefined, true)
     for (const name of [...this.ids.keys()].sort()) {
-      const box = this.boxOf(name)
+      const box = this.boxOf(name, true)
       if (!box) continue
       field.remove(name)
       if ([...field.under(box).keys()].some((other) => other < name)) field.add(name, this.giveWay(name, field, box, {}))

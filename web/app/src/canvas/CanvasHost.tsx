@@ -32,7 +32,7 @@ import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./
 import { EntityCard } from "./EntityCard"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
-import { madeHere, shownOf } from "./shown"
+import { HANG, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
@@ -73,8 +73,8 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
   const under = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-under`)
   const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side`)
   const scale = (zoom: number) => textScale(zoom) * zoom * Number(getComputedStyle(stage).getPropertyValue("--here"))
-  /** The takes beside it, in the canvas's own units at `zoom`, with their gap. */
-  const beside = (zoom: number) => (side ? ((side.offsetWidth + 8) * scale(zoom)) / zoom : 0)
+  /** The takes beside it, in the canvas's own units at `zoom`, with their gap (app.css `.here-side`, --s5). */
+  const beside = (zoom: number) => (side ? ((side.offsetWidth + 12) * scale(zoom)) / zoom : 0)
   const most = tall * (1 - LEAST_BOX) - UNDER_GAP
   const across = (zoom: number) => Math.min(wide, Math.max(w * zoom, LEAST_UNDER * scale(zoom)))
   /** What's under it as it would be at `zoom`: as tall as what it holds, up to what it may have. */
@@ -724,6 +724,8 @@ function Canvas({
       if (text === held) return
       held = text
       stage.current?.style.setProperty("--text", String(text))
+      // What hangs off a box at rest stops growing here, and shrinks with the canvas past it, in the room its box keeps (shown.ts).
+      stage.current?.style.setProperty("--hang", String(Math.min(text, HANG)))
     }
     set(flowStore.getState().transform[2])
     return flowStore.subscribe((state) => set(state.transform[2]))

@@ -114,3 +114,13 @@
   --check2: #e8e8e8;
   color-scheme: dark;
 }
+
+/* Space: gaps, padding and margins around a box and in what floats over the canvas take these steps, so things sit alike everywhere. */
+:root {
+  --s1: 2px;
+  --s2: 4px;
+  --s3: 6px;
+  --s4: 8px;
+  --s5: 12px;
+  --s6: 16px;
+}

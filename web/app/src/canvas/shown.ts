@@ -30,6 +30,28 @@ export function shownOf(view: ElementView): Shown | null {
 
 /** A card's size, unmeasured, so a card culled away still counts in a fit. */
 export const HEAD = 32
+
+/**
+ * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn one size on screen as the canvas
+ * zooms out, down to a zoom of 0.5; further out it shrinks with the canvas (--hang, set beside --text). So the room it takes is bounded,
+ * and a box keeps that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ */
+export const HANG = 2
+// As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25.
+const TITLE_LINE = 15.5 * 1.35 * 1.25
+const SMALL_LINE = 10.5 * 1.35 * 1.25
+/** How far a name rises over its box at most: its head is HEAD tall and keeps 24 of it under the name, clear of the picture. */
+const RISE = Math.ceil(TITLE_LINE * HANG - (HEAD - 24))
+/** An add-on chip: a small line, 2 px over and under it, and its border; the gap under each; and how far under its box they start. */
+const CHIP = Math.ceil((SMALL_LINE + 4) * HANG + 2)
+const CHIP_GAP = Math.ceil(4 * HANG)
+const STACK_GAP = 4
+
+/** The room a box keeps clear under it: its add-ons, else its shape's word, then the room the name of a box below it rises into. */
+export function underOf(view: ElementView, chips: number): number {
+  const hung = chips ? STACK_GAP + chips * CHIP + (chips - 1) * CHIP_GAP : view.asset?.tool ? Math.ceil(SMALL_LINE * HANG) : 0
+  return hung + RISE
+}
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72
 export const SUB_ROW = 136

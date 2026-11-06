@@ -18,6 +18,10 @@
   --tiny: calc(var(--t-tiny) * var(--m));
 }
 .react-flow__node {
+  /* What hangs off a box at rest stops growing at --hang, past which it shrinks with the canvas, in the room its box keeps (shown.ts). */
+  --on: calc(var(--ui) * var(--hang, 1));
+}
+.card.here {
   --on: calc(var(--ui) * var(--text, 1));
 }
 .card {
@@ -547,6 +551,7 @@ code {
 .play,
 .stop {
   position: absolute;
+  color: #fff;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -657,15 +662,16 @@ video.preview.on {
 .in-frame .mention-text {
   padding: 12px;
   color: var(--ink);
-  font-size: calc(var(--t-title) * var(--on));
+  font-size: calc(var(--t-title) * var(--ui) * var(--text, 1));
   line-height: 1.4;
 }
-/* As many lines as the box holds at this zoom. */
+/* As many whole lines as the box holds at this zoom: the last one shown is never cut through. */
 .words {
   margin: 0;
   align-self: flex-start;
   width: 100%;
-  max-height: 100%;
+  padding-bottom: 0;
+  max-height: calc(12px + round(down, 100% - 12px, 1.4em));
   overflow: hidden;
   overflow-wrap: anywhere;
 }
@@ -751,6 +757,21 @@ video.preview.on {
 .card.here .media {
   user-select: text;
 }
+/* At rest, its × and its state are drawn with its name: one size on screen, down to --hang. */
+.card .head .iconb {
+  width: calc(22px * var(--hang, 1));
+  height: calc(22px * var(--hang, 1));
+  border-radius: calc(5px * var(--hang, 1));
+}
+.card .head .iconb .icon {
+  width: calc(14px * var(--hang, 1));
+  height: calc(14px * var(--hang, 1));
+}
+.card .head .dot {
+  width: calc(7px * var(--hang, 1));
+  height: calc(7px * var(--hang, 1));
+  margin: 0 calc(2px * var(--hang, 1));
+}
 /* What it can do at its head and on its picture stays one size too: the canvas is drawn in on it. */
 .card.here .head .iconb {
   width: calc(30px * var(--text, 1));
@@ -779,14 +800,24 @@ video.preview.on {
 .card.here .tc {
   font-size: calc(var(--t-small) * var(--on));
 }
+/* Waiting, at rest: said on its picture, bottom left, as how far it's got is, so nothing hangs under it but what its box keeps room for. */
 .rest-waiting {
   position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  transform: scale(var(--text, 1));
-  transform-origin: top left;
-  white-space: nowrap;
+  left: calc(var(--s3) * var(--hang, 1));
+  bottom: calc(var(--s3) * var(--hang, 1));
+  max-width: calc(100% / var(--hang, 1) - 2 * var(--s3));
+  transform: scale(var(--hang, 1));
+  transform-origin: bottom left;
   z-index: 5;
+}
+.card .rest-waiting .status {
+  padding: 1px var(--s3);
+  border-radius: 5px;
+  overflow: hidden;
+  background: #000a;
+  color: #cfe6ff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* All of a box, under it. --here-width and --here-room come with each fit, and --here is how large it's drawn for the screen. */
 .stage {
@@ -822,14 +853,16 @@ video.preview.on {
 }
 .here-under > * {
   --text: 1;
+  --hang: 1;
 }
-/* A box worked on: its takes in a column beside the picture, the newest on top, the first's top on the picture's. */
+/* A box worked on: its takes in a column beside the picture, the newest on top, the first's top on the picture's and the column as tall
+   as it. A take's ring is drawn inside it, so nothing of one rises past the picture or is cut off by the column. */
 .here-side {
   position: absolute;
-  top: calc(var(--head) - 4px * var(--text, 1) * var(--here));
-  left: calc(100% + 8px * var(--text, 1));
-  width: var(--side-width, 132px);
-  height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)) + 4px);
+  top: var(--head);
+  left: calc(100% + var(--s5) * var(--text, 1));
+  width: var(--side-width, 124px);
+  height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)));
   overflow: hidden auto;
   overscroll-behavior: contain;
   transform: scale(calc(var(--text, 1) * var(--here)));
@@ -839,11 +872,12 @@ video.preview.on {
 }
 .here-side > * {
   --text: 1;
+  --hang: 1;
 }
 .here-side .takes {
   flex-direction: column;
-  gap: 6px;
-  padding: 4px;
+  gap: var(--s3);
+  padding: 0;
   overflow: visible;
 }
 .here-side .take {
@@ -877,9 +911,15 @@ video.preview.on {
   border-color: var(--ember);
   color: var(--ember);
 }
-.here-side .take.on {
-  outline: 4px solid var(--ember);
-  outline-offset: 2px;
+/* The one looked at: a ring inside its edge, over its picture and under its number. */
+.here-side .take.on::before,
+.here-under .take.on::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 4px solid var(--ember);
+  pointer-events: none;
 }
 .here-side .take.making {
   background: var(--card);
@@ -983,10 +1023,6 @@ video.preview.on {
 /* The one being looked at, and the one approved: each plain at a glance, on the row and the tile. */
 .here-under .takes {
   padding: 6px;
-}
-.here-under .take.on {
-  outline: 4px solid var(--ember);
-  outline-offset: 2px;
 }
 .take.approved::after {
   content: "✓";
@@ -2325,7 +2361,7 @@ a.tab:hover {
 .main-menu nav {
   position: absolute;
   right: 0;
-  top: 34px;
+  top: calc(100% + var(--s2));
   min-width: 140px;
   padding: 4px;
   display: flex;
@@ -2362,14 +2398,19 @@ a.tab:hover {
   border-top: 1px solid var(--line);
   margin-top: 6px;
 }
+/* Names in a column, each on one line: a long one ends in an ellipsis, and its title says it all. */
 .edit-more .slide > .ctl-name:first-child {
-  flex: 0 0 68px;
+  flex: 0 0 26%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.text-row {
+/* Its name level with the first line of its words, not the middle of all it holds. */
+.slide.text-row {
   align-items: flex-start;
 }
 .text-row > .ctl-name {
-  padding-top: 6px;
+  padding-top: var(--s3);
 }
 .text-box {
   flex: 1;
@@ -2435,6 +2476,11 @@ a.tab:hover {
   color: var(--ember2);
   font: 600 0.9em var(--mono);
   white-space: nowrap;
+}
+/* In a frame at rest a chip is words among words: it wraps with them, so a long one is never cut off at the box's edge. */
+.words .chip {
+  display: inline;
+  white-space: normal;
 }
 /* A name its tool doesn't take: there, and not sent. */
 .chip.refused {
@@ -2832,10 +2878,10 @@ input[type="checkbox"] {
   border-radius: calc(var(--round) * var(--ui));
   background: var(--float);
 }
+/* A block, so a name too long for its tab ends in an ellipsis: a flex box cuts its text where it ends. */
 .ptab,
 .ptabs-ghost > span {
-  display: inline-flex;
-  align-items: center;
+  display: block;
   max-width: calc(150px * var(--ui));
   padding: calc(4px * var(--ui)) calc(10px * var(--ui));
   overflow: hidden;
@@ -2858,6 +2904,8 @@ input[type="checkbox"] {
 }
 .ptab.new {
   flex: none;
+  display: inline-flex;
+  align-items: center;
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));
 }
 /* What each tab takes at its full width, laid out where no one sees it. */
