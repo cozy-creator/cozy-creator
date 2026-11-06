@@ -196,13 +196,15 @@ impl Escapes {
     }
 }
 
-/// What our own bytes may reach on this card now, as last sampled: no driver call.
+/// The most our own bytes could reach on this card, as last sampled (no driver call): its cap, else
+/// the card, with what other processes hold counted as theirs to give back, as reclaim asks them to
+/// (an idle peer executor's weights). A refusal by it never takes a pass that could fit.
 fn room_now(owner: &Device) -> usize {
     let cap = owner.capacity();
     if cap != usize::MAX {
-        return cap;
+        return cap.saturating_add(owner.outside.load(Ordering::Acquire));
     }
-    owner.total.load(Ordering::Acquire).saturating_sub(owner.outside.load(Ordering::Acquire))
+    owner.total.load(Ordering::Acquire)
 }
 
 /// A forward of the model `head` begins, its inputs of `shape` (0: unknown, and nothing is learned for
