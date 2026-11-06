@@ -618,7 +618,17 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           </button>
         ) : null}
         {here ? (
-          <button type="button" className="iconb nodrag" aria-label="Close" title="Close" onClick={store.leaveHere}>
+          // Open or not, its × deletes it, with Undo: Esc or a click off it leaves.
+          <button
+            type="button"
+            className="iconb nodrag"
+            aria-label="Delete"
+            title="Delete"
+            onClick={() => {
+              store.leaveHere()
+              store.remove([name])
+            }}
+          >
             <Icon name="close" />
           </button>
         ) : view.placing && view.placing.stage !== "adding" ? (
