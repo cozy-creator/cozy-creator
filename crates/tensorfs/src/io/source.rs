@@ -156,6 +156,18 @@ impl Source {
         )))
     }
 
+    /// `items`' file bytes out of the page cache: a host page holds them now, and a cached copy
+    /// beside it would only push out file bytes still read.
+    pub fn uncache(&self, items: &[Item]) {
+        for item in items {
+            if let ItemSource::Object(range) = &item.source {
+                if let Ok(file) = self.file(&range.obj) {
+                    platform::durable::dont_need(&file, range.off, range.len);
+                }
+            }
+        }
+    }
+
     pub fn resident(&self, obj: &ObjectRef, _tally: &IoTally) -> Result<bool> {
         #[cfg(feature = "store")]
         self.load(std::slice::from_ref(obj))?;

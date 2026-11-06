@@ -426,6 +426,9 @@ impl Tier {
                 tracing::warn!("a host page did not pin: {error}");
                 continue;
             }
+            // Its cached copy, active from the refills that made it worth keeping, would outlive
+            // file bytes still read: on a 32 GB cgroup Flux-2's warm steps took 7-9 s, not 3.2.
+            py.detach(|| source.uncache());
             if !self.register(py, &is_waiting, (key, set, page))? {
                 return Ok(());
             }

@@ -211,6 +211,20 @@ pub fn will_need(file: &File, off: u64, len: u64) {
     }
 }
 
+/// Drops `[off, off+len)` of `file` from the page cache (`POSIX_FADV_DONTNEED`): its bytes live
+/// elsewhere now. Nothing where the OS has no such advice.
+pub fn dont_need(file: &File, off: u64, len: u64) {
+    #[cfg(target_os = "linux")]
+    {
+        // Advice: clean pages go, dirty ones stay until written.
+        let _ = rustix::fs::fadvise(file, off, std::num::NonZeroU64::new(len), rustix::fs::Advice::DontNeed);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, off, len);
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::fs::File;
