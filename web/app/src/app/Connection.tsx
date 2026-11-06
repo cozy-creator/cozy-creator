@@ -131,6 +131,8 @@ class Bridge {
       for (const listener of this.runListeners) listener(run)
     }
     const ended = batch.some((run) => run.status !== "queued" && run.status !== "in_progress")
+    // An install, a removal or a machine's update that ends can change what a tool reads as, local code's included: the list is read again.
+    if (batch.some((run) => run.kind !== "call" && run.status === "completed")) void this.queries.invalidateQueries({ queryKey: ["tools"] })
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
     for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["runs"] })) {
       if (!list) continue
