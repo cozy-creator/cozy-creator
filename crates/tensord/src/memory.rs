@@ -18,6 +18,8 @@ pub struct Gpu {
     pub uuid: String,
     /// What the card has beyond the development `gpu_memory_limit`: never free here.
     absent: u64,
+    /// The card, or the limit: what a call may have of it.
+    pub capacity: u64,
 }
 
 impl Gpu {
@@ -25,7 +27,8 @@ impl Gpu {
         let row = row(entry, inventory)?;
         let figures = Figures::new().map_err(|error| log.note(serde_json::json!({"event": "gpu_figures_unavailable", "gpu": entry, "why": error.to_string()}))).ok()?;
         let absent = limit.map_or(0, |limit| row.memory_bytes.saturating_sub(limit));
-        let gpu = Self { figures, model: row.device_name.clone(), uuid: row.device_uuid.clone(), absent };
+        let gpu = Self { figures, model: row.device_name.clone(), uuid: row.device_uuid.clone(), absent,
+            capacity: row.memory_bytes.saturating_sub(absent) };
         peaks.restore(&gpu.model, &gpu.figures);
         log.note(serde_json::json!({"event": "memory_mode", "gpu": gpu.uuid, "mode": "executor_owned", "tensorD_gpu_bytes": 0}));
         Some(gpu)

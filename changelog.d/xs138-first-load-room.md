@@ -1,0 +1,1 @@
+A model's first load that can't fit beside idle executors gets its room as under v1: TensorD ends idle executors on its GPU, the least recently used first and warm sets never, until it fits. An idle executor's CUDA context comes back only when it exits.

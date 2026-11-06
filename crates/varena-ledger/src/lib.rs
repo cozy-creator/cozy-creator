@@ -417,14 +417,15 @@ impl Table {
         gave
     }
 
-    /// TensorD's ask for a process in no row (an executor older than the ledger) about to use this
-    /// GPU: every donor gives back all it holds idle. A borrowed row, which answers other asks with
-    /// nothing meanwhile, waits until each donor has answered or `deadline`. Needs its own `Table`:
-    /// the supervisor's would reap the row. The bytes given back; None with no free row.
-    pub fn ask_all_idle(&self, deadline: Instant) -> Option<u64> {
+    /// An ask no allocator of this process waits on, as TensorD's for a process in no row (an
+    /// executor older than the ledger) about to use this GPU: every donor gives back its share of
+    /// `bytes` (`u64::MAX`: all it holds idle). A borrowed row, which answers other asks with nothing
+    /// meanwhile, waits until each donor has answered or `deadline`. Needs its own `Table`: a claim
+    /// takes the one row this table's `reap` spares. The bytes given back; None with no free row.
+    pub fn ask_idle(&self, bytes: u64, deadline: Instant) -> Option<u64> {
         let row = self.claim()?;
         let before = self.page.released.load(Acquire);
-        let generation = self.ask(row, u64::MAX);
+        let generation = self.ask(row, bytes);
         loop {
             let seen = self.page.answers.load(Acquire);
             self.reap();

@@ -525,7 +525,7 @@ struct Session {
     /// Its row of `Serving`: the manifests its constructions read.
     serving: u64,
     /// Its TensorFS has varena v2, whose cores share each GPU through its ledger. An older one
-    /// is asked for nothing and asks for nothing: TensorD makes its room (`room_outside_ledger`).
+    /// is asked for nothing and asks for nothing: TensorD makes its room (`make_room`).
     ledger: bool,
 }
 impl Session {
@@ -1138,27 +1138,48 @@ impl Pool {
             .map(|(key, _)| key.clone());
         key.is_some_and(|key| self.end_session(&key))
     }
-    /// Before an executor outside the ledger (`Session::ledger`) serves a call on `lane`, room for
-    /// it, as v1 made it: it sizes itself by what the driver has free, which no peer gives it.
-    /// Idle executors outside the ledger there end, since nothing else returns what they hold; for
-    /// a construction it has not loaded, idle ledger members too, whose contexts no ask returns
-    /// (v1 ended every idle neighbour for a first call); then every member left gives back what it
-    /// holds idle. Warm sets stay.
-    fn room_outside_ledger(&self, lane: std::ops::Range<usize>, loading: bool) {
+    /// Before a call on `lane`, room for it, as v1 made it: only an exit returns a CUDA context. An
+    /// executor outside the ledger (`Session::ledger`) sizes itself by what the driver has free,
+    /// which no peer gives it: idle executors outside the ledger there end, since nothing else
+    /// returns what they hold; for a construction it has not loaded, idle ledger members too; then
+    /// every member left gives back what it holds idle. A ledger member's first load (`loading`)
+    /// ends idle executors there, outside the ledger first, then the least recently used, while
+    /// `need` does not fit in free room: at 6 GiB four idle executors held a third of the card, and
+    /// no ask returns a context. Warm sets stay.
+    fn make_room(&self, lane: std::ops::Range<usize>, ledger: bool, loading: bool, need: u64) {
+        let fits = || self.free(&lane).is_some_and(|free| free >= need);
+        if ledger && (!loading || fits()) {
+            return;
+        }
         let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
-        let keys: Vec<String> = self.sessions.lock().unwrap().iter()
+        let mut idle: Vec<(bool, Instant, String)> = self.sessions.lock().unwrap().iter()
             .filter(|(_, s)| s.degree != 0 && s.start < lane.end && lane.start < s.start + s.degree as usize)
-            .filter(|(_, s)| (loading || !s.ledger) && !s.loaded.keys().any(|key| warm.contains(key)))
-            .map(|(key, _)| key.clone()).collect();
-        let ended = keys.iter().filter(|key| self.end_session(key)).count();
+            .filter(|(_, s)| !s.loaded.keys().any(|key| warm.contains(key)))
+            .map(|(key, s)| (s.ledger, s.used, key.clone())).collect();
+        idle.sort();
+        let mut ended = 0;
+        for (member, _, key) in idle {
+            if ledger && fits() {
+                break;
+            }
+            if ledger || loading || !member {
+                ended += usize::from(self.end_session(&key));
+            }
+        }
         #[cfg(target_os = "linux")]
-        let given: u64 = self.devices[lane.clone()].iter().filter_map(|device| device.asking.as_ref())
-            .filter_map(|table| table.lock().unwrap().ask_all_idle(Instant::now() + std::time::Duration::from_secs(2))).sum();
+        let given: u64 = if ledger { 0 } else {
+            self.devices[lane.clone()].iter().filter_map(|device| device.asking.as_ref())
+                .filter_map(|table| table.lock().unwrap().ask_idle(u64::MAX, Instant::now() + std::time::Duration::from_secs(2))).sum()
+        };
         #[cfg(not(target_os = "linux"))]
         let given = 0;
-        self.notes.note(serde_json::json!({"event": "room_outside_ledger", "gpus": lane, "loading": loading,
-            "ended": ended, "given": given, "free": self.free(&lane)}));
+        self.notes.note(serde_json::json!({"event": "room", "gpus": lane, "ledger": ledger, "loading": loading,
+            "need": need, "ended": ended, "given": given, "free": self.free(&lane)}));
+    }
+    /// The least any GPU of `lane` gives a call: its card, or its limit.
+    fn capacity(&self, lane: &std::ops::Range<usize>) -> u64 {
+        lane.clone().filter_map(|index| Some(self.devices.get(index)?.memory.as_ref()?.capacity)).min().unwrap_or(0)
     }
     /// Current minimum driver free bytes, used only for exit diagnostics.
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -3319,8 +3340,11 @@ impl Pool {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
         let gpus = self.lane(start, degree)?;
-        if !session.ledger && degree > 0 {
-            self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
+        if degree > 0 {
+            // A first load needs its weights and a quarter of the card, the floor a split keeps.
+            let weights = plan.slots.iter().map(|slot| slot.selected_encoded_bytes).sum::<u64>() / u64::from(degree);
+            let need = if plan.slots.is_empty() { 0 } else { weights + self.capacity(&session.lane()) / 4 };
+            self.make_room(session.lane(), session.ledger, !session.loaded.contains_key(&construction), need);
         }
         let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
         // A call begins: the host is looked at before it grows.
