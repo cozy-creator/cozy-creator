@@ -160,6 +160,8 @@ struct OwnerState {
     facts: OwnerFacts,
     closing: bool,
     last_use: u64,
+    /// Its callback takes the host runtime's lock (the GIL): one holding that lock cannot wait for it.
+    host: bool,
 }
 struct OwnerMeta {
     pid: u32,
@@ -237,9 +239,22 @@ struct Control {
     changed: Condvar,
     clock: AtomicU64,
     requestable: AtomicUsize,
+    /// Of those, owners whose callbacks take the host runtime's lock.
+    hosted: AtomicUsize,
     gpu: &'static crate::Device,
 }
 impl Control {
+    fn count(&self, owner: &OwnerState, requestable: bool) {
+        let step = |counter: &AtomicUsize| if requestable {
+            counter.fetch_add(1, Ordering::AcqRel);
+        } else {
+            counter.fetch_sub(1, Ordering::AcqRel);
+        };
+        step(&self.requestable);
+        if owner.host {
+            step(&self.hosted);
+        }
+    }
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
         crate::check_process()?;
         if self.pid != std::process::id() {
@@ -288,11 +303,16 @@ impl CacheOwner {
     where
         F: FnMut(usize) -> Result<CallbackResult> + Send + 'static,
     {
-        Self::with_callback(device, Box::new(NativeCallback(Some(callback))))
+        Self::register(device, Box::new(NativeCallback(Some(callback))), false)
     }
 
+    /// A foreign runtime's owner, whose callback takes that runtime's lock.
     #[doc(hidden)]
     pub fn with_callback(device: i32, callback: Box<dyn CacheCallback>) -> Result<Self> {
+        Self::register(device, callback, true)
+    }
+
+    fn register(device: i32, callback: Box<dyn CacheCallback>, host: bool) -> Result<Self> {
         if device < 0 {
             return Err(Error::Invalid("cache owner device must be nonnegative"));
         }
@@ -313,6 +333,7 @@ impl CacheOwner {
                     changed: Condvar::new(),
                     clock: AtomicU64::new(0),
                     requestable: AtomicUsize::new(0),
+                    hosted: AtomicUsize::new(0),
                     gpu,
                 });
                 let (send, receive) = mpsc::channel();
@@ -350,6 +371,7 @@ impl CacheOwner {
                     },
                     closing: false,
                     last_use: control.clock.fetch_add(1, Ordering::AcqRel),
+                    host,
                 }),
             });
             state.owners.insert(id, Arc::clone(&owner));
@@ -371,7 +393,7 @@ impl CacheOwner {
             let mut held = owner.lock()?;
             held.facts.registered = true;
             held.facts.requestable = true;
-            control.requestable.fetch_add(1, Ordering::AcqRel);
+            control.count(&held, true);
         }
         control.changed.notify_all();
         Ok(Self { control, owner, id })
@@ -389,7 +411,7 @@ impl CacheOwner {
             && owner.facts.retirement_failed.is_none()
         {
             owner.facts.requestable = true;
-            self.control.requestable.fetch_add(1, Ordering::AcqRel);
+            self.control.count(&owner, true);
         }
         Ok(())
     }
@@ -398,7 +420,7 @@ impl CacheOwner {
         let mut owner = self.owner.lock()?;
         if owner.facts.requestable {
             owner.facts.requestable = false;
-            self.control.requestable.fetch_sub(1, Ordering::AcqRel);
+            self.control.count(&owner, false);
         }
         Ok(())
     }
@@ -430,7 +452,7 @@ impl CacheOwner {
             owner.facts.closing = true;
             if owner.facts.requestable {
                 owner.facts.requestable = false;
-                self.control.requestable.fetch_sub(1, Ordering::AcqRel);
+                self.control.count(&owner, false);
             }
         }
         self.control.changed.notify_all();
@@ -479,6 +501,11 @@ impl Drop for CacheOwner {
 
 pub fn requestable(device: i32) -> Result<usize> {
     Ok(control(device)?.map_or(0, |control| control.requestable.load(Ordering::Acquire)))
+}
+
+/// Requestable owners whose callbacks take the host runtime's lock.
+pub(crate) fn hosted(device: i32) -> Result<usize> {
+    Ok(control(device)?.map_or(0, |control| control.hosted.load(Ordering::Acquire)))
 }
 
 
@@ -653,7 +680,7 @@ fn deferred(error: &Error) -> bool {
 fn failed(control: &Control, owner: &mut OwnerState, reason: String, retirement: bool) {
     if owner.facts.requestable {
         owner.facts.requestable = false;
-        control.requestable.fetch_sub(1, Ordering::AcqRel);
+        control.count(owner, false);
     }
     if retirement {
         owner.facts.retirement_failed = Some(reason);
