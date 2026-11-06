@@ -1,4 +1,5 @@
 import { ApiError, type Client } from "../api/client"
+import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Row, Tool } from "../types"
@@ -28,6 +29,7 @@ export class Placer {
   private client: Client
   private hooks: Hooks
   private made?: Promise<string>
+  private projectKey = `project-${crypto.randomUUID()}`
   private nextKey = 0
 
   constructor(store: CanvasStore, client: Client, hooks: Hooks) {
@@ -112,7 +114,7 @@ export class Placer {
       const signal = new AbortController().signal
       const sent = async () => {
         const digest = await hashFile(file, signal, () => {})
-        if (!this.store.holdsFile(digest.slice("sha256:".length))) await sendFile(this.client, file, digest, signal, () => {}, () => {})
+        if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.reaching(() => sendFile(this.client, file, digest, signal, () => {}, () => {}), signal)
         return digest
       }
       void inLine(sent)
@@ -165,9 +167,8 @@ export class Placer {
     const name = this.store.get(key)!.name
     this.store.beginAdding()
     try {
-      const id = await this.project()
       const once = `import-${crypto.randomUUID()}`
-      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: (signal) => this.client.import(id, once, { source: digest, name, at }, signal), done, refused }))
+      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: async (signal) => this.client.import(await this.project(), once, { source: digest, name, at }, signal), done, refused }))
       this.store.land(key, answer, at)
       if (answer.note) say(answer.note)
       return answer.name
@@ -195,25 +196,46 @@ export class Placer {
   }
 
   private send(key: string, file: File, digest: string, signal: AbortSignal) {
-    this.stage(key, "sending", 0)
-    return sendFile(
-      this.client,
-      file,
-      digest,
-      signal,
-      (done) => this.stage(key, "sending", done),
-      (attempt) => this.store.patchPlacing(key, { attempt: attempt || undefined }),
-    )
+    return this.reaching(() => {
+      this.stage(key, "sending", 0)
+      return sendFile(
+        this.client,
+        file,
+        digest,
+        signal,
+        (done) => this.stage(key, "sending", done),
+        (attempt) => this.store.patchPlacing(key, { attempt: attempt || undefined }),
+      )
+    }, signal)
   }
 
+  /** Bytes go again each time they can't reach Calcifer, for as long as it's away: what's dropped meanwhile goes when it's back. */
+  private async reaching(work: () => Promise<void>, signal: AbortSignal) {
+    for (let tries = 1; ; tries++) {
+      try {
+        return await work()
+      } catch (error) {
+        if (signal.aborted || !lost(error)) throw error
+        await this.store.outbox.wait(tries, signal)
+      }
+    }
+  }
+
+  /** The project this canvas makes with its first box, under one key however often it's asked: one that didn't reach Calcifer is asked again. */
   private project(): Promise<string> {
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
-    this.made ??= this.client.newProject("untitled", `project-${crypto.randomUUID()}`).then(({ id, said }) => {
-      this.store.projectId = id
-      for (const line of said ?? []) say(line)
-      this.hooks.adopt(id)
-      return id
-    })
+    this.made ??= this.client.newProject("untitled", this.projectKey).then(
+      ({ id, said }) => {
+        this.store.projectId = id
+        for (const line of said ?? []) say(line)
+        this.hooks.adopt(id)
+        return id
+      },
+      (error) => {
+        this.made = undefined
+        throw error
+      },
+    )
     return this.made
   }
 }

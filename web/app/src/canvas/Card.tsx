@@ -194,7 +194,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
           <span className="take making" title={`Run ${run}`}>
             <TakeProgress view={view} run={run} />
           </span>
-          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(run)}>
+          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
             <Icon name="close" />
           </button>
         </span>

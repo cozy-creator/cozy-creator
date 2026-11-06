@@ -14,6 +14,7 @@ import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, u
 import { createPortal } from "react-dom"
 import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
+import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
@@ -147,14 +148,13 @@ function ProjectSync({ id }: { id: string }) {
     return () => dismiss(note)
   }, [stateError, navigate])
   useEffect(() => {
-    if (canvasError) say("Couldn't read where things sit", canvasError)
+    if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
   useEffect(
     () =>
       stream.subscribe((event) => {
         if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
         if (event.type === "resync" || event.type === "hello") store.fellBehind()
-        if (event.type === "hello") store.outbox.back()
       }),
     [stream, store, id],
   )
@@ -256,9 +256,9 @@ function Canvas({
   const connection = useConnection()
   const flow = useReactFlow<ElementNode, Edge>()
   const navigate = useNavigate()
-  const { scope, client, bridge } = connection
+  const { scope, client, bridge, outbox } = connection
   const [saved] = useState(() => loadViewport(scope, projectId))
-  const [store] = useState(() => new CanvasStore(client, projectId, loadSelection(scope, projectId), loadMore(scope, projectId)))
+  const [store] = useState(() => new CanvasStore(client, outbox, projectId, loadSelection(scope, projectId), loadMore(scope, projectId)))
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
   const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id) }))
@@ -349,19 +349,11 @@ function Canvas({
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store)
   const machine = machines?.at(-1) ?? null
-  // What can't be read says so on the canvas, and everything around it still works.
-  const { error: unread } = useQuery({ ...projectQuery(client, projectId ?? ""), enabled: Boolean(projectId) })
+  // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
+  const { data: read, error } = useQuery({ ...projectQuery(client, projectId ?? ""), enabled: Boolean(projectId) })
+  const unread = error && !(read && lost(error)) ? error : null
   const readable = unread ? null : projectId
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
-
-  // Something not saved yet, with Calcifer unreachable: the browser's own question is the only one the page ever asks.
-  useEffect(() => {
-    const leaving = (event: BeforeUnloadEvent) => {
-      if (store.outbox.owed) event.preventDefault()
-    }
-    window.addEventListener("beforeunload", leaving)
-    return () => window.removeEventListener("beforeunload", leaving)
-  }, [store])
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.

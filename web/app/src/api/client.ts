@@ -409,8 +409,8 @@ export class Client {
     return this.json(`${run(id)}?detail=full`, { signal })
   }
 
-  cancelRun(id: string): Promise<Run> {
-    return this.write("POST", `${run(id)}/cancel`, {})
+  cancelRun(id: string, once?: AbortSignal): Promise<Run> {
+    return this.write("POST", `${run(id)}/cancel`, {}, undefined, { once })
   }
 
   /** A run's log and events after a place in them, opened once: its reader resumes it. */

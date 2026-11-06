@@ -1,6 +1,6 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { ApiError, type Client } from "../api/client"
-import { type Action, Outbox } from "../api/outbox"
+import { type Action, lost, type Outbox } from "../api/outbox"
 import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, Control, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
@@ -61,8 +61,8 @@ export interface ElementView {
   pending?: number
   /** A render is on its way, until when, as `pending`: it says Queued from the click on. */
   asked?: number
-  /** What was asked of its row and not read back yet, until when, as `pending`. */
-  over?: { row: Partial<Asset>; until: number }
+  /** What was asked of its row and not read back yet, oldest first. */
+  over?: Asking[]
   /** How many writes of its fields are on their way. */
   writing?: number
   placing?: Placing
@@ -105,6 +105,15 @@ export interface ElementView {
   /** The take that just landed, sliding in beside the last. */
   slid?: number
 }
+
+/** One thing asked of a box's row: shown over what's read until a read begun after its answer, `until`, as `pending`. */
+interface Asking {
+  row: Partial<Asset>
+  until: number
+}
+
+/** A row as read, under what's been asked of it and not read back. */
+const asked = (read: Asset, over: Asking[] = []): Asset => over.reduce((asset, ask) => ({ ...asset, ...ask.row }), read)
 
 /** What a new take keeps of an old one. */
 export interface Keep {
@@ -186,7 +195,7 @@ export class CanvasStore {
   private unsentSaid = new Set<string>()
   private runs = new Map<number, Run>()
   /** What a person did, in order, on its way to Calcifer. */
-  readonly outbox = new Outbox()
+  readonly outbox: Outbox
   /** A push or pull is going. */
   readonly transferring = signal(false)
   /** The tools known so far, by id. */
@@ -266,8 +275,9 @@ export class CanvasStore {
   /** More was opened or shut. */
   onMore?: (names: string[]) => void
 
-  constructor(client: Client, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
+  constructor(client: Client, outbox: Outbox, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
     this.client = client
+    this.outbox = outbox
     this.projectId = projectId
     this.selected = new Set(selected)
     this.moreOpen = new Set(moreOpen)
@@ -555,10 +565,10 @@ export class CanvasStore {
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
-        const over = view.over && view.over.until >= this.began ? view.over : undefined
-        if (view.over && !over) change.over = undefined
+        const over = view.over?.filter((ask) => ask.until >= this.began)
+        if (view.over && over?.length !== view.over.length) change.over = over?.length ? over : undefined
         if (view.asset !== asset || view.landed) {
-          Object.assign(change, { asset: over ? { ...asset, ...over.row } : asset, landed: undefined })
+          Object.assign(change, { asset: asked(asset, over), landed: undefined })
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
@@ -640,7 +650,7 @@ export class CanvasStore {
     try {
       cards = (await this.client.canvas(this.projectId)).cards
     } catch (error) {
-      say("Couldn't read where things sit", error)
+      if (!lost(error)) say("Couldn't read where things sit", error)
     }
     const rows = this.rows!
     const state = this.state!
@@ -953,33 +963,52 @@ export class CanvasStore {
     if (name) this.patch(name, change)
   }
 
-  /** `row` over what its row says, now, until a read begun after the answer says for itself. Refused, it goes back. */
+  /**
+   * `row` over what its row says, now, until a read begun after the answer says for itself, over and under what else is asked of it. Refused, it goes,
+   * and the rest stays. What it hands back takes it back while it hasn't been tried: whether it could.
+   */
   private over<T extends { stale?: string[]; etag?: string }>(name: string, row: Partial<Asset>, send: (served: string, once: AbortSignal) => Promise<T>, what: string, then?: { done?(answer: T): void; refused?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
     const was = view.asset
-    const over = { row, until: NOT_YET }
+    const ask: Asking = { row, until: NOT_YET }
     const id = this.ids.get(key)
-    const mine = () => this.get(this.namesById.get(id ?? "") ?? "")?.over === over
-    this.patch(key, { over, asset: { ...was, ...row } })
-    return this.act(key, {
+    const now = () => this.views.get(this.namesById.get(id ?? "") ?? "")
+    this.patch(key, { over: [...(view.over ?? []), ask], asset: { ...was, ...row } })
+    const drop = () => {
+      const held = now()
+      if (!held?.over?.includes(ask)) return
+      const left = held.over.filter((other) => other !== ask)
+      const read = this.state?.assets.find((asset) => asset.name === this.served.get(id ?? ""))
+      this.patch(held.name, { over: left.length ? left : undefined, asset: asked(read ?? was, left) })
+      this.reshape(held.name)
+    }
+    const going = this.act(key, {
       send,
       done: (answer) => {
-        if (mine()) this.patchId(id, { over: { row, until: performance.now() } })
+        ask.until = performance.now()
         this.readAfter([id])
         // A write of its own: what a typed field began from moves with it, so it's no conflict.
-        const held = this.views.get(this.namesById.get(id ?? "") ?? "")
-        if (held && answer.etag) this.patchId(id, { known: answer.etag, ...(held.base === was.etag ? { base: held.drafts || held.writing ? answer.etag : undefined } : {}) })
+        const held = now()
+        if (held && answer.etag) {
+          this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(answer.etag))
+          this.patch(held.name, { known: answer.etag, ...(held.base === was.etag ? { base: held.drafts || held.writing ? answer.etag : undefined } : {}) })
+        }
         if (answer.stale?.length) say(`That puts ${answer.stale.join(", ")} out of date`)
         then?.done?.(answer)
       },
       refused: (error) => {
-        if (mine()) this.patchId(id, { over: undefined, asset: was })
+        drop()
         say(`Couldn't ${what} ${name}`, error)
         then?.refused?.()
       },
     })
+    return () => {
+      if (!this.outbox.takeBack(going)) return false
+      drop()
+      return true
+    }
   }
 
   /** One take or version off its box, at once, with no dialog: the strip closes up, an approved one's box stands on the newest, and a note offers Undo for a while. */
@@ -994,15 +1023,14 @@ export class CanvasStore {
     this.patch(key, { viewed: this.views.get(key)?.viewed === number ? undefined : this.views.get(key)?.viewed })
     let wasApproved = approved
     let note = 0
-    const going = this.over(key, gone, (served, once) => this.client.discardVersion(this.projectId!, served, number, once), `discard ${asset.noun} ${number} of`, {
+    const takeBack = this.over(key, gone, (served, once) => this.client.discardVersion(this.projectId!, served, number, once), `discard ${asset.noun} ${number} of`, {
       done: (answer) => {
         wasApproved = Boolean(answer.approved)
       },
       refused: () => dismiss(note),
     })
     const undo = () => {
-      if (going && this.outbox.takeBack(going)) return this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...back } })
-      this.over(key, back, (served, once) => this.client.restoreVersion(this.projectId!, served, number, wasApproved, once), `bring back ${asset.noun} ${number} of`)
+      if (!takeBack?.()) this.over(key, back, (served, once) => this.client.restoreVersion(this.projectId!, served, number, wasApproved, once), `bring back ${asset.noun} ${number} of`)
     }
     const stands = approved ? ` It was approved: ${name} now shows its newest.` : ""
     const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
@@ -1044,7 +1072,7 @@ export class CanvasStore {
     const stands = was !== undefined && !approves ? was : number
     let joined = 0
     let note = 0
-    const going = this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(was !== undefined ? { approved: stands } : {}) }, (served, once) => this.client.addVersion(this.projectId!, served, source, once), "add to", {
+    const takeBack = this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(was !== undefined ? { approved: stands } : {}) }, (served, once) => this.client.addVersion(this.projectId!, served, source, once), "add to", {
       done: (answer) => {
         joined = answer.number
         if (answer.already) dismiss(note)
@@ -1053,7 +1081,7 @@ export class CanvasStore {
       refused: () => dismiss(note),
     })
     const undo = () => {
-      if (going && this.outbox.takeBack(going)) return this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...back } })
+      if (takeBack?.()) return
       this.over(key, back, (served, once) => this.client.discardVersion(this.projectId!, served, joined, once), "take back from")
       if (approves) this.pin(key, was)
     }
@@ -1110,12 +1138,11 @@ export class CanvasStore {
       this.reshape(key)
     }
     let note = 0
-    const going = this.over(key, step.row, send(step.tool, step.fields), "change what makes", { done: (answer) => answer.warnings?.forEach((line) => say(line)), refused: () => dismiss(note) })
+    const takeBack = this.over(key, step.row, send(step.tool, step.fields), "change what makes", { done: (answer) => answer.warnings?.forEach((line) => say(line)), refused: () => dismiss(note) })
     after(step.row)
     if (!said) return
     const undo = () => {
-      if (going && this.outbox.takeBack(going)) this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...step.back.row } })
-      else this.over(key, step.back.row, send(step.back.tool, step.back.fields), "change what makes")
+      if (!takeBack?.()) this.over(key, step.back.row, send(step.back.tool, step.back.fields), "change what makes")
       after(step.back.row)
     }
     note = say(said, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
@@ -1144,9 +1171,10 @@ export class CanvasStore {
     this.over(name, { pinned: false, approved: undefined }, (served, once) => this.client.unpin(this.projectId!, served, once), "unapprove")
   }
 
-  /** Stops one run, and the box's others go on. */
-  cancelRun(run: number) {
-    this.client.cancelRun(String(run)).catch((error) => say(`Couldn't cancel run ${run}`, error))
+  /** Stops one of its runs, gone from the box at once, and its others go on. */
+  cancelRun(name: string, run: number) {
+    const making = this.get(name)?.asset?.making
+    if (making) this.over(name, { making: making.filter((number) => number !== run) }, (_, once) => this.client.cancelRun(String(run), once).then(() => ({})), `cancel run ${run} of`)
   }
 
   cancelRender(name: string) {
@@ -1336,19 +1364,12 @@ export class CanvasStore {
     this.patch(name, { drafts: Object.keys(drafts).length ? drafts : undefined })
   }
 
-  /** What makes it, among those of its kind. */
+  /** What makes it, among those of its kind: its fields stay. */
   setTool(name: string, tool: string) {
     const key = this.resolveName(name)
-    const id = this.ids.get(key)
-    if (!this.views.get(key)?.asset) return
-    this.act(key, {
-      send: (served, once) => this.client.patchAsset(this.projectId!, served, { tool }, undefined, once),
-      done: (answer) => {
-        const now = this.namesById.get(id ?? "")
-        if (now) this.wrote(now, answer)
-      },
-      refused: (error) => say(`Couldn't change what makes ${name}`, error),
-    })
+    if (this.views.get(key)?.asset?.tool === tool) return
+    this.over(key, { tool }, (served, once) => this.client.patchAsset(this.projectId!, served, { tool }, undefined, once), "change what makes", { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
+    this.reshape(key)
   }
 
   // Names in a text

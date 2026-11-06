@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query"
 import { createContext, useContext } from "react"
 import { ApiError, Client, type RunFilter } from "../api/client"
 import { EventStream } from "../api/events"
+import { Outbox } from "../api/outbox"
 import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
 import type { Machine, MachineList, ProjectState, Run, RunList, ServerEvent, Status } from "../types"
@@ -192,6 +193,8 @@ export interface Connection {
   queries: QueryClient
   stream: EventStream
   bridge: Bridge
+  /** What a person did, in order, on its way to this Calcifer, whichever project it's in. */
+  outbox: Outbox
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
   attempt: ReturnType<typeof signal<number>>
   signedOut: ReturnType<typeof signal<boolean>>
@@ -252,10 +255,14 @@ export async function connect(): Promise<Boot> {
   const scope = remote ?? "here"
   const stream = new EventStream(client, scope, Boolean(remote))
   const bridge = new Bridge(queries, client)
+  const outbox = new Outbox()
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
+  stream.subscribe((event) => {
+    if (event.type === "hello") outbox.back()
+  })
   stream.start()
-  return { connection: { scope, client, here, remote, queries, stream, bridge, attempt, signedOut, status } }
+  return { connection: { scope, client, here, remote, queries, stream, bridge, outbox, attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

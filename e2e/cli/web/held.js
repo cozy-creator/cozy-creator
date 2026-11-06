@@ -1,4 +1,4 @@
-// Windows: a save past a file another program holds longer than Calcifer waits. What the person did stays done, a note says what's in the
+// Windows: a save past a file another program holds longer than Calcifer waits. What the person did stays done, the top bar says what's in the
 // way, nothing is written while it's held, and it's saved when it's let go, with no reload and nothing pressed again.
 //   node held.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $HELD_FOLDER, $HELD_ID: a project of two Edits, `stays` and `goes`.
@@ -48,7 +48,7 @@ function check(name, ok, detail) {
   await shut.locator('.head [aria-label=Delete]').click();
   await until('gone from the canvas', () => page.locator('.react-flow__node .card[data-asset="goes"]').count(), (n) => n === 0);
   check('shown_at_once', true);
-  const note = page.locator('.note:has-text("project.yaml is open in another program")');
+  const note = page.locator('.top .pill:has-text("project.yaml is open in another program")');
   await note.waitFor();
   check('says_what_holds_it', true);
   check('not_written_while_held', yaml().includes('goes:'), yaml());

@@ -248,7 +248,8 @@ async function loseAnswers(page, method, path, times) {
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
     await page.waitForTimeout(800);
     check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && (yaml().match(new RegExp(`^  ${fifth}(_\\d+)?:`, 'gm'))?.length ?? 0) === 1 && !hasAsset(`${name}_6`), yaml());
-    check('nothing_left_saying_not_saved', !(await notes()).some((line) => /Not saved yet/.test(line)), await notes());
+    await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
+    check('nothing_left_saying_not_saved', true);
   }
 
   // A render whose answer is lost: the box says Queued at once, and however often it's asked, one run.
