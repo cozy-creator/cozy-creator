@@ -237,4 +237,4 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, signIn, until, watchBoxes, wav };
+module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, settled, signIn, until, watchBoxes, wav };
