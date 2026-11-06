@@ -392,8 +392,11 @@ impl Service {
             }
         }
         let generations: std::collections::BTreeSet<String> = removed.iter().map(|i| i.generation.clone()).collect();
+        // One the actor still installs (an installation this machine's pair moved past without
+        // moving its environment) keeps its warm members.
+        let kept: std::collections::BTreeSet<String> = self.engine.installations(actor)?.into_iter().map(|i| i.generation).collect();
         if let Some(gpu) = self.gpu() {
-            gpu.drop_members(actor, &generations);
+            gpu.drop_members(actor, &generations.difference(&kept).cloned().collect());
         }
         let bound = self.engine.with_journal(|j| j.bound_generations())?;
         let (mut reclaimed, mut retained) = (0u64, vec![]);

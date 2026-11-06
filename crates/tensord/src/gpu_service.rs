@@ -2269,7 +2269,7 @@ impl Pool {
         let (code, detail) = reason.strip_prefix("import-only start refused: ")?.split_once(": ")?;
         let code = ["import_failed", "missing_dependency"].into_iter().find(|known| *known == code)?;
         let refusal = Refused { code: code.into(), detail: detail.into() };
-        let said = floor_missed(&refusal, held).map_or_else(|| import_lines(&refusal).0.to_owned(), |said| said.detail);
+        let said = import_lines(&refusal).0.to_owned();
         // The next pass imports again.
         self.forget_parent(held, &parent);
         Some((code, said))
@@ -3816,10 +3816,7 @@ impl Pool {
                     gpu_memory_limit: self.config.gpu_memory_limit,
                 }),
                 &mut callbacks,
-            )?).map_err(|error| match refused(&error).and_then(|refusal| floor_missed(refusal, held)) {
-                Some(said) => io::Error::other(said),
-                None => error,
-            })?;
+            )?)?;
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
@@ -4608,25 +4605,6 @@ fn import_lines(refusal: &Refused) -> (&str, &str) {
         }
         _ => (&refusal.detail, ""),
     }
-}
-
-/// A package that did not import on a development Runtime that missed the package's own floor:
-/// that is why, and a traceback adds nothing a person can act on, so only the machine's log keeps it.
-fn floor_missed(refusal: &Refused, held: &HeldGeneration) -> Option<Refused> {
-    let (said, traceback) = import_lines(refusal);
-    let floors = &held.record.floors_missed;
-    if floors.is_empty() || traceback.is_empty() {
-        return None;
-    }
-    tracing::warn!("{said}\n{traceback}");
-    Some(Refused {
-        code: refusal.code.clone(),
-        detail: format!(
-            "{said}. {} {} needs {}, and this machine's development Runtime {} misses it: `cozy machine update <machine> {}`",
-            held.record.package, held.record.version, floors.join(" and "), held.record.runtime_build,
-            crate::published::environment::update_flags(floors),
-        ),
-    })
 }
 
 /// An import failure's bundle: its traceback, which travels as the run's detail.

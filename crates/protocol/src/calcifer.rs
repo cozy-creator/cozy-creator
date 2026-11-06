@@ -1100,7 +1100,8 @@ pub struct HeldPackage {
     pub hub: String,
     /// `local`, `hub`, or another Hub's URL.
     pub source: String,
-    /// Why the environment does not run the machine's own Runtime; empty when it does.
+    /// What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
+    /// and why); empty for nothing.
     pub warning: String,
 }
 
@@ -1203,7 +1204,8 @@ pub struct Environment {
     /// What it holds now: `installed`, `downloaded`, `imported`, `host` or `gpu`.
     #[serde(default)]
     pub level: String,
-    /// Why it does not run the machine's own Runtime; empty when it does.
+    /// What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
+    /// and why); empty for nothing.
     #[serde(default)]
     pub warning: String,
 }

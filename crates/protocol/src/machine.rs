@@ -952,7 +952,8 @@ pub struct Environment {
     pub runtime: String,
     /// What it holds now (as [`WarmItem::holds`]), in a warm set or not.
     pub level: String,
-    /// Why it does not run the machine's own Runtime; empty when it does.
+    /// What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
+    /// and why); empty for nothing.
     pub warning: String,
     /// The Hub origin a published installation came from; empty for local code.
     pub hub: String,

@@ -37,14 +37,10 @@ pub struct Generation {
     /// machine's Runtime read them: what keys their memo; one without keys on `source_digest`.
     #[serde(default)]
     pub closures: std::collections::BTreeMap<String, String>,
-    /// Empty when this machine's own Runtime and TensorFS installed; else why the release's
-    /// locked SDK runs instead, and which, or the package's bounds the machine's development
-    /// Runtime overrides (every run of it says so).
+    /// What every run of it is told of the Runtime pair it holds (one of this machine's it did not
+    /// take, and why; uv's findings): empty for nothing.
     #[serde(default)]
     pub sdk_fallback: String,
-    /// The package's floors on the pair that this machine's development Runtime missed.
-    #[serde(default)]
-    pub floors_missed: Vec<String>,
     /// The machine's development Runtime build this environment holds (`0.24.6+e9baf7a4`);
     /// empty for a published Runtime.
     #[serde(default)]
