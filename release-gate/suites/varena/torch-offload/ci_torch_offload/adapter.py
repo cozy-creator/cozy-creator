@@ -96,26 +96,35 @@ def split():
     # steps, the first room that runs is one a layer fits and a half doesn't. The room is what we may hold beyond what
     # can't go (live working bytes and pins): a refused room's regions and the warm-up's freed pages can, and would add
     # their bytes to it (a 64 MiB room bound the 392 MiB block whole while a warm-up's freed pages were still pending).
-    for room in range(64, 1024, 64):
+    # Another process giving memory back mid-run (the gate's last executor unloading) widens the room under us: a run
+    # whose capacity grew says nothing, and that room goes again.
+    room, moved = 64, 0
+    while room < 1024:
         model = copy.deepcopy(template)
         handle = offload(model, device=0)
         torch.cuda.empty_cache()
         vt.set_limit(0, wide)
         held = gpu.room()
         vt.set_limit(0, wide - held["capacity"] + held["working_live"] + held["pinned"] + room * 2**20)
+        before = gpu.room()["capacity"]
         try:
             with torch.inference_mode():
                 got = model(y.to(device))
         except torch.OutOfMemoryError:
             got = None  # its traceback holds the modules until this block ends
         finally:
+            after = gpu.room()["capacity"]
             vt.set_limit(0, None)
-        if got is None:
+        grew = after - before > 32 << 20 and moved < 3
+        if got is None or grew:
+            moved += grew
+            room += 0 if grew else 64
             del model, handle
             gc.collect()
             continue
         assert torch.allclose(got, want, rtol=1e-3, atol=1e-3)
-        assert any(unit.split for unit in handle.units), f"{room} MiB of room ran and nothing descended"
+        assert any(unit.split for unit in handle.units), (
+            f"{room} MiB of room ran and nothing descended (capacity {before >> 20} MiB, {after >> 20} after)")
         return
     raise AssertionError("no room ran the model")
 
