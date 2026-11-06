@@ -111,10 +111,11 @@ contract() {
 step "the contract with scripts and agents"
 local C=$OUT/contract line words path
 rm -rf "$C"; mkdir -p "$C"
-# said <label> <cozy args…>: one call, off a terminal; its exit in <label>.exit.
+# said <label> <cozy args…>: one call, off a terminal; its exit in <label>.exit (124: it waited, where `timeout` exists).
 said() {
-  local label=$1 code=0; shift
-  timeout 120 "$COZY" "$@" < /dev/null > "$C/$label.out" 2> "$C/$label.err" || code=$?
+  local label=$1 code=0 limit=(); shift
+  ! command -v timeout > /dev/null || limit=(timeout 120)
+  ${limit[@]+"${limit[@]}"} "$COZY" "$@" < /dev/null > "$C/$label.out" 2> "$C/$label.err" || code=$?
   printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"
   echo "$code" > "$C/$label.exit"
   [ "$code" != 124 ] || check "contract: cozy $* waited off a terminal: $(tail -c 200 "$C/$label.err")"
