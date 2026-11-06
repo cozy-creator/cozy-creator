@@ -2605,7 +2605,7 @@ input[type="checkbox"] {
   font-weight: 600;
 }
 
-/* Each rental, beside the project tabs: its name, then running / all it holds. */
+/* Each rental, top right: its name, then running / all it holds. */
 .mtabs {
   display: flex;
   align-items: stretch;
