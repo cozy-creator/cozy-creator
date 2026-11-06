@@ -545,7 +545,7 @@ impl Device {
     fn guard(&'static self, count: &'static AtomicUsize) -> Result<GlobalCaptureGuard> {
         count.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
             .map_err(|_| Error::Invalid("device activity count overflow"))?;
-        Ok(GlobalCaptureGuard { count, pid: std::process::id() })
+        Ok(GlobalCaptureGuard { count, pid: std::process::id(), capture: None })
     }
 
     fn owned(&self) -> usize {
@@ -907,7 +907,9 @@ pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
                 && state.retirements.load(Ordering::Acquire) == 0
             {
                 state.activity_epoch.fetch_add(1, Ordering::AcqRel);
-                return state.guard(&state.captures);
+                let mut guard = state.guard(&state.captures)?;
+                guard.capture = Some(state);
+                return Ok(guard);
             }
             if std::time::Instant::now() >= deadline {
                 return Err(if producers != 0 {
@@ -952,12 +954,17 @@ fn enter_retirement(device: i32) -> Result<GlobalCaptureGuard> {
 pub struct GlobalCaptureGuard {
     count: &'static AtomicUsize,
     pid: u32,
+    /// A capture's device: at its end, between requests, the core refills again (`source::captured`).
+    capture: Option<&'static Device>,
 }
 
 impl Drop for GlobalCaptureGuard {
     fn drop(&mut self) {
         if self.pid == std::process::id() {
             decrement(self.count);
+            if let Some(device) = self.capture {
+                let _ = source::captured(device); // A guess: its failure is no capture's.
+            }
         }
     }
 }

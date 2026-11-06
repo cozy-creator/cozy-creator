@@ -29,10 +29,12 @@ struct Slot {
     wanted: Option<(Arc<Region>, bool)>,
     running: Option<Arc<Region>>,
     worker: Option<ThreadId>,
-    /// Requests open on this GPU, and whether the last one has ended: then fills follow the
-    /// Plan from its start (`boundary`).
+    /// Requests open on this GPU, and whether the last one has ended: then the worker fills the
+    /// Plan from its start (`refill`). `recorded`: an idle capture ran since, so idle pools stay.
     open: usize,
     idle: bool,
+    refill: bool,
+    recorded: bool,
 }
 
 /// One GPU's fills ahead of demand, one at a time.
@@ -94,16 +96,22 @@ fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result
     if slot.running.as_ref().is_some_and(|running| Arc::ptr_eq(running, &region)) {
         return Ok(());
     }
+    wake(device, &mut slot)?;
+    let replaced = slot.wanted.replace((region, free_only));
+    drop(slot);
+    drop(replaced); // A Region's last drop needs the gate.
+    Ok(())
+}
+
+/// The worker, started if it isn't, looks at `slot` once it is let go.
+fn wake(device: &'static Device, slot: &mut Slot) -> Result<()> {
     if slot.worker.is_none() {
         let worker = std::thread::Builder::new().name(format!("varena-ahead-{}", device.ordinal()))
             .spawn(move || run(device))
             .map_err(|error| Error::Unsupported(format!("fill worker could not start: {error}")))?;
         slot.worker = Some(worker.thread().id());
     }
-    let replaced = slot.wanted.replace((region, free_only));
     device.ahead.wake.notify_all();
-    drop(slot);
-    drop(replaced); // A Region's last drop needs the gate.
     Ok(())
 }
 
@@ -115,6 +123,14 @@ fn run(device: &'static Device) {
                 if let Some(wanted) = slot.wanted.take() {
                     slot.running = Some(Arc::clone(&wanted.0));
                     break wanted;
+                }
+                if std::mem::take(&mut slot.refill) && slot.idle {
+                    drop(slot);
+                    if let Ok(Some(first)) = plan::absent(device.ordinal(), None) {
+                        let _ = want(device, first, true);
+                    }
+                    slot = device.ahead.slot();
+                    continue;
                 }
                 slot = device.ahead.wake.wait(slot).unwrap_or_else(|error| error.into_inner());
             }
@@ -163,23 +179,35 @@ fn fill_ahead(region: &Arc<Region>, free_only: bool) -> Result<bool> {
 /// A request begins or ends on this GPU. With none open, the core fills what the Plan uses
 /// first, from its start, into room nothing holds, until the next begins.
 pub(crate) fn boundary(device: &'static Device, begin: bool) -> Result<()> {
-    {
-        let mut slot = device.ahead.slot();
-        slot.open = if begin { slot.open + 1 } else { slot.open.saturating_sub(1) };
-        slot.idle = slot.open == 0 && !begin;
-        if !slot.idle {
-            return Ok(());
-        }
-    }
-    match plan::absent(device.ordinal(), None)? {
-        Some(first) => want(device, first, true),
-        None => Ok(()),
-    }
+    let mut slot = device.ahead.slot();
+    slot.open = if begin { slot.open + 1 } else { slot.open.saturating_sub(1) };
+    slot.idle = slot.open == 0 && !begin;
+    slot.recorded = false;
+    refill(device, &mut slot)
 }
 
-/// Whether no request is open on this GPU since the last one ended.
-pub(crate) fn idle(device: &Device) -> bool {
-    device.ahead.slot().idle
+/// A capture ended. An idle one stopped the refill (`stop`): it goes on, and leaves idle pools be,
+/// since one may be this capture's. Takes no lock but the slot: the gate may be held.
+pub(crate) fn captured(device: &'static Device) -> Result<()> {
+    let mut slot = device.ahead.slot();
+    slot.recorded |= slot.idle;
+    refill(device, &mut slot)
+}
+
+/// Between requests, the worker fills from the Plan's start, with no lock held.
+fn refill(device: &'static Device, slot: &mut Slot) -> Result<()> {
+    if !slot.idle {
+        return Ok(());
+    }
+    slot.refill = true;
+    wake(device, slot)
+}
+
+/// Whether no request is open on this GPU since the last one ended, and whether a fill may take
+/// idle pools' pages: not since an idle capture, which may have made one.
+pub(crate) fn idle(device: &Device) -> (bool, bool) {
+    let slot = device.ahead.slot();
+    (slot.idle, slot.idle && !slot.recorded)
 }
 
 /// A demand fill of `region` goes first: what runs ahead of it stops, unless it is that Region.
