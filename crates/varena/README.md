@@ -36,8 +36,9 @@ what it is asked for (`CacheOwner`), and TensorD may end an idle process.
 
 `Wait::No` takes completed memory only, `Local` also waits for submitted GPU work, and `Yes` adds
 owners and peers under a 2 s budget of last resort. Eviction rank: contentless, prefetched and
-unused, unplanned, later phases furthest first, then this phase's used regions most recent first,
-then its next use.
+unused, unplanned, later phases furthest first, then this phase's used regions most recent first
+(those this pass filled before those that stayed through it, so a loop streams the same regions
+each pass), then its next use. A fill ahead takes only regions this pass filled.
 
 ## Fills
 
