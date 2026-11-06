@@ -11,6 +11,8 @@ mod pages;
 #[cfg(feature = "store")]
 mod phase;
 #[cfg(feature = "store")]
+mod retained;
+#[cfg(feature = "store")]
 mod source;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -289,15 +291,7 @@ impl PyRegion {
     #[cfg(feature = "store")]
     #[pyo3(name = "use_on")]
     fn use_on(&self, py: Python<'_>, stream: u64) -> PyResult<PyUse> {
-        // SAFETY: the caller's live stream, which reads nothing before this returns.
-        let pin = py.detach(|| unsafe { self.region.use_on(stream) })
-            .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
-        let consumers = Consumers::new(self.region.device());
-        consumers.declare(stream).map_err(|error| raise(py, error))?;
-        Ok(PyUse {
-            preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
-            device: self.region.device(), pid: std::process::id(), consumers,
-        })
+        use_region(py, &self.region, stream)
     }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
         let pin = py
@@ -311,6 +305,20 @@ impl PyRegion {
             }
         }))
     }
+}
+
+/// `region` pinned for `stream`, filled by its Source if absent.
+#[cfg(feature = "store")]
+fn use_region(py: Python<'_>, region: &Arc<varena::Region>, stream: u64) -> PyResult<PyUse> {
+    // SAFETY: the caller's live stream, which reads nothing before this returns.
+    let pin = py.detach(|| unsafe { region.use_on(stream) })
+        .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
+    let consumers = Consumers::new(region.device());
+    consumers.declare(stream).map_err(|error| raise(py, error))?;
+    Ok(PyUse {
+        preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+        device: region.device(), pid: std::process::id(), consumers,
+    })
 }
 
 #[pyclass(name = "_VarenaUse", module = "tensorfs._ext", frozen)]
@@ -639,6 +647,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<pages::PyPages>()?;
     #[cfg(feature = "store")]
     module.add_class::<source::PySource>()?;
+    #[cfg(feature = "store")]
+    module.add_class::<retained::PyRetained>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
     Ok(())

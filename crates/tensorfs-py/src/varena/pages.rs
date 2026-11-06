@@ -54,10 +54,10 @@ impl Page {
     pub(super) fn windows(&self) -> impl Iterator<Item = (usize, usize)> + use<'_> {
         (0..self.len).step_by(WINDOW).map(|at| (at, WINDOW.min(self.len - at)))
     }
-    fn registered(&self) -> bool {
+    pub(super) fn registered(&self) -> bool {
         self.pins.len() * WINDOW >= self.len
     }
-    fn register_window(&mut self, device: i32) -> Result<(), tensorfs::io::cuda::Error> {
+    pub(super) fn register_window(&mut self, device: i32) -> Result<(), tensorfs::io::cuda::Error> {
         let (at, len) = self.windows().nth(self.pins.len()).expect("a window left to register");
         // SAFETY: inside this page, which outlives its pins: `Drop` releases them first.
         self.pins.push(unsafe { tensorfs::io::register(device, self.ptr.add(at), len) }?);
@@ -119,6 +119,9 @@ struct State {
     bound: i64,
     clock: u64,
     log: Vec<Row>,
+    /// Registered pages a retained region gave back, and whether since the last request ended: the
+    /// next request of the same shape takes them without registering again, else they go.
+    spare: Vec<(Page, bool)>,
 }
 
 pub(super) struct Tier {
@@ -196,6 +199,10 @@ impl Tier {
         let mut gone = Vec::new();
         if room >= self.headroom {
             return gone;
+        }
+        for (page, _) in state.spare.drain(..) {
+            room += page.len as i64;
+            gone.push(Kept { page: Arc::new(page), set: String::new(), last: 0 });
         }
         for (_, _, key) in state.cheapest() {
             if room >= self.headroom && room >= 0 {
@@ -330,6 +337,42 @@ impl Tier {
         state.rate.extend(refills);
         let streamed = state.wanted.values().filter_map(|wanted| wanted.source.upgrade()).map(|source| source.bytes() as i64).sum();
         (state.own, state.bound, state.looked) = (streamed, memory.bound, None);
+        let (fresh, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut state.spare).into_iter().partition(|(_, fresh)| *fresh);
+        state.spare = fresh.into_iter().map(|(page, _)| (page, false)).collect();
+        drop(state);
+        drop(stale); // Unregistering waits on the device: never under the lock.
+    }
+
+    /// A registered host page of at least `len` bytes for a retained region's copy: the smallest
+    /// spare that holds it, else a new one.
+    pub(super) fn retained_page(&self, len: usize) -> Result<Page, String> {
+        let spare = {
+            let mut state = self.state();
+            let best = state.spare.iter().enumerate().filter(|(_, (page, _))| page.len >= len)
+                .min_by_key(|(_, (page, _))| page.len).map(|(at, _)| at);
+            best.map(|at| state.spare.swap_remove(at).0)
+        };
+        if let Some(page) = spare {
+            return Ok(page);
+        }
+        let mut page = Page::new(len).map_err(|error| error.to_string())?;
+        while !page.registered() {
+            page.register_window(self.device).map_err(|error| error.to_string())?;
+        }
+        Ok(page)
+    }
+
+    pub(super) fn spare(&self, page: Page) {
+        self.state().spare.push((page, true));
+    }
+
+    /// Host bytes retained regions may take: what is available beyond the headroom, the tier's own
+    /// pages and spares included, which yield to them.
+    pub(super) fn retained_room(&self) -> i64 {
+        let memory = host_memory::read();
+        let state = self.state();
+        let spare: u64 = state.spare.iter().map(|(page, _)| page.len as u64).sum();
+        memory.available + state.bytes as i64 + spare as i64 - self.headroom
     }
 
     pub(super) fn row(&self, row: Row) {
@@ -438,15 +481,18 @@ impl Tier {
 
     /// Every page goes, or a set's: its fill changed, or it closed.
     fn forget(&self, set: Option<&str>) {
-        let gone: Vec<_> = {
+        let gone = {
             let mut state = self.state();
             let keys: Vec<_> = state.kept.iter().filter(|(_, kept)| set.is_none_or(|set| kept.set == set))
                 .map(|(key, _)| key.clone()).collect();
             state.wanted.retain(|_, wanted| set.is_some_and(|set| wanted.set != set));
-            if set.is_none() {
+            let spare = if set.is_none() {
                 state.filled = None;
-            }
-            keys.iter().filter_map(|key| state.remove(key)).collect()
+                std::mem::take(&mut state.spare)
+            } else {
+                Vec::new()
+            };
+            (keys.iter().filter_map(|key| state.remove(key)).collect::<Vec<_>>(), spare)
         };
         drop(gone);
     }
@@ -478,6 +524,10 @@ impl PyPages {
     /// A request ended: see `Tier::request_ended`.
     fn request_ended(&self, py: Python<'_>) {
         py.detach(|| self.tier.request_ended());
+    }
+    /// Host bytes retained regions may take now: see `Tier::retained_room`.
+    fn retained_room(&self, py: Python<'_>) -> i64 {
+        py.detach(|| self.tier.retained_room())
     }
     /// The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms).
     fn drain(&self) -> Vec<(String, u32, u64, &'static str, bool, u64, f64)> {

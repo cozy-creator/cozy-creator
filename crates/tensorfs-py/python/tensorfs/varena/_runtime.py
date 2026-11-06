@@ -171,6 +171,11 @@ class Pages:
     def request_ended(self) -> None:
         self._native.request_ended()
 
+    def retained_room(self) -> int:
+        """Host bytes retained regions may take now: available beyond the headroom, this tier's
+        own pages included, which yield to them."""
+        return self._native.retained_room()
+
     def drain(self) -> list[tuple[str, int, int, str, bool, int, float]]:
         """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
         return self._native.drain()
@@ -239,6 +244,33 @@ class Region:
         """
         native = self._native.pin()
         return None if native is None else Use(native)
+
+
+class Retained:
+    """State a model writes on the card once and reads every step (a prefix's K/V): a Region
+    the core keeps resident while there is room. A pinned host copy, taken behind compute on its
+    own stream, refills it once evicted, and the core fills it ahead of its next use."""
+
+    def __init__(self, device: Device, pages: Pages, bytes: int) -> None:
+        self._native = _ext._VarenaRetained(device._native, pages._native, bytes)
+
+    def write(self, stream: int, parts: Sequence[tuple[int, int, int]]) -> Use:
+        """Copy `parts`, (offset, device address, bytes) of live tensors ordered on `stream`,
+        into the region on `stream`, pinned for it. Once, before any other use."""
+        return Use(self._native.write(stream, list(parts)))
+
+    def use(self, stream: int) -> Use:
+        """Pinned for `stream`: refilled from its host copy if it was evicted."""
+        return Use(self._native.use_on(stream))
+
+    @property
+    def landed(self) -> bool:
+        """Whether its host copy has landed: from then on the core may evict it."""
+        return self._native.landed
+
+    @property
+    def resident(self) -> bool:
+        return self._native.resident
 
 
 class Use:

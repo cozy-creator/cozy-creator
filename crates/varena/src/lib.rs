@@ -289,6 +289,8 @@ struct Entry {
     filled: u64,
     // Its owner ranks it above rebuilding a cache: `reclaim::HIGH`.
     high: bool,
+    // State a loop keeps across steps, refilled from its pinned host copy.
+    retained: bool,
 }
 
 impl Entry {
@@ -363,6 +365,11 @@ impl State {
             true => reclaim::PHASE_FRESH,
             false => reclaim::PHASE_USED,
         };
+        // A loop's retained state is its own, read again next step like its weights: most recent
+        // first, with what this pass streamed, as its refill is one DMA from pinned host RAM.
+        if entry.retained && touched {
+            return (reclaim::PHASE_FRESH, u64::MAX - entry.last_use);
+        }
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
             None => (used, u64::MAX - entry.last_use),
@@ -703,6 +710,7 @@ impl Device {
                     last_use: 0,
                     filled: 0,
                     high: false,
+                    retained: false,
                 },
             );
             Region {
@@ -1162,6 +1170,13 @@ impl Region {
     pub fn set_high(&self, high: bool) -> Result<()> {
         self.gpu.lock()?.entries.get_mut(&self.id).expect("live region").high = high;
         self.gpu.any_high.fetch_or(high, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// State a loop keeps across steps: once used in the loop it ranks as the loop's own.
+    /// Metadata only.
+    pub fn set_retained(&self) -> Result<()> {
+        self.gpu.lock()?.entries.get_mut(&self.id).expect("live region").retained = true;
         Ok(())
     }
 
