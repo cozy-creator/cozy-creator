@@ -8,7 +8,7 @@ import { leftWords } from "../panels/format"
 import { fractionOf, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { long, workWords } from "../panels/runs/words"
 import type { Run, Tool } from "../types"
-import { useCanvasStore } from "./context"
+import { useCanvasStore, useElement } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { controlsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
@@ -428,9 +428,11 @@ const installsOf = (tool?: Tool) => tool && (tool.installs ?? tool.package)
 /** A render on its way: its package installing and its weights arriving say so, from what its machine lists, and the veil after them is
  *  its own work's. That says where it is once it's worth it: `Generating image 3 / 8, 25 s left`. Before its run is sent, local code
  *  installing for it says so too. */
-function Making({ run, pkg, making }: { run?: Run; pkg?: string; making: boolean }) {
+function Making({ run, pkg, making, waits }: { run?: Run; pkg?: string; making: boolean; waits: string | null }) {
   const on = useWaitsOn(run)
-  const installing = useInstalling(run ? undefined : pkg)
+  // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
+  const installing = useInstalling(run || waits ? undefined : pkg)
+  if (waits && !on) return <WaitsFor name={waits} />
   const before = on ?? installing
   if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} />
   if (before?.kind === "download") {
@@ -464,6 +466,15 @@ function FramePicture({ sha256, cardWidth, restWidth, onSize, onShown }: { sha25
       />
     </>
   )
+}
+
+/** A box that waits for one it reads: which, and how far that one's got while it's made. */
+function WaitsFor({ name }: { name: string }) {
+  const store = useCanvasStore()
+  const read = useElement(store.mentionOf(name, "")?.name ?? name)
+  const run = read?.asset?.making?.length ? read.run : undefined
+  const words = run && run.status !== "completed" ? workWords(run) : ""
+  return <Progress fraction={run?.progress?.done_fraction} says={`Waits for <${name}>${words ? `: ${words}` : ""}`} />
 }
 
 export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
@@ -528,7 +539,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       )}
       {(making || view.queued || view.asked !== undefined) && view.viewed === undefined && <div className="media-making" />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
-      {(making || view.queued || view.asked !== undefined) && <Making run={view.run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} />}
+      {(making || view.queued || view.asked !== undefined) && <Making run={view.run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} waits={making ? null : store.waitsFor(name)} />}
       {open && source && field && store.projectId && (
         <Player
           key={JSON.stringify(source)}

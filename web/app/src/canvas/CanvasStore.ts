@@ -158,6 +158,14 @@ export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
 
+/** A picture its words mention, faded behind them: its file, or with none yet its frame's shape and whether it's being made. */
+export interface Ghost {
+  mention: string
+  sha256?: string
+  shape?: number
+  making?: boolean
+}
+
 /** What moves the shape a box makes, or the one a mention of it sends. */
 const SHAPING = ["asset", "drafts", "sent", "aspect"] as const
 
@@ -412,16 +420,31 @@ export class CanvasStore {
   }
 
   /** The pictures a box's words mention, in order: the version named, else what each shows. */
-  mentionedPictures(name: string): string[] {
+  mentionedPictures(name: string): Ghost[] {
     const view = this.get(name)
     if (!view) return []
-    const files = this.mentionsOf(view).flatMap((mention) => {
+    const seen = new Set<string>()
+    return this.mentionsOf(view).flatMap((mention): Ghost[] => {
+      // The box by its exact name first, as Calcifer reads it: `<kyogre.primordial>` is that box, not a take of `kyogre`.
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined
-      const file = of && (read?.number !== undefined ? of.asset?.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of))
-      return file && !file.absent && file.field === "image" && !this.refusalOf(name, mention) ? [file.sha256] : []
+      if (!of?.asset || of.asset.kind !== "image" || this.refusalOf(name, mention) || seen.has(mention)) return []
+      seen.add(mention)
+      const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of)
+      if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256 }]
+      // Nothing of it yet: its frame, at the shape it will be, and whether it's being made.
+      return [{ mention, shape: sentShape(of) ?? 1, making: Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
     })
-    return [...new Set(files)]
+  }
+
+  /** What a box asked to render waits on: the first box it reads with nothing made yet, or that's being made. */
+  waitsFor(name: string): string | null {
+    const asset = this.get(name)?.asset
+    for (const read of asset?.reads ?? []) {
+      const of = this.get(this.mentionOf(read.name, name)?.name ?? "")
+      if (of?.asset?.tool && (of.asset.making?.length || of.queued || of.asked !== undefined || (!of.asset.prefixes?.length && !of.asset.sha256))) return read.name
+    }
+    return null
   }
 
   /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. Words that hold nothing but a take of its
@@ -1502,7 +1525,8 @@ export class CanvasStore {
     if (version) {
       const of = isSelf(version[1]) ? besides : this.nameOf(version[1])
       const numbers = numbersOf(this.get(of ?? "")?.asset).filter((number) => String(number).startsWith(version[2]))
-      return numbers.reverse().map((number) => `${version[1]}.${number}`)
+      // A box whose own name has the dot goes first, as an exact name wins.
+      return [...this.boxesLike(nameKey(typed), besides), ...numbers.reverse().map((number) => `${version[1]}.${number}`)]
     }
     const key = nameKey(typed)
     const own = key && SELF.startsWith(key) ? numbersOf(this.get(besides)?.asset).slice(-1).map((number) => `${SELF}.${number}`) : []

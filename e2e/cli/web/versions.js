@@ -534,6 +534,15 @@ async function died(why) {
     await until('back to Auto', shapeLine, (now) => now === null);
     check('its_x_goes_back_to_auto', (await here.locator('.ratio-rest').innerText()).trim() === 'Auto' && Math.abs((await shapedAs('framed', 1.6)) - 1.6) < 0.05, { rest: await here.locator('.ratio-rest').innerText(), now: await shapeOf('framed') });
     await shut();
+    // A box whose own name has a dot is that box, as Calcifer reads it, not a take of the box before the dot: mentioned with nothing made yet,
+    // behind the words it's its blank frame, never another box's picture.
+    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  ada.later:\n    tool: ${tool.id}\n    instructions: Not yet.\n  awaiting:\n    tool: ${tool.id}\n    instructions: <Ada.later> at dawn.\n`);
+    await box('awaiting').waitFor();
+    await open('awaiting');
+    const awaitingHere = page.locator('.card.here[data-asset="awaiting"]');
+    const blankGhost = await until('its blank frame behind', () => awaitingHere.locator('.in-frame .ghost-blank').count(), (n) => n === 1).catch(() => 0);
+    check('a_dotted_name_is_its_own_box', blankGhost === 1 && (await awaitingHere.locator('.in-frame .ghosts img').count()) === 0 && (await awaitingHere.locator('.in-frame .ghost-blank').getAttribute('data-mention')) === 'Ada.later', { blankGhost, imgs: await awaitingHere.locator('.in-frame .ghosts img').count() });
+    await shut();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
     const picturedWas = { shape: await shapeOf('picked'), width: (await box('picked').locator('.media').first().boundingBox()).width };
@@ -664,6 +673,11 @@ async function died(why) {
     await until('the longer one read', () => asset('sheet'), (row) => row?.fields?.seconds === 30);
     await render(['sheet', 'after'], `second-${Date.now()}`);
     await until('it going', () => asset('sheet'), (row) => row?.making?.length > 0, 2 * STEP_MS);
+    // What reads it says it waits for it, and nothing of a machine's work for another box.
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
+    const waitsSaid = await until('after says what it waits for', () => box('after').locator('.prog b').innerText().catch(() => ''), (text) => /^Waits for <sheet>/i.test(text)).catch(() => box('after').locator('.prog b').innerText().catch(() => ''));
+    check('a_box_says_what_it_waits_for', /^Waits for <sheet>/i.test(waitsSaid) && !/Installing/.test(waitsSaid), waitsSaid);
     await page.evaluate(() => {
       window.shown = [];
       const look = () => {
