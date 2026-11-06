@@ -502,6 +502,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
         onPointerMove={moved}
         onPointerUp={done}
         onPointerCancel={done}
+        onLostPointerCapture={done}
       />
     </>
   )

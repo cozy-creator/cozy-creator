@@ -165,7 +165,7 @@ web_proof() {
   [ "${ENGINE:-}" != webkit ] || shot=''
   HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart ENGINE=${ENGINE:-} LAST_LOOK=$(web_path "$OUT/web-$pass") SHOT=$shot CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" > "$json" 2> "$OUT/web-$pass.err" || code=$?
-  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
+  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$pass.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   lock=$HOME/.cozy/calcifer/calcifer.lock.holder
