@@ -340,6 +340,47 @@ const constants = (folder) => {
     if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-given-way.png` });
   }
 
+  // A box the page places as it arrives, and the CLI's `at` for it written between the page's read of where things sit and its write of
+  // the place it found: the CLI's stands (cl-800). The page's read is held until the CLI has written, so the two cross every time.
+  if (process.env.COZY) {
+    const pictures = mkdtempSync(join(tmpdir(), 'web-place-race-'));
+    const file = join(pictures, 'raced.png');
+    writeFileSync(file, png(222, 320, 180));
+    let [read, release] = [false, () => {}];
+    const held = new Promise((done) => { release = done; });
+    const canvasRead = `**/v1/projects/${id}/canvas`;
+    await page.route(canvasRead, async (route) => {
+      if (route.request().method() !== 'GET' || read) return route.fallback();
+      read = true;
+      const answer = await route.fetch();
+      await held;
+      await route.fulfill({ response: answer }).catch(() => {});
+    });
+    execFileSync(process.env.COZY, ['project', '-p', folder, 'import', file, 'raced'], { stdio: 'ignore' });
+    await until('the page reads where things sit', () => Promise.resolve(read), Boolean);
+    // Clear of everything, so nothing moves it off another.
+    const cli = { x: Math.max(...Object.values(rows(folder)).map((row) => row.x + (row.w ?? 240))) + 2000, y: 0, w: 240 };
+    execFileSync(process.env.COZY, ['project', '-p', folder, 'set', 'raced', `at=${cli.x},${cli.y},${cli.w}`], { stdio: 'ignore' });
+    release();
+    // The page's place goes now, after the CLI's: what's written is still the CLI's, once and for good.
+    const settled = await until('its row settled', async () => {
+      const one = JSON.stringify(rows(folder).raced);
+      await page.waitForTimeout(1500);
+      return one === JSON.stringify(rows(folder).raced) ? rows(folder).raced : null;
+    }, Boolean);
+    await page.unroute(canvasRead);
+    check('a_placement_never_overwrites_an_at', settled.x === cli.x && settled.y === cli.y && settled.w === cli.w, { settled, cli });
+    await page.keyboard.press('f');
+    await page.waitForTimeout(600);
+    const shown = await page.evaluate(() => {
+      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.card[data-asset="raced"]'));
+      const m = node && new DOMMatrix(getComputedStyle(node).transform);
+      return m ? { x: Math.round(m.e), y: Math.round(m.f) } : null;
+    });
+    check('the_page_shows_the_cli_place', shown?.x === cli.x && shown?.y === cli.y, { shown, cli });
+    rmSync(pictures, { recursive: true, force: true });
+  }
+
   // The terminal sees the same project.
   if (process.env.COZY) {
     const status = JSON.parse(execFileSync(process.env.COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));

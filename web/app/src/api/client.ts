@@ -374,8 +374,9 @@ export class Client {
     return this.json(`${project(id)}/canvas`, { signal })
   }
 
-  moveCards(id: string, cards: Record<string, Row | null>, once?: AbortSignal): Promise<{ etag: string }> {
-    return this.write("PATCH", `${project(id)}/canvas`, { cards }, undefined, { once })
+  /** Rows set; one named in `was` only if it's still what it began from (null: none), else answered in `kept` as it is. */
+  moveCards(id: string, cards: Record<string, Row | null>, was: Record<string, Row | null>, once?: AbortSignal): Promise<{ etag: string; kept?: Record<string, Row | null> }> {
+    return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(was).length ? { was } : {}) }, undefined, { once })
   }
 
   /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */
