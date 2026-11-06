@@ -147,16 +147,18 @@ trap 'end_it; again' EXIT
 trap 'exit 143' TERM INT
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
 run_project "$PWD/project" || { log "cozy project new failed"; exit 1; }
-# one_beat [args...]: H3's call in $BEAT: a text and its length are one beat, which goes to the model as written, and a reference's
-# `kind` is its `asset_type`, or nothing for a clip or a sound, which say what they are by their file.
+# one_beat [args...]: H3's call in $BEAT: without `beats`, a text and its length are one beat, which goes to the model as
+# written, and a reference's `kind` is its `asset_type`, or nothing for a clip or a sound, which say what they are by their
+# file. What is already in H3's form passes through.
 one_beat() {
-  local text='' seconds='' arg
+  local text='' seconds='' arg beats=''
   BEAT=()
+  for arg in "$@"; do [[ $arg != beats:=* ]] || beats=1; done
   for arg in "$@"; do
     case $arg in
-      prompt=*) text=${arg#prompt=} ;;
-      duration_s:=*) seconds=${arg#duration_s:=} ;;
-      references:=*) BEAT+=("references:=$(jq -c 'map(if .kind == "video" or .kind == "audio" then del(.kind) else (.asset_type = .kind | del(.kind)) end)' <<< "${arg#references:=}")") ;;
+      prompt=*) [ -n "$beats" ] && BEAT+=("$arg") || text=${arg#prompt=} ;;
+      duration_s:=*) [ -n "$beats" ] && BEAT+=("$arg") || seconds=${arg#duration_s:=} ;;
+      references:=*) BEAT+=("references:=$(jq -c 'map(if has("kind") | not then . elif .kind == "video" or .kind == "audio" then del(.kind) else (.asset_type = .kind | del(.kind)) end)' <<< "${arg#references:=}")") ;;
       *) BEAT+=("$arg") ;;
     esac
   done
