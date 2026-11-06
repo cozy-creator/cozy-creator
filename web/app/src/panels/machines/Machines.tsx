@@ -160,8 +160,8 @@ export function Machines() {
   const machines = data?.machines.filter((machine) => machine.state !== "ended") ?? []
   const now = useNow(machines.some((machine) => machine.state !== "stopped"))
   // This computer's, and apart, what other computers rented on the same account.
-  const mine = machines.filter((machine) => machine.recorded !== false)
-  const others = machines.filter((machine) => machine.recorded === false)
+  const mine = machines.filter((machine) => machine.ordered !== false)
+  const others = machines.filter((machine) => machine.ordered === false)
   const hourlyOf = (list: Machine[]) => list.reduce((sum, machine) => sum + (machine.rental?.usd_micros_per_hour ?? 0), 0)
   const rentals = mine.filter((machine) => machine.rental)
   const hourly = hourlyOf(rentals)
