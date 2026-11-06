@@ -1,0 +1,50 @@
+{
+ "note": "Five published Qwen-Image 2.1 LoRAs: LightX2V's Lightning (Diffusers names under transformer., LightX2V's lora.down/lora.up), Turbo8 (Diffusers' save_lora_weights), Alibaba PAI's Fun Acc PDD export (bare names, lora_down/lora_up parameters, per-step proj_out heads), an AI-Toolkit LoRA in ComfyUI's names (diffusion_model., the fused img_mlp.gate_up) and a DiffSynth-Studio LoRA (bare names, PEFT's lora_A.default)",
+ "members": [
+  {
+   "source": "lightx2v/Qwen-Image-2.1-Lightning@6b0a1176327c01522a44276c5da67331a025b6fc",
+   "member": "pytorch_lora_weights.safetensors",
+   "header_file": "qwen-image-2.1-lightning.safetensors.header",
+   "header_sha256": "0c4fca2700af853d54f378622a52e13a8bd520a8472931218787110886a37125",
+   "header_bytes": 35416,
+   "full_length": 67144280,
+   "declared_source_sha256": "53c69320d4163da51032f90275074028cb098556039c72b45f8dce9f0f9e34a3"
+  },
+  {
+   "source": "chriswritescode/Turbo8-LoRA-Qwen-Image-2.1@611a3f86d0cc53d21a1a09d07ea7dc82df3d68a1",
+   "member": "turbo8_lora_step2500.safetensors",
+   "header_file": "turbo8_lora_step2500.safetensors.header",
+   "header_sha256": "31932b0e4bd3067060df0f904bee38817668ebdc24ddaa6546090aa9b748a8eb",
+   "header_bytes": 63176,
+   "full_length": 1359148744,
+   "declared_source_sha256": "a0b7a7634ff2f82ccbe209e16b0ba19b25e2d9e18624d89edc490503b6a75d39"
+  },
+  {
+   "source": "alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs@f7545234760e1847cd8e89e52bd951cb0b7e327f",
+   "member": "models/Qwen-Image-2.1-Fun-Acc-4Step.safetensors",
+   "header_file": "Qwen-Image-2.1-Fun-Acc-4Step.safetensors.header",
+   "header_sha256": "96aa50dd7b888133844f581a9d77789ff28ab2f00e1173c74a199539f30af793",
+   "header_bytes": 61176,
+   "full_length": 345632504,
+   "declared_source_sha256": "764c56ae94f330b6d06ccc322f95e1b8ce46424ddde5899a15432f95f720d558"
+  },
+  {
+   "source": "gribbliest/qwen-image-2.1-qma-camera-angles@13007eec2648c09529e930164c2ccc9c8c12428c",
+   "member": "qwen-image-2.1-qma-camera-angles.safetensors",
+   "header_file": "qwen-image-2.1-qma-camera-angles.safetensors.header",
+   "header_sha256": "a432a2efbfe9ea975d0f968c297522742e1424fd3707c6bb94e3c0113876b626",
+   "header_bytes": 53120,
+   "full_length": 318820224,
+   "declared_source_sha256": "ad2c20e0e103b6ad3ffffc56ab4e89c0822263c488aa4dd70e7e03091ff37b8d"
+  },
+  {
+   "source": "WarmBloodAban/Qwen-Image-2.1-LoRAs@c4ab5473bfdf585fc19cfd1e280f79d2b0c79947",
+   "member": "Qwen2.1_Anime_consistency.safetensors",
+   "header_file": "Qwen2.1_Anime_consistency.safetensors.header",
+   "header_sha256": "688e0f84e79c8beab46d0e359696b2546435a5ea2ab9d1003d234b2a2764e1c2",
+   "header_bytes": 58248,
+   "full_length": 167830408,
+   "declared_source_sha256": "0c171eb802ea8051b511f2d93c1743eeadd030316255aa98fa65d40809366752"
+  }
+ ]
+}

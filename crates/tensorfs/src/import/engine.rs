@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub const TABLES: [&str; 11] = [
+pub const TABLES: [&str; 12] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("h3.native"),
@@ -31,6 +31,7 @@ pub const TABLES: [&str; 11] = [
     table!("h3.lora"),
     table!("sdxl.lora"),
     table!("krea2.lora"),
+    table!("qwenimage21.lora"),
     table!("seedvr2"),
     table!("h3.latent_upscaler"),
     table!("ideogram4.fp8"),
@@ -148,6 +149,10 @@ pub struct Component {
     pub expect: BTreeMap<String, Vec<u64>>,
     #[serde(deserialize_with = "rows")]
     pub rows: Vec<Row>,
+    /// A LoRA table's plain tensors, renamed beside the factors: a parallel decoder's per-step
+    /// output heads (PDD's `proj_out.weight`), `[steps, out, in]` for a row's `io` `[in, out]`.
+    #[serde(default, deserialize_with = "rows")]
+    pub keep: Vec<Row>,
 }
 
 /// A component's rows. `[target, source, ops, {"e": n}]` stands for n rows, `e` = 0..n: `{e}`
@@ -342,18 +347,39 @@ enum Factor {
     Alpha,
 }
 
-/// Whether `key`, past `c`'s prefix, is a factor of one of its modules.
-fn lora_module(lora: &Lora, c: &Component, key: &str) -> bool {
-    lora_split(lora, key).is_some_and(|(stem, _)| c.rows.iter().any(|r| r.key() == Some(stem)))
+/// Whether `key`, past `c`'s prefix, is a factor of one of its modules shaped for it (A
+/// `[r, in, kernel…]`, B `[out, r, 1…]` as stored, a scalar alpha), or a tensor it keeps. By
+/// shape, so families whose module names coincide (H3's and Qwen-Image 2.1's Diffusers
+/// `transformer_blocks.*.attn.to_q`) claim only their own files.
+fn lora_module(lora: &Lora, c: &Component, key: &str, t: &Tensor) -> bool {
+    if let Some(r) = c.keep.iter().find(|r| r.key() == Some(key)) {
+        return kept(r, t);
+    }
+    let Some((stem, factor)) = lora_split(lora, key) else { return false };
+    let shaped = |r: &Row| {
+        let (Some((input, output)), kernel, s) = (r.ops.io, &r.ops.kernel, &t.shape) else { return true };
+        let plain = s.len() == 2 + kernel.len();
+        match factor {
+            Factor::A => plain && s[0] > 0 && s[1] == input && s[2..] == kernel[..],
+            Factor::B => plain && s[0] == output && s[1] > 0 && s[2..].iter().all(|k| *k == 1),
+            Factor::Alpha => s.is_empty(),
+        }
+    };
+    c.rows.iter().any(|r| r.key() == Some(stem) && shaped(r))
+}
+
+/// Whether `t` is the tensor keep row `r` names: `[steps, out, in]` for its `io`.
+fn kept(r: &Row, t: &Tensor) -> bool {
+    r.ops.io.is_none_or(|(input, output)| t.shape.len() == 3 && t.shape[1..] == [output, input])
 }
 
 /// The keys of `group` no module of LoRA `table` holds.
 fn lora_strays<'g>(table: &Table, lora: &Lora, group: &'g Group) -> Vec<&'g str> {
-    let known = |key: &str| {
+    let known = |key: &str, t: &Tensor| {
         let owner = (table.components.iter()).filter(|c| key.starts_with(c.prefix.as_str())).max_by_key(|c| c.prefix.len());
-        owner.is_some_and(|c| lora_module(lora, c, &key[c.prefix.len()..]))
+        owner.is_some_and(|c| lora_module(lora, c, &key[c.prefix.len()..], t))
     };
-    group.tensors.keys().map(String::as_str).filter(|k| !known(k)).collect()
+    group.tensors.iter().filter(|(k, t)| !known(k, t)).map(|(k, _)| k.as_str()).collect()
 }
 
 /// Why one bucket of keys is not one component's layout: unknown and missing keys.
@@ -361,9 +387,11 @@ fn mismatch(
     table: &Table,
     c: &Component,
     keys: &BTreeSet<&str>,
+    group: &Group,
 ) -> Option<(Vec<String>, Vec<String>)> {
     if let Some(lora) = &table.lora {
-        let unknown: Vec<String> = keys.iter().filter(|k| !lora_module(lora, c, k)).map(|k| k.to_string()).collect();
+        let known = |k: &str| lora_module(lora, c, k, &group.tensors[&format!("{}{k}", c.prefix)]);
+        let unknown: Vec<String> = keys.iter().filter(|k| !known(k)).map(|k| k.to_string()).collect();
         return (unknown.len() == keys.len()).then_some((unknown, vec![]));
     }
     let required: BTreeSet<&str> = c
@@ -435,7 +463,7 @@ fn project(table: &Table, group: &Group) -> std::result::Result<Vec<usize>, Stri
                 if c.prefix != *prefix {
                     return false;
                 }
-                match mismatch(table, c, keys) {
+                match mismatch(table, c, keys, group) {
                     None => true,
                     Some((unknown, missing)) => {
                         if unknown.len() + missing.len() < closest.0 {
@@ -1205,6 +1233,12 @@ fn plan_lora(
         }
         if let Some(name) = &row.ops.table {
             out.push(constant(table, name, &claim.name, &format!("{}.table", row.target))?);
+        }
+    }
+    for row in &c.keep {
+        let Some(t) = row.key().and_then(|k| group.tensors.get(&format!("{}{k}", c.prefix))) else { continue };
+        if kept(row, t) && t.encoded.is_none() {
+            out.push(planned(&claim.name, &row.target, t, &Ops::default(), None)?);
         }
     }
     Ok(())

@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "diffusers==0.40.0", "transformers==5.16.1", "torch>=2.11", "numpy",
+#   "diffusers==0.41.0", "transformers==5.16.1", "torch>=2.11", "numpy",
 #   "einops==0.8.2", "omegaconf==2.4.0", "rotary-embedding-torch==0.9.1",
 # ]
 # [[tool.uv.index]]
@@ -54,7 +54,7 @@ from diffusers.loaders import lora_conversion_utils, single_file_utils
 from diffusers.utils import state_dict_utils
 from transformers import AutoConfig, AutoModelForImageTextToText
 
-PINS = {"diffusers": "0.40.0", "transformers": "5.16.1"}
+PINS = {"diffusers": "0.41.0", "transformers": "5.16.1"}
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT.parent / "tensorfs" / "converters"
 VECTORS = ROOT.parent / "tensorfs" / "vectors"
@@ -639,6 +639,74 @@ def krea2_lora() -> dict[str, Any]:
     return {"name": "krea2.lora", "lora": lora, "components": components}
 
 
+# ------------------------------------------------------------------ Qwen-Image 2.1 LoRA
+
+QWEN21 = VECTORS / "qwen-image-2.1-lora-headers"
+QWEN21_REFERENCE = "hf://Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758"
+
+
+def qwenimage21_lora() -> dict[str, Any]:
+    """Qwen-Image 2.1 LoRA factors onto every linear of the DiT. Its reference is in Diffusers' layout, so
+    every loader reads Diffusers' names: under `transformer.` (Diffusers' `save_lora_weights`: LightX2V's
+    Lightning, Turbo8), `diffusion_model.` or bare (ComfyUI; PAI's Fun Acc export; DiffSynth-Studio),
+    `base_model.model.` (PEFT), and kohya's flattened `lora_unet_` (musubi-tuner) and `lycoris_`, with
+    ComfyUI's `to_out` for `to_out.0`. ComfyUI's model fuses each block's `img_mlp.gate_layer` and `proj`
+    into `gate_up`, `[gate; proj]` (`comfy/lora.py` `model_lora_keys_unet`), and LoRAs trained on it
+    (AI-Toolkit's) adapt that under `diffusion_model.` and `lora_unet_`: A as is, B's halves. Factors are
+    PEFT's (also under DiffSynth's adapter name, `lora_A.default`), kohya's, LightX2V's `lora.down`/
+    `lora.up` and PDD's bare `lora_down`/`lora_up` parameters. A PDD export keeps one output head per step
+    (`proj_out.weight` `[steps, 64, 4096]`, `qwenimage21_pdd.py`), stored as `proj_out.heads`; its
+    replacement q/k and text norms equal the base's to bf16 rounding and are left out."""
+    model = construct("diffusers:QwenImage21Transformer2DModel", reference_config(QWEN21_REFERENCE, "transformer/config.json"))
+    census = {n: (m.in_features, m.out_features) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
+
+    def spelled(diffusers: str) -> list[str]:
+        return [diffusers, diffusers.removesuffix(".0")] if diffusers.endswith(".to_out.0") else [diffusers]
+
+    def flat(diffusers: str) -> list[str]:
+        return [s.replace(".", "_") for s in spelled(diffusers)]
+
+    spellings = {"transformer.": spelled, "diffusion_model.": spelled, "base_model.model.": lambda d: [d],
+                 "lora_unet_": flat, "lycoris_": flat, "": spelled}
+    components = [
+        {"name": "transformer", "prefix": prefix,
+         "rows": [[d, stem, {"io": list(io)}] for d, io in census.items() for stem in spell(d)]}
+        for prefix, spell in spellings.items()
+    ]
+    components[-1]["keep"] = [["proj_out.heads", "proj_out.weight", {"io": list(census["proj_out"])}]]
+    for c in components:
+        if c["prefix"] not in ("diffusion_model.", "lora_unet_"):
+            continue
+        for d, (fan_in, fan_out) in list(census.items()):
+            if d.endswith(".img_mlp.gate_layer"):
+                fused = d.removesuffix(".gate_layer") + ".gate_up"
+                stem = fused.replace(".", "_") if c["prefix"] == "lora_unet_" else fused
+                for half, target in enumerate((d, fused.removesuffix(".gate_up") + ".proj")):
+                    ops = {"io": [fan_in, 2 * fan_out], "b": {"view": [2, -1], "take": [0, [half]], "shape": [fan_out, -1]}}
+                    c["rows"].append([target, stem, ops])
+    # Each published LoRA is spelled as some component's rows say: every factor at its row's shape, else
+    # PDD's heads and its norms (left out).
+    a = (".lora_A.weight", ".lora_down.weight", ".lora.down.weight", ".lora_down", ".lora_A.default.weight")
+    b = (".lora_B.weight", ".lora_up.weight", ".lora.up.weight", ".lora_up", ".lora_B.default.weight")
+    for vector in ("qwen-image-2.1-lightning", "turbo8_lora_step2500", "Qwen-Image-2.1-Fun-Acc-4Step",
+                   "qwen-image-2.1-qma-camera-angles", "Qwen2.1_Anime_consistency"):
+        keys = header(QWEN21 / f"{vector}.safetensors.header")
+        prefix = max((c["prefix"] for c in components if all(k.startswith(c["prefix"]) for k in keys)), key=len)
+        c = next(c for c in components if c["prefix"] == prefix)
+        io = {stem: tuple(ops["io"]) for _, stem, ops in c["rows"]}
+        for key, (_, shape) in keys.items():
+            local = key.removeprefix(prefix)
+            stem, factor = next(((local.removesuffix(s), f) for f, ss in (("a", a), ("b", b)) for s in ss if local.endswith(s)), (None, None))
+            if stem is None:
+                assert (local == "proj_out.weight" and tuple(shape[1:]) == census["proj_out"][::-1]) or local.endswith(
+                    ("norm_q.weight", "norm_k.weight", "text_norm.weight")), (vector, key)
+                continue
+            fan_in, fan_out = io[stem]
+            assert (shape[1] == fan_in) if factor == "a" else (shape[0] == fan_out), (vector, key, shape)
+    lora = {"a": list(a), "b": list(b), "alpha": [".alpha"]}
+    return {"name": "qwenimage21.lora", "lora": lora, "components": components}
+
+
 # ------------------------------------------------------------------ SeedVR2
 
 
@@ -862,6 +930,7 @@ def generate() -> dict[str, dict[str, Any]]:
         "h3.lora": h3_lora(h3, source),
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
+        "qwenimage21.lora": qwenimage21_lora(),
         "seedvr2": seedvr2(),
         "h3.latent_upscaler": h3_latent_upscaler(),
         "ideogram4.fp8": ideogram4(),
