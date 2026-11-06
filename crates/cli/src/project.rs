@@ -161,8 +161,8 @@ enum Verb {
     /// Fetch every file project.lock names that files/ lacks, as real files.
     #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
-    /// Move a project of format 2 to format 3: nothing goes out of date and nothing runs.
-    #[command(after_help = "Example:\n  cozy project status --json > status.json    with the cozy that reads format 2\n  cozy project upgrade --status status.json   with this one\n\nThe old files stay beside the new, as project.yaml.v2 and project.lock.v2. Comments stay only there.\nWith no --status, each asset's approved version, else its newest, is taken as current.")]
+    /// Move a project of format 2 or 3 to format 4: nothing goes out of date and nothing runs.
+    #[command(after_help = "Example:\n  cozy project status --json > status.json    with the cozy that reads format 2\n  cozy project upgrade --status status.json   with this one\n\nThe old files stay beside the new, as project.yaml.v2/.v3 and project.lock.v2/.v3.\nFrom format 3, each box's state is read from format 3 itself. From format 2 with no --status, each asset's approved version, else its newest, is taken as current.")]
     Upgrade {
         /// What `cozy project status --json` said, with the cozy that reads format 2.
         #[arg(long, value_name = "FILE")]
@@ -453,7 +453,7 @@ fn upgrade(ctx: &Context, at: Option<&PathBuf>, status: Option<&PathBuf>) -> Res
         rows.fold(table, output::Table::row).print();
         done.said.iter().for_each(|line| output::warn(line));
         let worse = done.assets.iter().filter(|row| row.before == "current" && row.after != "current").count();
-        output::say(ctx, &format!("{} assets are format 3, and {worse} went out of date. The old files are project.yaml.v2 and project.lock.v2", done.assets.len()));
+        output::say(ctx, &format!("{} boxes are format 4, and {worse} went out of date. The old files stay beside them, as project.yaml.v2/.v3 and project.lock.v2/.v3", done.assets.len()));
     }
     let worse = done.assets.iter().any(|row| row.before == "current" && row.after != "current");
     Ok(if worse { ExitCode::from(3) } else { ExitCode::SUCCESS })
