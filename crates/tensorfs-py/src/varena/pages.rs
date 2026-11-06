@@ -361,11 +361,16 @@ impl Tier {
         // SAFETY: the read returned, so nothing reads through this pin.
         drop(unsafe { pin.into_completed_region() });
         if copied.is_ok() {
-            self.insert(&job.key, &job.set, page);
-            let mut state = self.state();
-            state.wanted.remove(&job.key); // Kept: `pin_idle` registers it, and never reads it again.
-            state.unregistered.push(job.key);
+            self.kept(&job.key, &job.set, page);
         }
+    }
+
+    /// `page` holds `key`'s bytes: `pin_idle` registers it, and never reads it again.
+    pub(super) fn kept(&self, key: &str, set: &str, page: Page) {
+        self.insert(key, set, page);
+        let mut state = self.state();
+        state.wanted.remove(key);
+        state.unregistered.push(key.to_owned());
     }
 
     /// Pages out of the tier: a registered one waits for idle, never unregistered beside a request.

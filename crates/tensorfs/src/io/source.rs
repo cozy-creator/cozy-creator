@@ -200,16 +200,18 @@ impl Source {
         issued: Option<Issued>,
     ) -> Result<ReadStats> {
         // SAFETY: identical source/destination contract; ordinary reads are not canceled.
-        unsafe { self.read_controlled(placements, threads, mode, tally, issued, None) }
+        unsafe { self.read_controlled(placements, threads, mode, tally, issued, None, None) }
     }
 
     /// The same bounded device read with cooperative cancellation between staged pieces.
-    /// Already submitted copies are joined before an ordinary cancellation is returned.
+    /// Already submitted copies are joined before an ordinary cancellation is returned. A `tee`
+    /// takes a copy of the device bytes inside it as they pass through staging.
     ///
     /// # Safety
-    /// The destination and owner requirements are exactly `read_placements`'s. On an error,
-    /// retain device destinations until `io::drain` proves completion; never infer it from
-    /// cancellation alone. Host destinations are read on TensorFS threads and stop between pieces.
+    /// The destination and owner requirements are exactly `read_placements`'s, and the tee's host
+    /// bytes are the caller's alone until it returns. On an error, retain device destinations until
+    /// `io::drain` proves completion; never infer it from cancellation alone. Host destinations are
+    /// read on TensorFS threads and stop between pieces.
     pub unsafe fn read_placements_cancelable(
         &self,
         placements: &[Placement],
@@ -217,28 +219,10 @@ impl Source {
         mode: Mode,
         tally: &IoTally,
         cancel: &ReadControl,
+        tee: Option<super::Tee>,
     ) -> Result<ReadStats> {
-        // SAFETY: identical checked read contract, with no issue observer.
-        unsafe { self.read_placements_cancelable_observed(placements, threads, mode, tally, cancel, None) }
-    }
-
-    /// The same checked cancelable read, with an optional issue-time observer.
-    /// `issued` is notification only, not a completion or successful-read certificate.
-    /// The callback must not block or re-enter the engine.
-    ///
-    /// # Safety
-    /// Exactly the source/destination contract of [`Source::read_placements_cancelable`].
-    pub unsafe fn read_placements_cancelable_observed(
-        &self,
-        placements: &[Placement],
-        threads: usize,
-        mode: Mode,
-        tally: &IoTally,
-        cancel: &ReadControl,
-        issued: Option<Issued>,
-    ) -> Result<ReadStats> {
-        // SAFETY: the caller retains the same sources and destinations through checked completion.
-        unsafe { self.read_controlled(placements, threads, mode, tally, issued, Some(cancel)) }
+        // SAFETY: the caller retains the same sources, destinations and tee through checked completion.
+        unsafe { self.read_controlled(placements, threads, mode, tally, None, Some(cancel), tee) }
     }
 
     fn plan_placements(&self, placements: &[Placement<'_>]) -> Result<ReadPlan> {
@@ -355,6 +339,7 @@ impl Source {
         tally: &IoTally,
         issued: Option<Issued>,
         cancel: Option<&ReadControl>,
+        tee: Option<super::Tee>,
     ) -> Result<ReadStats> {
         let plan = self.plan_placements(placements)?;
         let copies = plan.copies.iter().map(OwnedCopy::borrowed).collect();
@@ -380,6 +365,7 @@ impl Source {
         let opts = ReadOpts {
             threads,
             direct: self.direct_io && mode == Mode::Cache,
+            tee,
             ..ReadOpts::default()
         };
         // SAFETY: item ranges and destination bounds checked above; caller supplies exclusivity.

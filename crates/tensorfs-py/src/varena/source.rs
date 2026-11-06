@@ -139,15 +139,18 @@ impl Inner {
         unsafe { io::read(&copies, &ReadOpts::default()) }.map(drop)
     }
 
-    fn read(&self, stored: &Stored, fill: &varena::Fill, ahead: bool) -> Result<u64, tensorfs::io::source::Error> {
+    /// The stored bytes onto the card; a `keep` page takes a copy of them as they pass through staging.
+    fn read(&self, stored: &Stored, fill: &varena::Fill, ahead: bool, keep: Option<&Page>) -> Result<u64, tensorfs::io::source::Error> {
         let control = Arc::new(ReadControl::default());
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
         let mode = if fill.target().refilled() { Mode::Buffered } else { Mode::Cache };
         let dst = Dst::Device { device: fill.device(), ptr: fill.ptr(), len: fill.len(), stream: 0 };
         let source = if ahead { &stored.local } else { &stored.fetching };
         let placement = Placement { items: &stored.items, origin: 0, dst };
+        let tee = keep.map(|page| io::Tee { base: fill.ptr(), host: page.ptr(), len: page.len() });
         // SAFETY: the Fill is exclusive; `abort` drains before a failed fill's pages are released.
-        let read = unsafe { source.read_placements_cancelable(&[placement], READERS, mode, &IoTally::default(), &control) };
+        // The page is this thread's until it is inserted, after the read returns.
+        let read = unsafe { source.read_placements_cancelable(&[placement], READERS, mode, &IoTally::default(), &control, tee) };
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
         read.map(|stats| stats.bytes)
     }
@@ -256,8 +259,12 @@ impl varena::Source for PageSource {
             decline(fill); // Its page went since the core asked: this one needs its caller.
             return Err(varena::Error::Busy);
         }
+        // A page the tier admits takes the stored bytes on their way through: no copy back from the
+        // card. Not while a derive may still change them.
+        let mut keep = this.page.as_ref().filter(|_| derive.is_none() && this.stored.is_some())
+            .and_then(|key| this.tier.reserve(key, this.bytes).ok().flatten());
         if let Some(stored) = &this.stored {
-            match this.read(stored, &fill, ahead) {
+            match this.read(stored, &fill, ahead, keep.as_ref()) {
                 Ok(bytes) => this.row(bytes, "store", ahead, began),
                 Err(error) => {
                     let (error, failed) = storage(error);
@@ -282,8 +289,10 @@ impl varena::Source for PageSource {
         let region = Arc::downgrade(fill.target());
         let pin = publish(fill, consumer)?;
         if let Some(key) = &this.page {
-            this.tier.want(key, &this.set, weak, region.clone());
-            this.tier.keep_behind(key, &this.set, region, this.bytes);
+            match keep.take() {
+                Some(page) => this.tier.kept(key, &this.set, page),
+                None => this.tier.want(key, &this.set, weak, region),
+            }
         }
         Ok(pin)
     }

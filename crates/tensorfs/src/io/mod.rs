@@ -259,6 +259,46 @@ pub struct ReadOpts {
     pub direct: bool,
     /// Told of each copy as it lands, before the read returns; `None` costs nothing.
     pub landed: Option<Landed>,
+    /// Host bytes that take a copy of every byte this read writes to the device inside them.
+    pub tee: Option<Tee>,
+}
+
+/// `len` host bytes at `host` beside device bytes from `base`: each staged piece bound there is
+/// copied in from its staging slot too, so a host page needs no copy back from the card.
+#[derive(Clone, Copy, Debug)]
+pub struct Tee {
+    pub base: u64,
+    pub host: *mut u8,
+    pub len: usize,
+}
+
+// SAFETY: an address; `read`'s contract lends it to the engine, as it does a destination.
+unsafe impl Send for Tee {}
+// SAFETY: as above.
+unsafe impl Sync for Tee {}
+
+impl Tee {
+    /// Where device bytes `ptr..ptr + len` land here, as many as do.
+    fn at(&self, ptr: u64, len: usize) -> Option<(*mut u8, usize)> {
+        let off = usize::try_from(ptr.checked_sub(self.base)?).ok().filter(|&off| off < self.len)?;
+        Some((self.host.wrapping_add(off), len.min(self.len - off)))
+    }
+
+    /// # Safety
+    /// `src` holds `len` bytes; the tee's bytes are the caller's, written by nobody else.
+    pub(crate) unsafe fn copy(&self, ptr: u64, src: *const u8, len: usize) {
+        if let Some((at, n)) = self.at(ptr, len) {
+            // SAFETY: inside the tee (`at`) and inside `src` (n <= len).
+            unsafe { std::ptr::copy_nonoverlapping(src, at, n) };
+        }
+    }
+
+    pub(crate) fn zero(&self, ptr: u64, len: usize) {
+        if let Some((at, n)) = self.at(ptr, len) {
+            // SAFETY: inside the tee, which `read`'s contract lends exclusively.
+            unsafe { std::ptr::write_bytes(at, 0, n) };
+        }
+    }
 }
 
 impl Default for ReadOpts {
@@ -269,6 +309,7 @@ impl Default for ReadOpts {
             streams: 2,
             direct: true,
             landed: None,
+            tee: None,
         }
     }
 }

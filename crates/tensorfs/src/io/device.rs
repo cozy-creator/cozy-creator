@@ -707,6 +707,9 @@ impl Engine {
                     stopped.store(true, Relaxed);
                     break;
                 }
+                if let (Some(tee), Src::Zero, Dst::Device { ptr, .. }) = (&opts.tee, job.c.src, job.c.dst) {
+                    tee.zero(ptr + job.at as u64, job.len);
+                }
                 done(job);
             }
             // A failed copy's slots stay retained until checked completion: read with the rest.
@@ -870,6 +873,10 @@ impl Engine {
             },
             Src::Device { .. } => {}
             Src::Zero => unreachable!("zero uses native device memset"),
+        }
+        if let (Some(tee), Src::File(..) | Src::Host(_), Dst::Device { ptr, .. }) = (&opts.tee, job.c.src, job.c.dst) {
+            // SAFETY: the slot holds this piece's `job.len` bytes, filled above.
+            unsafe { tee.copy(ptr + job.at as u64, slot.ptr, job.len) };
         }
         let _queue = self.queues[lane].lock().unwrap();
         let rc = match (job.c.src, job.c.dst) {
