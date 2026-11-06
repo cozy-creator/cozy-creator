@@ -609,6 +609,18 @@ async function died(why) {
     check('canceled_makes_nothing', !(await until('nothing making', () => asset('slow'), (row) => !row?.making?.length, 2 * STEP_MS)).versions);
     await shut();
 
+    // Render pressed as a take lands, while its file is still on its way here, is one more take: it was taken in and dropped (cl-774, 11-05).
+    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  quick:\n    tool: ${fixture}/wait\n    instructions: Quickly.\n`);
+    await box('quick').waitFor();
+    await open('quick');
+    const quick = page.locator('.card.here[data-asset="quick"] button[aria-label=Render]');
+    await quick.click();
+    await until('its first listed', () => asset('quick'), (row) => row?.versions === 1, 2 * STEP_MS);
+    await quick.click();
+    const again = await until('one more', () => asset('quick'), (row) => row?.versions === 2, 2 * STEP_MS).catch((why) => String(why));
+    check('render_as_a_take_lands_is_one_more', again?.versions === 2, again);
+    await shut();
+
     // What a render can't read is refused, in words, and nothing runs.
     await render(['bare'], `bare-${Date.now()}`);
     const bare = await until('it refused', () => asset('bare'), (row) => row?.failure, 2 * STEP_MS);
