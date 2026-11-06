@@ -91,6 +91,42 @@ pub(super) fn alone(text: &str, name: &str) -> Option<String> {
     window(text, name).map(|at| format!("version: {}\n{}", super::folder::FORMAT, at.alone))
 }
 
+/// Asset `name`'s name as the file writes it, and its own lines under `assets:`, as `removed` answers them: what history keeps of it.
+pub(super) fn own(text: &str, name: &str) -> Option<(String, String)> {
+    let place = Place::find(text, name)?;
+    let written = key_of(place.lines[place.key])?;
+    Some((written, window(text, name)?.alone))
+}
+
+/// Whether `text` reads as YAML: a file a hand is halfway through saving may not.
+pub(super) fn reads(text: &str) -> bool {
+    read(text).is_ok()
+}
+
+/// What `own`'s lines say of the asset: its fields, or `None` when it's no mapping or doesn't read.
+pub(super) fn fields_of(lines: &str) -> Option<Map<String, Value>> {
+    let read = read(lines).ok()?;
+    let (_, asset) = read[SECTION].as_object()?.iter().next()?;
+    match asset {
+        Value::Null => Some(Map::new()),
+        asset => asset.as_object().cloned(),
+    }
+}
+
+/// `text` with asset `name`'s own lines what `own` answered once, where they are. What they say is checked, and the rest stays byte for byte.
+pub(super) fn replaced(text: &str, name: &str, back: &str) -> Result<String, Error> {
+    let refused = || Error::new(Kind::Validation, "asset_text", format!("that isn't {name} as {PROJECT} held it"));
+    let at = window(text, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
+    let lines = back.strip_prefix(&format!("{SECTION}:\n")).ok_or_else(refused)?;
+    let (from, to) = (lines.lines().next().map_or(0, spaces), at.alone.lines().nth(1).map_or(0, spaces));
+    let block: String = lines.split_inclusive('\n').map(|line| if line.trim().is_empty() { line.to_owned() } else { format!("{}{}", pad(to), line.get(from.min(spaces(line))..).unwrap_or(line)) }).collect();
+    let edited = [at.before, &block, at.after].concat();
+    let wanted = read(back).map_err(|_| refused())?;
+    let same = window(&edited, name).is_some_and(|now| read(&now.alone).is_ok_and(|read| canonical(&read) == canonical(&wanted)));
+    let reads = read(&edited).is_ok();
+    (same && reads).then_some(edited).ok_or_else(|| by_hand(name, "its lines as they were don't read where it is now"))
+}
+
 fn significant(line: &str) -> bool {
     !line.trim().is_empty() && !line.trim_start().starts_with('#')
 }

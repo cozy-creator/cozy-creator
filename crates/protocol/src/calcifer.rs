@@ -807,6 +807,15 @@ pub enum StreamEvent {
     /// What a machine is fetching ahead of a project's queued jobs, as it stands now.
     #[serde(rename = "ahead.updated")]
     AheadUpdated { project: String, ahead: Box<crate::project::Ahead> },
+    /// A project's history moved: an edit, an undo or a redo. `undo` and `redo` are what each would take now.
+    #[serde(rename = "history")]
+    History {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<Box<crate::project::HistoryEntry>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        redo: Option<Box<crate::project::HistoryEntry>>,
+    },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]
     Resync,
