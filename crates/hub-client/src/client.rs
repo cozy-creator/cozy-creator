@@ -616,11 +616,13 @@ impl Client {
 
     async fn execute(&self, request: Request) -> Result<Response, Error> {
         let (method, path) = (request.method().clone(), request.url().path().to_owned());
-        self.http.execute(request).await.map_err(|e| {
+        let response = self.http.execute(request).await.map_err(|e| {
             let error = Error::unanswered(&e);
             tracing::warn!(%method, path, "the Hub did not answer: {error}");
             error
-        })
+        })?;
+        crate::workload::observe(response.url(), response.headers());
+        Ok(response)
     }
 
     /// `request` with the credential's headers, and the user's Bearer among them.

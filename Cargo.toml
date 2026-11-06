@@ -59,6 +59,7 @@ hex = "0.4"
 hmac = "0.12"
 http = "1"
 http-body-util = "0.1.5"
+httpdate = "1"
 hyper = { version = "1.11", default-features = false }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 # `url`'s IDNA back end, chosen by this exact version: ASCII hostnames only (non-ASCII is refused, `xn--` works).
