@@ -199,7 +199,9 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     boot.at("cache");
     let machine = Machine::new(store.clone(), layout.cache.as_deref())?;
     boot.at("journal");
-    let service = crate::service::Service::open(&engine, &generations, 1)?;
+    // A tool that composes holds a CPU slot while it computes, and every run's output work takes one: one slot for every four cores.
+    let cpu_slots = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 4).max(1));
+    let service = crate::service::Service::open(&engine, &generations, cpu_slots)?;
     // A short store admit frees the machine's garbage before the store evicts a model.
     let reclaimer = Arc::downgrade(&service);
     store.on_short(move |incoming| reclaimer.upgrade().into_iter().for_each(|service| service.reclaim_for(incoming)));
