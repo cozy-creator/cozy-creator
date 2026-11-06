@@ -214,7 +214,12 @@ enum Prepared {
 
 /// Resolves and binds `ask` into the submission Calcifer records.
 async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared, Error> {
-    let on = ask.on.clone().unwrap_or_else(|| default_on(api));
+    // Named, it goes there; else where a render's job would (Paul, 11-06), resolved first on the first of that set.
+    let set = match &ask.on {
+        Some(on) => vec![on.clone()],
+        None => api.machines.list(false).await.map_or_else(|_| vec![On::Machine("local".into())], |list| list.render_set()),
+    };
+    let mut on = set.first().cloned().unwrap_or_else(|| default_on(api));
     // Local code installs as it resolves. A package answers for itself first: one named without a
     // function lists its functions on an OS that runs no models here.
     if local(api, ask).is_some() {
@@ -226,6 +231,10 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     let cwd = ask.cwd.as_deref();
     let agreed = ask.agreed.clone();
     let resolved = target::resolve(api, &hub, &ask.target, cwd, &on, ask.warm.is_some(), key, agreed).await?;
+    if let (Resolved::Release { package, function, card, .. }, true) = (&resolved, set.len() > 1) {
+        let function = function.as_deref().or(target::only_function(&card.interface)).unwrap_or_default();
+        on = crate::project::run_on(api, &set, &hub, package, &card.release, function).await;
+    }
     if let (Resolved::Release { package, card, .. }, On::Machine(machine), false) = (&resolved, &on, key == "quote")
         && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
     {
@@ -287,8 +296,8 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     Ok(Prepared::Run { submit, notes })
 }
 
-/// Where a run that names no machine goes: this computer's, on an OS that runs models itself; on
-/// another, a machine this computer has when it has one, else `local`, refused with the way forward.
+/// Where a run that names no machine is resolved and described: this computer's, on an OS that runs models itself; on another, a
+/// machine this computer has when it has one, else `local`, refused with the way forward. A run itself goes where a render's job would.
 pub(crate) fn default_on(api: &Api) -> On {
     let local = On::Machine("local".into());
     if platform::Os::CURRENT.local_inference() {

@@ -401,6 +401,9 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
                 out.list = true;
                 out.auto = false;
                 out.members = members(row);
+                if out.members.is_empty() {
+                    return None;
+                }
                 out.min_items = field.constraints.min_length;
                 out.max_items = field.constraints.max_length;
             }
@@ -409,6 +412,9 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
         Type::Struct(row) => {
             out.ty = FieldType::Group;
             out.members = members(row);
+            if out.members.is_empty() {
+                return None;
+            }
         }
         Type::Seed => {
             out.ty = FieldType::Seed;

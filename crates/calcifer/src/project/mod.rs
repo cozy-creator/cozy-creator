@@ -4670,6 +4670,33 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
     })
 }
 
+/// Where `cozy run` of `function` goes with no machine named (Paul, 11-06): as a render's job does, the set a render goes to, on whichever
+/// ends it soonest by what ran there, else by the same card, `local` losing a tie and taking nothing it would do poorly unless what ran says
+/// it ends it first. With nothing measured, the first of the set: a rental before this computer.
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str) -> On {
+    let (Some(first), true) = (set.first(), set.len() > 1) else { return set.first().cloned().unwrap_or_else(|| On::Machine("local".into())) };
+    let host = Host::new(api);
+    let target = format!("{package}/{function}");
+    let (mut learned, mut cards) = (HashMap::new(), HashMap::new());
+    let took: Vec<(On, Option<f64>)> = set.iter().map(|on| (on.clone(), learned_on(&host, &mut learned, &mut cards, &on.to_string(), &target, 1.0).and_then(sim::Learned::one_gpu_s))).collect();
+    let known = took.iter().all(|(_, took)| took.is_some());
+    // What hasn't run there is as long as the slowest that has, so a rental wins over this computer.
+    let slowest = took.iter().filter_map(|(_, took)| *took).reduce(f64::max).unwrap_or(0.0);
+    let soonest = took.iter().map(|(on, took)| (on, took.unwrap_or(slowest))).min_by(|(a, at), (b, bt)| at.total_cmp(bt).then(a.is_local().cmp(&b.is_local())));
+    let chosen = soonest.map_or(first, |(on, _)| on);
+    if !chosen.is_local() || known {
+        return chosen.clone();
+    }
+    let poorly = match host.published(hub, &format!("{package}@{release}"), Some(first)).await {
+        Ok(read) => fit::poorly_now(api, hub, &read, function, &Map::new()),
+        Err(_) => false,
+    };
+    match poorly {
+        true => set.iter().find(|on| !on.is_local()).cloned().unwrap_or_else(|| chosen.clone()),
+        false => chosen.clone(),
+    }
+}
+
 /// Where a file stands in its list: its path's last part, when that's an index.
 pub(crate) fn order_of(field: &str) -> u32 {
     field.rsplit('.').next().and_then(|last| last.parse().ok()).unwrap_or(0)

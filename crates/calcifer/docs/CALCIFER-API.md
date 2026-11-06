@@ -140,7 +140,7 @@ a spec.
   - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y), or local code `./dir[/fn]`,
     `./script.py[/fn]`.
-  - `on` (`local`, a machine, `any`, `new[:sku]`), `hub`, `gpus`, `lane`, `attention_kernel`, `project`, `warm`
+  - `on` (`local`, a machine, `any`, `new[:sku]`; absent: where a render's job would go, the set `cozy project render` sends with no `--on`, on whichever ends it soonest by what ran there, else by the same card, `local` losing a tie and taking nothing it would do poorly unless what ran says it ends it first), `hub`, `gpus`, `lane`, `attention_kernel`, `project`, `warm`
     (a level, instead of running), `agreed` (a `new` run's quote).
   - The payload: `input` (an object), `input_file` (a JSON or YAML file here; files it names are relative to
     it) or `input_text` (the same read from text; files it names are relative to `cwd`); then `terms` override it (`key=value` typed as declared, `key:=<json>`, `model.<slot>=<ref>`, one
