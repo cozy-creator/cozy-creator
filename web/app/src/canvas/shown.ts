@@ -16,6 +16,9 @@ export interface Shown extends MainFile {
 export function shownOf(view: ElementView): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
+  // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
+  const watch = watched(view)
+  if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number) => versions.find((held) => held.number === number)
   const held = version(view.viewed) ?? version(asset.version)
@@ -129,9 +132,10 @@ export function sentShape(view: ElementView, number?: number): number | undefine
 export function aspectOf(view: ElementView): number {
   const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
   if (made) return made
+  // Showing a take, its own shape, whatever the last one measured was.
   const shown = shownOf(view)
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
-  return view.aspect ?? measured ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
+  return measured ?? view.aspect ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
 const hasSlots = (links?: Record<string, string>) => Object.keys(links ?? {}).length > 0

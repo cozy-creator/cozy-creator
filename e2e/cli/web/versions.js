@@ -761,6 +761,59 @@ async function died(why) {
     check('file_slots_take_their_named_kind', JSON.stringify(drawTakes) === '["audio","image"]' && (await drawnChips.count()) === 1 && (await page.locator('.card.here[data-asset="drawn_from"] .in-frame .chip.refused').count()) === 0, { drawTakes, chips: await drawnChips.evaluateAll((all) => all.map((one) => one.className)) });
     await shut();
 
+    // A box approved at 1:1, its next take asked at 16:9 (Paul, 11-06): while it's made the box is 16:9 with no other take's picture in it;
+    // landed, it's that take's shape with no bars, the run having asked 16:9; and each take shown is its own shape.
+    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  shapes:\n    tool: ${fixture}/wait\n    instructions: A whale.\n    aspect_ratio: "1:1"\n`);
+    await box('shapes').waitFor();
+    await render(['shapes'], `shapes-${Date.now()}`);
+    await until('its square', () => asset('shapes'), (row) => row?.versions === 1 && !row.making?.length, 5 * STEP_MS);
+    await post(`${at}/approve`, { name: 'shapes', version: '1' });
+    await api(`${at}/assets/shapes`, { method: 'PATCH', body: JSON.stringify({ fields: { aspect_ratio: '16:9', seconds: 4 } }) });
+    await until('16:9 asked', () => asset('shapes'), (row) => row?.fields?.aspect_ratio === '16:9' && row.pinned);
+    await open('shapes');
+    const shapesHere = page.locator('.card.here[data-asset="shapes"]');
+    const frameShape = async () => {
+      const { width, height } = await shapesHere.locator('.media').first().boundingBox();
+      return width / height;
+    };
+    const square = await frameShape();
+    await (await renderOf(page, 'shapes')).click();
+    await until('being made', () => asset('shapes'), (row) => row?.making?.length === 1, 2 * STEP_MS);
+    const whileMade = await frameShape();
+    const noStale = (await shapesHere.locator('.media img').count()) === 0;
+    const madeAs = await until('its 16:9 take', () => asset('shapes'), (row) => row?.versions === 2 && !row.making?.length, 5 * STEP_MS);
+    const wide = madeAs.prefixes.find((held) => held.number === 2).main;
+    // Its picture as made: the run asked 16:9.
+    const pictureShape = await until('its picture', () => shapesHere.locator('.media img').last().evaluate((img) => img.naturalWidth / img.naturalHeight).catch(() => 0), (ratio) => ratio > 0).catch(() => 0);
+    const landedShape = await until('the box at its take', frameShape, (now) => Math.abs(now / pictureShape - 1) < 0.03).catch(() => frameShape());
+    check('a_take_is_made_and_shown_at_its_shape', Math.abs(square - 1) < 0.03 && Math.abs(whileMade / (16 / 9) - 1) < 0.03 && noStale && Math.abs(pictureShape / (16 / 9) - 1) < 0.05 && Math.abs(landedShape / pictureShape - 1) < 0.03 && (await shapesHere.locator('.here-side .take.on').getAttribute('data-take')) === '2', { square, whileMade, noStale, pictureShape, landedShape });
+    // Clicked, a take is in its frame at once, never another's picture after: its tile's thumbnail scaled, then itself.
+    const clickTo = (number, sha) => page.evaluate(async ({ number, sha }) => {
+      const card = () => document.querySelector('.card.here[data-asset="shapes"]');
+      const at = performance.now();
+      card().querySelector(`.here-side .take[data-take="${number}"]`).click();
+      let first;
+      let stale = 0;
+      return new Promise((done) => {
+        const look = () => {
+          const shown = [...card().querySelectorAll('.media img')].filter((img) => img.complete && img.naturalWidth);
+          if (shown.some((img) => !img.src.includes(sha))) stale++;
+          if (first === undefined && shown.some((img) => img.src.includes(sha))) first = performance.now() - at;
+          if (first !== undefined || performance.now() - at > 10_000) done({ first, stale });
+          else requestAnimationFrame(look);
+        };
+        requestAnimationFrame(look);
+      });
+    }, { number, sha: sha.replace('sha256:', '') });
+    const toSquare = await clickTo(1, madeAs.prefixes[0].main.sha256);
+    await page.waitForTimeout(300);
+    const squareAgain = await frameShape();
+    const toWide = await clickTo(2, wide.sha256);
+    await page.waitForTimeout(300);
+    seen.click_to_pixels = { toSquare, toWide };
+    check('a_clicked_take_shows_at_once_at_its_shape', toSquare.first < 400 && toWide.first < 400 && toSquare.stale <= 1 && toWide.stale <= 1 && Math.abs(squareAgain - 1) < 0.03 && Math.abs((await frameShape()) / pictureShape - 1) < 0.03, { toSquare, toWide, squareAgain });
+    await shut();
+
     // What a render can't read is refused, in words, and nothing runs.
     await render(['bare'], `bare-${Date.now()}`);
     const bare = await until('it refused', () => asset('bare'), (row) => row?.failure, 2 * STEP_MS);

@@ -15,7 +15,7 @@ import { useCanvasStore, useElement } from "./context"
 import { controlsOf, shapesOf, snapped } from "./controls"
 import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
 import { useDragScroll } from "./dragScroll"
-import { Media, Preview, Thumb, usePreview } from "./Media"
+import { Media, Preview, preload, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { aspectOf, faceOf, fieldsOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, watched } from "./shown"
@@ -167,11 +167,11 @@ function Side({ children }: { children: ReactNode }) {
 }
 
 /** A take on the row: a video's preview plays while the pointer rests on it. */
-function TakeThumb({ main, width }: { main: MainFile; width: number }) {
+function TakeThumb({ main, width, onShown }: { main: MainFile; width: number; onShown?: () => void }) {
   const { on, hover } = usePreview(main.field === "video")
   return (
     <span className="take-thumb" {...hover}>
-      <Thumb sha256={main.sha256} cardWidth={width} />
+      <Thumb sha256={main.sha256} cardWidth={width} onShown={onShown} />
       {on && <Preview sha256={main.sha256} />}
     </span>
   )
@@ -190,6 +190,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
   const writes = paints(view, tools)
+  // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
+  const { client } = useConnection()
+  const newest = asset.prefixes?.at(-1)
   const adds = writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit")
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
@@ -254,7 +257,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
           >
-            {version.main && !version.main.absent ? <TakeThumb main={version.main} width={width} /> : null}
+            {version.main && !version.main.absent ? (
+              <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256, HERE_THUMB) : undefined} />
+            ) : null}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -649,7 +654,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       {asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width} restWidth={width}>
           {here && (asset?.kind === "text" ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && !view.hereWords && asset && shownVersion?.main && <div className="take-out nodrag nopan" draggable onDragStart={(event) => takeOut(event, store, name, asset, shownVersion)} />}
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}

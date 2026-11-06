@@ -24,7 +24,8 @@ const PREVIEW_AFTER_MS = 250
 
 /**
  * At most two thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
- * connections to it, stalling every other call. An element scrolled away gives up its place.
+ * connections to it, stalling every other call. An element scrolled away gives up its place. What a person is looking at right now,
+ * `now`, goes at once, past the line.
  */
 function line(limit: number) {
   let running = 0
@@ -35,13 +36,16 @@ function line(limit: number) {
       waiting.shift()!()
     }
   }
-  return (start: () => void): (() => void) => {
+  return (start: () => void, now = false): (() => void) => {
     let state: "waiting" | "running" | "done" = "waiting"
     const go = () => {
       state = "running"
       start()
     }
-    waiting.push(go)
+    if (now) {
+      running += 1
+      go()
+    } else waiting.push(go)
     next()
     return () => {
       if (state === "waiting") waiting.splice(waiting.indexOf(go), 1)
@@ -58,6 +62,19 @@ const thumbLine = line(2)
 /** What's been up: coming back on screen is no arrival, and fades nothing. */
 const arrived = new Set<string>()
 
+/** A just-landed take's picture, at the size an open box draws it, asked once and decoded ahead, so a click on it shows it at once. */
+const preloaded = new Set<string>()
+export function preload(client: Client, projectId: string | null, sha256: string, cardWidth: number) {
+  const key = `${sha256}:${thumbWidth(cardWidth)}`
+  if (!projectId || preloaded.has(key)) return
+  preloaded.add(key)
+  void client.transport.src(client.thumb(projectId, sha256, thumbWidth(cardWidth))).then((url) => {
+    const img = new Image()
+    img.src = url
+    img.decode().then(() => arrived.add(key), () => preloaded.delete(key))
+  })
+}
+
 /** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache. */
 function thumbWidth(cardWidth: number): number {
   const wanted = cardWidth * Math.min(2, window.devicePixelRatio || 1)
@@ -71,6 +88,7 @@ export function Thumb({
   exact,
   className,
   frame,
+  now,
   onSize,
   onShown,
 }: {
@@ -81,6 +99,8 @@ export function Thumb({
   exact?: boolean
   className?: string
   frame?: number
+  /** What a person is looking at: past the line. */
+  now?: boolean
   onSize?: (aspect: number) => void
   onShown?: () => void
 }) {
@@ -98,7 +118,7 @@ export function Thumb({
       void client.transport.src(client.thumb(projectId, sha256, width, strip)).then((url) => {
         if (live) setSrc(url)
       })
-    })
+    }, now)
     return () => {
       live = false
       leaveLine.current()
@@ -424,7 +444,29 @@ function Making({ run, pkg, making }: { run?: Run; pkg?: string; making: boolean
   return <Progress fraction={run.progress?.done_fraction} says={long(run, Date.now()) ? workWords(run) || run.waiting : undefined} />
 }
 
-export function Media({ view, name, cardWidth, children }: { view: ElementView; name: string; cardWidth: number; children?: ReactNode }) {
+/** The picture in a box's frame, one take's alone: its small thumbnail at once, the one its tile and its box at rest already have, scaled up,
+ *  and its full size over it as soon as that's decoded. Another take's picture is never what stands in. */
+function FramePicture({ sha256, cardWidth, restWidth, onSize, onShown }: { sha256: string; cardWidth: number; restWidth: number; onSize: (aspect: number) => void; onShown: () => void }) {
+  const [full, setFull] = useState(false)
+  const larger = thumbWidth(cardWidth) > thumbWidth(restWidth)
+  return (
+    <>
+      {larger && !full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
+      <Thumb
+        sha256={sha256}
+        cardWidth={cardWidth}
+        now={larger}
+        onSize={onSize}
+        onShown={() => {
+          setFull(true)
+          onShown()
+        }}
+      />
+    </>
+  )
+}
+
+export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
@@ -461,7 +503,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
         />
       )}
       {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-      {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+      {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} cardWidth={cardWidth} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       {blank && words && (
