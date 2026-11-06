@@ -59,6 +59,9 @@ pub(super) struct Escapes {
     last_head: Option<u32>,
     loops: BTreeMap<u32, Loop>,
     learned: BTreeMap<(u32, u64), Learned>,
+    /// What this process held with the bytes it was last refused (`refused`), and the refusals so far.
+    refusal: usize,
+    refusals: u64,
 }
 
 struct Loop {
@@ -82,14 +85,17 @@ struct Loop {
     /// The least a pass held beyond its start and what it left: an estimate that errs low.
     transient: Option<usize>,
     refused: Option<Verdict>,
-    /// The device's refused allocations at its last mark.
+    /// The device's refused allocations, and the bytes live and held, at its last mark.
     ooms: u64,
+    held: usize,
 }
 
 #[derive(Clone, Copy)]
 struct Learned {
     escaped: usize,
     transient: usize,
+    /// A failed pass: what it held when refused, above what was held as it began.
+    failed: usize,
 }
 
 /// Why a pass cannot fit with every evictable byte gone.
@@ -169,14 +175,20 @@ impl Escapes {
         sites
     }
 
-    /// What the next loop of this head and shape will need. One whose last pass ran out of memory
-    /// (`failed`) needed more than that pass reached above its start: a first call whose cache
-    /// outgrew the card in step 0 has the next one refused at its first forward.
+    /// An allocation was refused with `owned` (this process's bytes and the request) not fitting.
+    pub(super) fn refused(&mut self, owned: usize) {
+        self.refusal = owned;
+        self.refusals += 1;
+    }
+
+    /// What the next loop of this head and shape will need. One whose last pass was refused memory
+    /// (`failed`) needed more than this process held then, above what it held as that pass began:
+    /// a first call whose cache outgrew the card in step 0 has the next refused at its first forward.
     fn learn(&mut self, head: u32, held: &Loop, failed: bool) {
-        let reached = failed.then(|| self.peak.saturating_sub(held.start));
-        if held.passes > 1 || reached.is_some() {
-            let transient = held.transient.unwrap_or(0).max(reached.unwrap_or(0));
-            self.learned.insert((head, held.shape), Learned { escaped: held.peak, transient });
+        let failed = if failed { self.refusal.saturating_sub(held.held) } else { 0 };
+        if held.passes > 1 || failed != 0 {
+            let transient = held.transient.unwrap_or(0);
+            self.learned.insert((head, held.shape), Learned { escaped: held.peak, transient, failed });
         }
     }
 
@@ -221,7 +233,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     }
     let mut state = owner.lock()?;
     let held = state.stats.allocated_bytes.saturating_add(owner.held.load(Ordering::Acquire));
-    let ooms = state.stats.ooms;
+    let ooms = state.escapes.refusals;
     let room = room_now(owner);
     let escapes = &mut state.escapes;
     escapes.pass = escapes.pass.wrapping_add(1);
@@ -231,17 +243,20 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     if !escapes.loops.contains_key(&head) {
         let learned = (shape != 0).then(|| escapes.learned.get(&(head, shape)).copied()).flatten();
         let verdict = learned.and_then(|learned| {
-            let need = held.saturating_add(learned.escaped).saturating_add(learned.transient).saturating_add(floor);
+            let planned = learned.escaped.saturating_add(learned.transient).saturating_add(floor);
+            let need = held.saturating_add(planned.max(learned.failed));
+            // What the last run held when refused counts as its working memory.
+            let transient = learned.transient.max(learned.failed.saturating_sub(learned.escaped).saturating_sub(floor));
             (need > room).then(|| Verdict {
                 need_bytes: need, room_bytes: room, held_bytes: held, escaped_bytes: learned.escaped,
-                transient_bytes: learned.transient, floor_bytes: floor, learned: true, sites: vec![],
+                transient_bytes: transient, floor_bytes: floor, learned: true, sites: vec![],
             })
         });
         let carried_sites = escapes.sites(0);
         escapes.loops.insert(head, Loop {
             shape, first: pass, last: pass, start: total, since_first: 0, since_last: 0, passes: 1,
             carried: total, carried_sites, escaped: 0, peak: 0, named_at: 0, peak_sites: vec![],
-            growth: None, transient: None, refused: verdict.clone(), ooms,
+            growth: None, transient: None, refused: verdict.clone(), ooms, held,
         });
         return Ok(verdict);
     }
@@ -263,6 +278,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     held_loop.start = total;
     held_loop.since_last = 0;
     held_loop.ooms = ooms;
+    held_loop.held = held;
     held_loop.escaped = escaped;
     held_loop.peak = held_loop.peak.max(escaped);
     if let Some(sites) = sites {
@@ -287,8 +303,8 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
 pub fn escapes_take(device: i32) -> Result<Vec<EscapeRecord>> {
     let Some(owner) = existing(device)? else { return Ok(vec![]) };
     let mut state = owner.lock()?;
-    let ooms = state.stats.ooms;
     let escapes = &mut state.escapes;
+    let ooms = escapes.refusals;
     let last = escapes.last_head.take();
     let ended = std::mem::take(&mut escapes.loops);
     let records = ended.into_iter().map(|(head, held)| {
