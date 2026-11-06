@@ -481,7 +481,7 @@ fn indexed<R>(api: &Api, keep: bool, change: impl FnOnce(&mut Index) -> R) -> R 
     let answer = change(index);
     if keep {
         let bytes = serde_json::to_vec_pretty(index).expect("an index serializes");
-        if let Err(e) = platform::durable::replace(&path, &bytes, 0o644) {
+        if let Err(e) = platform::durable::replace_soon(&path, &bytes, 0o644) {
             warn!("keeping the project index: {e}");
         }
     }

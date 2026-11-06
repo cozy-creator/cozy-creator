@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
     sync::Arc,
+    time::Instant,
 };
 
 use protocol::{
@@ -20,6 +21,7 @@ use super::{
     kept_files, known_packages, making_now, next_steps, orphans, queue, revision, row, unmade,
 };
 use crate::api::Api;
+use tracing::info;
 
 /// More assets than this changing at once is told as "read it whole".
 const MOST_TOLD: usize = 256;
@@ -58,15 +60,21 @@ impl Told {
 
 /// `project`'s model as its files are this moment. One read at a time, and any other waits and takes it.
 pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Model>, Error> {
+    let asked = Instant::now();
     let mut held = project.model.lock().await;
+    let wait_ms = asked.elapsed().as_secs_f64() * 1000.0;
     let rev = revision(&project.folder.dir);
     let heard = api.projects.heard_changes.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(model) = held.as_ref().filter(|model| model.rev == rev && model.heard == heard) {
         return Ok(model.clone());
     }
-    let (api, read) = (api.clone(), project.clone());
+    let (api, read, began) = (api.clone(), project.clone(), Instant::now());
     let answer = tokio::task::spawn_blocking(move || read_model(&api, &read, rev, heard)).await;
     let model = Arc::new(answer.map_err(|why| Error::new(Kind::Internal, "project_read", why.to_string()))??);
+    let read_ms = began.elapsed().as_secs_f64() * 1000.0;
+    if wait_ms + read_ms >= 5.0 {
+        info!(phase = "project_read", wait_ms, read_ms);
+    }
     *held = Some(model.clone());
     Ok(model)
 }

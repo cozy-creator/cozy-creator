@@ -13,7 +13,9 @@ use std::{
 };
 
 mod disk;
-pub use disk::{DiskClass, Filesystem, cached, cached_runs, filesystem, open_direct, page_size, will_need};
+mod soon;
+pub use disk::{DiskClass, Filesystem, cached, cached_runs, filesystem, open_direct, page_size, renames_after_data, will_need};
+pub use soon::soon;
 
 static TEMPS: AtomicU64 = AtomicU64::new(0);
 
@@ -51,7 +53,7 @@ pub fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
 /// this returns a crash keeps the new one. `mode` is the Unix permission; Windows keeps the
 /// profile's ACL, and has no directory to sync: the rename is atomic in NTFS's journal.
 pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    renamed(path, bytes, mode, true)?;
+    renamed(path, bytes, mode, Flush::Durable)?;
     sync_dir(
         path.parent()
             .filter(|dir| !dir.as_os_str().is_empty())
@@ -59,14 +61,36 @@ pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     )
 }
 
+/// As `replace`, returning once it is named, never waiting on the disk's write-back: the bytes
+/// reach the disk before the name does, so a crash of the machine keeps the old file or the new one,
+/// whole. Where the filesystem orders a rename over a file after its data (`renames_after_data`)
+/// nothing waits; else these bytes alone are written first (`ordered`). `soon` makes it durable
+/// after; a crash before then keeps the old.
+pub fn replace_soon(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let flush = match path.exists() && renames_after_data(dir) {
+        true => Flush::Not,
+        false => Flush::Ordered,
+    };
+    renamed(path, bytes, mode, flush)?;
+    soon(path);
+    Ok(())
+}
+
 /// As `replace`, but nothing is made to survive a crash: for a record of a live process, which a
 /// crash makes stale anyway. It never waits on the disk's write-back.
 pub fn swap(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    renamed(path, bytes, mode, false)
+    renamed(path, bytes, mode, Flush::Not)
 }
 
-/// Writes `bytes` beside `path` and renames them over it, flushed first when `durable`.
-fn renamed(path: &Path, bytes: &[u8], mode: u32, durable: bool) -> Result<()> {
+enum Flush {
+    Durable,
+    Ordered,
+    Not,
+}
+
+/// Writes `bytes` beside `path` and renames them over it, flushed first as `flush` says.
+fn renamed(path: &Path, bytes: &[u8], mode: u32, flush: Flush) -> Result<()> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -92,7 +116,11 @@ fn renamed(path: &Path, bytes: &[u8], mode: u32, durable: bool) -> Result<()> {
     let written = file
         .write_all(bytes)
         .and_then(|()| set_file_mode(&file, mode).map_err(io::Error::from))
-        .and_then(|()| if durable { file.sync_all() } else { Ok(()) })
+        .and_then(|()| match flush {
+            Flush::Durable => file.sync_all(),
+            Flush::Ordered => ordered(&file),
+            Flush::Not => Ok(()),
+        })
         .map_err(Error::io("write", &temp));
     drop(file);
     let renamed = written.and_then(|()| rename_over(&temp, path).map_err(Error::io("rename", path)));
@@ -100,6 +128,24 @@ fn renamed(path: &Path, bytes: &[u8], mode: u32, durable: bool) -> Result<()> {
         let _ = fs::remove_file(&temp);
     }
     renamed
+}
+
+/// Writes `file`'s bytes to the disk and waits for those alone, so a name given it after can't
+/// name what isn't there: on Linux not for a journal commit, which waits for every file's.
+/// Elsewhere a flush. `soon` makes the file durable.
+pub fn ordered(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let all = libc::SYNC_FILE_RANGE_WAIT_BEFORE | libc::SYNC_FILE_RANGE_WRITE | libc::SYNC_FILE_RANGE_WAIT_AFTER;
+        // SAFETY: a descriptor this owns, and scalars.
+        match unsafe { libc::sync_file_range(file.as_raw_fd(), 0, 0, all) } {
+            0 => Ok(()),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    file.sync_data()
 }
 
 /// Makes the entries of `dir` (a create, rename or unlink in it) survive a crash.
