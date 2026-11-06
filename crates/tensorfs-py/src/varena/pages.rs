@@ -2,9 +2,9 @@
 //! and no store read or bake. One per GPU. Process lifetime, never on disk, each page once, within
 //! half of the host's RAM and beyond a headroom. The tier follows use, not arrival: a page is
 //! worth its refills per request, and only pages worth less make room for it.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use platform::contain::host_memory;
@@ -19,6 +19,11 @@ const LOOK: Duration = Duration::from_millis(100);
 /// How much of a page is read or registered before a command may take over: one registration
 /// of H3's largest page made a request wait 0.6 s on an RTX 3090.
 const WINDOW: usize = 64 << 20;
+/// Threads faulting a page in: registering untouched memory on the fill path held each of Flux-2's
+/// 57 blocks about 0.2 s in step 1 (run 39103). On a 4090 host the driver registered untouched
+/// memory at 3 GB/s, one page at a time, touched memory at 28, and faulting in ran at 10.5 GB/s on
+/// four threads.
+const FAULTERS: usize = 4;
 
 /// Host bytes, page aligned, registered once filled: registering touched memory runs at about
 /// twice the rate of untouched memory. A window at a time, and no copy spans two: CUDA refuses it.
@@ -44,6 +49,17 @@ impl Page {
         }
         Ok(Self { ptr, len, pins: Vec::new() })
     }
+    /// Fault every byte in, a part on each of `FAULTERS` threads.
+    fn populate(&self) {
+        let part = self.len.div_ceil(FAULTERS).next_multiple_of(4096).max(4096);
+        let base = self.ptr as usize;
+        std::thread::scope(|scope| {
+            for at in (0..self.len).step_by(part) {
+                let len = part.min(self.len - at);
+                scope.spawn(move || fault_in(base + at, len));
+            }
+        });
+    }
     pub(super) fn ptr(&self) -> *mut u8 {
         self.ptr
     }
@@ -64,6 +80,19 @@ impl Page {
         Ok(())
     }
 }
+/// `len` bytes from `at`, inside an unshared page and page aligned, faulted in.
+fn fault_in(at: usize, len: usize) {
+    #[cfg(target_os = "linux")]
+    // SAFETY: the caller's range.
+    if unsafe { libc::madvise(at as *mut libc::c_void, len, libc::MADV_POPULATE_WRITE) } == 0 {
+        return;
+    }
+    for at in (at..at + len).step_by(4096) {
+        // SAFETY: as above; nothing reads it yet.
+        unsafe { (at as *mut u8).write_volatile(0) };
+    }
+}
+
 impl Drop for Page {
     fn drop(&mut self) {
         for pin in &mut self.pins {
@@ -87,6 +116,12 @@ struct Wanted {
     set: String,
     source: Weak<Inner>,
     region: Weak<varena::Region>,
+}
+
+/// A page registered ahead for a derive's bytes, not yet written.
+struct Reserved {
+    set: String,
+    page: Page,
 }
 
 /// One fill, for the request's record.
@@ -119,6 +154,14 @@ struct State {
     bound: i64,
     clock: u64,
     log: Vec<Row>,
+    /// Pages derives will keep, to make while their fills run, in the order the fills began.
+    ahead: VecDeque<(String, Weak<Inner>)>,
+    reserving: HashSet<String>,
+    reserved: HashMap<String, Reserved>,
+    /// Counts `forget`s: a page registered across one is not kept.
+    forgets: u64,
+    /// Keeps that found their page registered ahead.
+    reserved_ahead: u64,
 }
 
 pub(super) struct Tier {
@@ -126,8 +169,14 @@ pub(super) struct Tier {
     cap: u64,
     headroom: i64,
     state: Mutex<State>,
+    /// An ahead reservation was queued or ended.
+    reserving: Condvar,
+    reservers: OnceLock<()>,
     canceled: AtomicU64,
     failed: AtomicU64,
+    /// Fill-path time in `keep`, and of it in `reserve`.
+    pub(super) keep_ns: AtomicU64,
+    pub(super) reserve_ns: AtomicU64,
     /// One open store per checkpoint, for as long as a Source reads it: local, fetching.
     stores: Mutex<HashMap<String, (Weak<Store>, Weak<Store>)>>,
 }
@@ -158,7 +207,8 @@ impl Tier {
         let state = State { room: -1, ..State::default() };
         Self {
             device, cap, headroom: headroom as i64, state: Mutex::new(state),
-            canceled: AtomicU64::new(0), failed: AtomicU64::new(0), stores: Mutex::default(),
+            reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
+            keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), stores: Mutex::default(),
         }
     }
 
@@ -269,12 +319,21 @@ impl Tier {
     }
 
     /// A page with bytes the caller is about to write for `key`, admitted and registered, or
-    /// None: `insert` it once they are written.
+    /// None: `insert` it once they are written. One registered ahead if there is, or will be soon.
     pub(super) fn reserve(&self, key: &str, len: usize) -> PyResult<Option<Page>> {
         let (admitted, gone) = {
             let mut state = self.state();
+            while state.reserving.contains(key) {
+                state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner());
+            }
+            state.ahead.retain(|(queued, _)| queued != key);
             if state.kept.contains_key(key) {
                 return Ok(None);
+            }
+            if let Some(reserved) = state.reserved.remove(key) {
+                state.bytes -= reserved.page.len as u64;
+                state.reserved_ahead += 1;
+                return Ok(Some(reserved.page));
             }
             self.admit(&mut state, key, len as u64)
         };
@@ -282,7 +341,16 @@ impl Tier {
         if !admitted {
             return Ok(None);
         }
+        self.registered(len, false)
+    }
+
+    /// A page of `len` bytes, registered, faulted in first if `populate`. None: the driver refused,
+    /// and the tier is off.
+    fn registered(&self, len: usize, populate: bool) -> PyResult<Option<Page>> {
         let mut page = Page::new(len)?;
+        if populate {
+            page.populate();
+        }
         while !page.registered() {
             if let Err(error) = page.register_window(self.device) {
                 self.state().off = Some(error.to_string());
@@ -290,6 +358,82 @@ impl Tier {
             }
         }
         Ok(Some(page))
+    }
+
+    /// `source`'s fill began and its derive will keep the bytes: its page is made on the
+    /// tier's thread while the fill reads and derives, for `keep` to take.
+    pub(super) fn expect(self: &Arc<Self>, key: String, source: &Arc<Inner>) {
+        self.state().ahead.push_back((key, Arc::downgrade(source)));
+        self.reserving.notify_all();
+        self.reservers.get_or_init(|| {
+            let tier = Arc::clone(self);
+            let spawned = std::thread::Builder::new().name("tensorfs-reserve".into()).spawn(move || tier.reserve_ahead());
+            if let Err(error) = spawned {
+                tracing::warn!("host pages register on their fills: {error}");
+            }
+        });
+    }
+
+    /// Make the expected pages, the first expected first, while the tier admits them.
+    fn reserve_ahead(&self) {
+        loop {
+            let (key, source, forgets, gone) = {
+                let mut state = self.state();
+                let (key, source) = loop {
+                    if state.off.is_some() {
+                        return;
+                    }
+                    match state.ahead.pop_front() {
+                        Some((key, source)) => break (key, source),
+                        None => state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner()),
+                    }
+                };
+                let Some(source) = source.upgrade() else { continue };
+                if state.kept.contains_key(&key) || state.reserved.contains_key(&key) || state.reserving.contains(&key) {
+                    continue;
+                }
+                let (admitted, gone) = self.admit(&mut state, &key, source.bytes() as u64);
+                if admitted {
+                    state.bytes += source.bytes() as u64;
+                    state.reserving.insert(key.clone());
+                }
+                (admitted.then_some(key), source, state.forgets, gone)
+            };
+            drop(gone);
+            let Some(key) = key else { continue };
+            let page = self.registered(source.bytes(), true).ok().flatten();
+            let unused = {
+                let mut state = self.state();
+                state.reserving.remove(&key);
+                let page = match page {
+                    Some(page) if state.forgets == forgets && !state.kept.contains_key(&key) && source.keeps() => {
+                        state.reserved.insert(key, Reserved { set: source.set().to_owned(), page });
+                        None
+                    }
+                    page => {
+                        state.bytes -= source.bytes() as u64;
+                        page
+                    }
+                };
+                self.reserving.notify_all();
+                page
+            };
+            drop(unused);
+        }
+    }
+
+    /// `key`'s derive wrote nothing: its stored bytes are pinned at idle, if it streams.
+    pub(super) fn unreserve(&self, key: &str) {
+        let reserved = {
+            let mut state = self.state();
+            state.ahead.retain(|(queued, _)| queued != key);
+            let reserved = state.reserved.remove(key);
+            if let Some(reserved) = &reserved {
+                state.bytes -= reserved.page.len as u64;
+            }
+            reserved
+        };
+        drop(reserved);
     }
 
     pub(super) fn insert(&self, key: &str, set: &str, page: Page) {
@@ -438,7 +582,7 @@ impl Tier {
 
     /// Every page goes, or a set's: its fill changed, or it closed.
     fn forget(&self, set: Option<&str>) {
-        let gone: Vec<_> = {
+        let gone = {
             let mut state = self.state();
             let keys: Vec<_> = state.kept.iter().filter(|(_, kept)| set.is_none_or(|set| kept.set == set))
                 .map(|(key, _)| key.clone()).collect();
@@ -446,7 +590,13 @@ impl Tier {
             if set.is_none() {
                 state.filled = None;
             }
-            keys.iter().filter_map(|key| state.remove(key)).collect()
+            state.forgets += 1;
+            state.ahead.retain(|(_, source)| set.is_some_and(|set| source.upgrade().is_some_and(|source| source.set() != set)));
+            let reserved: Vec<_> = state.reserved.iter().filter(|(_, reserved)| set.is_none_or(|set| reserved.set == set))
+                .map(|(key, _)| key.clone()).collect();
+            let reserved: Vec<_> = reserved.iter().filter_map(|key| state.reserved.remove(key)).collect();
+            state.bytes -= reserved.iter().map(|reserved| reserved.page.len as u64).sum::<u64>();
+            (keys.iter().filter_map(|key| state.remove(key)).collect::<Vec<_>>(), reserved)
         };
         drop(gone);
     }
@@ -485,9 +635,10 @@ impl PyPages {
             .map(|row| (row.set, row.block, row.bytes, row.origin, row.ahead, row.ns, row.at_ms)).collect()
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (pages, bytes, room, wanted, pin_failed, off) = {
+        let (pages, bytes, room, wanted, pin_failed, off, reserved, reserved_ahead) = {
             let state = self.tier.state();
-            (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone())
+            (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone(),
+                state.reserved.len(), state.reserved_ahead)
         };
         let row = PyDict::new(py);
         row.set_item("scope", "the host tier: every streamed page's bytes, pinned")?;
@@ -499,8 +650,12 @@ impl PyPages {
         row.set_item("refused", off)?;
         row.set_item("wanted", wanted)?;
         row.set_item("pin_failed", pin_failed)?;
+        row.set_item("reserved", reserved)?;
+        row.set_item("reserved_ahead", reserved_ahead)?;
         row.set_item("ahead_canceled", self.tier.canceled.load(Ordering::Relaxed))?;
         row.set_item("ahead_failed", self.tier.failed.load(Ordering::Relaxed))?;
+        row.set_item("keep_ns", self.tier.keep_ns.load(Ordering::Relaxed))?;
+        row.set_item("reserve_ns", self.tier.reserve_ns.load(Ordering::Relaxed))?;
         Ok(row)
     }
 }
