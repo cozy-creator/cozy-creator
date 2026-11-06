@@ -6,10 +6,10 @@
 #      while they run: the upload's capability grants more, so the pod redeems again mid-download;
 #   4. every run completes; the pod's clock against the Hub's, and its redemptions, from its log.
 # The throwaway models are deleted after. params:
-#   download_mb  the downloaded commit's size (512): long enough for the upload to land while it downloads
-#   traffic_gb   GB the provider bills: the image, the session's cozy and the download (12)
+#   download_mb  the downloaded commit's size (2048): long enough for the upload to land while it downloads
+#   traffic_gb   GB the provider bills: the image, the session's cozy and the download (14)
 . "$(dirname "$0")/lib.sh"
-MB=$(param download_mb 512)
+MB=$(param download_mb 2048)
 TS=$(date -u +%m%d%H%M) A=$(cozy --json whoami | jq -r .account)
 [ -n "$A" ] && [ "$A" != null ] || fail "not signed in"
 MD=$A/proofs-d-$TS MU=$A/proofs-u-$TS
@@ -19,10 +19,12 @@ with open(sys.argv[1],"wb") as f:
     f.write(struct.pack("<Q",len(h))+h)
     for _ in range(n*4//2**20): f.write(os.urandom(2**20))
     f.write(os.urandom(n*4%2**20))' "$1" "$2"; }
-commit() { jq -r 'select(.type? == "run.completed") | .run.result.models[0].published.commit // empty' "$OUT/$1.txt" | tail -1; }
-settled() { jq -r 'select(.run.settled_at_ms?) | .run.settled_at_ms' "$OUT/$1" | tail -1; }
+# A step's output is its NDJSON with the CLI's own lines among them.
+records() { grep '^{' "$OUT/$1"; }
+commit() { records "$1.txt" | jq -r 'select(.type? == "run.completed") | .run.result.models[0].published.commit // empty' | tail -1; }
+settled() { records "$1" | jq -r 'select(.run.settled_at_ms?) | .run.settled_at_ms' | tail -1; }
 cleanup() { for m in $MD $MU; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
-quote "$(param traffic_gb 12)" 1800
+quote "$(param traffic_gb 14)" 1800
 rent
 trap 'cleanup; finish' EXIT
 
@@ -45,7 +47,7 @@ done
 
 # 3. An upload while one download runs and another waits on it.
 cozy --json model download "$MD@$CD" --on "$NAME" > "$OUT/download-1.ndjson" 2> "$OUT/download-1.err" & D1=$!
-until jq -e 'select(.progress.stage? | strings | startswith("downloading"))' "$OUT/download-1.ndjson" > /dev/null 2>&1; do
+until records download-1.ndjson | jq -e 'select(.progress.stage? | strings | startswith("downloading"))' > /dev/null 2>&1; do
   kill -0 $D1 2> /dev/null || fail "download 1 ended before it downloaded: $(tail -c 300 "$OUT/download-1.ndjson")"; sleep 0.5
 done
 cozy --json model download "$MD@$CD" --on "$NAME" > "$OUT/download-2.ndjson" 2> "$OUT/download-2.err" & D2=$!
@@ -53,13 +55,13 @@ tensors "$OUT/u3.safetensors" 1
 step upload-3 --json model upload "$OUT/u3.safetensors" "$MU" --lane f32 --source-format as-is --on "$NAME" || fail "upload 3 --on the pod"
 wait $D1 || fail "download 1: $(tail -c 300 "$OUT/download-1.ndjson")"
 wait $D2 || fail "download 2: $(tail -c 300 "$OUT/download-2.ndjson")"
-U=$(jq -r 'select(.run.settled_at_ms?) | .run.settled_at_ms' "$OUT/upload-3.txt" | tail -1)
+U=$(settled upload-3.txt)
 say "upload 3 settled at $U; downloads at $(settled download-1.ndjson), $(settled download-2.ndjson)"
 [ "$U" -lt "$(settled download-1.ndjson)" ] || fail "download 1 ended before upload 3: raise download_mb"
-for d in 1 2; do say "download $d: $(jq -c 'select(.type? == "run.completed") | .run.result.models[0].bytes' "$OUT/download-$d.ndjson")"; done
+for d in 1 2; do say "download $d: $(records "download-$d.ndjson" | jq -c 'select(.type? == "run.completed") | .run.result.models[0].bytes')"; done
 
 # 4. The pod's clock against the Hub's: its first progress stamp against the runner's Calcifer, the runner's against the Hub's Date.
-pod=$(jq -rs '(map(select(.run.accepted_at_ms?)) | first | .run.accepted_at_ms) as $a | (map(select(.progress.at_ms?)) | first | .progress.at_ms) - $a' "$OUT/upload-1.txt")
+pod=$(records upload-1.txt | jq -rs '(map(select(.run.accepted_at_ms?)) | first | .run.accepted_at_ms) as $a | (map(select(.progress.at_ms?)) | first | .progress.at_ms) - $a')
 hub=$(curl -sI "${COZY_HUB_URL:-https://tensorhub.com}/.well-known/oauth-protected-resource" | tr -d '\r' | sed -n 's/^[Dd]ate: //p')
 runner=$(( $(date +%s) - $(date -d "$hub" +%s) ))
 say "CLOCK the pod's first stamp is $pod ms past the runner's acceptance; the runner reads ${runner}s past the Hub's Date"
