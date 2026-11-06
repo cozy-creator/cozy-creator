@@ -866,28 +866,18 @@ impl Runs {
             // on-demand models' too: only if that fits. It is a guess, so it never makes room.
             let mut moved = tensorfs::fetch::Landed::default();
             if !plans.is_empty() {
-                let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
-                let each: Vec<_> = plans.iter().map(|plan| [plan.upfront(), plan.on_demand()].concat()).collect();
+                let each: Vec<_> = plans.iter().map(Plan::read).collect();
                 // Only what they all share: that's sure to be read. The rest comes when its run begins, which on a slow link costs no
                 // more time than fetching it now, as fetching ahead is canceled then, and on a fast one costs seconds, while bytes for a
                 // function that isn't called are paid for wherever downloads are billed.
-                let selected = shared_of(&each);
-                let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
-                let absent = fetch.absent(&selected)?;
-                if absent > free {
-                    return Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free")));
-                }
-                let report = |done, total| observe("downloading its weights", done, total);
-                moved = fetch.download(&selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
-                    true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
-                    false => {
-                        let text = e.to_string();
-                        match text.starts_with("machine_disk_full") {
-                            true => refused("machine_disk_full", text + &crate::reclaim::advice(self.publisher.store().root(), 0)),
-                            false => refused("model_fetch_failed", text),
-                        }
+                let fits = |absent: u64| {
+                    let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
+                    match absent > free {
+                        true => Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free"))),
+                        false => Ok(()),
                     }
-                })?;
+                };
+                moved = self.download(hub.clone(), &shared_of(&each), fits, &*observe, stoppable)?;
             }
             // The installed release, its interface and the installation a call may name, in the
             // warm run's result.
@@ -971,6 +961,25 @@ impl Runs {
         }
         bound?;
         Ok(None)
+    }
+
+    /// Every chunk of `selected` (header, components) here from `hub`, its bytes the warm run's
+    /// progress; `room` is asked for those absent first.
+    fn download(&self, hub: Option<hub::Source>, selected: &[(String, Vec<String>)], room: impl FnOnce(u64) -> Result<(), Refused>,
+        observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable) -> Result<tensorfs::fetch::Landed, Refused> {
+        let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX);
+        room(fetch.absent(selected)?)?;
+        let report = |done, total| observe("downloading its weights", done, total);
+        fetch.download(selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
+            true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
+            false => {
+                let text = e.to_string();
+                match text.starts_with("machine_disk_full") {
+                    true => refused("machine_disk_full", text + &crate::reclaim::advice(self.publisher.store().root(), 0)),
+                    false => refused("model_fetch_failed", text),
+                }
+            }
+        })
     }
 
     /// A warm set member, built one way whether a warm run makes it or a restart brings it back
@@ -1114,6 +1123,13 @@ impl Runs {
             rows.push((json!({"package": installation.package, "release": installation.release,
                 "entrypoint": item.entrypoint}), plans.len()));
             for plan in plans {
+                // `downloaded` is all the function may read on this disk once its warm run ends, its on-demand models'
+                // too, so its first call waits on no download (cl-790). Room is made for it as for a run.
+                if let (Level::Downloaded, Some(plan)) = (item.level, &plan) {
+                    let room = |absent| self.service.room_for(id, absent)
+                        .map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")));
+                    self.download(hub.clone(), &plan.read(), room, &**observe, stoppable)?;
+                }
                 kept.push(serde_json::to_string(&KeptMember {
                     installation: installation.alias.clone(),
                     level: item.level.name().into(),

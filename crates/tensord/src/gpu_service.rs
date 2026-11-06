@@ -327,6 +327,10 @@ impl Plan {
     pub fn on_demand(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
+    /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds.
+    pub fn read(&self) -> Vec<(String, Vec<String>)> {
+        merged(&self.slots).into_iter().map(|s| (s.manifest, s.components)).collect()
+    }
 }
 
 /// The precision lane the header of checkpoint `manifest` holds (`int8`, `bf16`, …); empty when
@@ -1884,9 +1888,9 @@ impl Pool {
                 *member.held_back.lock().unwrap() = "its warm preparation was canceled";
                 continue;
             }
-            // From `downloaded` up, what its constructions read comes behind every call's.
+            // From `downloaded` up, all its calls may read comes behind every call's.
             if let (Some(plan), Some(fetch), true) = (&member.plan, &member.fetch, member.level >= Level::Downloaded) {
-                if let Err(error) = fetch.keep(&plan.upfront()) {
+                if let Err(error) = fetch.keep(&plan.read()) {
                     tracing::warn!("warm set: downloading {}: {error}", plan.construction);
                 }
             }
@@ -2225,9 +2229,9 @@ impl Pool {
     pub fn holds(&self, plan: &Plan) -> bool {
         plan.selections().iter().all(|selected| crate::storage::held(&self.store, &selected.manifest).is_ok())
     }
-    /// Every object its constructions read up front is here: `downloaded`.
+    /// Every object its calls may read is here, on-demand slots' too: `downloaded`.
     pub fn downloaded(&self, plan: &Plan) -> bool {
-        plan.upfront().iter().all(|(manifest, components)| crate::access::whole(&self.store, manifest, components))
+        plan.read().iter().all(|(manifest, components)| crate::access::whole(&self.store, manifest, components))
     }
     /// The highest level each App of each generation holds now (keyed `(generation,
     /// application)`): an import-only parent, or an executor. A callee's executors in a
