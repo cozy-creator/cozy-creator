@@ -285,6 +285,15 @@ pub(crate) async fn candidates(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(Strin
     found
 }
 
+/// What a box of `tool` asks for, read as `read` reads it. None: it can't be read.
+pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<Vec<tool::ToolField>> {
+    let hub = api.machines.hubs.default_origin();
+    let found = target::describe(api, &hub, tool, Some(dir), &runs::default_on(api)).await.ok()?;
+    let interface = Interface::parse(&found.interface).ok()?;
+    let function = found.function.as_deref().or(target::only_function(&interface))?.to_owned();
+    tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
+}
+
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it
 /// on this computer would be. A tool can be local code, by a path from `dir`, and a package with one public function names that one.
 pub(crate) async fn read(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<(String, String), Error> {

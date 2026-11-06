@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use protocol::{
     error::{Error, Kind},
     project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionBack, VersionMoved},
-    tool,
+    tool::{self, FieldType},
 };
 use sha2::{Digest as _, Sha256};
 
@@ -165,6 +165,15 @@ pub(super) async fn patch(
         Some(tool) => Some(pictures(folder, &name, tool).map_err(Refusal)?),
         None => None,
     };
+    // A tool going on a picture starts from it: in its first required picture slot, else at the start of its first prompt.
+    let start = match (&asked.tool, &holds) {
+        (Some(tool), Some(Some(_))) if !tool.is_empty() => crate::toolbox::fields_of(&api, tool, &folder.dir).await.and_then(|fields| {
+            let slot = fields.iter().find(|field| field.required && field.ty == FieldType::Slot && field.accept.as_deref() == Some("image"));
+            let prompt = || fields.iter().find(|field| field.ty == FieldType::Prompt);
+            slot.map(|field| assetfile::Start::Slot(field.field.clone())).or_else(|| prompt().map(|field| assetfile::Start::Prompt(field.field.clone())))
+        }),
+        _ => None,
+    };
     let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok());
     let told = RefCell::new((String::new(), vec![]));
     // What it says of itself is what it wrote: the file may hold someone else's by now, and that isn't this write's to claim.
@@ -172,7 +181,7 @@ pub(super) async fn patch(
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
         let mut fields = fields.clone();
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
-            assetfile::with_tool(text, &name, tool, *holds, &mut fields)?;
+            assetfile::with_tool(text, &name, tool, *holds, start.clone(), &mut fields)?;
         }
         let (edited, warnings) = assetfile::set(text, &name, &fields)?;
         // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.

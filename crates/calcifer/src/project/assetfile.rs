@@ -418,10 +418,17 @@ fn set_in(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String
     Ok((edited, warnings))
 }
 
-/// What a change of its tool writes of asset `name`, with what `fields` ask, `tool` empty taking it off. Nothing else moves: its pictures, numbers, approval and
-/// description stay, and its text. Only a box with none of those pictures has its words in another field: `text` with no tool, `instructions` with one. A new
-/// prompt on a picture, `holds`, starts by reading it.
-pub(super) fn with_tool(text: &str, name: &str, tool: &str, holds: Option<u32>, fields: &mut Map<String, Value>) -> Result<(), Error> {
+/// Where a tool going on a picture starts from it: its first required picture slot, else the start of its first prompt.
+#[derive(Clone)]
+pub(super) enum Start {
+    Slot(String),
+    Prompt(String),
+}
+
+/// What a change of its tool writes of asset `name`, with what `fields` ask, `tool` empty taking it off, and its fields with it (Paul, 11-06).
+/// Nothing else moves: its pictures, numbers, approval and description stay. Only a box with none of those pictures has its words in another field:
+/// `text` with no tool, `instructions` with one. A tool going on a picture, `holds`, starts by reading it where `start` says.
+pub(super) fn with_tool(text: &str, name: &str, tool: &str, holds: Option<u32>, start: Option<Start>, fields: &mut Map<String, Value>) -> Result<(), Error> {
     let mut read = read(&editing(text, name).map_or_else(|| text.to_owned(), |at| at.alone))?;
     let held = slot(&mut read, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?.as_object().cloned().unwrap_or_default();
     let said = fields.contains_key(INSTRUCTIONS) || fields.contains_key(TEXT);
@@ -434,12 +441,30 @@ pub(super) fn with_tool(text: &str, name: &str, tool: &str, holds: Option<u32>, 
     match (tool.is_empty(), holds) {
         (true, None) => LEADS.iter().rev().find(|field| held.contains_key(**field)).into_iter().for_each(|field| moved(fields, field, TEXT)),
         (false, None) => moved(fields, TEXT, INSTRUCTIONS),
-        (false, Some(number)) if !said && !held.contains_key(INSTRUCTIONS) && !held.contains_key(TOOL) => drop(fields.insert(INSTRUCTIONS.to_owned(), json!(format!("<self.{number}>")))),
+        (false, Some(number)) if !said && !held.contains_key(TOOL) => {
+            let own = format!("<self.{number}>");
+            match start {
+                Some(Start::Slot(field)) if !held.contains_key(&field) => drop(fields.insert(field, json!(own))),
+                Some(Start::Prompt(field)) => {
+                    let words = held.get(&field).and_then(Value::as_str).filter(|words| !words.contains(&own));
+                    fields.insert(field, json!(words.map_or_else(|| own.clone(), |words| format!("{own} {words}"))));
+                }
+                _ => {}
+            }
+        }
         _ => {}
+    }
+    // Off, its fields go with it; what it was given back by Undo is a write of them.
+    if tool.is_empty() {
+        let gone: Vec<String> = held.keys().filter(|field| !BOX.contains(&field.as_str()) && !fields.contains_key(*field)).cloned().collect();
+        fields.extend(gone.into_iter().map(|field| (field, Value::Null)));
     }
     fields.insert(TOOL.to_owned(), if tool.is_empty() { Value::Null } else { json!(tool) });
     Ok(())
 }
+
+/// What a box holds whatever its tool: the platform's words.
+const BOX: [&str; 6] = ["tool", "approved", "description", "models", "lora", "text"];
 
 /// `text` with a new asset at the end of `assets:`, made by `tool`, or with none a text asset.
 pub(super) fn added(text: &str, name: &str, tool: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
