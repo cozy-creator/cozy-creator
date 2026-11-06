@@ -341,10 +341,20 @@ impl Holding {
     /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, ranges are cut here, and `pickup.`
     /// terms are the gesture. Answers the call, the project's files it names (fetched here if a machine keeps them), and what was said.
     pub(crate) async fn bound(&self, target: &str, package: &str, callable: &protocol::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
-        // A project of an older format moves first, as any touch of it does.
-        let said = tokio::task::block_in_place(|| upgrade::on_touch(&self.dir))?;
         let folder = Folder::at(&self.dir);
-        let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
+        // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
+        let (doc, lock) = match (Doc::load(&folder), folder.lock()) {
+            (Ok(doc), Ok(lock)) => (doc, lock),
+            (Err(why), _) | (_, Err(why)) => {
+                let mut written = written;
+                for field in callable.request.fields.iter().filter(|field| matches!(field.ty.plain(), protocol::interface::Type::Prompt(_))) {
+                    if let Some(Value::String(text)) = written.get(&field.name).cloned() {
+                        written.insert(field.name.clone(), json!({"text": text, "references": []}));
+                    }
+                }
+                return Ok((written, vec![], vec![format!("{}: {}, so what the run mentions isn't read", folder::PROJECT, why.message)]));
+            }
+        };
         let stand = doc.stand(&lock);
         let mut fields = written;
         let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), protocol::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
@@ -356,7 +366,6 @@ impl Holding {
         doc.worded(&mut fields, &reserved);
         let call = binder::Call { name: target, tool: target, package, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref() };
         let mut bound = binder::bind(&call)?;
-        bound.warnings.splice(0..0, said);
         let mut cut = HashMap::new();
         let mut digests = vec![];
         for range in &bound.cuts {
