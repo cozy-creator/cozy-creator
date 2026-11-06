@@ -15,7 +15,7 @@ import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
 import { Media, Thumb, useWalk, WalkedFrames } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, madeHere, makes, shownOf } from "./shown"
+import { aspectOf, faceOf, madeHere, makes, reshapes, shownOf } from "./shown"
 import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -381,25 +381,30 @@ function Description({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-/** The corner, pulled to size a box. A box whose tool has a shape takes it from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. */
+/** The corner, pulled to size a box. Showing no picture, or its words, a box takes its tool's shape from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. Showing a picture, it only scales. */
 function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
   const store = useCanvasStore()
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
-  const control = view.asset && faceOf(view) === "edit" && (!view.here || view.hereWords) ? controlsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
+  const control = view.asset && reshapes(view) ? controlsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const from = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const moved = (event: PointerEvent) => {
     if (!from.current) return
     const zoom = flow.getZoom()
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + (event.clientX - from.current.x) / zoom))
-    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + (event.clientY - from.current.y) / zoom))
+    const dx = (event.clientX - from.current.x) / zoom
+    const dy = (event.clientY - from.current.y) / zoom
+    if (!control) {
+      const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w * Math.max(1 + dx / from.current.w, 1 + dy / from.current.h)))
+      pulled.current = { w, h: w / aspectOf(view) }
+      return store.setWidth(name, w, false)
+    }
+    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + dx))
+    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + dy))
     pulled.current = { w, h }
-    if (control) {
-      store.drawShape(name, w, h)
-      setNearest(snapped(w / h, shapesOf(control)))
-    } else store.setWidth(name, w, false)
+    store.drawShape(name, w, h)
+    setNearest(snapped(w / h, shapesOf(control)))
   }
   const done = () => {
     if (!from.current) return
@@ -407,10 +412,11 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
     const size = pulled.current
     pulled.current = null
     setNearest(null)
-    if (store.inPlace) store.inPlace.pulled = false
-    if (!size) return
-    if (control) store.setShape(name, control.field, size.w, snapped(size.w / size.h, shapesOf(control)))
-    else store.setWidth(name, size.w)
+    if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+    else if (size) store.setWidth(name, size.w)
+    if (!store.inPlace) return
+    store.inPlace.pulled = false
+    requestAnimationFrame(() => store.fitHere(true))
   }
   return (
     <>
@@ -439,14 +445,24 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   )
 }
 
-/** The shape a box makes, under its corner, in the words of its name. Being pulled, the middle says it. */
+/** The shape a box makes, by its corner: the one set, else Auto. Open, the one set has an × that takes it back to Auto. Being pulled, the middle says it. */
 function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const control = view.asset && controlsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!control || view.shape) return null
-  const held = store.valueOf(name, control.field) ?? control.default
-  return <span className="ratio-rest">{typeof held === "string" ? held : "Auto"}</span>
+  const held = store.valueOf(name, control.field)
+  if (typeof held !== "string" || !held) return <span className="ratio-rest">Auto</span>
+  return (
+    <span className="ratio-rest">
+      {held}
+      {view.here && (
+        <button type="button" className="ratio-clear nodrag" aria-label="Auto shape" title="Back to its auto shape" onClick={() => store.unshape(name, control.field)}>
+          <Icon name="close" />
+        </button>
+      )}
+    </span>
+  )
 }
 
 const CardBody = memo(function CardBody({ name, width }: { name: string; width: number }) {
@@ -578,7 +594,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!here && !lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
+      {!lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
       {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
         <div className="rest-waiting">
           <Waiting view={view} />

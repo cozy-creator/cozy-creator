@@ -1,15 +1,16 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { ApiError, type Client } from "../api/client"
 import { type Action, Outbox } from "../api/outbox"
-import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
+import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, Control, MainFile, ProjectState, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { ADD_ON_HEIGHT, addOnsOf, STACK_GAP } from "./checkpoints"
 import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
-import { controlsOf, fullRows } from "./controls"
+import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, shownOf, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, ratioOf, sentShape, shownOf, valueIn, widthFor } from "./shown"
+import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
 import { isSelf, mentionFrom, numbersOf, SELF, versionOf } from "./versions"
@@ -91,6 +92,8 @@ export interface ElementView {
   scrub?: number
   /** Its ratio while it's being reshaped. */
   shape?: string
+  /** The shape it makes with none set: `autoOf`. */
+  auto?: number
   /** Its warnings are open under it. */
   warned?: boolean
   /** A caption is being asked for. */
@@ -141,6 +144,9 @@ const NOT_YET = Number.POSITIVE_INFINITY
 export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
+
+/** What moves the shape a box makes, or the one a mention of it sends. */
+const SHAPING = ["asset", "drafts", "sent", "aspect"] as const
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
 
@@ -317,6 +323,58 @@ export class CanvasStore {
     if (!view) return
     this.views.set(key, { ...view, ...change })
     this.notify(key)
+    if (SHAPING.some((field) => field in change)) this.follow(key, view)
+  }
+
+  /** Its auto shape again, and, if what a mention of it sends moved, theirs. */
+  private follow(key: string, was: ElementView, depth = 0) {
+    const view = this.views.get(key)
+    if (!view || depth > 8) return
+    if (sentShape(was) === sentShape(this.reauto(key, view))) return
+    for (const reader of this.readersOf(key)) this.follow(reader, this.views.get(reader)!, depth + 1)
+  }
+
+  /** Every box's auto shape, once names or tools have changed under them: again while any moves, as one can follow another. */
+  private followAll() {
+    for (let pass = 0; pass < 4; pass++) if (![...this.views].filter(([key, view]) => this.reauto(key, view) !== view).length) return
+  }
+
+  /** Its auto shape, kept on its view: the view it has now. */
+  private reauto(key: string, view: ElementView): ElementView {
+    const auto = this.autoOf(view)
+    if (auto === view.auto) return view
+    const now = { ...view, auto }
+    this.views.set(key, now)
+    this.notify(key)
+    this.reshape(key)
+    return now
+  }
+
+  /** The shape a box makes with none set, as Cozy's image packages take it: the first picture it mentions, held to what its tool makes, else its tool's own. */
+  private autoOf(view: ElementView): number | undefined {
+    const asset = view.asset
+    const tools = this.tools.get()
+    const control = asset && makes(view) ? controlsOf(asset, tools).find((held) => held.type === "shape") : undefined
+    if (!asset || !control) return undefined
+    const kind = tools.get(asset.tool ?? "")?.kind ?? asset.kind
+    for (const mention of this.mentionsOf(view)) {
+      const read = this.mentionOf(mention, view.name)
+      const of = read ? this.views.get(read.name) : undefined
+      const ratio = read && of?.asset?.kind === kind ? sentShape(of, read.number) : undefined
+      if (ratio) return heldTo(control, ratio)
+    }
+    // The SDK's own default with none: 1:1.
+    return heldTo(control, ratioOf(control.default) ?? 1)
+  }
+
+  /** What a box's fields mention, in order. */
+  private mentionsOf(view: ElementView): string[] {
+    return view.asset?.tool ? controlsOf(view.asset, this.tools.get()).flatMap((control) => textsIn(valueIn(view, control.field))).flatMap(mentionsIn) : []
+  }
+
+  /** The boxes whose fields mention `key`. */
+  private readersOf(key: string): string[] {
+    return [...this.views.values()].filter((view) => view.name !== key && this.mentionsOf(view).some((mention) => this.mentionOf(mention, view.name)?.name === key)).map((view) => view.name)
   }
 
   patchPlacing(key: string, change: Partial<Placing>) {
@@ -402,7 +460,9 @@ export class CanvasStore {
   addTools(tools: Tool[]) {
     const known = this.tools.get()
     const fresh = tools.filter((tool) => JSON.stringify(known.get(tool.id)) !== JSON.stringify(tool))
-    if (fresh.length) this.tools.set(new Map([...known, ...fresh.map((tool): [string, Tool] => [tool.id, tool])]))
+    if (!fresh.length) return
+    this.tools.set(new Map([...known, ...fresh.map((tool): [string, Tool] => [tool.id, tool])]))
+    this.followAll()
   }
 
   /** What a run says of the asset it's making: the lowest going, when there are several. */
@@ -419,6 +479,7 @@ export class CanvasStore {
     const rows = this.rows!
     const entities = state.entities ?? []
     const present = new Set([...state.assets, ...entities].map((element) => element.name))
+    const before = [...this.views.keys()]
     for (const name of this.deleting) if (!present.has(name)) this.deleting.delete(name)
     for (const name of this.deleting) present.delete(name)
     for (const [from, to] of this.renames) if (present.has(to)) this.renames.delete(from)
@@ -509,6 +570,7 @@ export class CanvasStore {
     const homeless = fresh.filter((element) => !rows.has(element.name))
     if (homeless.length) void this.findHomes(homeless)
     this.names.set(this.names.get() + 1)
+    if (before.some((name) => !this.views.has(name))) this.followAll()
     if (!this.seen) {
       this.seen = true
       this.onFirstRead?.(present.size > 0)
@@ -604,6 +666,7 @@ export class CanvasStore {
       return this.node(element.name, row, this.selected.has(element.name))
     })
     this.flow?.addNodes(nodes)
+    this.followAll()
   }
 
   private node(name: string, row: Row, selected = false, id = `e${++this.nextId}`): ElementNode {
@@ -1132,10 +1195,7 @@ export class CanvasStore {
 
   /** What a control shows: what's typed, else what was sent, else what it holds. */
   valueOf(name: string, field: string): unknown {
-    const view = this.get(name)
-    if (view?.drafts && field in view.drafts) return view.drafts[field]
-    if (view?.sent && field in view.sent) return view.sent[field]
-    return view?.asset?.fields?.[field]
+    return valueIn(this.get(name), field)
   }
 
   /** What's typed shows at once and writes itself at the first pause, on leaving the text, or as its box shuts. */
@@ -1657,11 +1717,20 @@ export class CanvasStore {
     this.reshape(name)
   }
 
-  /** Where a pulled corner lands: what its tool makes, at the width it was pulled to. */
-  setShape(name: string, field: string, width: number, shape: string) {
-    if (this.valueOf(name, field) !== shape) void this.setField(name, field, shape)
+  /** Where a pulled corner lands: what its tool makes, at the width it was pulled to. Let go at its auto shape, none set, it stays auto. */
+  setShape(name: string, control: Control, width: number, shape: string) {
+    const held = this.valueOf(name, control.field)
+    const auto = this.get(name)?.auto
+    const kept = ratioOf(held) === undefined && auto !== undefined && snapped(auto, shapesOf(control)) === shape
+    if (held !== shape && !kept) void this.setField(name, control.field, shape)
     this.patch(name, { shape: undefined })
     this.setWidth(name, width)
+  }
+
+  /** Its shape unset: it takes its auto shape again, at the width it has. */
+  unshape(name: string, field: string) {
+    void this.setField(name, field, null)
+    this.reshape(name)
   }
 
   /** Whatever's done to `name`, in its turn, under what it's called by then. Gone by then, there's nothing to do. */
@@ -1696,6 +1765,7 @@ export class CanvasStore {
     const asset = view.asset && { ...view.asset, name }
     this.adding += 1
     this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
+    this.reauto(name, this.views.get(name)!)
     const at = this.clearOf(name, dropped)
     this.rows?.set(name, at)
     const node = this.node(name, at)

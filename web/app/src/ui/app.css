@@ -955,6 +955,38 @@ code {
   white-space: nowrap;
   pointer-events: none;
 }
+/* Open, it's on the frame beside the corner, and what's set has its ×. */
+.card.here .ratio-rest {
+  top: auto;
+  bottom: calc(6px * var(--text, 1));
+  right: calc(30px * var(--text, 1));
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  padding: 0.05em 0.4em;
+  border-radius: 0.3em;
+  background: #000b;
+  color: #fff;
+  font-size: calc(16px * var(--text, 1));
+}
+.ratio-clear {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.ratio-clear .icon {
+  width: 1em;
+  height: 1em;
+}
+.ratio-clear:hover {
+  color: var(--ember);
+}
 .ratio-live {
   position: absolute;
   inset: 0;

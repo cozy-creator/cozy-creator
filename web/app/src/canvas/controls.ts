@@ -1,4 +1,5 @@
 import type { Asset, Control, Tool } from "../types"
+import { ratioOf } from "./shown"
 import { type Row, rowsIn } from "./text"
 
 /** Words with a name, which whatever mentions them reads: in the tool list, and no function of any package. */
@@ -81,8 +82,11 @@ const SHAPES = ["32:9", "2.39:1", "21:9", "2:1", "16:9", "5:3", "3:2", "4:3", "5
 
 const parts = (shape: string) => shape.split(":").map(Number)
 
+/** What a tool offers that's a shape: `source` isn't. */
+const optionsOf = (control: Control) => (control.options ?? []).filter((option): option is string => ratioOf(option) !== undefined)
+
 export const shapesOf = (control: Control): string[] => {
-  const options = (control.options ?? []).filter((option): option is string => typeof option === "string")
+  const options = optionsOf(control)
   if (options.length) return options
   const fits = (shape: string) => {
     const [w, h] = parts(shape)
@@ -98,4 +102,11 @@ export function snapped(ratio: number, shapes: string[]): string {
     return Math.abs(Math.log(ratio / (w / h)))
   }
   return shapes.reduce((best, shape) => (off(shape) < off(best) ? shape : best))
+}
+
+/** `ratio` as its tool can make it: the nearest of its options, else held to its bounds. */
+export function heldTo(control: Control, ratio: number): number {
+  const options = optionsOf(control)
+  if (options.length) return ratioOf(snapped(ratio, options))!
+  return Math.min(control.max ?? Infinity, Math.max(control.min ?? 0, ratio))
 }

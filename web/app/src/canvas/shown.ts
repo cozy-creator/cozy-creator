@@ -51,11 +51,33 @@ export function ratioOf(value: unknown): number | undefined {
   return parts.length === 2 && parts[0] > 0 && parts[1] > 0 ? parts[0] / parts[1] : undefined
 }
 
+/** What a field shows: what's typed, else what was sent, else what it holds. */
+export function valueIn(view: ElementView | undefined, field: string): unknown {
+  if (view?.drafts && field in view.drafts) return view.drafts[field]
+  if (view?.sent && field in view.sent) return view.sent[field]
+  return view?.asset?.fields?.[field]
+}
+
+/** Showing no picture, or its words, a box is the shape it will make, which its corner changes; showing one, it's that picture's. */
+export const reshapes = (view: ElementView) => makes(view) && (Boolean(view.hereWords) || !shownOf(view))
+
+/** The shape it will make: the one set, else what its tool takes with none. */
+const madeShape = (view: ElementView) => ratioOf(valueIn(view, "aspect_ratio")) ?? view.auto
+
+/** The shape of the picture a mention of it sends: version `number`'s, else its state's, else, with none yet, the one it will make. */
+export function sentShape(view: ElementView, number?: number): number | undefined {
+  const asset = view.asset
+  const main = asset?.prefixes?.find((held) => held.number === (number ?? asset.version))?.main
+  if (main?.width && main.height) return main.width / main.height
+  if (number !== undefined) return undefined
+  if (asset?.width && asset.height) return asset.width / asset.height
+  return makes(view) ? madeShape(view) : view.aspect
+}
+
 export function aspectOf(view: ElementView): number {
+  const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
+  if (made) return made
   const shown = shownOf(view)
-  // On its controls a box is the shape it will make.
-  const shaped = view.hereWords || (faceOf(view) === "edit" && !view.here) ? ratioOf(view.shape ?? view.sent?.aspect_ratio ?? view.asset?.fields?.aspect_ratio) : undefined
-  if (shaped) return shaped
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
   return view.aspect ?? measured ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }

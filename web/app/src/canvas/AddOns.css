@@ -22,7 +22,7 @@
   gap: calc(4px * var(--text, 1));
 }
 /* Short of the ratio at the right, at any zoom. */
-.react-flow__node:has(.ratio-rest) .add-ons {
+.react-flow__node:has(.card:not(.here) > .ratio-rest) .add-ons {
   width: min(72%, calc(100% - 80px * var(--text, 1)));
 }
 /* Below what a waiting box says there. */

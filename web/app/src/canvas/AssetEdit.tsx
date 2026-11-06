@@ -6,7 +6,7 @@ import { AddOnRows } from "./AddOns"
 import { addOnsOf } from "./checkpoints"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { controlsOf, fieldWords, fullRows, heldBeyond, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
+import { controlsOf, fieldWords, fullRows, heldBeyond, newRow, shownControls, VARIANT, variantOf } from "./controls"
 import { MentionText } from "./MentionText"
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
@@ -249,28 +249,6 @@ function FileControl({ name, control, view }: { name: string; control: Control; 
   )
 }
 
-/** What shape it makes. */
-function ShapeControl({ name, control }: { name: string; control: Control }) {
-  const store = useCanvasStore()
-  const held = store.valueOf(name, control.field) ?? control.default
-  const shapes = shapesOf(control)
-  return (
-    <label className="slide">
-      <span className="ctl-name">{control.label}</span>
-      <select className="field nodrag" aria-label={control.label} value={typeof held === "string" ? held : ""} onChange={(event) => void store.setField(name, control.field, event.target.value)}>
-        <option value="" disabled hidden>
-          Auto
-        </option>
-        {shapes.map((shape) => (
-          <option key={shape} value={shape}>
-            {shape}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
 /** A toggle like any, flipping which of its package's two functions makes the box. Everything else it holds stays. */
 function VariantControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
   const store = useCanvasStore()
@@ -295,8 +273,6 @@ export function ControlRow({ name, control, view, focus, named }: { name: string
       return <RangeControl name={name} control={control} />
     case "choice":
       return <ChoiceControl name={name} control={control} />
-    case "shape":
-      return <ShapeControl name={name} control={control} />
     case "toggle":
       return control.field === VARIANT ? <VariantControl name={name} control={control} view={view} /> : <ToggleControl name={name} control={control} />
     case "file":
@@ -405,7 +381,8 @@ export function AssetEdit({ name, view, editing, head, actions, children }: { na
   const controls = makes(view) ? controlsOf(view.asset, tools) : []
   const inFrame = framed(view, controls, tool)
   const first = controls.find((control) => control.type === "text")
-  const rest = controls.filter((control) => control !== inFrame && control.type !== "timeline")
+  // The box's own shape is its shape: its corner sets it.
+  const rest = controls.filter((control) => control !== inFrame && control.type !== "timeline" && control.type !== "shape")
   const asked = editing ? shownControls(controls) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, controls)
   const folded = rest.filter((control) => !asked.includes(control))
