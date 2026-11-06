@@ -148,6 +148,11 @@ pub fn version() -> io::Result<()> {
 /// under `var/lib/cozy/tensord`, the API on the granted port.
 fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Ready) -> io::Result<()> {
     let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, endpoint, logs, .. } = config;
+    // A shared computer's own programs come first: from this thread, before the runtime's, the
+    // background priority reaches every thread and process the machine starts (executors too).
+    if mode == protocol::config::MachineMode::Shared {
+        platform::process::background_process();
+    }
     let runtime = machine_runtime()?;
     use crate::machine::{identity, receipt};
     let layout = grant.layout.clone();
