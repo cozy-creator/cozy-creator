@@ -3,8 +3,7 @@ __pycache__/
 *.pyc
 *.so
 # Generated shim files are explicitly included by maturin, not committed.
-python/tensorfs/_varena_torch.so.building
-python/tensorfs/_varena_torch.json
+python/tensorfs/_varena_torch-*.so.building
 .venv/
 /uv.lock
 dist/

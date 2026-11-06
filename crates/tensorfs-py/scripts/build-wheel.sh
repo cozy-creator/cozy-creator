@@ -4,7 +4,9 @@
 # into wheel-data/scripts/ (pyproject `data`), so installers put it on PATH beside the
 # module.
 #
-#   scripts/build-wheel.sh [--out <dir>] [--torch-python <python>] [--cuda-crt-include <dir>] [maturin build args...]
+#   scripts/build-wheel.sh [--out <dir>] [maturin build args...]
+#
+# On Linux it builds one Torch allocator shim per Torch in backend/stage_shim.py, each with uv.
 #
 # Portable builds use the existing CI/release manylinux environment for BOTH
 # cargo and maturin. A host build can explicitly pass --compatibility linux.
@@ -13,14 +15,10 @@ cd "$(dirname "$0")/.."
 py="${PYTHON:-python3}"
 
 out=target/wheels
-torch_python=
-cuda_crt_include=
 args=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) out="$2"; shift ;;
-        --torch-python) torch_python="$2"; shift ;;
-        --cuda-crt-include) cuda_crt_include="$2"; shift ;;
         --plane|--no-default-features)
             echo "tensorfs ships one full Python+CLI wheel; $1 is not a supported wheel option" >&2
             exit 2 ;;
@@ -28,13 +26,6 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-
-if [ -n "$torch_python" ]; then
-    export TENSORFS_TORCH_PYTHON="$torch_python"
-fi
-if [ -n "$cuda_crt_include" ]; then
-    export TENSORFS_CUDA_CRT_INCLUDE="$cuda_crt_include"
-fi
 
 if [ "$(uname -s)" != Darwin ]; then
     if [ ! -f ../tensorfs/kernels/aot/catalog.rs ]; then

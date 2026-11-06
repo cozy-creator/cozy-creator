@@ -17,7 +17,7 @@ parser.add_argument("--platform", required=True)
 args = parser.parse_args()
 for wheel in list(args.directory.glob("*.whl")):
     with zipfile.ZipFile(wheel) as archive:
-        has_shim = "tensorfs/_varena_torch.so" in archive.namelist()
+        has_shim = any(name.startswith("tensorfs/_varena_torch-") for name in archive.namelist())
     # Torch/CUDA belong to the explicitly matched external framework profile.
     # Never copy a second framework implementation into the TensorFS wheel.
     external = ["libtorch_cuda.so", "libc10_cuda.so", "libc10.so", "libcudart.so.13"] if has_shim else []

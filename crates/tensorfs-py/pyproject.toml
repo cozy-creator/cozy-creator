@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.16,<2", "uv==0.12.7; sys_platform == 'linux' and platform_machine == 'x86_64'"]
+requires = ["maturin>=1.16,<2", "uv==0.12.7; sys_platform == 'linux'"]
 # maturin, behind a clear refusal when an sdist build finds no Rust (backend/tensorfs_build.py).
 build-backend = "tensorfs_build"
 backend-path = ["backend"]
@@ -56,5 +56,5 @@ data = "wheel-data"
 # Git and the sdist carry the empty data dir through this placeholder, so a source build (a
 # git dependency or the sdist) works; it never ships in a wheel. tensorfs carries the
 # documents it compiles in itself (crates/tensorfs/vectors/).
-include = [{ path = ".native/*", from = "out-dir", to = "tensorfs" }, { path = "wheel-data/scripts/.gitkeep", format = "sdist" }, { path = "backend/*.py", format = "sdist" }, { path = "LICENSE", format = "sdist" }, { path = "shim/*", format = "sdist" }, { path = "python/tensorfs/_varena_torch.so", format = "wheel" }, { path = "python/tensorfs/_varena_torch.json", format = "wheel" }]
+include = [{ path = ".native/*", from = "out-dir", to = "tensorfs" }, { path = "wheel-data/scripts/.gitkeep", format = "sdist" }, { path = "backend/*.py", format = "sdist" }, { path = "LICENSE", format = "sdist" }, { path = "shim/*", format = "sdist" }, { path = "python/tensorfs/_varena_torch-*.so", format = "wheel" }]
 exclude = [{ path = "wheel-data/scripts/.gitkeep", format = "wheel" }]

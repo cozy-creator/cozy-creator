@@ -8,7 +8,6 @@ from __future__ import annotations
 import ctypes
 from contextlib import contextmanager
 import functools
-import json
 import os
 from pathlib import Path
 import platform
@@ -66,7 +65,7 @@ def _device(device: DeviceLike = None) -> int:
 def install(device: _ExplicitDevice = 0) -> None:
     """Select Varena and activate a device, defaulting to device0, outside capture.
 
-    The wheel must list this Torch patch cohort and match its CUDA/C++ ABI and platform.
+    The wheel must carry a shim built for this exact Torch (`torch.__version__`).
     This never compiles at runtime and uses no cudaMalloc import hook.
     """
     index = _activation_device(device)
@@ -108,22 +107,15 @@ def _bind_allocator() -> None:
             if torch.backends.cudnn.benchmark:
                 raise RuntimeError("Varena requires cudnn.benchmark=False")
             directory = Path(__file__).resolve().parents[1]
-            library = directory / "_varena_torch.so"
-            metadata = library.with_suffix(".json")
-            if not library.is_file() or not metadata.is_file():
-                raise RuntimeError("this TensorFS wheel has no Torch shim; build with scripts/build-wheel.sh --torch-python <python-with-torch>")
-            actual = json.loads(metadata.read_text())
             runtime_torch = str(torch.__version__)
-            expected = {
-                "abi": 2, "cuda": torch.version.cuda,
-                "cxx11_abi": int(torch._C._GLIBCXX_USE_CXX11_ABI),
-                "system": platform.system(), "machine": platform.machine(),
-            }
-            supported = actual["supported_torch"]
-            if runtime_torch not in supported or any(actual.get(key) != value for key, value in expected.items()):
-                floor = ".".join(supported[0].split(".")[:2])
-                raise RuntimeError(f"this package's environment has Torch {runtime_torch}, GPU work needs {supported[0]}: relax the package's torch pin to torch>={floor}")
-            native = ctypes.CDLL(str(library))
+            built = sorted((p.stem.removeprefix("_varena_torch-") for p in directory.glob("_varena_torch-*.so")),
+                           key=lambda v: [int(n) for n in v.split("+")[0].split(".")])
+            if not built:
+                raise RuntimeError(f"this TensorFS wheel has no Torch allocator shim for {platform.system()} {platform.machine()}")
+            if runtime_torch not in built:
+                floor = ".".join(built[0].split(".")[:2])
+                raise RuntimeError(f"this package's environment has Torch {runtime_torch}, GPU work needs Torch {' or '.join(built)}: relax the package's torch pin to torch>={floor}")
+            native = ctypes.CDLL(str(directory / f"_varena_torch-{runtime_torch}.so"))
             native.varena_torch_bind.argtypes = [ctypes.c_void_p]
             native.varena_torch_bind.restype = ctypes.c_int
             native.varena_torch_abort_routing.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64]

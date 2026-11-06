@@ -109,7 +109,8 @@ jobs:
       - if: inputs.dev
         run: scripts/dev-version.sh
       # `tfs` ships in the wheel's data scripts beside the module. On Linux it is built INSIDE the
-      # manylinux container, so its glibc floor matches the extension's (tfs-051).
+      # manylinux container, so its glibc floor matches the extension's (tfs-051). The container is
+      # manylinux_2_28, Torch's own: each Torch allocator shim links that Torch (backend/stage_shim.py).
       - if: runner.os == 'Linux'
         uses: PyO3/maturin-action@v1
         with:
@@ -117,14 +118,12 @@ jobs:
           working-directory: crates/tensorfs-py
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i python3.10 python3.11
-          manylinux: ${{ matrix.target == 'x86_64' && '2_28' || 'auto' }}
+          manylinux: 2_28
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
             triple=$(rustc -vV | sed -n "s/^host: //p")
-            if [ "$triple" = x86_64-unknown-linux-gnu ]; then
-              export PATH="/opt/python/cp312-cp312/bin:$PATH"
-              /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
-            fi
+            export PATH="/opt/python/cp312-cp312/bin:$PATH"
+            /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
             /opt/python/cp310-cp310/bin/python backend/stage_cli.py --release --target "$triple" \
               -i /opt/python/cp310-cp310/bin/python /opt/python/cp311-cp311/bin/python
       - if: runner.os != 'Linux'
@@ -146,10 +145,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Verify and tag the complete Linux wheel
         if: runner.os == 'Linux'
-        run: |
-          floor=2_17
-          if [ "$(uname -m)" = x86_64 ]; then floor=2_28; fi
-          uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_${floor}_$(uname -m)"
+        run: uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_2_28_$(uname -m)"
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.name }}

@@ -5,6 +5,7 @@
 #include <c10/util/Exception.h>
 #include <c10/util/ApproximateClock.h>
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h>
+#include <torch/headeronly/version.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -373,6 +374,10 @@ extern "C" VR_EXPORT int32_t varena_torch_workspace_cache_enabled(
         TORCH_CHECK(enabled, "Varena workspace-cache query requires an output");
         // This host-only accessor returns Torch's first-call-latched state. It
         // neither initializes CUDA nor creates a library handle or workspace.
+#if TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR < 15
+        *enabled = 1; // Before 2.15 Torch has no switch: it always caches workspaces per stream.
+#else
         *enabled = at::cuda::isCUDABlasWorkspaceCachingEnabled() ? 1 : 0;
+#endif
     });
 }

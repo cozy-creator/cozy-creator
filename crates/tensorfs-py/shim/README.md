@@ -1,9 +1,10 @@
 # Torch allocator adapter
 
-Build the candidate wheel with `scripts/build-wheel.sh --torch-python <python-with-torch>`.
-The interpreter supplies headers and libc10; it is not modified. The shim is built ahead of time,
-and `tensorfs.varena.torch.install()` refuses a missing shim or an unlisted Torch/CUDA/C++ ABI.
-The builder supports Linux. Other platforms remain unqualified.
+The shim links one Torch's C++ ABI, so a Linux wheel carries one `_varena_torch-<torch.__version__>.so`
+per Torch our machines run: the list is `TORCH` in `backend/stage_shim.py`, and every wheel build
+(`scripts/build-wheel.sh`, the release and dev workflows) builds each with uv. `install()` loads the
+one for this exact `torch.__version__` and refuses any other Torch in one line naming the list.
+It never compiles at runtime. Other platforms carry no shim.
 
 In a fresh executor child, call `vt.install(device=0)` before Torch CUDA lazy initialization.
 This selects the whole-process allocator. P1 removes the old cudaMalloc import hook and its entry
@@ -35,16 +36,14 @@ working allocations, including graph pools, separately from weight-region statis
 snapshots/profilers, `MemPool`, CUDA IPC, cuDNN benchmark mode and Inductor graph trees are not supported
 by this adapter. Rebinding does not repair aliases imported before installation.
 
-## Reviewed Torch ABI profile
+## Adding a Torch
 
-The Linux RC admits exactly `2.15.0+cu132`, CUDA 13.2, with the actual build's C++ ABI and platform. The installed SDK reports Torch commit `d0f2af8b66b20da4baa50644c0cd3f887a2eae2e`. Build metadata records that version/commit and the single supported profile; other builds require a new review.
-
-The shim uses the SDK's `c10::MempoolId_t` directly. The actual CUDA pluggable-allocator header supplies the reviewed allocation/free, record-stream, reset and pool callback signatures; `c10::Error`, `OutOfMemoryError` and `AcceleratorError` remain the direct exception API. No older-Torch fallback is selected.
-
-Header inspection, compile/link and host loading establish ABI-build evidence only. Actual CUDA allocator, capture/replay, lifetime and model execution remain separate integrated gates. Historical 2.14 qualification receipts remain preserved under their original source and artifact identities.
+Add its exact `torch.__version__` (PyPI's Linux build) to `TORCH`; `cuda-toolkit[crt,cccl]` follows that
+Torch's own CUDA pin. Version differences in Torch's headers are `TORCH_VERSION_MINOR` checks in
+`varena_torch.cpp`. Drop a Torch once no image or machine runs it.
 
 The private `varena_torch_workspace_cache_enabled` export reads
 `at::cuda::isCUDABlasWorkspaceCachingEnabled()` through the existing contained-error
 ABI. It reports Torch's actual latched setting without initializing CUDA or allocating
-GPU memory. Managed graph frontends require this same-cohort export and refuse cached
+GPU memory; before 2.15 Torch always caches them per stream, and it reports 1. Managed graph frontends require this same-cohort export and refuse cached
 library workspaces; low-level graph owners retain their own workspace lifetime contract.
