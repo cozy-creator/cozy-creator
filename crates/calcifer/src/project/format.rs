@@ -207,6 +207,8 @@ pub struct Doc {
     dir: PathBuf,
     /// Read as format 3, only for the upgrade: what each box's state was then (`key_three`).
     three: Option<Three>,
+    /// Boxes written with a dotted name, read as their `_` form: by the dotted name's key, as a mention may still say it.
+    dotted: HashMap<String, usize>,
 }
 
 /// What format 3 read that format 4 doesn't: each box's `asset_type`, by its index.
@@ -339,19 +341,26 @@ impl Doc {
             defaults.insert(section.clone(), Value::Object(filled));
         }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
+        // A name holds no `.` (decision 4): one written with one reads as its `_` form, said.
+        let read_as = |name: &String| if format == FORMAT && name.contains('.') { name.replace('.', "_") } else { name.clone() };
         for name in listed.iter().filter(|_| format == FORMAT) {
-            named(name)?;
+            named(&read_as(name))?;
         }
-        let mut seen: HashMap<String, &String> = HashMap::new();
+        let mut seen: HashMap<String, String> = HashMap::new();
         for name in &listed {
-            if let Some(first) = seen.insert(name_key(name), name) {
-                return Err(one_name_twice(text, first, name));
+            if let Some(first) = seen.insert(name_key(&read_as(name)), name.clone()) {
+                return Err(one_name_twice(text, &first, name));
             }
         }
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone(), three: (format == 3).then(Three::default) };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone(), three: (format == 3).then(Three::default), dotted: HashMap::new() };
         for name in &listed {
             let Some(written) = declared.get(name) else { continue };
-            doc.declare(name, written, &defaults, folder, lock);
+            let shown = read_as(name);
+            if shown != *name {
+                doc.dotted.insert(name_key(name), doc.assets.len());
+                doc.warn(&shown, format!("{name}: a name holds no `.`, so it reads as {shown}: rename it {shown} in {}", folder::PROJECT));
+            }
+            doc.declare(&shown, written, &defaults, folder, lock);
         }
         for i in 0..doc.assets.len() {
             if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() && doc.assets[i].text.is_none() && lock.asset(&doc.assets[i].name).is_none_or(|held| held.versions.is_empty()) {
@@ -463,6 +472,13 @@ impl Doc {
         self.warnings.extend(said);
     }
 
+    /// `fields` with each text box they mention put in as its words, as a box's are: `cozy run`'s, written outside the file.
+    pub(super) fn worded(&self, fields: &mut Map<String, Value>, tags: &[String]) {
+        let texts: HashMap<String, usize> = self.assets.iter().enumerate().filter(|(_, asset)| asset.text.is_some()).map(|(i, asset)| (name_key(&asset.name), i)).collect();
+        let (mut took, mut said) = (vec![], vec![]);
+        fields.values_mut().for_each(|value| self.inline_in(value, tags, &texts, &mut took, &mut said));
+    }
+
     fn inline_in(&self, value: &mut Value, tags: &[String], texts: &HashMap<String, usize>, took: &mut Vec<usize>, said: &mut Vec<Warning>) {
         match value {
             Value::String(text) => *text = self.with_words(text, tags, texts, &mut vec![], took, said),
@@ -558,13 +574,18 @@ impl Doc {
         self.warnings.extend(said);
     }
 
+    /// The box a mention names by the dotted name it was written with, read as its `_` form.
+    pub(super) fn dotted_box(&self, mention: &str) -> Option<usize> {
+        self.dotted.get(&name_key(mention)).copied()
+    }
+
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
     }
 
     /// What `mention` in asset `i`'s text names: a box, and a version of it.
     fn mentioned(&self, i: usize, mention: &str) -> Option<(usize, Option<u32>)> {
-        if let Some(j) = self.find(mention).filter(|_| self.three.is_some()) {
+        if let Some(j) = self.find(mention).filter(|_| self.three.is_some()).or_else(|| self.dotted_box(mention)) {
             return Some((j, None));
         }
         let read = graph::mention(mention)?;
@@ -940,22 +961,28 @@ impl Doc {
         format!("{}{}", &digest(&Value::Object(own))[..OWN_PART], parts.into_iter().map(|(_, part)| part).collect::<String>())
     }
 
-    /// Each mention under `value` with its box by number, first mentioned first, as `order` holds them: `<Amy.2>` is `<#0.2>`. What names
-    /// nothing, or is a tag, stays as written.
-    fn numbered(&self, i: usize, value: &mut Value, order: &mut Vec<usize>) {
+    /// Each mention under `value` with its box by number, first mentioned first, as `order` holds them: `<Amy.2>` is `<#0.2>`. A mention of
+    /// nothing is numbered too, by its name, so a read that's gone moves nothing else. A tag stays as written.
+    fn numbered(&self, i: usize, value: &mut Value, order: &mut Vec<Result<usize, String>>) {
         let tags = self.tags(i).cloned().unwrap_or_default();
         let mut walk = |text: &mut String| {
             *text = mentions_replaced(text, &mut |inner| {
                 if is_tag(&tags, inner) {
                     return None;
                 }
-                let read = graph::mention(inner)?;
-                let (j, _) = self.mentioned(i, inner)?;
-                let k = order.iter().position(|&held| held == j).unwrap_or_else(|| {
-                    order.push(j);
+                let (named, rest) = match (self.mentioned(i, inner), self.dotted_box(inner)) {
+                    (Some((j, _)), Some(_)) => (Ok(j), ""),
+                    (Some((j, _)), None) => (Ok(j), &inner[graph::mention(inner)?.name.len()..]),
+                    (None, _) => {
+                        let read = graph::mention(inner)?;
+                        (Err(name_key(read.name)), &inner[read.name.len()..])
+                    }
+                };
+                let k = order.iter().position(|held| *held == named).unwrap_or_else(|| {
+                    order.push(named);
                     order.len() - 1
                 });
-                Some(format!("<#{k}{}>", &inner[read.name.len()..]))
+                Some(format!("<#{k}{rest}>"))
             });
         };
         each_text(value, &mut walk);
@@ -963,12 +990,19 @@ impl Doc {
 
     /// What each box asset `i` mentions sends, in `order`, by name: a text box its words, numbered on, and a box its files and description,
     /// of each version read. Calcifer's own tools read files alone.
-    fn parts(&self, i: usize, reads: &[ReadNow], order: &mut Vec<usize>) -> Vec<(String, String)> {
+    fn parts(&self, i: usize, reads: &[ReadNow], order: &mut Vec<Result<usize, String>>) -> Vec<(String, String)> {
         let tool = self.tool(i).is_some();
         let mut parts = vec![];
         let mut k = 0;
         while k < order.len() {
-            let j = order[k];
+            let j = match &order[k] {
+                Ok(j) => *j,
+                Err(name) => {
+                    parts.push((name.clone(), GONE.to_owned()));
+                    k += 1;
+                    continue;
+                }
+            };
             let of = &self.assets[j];
             let held = match of.text.as_ref().filter(|_| self.assets[i].inlined.contains(&j)) {
                 Some(text) => {
@@ -1005,7 +1039,9 @@ impl Doc {
         let mut inputs = Value::Object(self.assets[i].written.clone().unwrap_or_else(|| self.assets[i].inputs.clone()));
         self.numbered(i, &mut inputs, &mut order);
         let parts = self.parts(i, reads, &mut order);
-        parts.into_iter().enumerate().filter(|(k, (_, part))| held.get(*k).is_some_and(|was| *was != part.as_bytes())).map(|(_, (name, _))| format!("<{name}>")).collect()
+        // A read that's gone is no change: nothing could make it again.
+        let changed = |k: usize, part: &str| part != GONE && held.get(k).is_some_and(|was| *was != part.as_bytes());
+        parts.into_iter().enumerate().filter(|(k, (_, part))| changed(*k, part)).map(|(_, (name, _))| format!("<{name}>")).collect()
     }
 
     /// The words asset `i` is made from, its text assets' in them, what leads first, as a version keeps them. Calcifer's own tools have none.
@@ -1202,6 +1238,8 @@ fn digest(value: &Value) -> String {
 /// How much of a key says what makes it and its inputs, and how much says each read.
 const OWN_PART: usize = 8;
 const READ_PART: usize = 12;
+/// A part for a box a mention names that's gone.
+const GONE: &str = "------------";
 
 /// Each text under `value`, changed by `with`.
 fn each_text(value: &mut Value, with: &mut dyn FnMut(&mut String)) {

@@ -200,7 +200,10 @@ impl Binder<'_> {
             if self.tag(inner) {
                 return None;
             }
-            let mention = graph::mention(inner)?;
+            let mention = self.mention_of(inner)?;
+            if self.text_box(&mention) {
+                return None;
+            }
             self.box_of(&mention)?;
             said.push(inner.to_owned());
             Some(mention.name.to_owned())
@@ -219,7 +222,10 @@ impl Binder<'_> {
             if self.tag(inner) {
                 return None;
             }
-            let mention = graph::mention(inner)?;
+            let mention = self.mention_of(inner)?;
+            if self.text_box(&mention) {
+                return None;
+            }
             let Some(named) = self.named(&mention) else {
                 nothing.push(inner.to_owned());
                 return None;
@@ -246,8 +252,21 @@ impl Binder<'_> {
     fn box_of(&self, mention: &graph::Mention) -> Option<usize> {
         match name_key(mention.name) == SELF {
             true => self.call.own.filter(|_| mention.version.is_some()),
-            false => self.call.doc.find(mention.name),
+            false => self.call.doc.find(mention.name).or_else(|| self.call.doc.dotted_box(mention.name)),
         }
+    }
+
+    /// `inner` as a mention: a box written with a dotted name, whole, else by the grammar.
+    fn mention_of<'m>(&self, inner: &'m str) -> Option<graph::Mention<'m>> {
+        match self.call.doc.dotted_box(inner) {
+            Some(_) => Some(graph::Mention { name: inner, version: None, part: None, range: None }),
+            None => graph::mention(inner),
+        }
+    }
+
+    /// Whether `mention` is a text box's: one left in by a cycle stays as written.
+    fn text_box(&self, mention: &graph::Mention) -> bool {
+        self.box_of(mention).is_some_and(|j| self.call.doc.assets[j].text.is_some())
     }
 
     /// What `mention` sends. None: it names nothing; Some(None): its box has no file.
@@ -339,7 +358,7 @@ impl Binder<'_> {
                 continue;
             }
             for inner in said {
-                let Some(mention) = graph::mention(inner) else { continue };
+                let Some(mention) = self.mention_of(inner) else { continue };
                 match self.named(&mention) {
                     None => self.nothing.push(inner.to_owned()),
                     Some(None) => self.warn(format!("{}'s {at}: <{inner}> has no file yet, so it's left empty", self.call.name)),

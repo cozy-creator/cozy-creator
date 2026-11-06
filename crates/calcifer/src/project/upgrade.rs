@@ -1012,6 +1012,13 @@ pub fn tools(dir: &Path) -> Result<Upgraded, Error> {
 
     let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
     let now = doc.stand(&lock);
+    for i in 0..doc.assets.len() {
+        let gone = doc.missing_names(i, &doc.tags(i).cloned().unwrap_or_default(), &lock);
+        if !gone.is_empty() {
+            let named: Vec<String> = gone.iter().map(|name| format!("<{name}>")).collect();
+            said.push(format!("{} mentions {}, which no version wrote and nothing makes: edit its text", doc.assets[i].name, named.join(", ")));
+        }
+    }
     said.extend(doc.warnings.iter().map(|warning| warning.message.clone()));
     let rows = (0..doc.assets.len()).map(|i| {
         let name = doc.assets[i].name.clone();

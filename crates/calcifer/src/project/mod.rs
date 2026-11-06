@@ -341,6 +341,8 @@ impl Holding {
     /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, ranges are cut here, and `pickup.`
     /// terms are the gesture. Answers the call, the project's files it names (fetched here if a machine keeps them), and what was said.
     pub(crate) async fn bound(&self, target: &str, package: &str, callable: &protocol::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
+        // A project of an older format moves first, as any touch of it does.
+        let said = tokio::task::block_in_place(|| upgrade::on_touch(&self.dir))?;
         let folder = Folder::at(&self.dir);
         let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
         let stand = doc.stand(&lock);
@@ -351,8 +353,10 @@ impl Holding {
             Some(value) => Some(serde_json::from_value::<protocol::project::Pickup>(value).map_err(|why| Error::new(Kind::Usage, "pickup_malformed", format!("a pickup is pickup.take=<box.N> and pickup.out_frame=<frame>: {why}")))?),
         };
         let reserved = callable.tool.as_ref().map(|tool| tool.reserved.clone()).unwrap_or_default();
+        doc.worded(&mut fields, &reserved);
         let call = binder::Call { name: target, tool: target, package, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref() };
         let mut bound = binder::bind(&call)?;
+        bound.warnings.splice(0..0, said);
         let mut cut = HashMap::new();
         let mut digests = vec![];
         for range in &bound.cuts {
@@ -3718,7 +3722,8 @@ impl Walk {
             let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
-                let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| !new && tried.inputs == inputs).map(|tried| tried.seed);
+                // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
+                let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| tried.inputs == inputs).map(|tried| tried.seed);
                 version.seed = Some(tried.unwrap_or_else(new_seed));
             }
             version.pickup = pickup;
