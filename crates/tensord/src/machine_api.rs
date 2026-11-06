@@ -66,7 +66,7 @@ impl NativeBackend {
         }
         self.service
             .engine
-            .get_public(&actor_id(actor), &query.request_id)
+            .get_public(reader(actor).as_deref(), &query.request_id)
             .map_err(|error| match error.kind() {
                 io::ErrorKind::NotFound => Error::not_found("run_not_found", "this machine has no such run"),
                 _ => problem(error),
@@ -477,9 +477,9 @@ impl MachineBackend for NativeBackend {
         index: Option<u32>,
     ) -> Result<crate::api::backend::OutputSnapshot, Error> {
         let absent = || Error::not_found("output_not_found", "this machine has no such run or output");
-        let actor = actor_id(actor);
+        let reader = reader(actor);
         let record = match self.service.engine.get(&run.to_string()) {
-            Ok(record) if record.submission.as_ref().is_some_and(|s| s.actor == actor) => record,
+            Ok(record) if record.submission.as_ref().is_some_and(|s| reader.as_ref().is_none_or(|actor| s.actor == *actor)) => record,
             Ok(_) => return Err(absent()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(absent()),
             Err(error) => return Err(problem(error)),
@@ -928,13 +928,13 @@ impl MachineBackend for NativeBackend {
         actor: VerifiedActor,
         request: domain::MachineExecutionListQuery,
     ) -> Result<domain::MachineExecutionList, Error> {
-        let actor = actor_id(actor);
-        let head_number = self.service.engine.actor_head(&actor).map_err(problem)?;
+        let actor = reader(actor);
+        let head_number = self.service.engine.actor_head(actor.as_deref()).map_err(problem)?;
         let records = self
             .service
             .engine
             .actor_page(
-                &actor,
+                actor.as_deref(),
                 if request.newest_first {
                     0
                 } else {
@@ -972,6 +972,10 @@ impl MachineBackend for NativeBackend {
 }
 pub fn actor_id(actor: VerifiedActor) -> String {
     sha256::hex(&actor.public_key)
+}
+/// Whose runs `actor` reads: its own, or, for a rental's owner, every client's (none named).
+fn reader(actor: VerifiedActor) -> Option<String> {
+    (!actor.owner).then(|| actor_id(actor))
 }
 fn canonical(value: &Value) -> Result<Vec<u8>, Error> {
     serde_json_canonicalizer::to_vec(value)

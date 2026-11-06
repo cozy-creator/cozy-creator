@@ -323,8 +323,14 @@ pub enum Status {
 /// One run as Calcifer holds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Run {
+    /// Its id; `<machine>/<number>` for one another client of this account sent.
     pub id: RunId,
+    /// This controller's number for it; 0 for one another client sent.
     pub number: u64,
+    /// One another client of this account sent, as the machine it runs on numbers it: read there,
+    /// never held here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_number: Option<u64>,
     pub kind: Kind,
     pub target: String,
     pub hub: String,
@@ -392,6 +398,16 @@ pub struct Run {
     /// With `?detail=full`: what was asked of it, to show and to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<RunAsked>,
+}
+
+impl Run {
+    /// What names it to a person: its number, or `<machine>/<number>` for one another client sent.
+    pub fn name(&self) -> String {
+        match self.machine_number {
+            Some(_) => self.id.to_string(),
+            None => self.number.to_string(),
+        }
+    }
 }
 
 /// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
@@ -707,6 +723,10 @@ pub struct RunList {
     /// Matching runs the store cannot read, each as `run N: why`, left out of `runs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unreadable: Vec<String>,
+    /// With `?machine=`, newest first: its runs other clients of this account sent, as it reports
+    /// them now (`Run::machine_number`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub others: Vec<Run>,
 }
 
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
@@ -830,9 +850,10 @@ pub struct Machine {
     pub running: u32,
     #[serde(default)]
     pub queued: u32,
-    /// False: a live rental of this account that this controller did not rent.
+    /// False: a rental another client of this account ordered. This controller reaches it as its
+    /// own (the Hub grants it every device the account signed in on), but places no run on it unasked.
     #[serde(default = "yes")]
-    pub recorded: bool,
+    pub ordered: bool,
     /// Its Hub did not answer the last listing.
     #[serde(default)]
     pub unverified: bool,

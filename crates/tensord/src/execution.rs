@@ -477,7 +477,7 @@ impl Engine {
         self.notify_activity();
     }
 
-    pub fn get_public(&self, actor: &str, request_id: &str) -> io::Result<Execution> {
+    pub fn get_public(&self, actor: Option<&str>, request_id: &str) -> io::Result<Execution> {
         let owned = self.owned.lock().unwrap();
         let progress = self.progress.lock().unwrap();
         let mut record = self.journal.lock().unwrap().get_public(actor, request_id)?;
@@ -487,7 +487,7 @@ impl Engine {
 
     pub fn actor_page(
         &self,
-        actor: &str,
+        actor: Option<&str>,
         after: u64,
         before: u64,
         newest: bool,
@@ -496,7 +496,7 @@ impl Engine {
     ) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.actor_page(actor, after, before, newest, states, limit))
     }
-    pub fn actor_head(&self, actor: &str) -> io::Result<u64> {
+    pub fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
         self.journal.lock().unwrap().actor_head(actor)
     }
     /// See `Journal::jobs`.

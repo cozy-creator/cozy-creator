@@ -47,7 +47,7 @@ export function End({ machine, through, onAsked }: { machine: Machine; through?:
       </>
     )
   }
-  if (machine.recorded === false) {
+  if (machine.ordered === false) {
     return (
       <>
         <Confirm
