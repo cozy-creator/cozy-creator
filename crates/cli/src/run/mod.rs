@@ -66,7 +66,7 @@ struct RunArgs {
     #[arg(long, value_name = "N", value_parser = protocol::calcifer::gpu_count)]
     gpus: Option<u32>,
     /// The lane of the function's main model (a label: bf16, fp8, int8, …); its LoRAs and other
-    /// models take their own. Absent, the Hub picks what this machine's hardware runs best.
+    /// models take their own. Absent, the machine picks what its GPUs run best.
     #[arg(long, value_parser = protocol::model_ref::lane)]
     lane: Option<String>,
     /// Pin an attention kernel for this run: everywhere, or at one `[slot/]component`.

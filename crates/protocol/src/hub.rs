@@ -455,7 +455,7 @@ pub struct ModelDownload {
     /// `local/<alias>`: the name the machine keeps it under (required for a file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    /// A Hub model's lane; absent, the Hub picks what the machine runs best.
+    /// A Hub model's lane; absent, the machine picks what its GPUs run best.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
     /// The source's convention, a reviewed TensorFS format (`h3.lora`); usually detected.

@@ -168,7 +168,7 @@ pub struct RunRequest {
     /// At most this many GPUs; absent: every GPU its slots support.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpus: Option<u32>,
-    /// The main model's lane; absent: the Hub's pick for the machine.
+    /// The main model's lane; absent: the machine's pick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
     /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.

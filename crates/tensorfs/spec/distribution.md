@@ -10,12 +10,12 @@ An endpoint is a base URL `B`. Its objects are blobs, and nothing lists them:
 
 ```text
 B/blobs/<aa>/<bb>/<sha256>                an object: a tree, a cozytensors header, a chunk, an asset or a repo file
-B/v1/models/<org>/<name>/resolve          a model's commit, resolved (§2)
+B/v1/models/<org>/<name>/resolve          a model's release and its lanes (§2)
 B/v1/models/<org>/<name>/commits          a model's commits, recorded (§4)
 ```
 
 A directory (a store) keeps the repo document (`cozytensors.repo/1`) at `B/refs/<org>/<name>.json` instead of the
-two model routes, and a client resolves it itself (cozytensors.md §7). A static host or bucket serves objects only:
+two model routes, and a client lists a release's lanes from it and their headers itself. A static host or bucket serves objects only:
 a commit is named by its id.
 
 - `<org>/<name>` is the repo name with ASCII `A`–`Z` lowered; a segment other than letters, digits, `.`, `_` and
@@ -30,15 +30,15 @@ a commit is named by its id.
 ## 2. Reading
 
 ```text
-GET  B/v1/models/<org>/<name>/resolve?release=&lane=&gpus=&free_vram=&plain=   200 {release, lane, commit, header, reasons} | 404
+GET  B/v1/models/<org>/<name>/resolve?release=     200 {release, lanes} | 404
 GET  B/blobs/<aa>/<bb>/<hex>    [Range: bytes=a-b]          200 | 206 | 302/303/307 + Location | 404
 HEAD B/blobs/<aa>/<bb>/<hex>                                200 + Content-Length | 404
 ```
 
-- Resolve names one commit: of `release` (none: the newest), in `lane`, else what the hardware runs and fits:
-  `gpus`, each GPU's compute capability (`8.9`) or Apple Metal family (`apple9`), none for the CPU, and
-  `free_vram`, the free bytes on the smallest; `plain=true` takes plain lanes only (code that runs no encoded
-  tensor). `reasons` say what was passed over.
+- Resolve lists `release` (none: the newest) and every lane of it, sorted by label: `{label, commit, header,
+  bytes, kinds, family, bits}`, the commit and header as objects (`{sha256, length}`) and the rest the header's
+  profile (cozytensors.md §7), `family` `""` and `bits` 0 where the server's table names none. The client picks
+  the lane (cozytensors.md §7); the server picks nothing. A client refuses an answer without `lanes`.
 - A client walks commit (tree) → its repo files and header → that header's chunks and assets. It MUST check every
   object's length and SHA-256 before it admits it.
 - A commit no release names, and its objects, a server serves only to members of the model's organization.

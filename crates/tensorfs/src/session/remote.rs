@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::failure::{fail, Failure, Kind, Result};
-use crate::fetch::{self, Fetcher, Hardware, ObjectStore, Origin, VolumeOrigin, Want};
+use crate::fetch::{self, Fetcher, ObjectStore, Origin, VolumeOrigin, Want};
 use crate::format::{Header, ObjectRef, Repo, Tree};
+use crate::precision::{Ask, Gpus};
 use crate::store::Store;
 
 use super::provider::from_native;
@@ -97,54 +98,36 @@ impl Remote {
         Ok(result)
     }
 
-    /// What `reference` names: a bare object (`sha256:` repo id), a commit by id, or its release
-    /// and lane resolved once by the endpoint, for `hardware` when it names no lane (spec §7).
-    /// Offline, or when the endpoint cannot be reached, the store's record of what it resolved.
-    async fn root(&self, reference: &Ref, hardware: &Hardware) -> Result<Root> {
+    /// What `reference` names: a bare object (`sha256:` repo id), a commit by id, or the lane of
+    /// its release this machine picks for `gpus` (its lane, when it names one; spec §7). Offline,
+    /// or when the endpoint cannot be reached, a lane the store holds of what it recorded.
+    async fn root(&self, reference: &Ref, gpus: &Gpus) -> Result<Root> {
         let bare = |object| Root { object, release: String::new(), lane: String::new() };
         if let Some(hex) = reference.repo_id.strip_prefix("sha256:") {
             return Ok(bare(self.object(hex).await?));
         }
-        let (release, lane) = (reference.release.as_deref(), reference.lane.as_deref());
+        let release = reference.release.as_deref();
         if let Some(hex) = release.and_then(|r| r.strip_prefix("sha256:")) {
             return Ok(bare(self.object(hex).await?));
         }
-        let recorded = || -> Result<Option<Root>> {
-            let Some(repo) = self.store.get_ref(&reference.repo_id)? else { return Ok(None) };
-            Ok(repo.resolve(release, lane).ok().map(|(release, lane, object)| Root { object, release, lane: lane.unwrap_or_default() }))
-        };
-        let local;
-        let endpoint = match self.offline {
-            false => &self.endpoint,
-            true if self.mirror.is_none() => {
-                return recorded()?.ok_or_else(|| Failure { kind: Kind::NotFound, detail: format!("{} is not cached", reference.repo_id) });
-            }
-            true => {
+        let answer = match (self.offline, &self.mirror) {
+            (false, _) => Some(self.endpoint.inner.release(&reference.repo_id, release).await),
+            (true, None) => None,
+            (true, Some(mirror)) => {
                 // An absolute directory cannot be interpreted as an HTTP endpoint, and carries no
                 // provider even if Config supplies one for the Hub.
-                let mirror = self.mirror.as_ref().expect("a mirror");
                 let path = std::path::absolute(mirror).map_err(|error| io_failure(mirror.display(), error))?;
                 let path = path.to_str().ok_or_else(|| Failure { kind: Kind::Invalid, detail: "mirror path is not UTF-8".into() })?;
-                local = Endpoint {
-                    inner: Arc::new(fetch::Endpoint::new(&self.endpoint.transport, path, None).map_err(from_native)?),
-                    transport: self.endpoint.transport.clone(),
-                };
-                &local
+                let local = fetch::Endpoint::new(&self.endpoint.transport, path, None).map_err(from_native)?;
+                Some(local.release(&reference.repo_id, release).await)
             }
         };
-        match endpoint.inner.resolve(&reference.repo_id, release, lane, hardware).await.map_err(from_native) {
-            Ok(resolved) => {
-                for reason in &resolved.reasons {
-                    tracing::warn!("{reason}");
-                }
-                Ok(Root { object: resolved.commit, release: resolved.release, lane: resolved.lane })
-            }
-            Err(error) if error.kind == Kind::Network => match recorded()? {
-                Some(found) if self.store.reuse(&found.object)? => Ok(found),
-                _ => Err(error),
-            },
-            Err(error) => Err(error),
+        let ask = Ask { pin: reference.lane.clone(), ..Ask::default() };
+        let chosen = crate::lanes::resolve(&self.store, &reference.repo_id, release, answer, gpus, &ask).map_err(from_native)?;
+        for reason in &chosen.reasons {
+            tracing::warn!("{}: {reason}", reference.repo_id);
         }
+        Ok(Root { object: chosen.lane.commit, release: chosen.release, lane: chosen.lane.label })
     }
 
     /// A bare object by digest: from the store, the offline mirror, or the endpoint.
@@ -185,8 +168,8 @@ impl Remote {
     }
 
     /// The commit (or bare header) `reference` names, opened: its header fetched.
-    pub async fn open(&self, mut reference: Ref, hardware: &Hardware) -> Result<Checkpoint> {
-        let root = self.root(&reference, hardware).await?;
+    pub async fn open(&self, mut reference: Ref, gpus: &Gpus) -> Result<Checkpoint> {
+        let root = self.root(&reference, gpus).await?;
         let _root_hold = self.store.hold(std::slice::from_ref(&root.object))?;
         self.fetch(std::slice::from_ref(&root.object), &Download::default()).await?;
         let bytes = self.store.read(&root.object)?;
@@ -220,7 +203,7 @@ impl Remote {
     /// The commit `reference` names as a plain folder: its repo files and header, and the
     /// objects `want` selects.
     pub async fn snapshot(&self, reference: &Ref, want: &Download<'_>, local_dir: Option<&Path>) -> Result<PathBuf> {
-        let root = self.root(reference, &Hardware::default()).await?;
+        let root = self.root(reference, &Gpus::default()).await?;
         let commit = root.object.clone();
         let _root_hold = self.store.hold(std::slice::from_ref(&commit))?;
         self.fetch(std::slice::from_ref(&commit), &Download::default()).await?;
@@ -255,7 +238,7 @@ impl Remote {
         filename: &str,
         local_dir: Option<&Path>,
     ) -> Result<PathBuf> {
-        let root = self.root(reference, &Hardware::default()).await?;
+        let root = self.root(reference, &Gpus::default()).await?;
         let commit = root.object.clone();
         let _root_hold = self.store.hold(std::slice::from_ref(&commit))?;
         self.fetch(std::slice::from_ref(&commit), &Download::default())

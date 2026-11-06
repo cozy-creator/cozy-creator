@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::stream::{FuturesUnordered, TryStreamExt};
 
-pub use endpoint::{upload_commit, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
+pub use endpoint::{upload_commit, Endpoint, Payload, Released, Stream, UploadControl, Uploaded};
 pub use net::Client;
 pub(crate) use net::GetError;
 pub use origin::{Location, Origin};

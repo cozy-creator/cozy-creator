@@ -58,8 +58,8 @@ warning each). A model-only upload's lane labels the commit it makes.
 - **Names** (th-245): the machine resolves them at the run's Hub. A release (`org/name`, its
   release, or none for the newest this signer holds, else the Hub's newest) installs from the card and locked requirements it reads there
   by name. A model slot is the run's choice, else its declared `default` release (a callee's
-  too): `repository` at `release` (none: the newest) in its `lane`, else the commit the Hub picks for
-  the hardware (`GET /v1/models/{org}/{name}/resolve`); the commit's tree names its one header.
+  too): `repository` at `release` (none: the newest) in its `lane`, else the lane the machine picks
+  for the slot's tolerances on its GPUs from the release's lanes (`GET /v1/models/{org}/{name}/resolve`); the commit's tree names its one header.
   `manifest` names a commit (or a header) by hash: one the capability reads, or one the machine
   holds. A weights output the Runtime writes, the machine uploads itself as a commit of the run's
   `weights_destination` in the output's lane. Name
