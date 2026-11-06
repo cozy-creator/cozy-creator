@@ -18,6 +18,11 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   feature; real small cards are the evidence. Each GPU is a card of that size: Start carries it
   to every executor as its memory budget, and every free reading here and in the Runtime is the
   smaller card's. Driver-level exhaustion is not emulated.
+- `display_pace`: a shared machine's `[machine.display_pace]` (`work_ms` 80, `pause_ms` 16; a
+  `pause_ms` of 0 never pauses). When a GPU of a call's lane drives a display (NVML display-active),
+  Start carries it, and the Runtime pauses `pause_ms` after each `work_ms` at block entries and eager
+  step ends, so the desktop keeps drawing. A dedicated machine never pauses. The service itself, and
+  so every executor, runs at nice 10 and the lowest best-effort I/O on a shared machine.
 - `environment`: names `launch_identity::credential_name` judges credentials never reach an executor.
 - `host`: `{mode}`: `[machine] mode` in config.toml, else `dedicated` on a rental and `shared`
   elsewhere. At start a dedicated machine imports its installed environments' parents, most

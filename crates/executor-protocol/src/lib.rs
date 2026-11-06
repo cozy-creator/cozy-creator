@@ -132,6 +132,26 @@ pub struct Start {
     /// card of this many bytes, the executor's memory budget, to test constrained VRAM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_memory_limit: Option<u64>,
+    /// A GPU of the session drives this computer's display (a shared machine): its calls pause
+    /// for the desktop to draw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_pace: Option<DisplayPace>,
+}
+
+/// How a call shares a GPU with the display it drives (`machine.display_pace`): it pauses
+/// `pause_ms` (a 60 Hz frame) after each `work_ms` of work, keeping about work / (work + pause)
+/// of its speed. A `pause_ms` of 0 never pauses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+#[serde(default)]
+pub struct DisplayPace {
+    pub work_ms: u32,
+    pub pause_ms: u32,
+}
+impl Default for DisplayPace {
+    fn default() -> Self {
+        Self { work_ms: 80, pause_ms: 16 }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

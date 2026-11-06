@@ -6,7 +6,7 @@ use executor_protocol::{
     TensorFSOptions,
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork, Room,
-    GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
+    DisplayPace, GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
     PreparedUse, PrepareRequest, Probe, Publish, PublishPart, SavedFile, Start, StageMemoLookup, StageMemoStore, Unload, View,
 };
 use pyo3::{create_exception, exceptions::PyValueError, prelude::*, IntoPyObjectExt};
@@ -81,6 +81,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PreparedUse>()?;
     m.add_class::<ModelLoad>()?;
     m.add_class::<MemoSettings>()?;
+    m.add_class::<DisplayPace>()?;
     m.add_class::<Construction>()?;
     m.add_class::<CallInterface>()?;
     m.add_class::<InputMetadata>()?;
