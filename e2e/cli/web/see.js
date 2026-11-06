@@ -274,7 +274,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
-  check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
+  // Nothing made yet is nothing wrong: its dot is plain, as is one out of date.
+  check('dot_plain_when_nothing_made', (await element(page, 'shot').locator('.dot.s-current').count()) === 1 && (await element(page, 'shot').locator('.dot.s-missing, .dot.s-ood').count()) === 0, await element(page, 'shot').locator('.dot').getAttribute('class'));
   await open(page, 'odd');
   check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
   check('wire_warning_of_an_asset_type', read.warnings?.some((said) => said.name === 'older' && said.message.includes('asset_type')), read.warnings);
@@ -343,7 +344,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   });
   check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
   check('landed_with_no_reload', await notReloaded());
-  // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it.
+  // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it. Render kept picture open, and drawn in on it the canvas draws only what's near.
+  await away(page);
   await until('the cut landed', () => asset('edit'), (held) => held.standing === 'current');
   await until('its film shows', () => element(page, 'edit').locator('.media img').count(), (n) => n > 0);
   await open(page, 'edit');
@@ -403,6 +405,9 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('no_line_at_rest', (await needs.locator('.status').count()) === 0, await needs.innerText());
   const told = spawnSync(COZY, ['project', '-p', folder, 'status'], { encoding: 'utf8' });
   check('terminal_hears_the_failure', `${told.stdout}${told.stderr}`.includes('cannot render'), `${told.stdout}${told.stderr}`.slice(0, 400));
+  // A box takes its tool's shape once its tool is known, and a box it then lay on moved clear: what stands is the rows as they are now.
+  const beforeReload = await cards();
+  seen.moved_since_placed = named.filter((name) => beforeReload[name].x !== rows[name].x || beforeReload[name].y !== rows[name].y);
   await page.reload();
   await page.waitForSelector('.react-flow__node');
   await page.evaluate(() => { window.notReloaded = true; });
@@ -410,7 +415,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('still marked after a reload', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
   check('failure_survives_reload', (await asset('needs')).failure?.message.includes('cannot render'), (await asset('needs')).failure);
   const afterReload = await cards();
-  check('rows_stand_after_reload', named.every((name) => afterReload[name].x === rows[name].x && afterReload[name].y === rows[name].y), afterReload);
+  const moved = named.filter((name) => afterReload[name].x !== beforeReload[name].x || afterReload[name].y !== beforeReload[name].y);
+  check('rows_stand_after_reload', moved.length === 0, moved.map((name) => ({ name, was: beforeReload[name], now: afterReload[name] })));
   // Its text changes: the old reason no longer stands, with no reload.
   replaceFile(yamlAt, readFileSync(yamlAt, 'utf8').replace('video: <hollow_thing>', 'video: <clip>'));
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
