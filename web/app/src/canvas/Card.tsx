@@ -228,7 +228,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             onDoubleClick={() => store.toggleApproved(name, version.number)}
           >
             {version.main && !version.main.absent ? (
-              <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256, HERE_THUMB) : undefined} />
+              <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>

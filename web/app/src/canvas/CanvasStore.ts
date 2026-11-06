@@ -250,6 +250,8 @@ export class CanvasStore {
   readonly viewing = signal<string | null>(null)
   /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */
   readonly far = signal(false)
+  /** The canvas's zoom as pictures are asked for it: a power of two, so a zoom asks for a sharper picture only as it doubles. */
+  readonly sharpness = signal(1)
   /** What takes a drop, by its element: a box marks itself `data-drop-target`. */
   readonly dropTargets = new Map<Element, DropTarget>()
   /** Each open text's way to take a name at its caret, by `<node>:<place>`. */

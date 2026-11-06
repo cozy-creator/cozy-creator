@@ -64,24 +64,30 @@ const thumbLine = line(2)
 /** What's been up: coming back on screen is no arrival, and fades nothing. */
 const arrived = new Set<string>()
 
+/** What an open box draws: Calcifer's widest, never wider than the file, so a picture at its own resolution. */
+const FULL = 2048
+
 /** A just-landed take's picture, at the size an open box draws it, asked once and decoded ahead, so a click on it shows it at once. */
 const preloaded = new Set<string>()
-export function preload(client: Client, projectId: string | null, sha256: string, cardWidth: number) {
-  const key = `${sha256}:${thumbWidth(cardWidth)}`
+export function preload(client: Client, projectId: string | null, sha256: string) {
+  const key = `${sha256}:${FULL}`
   if (!projectId || preloaded.has(key)) return
   preloaded.add(key)
-  void client.transport.src(client.thumb(projectId, sha256, thumbWidth(cardWidth))).then((url) => {
+  void client.transport.src(client.thumb(projectId, sha256, FULL)).then((url) => {
     const img = new Image()
     img.src = url
     img.decode().then(() => arrived.add(key), () => preloaded.delete(key))
   })
 }
 
-/** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache. */
-function thumbWidth(cardWidth: number): number {
-  const wanted = cardWidth * Math.min(2, window.devicePixelRatio || 1)
-  return wanted <= 256 ? 256 : wanted <= 512 ? 512 : 1024
+/** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache: as wide as it's drawn on screen, the canvas's zoom and the
+ *  screen's density in, up to Calcifer's widest, which is never wider than the file. */
+function thumbWidth(cardWidth: number, zoom = 1): number {
+  const wanted = cardWidth * zoom * Math.min(2, window.devicePixelRatio || 1)
+  return wanted <= 256 ? 256 : wanted <= 512 ? 512 : wanted <= 1024 ? 1024 : FULL
 }
+/** The widest of each file drawn yet: zooming out keeps it rather than asking a smaller one. */
+const widest = new Map<string, number>()
 
 export function Thumb({
   sha256,
@@ -112,7 +118,8 @@ export function Thumb({
   const [failed, setFailed] = useState(false)
   const projectId = store.projectId
   const leaveLine = useRef(() => {})
-  const width = exact ? cardWidth : thumbWidth(cardWidth)
+  const zoom = useSignal(store.sharpness)
+  const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(sha256) ?? 0))
   useEffect(() => {
     if (!projectId) return
     let live = true
@@ -145,6 +152,7 @@ export function Thumb({
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
         arrived.add(`${sha256}:${width}`)
+        if (!strip) widest.set(sha256, Math.max(width, widest.get(sha256) ?? 0))
         onShown?.()
       }}
     />
@@ -490,17 +498,17 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
 }
 
 /** The picture in a box's frame, one take's alone: its small thumbnail at once, the one its tile and its box at rest already have, scaled up,
- *  and its full size over it as soon as that's decoded. Another take's picture is never what stands in. */
-function FramePicture({ sha256, cardWidth, restWidth, onSize, onShown }: { sha256: string; cardWidth: number; restWidth: number; onSize: (aspect: number) => void; onShown: () => void }) {
+ *  and its own resolution over it as soon as that's decoded. Another take's picture is never what stands in. */
+function FramePicture({ sha256, restWidth, onSize, onShown }: { sha256: string; restWidth: number; onSize: (aspect: number) => void; onShown: () => void }) {
   const [full, setFull] = useState(false)
-  const larger = thumbWidth(cardWidth) > thumbWidth(restWidth)
   return (
     <>
-      {larger && !full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
+      {!full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
       <Thumb
         sha256={sha256}
-        cardWidth={cardWidth}
-        now={larger}
+        cardWidth={FULL}
+        exact
+        now
         onSize={onSize}
         onShown={() => {
           setFull(true)
@@ -623,7 +631,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
         />
       )}
       {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-      {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} cardWidth={cardWidth} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+      {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       {blank && words && !madeFrom && <Said words={words} view={view} name={name} />}
