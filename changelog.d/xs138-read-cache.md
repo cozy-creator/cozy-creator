@@ -1,0 +1,1 @@
+TensorFS reads a range through the page cache when the cache holds at least half of it, decided once per read rather than per 1 MiB piece, so a mostly cached store no longer goes to the disk whole: hidream-refs on an RTX 4090 from a store 87% cached, step 1 2.91 s against 4.85 s before and v1's 3.67 (runs 40275, 40252, 40288).
