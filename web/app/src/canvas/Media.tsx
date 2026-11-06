@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
-import { runFullQuery, runQuery } from "../api/queries"
+import { runFullQuery, runQuery, runsQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
@@ -415,31 +415,58 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
 
 const GLYPHS: Record<string, IconName> = { image: "picture", video: "video", audio: "sound" }
 
-/** How far it's got, on the picture: a veil that moves and never reflows, and the number or the stage. */
-function Progress({ fraction, says, phase }: { fraction?: number; says?: string; phase?: string }) {
+/** How far it's got, on the picture: a veil that moves and never reflows, and the one line it says. An Edit rendered here is a progress bar. */
+function Progress({ veil = true, fraction, says, phase, rendering }: Way) {
   return (
-    <div className={`prog ${fraction === undefined ? "unknown" : ""} ${phase ?? ""}`}>
-      <i style={fraction === undefined ? undefined : { transform: `translateX(${Math.round(fraction * 100) - 100}%)` }} />
+    <div
+      className={`prog ${fraction === undefined ? "unknown" : ""} ${phase ?? ""}`}
+      {...(rendering ? { role: "progressbar", "aria-label": "Rendering", "aria-valuenow": Math.round((fraction ?? 0) * 100) } : {})}
+    >
+      {veil && <i style={fraction === undefined ? undefined : { transform: `translateX(${Math.round(fraction * 100) - 100}%)` }} />}
       {says && <b>{says}</b>}
     </div>
   )
 }
 
 const installsOf = (tool?: Tool) => tool && (tool.installs ?? tool.package)
+const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
+const sentence = (said: string) => said.charAt(0).toUpperCase() + said.slice(1)
 
-/** A render on its way: its package installing and its weights arriving say so, from what its machine lists, and the veil after them is
- *  its own work's. That says where it is once it's worth it: `Generating image 3 / 8, 25 s left`. Before its run is sent, local code
- *  installing for it says so too. */
-function Making({ run: first, number, pkg, making, waits }: { run?: Run; number?: number; pkg?: string; making: boolean; waits: string | null }) {
+/** How far a render on its way has got, and the one line it says. */
+interface Way {
+  veil?: boolean
+  fraction?: number
+  phase?: string
+  says?: string
+  rendering?: boolean
+}
+
+/** A render on its way, in one line, the most specific first: an Edit rendering here; what it reads and waits for, with that one's work; its
+ *  package installing or its weights arriving, from what its machine lists, before its run is sent too; its counted steps; its place in a
+ *  line; what it's doing; its machine getting ready; else queued. Its own work says so once it's worth it: `Denoise steps: 3/8, 25 s left`.
+ *  The veil is its run's, while it's made. The take looked at may be one asked after the first going: it's that one's. */
+function OnItsWay({ view, name, number }: { view: ElementView; name: string; number?: number }) {
   const { client } = useConnection()
-  // The take looked at may be one asked after the first going: how far that one is, as its words are.
-  const later = number !== undefined && number !== first?.number
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  const asset = view.asset
+  const making = asset?.standing === "making"
+  const later = number !== undefined && number !== view.run?.number
   const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
-  const run = later ? data : first
+  const run = later ? data : view.run
   const on = useWaitsOn(run)
   // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
-  const installing = useInstalling(run || waits ? undefined : pkg)
-  if (waits && !on) return <WaitsFor name={waits} />
+  const waits = making ? null : store.waitsFor(name)
+  const installing = useInstalling(run || waits ? undefined : installsOf(asset?.tool ? tools.get(asset.tool) : undefined))
+  const read = useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
+  const going = useQuery({ ...runsQuery(client, { status: "in_progress" }, 100), enabled: !run })
+  const lined = useQuery({ ...runsQuery(client, { status: "queued" }, 100), enabled: !run })
+  if (asset?.rendering !== undefined) return <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />
+  if (waits && !on) {
+    const theirs = read?.asset?.making?.length ? read.run : undefined
+    const words = theirs && theirs.status !== "completed" ? workWords(theirs) : ""
+    return <Progress fraction={theirs?.progress?.done_fraction} says={`Waits for <${waits}>${words ? `: ${words}` : ""}`} />
+  }
   const before = on ?? installing
   if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} />
   if (before?.kind === "download") {
@@ -447,10 +474,19 @@ function Making({ run: first, number, pkg, making, waits }: { run?: Run; number?
     const left = before.eta_s === undefined ? "" : `, ${leftWords(before.eta_s)}`
     return <Progress phase="download" fraction={fraction} says={`Waiting on download… ${fraction === undefined ? "" : `${Math.round(fraction * 100)}%`}${left}`} />
   }
-  if (!making) return null
   // A run that ended says no more of how far: it's all there, on its way here.
-  if (!run || run.status === "completed") return <Progress fraction={run ? 1 : undefined} />
-  return <Progress fraction={run.progress?.done_fraction} says={long(run, Date.now()) ? workWords(run) || run.waiting : undefined} />
+  if (run?.status === "completed") return <Progress fraction={1} />
+  const work = run && long(run, Date.now()) ? workWords(run) : ""
+  const counted = Boolean(run?.progress?.total || run?.progress?.bytes_total)
+  const machine = !run && [...(going.data?.runs ?? []), ...(lined.data?.runs ?? [])].find(settingUp)?.machine
+  const says =
+    (counted && work) ||
+    (run?.queue_position !== undefined && `Queued, number ${run.queue_position} in line`) ||
+    (run?.waiting && sentence(run.waiting)) ||
+    work ||
+    (machine && `Getting ${machine} ready`) ||
+    ((!run || run.status === "queued") && "Queued")
+  return <Progress veil={making} fraction={run?.progress?.done_fraction} says={says || undefined} />
 }
 
 /** The picture in a box's frame, one take's alone: its small thumbnail at once, the one its tile and its box at rest already have, scaled up,
@@ -473,15 +509,6 @@ function FramePicture({ sha256, cardWidth, restWidth, onSize, onShown }: { sha25
       />
     </>
   )
-}
-
-/** A box that waits for one it reads: which, and how far that one's got while it's made. */
-function WaitsFor({ name }: { name: string }) {
-  const store = useCanvasStore()
-  const read = useElement(store.mentionOf(name, "")?.name ?? name)
-  const run = read?.asset?.making?.length ? read.run : undefined
-  const words = run && run.status !== "completed" ? workWords(run) : ""
-  return <Progress fraction={run?.progress?.done_fraction} says={`Waits for <${name}>${words ? `: ${words}` : ""}`} />
 }
 
 /** Words as a frame draws them, read only: each mention a chip, struck through when it names nothing. */
@@ -610,7 +637,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {busy && view.viewed === undefined && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
-      {busy && <Making run={view.run} number={run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} waits={making ? null : store.waitsFor(name)} />}
+      {busy && <OnItsWay view={view} name={name} number={run} />}
       {open && source && field && store.projectId && (
         <Player
           key={JSON.stringify(source)}

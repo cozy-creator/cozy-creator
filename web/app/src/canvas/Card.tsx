@@ -1,11 +1,9 @@
-import { useQuery } from "@tanstack/react-query"
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react"
-import { runsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
-import type { MainFile, Run, Tool } from "../types"
+import type { MainFile, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -36,29 +34,6 @@ function kindOf(view: ElementView): string {
   if (madeHere(asset.tool)) return asset.kind === "video" ? "edit" : "frame"
   if (asset.field && !asset.tool) return "file"
   return asset.kind === "video" ? "shot" : asset.kind
-}
-
-const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
-
-/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. An Edit rendered here says how far it is. */
-function Waiting({ view }: { view: ElementView }) {
-  const { client } = useConnection()
-  const going = useQuery(runsQuery(client, { status: "in_progress" }, 100))
-  const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
-  const rendering = view.asset?.rendering
-  if (rendering !== undefined) {
-    const done = Math.round(rendering * 100)
-    return (
-      <div className="status mak" role="progressbar" aria-label="Rendering" aria-valuenow={done}>
-        Rendering {done}%
-      </div>
-    )
-  }
-  const said = view.run?.waiting
-  if (said) return <div className="status mak">{said[0].toUpperCase() + said.slice(1)}</div>
-  const machine = [...(going.data?.runs ?? []), ...(queued.data?.runs ?? [])].find(settingUp)?.machine
-  if (machine) return <div className="status mak">Getting {machine} ready</div>
-  return view.queued || view.asked !== undefined ? <div className="status mak">Queued</div> : null
 }
 
 /** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
@@ -397,23 +372,19 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
+  // How far it's got is on its picture, in one line, and an Edit's film on its own bar: here, only what's to be done about it.
   if (asset.standing === "making") {
-    const run = view.run
-    const stalled = run?.stalled
-    if (stalled) {
-      const since = took(Math.max(0, Date.now() - stalled.since_ms))
-      return (
-        <div className="status bad">
-          Stalled {since} on {stalled.machine}
-          {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
-        </div>
-      )
-    }
-    if (run?.queue_position !== undefined) return <div className="status mak">Queued, number {run.queue_position} in line</div>
-    // How far it's got is on its picture, and an Edit's film on its own bar.
-    return <Waiting view={view} />
+    const stalled = view.run?.stalled
+    if (!stalled) return null
+    const since = took(Math.max(0, Date.now() - stalled.since_ms))
+    return (
+      <div className="status bad">
+        Stalled {since} on {stalled.machine}
+        {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
+      </div>
+    )
   }
-  if (view.queued || view.asked !== undefined) return <Waiting view={view} />
+  if (view.queued || view.asked !== undefined) return null
   // What's at rest says nothing here: a failure is its toast, and a file that isn't here can be pulled.
   const shown = shownOf(view)
   if (shown?.absent && !shown.machine) return <Pull />
@@ -608,7 +579,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           </span>
         )}
         {view.draft === undefined && !lite && <span className="sp" />}
-        {view.draft === undefined && here && versions.length > 1 && (
+        {view.draft === undefined && here && versions.length > 1 && at >= 0 && (
           <span className="count">
             {at + 1}/{versions.length}
           </span>
@@ -658,11 +629,6 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       )}
       {!lite && asset && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
-      {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
-        <div className="rest-waiting">
-          <Waiting view={view} />
-        </div>
-      )}
       {here && asset && asset.kind !== "text" && !asset.timeline && (
         <Side>
           <Takes view={view} name={name} width={width} />

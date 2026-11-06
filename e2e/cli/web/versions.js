@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, until } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -199,9 +199,15 @@ async function died(why) {
   // press that doesn't move picks a take. (Sliding the pointer from take to take is gone: it fought the drag.)
   await imported('many', 50);
   for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
+  // On the canvas before its address is: one the page hasn't read yet goes back to the canvas.
+  await until('all of it read', () => asset('many'), (row) => row?.versions === 9);
+  await shut();
+  await box('many').waitFor({ state: 'attached' });
   await open('many');
   const side = page.locator('.card.here[data-asset="many"] .here-side');
   await side.locator('.take[data-take="1"]').waitFor();
+  // Where the column is once the canvas has drawn in on the box, not on its way there.
+  await settled(page);
   const sideBox = await side.boundingBox();
   const scrolled = () => side.evaluate((el) => el.scrollTop);
   const across = sideBox.x + sideBox.width / 2;

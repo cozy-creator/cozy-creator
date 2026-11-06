@@ -52,8 +52,7 @@
 .drawer-body,
 .card,
 .here-under,
-.here-side,
-.rest-waiting {
+.here-side {
   --title: calc(var(--t-title) * var(--m));
   --heading: calc(var(--t-heading) * var(--m));
   --body: calc(var(--t-body) * var(--m));
@@ -75,9 +74,6 @@
 .here-side {
   --m: 1;
   font-size: var(--body);
-}
-.rest-waiting {
-  --m: var(--ui);
 }
 
 html,
@@ -680,6 +676,20 @@ code {
   color: #cfe6ff;
   font: var(--small) var(--sans);
 }
+/* At rest, one size on screen as the canvas zooms out, down to --hang, as all that hangs off a box at rest is: one line, so nothing hangs
+   under it but what its box keeps room for. */
+.card:not(.here) .prog b {
+  left: calc(var(--s3) * var(--hang, 1));
+  bottom: calc(var(--s3) * var(--hang, 1));
+  max-width: calc(100% / var(--hang, 1) - 2 * var(--s3));
+  padding: 1px var(--s3);
+  overflow: hidden;
+  font: calc(var(--t-small) * var(--ui)) / 1.4 var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: scale(var(--hang, 1));
+  transform-origin: bottom left;
+}
 .tc {
   position: absolute;
   right: 5px;
@@ -839,7 +849,7 @@ video.preview.on {
   flex-direction: column;
   z-index: 3;
   pointer-events: none;
-  /* What says so: at rest .rest-waiting, at --hang, and open .prog b. */
+  /* What says so (.prog b): at rest at --hang, open at its own size. */
   padding-bottom: max(calc(var(--hang, 1) * (var(--s3) + 1.4 * var(--t-small) * var(--ui) + 2px)), calc(10px + 1.4 * var(--small)));
 }
 .card .made-from .words {
@@ -893,25 +903,6 @@ video.preview.on {
 }
 .card.here .tc {
   font-size: calc(var(--t-small) * var(--on));
-}
-/* Waiting, at rest: said on its picture, bottom left, as how far it's got is, so nothing hangs under it but what its box keeps room for. */
-.rest-waiting {
-  position: absolute;
-  left: calc(var(--s3) * var(--hang, 1));
-  bottom: calc(var(--s3) * var(--hang, 1));
-  max-width: calc(100% / var(--hang, 1) - 2 * var(--s3));
-  transform: scale(var(--hang, 1));
-  transform-origin: bottom left;
-  z-index: 5;
-}
-.card .rest-waiting .status {
-  padding: 1px var(--s3);
-  border-radius: 5px;
-  overflow: hidden;
-  background: #000a;
-  color: #cfe6ff;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* All of a box, under it: one block with its picture and its takes, from the picture's left edge to the takes' right edge and a gap below
    them, at any zoom. Its words stay one size on screen and wrap. --here-room comes with each fit, --here is how large it's drawn for the

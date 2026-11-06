@@ -1,6 +1,7 @@
 // How the canvas and what's around it are laid out (Paul, 11-06: "avoid errors and overlaps; make sure there's good spacing and everything is legible"), in a real browser
 // on a real Calcifer, measured: every kind of box (a picture with and without a tool, a shot with beats, text, an Edit, a long name) at rest, under the pointer and selected;
-// open on a take, written in, with More and its warnings open; failed, with many takes and an add-on, on a crowded canvas; far out, at the home zoom and close; at 1280×720,
+// open on a take, written in, with More and its warnings open; failed, with many takes and an add-on, on a crowded canvas; far out, at the home zoom and close; one being
+// made, saying how far it's got, at 75%, where what hangs off a box at rest keeps its size on screen; at 1280×720,
 // 1600×1000 and 2560×1440 at 2×. And the frame around the canvas: the top bar, the tools, the drawers, a note, the menus, the names list. Anything that collides, is cut off,
 // pokes past its edge, touches its neighbour or its panel's edge, reads too small, or is a square shadow under a drawn edge fails it, each said where, with a picture.
 // With scrollbars shown, one anywhere fails. Rastered on the GPU path as a person's Chrome is (page.js GPU), a drawn edge
@@ -29,8 +30,11 @@ function check(name, ok, detail) {
   during = name;
   if (!ok) failures.push(name);
 }
+/** Ends what's still being made, once the measuring is done. */
+let stopMaking = () => {};
 async function died(why) {
   failures.push(`${during}: ${why}`);
+  stopMaking();
   summed();
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
@@ -187,7 +191,7 @@ function audit({ floor, hangZoom }) {
   // 3. Each box: its name and × clear of its picture, its takes level with it, and what hangs under it on nothing else's.
   const boxes = [...document.querySelectorAll('.react-flow__node')].filter((node) => visible(node) && onScreen(R(node)));
   // A box and all that hangs off it: its name rises above it as it's drawn larger, and what's under it hangs below.
-  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .rest-waiting, .add-on, .refused-line')].filter(visible).map(R);
+  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .add-on, .refused-line')].filter(visible).map(R);
   for (const node of boxes) {
     const card = node.querySelector('.card');
     const media = node.querySelector(':scope .card > .media, :scope .card > .tl');
@@ -488,8 +492,14 @@ ${local ? `  card:
     tool: ${shotsPy}/crash
     plate: <clip>
     crash: the fixture's own failure, said in full so it wraps
+  making:
+    tool: ${shotsPy}/scenes
+    plate: <clip>
+    summary: <hero_art> walks the shore, segment after segment, as the tide comes in and the light goes long across the sand.
+    segments: 600
+    each: 5
 ` : ''}`);
-  names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken'] : [])];
+  names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = (asset, wait = true) => {
     const words = ['project', '-p', folder, 'render', asset, ...(local ? ['--on', 'local'] : []), '--plain'];
@@ -510,7 +520,7 @@ ${local ? `  card:
   if (local) {
     // Its first render waits on its install, which the box says.
     render('card', false);
-    const waiting = await until('the picture tool waits', () => box('card').locator('.rest-waiting, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
+    const waiting = await until('the picture tool waits', () => box('card').locator('.prog b, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
     seen.waits = waiting > 0;
     if (waiting) for (const finding of await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM })) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
     await until('the first take', () => api(`/v1/projects/${id}`), (state) => state.assets.find((held) => held.name === 'card')?.prefixes?.length >= 1, RUN_MS);
@@ -520,6 +530,11 @@ ${local ? `  card:
     render('broken');
   }
   await until('every take landed', () => api(`/v1/projects/${id}`), (state) => !state.assets.some((held) => held.standing === 'making'), RUN_MS);
+  // One being made all through the measuring, saying how far it's got, its steps a second each.
+  if (local) {
+    render('making', false);
+    stopMaking = () => execFileSync(COZY, ['project', '-p', folder, 'cancel', 'making'], { stdio: 'ignore' });
+  }
   }
   await first.close();
 
@@ -590,6 +605,22 @@ ${local ? `  card:
       await page.mouse.click(2, size.viewport.height - 2);
       await zoomTo(2);
       await look('rest-close', true);
+    }
+    // At rest, being made, at 75%: what it says of how far it's got hangs off it as all else at rest does, one size on screen.
+    const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
+    await home();
+    if (names.includes('making') && (await making.count())) {
+      const at = await making.boundingBox();
+      await page.keyboard.down('Shift');
+      await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+      await page.keyboard.up('Shift');
+      await page.keyboard.press('Shift+2');
+      await settled(page);
+      await page.mouse.click(2, size.viewport.height - 2);
+      await zoomTo(0.75);
+      const said = await until('it says how far', () => making.locator('.prog b').innerText().catch(() => ''), (text) => /steps/i.test(text)).catch(() => '');
+      check(`making_says_how_far_${size.name}`, /steps/i.test(said), said);
+      await look('rest-making', true);
     }
     await home();
     for (const asset of size.open ? [] : names) {
@@ -790,6 +821,7 @@ ${local ? `  card:
     await context.close();
   }
   await drawn.close();
+  stopMaking();
 
   summed();
   seen.shots = shots.length;
