@@ -77,6 +77,7 @@ use jobs::{Going, Jobs};
 use walker::{End, Frozen, Graph, Kind as JobKind, Named, Node, Turn};
 use tools::Canvas;
 pub use upgrade::{Upgraded, upgrade};
+pub(crate) use thumbs::previews;
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
 /// project), and its index of every folder it opened, kept in `projects.json`.

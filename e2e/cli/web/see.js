@@ -1,20 +1,21 @@
 // See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy project
 // import` and blocks written straight into project.yaml show with no reload: elements of every kind, with no edges, each placed once, left
-// to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. Scrubbing opens no <video>; playing is Range with ?media=,
-// at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
+// to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
+// on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
-// run. With the Hub unreachable it still answers. 300 elements, measured: seen.scale. The project tabs: as many as fit, still while the
-// window resizes, "N more" opening All projects with the rest first, a search there, and + ready for a new name.
+// run. With the Hub unreachable it still answers. 300 elements, measured, and panned under a resting pointer: seen.scale. The project
+// tabs: as many as fit, still while the window resizes, "N more" opening All projects with the rest first, a search there, and + ready
+// for a new name.
 //   node see.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawnSync } = require('child_process');
-const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
-const { tmpdir } = require('os');
+const { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
+const { DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -93,6 +94,32 @@ const quiet = (page, ms) => page.evaluate((ms) => new Promise((done) => {
   requestAnimationFrame(step);
 }), ms);
 
+/** How far an image's or a video's luma spreads, 0 to 255, on 64×36 of it, and its mean: near 0 for black. */
+const spreadOf = (picture) => {
+  const canvas = document.createElement('canvas');
+  [canvas.width, canvas.height] = [64, 36];
+  const drawn = canvas.getContext('2d');
+  drawn.drawImage(picture, 0, 0, 64, 36);
+  const pixels = drawn.getImageData(0, 0, 64, 36).data;
+  const lumas = [];
+  for (let i = 0; i < pixels.length; i += 4) lumas.push(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]);
+  const mean = lumas.reduce((sum, luma) => sum + luma, 0) / lumas.length;
+  return { mean: Math.round(mean), spread: Math.round(Math.sqrt(lumas.reduce((sum, luma) => sum + (luma - mean) ** 2, 0) / lumas.length)) };
+};
+
+/** What each video on the page is doing. */
+const videos = (page) => page.evaluate(() => [...document.querySelectorAll('video')].map((video) => ({ preview: video.classList.contains('preview'), on: video.classList.contains('on'), paused: video.paused, at: video.currentTime, muted: video.muted, loop: video.loop })));
+
+/** A video's preview in Calcifer's cache, by its hash: made as the file landed. */
+const previewOf = (sha256) => join(homedir(), '.cozy', 'cache', 'thumbs', `${sha256.replace('sha256:', '')}-preview.mp4`);
+
+/** The pointer resting on `handle`, moving a little as a hand does. */
+async function rest(page, handle) {
+  const box = await handle.boundingBox();
+  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5, { steps: 3 });
+}
+
 function summary(frames) {
   const sorted = [...frames].sort((a, b) => a - b);
   return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
@@ -124,7 +151,7 @@ function summary(frames) {
         refused.push(refusal);
         answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
       }
-      if (url.pathname.includes('/thumbs/')) thumbs.push({ strip: url.searchParams.get('strip'), status: answer.status() });
+      if (url.pathname.includes('/thumbs/')) thumbs.push({ strip: url.searchParams.get('strip'), preview: url.searchParams.has('preview'), status: answer.status() });
       if (url.pathname.includes('/files/') && answer.request().resourceType() === 'media') fileAnswers.push({ status: answer.status(), media: url.searchParams.has('media') });
     });
   };
@@ -166,6 +193,7 @@ function summary(frames) {
     ['sea_sound', 'sea.wav', wav()],
     ['clip', 'clip.mp4', MP4],
     ['clip_b', 'clip_b.mp4', MP4],
+    ['dark_open', 'dark_open.mp4', DARK_OPEN],
   ]) {
     writeFileSync(join(scratch, file), bytes);
     execFileSync(COZY, ['project', '-p', folder, 'import', join(scratch, file), name], { encoding: 'utf8' });
@@ -215,7 +243,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     description: The same hero, older.
     asset_type: villain
 `);
-  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
+  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'dark_open', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
 
   // Every name is placed once and its row written, with no reload.
   const cards = async () => (await api(`/v1/projects/${id}/canvas`)).cards;
@@ -267,20 +295,35 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // No edges at all: what reads what stays inside Calcifer.
   check('no_edges', (await page.locator('.react-flow__edge, .ge').count()) === 0);
 
-  // A video costs nothing until clicked: hovering scrubs a strip, with a timecode, and opens no <video>.
-  await until('clip measured', () => asset('clip'), (held) => held.duration_ms > 0);
-  const clip = element(page, 'clip');
-  await open(page, 'clip');
-  const media = await clip.locator('.media').boundingBox();
-  await page.mouse.move(media.x + media.width * 0.6, media.y + media.height * 0.6);
-  await until('a strip of 8 asked', () => Promise.resolve(thumbs), (all) => all.some((thumb) => thumb.strip === '8' && thumb.status === 200));
-  await until('the strip up', () => clip.locator('img.strip').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n === 1);
-  // Eight frames of a clip of ten, all there: the last seek of a short clip lands past its last frame.
-  const strip = await clip.locator('img.strip').evaluate((image) => ({ width: image.naturalWidth, height: image.naturalHeight, moved: image.style.transform }));
-  check('strip_is_8_frames', strip.width === 8 * 160 && strip.height === 90, strip);
-  check('scrub_moves_the_strip', strip.moved === 'translateX(-50%)', strip);
-  check('timecode', /^\d+:\d\d$/.test(await clip.locator('.tc').textContent()), await clip.locator('.tc').textContent());
-  check('hover_opens_no_video', (await page.locator('video').count()) === 0);
+  // A video costs nothing until the pointer rests on it. Its poster is a frame that shows something, not its black first one. Its preview,
+  // made as it was imported, plays from that frame, muted and looping, and goes when the pointer leaves or its box leaves the screen.
+  await until('dark_open measured', () => asset('dark_open'), (held) => held.duration_ms > 0);
+  const dark = element(page, 'dark_open');
+  await thumbUp('dark_open');
+  const poster = await dark.locator('.media img').first().evaluate(spreadOf);
+  check('poster_not_black', poster.spread >= 12, poster);
+  await until('its preview made as it was imported', () => Promise.resolve(existsSync(previewOf(imported.dark_open))), Boolean);
+  check('preview_made_unasked', !thumbs.some((thumb) => thumb.preview), thumbs);
+  check('no_video_before_a_hover', (await page.locator('video').count()) === 0, await videos(page));
+  await rest(page, dark.locator('.media'));
+  const playing = await until('its preview plays', () => videos(page), (all) => all.length === 1 && all[0].preview && all[0].on && !all[0].paused && all[0].at > 0);
+  check('hover_plays_the_preview', playing[0].muted && playing[0].loop, playing);
+  const frame = await dark.locator('video.preview').evaluate(spreadOf);
+  check('preview_from_the_poster_frame', frame.spread >= 12, frame);
+  await shot('preview');
+  await page.mouse.move(2, 500);
+  await until('leaving stops it', () => page.locator('video').count(), (n) => n === 0);
+  check('leaving_stops_it', true);
+  await rest(page, dark.locator('.media'));
+  await until('it plays again', () => dark.locator('video.preview.on').count(), (n) => n === 1);
+  // Panned away under the pointer, by a wheel that never reaches its box.
+  await page.evaluate(() => document.querySelector('.react-flow__pane').dispatchEvent(new WheelEvent('wheel', { deltaX: 6000, deltaY: 0, bubbles: true, cancelable: true })));
+  await until('its box off screen', () => dark.count(), (n) => n === 0);
+  await page.waitForTimeout(400);
+  check('nothing_plays_off_screen', (await page.locator('video').count()) === 0, await videos(page));
+  await page.mouse.move(2, 500);
+  await page.keyboard.press('f');
+  await until('every element on screen again', () => page.locator('.react-flow__node').count(), (n) => n === named.length);
   await away(page);
 
   // A take landing shows with no reload. The strip's + goes to POST runs; what Calcifer makes itself needs no machine.
@@ -307,6 +350,16 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await element(page, 'edit').locator('.tl').waitFor();
   check('its_clips_on_a_hover', (await element(page, 'edit').locator('.tl-clip').evaluateAll((clips) => clips.map((held) => held.dataset.name))).join() === 'clip,clip_b');
   check('hover_on_an_edit_opens_no_video', (await page.locator('video').count()) === 0);
+  // A take on its row plays its preview too: the film's, made as it landed from the cut.
+  const film = (await asset('edit')).prefixes.at(-1).main.sha256;
+  await until('the film\'s preview made as it landed', () => Promise.resolve(existsSync(previewOf(film))), Boolean);
+  const take = element(page, 'edit').locator('.take-thumb').first();
+  await rest(page, take);
+  await until('the take\'s preview plays', () => take.locator('video.preview').evaluateAll((all) => all.map((video) => !video.paused && video.currentTime > 0)), (all) => all.length === 1 && all[0]);
+  check('take_hover_plays_its_preview', true);
+  await shot('take-preview');
+  await page.mouse.move(2, 500);
+  await until('it stops off the take', () => page.locator('video').count(), (n) => n === 0);
   const landedVersion = (await asset('picture')).prefixes?.at(-1);
   check('wire_version_main', landedVersion?.main?.field === 'image' && /^files\//.test(landedVersion?.main?.path ?? '') && landedVersion?.main?.sha256?.startsWith('sha256:'), landedVersion);
   await shot('landed');
@@ -315,7 +368,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await open(page, 'clip');
   // A clip lasts a second, and one that ends lets go: paused, each keeps its place in the count.
   const held = () => page.evaluate(() => document.querySelectorAll('video').forEach((video) => video.pause()));
-  await clip.locator('.play').click();
+  await element(page, 'clip').locator('.play').click();
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
   await held();
@@ -495,6 +548,33 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const near = await panning(tab, 3000);
     seen.scale.pan_70 = { ...(await onScreen(tab)), fewest_cards: near.fewest, ...summary(near.frames) };
     check('scale_near_panned', near.places > 10, near.places);
+    await tab.close();
+
+    tab = await openTab(0.7, 40);
+    // A hand's pan: wheels under a pointer resting on a video mid-screen (n40), whose preview plays. The first wheel stops it, and as boxes,
+    // a fifth of them videos, slide under the pointer, none starts.
+    await rest(tab, element(tab, 'n40').locator('.media'));
+    await until('a rest plays its preview', () => tab.locator('video.preview.on').count(), (n) => n === 1);
+    const counting = tab.evaluate(() => new Promise((done) => {
+      let [last, added] = [performance.now(), 0];
+      const [frames, end] = [[], last + 3000];
+      const watching = new MutationObserver((changes) => {
+        for (const change of changes) for (const node of change.addedNodes) if (node.nodeName === 'VIDEO' || node.querySelector?.('video')) added += 1;
+      });
+      watching.observe(document.body, { childList: true, subtree: true });
+      const step = (now) => {
+        frames.push(now - last);
+        last = now;
+        if (now < end) return requestAnimationFrame(step);
+        watching.disconnect();
+        done({ frames: frames.slice(1), added, left: document.querySelectorAll('video').length });
+      };
+      requestAnimationFrame(step);
+    }));
+    for (let i = 0, stop = Date.now() + 3000; Date.now() < stop; i++) await tab.mouse.wheel(i % 80 < 40 ? 12 : -12, 0);
+    const under = await counting;
+    seen.scale.pan_under_pointer = { videos_added: under.added, videos_left: under.left, ...summary(under.frames) };
+    check('scale_pan_starts_no_preview', under.added === 0 && under.left === 0, seen.scale.pan_under_pointer);
     await tab.close();
 
     // At 11% the 18 columns are about 630 px of this 1800 px window. From here its pan, 480 px left and back, keeps them all on screen,

@@ -12,7 +12,7 @@ import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { controlsOf, shapesOf, snapped } from "./controls"
 import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
-import { Media, Thumb, useWalk, WalkedFrames } from "./Media"
+import { Media, Preview, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { aspectOf, faceOf, madeHere, makes, reshapes, shownOf } from "./shown"
@@ -108,13 +108,13 @@ function Pictures({ name }: { name: string }) {
   )
 }
 
-/** A take on the row: a video's frames walk by under the pointer. */
+/** A take on the row: a video's preview plays while the pointer rests on it. */
 function TakeThumb({ main, width }: { main: MainFile; width: number }) {
-  const { at, walk, stop } = useWalk()
+  const { on, hover } = usePreview(main.field === "video")
   return (
-    <span className="take-thumb" onPointerMove={main.field === "video" ? walk : undefined} onPointerLeave={stop}>
+    <span className="take-thumb" {...hover}>
       <Thumb sha256={main.sha256} cardWidth={width} />
-      {at !== null && <WalkedFrames sha256={main.sha256} cardWidth={width} at={at} />}
+      {on && <Preview sha256={main.sha256} />}
     </span>
   )
 }

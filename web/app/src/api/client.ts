@@ -389,6 +389,11 @@ export class Client {
     return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}`
   }
 
+  /** A video's preview: a few seconds of it, small and silent. */
+  preview(id: string, sha256: string): string {
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?preview=true`
+  }
+
   file(id: string, file: string): string {
     return `${project(id)}/${file.split("/").map(encodeURIComponent).join("/")}`
   }
