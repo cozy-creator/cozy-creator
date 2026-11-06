@@ -1,7 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  Background,
-  BackgroundVariant,
   type Edge,
   type OnSelectionChangeParams,
   ReactFlow,
@@ -32,7 +30,7 @@ import { copyBoxes, ownCopy } from "./copy"
 import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { Placer } from "./place"
-import { Sheet } from "./Sheet"
+import { Dots, Sheet } from "./Sheet"
 import { madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
@@ -669,6 +667,22 @@ function Canvas({
     set(flowStore.getState().transform[2])
     return flowStore.subscribe((state) => set(state.transform[2]))
   }, [flowStore])
+  // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
+  useLayoutEffect(() => {
+    let [held, settle] = [flowStore.getState().transform[2], 0]
+    const settled = () => stage.current?.toggleAttribute("data-zooming", false)
+    const stop = flowStore.subscribe(({ transform: [, , zoom] }) => {
+      if (zoom === held) return
+      held = zoom
+      stage.current?.toggleAttribute("data-zooming", true)
+      cancelAnimationFrame(settle)
+      settle = requestAnimationFrame(() => (settle = requestAnimationFrame(settled)))
+    })
+    return () => {
+      stop()
+      cancelAnimationFrame(settle)
+    }
+  }, [flowStore])
   const accepted = useCallback((event: DragEvent) => [DRAGGED_TOOL, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_CHECKPOINT].some((type) => event.dataTransfer.types.includes(type)), [])
 
   // The list a box's controls come from, whatever the panel is searching.
@@ -693,6 +707,7 @@ function Canvas({
       <div
         ref={stage}
         className="stage"
+        data-layered={LAYERED ? "" : undefined}
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
         onPointerMove={(event) => {
@@ -747,7 +762,7 @@ function Canvas({
           onSelectionDrag={selectionDrag}
           onSelectionDragStop={selectionDragStop}
         >
-          <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
+          <Dots />
           {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
         </ReactFlow>
         {veil && <div className="dropveil" />}
@@ -761,6 +776,13 @@ function Canvas({
     </CanvasStoreProvider>
   )
 }
+
+/**
+ * WebKit draws again all that a transform moves, each frame it moves, so there the boxes are on a layer of their own: 300 of them panned at
+ * 214–590 ms a frame on macOS, and 16 ms on one. Chrome and Firefox move them as drawn already, and Chrome rasters a layer at its whole size:
+ * 5,000 fitted were many windows of it, and every frame took 1.5 s.
+ */
+const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.test(navigator.userAgent)
 
 /** How much a box's words are scaled against the canvas, so they read at nearly one size at any zoom: in steps, so a zoom sets it only as it crosses one. */
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
