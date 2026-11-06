@@ -508,7 +508,7 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
             }
         };
         remember(&api);
-        // What landed last is measured here, or no later walk says how long a take lasts, which New take from here needs.
+        // What landed last is measured here, or no later walk says how long a take lasts, which Pick up from here needs.
         if let Err(error) = walk.measure() {
             warn!("measuring a project's files: {}", error.message);
         }
