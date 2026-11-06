@@ -389,18 +389,33 @@ pub(super) async fn put_back(
     if Doc::load(folder).map_err(Refusal)?.find(&name).is_some() {
         return Err(Refusal(taken(&name)));
     }
-    // Its row before its lines, as a new asset's.
+    // Its row and its versions before its lines, as a new asset's row: a read between would see it with none. Again after, in case a render
+    // asked in between set them aside.
     if let Some(card) = asked.at {
         canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
-    let text = (folder.edit_project(|text| {
+    let revived = std::cell::Cell::new(false);
+    folder.update_lock(|lock| revived.set(lock.untombstone(&name))).map_err(Refusal)?;
+    let edited = folder.edit_project(|text| {
         if Doc::read(folder, text)?.find(&name).is_some() {
             return Err(taken(&name));
         }
         assetfile::restored(text, &name, &back.lines)
-    }))
+    });
+    let text = match edited {
+        Ok(text) => text,
+        // Taken by a hand in between: the versions it brought back go back to being an orphan's.
+        Err(error) => {
+            if revived.get() {
+                folder.update_lock(|lock| lock.bury(&name_key(&name))).map_err(Refusal)?;
+            }
+            return Err(Refusal(error));
+        }
+    };
+    folder.update_lock(|lock| {
+        lock.untombstone(&name);
+    })
     .map_err(Refusal)?;
-    folder.update_lock(|lock| lock.untombstone(&name)).map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
     let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetMade { name, etag }))
