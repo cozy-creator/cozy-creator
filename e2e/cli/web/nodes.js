@@ -741,7 +741,8 @@ function linesOf(text, name) {
     check('render_keeps_it_open_saying_nothing', (await page.locator('.card.here[data-asset="Sheet"]').count()) === 1 && (await box('Sheet').locator('.status').count()) === 0, await box('Sheet').innerText());
     // The same failure again is said again, naming its box once.
     await page.locator('.note [aria-label=Dismiss]').evaluateAll((all) => all.forEach((one) => one.click()));
-    await box('Sheet').locator('button[aria-label=Render]').click();
+    // Render looked at the take it asked for, which never came: + is its words again, as they were.
+    await (await renderOf(page, 'Sheet')).click();
     const again = await until('it says so again', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render")));
     check('failed_again_said_again', again.every((line) => !line.includes('Sheet: ')), again);
     check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
@@ -780,7 +781,8 @@ function linesOf(text, name) {
 
     // What hasn't been approved when its source goes is worth a plain note, with no dialog, and Undo stays.
     await open('Other');
-    // A box with takes opens on its take, its words under it.
+    // A box with takes opens on its take: its words are its next take's, behind its +.
+    await renderOf(page, 'Other');
     await box('Other').locator('.mention-text[data-field=instructions]').click();
     await page.keyboard.type('From <source-b>');
     await page.mouse.click(1500, 1000);
