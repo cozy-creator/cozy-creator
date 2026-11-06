@@ -503,7 +503,8 @@ function linesOf(text, name) {
     // Steps read as steps, whatever the package calls its stage.
     const said = await page.evaluate(() => window.progressSaid);
     seen.render_said = said;
-    check('steps_read_as_denoise_steps', said.some((text) => /^Denoise steps: \d+\/10(, \d+s left)?$/.test(text)) && !said.some((text) => /drawing/i.test(text)), said);
+    // The time is Calcifer's for the whole run; its first run here says so until it has steps of its own.
+    check('steps_read_as_denoise_steps', said.some((text) => /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/.test(text)) && !said.some((text) => /drawing/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);

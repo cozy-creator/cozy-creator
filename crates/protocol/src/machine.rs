@@ -554,8 +554,9 @@ pub struct Progress {
     pub bytes_total: u64,
     /// The latest step's time, while a stage steps.
     pub step_ms: f64,
-    /// The mean of its steps after the first, which carries the stage's setup; 0 before one.
-    pub step_avg_ms: f64,
+    /// The median of its last five steps after the first, which carries the stage's setup: its
+    /// steady pace, robust to a slow step; 0 before its second.
+    pub step_steady_ms: f64,
     /// How far this stage is, when it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_fraction: Option<f64>,
@@ -635,6 +636,10 @@ pub struct Outcome {
     /// How its executor served the request other than as sent, in the executor's order. Advisory.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub adjustments: Vec<Adjustment>,
+    /// The GPU it ran on, by name (`NVIDIA GeForce RTX 4090`), as its controller recorded it: what
+    /// a later run's time left is learned from on another machine of that GPU. Empty: unknown.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gpu: String,
 }
 
 /// One request field served other than as sent.

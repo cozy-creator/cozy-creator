@@ -15,7 +15,7 @@ use protocol::names::shown;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use protocol::{
     calcifer::{
-        Adjustment, Event, Machine, MachineState, NoteLevel, On, OutputItem, Progress, Run, RunQuote,
+        Adjustment, EtaBasis, Event, Machine, MachineState, NoteLevel, On, OutputItem, Progress, Run, RunQuote,
         RunRequest, Stalled, Status, Submitted,
     },
     error::{Error, Kind},
@@ -339,11 +339,17 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
+    if let Some(gpu) = &run.gpu {
+        record = record.field("gpu", gpu);
+    }
     if let Some(waiting) = run.waiting.as_deref().filter(|_| !settled(run)) {
         record = record.field("waiting", waiting);
     }
     if let Some(progress) = run.progress.as_ref().filter(|_| !settled(run)) {
         record = record.field("progress", said(progress));
+        if let Some(left) = left(progress) {
+            record = record.field("left", left);
+        }
     }
     if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) {
         record = record.field("stalled", format!("{}. It keeps running until you end it", stalled_words(stalled)));
@@ -683,15 +689,15 @@ impl View {
         let Some((progress, stepped)) = self.last.clone() else { return };
         let fraction = progress.done_fraction;
         let mut text = said(&progress);
-        // At what rate bytes move, and so how long is left: a download that crawls says so.
+        // At what rate bytes move: a download that crawls says so. Then how long the run has left.
         if let Some(rate) = progress.bytes_per_s {
             let _ = write!(text, " at {}/s", output::bytes(rate as u64));
-            if let Some(left) = progress.eta_s {
-                let _ = write!(text, ", {} left", output::span(left));
-            }
+        }
+        if let Some(left) = left(&progress) {
+            let _ = write!(text, " · {left}");
         }
         // A step running twice its stage's pace or more is named, with how long it has run.
-        let pace = if progress.step_avg_ms > 0.0 { progress.step_avg_ms } else { progress.step_ms };
+        let pace = if progress.step_steady_ms > 0.0 { progress.step_steady_ms } else { progress.step_ms };
         let running = stepped.elapsed().as_secs_f64() * 1000.0;
         if pace > 0.0 && progress.completed < progress.total && running > 2.0 * pace {
             let _ = write!(text, " · step {} running {}", progress.completed + 1, took(running));
@@ -746,17 +752,30 @@ pub(crate) fn said(progress: &Progress) -> String {
             let _ = write!(text, "/{}", output::bytes(total));
         }
     }
-    let (last, steady) = (progress.step_ms, progress.step_avg_ms);
+    let (last, steady) = (progress.step_ms, progress.step_steady_ms);
     let _ = match (last > 0.0, progress.completed, steady > 0.0) {
         (false, ..) => Ok(()),
         (true, 1, _) => write!(text, " · first step {}", took(last)),
-        (true, _, true) => write!(text, " · {} last, {} avg", took(last), took(steady)),
+        (true, _, true) => write!(text, " · {} last, {} steady", took(last), took(steady)),
         (true, ..) => write!(text, " · {} last", took(last)),
     };
     if let Some(still) = still(progress) {
         let _ = write!(text, " · no progress for {}", output::span(still));
     }
     text
+}
+
+/// How long the run has left, as Calcifer estimates it: `41s left`, `about 3m10s left` while that is
+/// little trusted, or that nothing like it ran here to tell.
+pub(crate) fn left(progress: &Progress) -> Option<String> {
+    match (progress.eta_s, progress.eta_basis) {
+        (Some(left), _) => {
+            let about = if progress.eta_confidence.is_some_and(|c| c < 0.5) { "about " } else { "" };
+            Some(format!("{about}{} left", output::span(left)))
+        }
+        (None, Some(EtaBasis::FirstRun)) => Some("first run on this machine".into()),
+        (None, _) => None,
+    }
 }
 
 /// How long, in seconds, the run has made no progress, once a minute or more (the machine's time

@@ -365,11 +365,17 @@ export interface Progress {
   bytes_done?: number
   bytes_total?: number
   step_ms?: number
-  step_avg_ms?: number
+  /** The median of its stage's last five steps after the first. */
+  step_steady_ms?: number
   at_ms?: number
   done_fraction?: number
   bytes_per_s?: number
+  /** The seconds the whole run has left, as Calcifer estimates them; every client shows this one. */
   eta_s?: number
+  /** 0 to 1. */
+  eta_confidence?: number
+  /** `first_run` with no `eta_s`: nothing like it ran on this machine or its GPU yet. */
+  eta_basis?: "machine" | "gpu" | "steps" | "first_run"
 }
 
 export interface OutputItem {
