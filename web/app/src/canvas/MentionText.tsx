@@ -1,4 +1,4 @@
-import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -189,6 +189,16 @@ export function MentionText({
     return () => document.removeEventListener("selectionchange", remember)
   }, [remember])
 
+  /** A click on a name puts the caret just after it, at once: what a browser does with a click there differs, and a late `selectionchange` would let a key go nowhere. */
+  const clickName = (event: MouseEvent) => {
+    const name = (event.target as Element).closest("[data-mention]")
+    const parent = name?.parentNode
+    if (!name || !parent || !box.current?.contains(name)) return
+    const selection = document.getSelection()
+    selection?.collapse(parent, [...parent.childNodes].indexOf(name) + 1)
+    if (selection?.rangeCount) caret.current = selection.getRangeAt(0).cloneRange()
+  }
+
   /** A take carried out of a box, let go in this text: that version, where it was let go. */
   const takeIn = (event: DragEvent) => {
     const taken = event.dataTransfer.getData(DRAGGED_FILE)
@@ -307,6 +317,7 @@ export function MentionText({
           look()
         }}
         onKeyDown={keys}
+        onClick={clickName}
         onCopy={copy}
         onCut={cut}
         onPaste={paste}

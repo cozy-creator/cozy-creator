@@ -423,14 +423,30 @@ function linesOf(text, name) {
   await until('mine kept', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes(' again'));
   check('kept_mine', true);
 
-  // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after.
+  // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after, and what's typed there is saved there.
   await open('Sheet');
   await sheetText.locator('.chip').first().click();
-  await page.waitForTimeout(50);
-  await page.keyboard.type(' typed');
-  await page.mouse.click(1500, 1000);
-  await until('typed after the name', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('<source-a> typed'));
-  check('typed_after_a_name', true);
+  const caret = () => page.evaluate(() => {
+    const box = document.activeElement;
+    const at = getSelection();
+    if (!box?.matches('.mention-text') || !at?.rangeCount || !at.isCollapsed) return null;
+    const { startContainer: node, startOffset: offset } = at.getRangeAt(0);
+    const before = node === box ? box.childNodes[offset - 1] : node.nodeType === Node.TEXT_NODE && offset === 0 ? node.previousSibling : null;
+    return before?.dataset?.mention ?? `${node.nodeName}@${offset}`;
+  });
+  // Each step waits on what it needs, and one that never comes is a failed check with what was there, so the cell goes on.
+  const typedAfter = {};
+  try {
+    typedAfter.caret = await until('the caret just after the name', caret, (after) => after === 'source-a');
+    await page.keyboard.type(' typed');
+    typedAfter.box = await until('typed after the name, in the box', () => sheetText.innerText(), (text) => /source-a\s+typed/.test(text));
+    await page.mouse.click(1500, 1000);
+    typedAfter.file = await until('typed after the name, in the file', async () => ({ lines: linesOf(yaml(), 'Sheet'), conflict: await box('Sheet').locator('.status.ood:has-text("changed under this")').count() }), (now) => now.lines?.includes('<source-a> typed') || now.conflict > 0);
+  } catch (error) {
+    typedAfter.error = String(error.message ?? error).slice(0, 400);
+  }
+  check('typed_after_a_name', Boolean(typedAfter.file?.lines?.includes('<source-a> typed')), typedAfter);
+  await away();
 
   // Right click: rename, delete, and what it's made with.
   await away();
@@ -747,7 +763,12 @@ function linesOf(text, name) {
     check('orphan_is_listed', (await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
     await page.locator('.note:has-text("Other") button:has-text("Undo")').click();
     await box('Other').waitFor();
-    check('undo_brings_its_versions', (await versions('Other')) === takes, await versions('Other'));
+    // At once on the page, then in the project as its put lands: with all its versions, on both.
+    const restored = await until('Other back in the project', () => of('Other'), Boolean);
+    await open('Other');
+    const shown = await box('Other').locator('.take[aria-label^="version"]').count();
+    check('undo_brings_its_versions', (restored.prefixes?.length ?? 0) === takes && shown === takes, { takes, project: restored.prefixes?.length ?? 0, shown });
+    await away();
 
     // What hasn't been approved when its source goes is worth a plain note, with no dialog, and Undo stays.
     await open('Other');

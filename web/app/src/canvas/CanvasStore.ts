@@ -425,7 +425,8 @@ export class CanvasStore {
     if (!owner) return
     const making = this.get(owner)?.asset?.making ?? []
     if (run.number !== Math.min(...making)) return
-    const shown = [...(run.output ?? [])].reverse().find((item) => item.status === "completed" && /^(image|video)\//.test(item.media_type))
+    // Only what's here: an output of a run on another machine, or one that hasn't landed, has nothing yet to show.
+    const shown = [...(run.output ?? [])].reverse().find((item) => item.status === "completed" && Boolean(item.url || item.path) && /^(image|video)\//.test(item.media_type))
     const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 }
     const held = this.get(owner)?.glimpse
     this.patch(owner, glimpse && JSON.stringify(glimpse) !== JSON.stringify(held) ? { run, glimpse } : { run })
