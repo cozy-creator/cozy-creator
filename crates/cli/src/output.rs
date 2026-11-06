@@ -165,7 +165,7 @@ fn say_refusal(json: bool, error: &Error) {
 }
 
 /// `error`, naming a command to run next when it names none: signing in for a credential, `cozy doctor` for this computer's
-/// cozy failing, the same command for what did not answer, else the verb's `--help`.
+/// cozy failing, for what did not answer a read again or `cozy status`, else the verb's `--help`.
 fn with_next(error: &Error) -> Error {
     if !error.next.is_empty() {
         return error.clone();
@@ -173,7 +173,11 @@ fn with_next(error: &Error) -> Error {
     let next = match error.kind {
         Kind::Credential => "cozy login <email>".to_owned(),
         Kind::Internal => "cozy doctor".to_owned(),
-        Kind::Unavailable => again_with(""),
+        // Asked again, a read is safe; anything else may have gone through, which `cozy status` shows.
+        Kind::Unavailable => match VERB.get().and_then(|verb| verb.rsplit(' ').next()) {
+            Some("" | "ls" | "show" | "info" | "logs" | "status" | "whoami" | "wait") => again_with(""),
+            _ => "cozy status".to_owned(),
+        },
         _ => format!("cozy {} --help", VERB.get().map_or("", String::as_str)).replace("  ", " "),
     };
     error.clone().next(next)
