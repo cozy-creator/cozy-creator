@@ -329,9 +329,8 @@ function linesOf(text, name) {
   check('add_placed_on_screen', await onScreen('live_auto'), autoRow);
   check('add_placed_on_nothing', (await overlaps()).length === 0, await overlaps());
 
-  // Approved by a command: it turns into that picture. Unapproved: back.
-  await timed('approve', { name: 'live_tool', dot: 's-current' }, () => project('approve', 'live_tool', hash));
-  await shows({ name: 'live_tool', picture: true });
+  // Approved by a command: it turns into that picture. Unapproved: back. Out of date has no dot now (Paul, 11-05): what shows is the picture.
+  await timed('approve', { name: 'live_tool', picture: true }, () => project('approve', 'live_tool', hash));
   check('approve_in_the_status', (await held('live_tool')).pinned === true);
   await timed('unapprove', { name: 'live_tool', picture: false }, () => project('unapprove', 'live_tool'));
   check('unapprove_in_the_status', !(await held('live_tool')).pinned);
@@ -550,8 +549,10 @@ function linesOf(text, name) {
   // A burst: 200 edits as fast as they go. Twelve boxes on screen are written and moved, each by its own line of commands so the last is known,
   // and 40 come with no place. Few reads, shown as it goes, right at the end with no reload, and frames sampled through it.
   const fixed = Array.from({ length: 12 }, (_, i) => `burst_${i}`);
-  // Clear of everything so far, and all of it fitted on the screen.
-  await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * 400},260`, 'description=start')));
+  // Clear of everything so far, and all of it fitted on the screen. A row apart by more than an Edit at rest and the room it keeps under it
+  // for its add-ons and the name of a box below (e139a61c6, shown.ts): about 460 at 260 wide. Closer, the page moves one off the other.
+  const ROW = 500;
+  await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * ROW},260`, 'description=start')));
   // Fitted to all of them: a box that comes after a fit is drawn for a moment, then not, off the screen (macOS, 41955999465).
   await until('the boxes for the burst', async () => {
     await page.keyboard.press('f');
@@ -563,7 +564,7 @@ function linesOf(text, name) {
   }, Boolean);
   const lanes = Array.from({ length: 8 }, () => []);
   const last = new Map();
-  const targets = fixed.map((name, i) => ({ name, x: 260 + (i % 4) * 300, y: 2000 + Math.floor(i / 4) * 400 }));
+  const targets = fixed.map((name, i) => ({ name, x: 260 + (i % 4) * 300, y: 2000 + Math.floor(i / 4) * ROW }));
   for (let edit = 0; edit < 160; edit++) {
     const which = edit % fixed.length;
     const lane = lanes[which % lanes.length];
