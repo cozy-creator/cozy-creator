@@ -199,8 +199,9 @@ fn room_now(owner: &Device) -> usize {
     owner.total.load(Ordering::Acquire).saturating_sub(owner.outside.load(Ordering::Acquire))
 }
 
-/// A forward of the model `head` begins, its inputs of `shape`; `floor` is the most of its weights one
-/// block holds at once. Its first forward this request begins a loop (keyed by that forward's shape),
+/// A forward of the model `head` begins, its inputs of `shape` (0: unknown, and nothing is learned for
+/// it); `floor` is the most of its weights one block holds at once. Its first forward this request
+/// begins a loop (keyed by that forward's shape),
 /// any later one a pass of it, whatever its own shape (a prefix cached in step 0 is absent after). A
 /// pass that cannot fit with every evictable byte gone says why, once per loop: live working memory
 /// and pinned weights, what a pass holds beyond them, and one block's weights, over the room.
@@ -219,7 +220,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     let interleaved = escapes.last_head.replace(head) != Some(head);
     let (peak, total) = (std::mem::replace(&mut escapes.peak, escapes.total), escapes.total);
     if !escapes.loops.contains_key(&head) {
-        let learned = escapes.learned.get(&(head, shape)).copied();
+        let learned = (shape != 0).then(|| escapes.learned.get(&(head, shape)).copied()).flatten();
         let verdict = learned.and_then(|learned| {
             let need = held.saturating_add(learned.escaped).saturating_add(learned.transient).saturating_add(floor);
             (need > room).then(|| Verdict {
