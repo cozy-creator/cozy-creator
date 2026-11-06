@@ -480,11 +480,20 @@ impl Menu {
         self.trial().unwrap_or_else(|| self.fitting())
     }
 
-    /// The coarsest level under the budget that is usable; with none, the finest.
+    /// The coarsest level under the budget; when the phase streams, the coarsest of those that fits,
+    /// else the finest. A phase that fits takes its level from the budget alone, and the allocation
+    /// makes the room (H3 Turbo on a 4090 at levels 2/0/1/0, 310 s, against 5/2/2/3, 363 s).
     fn fitting(&self) -> usize {
         let cap = self.budget();
         let under = self.plans.iter().position(|plan| plan.want() <= cap).unwrap_or(self.plans.len() - 1);
-        self.plans[under..].iter().position(Fit::usable).map_or(self.plans.len() - 1, |finer| under + finer)
+        if !self.streams() {
+            return under;
+        }
+        self.plans[under..].iter().position(Fit::fits).map_or(self.plans.len() - 1, |finer| under + finer)
+    }
+
+    fn streams(&self) -> bool {
+        self.plans.first().and_then(|plan| plan.phase.as_ref()).is_some_and(|phase| phase.bytes > self.capacity)
     }
 
     /// A level that never ran is only an estimate, which can sit well over what it measures, and
@@ -496,7 +505,7 @@ impl Menu {
         let at = self.fitting();
         let room = self.capacity.saturating_sub(self.live);
         self.plans[at].measured().then(|| {
-            self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room && plan.usable())
+            self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room && (!self.streams() || plan.fits()))
         })?
     }
 
@@ -506,7 +515,7 @@ impl Menu {
     fn budget(&self) -> usize {
         let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
         let room = self.capacity.saturating_sub(self.live);
-        if weights > self.capacity { room } else { self.capacity.saturating_sub(weights).max(self.capacity / 4).min(room) }
+        if self.streams() { room } else { self.capacity.saturating_sub(weights).max(self.capacity / 4).min(room) }
     }
 
     fn selection(&self, selected: &Fit, target: usize, stream: u64) -> SplitSelection {
