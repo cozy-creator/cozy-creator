@@ -986,13 +986,6 @@ export interface AssetPatched {
   warnings?: string[]
 }
 
-export interface Captioned {
-  name: string
-  text: string
-  run: number
-  warnings?: string[]
-}
-
 export interface AssetDeleted {
   name: string
   /** Opaque: what `PUT` takes to put it back. */

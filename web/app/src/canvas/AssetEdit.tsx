@@ -388,8 +388,6 @@ export function AssetEdit({ name, view, editing, head, actions, children }: { na
   const folded = rest.filter((control) => !asked.includes(control))
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
-  // A caption is typed into its field, and shows until it's kept or dropped.
-  const typing = view.drafts !== undefined && "description" in view.drafts
   const shown = rest.filter((control) => asked.includes(control))
   return (
     <div className="edit-face">
@@ -417,7 +415,7 @@ export function AssetEdit({ name, view, editing, head, actions, children }: { na
                 )}
               </div>
               {behind ? (
-                (open || typing) && (
+                open && (
                   <div className="edit-more">
                     {open && more}
                     {open && <AddOnRows name={name} />}

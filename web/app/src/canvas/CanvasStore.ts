@@ -96,8 +96,6 @@ export interface ElementView {
   auto?: number
   /** Its warnings are open under it. */
   warned?: boolean
-  /** A caption is being asked for. */
-  captioning?: boolean
   /** Something is being dragged over it. */
   hot?: boolean
   /** How many files dropped on it are on their way to being its versions. */
@@ -531,6 +529,8 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
+          // Its first take, landing while it's open on its words with nothing typed: it shows the take.
+          if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline) change.hereWords = undefined
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
@@ -1296,33 +1296,6 @@ export class CanvasStore {
     if (!view?.drafts) return
     const { [field]: _, ...drafts } = view.drafts
     this.patch(name, { drafts: Object.keys(drafts).length ? drafts : undefined })
-  }
-
-  /** Its description, as a package would say it: an edit in the field, not saved. It runs on a machine that's up, so with none it asks for one. */
-  caption(name: string) {
-    const key = this.resolveName(name)
-    if (!this.views.get(key)?.asset) return
-    const [on] = this.machines()
-    if (!on) {
-      say("Caption runs on a machine that's up")
-      return this.askMachine()
-    }
-    this.patch(key, { captioning: true })
-    const id = this.ids.get(key)
-    const once = `caption-${crypto.randomUUID()}`
-    this.act(key, {
-      long: true,
-      send: (served, signal) => this.client.caption(this.projectId!, served, on, once, signal),
-      done: (answer) => {
-        this.patchId(id, { captioning: undefined })
-        this.setDraft(this.namesById.get(id ?? "") ?? name, "description", answer.text)
-        for (const warning of answer.warnings ?? []) say(warning)
-      },
-      refused: (error) => {
-        this.patchId(id, { captioning: undefined })
-        say(`Couldn't caption ${name}`, error)
-      },
-    })
   }
 
   /** What makes it, among those of its kind. */
