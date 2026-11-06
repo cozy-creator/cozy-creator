@@ -39,9 +39,14 @@ export const VARIANT = "variant"
 
 /** The other function a box can be, of its package and label: the word on its toggle, whether it's on, and what it flips to. */
 export function variantOf(tool: Tool | undefined, tools: Map<string, Tool>) {
-  const other = tool && [...tools.values()].find((held) => held.package === tool.package && held.label === tool.label && held.id !== tool.id)
-  const word = tool?.variant ?? other?.variant
-  return other && word ? { word, on: Boolean(tool?.variant), other: other.id } : null
+  if (!tool) return null
+  const all = [...tools.values()]
+  const named = all.find((held) => held.package === tool.package && held.label === tool.label && held.id !== tool.id)
+  // A function and its `_turbo` form are one box too, its toggle Turbo.
+  const paired = named ? undefined : all.find((held) => held.package === tool.package && (held.function === `${tool.function}_turbo` || `${held.function}_turbo` === tool.function))
+  const other = named ?? paired
+  const word = tool.variant ?? other?.variant ?? (paired && "Turbo")
+  return other && word ? { word, on: named ? Boolean(tool.variant) : tool.function.endsWith("_turbo"), other: other.id } : null
 }
 
 /** What a box asks for: its tool's controls, or what its fields hold. Nothing here knows any function. */

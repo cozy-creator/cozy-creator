@@ -2411,21 +2411,6 @@ a.tab:hover {
   grid-column: 2;
   align-self: center;
 }
-.tool.quick {
-  flex: none;
-  padding: 2px;
-  border-radius: 4px;
-  color: var(--faint);
-}
-.tool.quick .icon {
-  width: 13px;
-  height: 13px;
-}
-.tool.quick:hover {
-  color: var(--ember);
-  background: none;
-  transform: scale(1.2);
-}
 .tool-ghost {
   height: 18px;
   margin: 6px;
