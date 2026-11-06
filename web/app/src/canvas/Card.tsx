@@ -177,7 +177,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             type="button"
             className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === (asset.approved ?? asset.version) ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
             aria-label={`${asset.noun} ${version.number}`}
-            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
+            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             draggable={Boolean(asset.timeline && version.main)}
             onDragStart={(event) => version.main && takeOut(event, store, name, asset, version)}

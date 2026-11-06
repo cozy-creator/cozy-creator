@@ -55,11 +55,6 @@ export interface MainFile {
   machine?: string
 }
 
-export interface Kept {
-  take: number
-  until_s: number
-}
-
 export interface VersionPrefix {
   number: number
   prefix: string
@@ -69,7 +64,8 @@ export interface VersionPrefix {
   from?: string[]
   /** A cut's: what it was cut without, `<piece>: <why>` each. */
   without?: string[]
-  kept?: Kept
+  /** The take it picked up from. */
+  pickup?: Pickup
   /** The machine holding its latents, which a pickup of it joins on. */
   latents?: string
   execution_ms?: number
