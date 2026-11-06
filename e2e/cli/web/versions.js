@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, renderOf, until } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, until } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -185,8 +185,9 @@ async function died(why) {
     await page.locator(`.card.here[data-asset="${name}"]`).first().waitFor();
   };
   await open('Ada');
-  const numbers = await until('its numbers', () => page.locator('.card[data-asset="Ada"] .take-no').allInnerTexts(), (held) => held.length === 3, 5000).catch((why) => String(why));
-  check('thumbnails_say_their_number', [...numbers].sort().join() === '1,2,3', numbers);
+  // A take's number is in its name, on hover, and not drawn on its thumbnail.
+  const numbers = await until('its numbers', () => page.locator('.card[data-asset="Ada"] .here-side .take[data-take]').evaluateAll((all) => all.map((one) => one.getAttribute('aria-label'))), (held) => held.length === 3, 5000).catch((why) => String(why));
+  check('thumbnails_say_their_number', Array.isArray(numbers) && [...numbers].map((label) => label.match(/\d+$/)?.[0]).sort().join() === '1,2,3' && (await page.locator('.card[data-asset="Ada"] .take-no').count()) === 0, numbers);
   await shot('numbers');
   // Open, its takes are a column beside the picture, the newest on top.
   const big = await page.locator('.card.here[data-asset="Ada"] .media').first().boundingBox();
@@ -194,28 +195,86 @@ async function died(why) {
   const take = (number) => page.locator(`.card[data-asset="Ada"] .take[data-take="${number}"]`).boundingBox();
   const [newest, middle, oldest] = [await take(3), await take(2), await take(1)];
   check('takes_beside_the_picture', column.x >= big.x + big.width - 1 && Math.abs(newest.x - oldest.x) < 2 && newest.y < middle.y && middle.y < oldest.y, { big, column, newest, oldest });
-  // Held down, the pointer slides along the column from take to take, the column staying under it.
-  await page.waitForTimeout(300);
-  const columnAt = async () => {
-    const { x, y } = await page.locator('.card[data-asset="Ada"] .takes').boundingBox();
-    return { x, y };
-  };
-  const from = (box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
-  const [start, end] = [from(newest), from(oldest)];
-  await page.mouse.move(start.x, start.y);
+  // The column scrolls by dragging it, a mouse's or a finger's, with no bar and a little carry after, its ends fading where there's more; a
+  // press that doesn't move picks a take. (Sliding the pointer from take to take is gone: it fought the drag.)
+  await imported('many', 50);
+  for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
+  await open('many');
+  const side = page.locator('.card.here[data-asset="many"] .here-side');
+  await side.locator('.take[data-take="1"]').waitFor();
+  const sideBox = await side.boundingBox();
+  const scrolled = () => side.evaluate((el) => el.scrollTop);
+  const across = sideBox.x + sideBox.width / 2;
+  await page.mouse.move(across, sideBox.y + sideBox.height - 12);
   await page.mouse.down();
-  const columnFrom = await columnAt();
-  let columnMoved = 0;
-  // At a hand's pace: each take it crosses is drawn large before it goes on.
-  for (let step = 1; step <= 10; step++) {
-    await page.mouse.move(start.x + ((end.x - start.x) * step) / 10, start.y + ((end.y - start.y) * step) / 10);
-    await page.waitForTimeout(100);
-    const now = await columnAt();
-    columnMoved = Math.max(columnMoved, Math.abs(now.x - columnFrom.x), Math.abs(now.y - columnFrom.y));
-  }
+  for (let step = 1; step <= 8; step++) await page.mouse.move(across, sideBox.y + sideBox.height - 12 - step * 18);
   await page.mouse.up();
-  const slid = await page.locator('.card[data-asset="Ada"] .take.on').getAttribute('data-take');
-  check('a_slide_reaches_each_take', slid === '1' && columnMoved < 2, { slid, columnMoved });
+  const byMouse = await scrolled();
+  await page.waitForTimeout(500);
+  const coasted = await scrolled();
+  const looks = await side.evaluate((el) => ({ bar: el.offsetWidth - el.clientWidth, mask: getComputedStyle(el).maskImage || getComputedStyle(el).webkitMaskImage, top: el.style.getPropertyValue('--fade-top'), bottom: el.style.getPropertyValue('--fade-bottom') }));
+  check('the_column_drags_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { byMouse, coasted, looks });
+  // Under the take shown, how words name it: its one name, approved or not.
+  const namedFirst = await page.locator('.card.here[data-asset="many"] .take-name .chip').allInnerTexts();
+  const pickedBefore = await side.locator('.take.on').getAttribute('data-take');
+  const another = side.locator(`.take[data-take]:not([data-take="${pickedBefore}"])`).first();
+  const anotherNumber = await another.getAttribute('data-take');
+  await another.click();
+  check('a_still_press_picks', (await side.locator('.take.on').getAttribute('data-take')) === anotherNumber, { pickedBefore, anotherNumber });
+  const takeName = page.locator('.card.here[data-asset="many"] .take-name .chip');
+  const namedThen = await takeName.allInnerTexts();
+  await takeName.last().click();
+  check('the_take_shown_is_named_to_mention', namedFirst.join() === `<Many.${pickedBefore}>` && namedThen.join() === `<Many.${anotherNumber}>` && (await toast(`<many.${anotherNumber}>`)) === true, { namedFirst, namedThen });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const beforeFinger = await scrolled();
+  const touchFrom = { x: across, y: sideBox.y + sideBox.height - 12 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [touchFrom] });
+  for (let step = 1; step <= 6; step++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchFrom.x, y: touchFrom.y - step * 18 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.waitForTimeout(500);
+  const byFinger = await scrolled();
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await cdp.detach();
+  check('the_column_drags_with_a_finger', byFinger > beforeFinger + 40 && (await page.locator('.card.here[data-asset="many"]').count()) === 1, { beforeFinger, byFinger });
+
+  // A take carried out of its box onto the canvas moves there: a box of its own holds it, it leaves its box, and what named it names that box.
+  // One note's Undo puts all of it back. Carried out again, the new box dropped back on the old one merges in as its newest take.
+  await imported('moving', 60);
+  await joined('moving', 61);
+  await joined('moving', 62);
+  writeFileSync(yamlAt, `${yaml().trimEnd()}\n  moving_words:\n    text: <moving.2> on top.\n`);
+  await box('moving_words').waitFor();
+  const second = (await asset('moving')).prefixes.find((held) => held.number === 2).main.sha256;
+  const carryOut = async () => {
+    await open('moving');
+    const movingHere = page.locator('.card.here[data-asset="moving"]');
+    await movingHere.locator('.here-side .take[data-take="2"]').click();
+    await movingHere.locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
+    return until('moved out', async () => (await state()).assets.find((one) => one.sha256 === second && one.name !== 'moving'), Boolean).catch(() => null);
+  };
+  const movedOut = await carryOut();
+  const leftBehind = await asset('moving');
+  const renamedWords = await until('what named it', () => asset('moving_words'), (row) => row?.fields?.text?.includes('<moving_2>')).catch(() => null);
+  check('a_take_carried_out_moves', movedOut?.name === 'moving_2' && !leftBehind.prefixes.some((held) => held.number === 2) && Boolean(renamedWords) && (await toast('Moved version 2 of moving out as moving_2')) === true, { movedOut: movedOut?.name, left: leftBehind.prefixes.map((held) => held.number), words: renamedWords?.fields?.text });
+  await undoIn('Moved version 2 of moving').click();
+  const putBack = await until('all back', async () => [await asset('moving'), await asset('moving_2'), await asset('moving_words')], ([row, gone, words]) => row.prefixes.some((held) => held.number === 2) && !gone && words.fields.text.includes('<moving.2>')).catch((why) => String(why));
+  check('its_undo_puts_it_all_back', Array.isArray(putBack), putBack);
+  const outAgain = (await carryOut())?.name ?? 'moving_2';
+  await shut();
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
+  const outBox = await box(outAgain).locator('.nm').boundingBox();
+  const homeBox = await box('moving').locator('.media').first().boundingBox();
+  await page.mouse.move(outBox.x + 4, outBox.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(outBox.x + 12, outBox.y + 4);
+  await page.mouse.move(homeBox.x + homeBox.width / 2, homeBox.y + homeBox.height / 2, { steps: 8 });
+  await page.waitForTimeout(100);
+  await page.mouse.up();
+  const mergedBack = await until('merged back', async () => [await asset('moving'), await asset(outAgain)], ([row, gone]) => !gone && row.prefixes.at(-1).main?.sha256 === second).catch((why) => String(why));
+  check('dropped_back_it_merges_in', Array.isArray(mergedBack), mergedBack);
+  await open('Ada');
 
   // A double tap approves a take, and again unapproves it; on the big picture too, and Enter, and none opens it large. A click opens a box at once.
   const ada = page.locator('.card.here[data-asset="Ada"]');
@@ -512,6 +571,15 @@ async function died(why) {
     await until('back to Auto', shapeLine, (now) => now === null);
     check('its_x_goes_back_to_auto', (await here.locator('.ratio-rest').innerText()).trim() === 'Auto' && Math.abs((await shapedAs('framed', 1.6)) - 1.6) < 0.05, { rest: await here.locator('.ratio-rest').innerText(), now: await shapeOf('framed') });
     await shut();
+    // A box whose own name has a dot is that box, as Calcifer reads it, not a take of the box before the dot: mentioned with nothing made yet,
+    // behind the words it's its blank frame, never another box's picture.
+    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  ada.later:\n    tool: ${tool.id}\n    instructions: Not yet.\n  awaiting:\n    tool: ${tool.id}\n    instructions: <Ada.later> at dawn.\n`);
+    await box('awaiting').waitFor();
+    await open('awaiting');
+    const awaitingHere = page.locator('.card.here[data-asset="awaiting"]');
+    const blankGhost = await until('its blank frame behind', () => awaitingHere.locator('.in-frame .ghost-blank').count(), (n) => n === 1).catch(() => 0);
+    check('a_dotted_name_is_its_own_box', blankGhost === 1 && (await awaitingHere.locator('.in-frame .ghosts img').count()) === 0 && (await awaitingHere.locator('.in-frame .ghost-blank').getAttribute('data-mention')) === 'Ada.later', { blankGhost, imgs: await awaitingHere.locator('.in-frame .ghosts img').count() });
+    await shut();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
     const picturedWas = { shape: await shapeOf('picked'), width: (await box('picked').locator('.media').first().boundingBox()).width };
@@ -642,6 +710,11 @@ async function died(why) {
     await until('the longer one read', () => asset('sheet'), (row) => row?.fields?.seconds === 30);
     await render(['sheet', 'after'], `second-${Date.now()}`);
     await until('it going', () => asset('sheet'), (row) => row?.making?.length > 0, 2 * STEP_MS);
+    // What reads it says it waits for it, and nothing of a machine's work for another box.
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
+    const waitsSaid = await until('after says what it waits for', () => box('after').locator('.prog b').innerText().catch(() => ''), (text) => /^Waits for <sheet>/i.test(text)).catch(() => box('after').locator('.prog b').innerText().catch(() => ''));
+    check('a_box_says_what_it_waits_for', /^Waits for <sheet>/i.test(waitsSaid) && !/Installing/.test(waitsSaid), waitsSaid);
     await page.evaluate(() => {
       window.shown = [];
       const look = () => {
@@ -696,6 +769,10 @@ async function died(why) {
     check('each_press_one_more', making.length === 2 && Array.isArray(crosses) && making.every((run) => crosses.includes(`Cancel run ${run}`)), { making, crosses });
     await shot('making-two');
     const [older, newer] = [...making].sort((a, b) => a - b);
+    // A tile of a take still being made is picked like any: its outline, and its progress on the frame.
+    await slow.locator(`.here-side .take.making[title="Run ${older}"]`).click();
+    const pickedOlder = await until('the older picked', () => slow.locator('.here-side .take.making.on').getAttribute('title').catch(() => null), (title) => title === `Run ${older}`).catch(() => null);
+    check('a_take_being_made_is_picked_by_its_tile', pickedOlder === `Run ${older}` && (await slow.locator('.here-side .take.on').count()) === 1 && (await slow.locator('.media .media-making').count()) === 1, { pickedOlder, on: await slow.locator('.here-side .take.on').count() });
     const runState = async (number) => (await api(`/v1/runs/${number}`)).body?.status;
     await slow.locator(`.take-off[aria-label="Cancel run ${newer}"]`).click();
     const canceled = await until('the newer canceled', () => runState(newer), (status) => status === 'canceled', 2 * STEP_MS).catch((why) => String(why));
@@ -733,6 +810,59 @@ async function died(why) {
     const drawnChips = page.locator('.card.here[data-asset="drawn_from"] .in-frame .chip');
     await drawnChips.first().waitFor().catch(() => {});
     check('file_slots_take_their_named_kind', JSON.stringify(drawTakes) === '["audio","image"]' && (await drawnChips.count()) === 1 && (await page.locator('.card.here[data-asset="drawn_from"] .in-frame .chip.refused').count()) === 0, { drawTakes, chips: await drawnChips.evaluateAll((all) => all.map((one) => one.className)) });
+    await shut();
+
+    // A box approved at 1:1, its next take asked at 16:9 (Paul, 11-06): while it's made the box is 16:9 with no other take's picture in it;
+    // landed, it's that take's shape with no bars, the run having asked 16:9; and each take shown is its own shape.
+    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  shapes:\n    tool: ${fixture}/wait\n    instructions: A whale.\n    aspect_ratio: "1:1"\n`);
+    await box('shapes').waitFor();
+    await render(['shapes'], `shapes-${Date.now()}`);
+    await until('its square', () => asset('shapes'), (row) => row?.versions === 1 && !row.making?.length, 5 * STEP_MS);
+    await post(`${at}/approve`, { name: 'shapes', version: '1' });
+    await api(`${at}/assets/shapes`, { method: 'PATCH', body: JSON.stringify({ fields: { aspect_ratio: '16:9', seconds: 4 } }) });
+    await until('16:9 asked', () => asset('shapes'), (row) => row?.fields?.aspect_ratio === '16:9' && row.pinned);
+    await open('shapes');
+    const shapesHere = page.locator('.card.here[data-asset="shapes"]');
+    const frameShape = async () => {
+      const { width, height } = await shapesHere.locator('.media').first().boundingBox();
+      return width / height;
+    };
+    const square = await frameShape();
+    await (await renderOf(page, 'shapes')).click();
+    await until('being made', () => asset('shapes'), (row) => row?.making?.length === 1, 2 * STEP_MS);
+    const whileMade = await frameShape();
+    const noStale = (await shapesHere.locator('.media img').count()) === 0;
+    const madeAs = await until('its 16:9 take', () => asset('shapes'), (row) => row?.versions === 2 && !row.making?.length, 5 * STEP_MS);
+    const wide = madeAs.prefixes.find((held) => held.number === 2).main;
+    // Its picture as made: the run asked 16:9.
+    const pictureShape = await until('its picture', () => shapesHere.locator('.media img').last().evaluate((img) => img.naturalWidth / img.naturalHeight).catch(() => 0), (ratio) => ratio > 0).catch(() => 0);
+    const landedShape = await until('the box at its take', frameShape, (now) => Math.abs(now / pictureShape - 1) < 0.03).catch(() => frameShape());
+    check('a_take_is_made_and_shown_at_its_shape', Math.abs(square - 1) < 0.03 && Math.abs(whileMade / (16 / 9) - 1) < 0.03 && noStale && Math.abs(pictureShape / (16 / 9) - 1) < 0.05 && Math.abs(landedShape / pictureShape - 1) < 0.03 && (await shapesHere.locator('.here-side .take.on').getAttribute('data-take')) === '2', { square, whileMade, noStale, pictureShape, landedShape });
+    // Clicked, a take is in its frame at once, never another's picture after: its tile's thumbnail scaled, then itself.
+    const clickTo = (number, sha) => page.evaluate(async ({ number, sha }) => {
+      const card = () => document.querySelector('.card.here[data-asset="shapes"]');
+      const at = performance.now();
+      card().querySelector(`.here-side .take[data-take="${number}"]`).click();
+      let first;
+      let stale = 0;
+      return new Promise((done) => {
+        const look = () => {
+          const shown = [...card().querySelectorAll('.media img')].filter((img) => img.complete && img.naturalWidth);
+          if (shown.some((img) => !img.src.includes(sha))) stale++;
+          if (first === undefined && shown.some((img) => img.src.includes(sha))) first = performance.now() - at;
+          if (first !== undefined || performance.now() - at > 10_000) done({ first, stale });
+          else requestAnimationFrame(look);
+        };
+        requestAnimationFrame(look);
+      });
+    }, { number, sha: sha.replace('sha256:', '') });
+    const toSquare = await clickTo(1, madeAs.prefixes[0].main.sha256);
+    await page.waitForTimeout(300);
+    const squareAgain = await frameShape();
+    const toWide = await clickTo(2, wide.sha256);
+    await page.waitForTimeout(300);
+    seen.click_to_pixels = { toSquare, toWide };
+    check('a_clicked_take_shows_at_once_at_its_shape', toSquare.first < 400 && toWide.first < 400 && toSquare.stale <= 1 && toWide.stale <= 1 && Math.abs(squareAgain - 1) < 0.03 && Math.abs((await frameShape()) / pictureShape - 1) < 0.03, { toSquare, toWide, squareAgain });
     await shut();
 
     // What a render can't read is refused, in words, and nothing runs.

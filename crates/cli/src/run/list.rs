@@ -195,10 +195,13 @@ fn row(run: &Run) -> Vec<String> {
     let progress = match (run.status, &run.progress) {
         _ if run.queue_position.is_some() => String::new(),
         (Status::InProgress, Some(p)) => {
-            let shown = match p.done_fraction {
+            let mut shown = match p.done_fraction {
                 Some(f) => format!("{} {:.0}%", p.stage, f * 100.0),
                 None => p.stage.clone(),
             };
+            if let Some(left) = follow::left(p) {
+                shown = format!("{shown} · {left}");
+            }
             let shown = match (&run.stalled, follow::still(p)) {
                 (Some(stalled), _) => format!("{shown} · {}", follow::stalled_words(stalled)),
                 (None, Some(still)) => format!("{shown} · no progress for {}", output::span(still)),

@@ -96,7 +96,6 @@
   overflow-x: auto;
   overflow-y: hidden;
   background: #0a0a0b;
-  scrollbar-width: none;
 }
 .tl-track {
   position: relative;

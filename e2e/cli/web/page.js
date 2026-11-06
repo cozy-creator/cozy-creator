@@ -218,8 +218,13 @@ function signIn(page, options) {
   return page.goto(link, options);
 }
 
-/** This pass's browser: $ENGINE's own build (webkit, firefox), else the Chrome at $CHROME. */
-const launch = (playwright) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true }));
+/** Chrome with its scrollbars shown, as on a person's screen, not hidden as headless has them. */
+const BARS = { ignoreDefaultArgs: ['--hide-scrollbars'] };
+/** And rastered on the GPU path (SwiftShader where there's no GPU), as a person's Chrome rasters. Headless rasters in software, which drew right what a
+ *  person's drew wrong: a drawn edge's tiled sides, shifted out at a fractional scale. Its compositor holds CSS animations at their start. */
+const GPU = { ...BARS, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-gpu-rasterization', '--ignore-gpu-blocklist'] };
+/** This pass's browser: $ENGINE's own build (webkit, firefox), else the Chrome at $CHROME, launched with `options`. */
+const launch = (playwright, options = {}) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true, ...options }));
 
 async function lastLook() {
   if (!looking || !process.env.LAST_LOOK) return;
@@ -273,4 +278,4 @@ function summary(frames) {
   return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
 }
 
-module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, settled, signIn, summary, until, watchBoxes, wav };
+module.exports = { BARS, DARK_OPEN, GPU, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, settled, signIn, summary, until, watchBoxes, wav };

@@ -130,6 +130,7 @@ fn of(row: &MachineRow, state: &v1::RunState) -> Run {
         calls: vec![],
         report: None,
         request: None,
+        gpu: None,
     };
     stated(&mut run, state);
     run

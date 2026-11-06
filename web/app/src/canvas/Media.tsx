@@ -8,7 +8,7 @@ import { leftWords } from "../panels/format"
 import { fractionOf, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { long, workWords } from "../panels/runs/words"
 import type { Run, Tool } from "../types"
-import { useCanvasStore } from "./context"
+import { useCanvasStore, useElement } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { controlsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
@@ -24,7 +24,8 @@ const PREVIEW_AFTER_MS = 250
 
 /**
  * At most two thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
- * connections to it, stalling every other call. An element scrolled away gives up its place.
+ * connections to it, stalling every other call. An element scrolled away gives up its place. What a person is looking at right now,
+ * `now`, goes at once, past the line.
  */
 function line(limit: number) {
   let running = 0
@@ -35,13 +36,16 @@ function line(limit: number) {
       waiting.shift()!()
     }
   }
-  return (start: () => void): (() => void) => {
+  return (start: () => void, now = false): (() => void) => {
     let state: "waiting" | "running" | "done" = "waiting"
     const go = () => {
       state = "running"
       start()
     }
-    waiting.push(go)
+    if (now) {
+      running += 1
+      go()
+    } else waiting.push(go)
     next()
     return () => {
       if (state === "waiting") waiting.splice(waiting.indexOf(go), 1)
@@ -58,6 +62,19 @@ const thumbLine = line(2)
 /** What's been up: coming back on screen is no arrival, and fades nothing. */
 const arrived = new Set<string>()
 
+/** A just-landed take's picture, at the size an open box draws it, asked once and decoded ahead, so a click on it shows it at once. */
+const preloaded = new Set<string>()
+export function preload(client: Client, projectId: string | null, sha256: string, cardWidth: number) {
+  const key = `${sha256}:${thumbWidth(cardWidth)}`
+  if (!projectId || preloaded.has(key)) return
+  preloaded.add(key)
+  void client.transport.src(client.thumb(projectId, sha256, thumbWidth(cardWidth))).then((url) => {
+    const img = new Image()
+    img.src = url
+    img.decode().then(() => arrived.add(key), () => preloaded.delete(key))
+  })
+}
+
 /** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache. */
 function thumbWidth(cardWidth: number): number {
   const wanted = cardWidth * Math.min(2, window.devicePixelRatio || 1)
@@ -71,6 +88,7 @@ export function Thumb({
   exact,
   className,
   frame,
+  now,
   onSize,
   onShown,
 }: {
@@ -81,6 +99,8 @@ export function Thumb({
   exact?: boolean
   className?: string
   frame?: number
+  /** What a person is looking at: past the line. */
+  now?: boolean
   onSize?: (aspect: number) => void
   onShown?: () => void
 }) {
@@ -98,7 +118,7 @@ export function Thumb({
       void client.transport.src(client.thumb(projectId, sha256, width, strip)).then((url) => {
         if (live) setSrc(url)
       })
-    })
+    }, now)
     return () => {
       live = false
       leaveLine.current()
@@ -408,9 +428,11 @@ const installsOf = (tool?: Tool) => tool && (tool.installs ?? tool.package)
 /** A render on its way: its package installing and its weights arriving say so, from what its machine lists, and the veil after them is
  *  its own work's. That says where it is once it's worth it: `Generating image 3 / 8, 25 s left`. Before its run is sent, local code
  *  installing for it says so too. */
-function Making({ run, pkg, making }: { run?: Run; pkg?: string; making: boolean }) {
+function Making({ run, pkg, making, waits }: { run?: Run; pkg?: string; making: boolean; waits: string | null }) {
   const on = useWaitsOn(run)
-  const installing = useInstalling(run ? undefined : pkg)
+  // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
+  const installing = useInstalling(run || waits ? undefined : pkg)
+  if (waits && !on) return <WaitsFor name={waits} />
   const before = on ?? installing
   if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} />
   if (before?.kind === "download") {
@@ -424,7 +446,38 @@ function Making({ run, pkg, making }: { run?: Run; pkg?: string; making: boolean
   return <Progress fraction={run.progress?.done_fraction} says={long(run, Date.now()) ? workWords(run) || run.waiting : undefined} />
 }
 
-export function Media({ view, name, cardWidth, children }: { view: ElementView; name: string; cardWidth: number; children?: ReactNode }) {
+/** The picture in a box's frame, one take's alone: its small thumbnail at once, the one its tile and its box at rest already have, scaled up,
+ *  and its full size over it as soon as that's decoded. Another take's picture is never what stands in. */
+function FramePicture({ sha256, cardWidth, restWidth, onSize, onShown }: { sha256: string; cardWidth: number; restWidth: number; onSize: (aspect: number) => void; onShown: () => void }) {
+  const [full, setFull] = useState(false)
+  const larger = thumbWidth(cardWidth) > thumbWidth(restWidth)
+  return (
+    <>
+      {larger && !full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
+      <Thumb
+        sha256={sha256}
+        cardWidth={cardWidth}
+        now={larger}
+        onSize={onSize}
+        onShown={() => {
+          setFull(true)
+          onShown()
+        }}
+      />
+    </>
+  )
+}
+
+/** A box that waits for one it reads: which, and how far that one's got while it's made. */
+function WaitsFor({ name }: { name: string }) {
+  const store = useCanvasStore()
+  const read = useElement(store.mentionOf(name, "")?.name ?? name)
+  const run = read?.asset?.making?.length ? read.run : undefined
+  const words = run && run.status !== "completed" ? workWords(run) : ""
+  return <Progress fraction={run?.progress?.done_fraction} says={`Waits for <${name}>${words ? `: ${words}` : ""}`} />
+}
+
+export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
@@ -461,7 +514,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
         />
       )}
       {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-      {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+      {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} cardWidth={cardWidth} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       {blank && words && (
@@ -486,7 +539,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
       )}
       {(making || view.queued || view.asked !== undefined) && view.viewed === undefined && <div className="media-making" />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
-      {(making || view.queued || view.asked !== undefined) && <Making run={view.run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} />}
+      {(making || view.queued || view.asked !== undefined) && <Making run={view.run} pkg={installsOf(asset?.tool ? tools.get(asset.tool) : undefined)} making={making} waits={making ? null : store.waitsFor(name)} />}
       {open && source && field && store.projectId && (
         <Player
           key={JSON.stringify(source)}

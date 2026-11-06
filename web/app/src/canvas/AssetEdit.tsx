@@ -368,9 +368,15 @@ function Ghosts({ name, view }: { name: string; view: ElementView }) {
   const side = Math.ceil(Math.sqrt(pictures.length))
   return (
     <div className="ghosts" style={{ "--side": side } as CSSProperties} aria-hidden>
-      {pictures.map((sha256) => (
-        <Thumb key={sha256} sha256={sha256} cardWidth={960 / side} />
-      ))}
+      {pictures.map((ghost) =>
+        ghost.sha256 ? (
+          <Thumb key={ghost.mention} sha256={ghost.sha256} cardWidth={960 / side} />
+        ) : (
+          <svg key={ghost.mention} className={`ghost-blank ${ghost.making ? "making" : ""}`} data-mention={ghost.mention} viewBox={`0 0 ${100 * (ghost.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
+            <rect x="2" y="2" width={100 * (ghost.shape ?? 1) - 4} height="96" rx="3" />
+          </svg>
+        ),
+      )}
     </div>
   )
 }

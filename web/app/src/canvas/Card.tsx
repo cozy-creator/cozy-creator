@@ -1,23 +1,25 @@
 import { useQuery } from "@tanstack/react-query"
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
-import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
+import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { runsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Run, Tool } from "../types"
 import { Icon } from "../ui/Icon"
+import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { controlsOf, shapesOf, snapped } from "./controls"
 import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
-import { Media, Preview, Thumb, usePreview } from "./Media"
+import { useDragScroll } from "./dragScroll"
+import { Media, Preview, preload, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { aspectOf, faceOf, fieldsOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, watched } from "./shown"
-import { clock, noHash, piecesOf, rowsIn, took } from "./text"
+import { chipWords, clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 
@@ -126,18 +128,51 @@ function Pictures({ name }: { name: string }) {
   )
 }
 
+/** The take shown, as words mention it: `<Kyogre_3.2>`, its one name. A click copies it; dragged onto a box or into a prompt it's a mention,
+ *  as a box dragged is. */
+function TakeName({ view }: { view: ElementView }) {
+  const number = shownOf(view)?.number
+  if (!view.asset || number === undefined) return null
+  const name = `${view.name}.${number}`
+  return (
+    <div className="take-name">
+      <button
+        type="button"
+        className="chip nodrag"
+        title={`Copy <${name}>`}
+        draggable
+        onDragStart={(event) => event.dataTransfer.setData(DRAGGED_NAME, name)}
+        onClick={() => void navigator.clipboard?.writeText(`<${name}>`).then(() => say(`Copied <${name}>`), () => say(`<${name}>`))}
+      >
+        {chipWords(name)}
+      </button>
+    </div>
+  )
+}
+
+/** An open box's takes beside it: dragged up or down, by a mouse or a finger, they scroll, with no bar. */
+function Side({ children }: { children: ReactNode }) {
+  const self = useRef<HTMLDivElement>(null)
+  useDragScroll(self)
+  return (
+    <div ref={self} className="here-side nodrag nopan nowheel">
+      {children}
+    </div>
+  )
+}
+
 /** A take on the row: a video's preview plays while the pointer rests on it. */
-function TakeThumb({ main, width }: { main: MainFile; width: number }) {
+function TakeThumb({ main, width, onShown }: { main: MainFile; width: number; onShown?: () => void }) {
   const { on, hover } = usePreview(main.field === "video")
   return (
     <span className="take-thumb" {...hover}>
-      <Thumb sha256={main.sha256} cardWidth={width} />
+      <Thumb sha256={main.sha256} cardWidth={width} onShown={onShown} />
       {on && <Preview sha256={main.sha256} />}
     </span>
   )
 }
 
-/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, a double tap approves it or, approved, unapproves it, and held down the pointer slides between them. + first goes to its words: an Edit's, or the next take an image tool writes in the frame. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
+/** Each take or version, side by side, the newest first and what's still being made before that: a click looks at it, a double tap approves it or, approved, unapproves it, and a drag sideways carries it out. + first goes to its words: an Edit's, or the next take an image tool writes in the frame. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
 function Takes({ view, name, width }: { view: ElementView; name: string; width: number }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
@@ -150,6 +185,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
   const writes = paints(view, tools)
+  // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
+  const { client } = useConnection()
+  const newest = asset.prefixes?.at(-1)
   const adds = writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit")
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
@@ -167,18 +205,11 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   }
   const pick = (number: number) => {
     store.pickTake(name, number)
-    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined })
+    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined, watchRun: undefined })
   }
   return (
     <div
       className="takes nodrag nopan nowheel"
-      onPointerMove={(event) => {
-        // Held down, the pointer slides from take to take.
-        if (!event.buttons) return
-        const over = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-take]")
-        const number = Number(over?.dataset.take)
-        if (number && number !== shown?.number) pick(number)
-      }}
       onWheel={(event) => {
         event.currentTarget.scrollLeft += event.deltaX || event.deltaY
       }}
@@ -190,9 +221,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       )}
       {waiting && (
         <span className="take-at">
-          <span className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued">
+          <button type="button" className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued" onClick={() => store.watchTake(name)}>
             …
-          </span>
+          </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
             <Icon name="close" />
           </button>
@@ -200,9 +231,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       )}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <span className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`}>
+          <button type="button" className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`} onClick={() => store.watchTake(name, run)}>
             <TakeProgress view={view} run={run} />
-          </span>
+          </button>
           <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
             <Icon name="close" />
           </button>
@@ -216,14 +247,14 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             aria-label={`${asset.noun} ${version.number}`}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
-            draggable={Boolean(asset.timeline && version.main)}
+            draggable={Boolean(version.main)}
             onDragStart={(event) => version.main && takeOut(event, store, name, asset, version)}
-            onPointerDown={() => pick(version.number)}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
           >
-            {version.main && !version.main.absent ? <TakeThumb main={version.main} width={width} /> : null}
-            <span className="take-no">{version.number}</span>
+            {version.main && !version.main.absent ? (
+              <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256, HERE_THUMB) : undefined} />
+            ) : null}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -471,6 +502,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
         onPointerMove={moved}
         onPointerUp={done}
         onPointerCancel={done}
+        onLostPointerCapture={done}
       />
     </>
   )
@@ -587,7 +619,17 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           </button>
         ) : null}
         {here ? (
-          <button type="button" className="iconb nodrag" aria-label="Close" title="Close" onClick={store.leaveHere}>
+          // Open or not, its × deletes it, with Undo: Esc or a click off it leaves.
+          <button
+            type="button"
+            className="iconb nodrag"
+            aria-label="Delete"
+            title="Delete"
+            onClick={() => {
+              store.leaveHere()
+              store.remove([name])
+            }}
+          >
             <Icon name="close" />
           </button>
         ) : view.placing && view.placing.stage !== "adding" ? (
@@ -608,7 +650,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       {asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width} restWidth={width}>
           {here && (asset?.kind === "text" ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && !view.hereWords && asset && shownVersion?.main && <div className="take-out nodrag nopan" draggable onDragStart={(event) => takeOut(event, store, name, asset, shownVersion)} />}
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
@@ -622,9 +664,9 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         </div>
       )}
       {here && asset && asset.kind !== "text" && !asset.timeline && (
-        <div className="here-side nodrag nopan nowheel">
+        <Side>
           <Takes view={view} name={name} width={width} />
-        </div>
+        </Side>
       )}
       {here && asset && asset.kind !== "text" && (
         <div className="here-under nodrag nopan nowheel">
@@ -637,6 +679,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             {!looking && (
               <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />
             )}
+            {!view.hereWords && <TakeName view={view} />}
             {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
             {!(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
             {view.warned && warned ? (

@@ -52,15 +52,16 @@ const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 const MOST_HERE = 2.5
 /** Of the height there is, what a box keeps however much is under it, which then scrolls. */
 const LEAST_BOX = 0.35
-/** How wide what's under a box is, in its own pixels, however narrow the box, where there's room. */
-const LEAST_UNDER = 520
-const UNDER_GAP = 8
 /** A window this narrow has no room for the tools beside a box being worked on: they fold away, and come back after. */
 const NARROW = 760
 /** How long the canvas takes to draw in on a box, or go back. */
 const HERE_MS = 260
 
-/** The view of a box and what's under it, the two as large as they go together, and what's under it told how wide it is and how tall it may be. Null with no node to fit to. */
+/**
+ * The view of a box with its takes beside it and what's under it, as large as they go together, and what's under it told how tall it may be.
+ * What's under it spans the picture and its takes at any zoom (app.css `.here-under`): its height at a zoom is read with that zoom's --text on
+ * it. `below` is that height with the gap above it. Null with no node to fit to.
+ */
 function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: string, stage: HTMLElement) {
   const node = flow.getNode(id)
   const w = node?.measured?.width ?? node?.width
@@ -71,26 +72,29 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
   const wide = room.width - left - right
   const tall = room.height - top - bottom
   const under = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-under`)
-  const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side`)
-  const scale = (zoom: number) => textScale(zoom) * zoom * Number(getComputedStyle(stage).getPropertyValue("--here"))
-  /** The takes beside it, in the canvas's own units at `zoom`, with their gap (app.css `.here-side`, --s5). */
-  const beside = (zoom: number) => (side ? ((side.offsetWidth + 12) * scale(zoom)) / zoom : 0)
-  const most = tall * (1 - LEAST_BOX) - UNDER_GAP
-  const across = (zoom: number) => Math.min(wide, Math.max(w * zoom, LEAST_UNDER * scale(zoom)))
-  /** What's under it as it would be at `zoom`: as tall as what it holds, up to what it may have. */
-  const height = (zoom: number) => {
-    if (!under) return most / 2
-    under.style.setProperty("--here-width", `${across(zoom) / scale(zoom)}px`)
-    return Math.min(most, ((under.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0) * scale(zoom))
+  const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side:not(:empty)`)
+  const style = getComputedStyle(stage)
+  const gap = Number.parseFloat(style.getPropertyValue("--here-gap"))
+  const scale = (zoom: number) => textScale(zoom) * zoom * Number(style.getPropertyValue("--here"))
+  /** The takes beside it with the gap before them, in the canvas's own units at `zoom`. */
+  const beside = (zoom: number) => (side ? ((side.offsetWidth + gap) * scale(zoom)) / zoom : 0)
+  const most = tall * (1 - LEAST_BOX)
+  /** What's under it and the gap above it, on screen at `zoom`: as tall as what it holds, up to what it may have. */
+  const belowAt = (zoom: number) => {
+    if (!under) return 0
+    under.style.setProperty("--text", String(textScale(zoom)))
+    const holds = (under.firstElementChild as HTMLElement | null)?.scrollHeight ?? 0
+    under.style.removeProperty("--text")
+    return Math.min(most, holds * scale(zoom)) + gap * scale(zoom)
   }
-  const zoomFor = (below: number, across: number) => Math.min(MOST_HERE, wide / (w + across), (tall - below - (below && UNDER_GAP)) / h)
+  const zoomFor = (below: number, across: number) => Math.min(MOST_HERE, wide / (w + across), (tall - below) / h)
   // How tall it is depends on how wide, which goes with the zoom, which depends on how tall: twice round settles it.
   let zoom = zoomFor(most / 2, 0)
-  zoom = zoomFor(height(zoom), beside(zoom))
-  zoom = zoomFor(height(zoom), beside(zoom))
-  const below = height(zoom)
+  zoom = zoomFor(belowAt(zoom), beside(zoom))
+  zoom = zoomFor(belowAt(zoom), beside(zoom))
+  const below = belowAt(zoom)
   under?.style.setProperty("--here-room", `${most / scale(zoom)}px`)
-  const high = h * zoom + (below && below + UNDER_GAP)
+  const high = h * zoom + below
   return {
     below,
     view: {
@@ -301,7 +305,7 @@ function Canvas({
         const node = flow.getNode(id)
         const left = (node?.position.x ?? 0) * at.zoom + at.x
         const right = left + (node?.measured?.width ?? 0) * at.zoom
-        const end = (node?.position.y ?? 0) * at.zoom + at.y + (node?.measured?.height ?? 0) * at.zoom + fit.below + UNDER_GAP
+        const end = (node?.position.y ?? 0) * at.zoom + at.y + (node?.measured?.height ?? 0) * at.zoom + fit.below
         if (end <= fit.room.bottom + 1 && left >= fit.room.left - 1 && right <= fit.room.right + 1) return
       }
       held.fitted = fit.view

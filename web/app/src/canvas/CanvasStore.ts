@@ -9,7 +9,7 @@ import { Field, fit, type Give, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, shownOf, underOf, valueIn, watched, widthFor } from "./shown"
+import { faceOf, fieldsOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, shownOf, underOf, valueIn, watched, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -102,6 +102,8 @@ export interface ElementView {
   refused?: string
   /** Rendered from its words: the newest take asked after this run is the one looked at (`watched`). */
   watchFrom?: number
+  /** A take being made, picked by its tile: its run, looked at until it lands, and then as it lands. */
+  watchRun?: number
   /** How many files dropped on it are on their way to being its versions. */
   joining?: number
   /** It just arrived, and lands. */
@@ -155,6 +157,14 @@ const NOT_YET = Number.POSITIVE_INFINITY
 export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
+
+/** A picture its words mention, faded behind them: its file, or with none yet its frame's shape and whether it's being made. */
+export interface Ghost {
+  mention: string
+  sha256?: string
+  shape?: number
+  making?: boolean
+}
 
 /** What moves the shape a box makes, or the one a mention of it sends. */
 const SHAPING = ["asset", "drafts", "sent", "aspect"] as const
@@ -410,16 +420,31 @@ export class CanvasStore {
   }
 
   /** The pictures a box's words mention, in order: the version named, else what each shows. */
-  mentionedPictures(name: string): string[] {
+  mentionedPictures(name: string): Ghost[] {
     const view = this.get(name)
     if (!view) return []
-    const files = this.mentionsOf(view).flatMap((mention) => {
+    const seen = new Set<string>()
+    return this.mentionsOf(view).flatMap((mention): Ghost[] => {
+      // The box by its exact name first, as Calcifer reads it: `<kyogre.primordial>` is that box, not a take of `kyogre`.
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined
-      const file = of && (read?.number !== undefined ? of.asset?.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of))
-      return file && !file.absent && file.field === "image" && !this.refusalOf(name, mention) ? [file.sha256] : []
+      if (!of?.asset || of.asset.kind !== "image" || this.refusalOf(name, mention) || seen.has(mention)) return []
+      seen.add(mention)
+      const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of)
+      if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256 }]
+      // Nothing of it yet: its frame, at the shape it will be, and whether it's being made.
+      return [{ mention, shape: sentShape(of) ?? 1, making: Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
     })
-    return [...new Set(files)]
+  }
+
+  /** What a box asked to render waits on: the first box it reads with nothing made yet, or that's being made. */
+  waitsFor(name: string): string | null {
+    const asset = this.get(name)?.asset
+    for (const read of asset?.reads ?? []) {
+      const of = this.get(this.mentionOf(read.name, name)?.name ?? "")
+      if (of?.asset?.tool && (of.asset.making?.length || of.queued || of.asked !== undefined || (!of.asset.prefixes?.length && !of.asset.sha256))) return read.name
+    }
+    return null
   }
 
   /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. Words that hold nothing but a take of its
@@ -609,7 +634,9 @@ export class CanvasStore {
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
           const seen = watched({ ...view, asset })
-          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, viewed: seen.number === asset.version ? undefined : seen.number })
+          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number })
+          // The take picked stopped without one: nothing's being looked at.
+          else if (view.watchRun !== undefined && !asset.making?.includes(view.watchRun)) change.watchRun = undefined
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
@@ -979,6 +1006,14 @@ export class CanvasStore {
     if (next !== words) this.setDraft(name, field, next)
   }
 
+  /** Looks at a take still being made: the run picked, or with none the next one asked. Its tile is picked, its progress on the frame. */
+  watchTake(name: string, run?: number) {
+    const asset = this.get(name)?.asset
+    if (!asset) return
+    const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
+    this.patch(name, { hereWords: undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
+  }
+
   seek(name: string, at: number) {
     const held = this.get(name)
     if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
@@ -994,10 +1029,7 @@ export class CanvasStore {
     const asset = view?.asset
     if (!asset || view.conflict) return
     // From an image tool's words, the box looks at the take being made, and its + goes back to them.
-    if (view.here && view.hereWords && paints(view, this.tools.get())) {
-      const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-      this.patch(key, { hereWords: undefined, viewed: undefined, watchFrom: Math.max(0, ...runs) })
-    }
+    if (view.here && view.hereWords && paints(view, this.tools.get())) this.watchTake(key)
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
@@ -1117,6 +1149,18 @@ export class CanvasStore {
   discardTake(name: string, number: number) {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
+    let note = 0
+    const undo = this.dropTake(key, number, () => dismiss(note))
+    if (!asset || !undo) return
+    const stands = asset.approved === number ? ` It was approved: ${name} now shows its newest.` : ""
+    const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
+    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
+    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** Take `number` off its box, in its turn: what's approved going leaves it following its inputs. What puts it back, its number and approval as they were. */
+  private dropTake(key: string, number: number, refused?: () => void): (() => void) | undefined {
+    const asset = this.views.get(key)?.asset
     const left = asset?.prefixes?.filter((held) => held.number !== number)
     if (!asset || !left) return
     const approved = asset.approved === number
@@ -1124,20 +1168,62 @@ export class CanvasStore {
     const gone: Partial<Asset> = { prefixes: left, versions: left.length, version: asset.version === number ? left.at(-1)?.number : asset.version, ...(approved ? { approved: undefined, pinned: false } : {}) }
     this.patch(key, { viewed: this.views.get(key)?.viewed === number ? undefined : this.views.get(key)?.viewed })
     let wasApproved = approved
-    let note = 0
     const takeBack = this.over(key, gone, (served, once) => this.client.discardVersion(this.projectId!, served, number, once), `discard ${asset.noun} ${number} of`, {
       done: (answer) => {
         wasApproved = Boolean(answer.approved)
       },
-      refused: () => dismiss(note),
+      refused,
     })
-    const undo = () => {
+    return () => {
       if (!takeBack?.()) this.over(key, back, (served, once) => this.client.restoreVersion(this.projectId!, served, number, wasApproved, once), `bring back ${asset.noun} ${number} of`)
     }
-    const stands = approved ? ` It was approved: ${name} now shows its newest.` : ""
-    const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
-    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
-    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /**
+   * A take carried out of `from` onto the canvas is moved, not copied: its new box `to` holds it, it leaves `from` as a discard does (an approved
+   * one leaving `from` following its inputs), and words that named it, `<from.N>` or `from`'s own `<self.N>`, name `to`. One note, with Undo
+   * putting all of it back. Called once `to` is made, its writes follow in line.
+   */
+  movedOut(from: string, number: number, to: string) {
+    const key = this.resolveName(from)
+    const asset = this.views.get(key)?.asset
+    let note = 0
+    const undo = this.dropTake(key, number, () => dismiss(note))
+    if (!asset || !undo) return
+    const named = (mention: string, reader: string) => {
+      const version = versionOf(mention)
+      return version?.number === number && (nameKey(version.name) === nameKey(key) || (reader === key && isSelf(version.name)))
+    }
+    const renamed = (value: unknown, reader: string): unknown =>
+      typeof value === "string"
+        ? value.replace(/<([^<>\s]+)>/g, (whole, mention: string) => (named(mention, reader) ? `<${to}>` : whole))
+        : Array.isArray(value)
+          ? value.map((item) => renamed(item, reader))
+          : value && typeof value === "object"
+            ? Object.fromEntries(Object.entries(value).map(([field, item]) => [field, renamed(item, reader)]))
+            : value
+    const readers: { name: string; back: Record<string, unknown> }[] = []
+    for (const [name, view] of this.views) {
+      if (!view.asset || name === to) continue
+      const fields = fieldsOf(view)
+      const next = Object.fromEntries(Object.entries(fields).flatMap(([field, value]) => (JSON.stringify(renamed(value, name)) === JSON.stringify(value) ? [] : [[field, renamed(value, name)]])))
+      if (!Object.keys(next).length) continue
+      readers.push({ name, back: Object.fromEntries(Object.keys(next).map((field) => [field, fields[field]])) })
+      void this.setFields(name, next)
+    }
+    const stands = asset.pinned && asset.approved === number ? ` It was approved: ${from} now follows its inputs.` : ""
+    const read = readers.length ? ` ${readers.map((one) => one.name).join(", ")} ${readers.length === 1 ? "names" : "name"} ${to} now.` : ""
+    note = say(`Moved ${asset.noun} ${number} of ${from} out as ${to}.${stands}${read}`, undefined, {
+      action: {
+        label: "Undo",
+        run: () => {
+          undo()
+          for (const one of readers) void this.setFields(one.name, one.back)
+          this.remove([to], undefined, true)
+        },
+      },
+      ms: UNDO_MS,
+    })
   }
 
   /** Whether a picture dropped here joins it: a box of pictures with no tool. */
@@ -1493,7 +1579,8 @@ export class CanvasStore {
     if (version) {
       const of = isSelf(version[1]) ? besides : this.nameOf(version[1])
       const numbers = numbersOf(this.get(of ?? "")?.asset).filter((number) => String(number).startsWith(version[2]))
-      return numbers.reverse().map((number) => `${version[1]}.${number}`)
+      // A box whose own name has the dot goes first, as an exact name wins.
+      return [...this.boxesLike(nameKey(typed), besides), ...numbers.reverse().map((number) => `${version[1]}.${number}`)]
     }
     const key = nameKey(typed)
     const own = key && SELF.startsWith(key) ? numbersOf(this.get(besides)?.asset).slice(-1).map((number) => `${SELF}.${number}`) : []
@@ -1627,7 +1714,8 @@ export class CanvasStore {
   // Deleting
 
   /** Gone at once, with no dialog. Files stay: a note offers Undo for a while, and says if something still needs what went. */
-  remove(names: string[], merged?: { into: string; undo: () => void }) {
+  /** `quiet`: a move's Undo, whose note was said. */
+  remove(names: string[], merged?: { into: string; undo: () => void }, quiet = false) {
     // One taken out or pasted a moment ago may have no row read yet: its delete waits behind its import.
     const going = names.map((name) => this.resolveName(name)).filter((name) => (this.views.get(name)?.asset || this.views.get(name)?.landed) && !this.views.get(name)?.placing)
     if (!going.length) return
@@ -1665,7 +1753,7 @@ export class CanvasStore {
       gone.forEach((box) => this.undo(box))
       merged?.undo()
     }
-    note = say(merged ? `${what} merged into ${merged.into}.${said}` : `Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+    if (!quiet) note = say(merged ? `${what} merged into ${merged.into}.${said}` : `Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
   }
 
   /** A box again, as it was, where it was. */
@@ -1810,10 +1898,10 @@ export class CanvasStore {
     this.removeNode(key)
   }
 
-  /** A picture says its shape before it's measured. A take looked at where the box stands keeps the box's frame, so its row stays under the pointer. */
+  /** A picture says its shape before it's measured: what a take's own size doesn't say. */
   setAspect(name: string, aspect: number) {
     const view = this.get(name)
-    if (!view || view.aspect === aspect || (view.here && view.viewed !== undefined)) return
+    if (!view || view.aspect === aspect) return
     this.patch(name, { aspect })
     this.reshape(name)
   }

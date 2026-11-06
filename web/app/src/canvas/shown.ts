@@ -16,6 +16,9 @@ export interface Shown extends MainFile {
 export function shownOf(view: ElementView): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
+  // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
+  const watch = watched(view)
+  if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number) => versions.find((held) => held.number === number)
   const held = version(view.viewed) ?? version(asset.version)
@@ -97,13 +100,14 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   return `${tool!.label} takes ${takes.map((one) => SEVERAL[one] ?? one).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
-/** Rendered from its words, the take since `watchFrom` that it looks at: the newest asked, its run while it's made, and its number once it's landed. */
+/** The take being made that it looks at: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made, and its number once it's landed. */
 export function watched(view: ElementView): { run?: number; number?: number } | undefined {
-  const from = view.watchFrom
-  if (from === undefined) return undefined
-  const landed = (view.asset?.prefixes ?? []).filter((held) => (held.run ?? 0) > from)
-  const run = Math.max(0, ...(view.asset?.making ?? []).filter((one) => one > from), ...landed.map((held) => held.run ?? 0))
-  return { run: run || undefined, number: landed.find((held) => held.run === run)?.number }
+  const { watchRun, watchFrom: from } = view
+  if (watchRun === undefined && from === undefined) return undefined
+  const versions = view.asset?.prefixes ?? []
+  const newer = (run?: number) => (run ?? 0) > (from ?? 0)
+  const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
+  return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
 }
 
 /** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */
@@ -128,9 +132,10 @@ export function sentShape(view: ElementView, number?: number): number | undefine
 export function aspectOf(view: ElementView): number {
   const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
   if (made) return made
+  // Showing a take, its own shape, whatever the last one measured was.
   const shown = shownOf(view)
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
-  return view.aspect ?? measured ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
+  return measured ?? view.aspect ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
 const hasSlots = (links?: Record<string, string>) => Object.keys(links ?? {}).length > 0

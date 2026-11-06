@@ -1,5 +1,48 @@
 * {
   box-sizing: border-box;
+  /* No bar is drawn on what scrolls (Paul, 11-06): it goes by the wheel, a finger or a drag, and an end with more to see fades. */
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+/* An end of what scrolls fades while there's more past it: --fade-top and --fade-bottom go with its scroll, here or in dragScroll.ts. */
+@property --fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes fade-top {
+  to {
+    --fade-top: 24px;
+  }
+}
+@keyframes fade-bottom {
+  from {
+    --fade-bottom: 24px;
+  }
+}
+.here-all,
+.here-side,
+.tool-groups,
+.drawer-body,
+.browse,
+.in-frame .mention-text {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent 100%);
+}
+.here-all,
+.tool-groups,
+.drawer-body,
+.browse,
+.in-frame .mention-text {
+  animation: fade-top linear both, fade-bottom linear both;
+  animation-timeline: scroll(self), scroll(self);
+  animation-range: 0 24px, calc(100% - 24px) 100%;
 }
 /* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
    by --here, and a box's insides scale with the canvas, so each sets --m. Its name, its words and what's said around them read the
@@ -302,6 +345,23 @@ code {
 .card {
   position: relative;
   user-select: none;
+}
+/* Where a box draws nothing, the pointer finds the canvas and a drag there pans it: its name row between its name and its ×, its takes column
+   past its takes, its add-ons' row past them (Paul, 11-06). !important: React Flow sets its own inline. */
+.react-flow__node:has(> .card:not(.entity)) {
+  pointer-events: none !important;
+}
+/* Of no weight, so what sets its own (.ratio-rest at rest) keeps it. */
+:where(.react-flow__node > .card) > :where(:not(.head, .here-side)),
+:where(.react-flow__node > .card > .head) > :where(:not(.sp)),
+:where(.here-side, .add-ons) > * {
+  pointer-events: auto;
+}
+.react-flow__attribution {
+  pointer-events: none;
+}
+.react-flow__attribution a {
+  pointer-events: auto;
 }
 .card.entity {
   background: var(--card);
@@ -709,6 +769,25 @@ video.preview.on {
 .in-frame .mention-text {
   position: relative;
 }
+/* A picture it mentions with nothing made yet: its frame at its shape, shimmering while it's made. */
+.ghost-blank {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 6%;
+  box-sizing: border-box;
+}
+.ghost-blank rect {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2px;
+  stroke-dasharray: 8 6;
+  vector-effect: non-scaling-stroke;
+}
+.ghost-blank.making rect {
+  fill: var(--mark2);
+  animation: breathe 1.4s ease-in-out infinite alternate;
+}
 .in-frame .slot-control {
   margin: auto;
   border: 0;
@@ -819,9 +898,13 @@ video.preview.on {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* All of a box, under it. --here-width and --here-room come with each fit, and --here is how large it's drawn for the screen. */
+/* All of a box, under it: one block with its picture and its takes, from the picture's left edge to the takes' right edge and a gap below
+   them, at any zoom. Its words stay one size on screen and wrap. --here-room comes with each fit, --here is how large it's drawn for the
+   screen, and --here-gap, in its own pixels, is between the picture and its takes and under them. */
 .stage {
   --here: 1.4;
+  --here-gap: var(--s6);
+  --side-width: 124px;
 }
 @media (min-width: 2400px) {
   .stage {
@@ -835,21 +918,24 @@ video.preview.on {
 }
 .here-under {
   position: absolute;
-  top: calc(100% + 8px * var(--text, 1));
-  left: 50%;
-  width: var(--here-width, 520px);
+  top: calc(100% + var(--here-gap) * var(--text, 1) * var(--here));
+  left: 0;
+  width: calc(100% / (var(--text, 1) * var(--here)));
   max-height: var(--here-room, 60vh);
-  overflow: hidden auto;
-  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--line2);
   border-radius: var(--round2);
   background: var(--panel);
   box-shadow: 0 10px 28px var(--shadow);
-  transform: translateX(-50%) scale(calc(var(--text, 1) * var(--here)));
-  transform-origin: top center;
+  transform: scale(calc(var(--text, 1) * var(--here)));
+  transform-origin: top left;
   user-select: text;
   z-index: 5;
   animation: fade-in 120ms ease-out;
+}
+.card:has(> .here-side:not(:empty)) > .here-under {
+  width: calc(100% / (var(--text, 1) * var(--here)) + var(--here-gap) + var(--side-width));
 }
 .here-under > * {
   --text: 1;
@@ -860,8 +946,8 @@ video.preview.on {
 .here-side {
   position: absolute;
   top: var(--head);
-  left: calc(100% + var(--s5) * var(--text, 1));
-  width: var(--side-width, 124px);
+  left: calc(100% + var(--here-gap) * var(--text, 1) * var(--here));
+  width: var(--side-width);
   height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)));
   overflow: hidden auto;
   overscroll-behavior: contain;
@@ -869,6 +955,13 @@ video.preview.on {
   transform-origin: top left;
   z-index: 5;
   animation: fade-in 120ms ease-out;
+}
+/* Dragged to scroll, by a mouse or a finger (dragScroll.ts). */
+.here-side {
+  touch-action: none;
+}
+.here-side:empty {
+  display: none;
 }
 .here-side > * {
   --text: 1;
@@ -927,6 +1020,18 @@ video.preview.on {
   color: var(--ink);
   font-size: var(--title);
 }
+/* The take shown, as words mention it. */
+.take-name {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2, 6px);
+  margin-bottom: var(--s3, 8px);
+}
+.take-name .chip {
+  border: 0;
+  font: inherit;
+  cursor: copy;
+}
 /* What a box is, in its own words: a field of its own, under its label. */
 .desc-field {
   display: flex;
@@ -972,7 +1077,11 @@ video.preview.on {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-height: 0;
   padding: 8px 10px 10px;
+  border-radius: inherit;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
 }
 .here-all .field,
 .here-all .tb {
@@ -1260,7 +1369,6 @@ video.preview.on {
   gap: 4px;
   padding: 6px 8px 2px;
   overflow-x: auto;
-  scrollbar-width: none;
 }
 .take {
   position: relative;
@@ -2192,8 +2300,6 @@ a.tab:hover {
 .tool-groups {
   overflow-y: auto;
   min-height: 0;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
 }
 .tool-groups[hidden] {
   display: none;
@@ -3311,5 +3417,11 @@ input[type="checkbox"] {
 @media (min-width: 760px) {
   .shell:not([data-drawer="none"]) .zoom {
     right: calc(var(--drawer) * 1.15 + 16px);
+  }
+}
+
+@keyframes breathe {
+  to {
+    fill-opacity: 0.2;
   }
 }
