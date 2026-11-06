@@ -524,6 +524,9 @@ struct Session {
     invoked: std::collections::BTreeSet<String>,
     /// Its row of `Serving`: the manifests its constructions read.
     serving: u64,
+    /// Its TensorFS has varena v2, whose cores share each GPU through its ledger. An older one
+    /// is asked for nothing and asks for nothing: TensorD makes its room (`room_outside_ledger`).
+    ledger: bool,
 }
 impl Session {
     fn lane(&self) -> std::ops::Range<usize> {
@@ -902,6 +905,9 @@ struct Device {
     /// What its executors hold and ask for. They and it meet here without any wire.
     #[cfg(target_os = "linux")]
     ledger: Option<Arc<varena_ledger::Table>>,
+    /// Its own view of that ledger, for asks on behalf of an executor outside it.
+    #[cfg(target_os = "linux")]
+    asking: Option<Mutex<varena_ledger::Table>>,
 }
 
 impl Device {
@@ -970,15 +976,20 @@ impl Pool {
         remove_old_executor_roots(root);
         let peaks = memory::Peaks::at(root.join("peaks"), notes.clone());
         let tenants = memory::Tenants::default();
-        let devices: Vec<Device> = envelope.iter().map(|entry| Device {
-            entry: entry.clone(),
-            memory: memory::Gpu::create(entry, &config.inventory, config.gpu_memory_limit, &peaks, &notes).map(Arc::new),
+        let devices: Vec<Device> = envelope.iter().map(|entry| {
             #[cfg(target_os = "linux")]
-            ledger: memory::row(entry, &config.inventory)
+            let open = || memory::row(entry, &config.inventory)
                 .and_then(|row| varena_ledger::parse_uuid(&row.device_uuid))
                 .and_then(|uuid| varena_ledger::Table::open(&uuid)
-                    .map_err(|error| tracing::warn!("GPU {entry} has no ledger: {error}")).ok())
-                .map(Arc::new),
+                    .map_err(|error| tracing::warn!("GPU {entry} has no ledger: {error}")).ok());
+            Device {
+                entry: entry.clone(),
+                memory: memory::Gpu::create(entry, &config.inventory, config.gpu_memory_limit, &peaks, &notes).map(Arc::new),
+                #[cfg(target_os = "linux")]
+                ledger: open().map(Arc::new),
+                #[cfg(target_os = "linux")]
+                asking: open().map(Mutex::new),
+            }
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
         let running = memory::Running::default();
@@ -1112,9 +1123,10 @@ impl Pool {
     }
 
     /// An asker on GPU `index` stays short after every peer trimmed. Only an exit returns a CUDA
-    /// context: end the least recently used idle executor there, warm sets last, never an asker's
-    /// own (an idle executor recording a graph asked, and the supervisor ended it: every SDXL call on an
-    /// 8 GB card started a new process, 35140-35161). Whether one ended.
+    /// context: end the least recently used idle executor there, warm sets last and one outside the
+    /// ledger first (all it holds is held: no ask reaches it), never an asker's own (an idle executor
+    /// recording a graph asked, and the supervisor ended it: every SDXL call on an 8 GB card started
+    /// a new process, 35140-35161). Whether one ended.
     #[cfg(target_os = "linux")]
     fn end_idle_on(&self, index: usize, askers: &[u32]) -> bool {
         let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
@@ -1122,9 +1134,31 @@ impl Pool {
         let key = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.degree != 0 && session.lane().contains(&index))
             .filter(|(_, session)| !executor_births(&session.executor.birth, &session.followers).iter().any(|birth| askers.contains(&birth.pid)))
-            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.used))
+            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.ledger, session.used))
             .map(|(key, _)| key.clone());
         key.is_some_and(|key| self.end_session(&key))
+    }
+    /// Before an executor outside the ledger (`Session::ledger`) serves a call on `lane`, room for
+    /// it, as v1 made it: it sizes itself by what the driver has free, which no peer gives it.
+    /// Idle executors outside the ledger there end, since nothing else returns what they hold; for
+    /// a construction it has not loaded, idle ledger members too, whose contexts no ask returns
+    /// (v1 ended every idle neighbour for a first call); then every member left gives back what it
+    /// holds idle. Warm sets stay.
+    fn room_outside_ledger(&self, lane: std::ops::Range<usize>, loading: bool) {
+        let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
+            .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
+        let keys: Vec<String> = self.sessions.lock().unwrap().iter()
+            .filter(|(_, s)| s.degree != 0 && s.start < lane.end && lane.start < s.start + s.degree as usize)
+            .filter(|(_, s)| (loading || !s.ledger) && !s.loaded.keys().any(|key| warm.contains(key)))
+            .map(|(key, _)| key.clone()).collect();
+        let ended = keys.iter().filter(|key| self.end_session(key)).count();
+        #[cfg(target_os = "linux")]
+        let given: u64 = self.devices[lane.clone()].iter().filter_map(|device| device.asking.as_ref())
+            .filter_map(|table| table.lock().unwrap().ask_all_idle(Instant::now() + std::time::Duration::from_secs(2))).sum();
+        #[cfg(not(target_os = "linux"))]
+        let given = 0;
+        self.notes.note(serde_json::json!({"event": "room_outside_ledger", "gpus": lane, "loading": loading,
+            "ended": ended, "given": given, "free": self.free(&lane)}));
     }
     /// Current minimum driver free bytes, used only for exit diagnostics.
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -3247,7 +3281,9 @@ impl Pool {
             serving: self.serving.clone(),
             id,
         });
+        let ledger = in_ledger(&executor.hello.tensorfs_version);
         Ok(Session {
+            ledger,
             env: plan.executor.clone(),
             start,
             generation: plan.generation.clone(),
@@ -3283,6 +3319,9 @@ impl Pool {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
         let gpus = self.lane(start, degree)?;
+        if !session.ledger && degree > 0 {
+            self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
+        }
         let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
         // A call begins: the host is looked at before it grows.
         self.nudge_host();
@@ -3696,6 +3735,13 @@ impl Pool {
 /// interpreter's own Runtime; its builders inherit that path.
 const RUNTIME_FIRST: &str = "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); \
     runpy.run_module('cozy_runtime.internal.machine_kernels', run_name='__main__')";
+
+/// Whether an executor of TensorFS `version` shares its GPUs through their ledgers: varena v2,
+/// TensorFS 0.21 on. One that names none is taken as current.
+fn in_ledger(version: &str) -> bool {
+    use std::str::FromStr;
+    pep440_rs::Version::from_str(version).map_or(true, |version| version.release() >= &[0, 21][..])
+}
 
 /// A Runtime wheel's importable tree, unpacked once per wheel digest under `into`.
 fn unpack_runtime(wheel: &Path, into: &Path) -> io::Result<PathBuf> {
