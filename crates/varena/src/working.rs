@@ -196,7 +196,7 @@ impl Segment {
         let chunks = (0..bytes).step_by(chunk)
             .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
             .collect();
-        Self { bytes, size_class, chunks, pool, phase_blocks: 0, guard: 0 }
+        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0 }
     }
 
     fn backed(&self) -> bool {
@@ -265,6 +265,8 @@ struct Segment {
     pool: Option<PoolId>,
     // Rebuilt at phase entry; maintained only while that phase owns the device observation.
     phase_blocks: usize,
+    // The plan phase (`State::plan_epoch`) that last held a phase's block here. A loop keeps it.
+    touched: u64,
     // Unmapped VA after it (`checks::guard`), which goes back with it.
     guard: usize,
 }
@@ -298,6 +300,11 @@ struct Pool {
 pub(crate) struct State {
     pub(crate) entries: BTreeMap<u64, crate::Entry>,
     pub(crate) phase_boundary: Option<u64>,
+    pub(crate) plan_phase: Option<crate::PlanPhase>,
+    // Counts plan phase entries.
+    pub(crate) plan_epoch: u64,
+    // Whether each plan phase looped last time it ran.
+    pub(crate) passes: BTreeMap<String, bool>,
     // The Region used last: its `next` is this use's.
     pub(crate) last_used: Option<u64>,
     pub(crate) fills: u64,
@@ -423,6 +430,54 @@ impl State {
             .sum()
     }
 
+    /// A loop keeps the working pages its phases touched: what one step used the next uses again,
+    /// and mapping it back costs driver calls on the submitting thread (Qwen 2 MP at 8 GiB: 950 a
+    /// step, and a GPU drain for each wait on its own frees).
+    pub(super) fn looping(&self) -> bool {
+        self.plan_phase.as_ref().is_some_and(crate::PlanPhase::keeps)
+    }
+
+    /// The segments a loop keeps whole.
+    pub(super) fn kept(&self) -> BTreeSet<u64> {
+        if !self.looping() {
+            return BTreeSet::new();
+        }
+        self.segments.iter().filter(|(_, segment)| segment.pool.is_none() && segment.touched == self.plan_epoch)
+            .map(|(base, _)| *base).collect()
+    }
+
+    /// What the active eager phase still needs of working memory, if measured: its last pass's
+    /// peak, or in a loop, the most it has held.
+    fn phase_need(&self) -> Option<usize> {
+        let active = self.phases.active.as_ref().filter(|active| active.invalid.is_none() && active.mode == PhaseMode::Eager)?;
+        let sample = active.key.as_ref().and_then(|key| self.phases.samples.get(key)).filter(|sample| sample.known);
+        let peak = sample.map(|sample| sample.peak_bytes).max(self.looping().then_some(active.owned_peak))?;
+        Some(peak.saturating_sub(active.owned_charged))
+    }
+
+    fn phase_known(&self) -> bool {
+        self.looping() || self.phase_need().is_some()
+    }
+
+    /// Completed free pages beyond what the active phase needs, and the segments a loop keeps
+    /// whole. With no measure of it, all of them.
+    fn beyond_phase(&self) -> (usize, BTreeSet<u64>) {
+        let need = self.phase_need();
+        if need.is_none() && !self.looping() {
+            return (usize::MAX, BTreeSet::new());
+        }
+        let kept = self.kept();
+        let (mut reusable, mut outside) = (0usize, 0usize);
+        for (base, segment) in self.segments.iter().filter(|(_, segment)| segment.pool.is_none()) {
+            let bytes = self.releasable(*base, segment);
+            reusable += bytes;
+            if !kept.contains(base) {
+                outside += bytes;
+            }
+        }
+        (reusable.saturating_sub(need.unwrap_or(0)).min(outside), kept)
+    }
+
     /// A completed free block across `at` becomes two, so a handle's pages can leave alone.
     fn carve(&mut self, at: u64) {
         let Some((&ptr, block)) = self.blocks.range(..at).next_back() else { return };
@@ -470,6 +525,9 @@ impl State {
         let held = segment.phase_blocks != 0;
         segment.phase_blocks =
             segment.phase_blocks - usize::from(was_owned) + usize::from(is_owned);
+        if is_owned {
+            segment.touched = self.plan_epoch;
+        }
         match (held, segment.phase_blocks != 0) {
             (false, true) => active.backing += segment.bytes,
             (true, false) => active.backing -= segment.bytes,
@@ -494,6 +552,7 @@ impl State {
                 if block.phase == Some(token) {
                     owned += block.capacity;
                     segment.phase_blocks += 1;
+                    segment.touched = self.plan_epoch;
                 }
             }
             let backing = self
@@ -1433,9 +1492,10 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     let class = size_class(bytes, owner.page())?;
     let exact = if class <= LARGE { owner.page() } else { class };
     let mut pool = pool;
-    let workspace;
+    let (workspace, looping);
     {
         let mut state = owner.lock()?;
+        looping = state.looping();
         owner.callback_mutation(&mut state);
         // A capture's primed stream holds its workspaces already: nothing it allocates is one.
         let primed = pool.is_some_and(|id| state.pools.get(&id).is_some_and(|p| p.routing && p.primed.contains(&stream)));
@@ -1475,7 +1535,10 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         }
     }
     let segment = rounded(class.max(SEGMENT), owner.page())?;
-    let result = reclaim::acquire(device, exact, Wait::Yes, Protect { reuse_working: true, ..Default::default() }, || {
+    // A loop's working allocation, like its weights, takes weights before its other pages: what one
+    // step freed the next uses again.
+    let protect = Protect { reuse_working: true, keep_phase: looping, ..Default::default() };
+    let result = reclaim::acquire(device, exact, Wait::Yes, protect, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
@@ -1861,6 +1924,15 @@ pub fn trim_all() -> Result<usize> {
 
 /// The first step of the reclaim order: completed free pages, with no waiting.
 pub(crate) fn release_completed(device: i32, want: usize, maximum: usize, keep: Option<PoolId>) -> Result<usize> {
+    release_free(device, want, maximum, keep, false)
+}
+
+/// Completed free pages the active phase can spare (`State::beyond_phase`).
+pub(crate) fn release_beyond_phase(device: i32, want: usize, maximum: usize, keep: Option<PoolId>) -> Result<usize> {
+    release_free(device, want, maximum, keep, true)
+}
+
+fn release_free(device: i32, want: usize, maximum: usize, keep: Option<PoolId>, phase: bool) -> Result<usize> {
     let Some(owner) = existing(device)? else {
         return Ok(0);
     };
@@ -1868,8 +1940,10 @@ pub(crate) fn release_completed(device: i32, want: usize, maximum: usize, keep: 
     gate.not_capturing()?;
     let mut state = owner.lock()?;
     let _context = owner.driver().enter()?;
-    let result = owner.poll(&mut state)
-        .and_then(|()| owner.trim_ready(&mut state, want, keep, &BTreeSet::new(), maximum));
+    let result = owner.poll(&mut state).and_then(|()| {
+        let (beyond, kept) = if phase { state.beyond_phase() } else { (usize::MAX, BTreeSet::new()) };
+        owner.trim_ready(&mut state, want.min(beyond), keep, &kept, maximum)
+    });
     result.map_err(|error| owner.fail(&mut state, error))
 }
 
@@ -2147,10 +2221,10 @@ pub fn phase_forget(device: i32, key: &str) -> Result<bool> {
     Ok(removed || replayed || split_removed)
 }
 
-/// What the rest of this phase still needs of working memory, per its last pass, and the
-/// completed free pages already mapped for it. With no measure it says a quarter of the card, the
-/// same floor a split has, and whether it knew. None declines: capture, or pressure.
-pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, bool)>> {
+/// What the rest of this phase still needs of working memory (`State::phase_need`), the completed
+/// free pages already mapped for it, those it can spare, and whether it knew. With no measure it says
+/// a quarter of the card, the same floor a split has. None declines: capture, or pressure.
+pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, usize, bool)>> {
     let Some(owner) = existing(device)? else {
         return Ok(None);
     };
@@ -2161,19 +2235,23 @@ pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, bool)>> 
             return None;
         }
         let reusable = state.reusable_eager_pages();
-        let unknown = Some((owner.capacity() / 4, reusable, false));
+        let unknown = Some((owner.capacity() / 4, reusable, 0, false));
         let Some(active) = state.phases.active.as_ref().filter(|active| active.invalid.is_none()) else {
             return unknown;
         };
-        let samples = match active.mode {
-            PhaseMode::Eager => &state.phases.samples,
-            PhaseMode::Replay => &state.phases.replay_samples,
-            _ => return None,
-        };
-        let Some(sample) = active.key.as_ref().and_then(|key| samples.get(key)).filter(|sample| sample.known) else {
-            return unknown;
-        };
-        Some((sample.peak_bytes.saturating_sub(active.owned_charged), reusable, true))
+        match active.mode {
+            PhaseMode::Eager => {
+                let Some(need) = state.phase_need() else { return unknown };
+                Some((need, reusable, state.beyond_phase().0, true))
+            }
+            PhaseMode::Replay => {
+                let sample = active.key.as_ref().and_then(|key| state.phases.replay_samples.get(key));
+                let Some(sample) = sample.filter(|sample| sample.known) else { return unknown };
+                let need = sample.peak_bytes.saturating_sub(active.owned_charged);
+                Some((need, reusable, reusable.saturating_sub(need), true))
+            }
+            _ => None,
+        }
     })();
     if answer.is_none() {
         state.stats.prefetch_declines += 1;
@@ -2181,18 +2259,12 @@ pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, bool)>> 
     Ok(answer)
 }
 
-/// Free pages beyond what the rest of this phase will use again, per its last pass. With no measure
-/// of it, usize::MAX: nothing is known to come back.
-pub(crate) fn beyond_phase(device: i32) -> Result<usize> {
+/// Whether the active phase's working need is known (`State::phase_need`).
+pub(crate) fn phase_known(device: i32) -> Result<bool> {
     let Some(owner) = existing(device)? else {
-        return Ok(usize::MAX);
+        return Ok(false);
     };
-    let state = owner.lock()?;
-    let known = state.phases.active.as_ref().filter(|active| active.invalid.is_none() && active.mode == PhaseMode::Eager)
-        .and_then(|active| Some((state.phases.samples.get(active.key.as_ref()?).filter(|sample| sample.known)?, active)));
-    Ok(known.map_or(usize::MAX, |(sample, active)| {
-        state.reusable_eager_pages().saturating_sub(sample.peak_bytes.saturating_sub(active.owned_charged))
-    }))
+    Ok(owner.lock()?.phase_known())
 }
 
 pub(crate) fn prefetch_declined(device: i32) -> Result<()> {

@@ -710,7 +710,8 @@ fn split_begin_inner(
             None => {}
         }
     }
-    let keep = Protect { keep_working: true, ..Default::default() };
+    let looping = owner.lock()?.looping();
+    let keep = Protect { keep_working: true, keep_phase: looping, ..Default::default() };
     reclaim::acquire(device, 0, Wait::Yes, keep, || {
         // Keep GPU-owning leases outside and longer-lived than every exclusion guard.
         let lease = crate::plan::Lease::acquire(device)?;
@@ -729,8 +730,9 @@ fn split_begin_inner(
             let plan = plans.iter().find(|plan| plan.id == choice_id)
                 .ok_or(Error::Invalid("split choice is not declared"))?;
             if plan.missing > plan.now {
-                // Matched compatible slots stay mapped; only unmatched completed backing goes.
-                owner.trim_ready(&mut state, plan.missing - plan.now, None, &plan.preserve, usize::MAX)?;
+                // Matched compatible slots stay mapped, and so does a loop's; only other completed backing goes.
+                let preserve = plan.preserve.union(&state.kept()).copied().collect();
+                owner.trim_ready(&mut state, plan.missing - plan.now, None, &preserve, usize::MAX)?;
                 let (free, _) = owner.driver().memory_info()?;
                 let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
                 let plan = plans.iter().find(|plan| plan.id == choice_id).expect("copied choice");

@@ -134,7 +134,8 @@ impl Plan {
         self.device.plan_generation.fetch_add(1, Ordering::AcqRel);
         drop(active);
         // A new plan or phase is the boundary: what ran before it is no longer in its loop.
-        self.device.enter_phase()
+        crate::gate(self.device())?.not_capturing()?;
+        self.device.enter_plan_phase(Some(&self.phases[phase].name))
     }
 
     pub fn deactivate(self: &Arc<Self>) -> Result<()> {
@@ -146,6 +147,8 @@ impl Plan {
         if active.as_ref().is_some_and(|active| active.id == self.id) {
             *active = None;
             self.device.plan_generation.fetch_add(1, Ordering::AcqRel);
+            drop(active);
+            let _ = self.device.enter_plan_phase(None); // Metadata: a poisoned table keeps its own.
         }
         Ok(())
     }
@@ -190,6 +193,10 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
 #[derive(Default)]
 pub(crate) struct Order {
     next: BTreeMap<u64, (u64, u64)>,
+    // For the active phase's regions: their first use in a later phase.
+    later: BTreeMap<u64, (u64, u64)>,
+    // Phase names, from the active one.
+    names: Vec<String>,
 }
 
 impl Order {
@@ -198,6 +205,14 @@ impl Order {
     }
     pub(crate) fn planned(&self) -> bool {
         !self.next.is_empty()
+    }
+    /// An active phase's region's first use in a later phase.
+    pub(crate) fn later_use(&self, id: u64) -> Option<(u64, u64)> {
+        self.later.get(&id).copied()
+    }
+    /// The phase `ahead` of the active one.
+    pub(crate) fn name(&self, ahead: u64) -> Option<&str> {
+        self.names.get(ahead as usize).map(String::as_str)
     }
 }
 
@@ -219,8 +234,13 @@ pub(crate) fn order(ordinal: i32) -> Result<Order> {
     if let Some((plan, active)) = &lease.active {
         for ahead in 0..plan.phases.len() {
             let phase = &plan.phases[(active + ahead) % plan.phases.len()];
+            order.names.push(phase.name.clone());
             for (position, region) in phase.regions.iter().enumerate() {
-                order.next.entry(region.id()).or_insert((ahead as u64, position as u64));
+                let at = (ahead as u64, position as u64);
+                if ahead != 0 && order.next.get(&region.id()).is_some_and(|(phases, _)| *phases == 0) {
+                    order.later.entry(region.id()).or_insert(at);
+                }
+                order.next.entry(region.id()).or_insert(at);
             }
         }
     }
