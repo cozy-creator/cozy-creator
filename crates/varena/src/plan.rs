@@ -43,8 +43,6 @@ pub(crate) struct Snapshot {
     pub outside_reclaimable: usize,
     /// Every phase's weights, each region once: what the plan holds when all of it stays on the card.
     pub plan_bytes: usize,
-    /// The other phases' weights on the card now, which the plan uses again.
-    pub kept: usize,
 }
 
 /// Owns the active plan's regions before gate and table guards are taken: a Plan's last drop
@@ -186,17 +184,12 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
             outside_reclaimable += entry.bytes;
         }
     }
-    let (mut plan_bytes, mut kept) = (phase.bytes, 0usize);
     let mut seen = BTreeSet::new();
-    for other in plan.phases.iter().filter(|other| !std::ptr::eq(*other, phase)) {
-        for region in other.regions.iter().filter(|region| !phase.ids.contains(&region.id()) && seen.insert(region.id())) {
-            plan_bytes += region.rounded;
-            if state.entries.get(&region.id()).is_some_and(|entry| entry.handle.is_some()) {
-                kept += region.rounded;
-            }
-        }
-    }
-    Ok(Some(Snapshot { name: phase.name.clone(), bytes: phase.bytes, missing, outside_reclaimable, plan_bytes, kept }))
+    let plan_bytes = phase.bytes + plan.phases.iter().flat_map(|other| &other.regions)
+        .filter(|region| !phase.ids.contains(&region.id()) && seen.insert(region.id()))
+        .map(|region| region.rounded)
+        .sum::<usize>();
+    Ok(Some(Snapshot { name: phase.name.clone(), bytes: phase.bytes, missing, outside_reclaimable, plan_bytes }))
 }
 
 /// Next use of each planned region: phases ahead of the active one, then position within it.

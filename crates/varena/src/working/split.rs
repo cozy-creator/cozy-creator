@@ -445,9 +445,11 @@ struct Menu {
     capacity: usize,
     /// What no eviction can touch: live working bytes and weights held for use.
     live: usize,
-    /// The plan's other phases' weights on the card, when all its phases fit it: taken for a
-    /// coarser level, they are read back every call. SDXL's VAE decode at 6 GiB ran whole beside
-    /// 0.18 GiB of its own weights, evicted 1 GB of UNet a call and lost its recorded program.
+    /// The plan's other phases' weights, when all its phases fit the card: their room is theirs,
+    /// on the card now or not, or a coarser level reads them back every call. SDXL's VAE decode at
+    /// 6 GiB ran whole beside 0.18 GiB of its own weights, evicted 1 GB of UNet a call and lost
+    /// its recorded program; counting only those still on the card, each eviction let the next
+    /// site go coarser.
     kept: usize,
 }
 
@@ -472,7 +474,7 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     let (now, peak) = owner.note_held();
     let held = phase.as_ref().map_or(peak, |phase| now.max(peak.min(phase.bytes)));
     let capacity = total.min(owner.capacity());
-    let kept = phase.as_ref().filter(|phase| phase.plan_bytes <= capacity).map_or(0, |phase| phase.kept);
+    let kept = phase.as_ref().filter(|phase| phase.plan_bytes <= capacity).map_or(0, |phase| phase.plan_bytes - phase.bytes);
     Ok(Menu { plans, capacity, live: live_working(&state) + held, kept })
 }
 
