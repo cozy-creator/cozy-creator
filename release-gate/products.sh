@@ -80,6 +80,31 @@ product_flux_3_klein() {
 product_qwen_image_2() {
   cell qwen "$(pkg qwen-image-2 generate)" seed:=$((R + 5)) prompt="This is an RGBA image with transparency. $OBJECT, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
   refs qwen-refs qwen-image-2 generate_turbo $((R + 20))
+  qwen_lora
+}
+# A published Qwen-Image 2.1 LoRA in ComfyUI's names (AI-Toolkit's camera angles, whose MLP adapts ComfyUI's fused
+# img_mlp.gate_up), uploaded from its provider by $M as a private throwaway, then added on Turbo (tfs-144: until 11-06 no
+# Qwen 2.1 LoRA converted, and none served). The upload reads as qwenimage21.lora, a qwen-image-2 transformer LoRA; the
+# render adapts every layer of it, so its run is told of none skipped. The model is deleted after.
+QWEN_LORA=hf://gribbliest/qwen-image-2.1-qma-camera-angles@13007eec2648c09529e930164c2ccc9c8c12428c/qwen-image-2.1-qma-camera-angles.safetensors
+qwen_lora() {
+  [ -z "$ONLY" ] || [[ $ONLY == *",qwen-lora,"* || $ONLY == *",qwen-image-2,"* ]] || return 0
+  local who model commit format said
+  who=$("$CLI" --json whoami 2>/dev/null | jq -r '.account // empty')
+  model=$who/ci-qwen21-lora-$R
+  run_submit "$OUT" qwen-lora-upload model upload "$QWEN_LORA" "$model" --lane bf16 --on "$M" > /dev/null
+  run_wait "$OUT" qwen-lora-upload
+  commit=$(run_get "$OUT" qwen-lora-upload '.result.models[0].published.commit')
+  format=$(run_get "$OUT" qwen-lora-upload '.result.models[0].format')
+  expect qwen-lora-convert "$([[ $format == "detected qwenimage21.lora; LoRA of qwen-image-2 transformer" && -n $commit ]] && echo PASS || echo FAIL)" \
+    "upload run $(cat qwen-lora-upload.number): ${format:-no format}, ${commit:-no commit}"
+  if [ -n "$commit" ]; then
+    cell qwen-lora "$(pkg qwen-image-2 generate_turbo)" --lora "$model@$commit" seed:=$((R + 28)) prompt="A low-angle shot looking up at $OBJECT, wide lens"
+    said=$(grep -o 'do not apply[^"]*' qwen-lora.ndjson 2>/dev/null | head -1)
+    expect qwen-lora-applied "$([ "$(run_get "$OUT" qwen-lora .status)" = completed ] && [ -z "$said" ] && echo PASS || echo FAIL)" \
+      "run $(cat qwen-lora.number): $(run_get "$OUT" qwen-lora .status) ${said:-every layer applied}"
+  fi
+  "$CLI" model delete "$model" -y > qwen-lora-delete.log 2>&1 || log "qwen-lora: $model not deleted: $(tail -c 200 qwen-lora-delete.log)"
 }
 product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best quality, anime illustration of $CHAR" seed:=$((R + 6)); }
 product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --file image="${K:-$REF}"; }
