@@ -119,6 +119,9 @@ struct State {
     bound: i64,
     clock: u64,
     log: Vec<Row>,
+    /// Each store read's (set, block, O_DIRECT bytes, cached bytes, ns): this request's, the last one's.
+    reads: Vec<(String, u32, u64, u64, u64)>,
+    last_reads: Vec<(String, u32, u64, u64, u64)>,
 }
 
 pub(super) struct Tier {
@@ -330,6 +333,12 @@ impl Tier {
         state.rate.extend(refills);
         let streamed = state.wanted.values().filter_map(|wanted| wanted.source.upgrade()).map(|source| source.bytes() as i64).sum();
         (state.own, state.bound, state.looked) = (streamed, memory.bound, None);
+        state.last_reads = std::mem::take(&mut state.reads);
+    }
+
+    /// Where a store read's bytes came from: past the page cache, or through it.
+    pub(super) fn read_source(&self, set: &str, block: u32, stats: &tensorfs::io::ReadStats) {
+        self.state().reads.push((set.to_owned(), block, stats.direct, stats.cached, stats.ns));
     }
 
     pub(super) fn row(&self, row: Row) {
@@ -485,9 +494,10 @@ impl PyPages {
             .map(|row| (row.set, row.block, row.bytes, row.origin, row.ahead, row.ns, row.at_ms)).collect()
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (pages, bytes, room, wanted, pin_failed, off) = {
+        let (pages, bytes, room, wanted, pin_failed, off, reads) = {
             let state = self.tier.state();
-            (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone())
+            (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone(),
+                state.last_reads.clone())
         };
         let row = PyDict::new(py);
         row.set_item("scope", "the host tier: every streamed page's bytes, pinned")?;
@@ -501,6 +511,8 @@ impl PyPages {
         row.set_item("pin_failed", pin_failed)?;
         row.set_item("ahead_canceled", self.tier.canceled.load(Ordering::Relaxed))?;
         row.set_item("ahead_failed", self.tier.failed.load(Ordering::Relaxed))?;
+        row.set_item("store_reads_scope", "the last request's store reads: set, block, O_DIRECT bytes, cached bytes, ns")?;
+        row.set_item("store_reads", reads)?;
         Ok(row)
     }
 }

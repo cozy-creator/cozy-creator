@@ -139,7 +139,7 @@ impl Inner {
         unsafe { io::read(&copies, &ReadOpts::default()) }.map(drop)
     }
 
-    fn read(&self, stored: &Stored, fill: &varena::Fill, ahead: bool) -> Result<u64, tensorfs::io::source::Error> {
+    fn read(&self, stored: &Stored, fill: &varena::Fill, ahead: bool) -> Result<io::ReadStats, tensorfs::io::source::Error> {
         let control = Arc::new(ReadControl::default());
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
         let mode = if fill.target().refilled() { Mode::Buffered } else { Mode::Cache };
@@ -149,7 +149,7 @@ impl Inner {
         // SAFETY: the Fill is exclusive; `abort` drains before a failed fill's pages are released.
         let read = unsafe { source.read_placements_cancelable(&[placement], READERS, mode, &IoTally::default(), &control) };
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        read.map(|stats| stats.bytes)
+        read
     }
 
     /// Bytes `at..at + len` of its stored bytes into a host page of `whole` bytes, gaps zeroed.
@@ -279,7 +279,10 @@ impl varena::Source for PageSource {
         }
         if let Some(stored) = &this.stored {
             match this.read(stored, &fill, ahead) {
-                Ok(bytes) => this.row(bytes, "store", ahead, began),
+                Ok(stats) => {
+                    this.row(stats.bytes, "store", ahead, began);
+                    this.tier.read_source(&this.set, this.block, &stats);
+                }
                 Err(error) => {
                     let (error, failed) = storage(error);
                     if matches!(error, varena::Error::Busy) {
