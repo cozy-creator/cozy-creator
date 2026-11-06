@@ -111,6 +111,7 @@ export class Placer {
   join(files: File[], name: string) {
     for (const file of files) {
       const landed = this.store.joining(name)
+      const owed = this.store.outbox.owing()
       const signal = new AbortController().signal
       const sent = async () => {
         const digest = await hashFile(file, signal, () => {})
@@ -119,7 +120,10 @@ export class Placer {
       }
       void inLine(sent)
         .then((digest) => this.store.joinVersion(name, { sha256: digest.slice("sha256:".length), field: mediaOf(file) }, digest, file.name), (error) => say(file.name, error))
-        .finally(landed)
+        .finally(() => {
+          landed()
+          owed()
+        })
     }
   }
 
@@ -141,16 +145,20 @@ export class Placer {
   }
 
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then?: (name: string) => void) {
+    const owed = this.store.outbox.owing()
     try {
       const digest = await inLine(() => this.hashAndSend(key, file, signal))
       await this.store.whenNamed(key, signal)
+      // Its import is in the queue from here, and counted there.
+      owed()
       try {
         const name = await this.ask(key, digest, dropped)
         then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
-        await inLine(() => this.send(key, file, digest, signal))
+        const again = this.store.outbox.owing()
+        await inLine(() => this.send(key, file, digest, signal)).finally(again)
         const name = await this.ask(key, digest, dropped)
         then?.(name)
       }
@@ -158,6 +166,8 @@ export class Placer {
       if (signal.aborted) return
       say(file.name, error)
       this.store.cancel(key)
+    } finally {
+      owed()
     }
   }
 

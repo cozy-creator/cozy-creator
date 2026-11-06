@@ -233,6 +233,8 @@ export class CanvasStore {
   /** The machines a render may go to, a rental before this computer: the walk places it on whichever is free. */
   machines: () => string[] = () => []
   private ids = new Map<string, string>()
+  /** The last `GET canvas` taken in: a canvas drawn again is handed it again, and what's happened since stands. */
+  private cardsRead?: Record<string, Row>
   /** Each box by its node's id, the same whatever it's called: an action waits for its turn by this. */
   private namesById = new Map<string, string>()
   /** What Calcifer calls each, by id: a rename on its way shows here first. */
@@ -288,6 +290,7 @@ export class CanvasStore {
     return this.seen
   }
 
+  /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
   attach(flow: Flow) {
     this.flow = flow
     if (this.state && this.rows) this.reconcile()
@@ -296,13 +299,24 @@ export class CanvasStore {
       if (this.flow !== flow) return
       flow.setNodes((nodes) => {
         const there = new Set(nodes.map((node) => node.id))
-        return [...nodes, ...[...this.ids].filter(([, id]) => !there.has(id)).flatMap(([name, id]) => (this.rows?.has(name) ? [this.node(name, this.rows.get(name)!, this.selected.has(name), id)] : []))]
+        return [
+          ...nodes,
+          ...[...this.ids].filter(([, id]) => !there.has(id)).flatMap(([name, id]) => (this.rows?.has(name) ? [this.node(name, this.rows.get(name)!, this.selected.has(name), id)] : [])),
+        ]
       })
     })
   }
 
+  /** Its canvas goes, and the store stays for when it's drawn again: nothing is open or held in a drag by then. */
   detach() {
     this.flow = null
+    if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
+    this.inPlace = null
+    this.dragging.clear()
+    this.dragFrom.clear()
+    this.setHot(null)
+    this.menu.set(null)
+    this.viewing.set(null)
   }
 
   // Reading, by name
@@ -452,8 +466,11 @@ export class CanvasStore {
 
   /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
   applyCanvas(cards: Record<string, Row>, began = 0) {
+    if (cards === this.cardsRead) return
+    this.cardsRead = cards
     const first = !this.rows
     const rows = new Map(Object.entries(cards))
+    for (const [key, view] of this.views) if (view.placing && this.rows?.has(key)) rows.set(key, this.rows.get(key)!)
     for (const [name, at] of this.movedAt) {
       const mine = this.rows?.get(name)
       if (at >= began && mine) rows.set(name, mine)
@@ -717,7 +734,8 @@ export class CanvasStore {
   private node(name: string, row: Row, selected = false, id = `e${++this.nextId}`): ElementNode {
     this.ids.set(name, id)
     this.namesById.set(id, name)
-    this.served.set(id, name)
+    // Drawn again, a box keeps what Calcifer calls it: a rename on its way hasn't reached it.
+    if (!this.served.has(id)) this.served.set(id, name)
     const view = this.views.get(name)!
     const width = row.w ?? widthFor(view)
     const height = heightFor(view, width)
@@ -822,7 +840,8 @@ export class CanvasStore {
     if (spot.x === box.x && spot.y === box.y) return box
     this.glide(name, spot)
     const row = { x: Math.round(spot.x), y: Math.round(spot.y), w: this.rows?.get(name)?.w ?? box.w }
-    if (!this.views.get(name)?.placing) this.move(name, row)
+    if (this.views.get(name)?.placing) this.rows?.set(name, row)
+    else this.move(name, row)
     return { ...box, ...spot }
   }
 
@@ -1594,9 +1613,12 @@ export class CanvasStore {
     )
   }
 
+  /** A file being placed has a row of its own, under its key, until it lands: its canvas drawn again finds it there. */
   addPlacing(key: string, name: string, placing: Placing, at: Row, opts: { naming: boolean; preview?: string }) {
     this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview, landing: true })
-    this.flow?.addNodes(this.node(key, this.clearOf(key, at)))
+    const row = this.clearOf(key, at)
+    this.rows?.set(key, row)
+    this.flow?.addNodes(this.node(key, row))
   }
 
   /** `at`, or the nearest place to it that's clear, for a box not on the canvas yet. Asked for, it stays where it can be seen. */
@@ -1672,6 +1694,7 @@ export class CanvasStore {
   }
 
   cancel(key: string) {
+    this.rows?.delete(key)
     const view = this.views.get(key)
     view?.placing?.abort.abort()
     if (view?.preview) URL.revokeObjectURL(view.preview)
@@ -1715,7 +1738,8 @@ export class CanvasStore {
       if (!view) continue
       const row = toRow(node)
       const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
-      if (!view.placing) this.move(name, row)
+      if (view.placing) this.rows?.set(name, row)
+      else this.move(name, row)
       field.add(name, this.toClear(name, field, box))
     }
   }

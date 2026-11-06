@@ -16,7 +16,7 @@ import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
 import { Media, Preview, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, madeHere, makes, paints, reshapes, shownOf } from "./shown"
+import { aspectOf, faceOf, fieldsOf, madeHere, makes, paints, reshapes, shownOf } from "./shown"
 import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -287,7 +287,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
   const tools = useSignal(store.tools)
   const group = view.asset && controlsOf(view.asset, tools).find((control) => control.members?.some((member) => member.total))
   const total = group?.members?.find((member) => member.total)
-  const rows = group ? rowsIn(view.asset?.fields?.[group.field]) : []
+  const rows = group ? rowsIn(fieldsOf(view)[group.field]) : []
   if (total && rows.length) {
     const lasts = (row: Record<string, unknown>) => Number(row[total.field]) || Number(total.default) || 1
     return (
@@ -301,7 +301,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
-  const pieces = piecesOf(view.asset?.fields)
+  const pieces = piecesOf(fieldsOf(view))
   if (!pieces.length) return null
   const lasts = pieces.map((piece) => {
     const held = store.get(piece)

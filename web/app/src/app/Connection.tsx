@@ -6,6 +6,7 @@ import { Outbox } from "../api/outbox"
 import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
 import type { Machine, MachineList, ProjectState, Run, RunList, ServerEvent, Status } from "../types"
+import type { CanvasStore } from "../canvas/CanvasStore"
 import { signal } from "../ui/signal"
 import { readSession } from "./session"
 
@@ -195,6 +196,8 @@ export interface Connection {
   bridge: Bridge
   /** What a person did, in order, on its way to this Calcifer, whichever project it's in. */
   outbox: Outbox
+  /** Each project's canvas as it was last shown, by its id. */
+  canvases: Map<string, CanvasStore>
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
   attempt: ReturnType<typeof signal<number>>
   signedOut: ReturnType<typeof signal<boolean>>
@@ -262,7 +265,7 @@ export async function connect(): Promise<Boot> {
     if (event.type === "hello") outbox.back()
   })
   stream.start()
-  return { connection: { scope, client, here, remote, queries, stream, bridge, outbox, attempt, signedOut, status } }
+  return { connection: { scope, client, here, remote, queries, stream, bridge, outbox, canvases: new Map(), attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

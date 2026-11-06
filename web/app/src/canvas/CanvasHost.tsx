@@ -256,9 +256,18 @@ function Canvas({
   const connection = useConnection()
   const flow = useReactFlow<ElementNode, Edge>()
   const navigate = useNavigate()
-  const { scope, client, bridge, outbox } = connection
+  const { scope, client, bridge, outbox, canvases } = connection
   const [saved] = useState(() => loadViewport(scope, projectId))
-  const [store] = useState(() => new CanvasStore(client, outbox, projectId, loadSelection(scope, projectId), loadMore(scope, projectId)))
+  // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
+  // One a code reload left is another class's, and is made again.
+  const [store] = useState(() => {
+    const kept = projectId ? canvases.get(projectId) : undefined
+    return kept instanceof CanvasStore ? kept : new CanvasStore(client, outbox, projectId, loadSelection(scope, projectId), loadMore(scope, projectId))
+  })
+  // A canvas's first box makes its project: kept from then on.
+  useEffect(() => {
+    if (store.projectId) canvases.set(store.projectId, store)
+  })
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
   const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id) }))

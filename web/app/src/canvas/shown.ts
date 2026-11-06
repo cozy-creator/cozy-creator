@@ -51,6 +51,9 @@ export function ratioOf(value: unknown): number | undefined {
   return parts.length === 2 && parts[0] > 0 && parts[1] > 0 ? parts[0] / parts[1] : undefined
 }
 
+/** What its fields show: what's typed, else what was sent, else what it holds. */
+export const fieldsOf = (view: ElementView | undefined): Record<string, unknown> => ({ ...view?.asset?.fields, ...view?.sent, ...view?.drafts })
+
 /** What a field shows: what's typed, else what was sent, else what it holds. */
 export function valueIn(view: ElementView | undefined, field: string): unknown {
   if (view?.drafts && field in view.drafts) return view.drafts[field]

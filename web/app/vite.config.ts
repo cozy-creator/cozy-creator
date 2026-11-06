@@ -41,9 +41,11 @@ function forward(req: IncomingMessage, res: ServerResponse) {
   const refused = foreign(req)
   if (refused) return refuse(res, 403, "origin_not_allowed", `The dev proxy serves its own page only, not ${refused}`)
 
-  let holder: { address: string; token: string }
+  let holder: { address: string; token: string; pid: number }
   try {
     holder = JSON.parse(readFileSync(HOLDER, "utf8"))
+    // A record a stopped Calcifer left: its port may be another's by now, which would refuse this one's bearer.
+    process.kill(holder.pid, 0)
   } catch {
     return refuse(res, 503, "calcifer_down", "Calcifer isn't running on this computer. Run any cozy command to start it.")
   }
@@ -63,6 +65,10 @@ function forward(req: IncomingMessage, res: ServerResponse) {
     (answer) => {
       res.writeHead(answer.statusCode ?? 502, answer.headers)
       answer.pipe(res)
+      // Cut off, as a stopped Calcifer's stream is: the page hears it end, as it would from Calcifer itself.
+      answer.on("close", () => {
+        if (!answer.complete) res.destroy()
+      })
     },
   )
   upstream.on("error", () => {

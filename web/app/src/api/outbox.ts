@@ -45,6 +45,8 @@ export function lost(error: unknown): boolean {
 export class Outbox {
   readonly owed = signal<Owed>({ count: 0, slow: false })
   private queue: Action<any>[] = []
+  /** What's on its way outside the queue: a file's bytes. */
+  private outside = 0
   private going = false
   private trying?: AbortController
   private wakes = new Set<() => void>()
@@ -52,7 +54,7 @@ export class Outbox {
 
   constructor() {
     addEventListener("beforeunload", (event) => {
-      if (this.queue.length) event.preventDefault()
+      if (this.queue.length + this.outside) event.preventDefault()
     })
   }
 
@@ -60,6 +62,19 @@ export class Outbox {
     this.queue.push(action)
     this.tell()
     void this.drain()
+  }
+
+  /** Something on its way to Calcifer by itself, counted as waiting until it's ended. */
+  owing(): () => void {
+    this.outside += 1
+    this.tell()
+    let ended = false
+    return () => {
+      if (ended) return
+      ended = true
+      this.outside -= 1
+      this.tell(this.queue.length + this.outside ? {} : { slow: false, held: undefined })
+    }
   }
 
   /** Takes back what hasn't been tried. Whether `action` was still waiting. */
@@ -93,7 +108,7 @@ export class Outbox {
   }
 
   private tell(change: Partial<Owed> = {}) {
-    const now = { ...this.owed.get(), ...change, count: this.queue.length }
+    const now = { ...this.owed.get(), ...change, count: this.queue.length + this.outside }
     const was = this.owed.get()
     if (now.count !== was.count || now.slow !== was.slow || now.held !== was.held) this.owed.set(now)
   }
@@ -117,7 +132,7 @@ export class Outbox {
     }
     this.going = false
     clearTimeout(this.slowly)
-    this.tell({ slow: false, held: undefined })
+    if (!this.outside) this.tell({ slow: false, held: undefined })
   }
 
   private async attempt<T>(action: Action<T>) {

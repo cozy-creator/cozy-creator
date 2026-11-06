@@ -13,7 +13,7 @@ import type { ElementView } from "./CanvasStore"
 import { controlsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
+import { aspectOf, faceOf, fieldsOf, type Shown, shownOf } from "./shown"
 import { chipWords, clock, lineOf, withMentions } from "./text"
 import { isSelf } from "./versions"
 
@@ -438,7 +438,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   // On the canvas: an opened box plays the file itself.
   const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
   const tools = useSignal(store.tools)
-  const words = lineOf(asset?.fields, asset ? controlsOf(asset, tools) : [])
+  const words = lineOf(fieldsOf(view), asset ? controlsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
   // An Edit with no film yet is its first clip, and with no clip, what it's for.
   const clips = asset?.timeline?.tracks[0]?.clips
