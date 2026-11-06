@@ -33,7 +33,7 @@ pub(super) struct Model {
     head: ProjectState,
     /// In the doc's order, so an asset's index in it is its index here.
     rows: Vec<Row>,
-    stand: Vec<Standing>,
+    pub stand: Vec<Standing>,
 }
 
 /// What streams were last told of a project.

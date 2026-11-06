@@ -334,7 +334,8 @@ async fn undiscard(ctx: &Context, at: Option<&PathBuf>, name: String, versions: 
 /// `status <name>`: its fields and each take or version.
 pub(super) async fn one(ctx: &Context, at: Option<&PathBuf>, name: String) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
-    let mut held: AssetVersions = ctx.calcifer().await?.get(&route(&["v1", "projects", &opened.id, "assets", &name])).await?;
+    let path = route(&["v1", "projects", &opened.id, "assets", &name]);
+    let mut held: AssetVersions = ctx.calcifer().await?.get_query(&path, &[("call", "true")]).await?;
     // The newest `SHOWN`, unless --full; `asset.versions` counts them all.
     let all = held.versions.len();
     if !ctx.full && all > SHOWN {
@@ -366,6 +367,11 @@ pub(super) async fn one(ctx: &Context, at: Option<&PathBuf>, name: String) -> Re
         let numbers: Vec<String> = held.discarded.iter().map(u32::to_string).collect();
         println!("discarded, until `cozy project reclaim`: {}. To bring one back: cozy project restore {} --version <n>", numbers.join(", "), asset.name);
     }
+    // What a render would send now: the JSON `cozy run --input` takes.
+    if let Some(call) = &held.call {
+        println!("call: {}", serde_json::to_string_pretty(call).unwrap_or_default());
+        held.call_warnings.iter().for_each(|said| output::warn(said));
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -375,5 +381,5 @@ const SHOWN: usize = 20;
 const FIELDS: &[&str] = &[
     "discarded", "asset.name", "asset.kind", "asset.tool", "asset.status", "asset.standing", "asset.approved", "asset.version",
     "asset.versions", "asset.fields", "asset.reads", "asset.failure", "versions.number", "versions.approved", "versions.made_by",
-    "versions.seed", "versions.runs", "versions.files", "versions.execution_ms",
+    "versions.seed", "versions.runs", "versions.files", "versions.execution_ms", "call", "call_warnings",
 ];

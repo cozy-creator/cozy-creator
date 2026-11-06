@@ -566,6 +566,11 @@ pub struct AssetVersions {
     /// The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discarded: Vec<u32>,
+    /// With `?call=true`: the call its binder would send now, as `cozy run --input` takes it, and what binding it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub call_warnings: Vec<String>,
 }
 
 /// `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.

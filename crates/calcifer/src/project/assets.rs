@@ -9,7 +9,7 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, State, rejection::BytesRejection},
+    extract::{Path, Query, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, header},
 };
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ use protocol::{
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    Doc, Project, Tool, Walk, assetfile, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, keep_file, listed, measure_soon, model, noun, pin_in_file, stale_names,
+    Doc, Host, Project, Tool, Walk, assetfile, binder, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, keep_file, listed, measure_soon, model, noun, pin_in_file, stale_names,
 };
 use crate::api::{Api, Refusal, parse};
 
@@ -124,7 +124,7 @@ pub(super) async fn create(
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: the asset and each of its versions.
-pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetVersions>, Refusal> {
+pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>, Query(asked): Query<Asked>) -> Result<Json<AssetVersions>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let model = model::of(&api, &project).await.map_err(Refusal)?;
     let (doc, lock) = (&model.doc, &model.lock);
@@ -146,7 +146,28 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
         })
         .collect();
     let discarded = lock.asset(&asset.name).into_iter().flat_map(|held| &held.discarded).map(|version| version.number).collect();
-    Ok(Json(AssetVersions { asset, versions, discarded }))
+    let (call, call_warnings) = match asked.call && doc.makes(i) && doc.tool(i).is_none() {
+        true => {
+            let hub = api.machines.hubs.default_origin();
+            let on = [crate::runs::default_on(&api)];
+            let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on).await.map_err(Refusal)?;
+            let function = package.maker().map_err(Refusal)?.map(|maker| maker.function).unwrap_or_default();
+            let callable = package.callable(&function).ok_or_else(|| Refusal(Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {function}", package.name))))?;
+            let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
+            let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None };
+            let bound = binder::bind(&call).map_err(Refusal)?;
+            (Some(serde_json::Value::Object(bound.payload)), bound.warnings)
+        }
+        false => (None, vec![]),
+    };
+    Ok(Json(AssetVersions { asset, versions, discarded, call, call_warnings }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct Asked {
+    /// The call its binder would send now.
+    #[serde(default)]
+    call: bool,
 }
 
 /// `PATCH /v1/projects/{id}/assets/{name}`: its inputs set over what the file holds this moment. With `If-Match`, only if it is still
