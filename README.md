@@ -78,8 +78,8 @@ repository, and its outputs land in that project's `files/`.
 
 Off a terminal cozy never prompts, pages or draws a spinner: a view is one short block on stdout, and a
 price or a deletion needs `--yes`. `--json` prints the same facts as one JSON document (`--full`: the
-whole record), and work that is followed (a run, an install, a rent) as NDJSON, the run's number or the
-rental's id first. Progress and warnings go to stderr. A refusal is one line with its `code` and a
+whole record), and work that is followed (a run, an install, a rent) as NDJSON, naming the run's number or
+the rental's id as soon as there is one. Progress and warnings go to stderr. A refusal is one line with its `code` and a
 `next:` command; with `--json`, `{"error": {"kind", "code", "message", "next"}}` on stdout.
 
 | Exit | Means |
@@ -89,7 +89,7 @@ rental's id first. Progress and warnings go to stderr. A refusal is one line wit
 | 2 | usage: a flag or argument is wrong, or a price needs `--yes`; nothing happened |
 | 3 | partial: a push or pull left files out, or you stopped following work that goes on |
 | 4 | stalled: a run stopped moving; it goes on until you cancel it |
-| 5 | refused: cozy, Calcifer, a machine or the Hub said no or did not answer; nothing happened |
+| 5 | refused: cozy, Calcifer, a machine or the Hub said no, or did not answer |
 | 6 | not found: the run, machine, project, asset, package or model named does not exist |
 
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and

@@ -42,7 +42,7 @@ Exit codes, the same for every verb:
   2  usage: a flag or argument is wrong, or a price needs --yes; nothing happened
   3  partial: a push or pull left files out, an upgrade put something out of date, or you stopped following work that goes on
   4  stalled: a run stopped moving, as Calcifer says after 10 minutes with no progress; it goes on until you cancel it
-  5  refused: cozy, Calcifer, a machine or the Hub said no or did not answer; nothing happened
+  5  refused: cozy, Calcifer, a machine or the Hub said no, or did not answer
   6  not found: the run, machine, project, asset, package or model named does not exist
 
 A refusal is one line with its code, then `next:`, the command to run. With --json it is {\"error\": {kind, code, message, next}}
@@ -223,11 +223,12 @@ fn usage(error: clap::Error) -> ExitCode {
         ErrorKind::TooManyValues | ErrorKind::TooFewValues | ErrorKind::WrongNumberOfValues => "values_count",
         _ => "usage",
     };
+    // clap's words: the error and what it names (`<NAME>`) up to a blank line, then tips and the usage.
     let rendered = error.render().to_string();
-    let mut lines = rendered.lines().map(str::trim).filter(|line| !line.is_empty());
-    let first = lines.next().unwrap_or_default();
-    let message = first.strip_prefix("error: ").unwrap_or(first);
-    let said: Vec<&str> = lines.filter(|line| !line.starts_with("For more information")).collect();
+    let (head, rest) = rendered.split_once("\n\n").unwrap_or((&rendered, ""));
+    let message = head.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+    let message = message.strip_prefix("error: ").unwrap_or(&message);
+    let said: Vec<&str> = rest.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with("For more information")).collect();
     let tips: Vec<&str> = said.iter().filter_map(|line| line.strip_prefix("tip: ")).collect();
     let remedy = match tips.is_empty() {
         true => said.iter().find(|line| line.starts_with("Usage: ")).map(|line| line.to_string()),

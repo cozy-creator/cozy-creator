@@ -166,11 +166,17 @@ J '.error.next[0] | endswith("package delete e2e-no-such-package --yes")' "$C/un
 refused login 5 login_needs_terminal login e2e@example.com
 json no-verb machine
 { [ "$(cat "$C/no-verb.exit")" = 2 ] && J '.error.code == "verb_missing"' "$C/no-verb.out"; } || check "contract: cozy --json machine: $(head -c 200 "$C/no-verb.out")"
-# parses <line>: its verbs and flags, quotes as a shell reads them, then --help.
+# parses <line>: its words as a shell reads them, then --help: the grammar takes it. A refusal past the grammar is taken too
+# (`machine ssh`'s command takes the --help), and so is a `<placeholder>` value that an example leaves to fill.
 parses() {
-  local word words=()
-  while IFS= read -r word; do words+=("$word"); done < <(xargs -n1 <<< "$1" 2> /dev/null)
-  "$COZY" "${words[@]:1}" --help > /dev/null 2>&1
+  local line=$1 word words=()
+  while IFS= read -r word; do words+=("$word"); done < <(xargs -n1 printf '%s\n' <<< "$line" 2> /dev/null)
+  set -- "${words[@]:1}"
+  [[ " $* " == *" --help "* ]] || set -- "$@" --help
+  [[ " $* " == *" --json "* ]] || set -- --json "$@"
+  "$COZY" "$@" < /dev/null > "$C/parse.json" 2>&1 && return 0
+  J '.error.kind != "usage"' "$C/parse.json" 2> /dev/null && return 0
+  [[ $line == *"<"* ]] && J '.error.code == "value_invalid"' "$C/parse.json" 2> /dev/null
 }
 sort -u "$C/next.txt" | while IFS= read -r line; do parses "$line" || check "contract: next: $line does not parse"; done
 
