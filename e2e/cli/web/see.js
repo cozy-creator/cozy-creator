@@ -257,7 +257,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
   const checker = await element(page, 'hero_art').locator('.media.alpha').evaluate((el) => ({ under: getComputedStyle(el).backgroundColor, over: getComputedStyle(el).getPropertyValue('--check2').trim() }));
-  check('checkerboard_white_and_light_grey', checker.under === 'rgb(255, 255, 255)' && checker.over === '#ececec', checker);
+  check('checkerboard_white_and_light_grey', checker.under === 'rgb(251, 251, 251)' && checker.over === '#e8e8e8', checker);
   check('no_checkerboard_without_alpha', (await element(page, 'older_art').locator('.media.alpha').count()) === 0);
   const thumbUp = (name) => until(`${name}'s thumbnail`, () => element(page, name).locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await thumbUp('sea_sound');
