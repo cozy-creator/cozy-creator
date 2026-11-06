@@ -84,24 +84,34 @@ def split():
     y = torch.randn(1, 7168)
     with torch.inference_mode():
         want = template(y).to(device)
+        # The GEMM's first launch loads its kernels into the context, outside our bytes: before any room is measured
+        # (a 5090 lost 68 MiB of a 256 MiB room to it, and a 2 MiB activation found none).
+        warm = copy.deepcopy(template).to(device)
+        warm(y.to(device))
+    del warm
+    torch.cuda.empty_cache()
     gpu, wide = api.open(0), torch.cuda.mem_get_info(0)[1]
     # What's outside us moves by host, so no one cap is right. A layer is 196 MiB and a half 392: climbing in smaller
-    # steps, the first room that runs is one a layer fits and a half doesn't.
+    # steps, the first room that runs is one a layer fits and a half doesn't. A refused room's regions can outlive it
+    # while they're reclaimable, so the room is set over what is resident besides: evicting it frees no more for us.
     for room in range(64, 1024, 64):
         model = copy.deepcopy(template)
         handle = offload(model, device=0)
         torch.cuda.empty_cache()
         vt.set_limit(0, wide)
-        vt.set_limit(0, wide - gpu.room()["free"] + room * 2**20)
+        held = gpu.room()
+        vt.set_limit(0, wide - held["free"] - held["weights_resident"] + room * 2**20)
         try:
             with torch.inference_mode():
                 got = model(y.to(device))
         except torch.OutOfMemoryError:
+            got = None  # its traceback holds the modules until this block ends
+        finally:
+            vt.set_limit(0, None)
+        if got is None:
             del model, handle
             gc.collect()
             continue
-        finally:
-            vt.set_limit(0, None)
         assert torch.allclose(got, want, rtol=1e-3, atol=1e-3)
         assert any(unit.split for unit in handle.units), f"{room} MiB of room ran and nothing descended"
         return
