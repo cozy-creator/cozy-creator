@@ -86,6 +86,11 @@ pub(crate) fn recover(device: i32, bytes: usize, deadline: Instant) -> Recovery 
     }
 }
 
+/// Whether this process is in a request on `device`; None with no ledger row to say.
+pub(crate) fn in_request(device: i32) -> Option<bool> {
+    service(device).map(|service| service.table.running(service.row))
+}
+
 pub(crate) fn peers_idle(device: i32) -> bool {
     service(device).is_some_and(|service| service.table.peers_idle(service.row))
 }

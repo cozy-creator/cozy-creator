@@ -248,6 +248,10 @@ impl Table {
         self.page.rows[row.0].running.fetch_add(1, AcqRel);
     }
 
+    pub fn running(&self, row: Row) -> bool {
+        self.page.rows[row.0].running.load(Acquire) != 0
+    }
+
     pub fn request_end(&self, row: Row) {
         let row = &self.page.rows[row.0];
         row.last_use.store(now_ns(), Release);
