@@ -401,6 +401,9 @@ impl Tier {
                 tracing::warn!("a host page did not pin: {error}");
                 continue;
             }
+            // Its cached copy, active from the refills that made it worth keeping, would outlive
+            // file bytes still read: a 26 GB cgroup's Flux-2 then read them from disk every step.
+            py.detach(|| source.uncache());
             if !self.register(py, &is_waiting, (key, set, page))? {
                 return Ok(());
             }

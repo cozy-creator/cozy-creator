@@ -152,6 +152,13 @@ impl Inner {
         read.map(|stats| stats.bytes)
     }
 
+    /// Its stored bytes out of the page cache, now that its page is kept.
+    pub(super) fn uncache(&self) {
+        if let Some(stored) = &self.stored {
+            stored.local.uncache(&stored.items);
+        }
+    }
+
     /// Bytes `at..at + len` of its stored bytes into a host page of `whole` bytes, gaps zeroed.
     pub(super) fn read_window(&self, page: *mut u8, whole: usize, at: usize, len: usize) -> Result<(), String> {
         let stored = self.stored.as_ref().ok_or("a page with no stored bytes")?;
@@ -179,6 +186,7 @@ impl Inner {
             kept.get_item(&window)?.call_method1("copy_", (view.get_item(&window)?,))?;
         }
         self.tier.insert(key, &self.set, page);
+        self.uncache();
         Ok(())
     }
 
