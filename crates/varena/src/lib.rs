@@ -321,6 +321,9 @@ impl State {
         }
         let interval = now - previous;
         entry.period = interval;
+        if let Some(phase) = &mut self.plan_phase && previous > phase.entered {
+            phase.recurred = true;
+        }
         let start = previous - 1;
         let Some(boundary) = self.phase_boundary else {
             self.phase_boundary = Some(start);
@@ -355,6 +358,7 @@ impl State {
             return (reclaim::PREFETCHED, u64::MAX - next);
         }
         let touched = self.phase_boundary.is_some_and(|boundary| entry.last_use > boundary);
+        let looping = self.plan_phase.as_ref().is_none_or(PlanPhase::loops);
         let used = match self.phase_boundary.is_some_and(|boundary| entry.filled > boundary) {
             true => reclaim::PHASE_FRESH,
             false => reclaim::PHASE_USED,
@@ -362,10 +366,22 @@ impl State {
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
             None => (used, u64::MAX - entry.last_use),
-            Some((0, _)) if touched => (used, u64::MAX - entry.last_use),
-            Some((0, position)) => (reclaim::PHASE_NEXT, u64::MAX - position),
-            Some((phases, position)) => (reclaim::LATER_PHASE, u64::MAX - (phases << 32 | position)),
+            Some((0, _)) if touched && looping => (used, u64::MAX - entry.last_use),
+            Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
+            // A single pass uses what it used next in a later phase, else next cycle, as late as what no
+            // plan names; most recent first, so the next pass finds its start. Ranked as a loop's, Qwen
+            // Turbo's text encoder evicted 4 GB of transformer a call, read back in step 1.
+            Some((0, _)) => order.later_use(id)
+                .map_or((reclaim::UNPLANNED, u64::MAX - entry.last_use), |later| self.later(order, later)),
+            Some(next) => self.later(order, next),
         }
+    }
+
+    /// Another phase's region, furthest first, and a loop's after every single pass's: a single pass
+    /// reads what doesn't fit once a cycle whatever goes, while a loop that stays never reads again.
+    fn later(&self, order: &plan::Order, (phases, position): (u64, u64)) -> (u8, u64) {
+        let single = order.name(phases).is_some_and(|name| self.passes.get(name) == Some(&false));
+        (reclaim::LATER_PHASE, u64::from(!single) << 63 | ((u64::MAX >> 1) - (phases << 32 | position)))
     }
 }
 
@@ -392,6 +408,29 @@ pub fn request_boundary(device: i32, begin: bool) {
     cooperative::request_boundary(device, begin);
     #[cfg(not(target_os = "linux"))]
     let _ = (device, begin);
+}
+
+/// The active plan phase. One that ran through last time with no region coming back is a single
+/// pass: its used weights are wanted again only in a later phase, a loop's in its next step.
+pub(crate) struct PlanPhase {
+    name: String,
+    entered: u64,
+    // A region came back since entry.
+    recurred: bool,
+    // Whether it looped last time.
+    looped: Option<bool>,
+}
+
+impl PlanPhase {
+    /// For eviction: unless it is known to be a single pass.
+    fn loops(&self) -> bool {
+        self.recurred || self.looped != Some(false)
+    }
+
+    /// For keeping working pages: once seen looping.
+    pub(crate) fn keeps(&self) -> bool {
+        self.recurred || self.looped == Some(true)
+    }
 }
 
 /// What the driver's own charge may grow by between samples under a development cap.
@@ -683,6 +722,22 @@ impl Device {
     pub fn enter_phase(&self) -> Result<()> {
         gate(self.ordinal)?.not_capturing()?;
         self.lock()?.phase_boundary = Some(self.clock.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    /// The plan's phase `name` begins, a boundary, or with None the plan ends. Metadata only.
+    fn enter_plan_phase(&self, name: Option<&str>) -> Result<()> {
+        let mut state = self.lock()?;
+        let now = self.clock.load(Ordering::Relaxed);
+        if let Some(ended) = state.plan_phase.take() {
+            state.passes.insert(ended.name, ended.recurred);
+        }
+        if let Some(name) = name {
+            state.phase_boundary = Some(now);
+            state.plan_epoch += 1;
+            let looped = state.passes.get(name).copied();
+            state.plan_phase = Some(PlanPhase { name: name.to_owned(), entered: now, recurred: false, looped });
+        }
         Ok(())
     }
 
