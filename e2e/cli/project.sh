@@ -337,6 +337,15 @@ every_render
 frames
 direct_inputs
 tool_functions
+binder_types
+three_pictures
+composed_tool
+memo_retry
+cancel_children
+run_as_render
+latents_stay
+pickup_take
+run_no_on
 by_the_cli
 cuts "$P" "$ID"
 imports
@@ -2450,6 +2459,312 @@ J '.request.input.image | .type == "image" and .description == "PUBLIC-RED-WORDS
 J --arg e caption_no_file '.error.code == $e' <<< "$(api -X POST "http://$ADDR/v1/projects/$id/assets/kept_video/caption")" || check "tools: a caption of nothing isn't refused"
 }
 
+# The tools (design/tools.md, weightless proofs 1 to 11): a box's fields, by its tool's types, as its function gets them through the one
+# binder that Render, `cozy project render` and `cozy run` share. The every-type tool is project/boxes.py's `shot`, the composed one
+# project/probe's `composed`, which calls project/probe-callee, and the takes are project/shots.py's.
+
+# tool_pictures <dir>: a project of three pictures (amy, with words, sky and the still coast makes), a 6 s video and a sound, and a text box.
+tool_pictures() {
+  local T=$1 amy sky walk hum
+  mkdir -p "$T"; still "$T/amy.png" red; still "$T/sky.png" teal; plate "$T/walk.mp4" testsrc2 440 800
+  ffmpeg -v error -y -f lavfi -i sine=frequency=220:duration=1 "$T/hum.wav"
+  printf 'version: 4\nassets: {}\n' > "$T/project.yaml"
+  amy=$(prefix "$T" "$T/amy.png"); sky=$(prefix "$T" "$T/sky.png"); walk=$(prefix "$T" "$T/walk.mp4"); hum=$(prefix "$T" "$T/hum.wav")
+  cat > "$T/project.yaml" <<YAML
+version: 4
+assets:
+  amy: {approved: $amy, description: "Amy, tall."}
+  sky: {approved: $sky}
+  walk: {approved: $walk, description: A walk.}
+  hum: {approved: $hum}
+  mood: {text: Soft light.}
+  coast: {tool: $here/project/tool.py/still, instructions: A coast., description: A volcanic coast.}
+YAML
+}
+
+# keys <prompt>: its references' keys and types, in order.
+keys() { jq -c '[.references[] | [.key, .type]]' <<< "$1"; }
+
+binder_types() {
+step "a tool: each type reaches its function as typed, and each prompt only what its text mentions (weightless 1)"
+local T=$OUT/types input given
+tool_pictures "$T"
+cat >> "$T/project.yaml" <<YAML
+  shot:
+    tool: $here/project/boxes.py/shot
+    summary: <Amy> walks on <COAST> in <mood>, as in <walk:24-72>, and <amy> again; <hum> plays.
+    pictures: <coast.1> and <walk>.
+    negative: no <amy> here
+    beats:
+      - duration: 4
+        description: <amy> runs.
+        look: {lens: close, note: tight}
+        angles:
+          - framing: <coast> wide
+            hold: 2
+        still: <sky>
+      - duration: 3
+        description: Nothing named.
+    aspect_ratio: "2:1"
+    turbo: false
+    bright: true
+    megapixels: 9
+    segments: 2
+    quality: draft
+    resolution: 1080p
+    edit: head
+    first_frame: <amy>
+    plate: <walk>
+    sound: <hum>
+    clip: <walk:0-48>
+    references: [<amy>, <coast>]
+    steps: 12
+    seed: 5
+YAML
+render "$T" coast shot || { check "types: render: $(tail -c 500 "$OUT/render.txt")"; return; }
+input=$(asked "$T" shot | jq -c .input)
+printf '%s\n' "$input" > "$OUT/types-input.json"
+J '.summary.text == "<amy> walks on <coast> in Soft light., as in <walk:24-72>, and <amy> again; <hum> plays."' <<< "$input" || check "types: the summary's text, each mention as its box spells it and the text box its words: $(jq -c .summary.text <<< "$input")"
+[ "$(keys "$(jq -c .summary <<< "$input")")" = '[["amy","image"],["coast","image"],["walk:24-72","video"],["hum","audio"]]' ] || check "types: the summary's references, once each, in first-mention order: $(keys "$(jq -c .summary <<< "$input")")"
+J --arg amy "sha256:$(sha "$T/amy.png")" --arg walk "sha256:$(sha "$T/walk.mp4")" '.summary.references | (.[0] | .description == "Amy, tall." and .file == $amy) and (.[1].description == "A volcanic coast.") and all(.file | startswith("sha256:")) and (.[2].file != $walk)' <<< "$input" || check "types: what a reference holds, a range cut: $(jq -c .summary.references <<< "$input")"
+J '.pictures.text == "<coast.1> and walk." and (.pictures.references | map(.key) == ["coast.1"])' <<< "$input" || check "types: a prompt of pictures, a version by its number, a video as its name: $(jq -c .pictures <<< "$input")"
+J '.negative == "no amy here"' <<< "$input" || check "types: words take a box as its name: $(jq -c .negative <<< "$input")"
+J '.beats | length == 2 and (.[0] | .duration == 4 and (.description.references | map(.key) == ["amy"]) and .look == {"lens": "close", "note": "tight"} and (.angles[0] | .hold == 2 and (.framing.references | map(.key) == ["coast"])) and (.still | startswith("sha256:"))) and (.[1].description == {"text": "Nothing named.", "references": []})' <<< "$input" \
+  || check "types: groups two deep, each prompt only its own: $(jq -c .beats <<< "$input")"
+J '.aspect_ratio == "16:9" and .megapixels == 4 and .turbo == false and .bright == true and .segments == 2 and .quality == "draft" and .resolution == "1080p" and .edit == "head" and .steps == 12 and .seed == 5' <<< "$input" \
+  || check "types: toggles, numbers, choices, the shape and the seed: $(jq -c 'del(.summary, .pictures, .beats, .references, .clip)' <<< "$input")"
+J --arg amy "sha256:$(sha "$T/amy.png")" --arg walk "sha256:$(sha "$T/walk.mp4")" --arg hum "sha256:$(sha "$T/hum.wav")" '.first_frame == $amy and .plate == $walk and .sound == $hum' <<< "$input" || check "types: a slot holds what's written in it: $(jq -c '{first_frame, plate, sound}' <<< "$input")"
+J '.clip | .type == "video" and .description == "A walk." and (.file | startswith("sha256:"))' <<< "$input" || check "types: a described video slot: $(jq -c .clip <<< "$input")"
+J '.references | length == 2 and all(.type == "image") and (map(.description) == ["Amy, tall.", "A volcanic coast."])' <<< "$input" || check "types: a list slot of pictures: $(jq -c .references <<< "$input")"
+J 'has("pickup") | not' <<< "$input" || check "types: a pickup no gesture made: $(jq -c .pickup <<< "$input")"
+says types "megapixels: 9 is past what it takes, so it's 4"
+says types "isn't a shape it takes, so it's 16:9"
+says types "negative takes words, so <amy> goes as its name"
+says types "<walk>, a video, goes as its name"
+given=$(cat "$(file_at "$T" "$(take_file "$T" shot given)")")
+J '.first_frame == {"file": "ImageFile"} and .plate == {"file": "VideoFile"} and .sound == {"file": "AudioFile"} and .clip.file == {"file": "VideoFile"} and (.summary.references | keys_unsorted == ["amy", "coast", "walk:24-72", "hum"]) and .beats[0].angles[0].hold == 2 and .beats[0].look.lens == "close"' <<< "$given" \
+  || check "types: what the function got, as typed: $given"
+}
+
+three_pictures() {
+step "a tool: three pictures mentioned are three references, and none is a frame (weightless 3)"
+local T=$OUT/three input
+tool_pictures "$T"
+cat >> "$T/project.yaml" <<YAML
+  three:
+    tool: $here/project/boxes.py/shot
+    summary: <amy>, <coast> and <sky> meet.
+    plate: <walk>
+  trio:
+    tool: $here/project/tool.py/still
+    instructions: <amy>, <coast> and <sky> together, not <walk>.
+YAML
+render "$T" coast three trio || { check "three: render: $(tail -c 500 "$OUT/render.txt")"; return; }
+input=$(asked "$T" three | jq -c .input)
+[ "$(keys "$(jq -c .summary <<< "$input")")" = '[["amy","image"],["coast","image"],["sky","image"]]' ] && J '(has("first_frame") | not) and (has("references") | not) and (.beats[0] | has("still") | not)' <<< "$input" \
+  || check "three: a shot's three pictures: $input"
+input=$(asked "$T" trio | jq -c .input)
+J '(.instructions.references | map(.key) == ["amy", "coast", "sky"]) and (.instructions.text | endswith("not walk."))' <<< "$input" || check "three: a still's three pictures, and a video it doesn't take: $(jq -c .instructions <<< "$input")"
+}
+
+# One composed tool's runs, with its calls: shade from the other package, then tint of its own when that came out dark.
+composed_tool() {
+step "a tool that composes: it calls another package, branches on its answer, calls its own, and shows each step (weightless 2)"
+local T=$OUT/composed page run
+mkdir -p "$T"; still "$T/page.png" gray
+printf 'version: 4\nassets: {}\n' > "$T/project.yaml"
+page=$(prefix "$T" "$T/page.png")
+cat > "$T/project.yaml" <<YAML
+version: 4
+assets:
+  page: {approved: $page}
+  dark: {tool: $here/project/probe/composed, page: <page>, darkness: 0.75}
+  light: {tool: $here/project/probe/composed, page: <page>, darkness: 0.25}
+YAML
+render "$T" dark light || { check "composed: render: $(tail -c 500 "$OUT/render.txt")"; return; }
+run=$(held "$T" dark | jq -r '.versions[-1].runs[-1]')
+ended "$run" > "$OUT/composed-dark.json"
+J '[.calls[] | select(.status == "succeeded") | .function] as $f | ($f | index("shade")) != null and ($f | index("tint")) != null and ($f | index("enlarge")) == null' "$OUT/composed-dark.json" \
+  || check "composed: a dark shade calls tint, and nothing enlarges unasked: $(jq -c '[.calls[] | {function, status}]' "$OUT/composed-dark.json")"
+# Each publish is a revision of the box's picture, shown as it lands: Shaded, then Lightened, which the result is.
+J '[.output[] | select(.name == "image")] | length == 1 and .[0].rev == 2 and .[0].label == "Lightened"' "$OUT/composed-dark.json" || check "composed: two previews and the result: $(jq -c '[.output[] | {name, rev, label}]' "$OUT/composed-dark.json")"
+ended "$(held "$T" light | jq -r '.versions[-1].runs[-1]')" > "$OUT/composed-light.json"
+J '([.calls[] | .function] | (index("shade") != null) and (index("tint") == null)) and ([.output[] | select(.name == "image")][0] | .rev == 1 and .label == "Shaded")' "$OUT/composed-light.json" || check "composed: a light shade still called tint: $(jq -c '{calls: [.calls[] | {function, status}], output: [.output[] | {name, rev, label}]}' "$OUT/composed-light.json")"
+}
+
+# A failed composed render asked again: the step that finished comes from the memo. Its failure is deliberate: never alone.
+memo_retry() {
+[ -z "${ALONE:-}" ] || return 0
+step "a tool that composes: a failure, then Try again, and the step that finished is the memo's (weightless 5)"
+local T=$OUT/retry page code=0 failed again
+# A page of its own colour, so no memo of an earlier run answers.
+mkdir -p "$T"; still "$T/page.png" "$(printf '0x%06x' $(((RANDOM << 9 ^ RANDOM) % 16777216)))"
+printf 'version: 4\nassets: {}\n' > "$T/project.yaml"
+page=$(prefix "$T" "$T/page.png")
+cat > "$T/project.yaml" <<YAML
+version: 4
+assets:
+  page: {approved: $page}
+  flaky: {tool: $here/project/probe/composed, page: <page>, darkness: 0.5, fails_until: $T/ready}
+YAML
+render "$T" flaky || code=$?
+failed=$(cozy --json run ls -p "$T" --limit 0 --state failed | jq -r '[.runs[] | select(.target | endswith("/composed"))][0].number // empty')
+{ [ "$code" != 0 ] && [ -n "$failed" ] && [ "$(made "$T" flaky)" = 0 ]; } || check "retry: the deliberate failure (exit $code, run ${failed:-none}): $(tail -c 400 "$OUT/render.txt")"
+[ -z "$failed" ] || ended "$failed" > "$OUT/retry-failed.json" || true
+J '.status == "failed" and ([.calls[] | select(.function == "shade") | [.status, .memoized]] == [["succeeded", false]])' "$OUT/retry-failed.json" || check "retry: the failed run's shade: $(jq -c '{status, calls: [.calls[]? | {function, status, memoized}]}' "$OUT/retry-failed.json")"
+touch "$T/ready"
+render "$T" flaky || check "retry: Try again: $(tail -c 400 "$OUT/render.txt")"
+again=$(held "$T" flaky | jq -r '.versions[-1].runs[-1]')
+ended "$again" > "$OUT/retry-again.json"
+J --arg seed "$(jq -r .request.seed "$OUT/retry-failed.json")" '.status == "completed" and (.request.seed | tostring) == $seed and ([.calls[] | select(.function == "shade") | .memoized] == [true])' "$OUT/retry-again.json" \
+  || check "retry: shade wasn't the memo's on the same seed: $(jq -c '{status, seed: .request.seed, calls: [.calls[]? | {function, status, memoized}]}' "$OUT/retry-again.json")"
+}
+
+# A composed render canceled while its call runs: the call ends with it, so it leaves no result, and the next render makes it again,
+# though it's memoized. Its cancel is deliberate: never alone.
+cancel_children() {
+[ -z "${ALONE:-}" ] || return 0
+step "a tool that composes: canceled mid-step, every call it made ends canceled (weightless 6)"
+local T=$OUT/cancel page run=''
+mkdir -p "$T"; still "$T/page.png" "$(printf '0x%06x' $(((RANDOM << 9 ^ RANDOM) % 16777216)))"
+printf 'version: 4\nassets: {}\n' > "$T/project.yaml"
+page=$(prefix "$T" "$T/page.png")
+cat > "$T/project.yaml" <<YAML
+version: 4
+assets:
+  page: {approved: $page}
+  long: {tool: $here/project/probe/composed, page: <page>, hold: 20}
+YAML
+cozy project -p "$T" render long --queue --on local > "$OUT/cancel.txt" 2>&1 || check "cancel: render: $(tail -c 300 "$OUT/cancel.txt")"
+for _ in $(seq 240); do run=$(status "$T" | jq -r '.board.jobs[] | select(.asset == "long") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.5; done
+# Into shade's 20 s.
+sleep 6
+cozy project -p "$T" cancel long > /dev/null 2>&1 || check "cancel: cancel long"
+for _ in $(seq 120); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
+ended "$run" > "$OUT/cancel.json" || true
+J '.status == "canceled" and ((.calls // []) | all(.function == "composed" or .status == "canceled"))' "$OUT/cancel.json" || check "cancel: the render and its calls: $(jq -c '{status, calls}' "$OUT/cancel.json")"
+[ "$(made "$T" long)" = 0 ] || check "cancel: a canceled render made a version"
+# A shade that went on would have ended by now, memoized.
+sleep 20
+render "$T" long || check "cancel: the render after: $(tail -c 300 "$OUT/render.txt")"
+ended "$(held "$T" long | jq -r '.versions[-1].runs[-1]')" > "$OUT/cancel-after.json" || true
+J '[.calls[] | select(.function == "shade") | .memoized] == [false]' "$OUT/cancel-after.json" || check "cancel: the canceled shade went on to its end: $(jq -c '[.calls[]? | {function, status, memoized}]' "$OUT/cancel-after.json")"
+}
+
+# The same box by `cozy run` in its project and by Render: one binder, so one call.
+run_as_render() {
+step "a tool: the same box through cozy run and through Render is the same call (weightless 7)"
+local T=$OUT/same rendered ran called
+tool_pictures "$T"
+cat >> "$T/project.yaml" <<YAML
+  same:
+    tool: $here/project/tool.py/told
+    instructions: <Amy> by <coast>, in <mood>.
+    shade: 0.5
+    beats:
+      - description: <coast> at dusk.
+        duration: 4
+    seed: 9
+YAML
+render "$T" coast same || { check "same: render: $(tail -c 500 "$OUT/render.txt")"; return; }
+rendered=$(asked "$T" same | jq -S -c .input)
+called=$(cozy --json --full project -p "$T" status same | jq -S -c '.call // .asset.call // empty')
+(cd "$T" && cozy --json run "$here/project/tool.py/told" 'instructions=<Amy> by <coast>, in <mood>.' 'shade:=0.5' 'beats:=[{"description": "<coast> at dusk.", "duration": 4}]' 'seed:=9' --on local) > "$OUT/same.ndjson" 2> "$OUT/same.err" \
+  || check "same: cozy run: $(tail -c 400 "$OUT/same.err")"
+ran=$(cozy --json --full run show "$(tail -1 "$OUT/same.ndjson" | jq -r .run.number)" --once | jq -S -c .request.input)
+[ "$rendered" = "$ran" ] || check "same: Render sent $rendered and cozy run $ran"
+J '.instructions.text == "<amy> by <coast>, in Soft light.." and (.instructions.references | map(.key) == ["amy", "coast"]) and (.beats[0].description.references | map(.key) == ["coast"])' <<< "$rendered" || check "same: what it sent: $rendered"
+[ -z "$called" ] || [ "$(jq -S -c '.input // .' <<< "$called")" = "$rendered" ] || check "same: status's call is $called, and Render sent $rendered"
+}
+
+# What a run makes comes down, but a result field typed `Latents`: that stays on its machine. A slot's extras are read only from a version
+# its own package made.
+latents_stay() {
+step "a tool: a Latents result stays on its machine, any other file comes down, and only its own package reads its extras (weightless 9)"
+local T=$OUT/latents run held
+tool_pictures "$T"
+(cd "$T" && cozy --json run "$here/project/boxes.py/shot" 'plate=<walk>' --on local) > "$OUT/latents.ndjson" 2> "$OUT/latents.err" || { check "latents: the run: $(tail -c 400 "$OUT/latents.err")"; return; }
+run=$(tail -1 "$OUT/latents.ndjson" | jq -r .run.number)
+ended "$run" > "$OUT/latents.json"
+J '.output[] | select(.name == "latents") | .stays and .path == null and .sha256 != null' "$OUT/latents.json" || check "latents: a Latents field: $(jq -c '[.output[] | {name, stays, path}]' "$OUT/latents.json")"
+J '[.output[] | select(.name == "video" or .name == "given")] | length == 2 and all(.path != null and (.stays | not))' "$OUT/latents.json" || check "latents: what else it made didn't come down: $(jq -c '[.output[] | {name, stays, path}]' "$OUT/latents.json")"
+held=$(jq -r '.output[] | select(.name == "latents") | .sha256' "$OUT/latents.json")
+{ grep -A3 "${held#sha256:}" "$T/project.lock" | grep -q 'machine: local' && [ ! -e "$T/files/${held#sha256:}" ]; } || check "latents: the lock doesn't say who holds them, or they came here: $(grep -A3 "${held#sha256:}" "$T/project.lock")"
+[ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/runs/$run/outputs/latents")" = 409 ] || check "latents: the output route served what stays"
+(cd "$T" && cozy --json run "$here/project/shots.py/only_untyped" prompt=alone --on local) > "$OUT/untyped.ndjson" 2> "$OUT/untyped.err" || check "latents: an untyped run: $(tail -c 300 "$OUT/untyped.err")"
+tail -1 "$OUT/untyped.ndjson" | J '.run.output[0] | (.stays | not) and .path != null' || check "latents: an untyped File didn't come down: $(tail -1 "$OUT/untyped.ndjson" | jq -c .run.output)"
+cat >> "$T/project.yaml" <<YAML
+  ours: {tool: $here/project/shaped.py/shot, summary: On <walk>., beats: [{duration: 2}]}
+  theirs: {tool: $here/project/shots.py/shoot, summary: On <walk>.}
+  up_ours: {tool: $here/project/shaped.py/up, video: <ours>}
+  up_theirs: {tool: $here/project/shaped.py/up, video: <theirs>}
+YAML
+render "$T" up_ours up_theirs || { check "latents: the ups: $(tail -c 500 "$OUT/render.txt")"; return; }
+J '.input.video | .type == "video" and (.latents | startswith("sha256:")) and .own == false' <<< "$(asked "$T" up_ours)" || check "latents: its own package's take didn't give its latents: $(asked "$T" up_ours | jq -c .input.video)"
+J '.input.video | .type == "video" and .latents == null and (.file | startswith("sha256:"))' <<< "$(asked "$T" up_theirs)" || check "latents: another package's take gave its latents: $(asked "$T" up_theirs | jq -c .input.video)"
+J '.absent == 0' <<< "$(status "$T")" || check "latents: status counts what stays on its machine as absent: $(status "$T" | jq -c .absent)"
+}
+
+# Pick up from here: only the gesture fills a pickup, from `cozy project render`, Calcifer's route and `cozy run`, and the take it makes says so.
+pickup_take() {
+step "a tool: Pick up from here reaches the function, writes nothing, and its take records it (weightless 10)"
+local T=$OUT/pickup look before id input
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800
+printf 'version: 4\nassets: {}\n' > "$T/project.yaml"
+look=$(prefix "$T" "$T/look.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 4
+assets:
+  look: {approved: $look}
+  clash: {tool: $here/project/shots.py/shoot, summary: Two lights meet on <look>.}
+  shaped: {tool: $here/project/shaped.py/shot, summary: On <look>., beats: [{duration: 3}]}
+YAML
+given() { cat "$(file_at "$T" "$(take_file "$T" "$1" given "${2:--1}")")"; }
+render "$T" clash shaped || { check "pickup: the first takes: $(tail -c 400 "$OUT/render.txt")"; return; }
+J '.pickup == null' <<< "$(given clash)" || check "pickup: a render with no gesture picked up: $(given clash)"
+before=$(sha "$T/project.yaml")
+render "$T" clash 'pickup.take=<clash.1>' pickup.out_frame=12 || check "pickup: render: $(tail -c 400 "$OUT/render.txt")"
+J '.pickup.out_frame == 12' <<< "$(given clash)" || check "pickup: it didn't reach the function: $(given clash)"
+J '.input.pickup | .out_frame == 12 and .take.type == "video" and (.take.file | startswith("sha256:"))' <<< "$(asked "$T" clash)" || check "pickup: the call: $(asked "$T" clash | jq -c .input.pickup)"
+{ [ "$(sha "$T/project.yaml")" = "$before" ] && ! grep -q pickup "$T/project.yaml"; } || check "pickup: project.yaml changed: $(cat "$T/project.yaml")"
+J '.versions[-1].pickup == {"take": "<clash.1>", "out_frame": 12} and .versions[0].pickup == null' <<< "$(held "$T" clash)" || check "pickup: the take doesn't record it: $(held "$T" clash | jq -c '[.versions[] | {number, pickup}]')"
+says pickup "picks up <clash.1> at frame 12"
+# On the frames the tool's take lands on, with its own extras.
+render "$T" shaped 'pickup.take=<shaped.1>' pickup.out_frame=50 pickup.beats_from=1.5 || check "pickup: shaped: $(tail -c 400 "$OUT/render.txt")"
+says pickup "frame 50 isn't one a pickup lands on: it picks up at 56"
+input=$(asked "$T" shaped | jq -c .input.pickup)
+J '.out_frame == 56 and .beats_from == 1.5 and .take.own == true and (.take.latents | startswith("sha256:"))' <<< "$input" || check "pickup: its own take, snapped: $input"
+render "$T" shaped 'pickup.take=<clash.2>' pickup.out_frame=90 || check "pickup: another box's take: $(tail -c 400 "$OUT/render.txt")"
+input=$(asked "$T" shaped | jq -c .input.pickup)
+J '.out_frame == 90 and .take.own == false and .take.latents == null' <<< "$input" || check "pickup: another package's take: $input"
+# Calcifer's route, as the page sends it.
+id=$(status "$T" | jq -r .id)
+api -X POST -H "Idempotency-Key: pickup-$RANDOM$RANDOM" -d '{"names": ["clash"], "on": ["local"], "pickup": {"take": "<clash.2>", "out_frame": 24}}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/pickup-route.json"
+for _ in $(seq 240); do [ "$(made "$T" clash)" = 3 ] && J '.busy | not' <<< "$(status "$T")" && break; sleep 0.5; done
+J '.versions[-1].pickup == {"take": "<clash.2>", "out_frame": 24}' <<< "$(held "$T" clash)" && J '.pickup.out_frame == 24' <<< "$(given clash)" || check "pickup: POST runs: $(cat "$OUT/pickup-route.json") $(held "$T" clash | jq -c '[.versions[] | {number, pickup}]')"
+# `cozy run`, by the same binder.
+(cd "$T" && cozy --json run "$here/project/shots.py/shoot" 'summary=Two lights meet on <look>.' 'pickup.take=<clash.1>' pickup.out_frame=30 --on local) > "$OUT/pickup-run.ndjson" 2> "$OUT/pickup-run.err" || check "pickup: cozy run: $(tail -c 300 "$OUT/pickup-run.err")"
+input=$(cozy --json --full run show "$(tail -1 "$OUT/pickup-run.ndjson" | jq -r .run.number)" --once | jq -c .request.input)
+J '.pickup.out_frame == 30 and .pickup.take.type == "video" and (.summary.references | map(.key) == ["look"])' <<< "$input" || check "pickup: cozy run's call: $input"
+# Written in the file, it's said and not sent.
+printf '  written: {tool: %s/project/shots.py/shoot, summary: On <look>., pickup: {take: <clash.1>, out_frame: 5}}\n' "$here" >> "$T/project.yaml"
+render "$T" written || check "pickup: a written pickup stopped the render: $(tail -c 400 "$OUT/render.txt")"
+says pickup "a pickup isn't written; use Pick up from here"
+J '.input | has("pickup") | not' <<< "$(asked "$T" written)" || check "pickup: a written pickup was sent: $(asked "$T" written | jq -c .input)"
+}
+
+# Paul, 11-06: no --on is the render set, and with no rental that's this computer. release-gate/sessions/run-no-on.sh holds a rental's case.
+run_no_on() {
+step "a run with no --on and no rental goes to this computer (weightless 11)"
+local T=$OUT/no-on
+if [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind != "local" and (.state == "ready" or .state == "booting"))] | length')" != 0 ]; then
+  echo "another machine is up: release-gate/sessions/run-no-on.sh is that case"; return 0
+fi
+mkdir -p "$T"; printf 'version: 4\nassets: {}\n' > "$T/project.yaml"
+(cd "$T" && cozy --json run "$here/project/tool.py/still" 'instructions=Wherever it ends first.') > "$OUT/no-on.ndjson" 2> "$OUT/no-on.err" || { check "no --on: $(tail -c 300 "$OUT/no-on.err")"; return; }
+tail -1 "$OUT/no-on.ndjson" | J '.run.machine == "local" and .run.status == "completed"' || check "no --on: it went to $(tail -1 "$OUT/no-on.ndjson" | jq -c '.run | {machine, status}')"
+}
+
 # Runs that fail on purpose, on a machine with no history to keep clean: never alone.
 failures() {
 step "a project: a clip ffprobe can't read is left out and the rest is cut, a still among it"
@@ -2905,6 +3220,14 @@ J '.versions[-1].approved' <<< "$(held "$T" hung)" || check "renames: its approv
 render "$T" all --missing || check "renames: render what's missing: $(tail -c 300 "$OUT/render.txt")"
 [ "$(counts "$T" | tr -d '"' | sed 's/picture/still/; s/tone/mood/; s/fight/clash/; s/print/poster/; s/hung/framed/')" = "$(tr -d '"' <<< "$before")" ] || check "renames: something ran: $before then $(counts "$T")"
 
+step "a project: a rename by hand keeps the box's versions and approval, and puts nothing out of date; a description edit does (weightless 4)"
+# As an editor saves it, with no `cozy project rename`: a read and its mentions, and an approved box.
+sed -i 's/^  picture:$/  painting:/; s/<picture>/<painting>/g; s/^  hung:$/  shown:/' "$T/project.yaml"
+J '[.assets[] | select(.standing != "current") | {name, status}] == []' <<< "$(status "$T")" || check "renames: by hand, out of date: $(status "$T" | jq -c '[.assets[] | select(.standing != "current") | {name, status}]')"
+{ [ "$(made "$T" painting)" = 1 ] && [ "$(made "$T" shown)" = 1 ] && J '.versions[-1].approved' <<< "$(held "$T" shown)"; } || check "renames: by hand, a box lost its versions or approval: $(counts "$T"), $(held "$T" shown | jq -c '.versions')"
+# Decision 3: a box's description goes to its readers with its picture.
+sed -i 's/^  painting:$/  painting:\n    description: A still, on a wall./' "$T/project.yaml"
+{ [ "$(row "$T" print .standing)" = '"out_of_date"' ] && [ "$(row "$T" painting .standing)" = '"current"' ]; } || check "renames: a description edit: print $(row "$T" print .standing), painting $(row "$T" painting .standing)"
 }
 
 # Three assets failing alike, a package that isn't there, so no run is made.
