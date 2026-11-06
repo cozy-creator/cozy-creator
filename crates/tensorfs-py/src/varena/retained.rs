@@ -18,11 +18,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 struct Retained {
     tier: Arc<Tier>,
-    /// The one write: (offset, device address, bytes) of each tensor, taken by the first fill.
-    writes: Mutex<Option<Vec<(u64, u64, usize)>>>,
+    /// The one write: (offset, device address, bytes) of each tensor, taken by the first fill, and
+    /// whether its host copy is taken.
+    writes: Mutex<Option<(Vec<(u64, u64, usize)>, bool)>>,
     /// The host copy, once it landed.
     host: Mutex<Option<Arc<Page>>>,
-    /// The region's pin when its copy failed: it stays on the card until its owner goes.
+    /// The region's pin when it has no host copy (none taken, or it failed): it stays on the card
+    /// until its owner goes.
     held: Mutex<Option<varena::Pin>>,
 }
 
@@ -62,13 +64,16 @@ impl varena::Source for RetainedSource {
                 source::publish(fill, None)
             }
             (None, Some(consumer)) => {
-                let Some(writes) = lock(&self.0.writes).take() else {
+                let Some((writes, copied)) = lock(&self.0.writes).take() else {
                     source::decline(fill);
                     return Err(varena::Error::Invalid("a retained region's bytes are gone"));
                 };
                 let copies: Vec<_> = writes.iter().map(|&(at, from, len)| Part::Device(at, from, len)).collect();
                 let pin = stream_fill(fill, consumer, &copies, Box::new(Holds(())))?;
-                spill(&self.0, pin.try_clone()?, consumer);
+                match copied {
+                    true => spill(&self.0, pin.try_clone()?, consumer),
+                    false => *lock(&self.0.held) = Some(pin.try_clone()?),
+                }
                 Ok(Some(pin))
             }
             (None, None) => {
@@ -317,12 +322,14 @@ impl PyRetained {
     }
 
     /// Copy `parts`, (offset, device address, bytes) of live tensors ordered on `stream`, into the
-    /// region on `stream`, pinned for it. Once, before any other use.
-    fn write(&self, py: Python<'_>, stream: u64, parts: Vec<(u64, u64, usize)>) -> PyResult<PyUse> {
+    /// region on `stream`, pinned for it. Once, before any other use. `spill`: a host copy is taken
+    /// behind compute, and the region is evictable once it lands; else it stays on the card.
+    #[pyo3(signature = (stream, parts, *, spill = true))]
+    fn write(&self, py: Python<'_>, stream: u64, parts: Vec<(u64, u64, usize)>, spill: bool) -> PyResult<PyUse> {
         if parts.iter().any(|&(at, _, len)| at as usize + len > self.region.len()) {
             return Err(PyValueError::new_err("a retained part lies past its region"));
         }
-        *lock(&self.retained.writes) = Some(parts);
+        *lock(&self.retained.writes) = Some((parts, spill));
         use_region(py, &self.region, stream)
     }
 

@@ -254,10 +254,11 @@ class Retained:
     def __init__(self, device: Device, pages: Pages, bytes: int) -> None:
         self._native = _ext._VarenaRetained(device._native, pages._native, bytes)
 
-    def write(self, stream: int, parts: Sequence[tuple[int, int, int]]) -> Use:
+    def write(self, stream: int, parts: Sequence[tuple[int, int, int]], *, spill: bool = True) -> Use:
         """Copy `parts`, (offset, device address, bytes) of live tensors ordered on `stream`,
-        into the region on `stream`, pinned for it. Once, before any other use."""
-        return Use(self._native.write(stream, list(parts)))
+        into the region on `stream`, pinned for it. Once, before any other use. `spill`: a host
+        copy is taken behind compute and the region is evictable once it lands; else it stays."""
+        return Use(self._native.write(stream, list(parts), spill=spill))
 
     def use(self, stream: int) -> Use:
         """Pinned for `stream`: refilled from its host copy if it was evicted."""
