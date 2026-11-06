@@ -193,8 +193,8 @@ export class CanvasStore {
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
   readonly names = signal(0)
-  /** The menu open, and where. `full`: from an opened box, with what's asked of it. */
-  readonly menu = signal<{ name: string; x: number; y: number; full?: boolean } | null>(null)
+  /** The menu open, and where. */
+  readonly menu = signal<{ name: string; x: number; y: number } | null>(null)
   /** The box whose file is being looked at large, over everything. */
   readonly viewing = signal<string | null>(null)
   /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */

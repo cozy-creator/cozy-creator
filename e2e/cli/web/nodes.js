@@ -443,7 +443,7 @@ function linesOf(text, name) {
   check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
   await open('Sheet');
-  await box('Sheet').locator('[aria-label="More for this box"]').click();
+  await box('Sheet').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu > button').allTextContents();
   check('box_menu', ['Change the tool', 'Rename', 'Delete'].every((item) => items.includes(item)), items);

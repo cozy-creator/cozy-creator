@@ -298,11 +298,12 @@ code {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  padding: 0 2px;
+  /* Clear of the picture and its outline at any zoom: what's taller than the head rises above it. */
+  padding: 0 2px min(calc(4px + 8px * var(--text, 1)), 24px);
   height: var(--head);
 }
 .nm {
-  flex: none;
+  flex: 0 1 auto;
   max-width: 100%;
   color: var(--ink);
   font: calc(20px * var(--text, 1)) / 1.25 var(--mono);
@@ -764,13 +765,13 @@ video.preview.on {
 .here-under > * {
   --text: 1;
 }
-/* A box worked on: its takes in a column beside the picture, the newest on top. */
+/* A box worked on: its takes in a column beside the picture, the newest on top, the first's top on the picture's. */
 .here-side {
   position: absolute;
-  top: 0;
+  top: calc(var(--head) - 4px * var(--text, 1) * var(--here));
   left: calc(100% + 8px * var(--text, 1));
   width: var(--side-width, 132px);
-  height: calc(100% / (var(--text, 1) * var(--here)));
+  height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)) + 4px);
   overflow: hidden auto;
   overscroll-behavior: contain;
   transform: scale(calc(var(--text, 1) * var(--here)));
