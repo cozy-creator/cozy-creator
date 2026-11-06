@@ -859,11 +859,18 @@ video.preview.on {
   flex-direction: column;
   z-index: 3;
   pointer-events: none;
-  /* What says so (.prog b): at rest at --hang, open at its own size. */
-  padding-bottom: max(calc(var(--hang, 1) * (var(--s3) + 1.4 * var(--t-small) * var(--ui) + 2px)), calc(10px + 1.4 * var(--small)));
+  /* What says so (.prog b), at rest at --hang; open, below. */
+  padding-bottom: calc(var(--hang, 1) * (var(--s3) + 1.4 * var(--t-small) * var(--ui) + 2px));
 }
 .card .made-from .words {
   visibility: visible;
+}
+/* Open, what says how far it's got is one size on screen as the canvas is drawn in on its box, as its timecode is. */
+.card.here .prog b {
+  font-size: calc(var(--t-small) * var(--on));
+}
+.card.here .made-from {
+  padding-bottom: calc(10px + 1.4 * var(--t-small) * var(--on));
 }
 .card.here .in-frame {
   background: var(--card);
