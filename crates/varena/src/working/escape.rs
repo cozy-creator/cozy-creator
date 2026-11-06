@@ -3,6 +3,8 @@
 //! each forward of a model (`pass_mark`). Each eager block is tallied by the pass and site it was
 //! born in, and each open loop keeps a running sum of what its passes left live, so an allocation
 //! costs O(open loops) and a mark O(1); naming the sites reads the tally, only as a loop's peak grows.
+//! Kept across steps means live through a whole pass since its birth: a step's output that the next
+//! step replaces is not.
 //! Those bytes enter the room check of the loop's next pass, and the request's record names where
 //! they were born.
 use super::*;
@@ -163,10 +165,10 @@ impl Escapes {
         }
     }
 
-    /// The largest sites of what is live, born at or after `since`.
-    fn sites(&self, since: u32) -> Vec<(u32, usize)> {
+    /// The largest sites of what is live, born in passes `from..to`.
+    fn sites(&self, from: u32, to: u32) -> Vec<(u32, usize)> {
         let mut by = BTreeMap::<u32, usize>::new();
-        for (&(_, site), &bytes) in self.live.range((since, 0)..) {
+        for (&(_, site), &bytes) in self.live.range((from, 0)..(to, 0)) {
             *by.entry(site).or_default() += bytes;
         }
         let mut sites: Vec<_> = by.into_iter().collect();
@@ -252,7 +254,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
                 transient_bytes: transient, floor_bytes: floor, learned: true, sites: vec![],
             })
         });
-        let carried_sites = escapes.sites(0);
+        let carried_sites = escapes.sites(0, pass);
         escapes.loops.insert(head, Loop {
             shape, first: pass, last: pass, start: total, since_first: 0, since_last: 0, passes: 1,
             carried: total, carried_sites, escaped: 0, peak: 0, named_at: 0, peak_sites: vec![],
@@ -260,11 +262,14 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
         });
         return Ok(verdict);
     }
-    let first = escapes.loops[&head].first;
-    let rename = escapes.loops[&head].since_first > escapes.loops[&head].named_at.saturating_add(RENAME);
-    let sites = rename.then(|| escapes.sites(first));
+    // Kept across steps: born in an earlier pass and live through a whole pass since. What the last
+    // pass made and the next replaces (a step's output, the sampler's state) is not.
+    let (first, last) = (escapes.loops[&head].first, escapes.loops[&head].last);
+    let kept = escapes.loops[&head].since_first.saturating_sub(escapes.loops[&head].since_last);
+    let rename = kept > escapes.loops[&head].named_at.saturating_add(RENAME);
+    let sites = rename.then(|| escapes.sites(first, last));
     let held_loop = escapes.loops.get_mut(&head).expect("this head's loop");
-    let escaped = held_loop.since_first;
+    let escaped = kept;
     if !interleaved {
         let transient = peak.saturating_sub(held_loop.start).saturating_sub(held_loop.since_last);
         held_loop.transient = Some(held_loop.transient.map_or(transient, |least| least.min(transient)));
