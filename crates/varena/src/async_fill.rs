@@ -771,6 +771,7 @@ fn run_worker(receiver: mpsc::Receiver<Payload>) {
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
         }
         pending.extend(receiver.try_iter());
+        let _quiet = crate::quiet::driver_work();
         let mut index = 0;
         while index < pending.len() {
             let result =

@@ -196,6 +196,7 @@ impl Native {
 
 impl Donor for Native {
     fn holdings(&mut self) -> (u64, u64) {
+        let _quiet = crate::quiet::driver_work();
         let held = self.gpu.owned();
         // A momentary refusal keeps the last count: zero would read as nothing left to ask for.
         self.idle = self.count_idle().unwrap_or(self.idle);
@@ -203,6 +204,7 @@ impl Donor for Native {
     }
 
     fn trim(&mut self, bytes: u64) -> u64 {
+        let _quiet = crate::quiet::driver_work();
         let wanted = bytes as usize;
         let released = || self.gpu.released.load(Ordering::Acquire);
         let since = released();
@@ -224,6 +226,7 @@ impl Donor for Native {
     /// Design §4.6: `free < H` gives back up to `2H - free`, wherever a foreign program or this
     /// card's own fill put it, and speculation regrows at a pass boundary only once `2H` is free.
     fn tick(&mut self, table: &Table, row: Row, idle: u64) -> bool {
+        let _quiet = crate::quiet::driver_work();
         // Right after a give its taker may not have taken it yet: the next look comes as soon.
         let gave = std::mem::take(&mut self.asked);
         if gave {

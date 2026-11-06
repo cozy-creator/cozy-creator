@@ -146,6 +146,7 @@ fn run(retirer: Arc<Retirer>, receiver: mpsc::Receiver<Job>) {
             }
         }
         pending.extend(receiver.try_iter());
+        let _quiet = crate::quiet::driver_work();
         let mut index = 0;
         while index < pending.len() {
             // Owners stay outside the unwind scope: a panic quarantines only this job.

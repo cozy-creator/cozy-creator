@@ -115,6 +115,7 @@ fn run(device: &'static Device) {
                 slot = device.ahead.wake.wait(slot).unwrap_or_else(|error| error.into_inner());
             }
         };
+        let quiet = crate::quiet::driver_work();
         let filled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill_ahead(&region, free_only)));
         // Past the one Region a use asked for, only into room nothing else needs.
         let chained = match filled {
@@ -135,6 +136,8 @@ fn run(device: &'static Device) {
                 slot.wanted = Some((next, true));
             }
         }
+        drop(region); // A Region's last drop calls the driver: inside the quiet.
+        drop(quiet);
     }
 }
 
