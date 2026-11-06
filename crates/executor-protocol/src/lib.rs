@@ -232,6 +232,9 @@ pub struct Invoke {
     /// this name, so the child is admitted beside it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family: String,
+    /// Start's `display_limit` as the display uses it now, read again for each request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_limit: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

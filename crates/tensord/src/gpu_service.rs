@@ -770,11 +770,13 @@ fn parent_app(held: &HeldGeneration) -> App {
 }
 
 /// What a GPU that drives a display keeps free at the driver beside a run, past what varena
-/// samples (the display's standing use, the run's context): an executor's outside bytes grew
-/// about 50 MiB past a fresh process's 464 MiB on a 4090 (runs 40835-40850), and the display
-/// server may double its own (Xorg held 155 MiB on Paul's laptop) and add a triple-buffered 4K
-/// framebuffer (95 MiB). varena keeps its 128 MiB slack on top.
-pub const DISPLAY_RESERVE: u64 = 384 << 20;
+/// samples (the display's standing use, the run's context): as much again as the display's
+/// programs use now (a browser, a second monitor), and [`DISPLAY_MARGIN`] for the driver's own
+/// allocations (the 10-13 freeze logged NV_ERR_NO_MEMORY on shadow fault buffers), never under
+/// [`DISPLAY_FLOOR`]. An executor's own outside bytes grew about 50 MiB past a fresh process's
+/// 464 MiB on a 4090 (runs 40835-40850); varena keeps its 128 MiB slack on top.
+pub const DISPLAY_MARGIN: u64 = 256 << 20;
+pub const DISPLAY_FLOOR: u64 = 384 << 20;
 
 /// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
@@ -1358,16 +1360,16 @@ impl Pool {
         }
     }
     /// The limit of each GPU of `lane` that drives a display now, in its order: its total less
-    /// [`DISPLAY_RESERVE`]; empty when none does (a pod).
+    /// what the display keeps free ([`DISPLAY_MARGIN`]); empty when none does (a pod). Read at
+    /// Start and again for each request.
     fn display_limit(&self, lane: &str) -> Vec<u64> {
         let limits: Vec<u64> = lane.split(',').map(|entry| {
             let Some(gpu) = memory::row(entry.trim(), &self.config.inventory) else { return 0 };
-            let display = platform::gpu::Device::open(&gpu.device_uuid).and_then(|device| device.display_active()).unwrap_or(false);
-            if !display {
-                return 0;
-            }
-            let limit = gpu.memory_bytes.saturating_sub(DISPLAY_RESERVE);
-            tracing::info!("GPU {entry} drives a display: its runs use at most {} of its {} MiB", limit >> 20, gpu.memory_bytes >> 20);
+            let display = platform::gpu::Device::open(&gpu.device_uuid).and_then(|device| device.display_use());
+            let Ok(Some(used)) = display else { return 0 };
+            let reserve = (used + DISPLAY_MARGIN).max(DISPLAY_FLOOR);
+            let limit = gpu.memory_bytes.saturating_sub(reserve);
+            tracing::debug!("GPU {entry} drives a display using {} MiB: a run uses at most {} of its {} MiB", used >> 20, limit >> 20, gpu.memory_bytes >> 20);
             limit
         }).collect();
         if limits.iter().all(|&bytes| bytes == 0) { vec![] } else { limits }
@@ -3589,6 +3591,7 @@ impl Pool {
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
                 weights,
+                display_limit: self.display_limit(&lane),
             })),
             &mut callbacks,
         );

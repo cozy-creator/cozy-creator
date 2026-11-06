@@ -183,7 +183,8 @@ thread.
   in 4..16 GiB, plus what free swap is short of a quarter of it). A run that outgrows the computer
   is OOM-killed inside it and fails `host_out_of_memory`. No `memory.high`: it throttles a run
   that cannot shrink for a minute before the kill. Not delegated: one warning, in-process limits.
-- A GPU that drives a display keeps `DISPLAY_RESERVE` free at the driver: Start's
-  `display_limit` (its total less it), which the Runtime passes to varena's `set_limit`.
+- A GPU that drives a display keeps free at the driver what its display's programs use now plus
+  256 MiB (384 MiB at least), read at Start and each Invoke (`display_limit`, its total less that),
+  which the Runtime passes to varena's `set_limit`.
 - Seal: `OMP_NUM_THREADS` 4 (torch's allocator is set in Runtime code); `<root>/home`, `<root>/kernels` (per UID) and
   `<root>/jit/<run>/<generation>`. Earlier runs' JIT scopes, and executor roots (logs) older than a day, are removed at pool start.
