@@ -15,6 +15,8 @@
 #   launch), over a first call that records, then two that reuse it, and over a first call that records nothing, the idle
 #   recording after it, and two that reuse that: each counter exactly what running without graphs gives (90721eb84 ran a
 #   step and its `after` twice, and read 5 where 4 was due)
+# At the same split levels the bytes must match. Where levels moved with the room, or `why` names a cause the bytes
+# follow, the outputs are judged by quality (differential.py; Paul 11-06: determinism is desirable, not required).
 # A skipped or unreadable arm is a FAIL: a gate that did not run this has not passed it.
 D=$V/differential
 ARMS=$OUT/differential
@@ -45,8 +47,16 @@ diff_run() {  # diff_run <cell> <arm> <package> <function> <args...>: H3's text 
   run_cell "$OUT" "$name" "./differential/$arm/$package/$function" --on "$M" "$@"
   log "$name run $(cat "$name.number" 2>/dev/null) $(run_get "$OUT" "$name" .status)"
 }
+# why <check>: what else the check's bytes follow, each seen in v1 0.20.1 on the same 5090 too (11-06).
+why() {
+  case $1 in
+    diff-sdxl-capped) echo "capped SDXL's first and second calls differ with no split moved: a kernel choice follows free memory";;
+    diff-sdxl-noroom) echo "its room differs by design: kernel choices and split levels follow it";;
+    diff-h3-repeat|diff-h3-capped) echo "Sol serves a length's first sight dense while its sparse kernel opens: a first call is not a second";;
+  esac
+}
 diff_expect() {  # diff_expect <check> <a> <b>
-  local said; said=$(python3 "$D/differential.py" "$2.json" "$3.json" 2>&1)
+  local said; said=$(python3 "$D/differential.py" "$2.json" "$3.json" "$1" "$(why "$1")" 2>&1)
   case $said in PASS*) expect "$1" PASS "${said#PASS }";; *) expect "$1" FAIL "${said#FAIL }";; esac
 }
 diff_model() {  # diff_model <name> <package> <function> <cap> <uses|perturbed_bytes> <args...>
