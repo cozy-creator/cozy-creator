@@ -28,8 +28,11 @@ pub(crate) const HIGH: u8 = 7;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wait {
-    /// Peer service, owner collection and prefetch: completed memory only.
+    /// Peer service and owner collection: completed memory only.
     No,
+    /// A fill ahead of demand, on its own thread: may also wait for the GPU work on the weights it
+    /// evicts, nothing else.
+    Fences,
     /// May also wait for GPU work already submitted and, before this process's weights go, an
     /// idle peer's answer; never on another thread, or on a process in a request.
     Local,
@@ -138,7 +141,7 @@ impl<'a> Sequence<'a> {
     /// Run steps until one makes progress. False: every step is exhausted.
     fn advance(&mut self, want: usize, physical: bool) -> Result<bool> {
         // A fill ahead of demand is a guess: it stops before anything real gives way.
-        if self.wait != Wait::No && !std::mem::replace(&mut self.ahead_stopped, true)
+        if !matches!(self.wait, Wait::No | Wait::Fences) && !std::mem::replace(&mut self.ahead_stopped, true)
             && crate::source::stop_and_wait(self.gpu)
         {
             return Ok(true);
@@ -172,7 +175,7 @@ impl<'a> Sequence<'a> {
     }
 
     fn run(&mut self, step: Step, want: usize, physical: bool) -> Result<bool> {
-        let waiting = self.wait != Wait::No;
+        let waiting = matches!(self.wait, Wait::Local | Wait::Yes);
         let released = self.released;
         match step {
             Step::CompletedWorking => {
@@ -188,7 +191,7 @@ impl<'a> Sequence<'a> {
             Step::Weights => {
                 // A guess takes no other guess and no region this phase still needs.
                 let classes = if self.protect.speculative { UNPLANNED..=PHASE_FRESH } else { PREFETCHED..=PHASE_NEXT };
-                self.weights(want, classes, waiting, waiting)
+                self.weights(want, classes, waiting || self.wait == Wait::Fences, waiting)
             }
             Step::PendingWorking if waiting => {
                 if self.protect.keep_phase && working::phase_known(self.device)? {
@@ -416,7 +419,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
     let gpu = crate::gpu(device)?;
     let into = group.first().copied();
     let protect = Protect { regions: Some(group), speculative: true, spent_only: !known, keep_working: true, into, ..Default::default() };
-    let (room, idle, spent_idle) = {
+    let (room, done, pending) = {
         let order = plan::order(device)?;
         let gate = crate::gate(device)?;
         if gate.not_capturing().is_err() {
@@ -425,17 +428,20 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
         let _context = gpu.driver().enter()?;
         let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
         let state = gpu.lock()?;
-        let (mut idle, mut spent_idle) = (0, 0);
+        let (mut done, mut pending) = (0, 0);
         for (id, entry) in &state.entries {
             let class = state.rank(*id, entry, &order).0;
             if entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
-                && gpu.completion(&state, *id) == Completion::Done
+                && (known || spent(class, &order, *id))
             {
-                idle += entry.bytes;
-                spent_idle += if spent(class, &order, *id) { entry.bytes } else { 0 };
+                match gpu.completion(&state, *id) {
+                    Completion::Done => done += entry.bytes,
+                    Completion::Pending => pending += entry.bytes,
+                    Completion::Unjoined => {}
+                }
             }
         }
-        (room, idle, spent_idle)
+        (room, done, pending)
     };
     if needed <= room {
         return Ok(true);
@@ -443,14 +449,17 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
     // Unmeasured, a first pass's guess keeps the quarter-card floor and takes only what this request
     // is done with: under a cap the text encoder held the room, and Qwen 4 MP at 6 GiB read its whole
     // first transformer pass on demand (33 fills, step 1 2.4 s against v1's 1.2).
+    // What its GPU work still holds, this thread waits for, off the critical path: declining, Klein's
+    // upsampler LM read 535 of its streamed layers on demand at 8 GiB (v1: 19), 14% more a character.
     let short = needed - room;
-    if free_only || short > if known { idle } else { spent_idle } + excess {
+    if free_only || short > done + pending + excess {
         return Ok(false);
     }
     let trimmed = working::release_beyond_phase(device, short.min(excess), usize::MAX, None)?;
     if trimmed < short {
         let mut released = 0;
-        release(device, short - trimmed, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
+        let wait = if short - trimmed > done { Wait::Fences } else { Wait::No };
+        release(device, short - trimmed, usize::MAX, wait, protect, ReclaimReason::Allocator, &mut released)?;
     }
     Ok(true)
 }
