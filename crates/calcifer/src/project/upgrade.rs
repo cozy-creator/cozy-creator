@@ -32,6 +32,7 @@ use super::{
 const KINDS: [&str; 3] = ["image", "video", "audio"];
 const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
 const WAS_YAML: &str = "project.yaml.v2";
+const FRAME: &str = "cozy/frame";
 const WAS_LOCK: &str = "project.lock.v2";
 /// An asset's keys in the order they're written, then any other by name, then what's said of it.
 const FIRST: [&str; 14] = ["tool", "models", "lora", "instructions", "summary", "soundscape", "music", "style", "aspect_ratio", "resolution", "video", "beats", "fps", "tracks"];
@@ -191,7 +192,7 @@ impl Folding {
 fn tool_of(with: &str, kind: &str, inputs: &Map<String, Value>, turbo: Option<bool>, made_by: Option<&str>, folder: &Folder, notes: &mut Vec<String>, name: &str) -> String {
     let with = with.trim();
     if made_here(with) {
-        return if kind == "video" { EDIT.to_owned() } else { "cozy/frame".to_owned() };
+        return if kind == "video" { EDIT.to_owned() } else { FRAME.to_owned() };
     }
     let is_path = written_as_path(with) || with.ends_with(".py");
     let named = match is_path {
@@ -762,18 +763,23 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         let Some(body) = entities.get(&name).and_then(Value::as_object) else { continue };
         folding.links(&name, &name, body, &Said::default(), &with_body);
     }
-    // What a shot wrote and something reads is a file now.
+    // A frame a beat wrote is a box of `cozy/frame`, of that shot at that time, as it was made: format 3 has no beat writes.
+    let mut stills: Vec<(String, String, Map<String, Value>)> = (was.frames().into_iter())
+        .filter(|(name, ..)| !with_body.contains(&name_key(name)))
+        .map(|(name, shot, at)| (name_key(&name), name, Map::from_iter([("tool".to_owned(), json!(FRAME)), ("video".to_owned(), json!(format!("<{shot}>"))), ("at".to_owned(), json!(at))])))
+        .collect();
+    // A still no beat writes now, and something reads, is a file.
     let said_anywhere: BTreeSet<String> = mentions_in(&json!(declared)).iter().chain(mentions_in(&json!(old_defaults)).iter()).map(|name| name_key(name)).collect();
-    let mut stills = vec![];
-    for (key, held) in old["assets"].as_object().into_iter().flatten() {
+    let framed: BTreeSet<String> = stills.iter().map(|(key, ..)| key.clone()).collect();
+    for (key, held) in old["assets"].as_object().into_iter().flatten().filter(|(key, _)| !framed.contains(*key)) {
         let newest = held["versions"].as_array().and_then(|versions| versions.last());
-        let is_still = newest.is_some_and(|newest| newest["made_by"]["with"] == "cozy/frame");
+        let is_still = newest.is_some_and(|newest| newest["made_by"]["with"] == FRAME);
         let Some(main) = newest.and_then(|newest| newest["files"]["image"].as_str()).filter(|_| is_still && !with_body.contains(key)) else { continue };
         if !written_names.iter().any(|name| name_key(name) == *key) && !said_anywhere.contains(key) {
             continue;
         }
         let shown = held["name"].as_str().filter(|name| !name.is_empty()).unwrap_or(key).to_owned();
-        stills.push((key.clone(), shown, folder::prefix_of(main).to_owned()));
+        stills.push((key.clone(), shown, Map::from_iter([("approved".to_owned(), json!(folder::prefix_of(main)))])));
     }
 
     let renames = folding.renames.clone();
@@ -783,9 +789,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     let taken: Vec<String> = written_names.iter().cloned().chain(renames.keys().cloned()).chain(renames.values().cloned()).chain(stills.iter().map(|(_, new, _)| new.clone())).collect();
     let shared = Shared::of(old_defaults, taken);
     assets.splice(0..0, shared.assets.iter().cloned());
-    for (_, new, hash) in &stills {
-        assets.push((new.clone(), Map::from_iter([("approved".to_owned(), json!(hash))])));
-    }
+    assets.extend(stills.iter().map(|(_, new, body)| (new.clone(), body.clone())));
     let mut kinds: Vec<(String, String)> = vec![];
     for name in &written_names {
         let key = name_key(name);

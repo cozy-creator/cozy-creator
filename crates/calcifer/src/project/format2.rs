@@ -242,6 +242,12 @@ impl Doc {
         Some(&self.assets[self.assets[i].beat_of?].name)
     }
 
+    /// Each free frame a beat wrote: its name, the shot it is of, and when, in seconds into the shot.
+    pub fn frames(&self) -> Vec<(String, String, f64)> {
+        let frame = |asset: &Asset| Some((asset.name.clone(), self.assets[asset.beat_of?].name.clone(), asset.body.get("at")?.as_f64()?));
+        self.assets.iter().filter(|asset| asset.frame).filter_map(frame).collect()
+    }
+
     /// What `mention` meant.
     pub fn meant(&self, mention: &str) -> String {
         match (self.find(mention), self.beat_of(mention)) {
