@@ -640,7 +640,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           view.draft === undefined &&
           asset &&
           !lite && (
-            <button type="button" className="iconb nodrag on-hover" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
+            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
             </button>
           )

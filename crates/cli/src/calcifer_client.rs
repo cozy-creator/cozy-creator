@@ -87,8 +87,11 @@ impl Client {
     }
 
     fn new(ctx: &Context) -> Result<Self, Error> {
+        // Who a project's history says made an edit.
+        let said = header::HeaderMap::from_iter([(header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli"))]);
         let http = reqwest::Client::builder()
             .no_proxy()
+            .default_headers(said)
             .build()
             .map_err(|e| Error::new(Kind::Internal, "http_client", e.to_string()))?;
         Ok(Self(Arc::new(Inner {

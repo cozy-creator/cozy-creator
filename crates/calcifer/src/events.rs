@@ -119,6 +119,11 @@ pub fn canvas(id: &str, etag: &str, cards: BTreeMap<String, Option<Card>>) {
     let _ = PROJECTS.said.send(event);
 }
 
+/// Tells every stream project `id`'s history moved, and what undo and redo would take now.
+pub fn history(id: &str, undo: Option<Box<protocol::project::HistoryEntry>>, redo: Option<Box<protocol::project::HistoryEntry>>) {
+    let _ = PROJECTS.said.send(StreamEvent::History { id: id.to_owned(), undo, redo });
+}
+
 /// Tells every stream what project `id` is fetching ahead moved.
 pub fn ahead_updated(id: &str, ahead: &protocol::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });

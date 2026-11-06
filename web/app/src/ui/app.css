@@ -836,15 +836,15 @@ video.preview.on {
 .card.here .media {
   user-select: text;
 }
-/* At rest, its × and its state are drawn with its name: one size on screen, down to --hang. */
+/* At rest, its × and its state are drawn with its name: one size on screen, down to --hang. The × is always there, big enough to hit. */
 .card .head .iconb {
-  width: calc(22px * var(--hang, 1));
-  height: calc(22px * var(--hang, 1));
-  border-radius: calc(5px * var(--hang, 1));
+  width: calc(30px * var(--hang, 1));
+  height: calc(30px * var(--hang, 1));
+  border-radius: calc(6px * var(--hang, 1));
 }
 .card .head .iconb .icon {
-  width: calc(14px * var(--hang, 1));
-  height: calc(14px * var(--hang, 1));
+  width: calc(20px * var(--hang, 1));
+  height: calc(20px * var(--hang, 1));
 }
 .card .head .dot {
   width: calc(7px * var(--hang, 1));
@@ -2450,6 +2450,76 @@ a.tab:hover {
   border-radius: 6px;
   background: var(--float);
 }
+/* Undo, Redo and the project's history, at the top bar's left. */
+.history-controls:empty {
+  display: none;
+}
+.history {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.history > .tb {
+  padding: 0 7px;
+  background: var(--float);
+}
+.history > .tb:disabled {
+  opacity: 0.4;
+}
+.history > .tb.on {
+  border-color: var(--line2);
+}
+.history-list {
+  position: absolute;
+  left: 0;
+  top: calc(100% + var(--s2));
+  width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--float);
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  box-shadow: 0 10px 28px var(--shadow);
+  z-index: 40;
+  animation: open-up 90ms ease-out;
+}
+.history-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--round);
+  background: none;
+  color: var(--ink);
+  text-align: left;
+}
+.history-row:hover {
+  background: var(--tint);
+}
+.history-row.undone .history-words {
+  color: var(--mute);
+  text-decoration: line-through;
+}
+.history-words {
+  font-size: var(--body);
+}
+.history-by,
+.history-none {
+  color: var(--mute);
+  font-size: var(--small);
+}
+.history-none {
+  margin: 0;
+  padding: 6px 8px;
+}
+
 .main-menu {
   position: relative;
 }
@@ -3187,12 +3257,10 @@ input[type="checkbox"] {
   margin: 8px 4px 2px;
 }
 
-/* On the canvas a box shows its X and its corner only under the pointer, with nothing else opening. */
-.card .on-hover,
+/* On the canvas a box shows its corner only under the pointer, with nothing else opening. */
 .card:not(.here) .corner {
   visibility: hidden;
 }
-.card:hover .on-hover,
 .card:hover .corner {
   visibility: visible;
 }
