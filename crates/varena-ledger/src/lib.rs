@@ -416,15 +416,17 @@ impl Table {
     /// TensorD's side, for this GPU. While the table's supervisor byte is held, an asker that
     /// peers could not help waits for `end_idle`: it ends an idle process, or says there is none.
     /// Only an exit returns a CUDA context. `end_idle` returns None when the service is gone.
-    pub fn supervise(&self, mut end_idle: impl FnMut() -> Option<bool>) {
+    /// An asker's own process is never the one ended: its exit can't give it room.
+    pub fn supervise(&self, mut end_idle: impl FnMut(&[u32]) -> Option<bool>) {
         if !self.lock(0) { return; } // Another TensorD on this GPU has it.
         loop {
             let seen = self.page.answers.load(Acquire);
             self.reap();
             let released = self.page.released.load(Acquire);
             let is_short = |row: &&Words| row.pid.load(Acquire) != 0 && row.short.load(Acquire) == released + 1;
-            if self.page.rows.iter().any(|row| is_short(&row)) {
-                match end_idle() {
+            let askers: Vec<u32> = self.page.rows.iter().filter(is_short).map(|row| row.pid.load(Acquire) as u32).collect();
+            if !askers.is_empty() {
+                match end_idle(&askers) {
                     Some(true) => {
                         self.reap();
                         self.release(1);
