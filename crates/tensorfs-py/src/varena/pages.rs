@@ -19,6 +19,11 @@ const LOOK: Duration = Duration::from_millis(100);
 /// How much of a page is read or registered before a command may take over: one registration
 /// of H3's largest page made a request wait 0.6 s on an RTX 3090.
 const WINDOW: usize = 64 << 20;
+/// Threads faulting a page in: registering untouched memory on the fill path held each of Flux-2's
+/// 57 blocks about 0.2 s in step 1 (run 39103). On a 4090 host the driver registered untouched
+/// memory at 3 GB/s, one page at a time, touched memory at 28, and faulting in ran at 10.5 GB/s on
+/// four threads.
+const FAULTERS: usize = 4;
 
 /// Host bytes, page aligned, registered once filled: registering touched memory runs at about
 /// twice the rate of untouched memory. A window at a time, and no copy spans two: CUDA refuses it.
@@ -44,6 +49,17 @@ impl Page {
         }
         Ok(Self { ptr, len, pins: Vec::new() })
     }
+    /// Fault every byte in, a part on each of `FAULTERS` threads.
+    fn populate(&self) {
+        let part = self.len.div_ceil(FAULTERS).next_multiple_of(4096).max(4096);
+        let base = self.ptr as usize;
+        std::thread::scope(|scope| {
+            for at in (0..self.len).step_by(part) {
+                let len = part.min(self.len - at);
+                scope.spawn(move || fault_in(base + at, len));
+            }
+        });
+    }
     pub(super) fn ptr(&self) -> *mut u8 {
         self.ptr
     }
@@ -62,6 +78,18 @@ impl Page {
         // SAFETY: inside this page, which outlives its pins: `Drop` releases them first.
         self.pins.push(unsafe { tensorfs::io::register(device, self.ptr.add(at), len) }?);
         Ok(())
+    }
+}
+/// `len` bytes from `at`, inside an unshared page and page aligned, faulted in.
+fn fault_in(at: usize, len: usize) {
+    #[cfg(target_os = "linux")]
+    // SAFETY: the caller's range.
+    if unsafe { libc::madvise(at as *mut libc::c_void, len, libc::MADV_POPULATE_WRITE) } == 0 {
+        return;
+    }
+    for at in (at..at + len).step_by(4096) {
+        // SAFETY: as above; nothing reads it yet.
+        unsafe { (at as *mut u8).write_volatile(0) };
     }
 }
 impl Drop for Page {
@@ -352,14 +380,32 @@ impl Tier {
                 .min_by_key(|(_, (page, _))| page.len).map(|(at, _)| at);
             best.map(|at| state.spare.swap_remove(at).0)
         };
-        if let Some(page) = spare {
-            return Ok(page);
+        match spare {
+            Some(page) => Ok(page),
+            None => self.new_page(len),
         }
+    }
+
+    /// Faulted in first: the driver registers touched memory about nine times as fast, and
+    /// registering holds every other driver call of the process.
+    fn new_page(&self, len: usize) -> Result<Page, String> {
         let mut page = Page::new(len).map_err(|error| error.to_string())?;
+        page.populate();
         while !page.registered() {
             page.register_window(self.device).map_err(|error| error.to_string())?;
         }
         Ok(page)
+    }
+
+    /// A spare page of `len` bytes made now, while nothing waits for it, unless one is there: the
+    /// next retained region of a loop is the size of the last.
+    pub(super) fn spare_ahead(&self, len: usize) {
+        if self.state().spare.iter().any(|(page, _)| page.len >= len) {
+            return;
+        }
+        if let Ok(page) = self.new_page(len) {
+            self.spare(page);
+        }
     }
 
     pub(super) fn spare(&self, page: Page) {

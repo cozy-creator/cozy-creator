@@ -214,7 +214,23 @@ fn spill(retained: &Arc<Retained>, pin: varena::Pin, consumer: u64) {
 
 fn run(device: i32, context: usize, jobs: mpsc::Receiver<Job>) {
     let stream = cuda::Stream::new(device);
-    for job in jobs {
+    // The last copy's tier and size: idle, the worker makes the next one's page.
+    let mut last: Option<(Arc<Tier>, usize)> = None;
+    loop {
+        let job = match jobs.try_recv() {
+            Ok(job) => job,
+            Err(mpsc::TryRecvError::Disconnected) => return,
+            Err(mpsc::TryRecvError::Empty) => {
+                if let Some((tier, len)) = last.take() {
+                    tier.spare_ahead(len);
+                }
+                match jobs.recv() {
+                    Ok(job) => job,
+                    Err(_) => return,
+                }
+            }
+        };
+        last = job.retained.upgrade().map(|retained| (retained.tier.clone(), job.pin.len()));
         let copied = match &stream {
             Ok(stream) => copy(&job, stream, context),
             Err(error) => Err(error.to_string()),
