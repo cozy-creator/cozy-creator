@@ -2331,7 +2331,7 @@ a.tab:hover {
   border-radius: 4px;
   background: color-mix(in srgb, var(--ember) 13%, transparent);
   color: var(--ember2);
-  font: 600 1.08em var(--mono);
+  font: 600 0.9em var(--mono);
   white-space: nowrap;
 }
 .chip.missing {
