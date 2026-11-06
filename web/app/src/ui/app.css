@@ -1099,6 +1099,9 @@ video.preview.on {
   overflow: hidden auto;
   overscroll-behavior: contain;
 }
+.here-all > * {
+  flex-shrink: 0;
+}
 .here-all .field,
 .here-all .tb {
   font-size: var(--body);

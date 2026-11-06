@@ -40,8 +40,13 @@ import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
 
 const nodeTypes = { element: Card, entity: EntityCard }
-/** The room left on the canvas by what floats over it. */
-const clearOf = () => ({ left: (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24, top: (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12, right: 24, bottom: 24 })
+/** The room left on the canvas by what floats over it: the tools at the left, the top bar, and the zoom control in the bottom corner. */
+const clearOf = () => ({
+  left: (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24,
+  top: (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12,
+  right: 24,
+  bottom: Math.max(24, innerHeight - (document.querySelector(".zoom")?.getBoundingClientRect().top ?? innerHeight) + 12),
+})
 /** A fit, clear of what floats over the canvas. */
 const fitOver = () => {
   const { left, top, right, bottom } = clearOf()
