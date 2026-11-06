@@ -927,6 +927,7 @@ fn land_in(m: &Member, dest: &Path, access: &Scope<'_>, landed: &mut (dyn FnMut(
         let mut out: File = OpenOptions::new().create(true).append(true).open(dest).map_err(io)?;
         out.set_len(from).map_err(io)?;
         let (range, mut end) = ((from > 0).then_some((from, None)), from);
+        let mut paced = platform::durable::Paced::default();
         access.get(provider, url, range, &mut |at, frame| {
             if at != end {
                 // The origin started the body over.
@@ -934,6 +935,7 @@ fn land_in(m: &Member, dest: &Path, access: &Scope<'_>, landed: &mut (dyn FnMut(
                 hash = prefix(dest, at, verify, access, landed)?;
             }
             out.write_all(frame).map_err(io)?;
+            paced.wrote(&out, at, frame.len() as u64);
             hash.update(frame);
             end = at + frame.len() as u64;
             landed(end);

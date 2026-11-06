@@ -338,6 +338,7 @@ impl Store {
             hash: Sha256::new(),
             length: 0,
             over: false,
+            paced: durable::Paced::default(),
         })
     }
 
@@ -629,6 +630,7 @@ pub struct Admission {
     hash: Sha256,
     length: u64,
     over: bool,
+    paced: durable::Paced,
 }
 
 impl Admission {
@@ -692,6 +694,7 @@ impl Write for Admission {
             .as_mut()
             .expect("an admission has its file until it finishes");
         let n = file.write(bytes)?;
+        self.paced.wrote(file, self.length, n as u64);
         self.hash.update(&bytes[..n]);
         self.length += n as u64;
         Ok(n)
@@ -729,11 +732,13 @@ struct Stretch {
     file: File,
     journal: Option<Arc<Mutex<File>>>,
     path: PathBuf,
+    paced: durable::Paced,
 }
 
 impl fetch::RangeWrite for Stretch {
     fn write_at(&mut self, at: u64, bytes: &[u8]) -> crate::err::Result<()> {
         write_all_at(&self.file, bytes, at).map_err(|error| fail("write", &self.path)(error).refusal())?;
+        self.paced.wrote(&self.file, at, bytes.len() as u64);
         if let Some(journal) = &self.journal {
             let mut journal = journal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             writeln!(journal, "{at} {}", at + bytes.len() as u64).map_err(|error| fail("write", journal_path(&self.path))(error).refusal())?;
@@ -749,7 +754,7 @@ impl fetch::Admission for Partial {
 
     fn writer(&self) -> crate::err::Result<Box<dyn fetch::RangeWrite>> {
         let file = self.file.as_ref().expect("a partial has its file until it commits").try_clone().map_err(|error| fail("open", &self.temp)(error).refusal())?;
-        Ok(Box::new(Stretch { file, journal: self.journal.clone(), path: self.temp.clone() }))
+        Ok(Box::new(Stretch { file, journal: self.journal.clone(), path: self.temp.clone(), paced: durable::Paced::default() }))
     }
 
     fn commit(mut self: Box<Self>) -> crate::err::Result<()> {
