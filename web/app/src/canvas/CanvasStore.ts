@@ -9,7 +9,7 @@ import { Field, fit, type Give, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, shownOf, underOf, valueIn, watched, widthFor } from "./shown"
+import { faceOf, fieldsOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, shownOf, underOf, valueIn, watched, widthFor } from "./shown"
 import { mentionsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
@@ -1149,6 +1149,18 @@ export class CanvasStore {
   discardTake(name: string, number: number) {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
+    let note = 0
+    const undo = this.dropTake(key, number, () => dismiss(note))
+    if (!asset || !undo) return
+    const stands = asset.approved === number ? ` It was approved: ${name} now shows its newest.` : ""
+    const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
+    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
+    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** Take `number` off its box, in its turn: what's approved going leaves it following its inputs. What puts it back, its number and approval as they were. */
+  private dropTake(key: string, number: number, refused?: () => void): (() => void) | undefined {
+    const asset = this.views.get(key)?.asset
     const left = asset?.prefixes?.filter((held) => held.number !== number)
     if (!asset || !left) return
     const approved = asset.approved === number
@@ -1156,20 +1168,62 @@ export class CanvasStore {
     const gone: Partial<Asset> = { prefixes: left, versions: left.length, version: asset.version === number ? left.at(-1)?.number : asset.version, ...(approved ? { approved: undefined, pinned: false } : {}) }
     this.patch(key, { viewed: this.views.get(key)?.viewed === number ? undefined : this.views.get(key)?.viewed })
     let wasApproved = approved
-    let note = 0
     const takeBack = this.over(key, gone, (served, once) => this.client.discardVersion(this.projectId!, served, number, once), `discard ${asset.noun} ${number} of`, {
       done: (answer) => {
         wasApproved = Boolean(answer.approved)
       },
-      refused: () => dismiss(note),
+      refused,
     })
-    const undo = () => {
+    return () => {
       if (!takeBack?.()) this.over(key, back, (served, once) => this.client.restoreVersion(this.projectId!, served, number, wasApproved, once), `bring back ${asset.noun} ${number} of`)
     }
-    const stands = approved ? ` It was approved: ${name} now shows its newest.` : ""
-    const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
-    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
-    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /**
+   * A take carried out of `from` onto the canvas is moved, not copied: its new box `to` holds it, it leaves `from` as a discard does (an approved
+   * one leaving `from` following its inputs), and words that named it, `<from.N>` or `from`'s own `<self.N>`, name `to`. One note, with Undo
+   * putting all of it back. Called once `to` is made, its writes follow in line.
+   */
+  movedOut(from: string, number: number, to: string) {
+    const key = this.resolveName(from)
+    const asset = this.views.get(key)?.asset
+    let note = 0
+    const undo = this.dropTake(key, number, () => dismiss(note))
+    if (!asset || !undo) return
+    const named = (mention: string, reader: string) => {
+      const version = versionOf(mention)
+      return version?.number === number && (nameKey(version.name) === nameKey(key) || (reader === key && isSelf(version.name)))
+    }
+    const renamed = (value: unknown, reader: string): unknown =>
+      typeof value === "string"
+        ? value.replace(/<([^<>\s]+)>/g, (whole, mention: string) => (named(mention, reader) ? `<${to}>` : whole))
+        : Array.isArray(value)
+          ? value.map((item) => renamed(item, reader))
+          : value && typeof value === "object"
+            ? Object.fromEntries(Object.entries(value).map(([field, item]) => [field, renamed(item, reader)]))
+            : value
+    const readers: { name: string; back: Record<string, unknown> }[] = []
+    for (const [name, view] of this.views) {
+      if (!view.asset || name === to) continue
+      const fields = fieldsOf(view)
+      const next = Object.fromEntries(Object.entries(fields).flatMap(([field, value]) => (JSON.stringify(renamed(value, name)) === JSON.stringify(value) ? [] : [[field, renamed(value, name)]])))
+      if (!Object.keys(next).length) continue
+      readers.push({ name, back: Object.fromEntries(Object.keys(next).map((field) => [field, fields[field]])) })
+      void this.setFields(name, next)
+    }
+    const stands = asset.pinned && asset.approved === number ? ` It was approved: ${from} now follows its inputs.` : ""
+    const read = readers.length ? ` ${readers.map((one) => one.name).join(", ")} ${readers.length === 1 ? "names" : "name"} ${to} now.` : ""
+    note = say(`Moved ${asset.noun} ${number} of ${from} out as ${to}.${stands}${read}`, undefined, {
+      action: {
+        label: "Undo",
+        run: () => {
+          undo()
+          for (const one of readers) void this.setFields(one.name, one.back)
+          this.remove([to], undefined, true)
+        },
+      },
+      ms: UNDO_MS,
+    })
   }
 
   /** Whether a picture dropped here joins it: a box of pictures with no tool. */
@@ -1660,7 +1714,8 @@ export class CanvasStore {
   // Deleting
 
   /** Gone at once, with no dialog. Files stay: a note offers Undo for a while, and says if something still needs what went. */
-  remove(names: string[], merged?: { into: string; undo: () => void }) {
+  /** `quiet`: a move's Undo, whose note was said. */
+  remove(names: string[], merged?: { into: string; undo: () => void }, quiet = false) {
     // One taken out or pasted a moment ago may have no row read yet: its delete waits behind its import.
     const going = names.map((name) => this.resolveName(name)).filter((name) => (this.views.get(name)?.asset || this.views.get(name)?.landed) && !this.views.get(name)?.placing)
     if (!going.length) return
@@ -1698,7 +1753,7 @@ export class CanvasStore {
       gone.forEach((box) => this.undo(box))
       merged?.undo()
     }
-    note = say(merged ? `${what} merged into ${merged.into}.${said}` : `Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+    if (!quiet) note = say(merged ? `${what} merged into ${merged.into}.${said}` : `Deleted ${what}.${said}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
   }
 
   /** A box again, as it was, where it was. */

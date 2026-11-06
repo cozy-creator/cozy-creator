@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, renderOf, until } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, until } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -237,6 +237,43 @@ async function died(why) {
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await cdp.detach();
   check('the_column_drags_with_a_finger', byFinger > beforeFinger + 40 && (await page.locator('.card.here[data-asset="many"]').count()) === 1, { beforeFinger, byFinger });
+
+  // A take carried out of its box onto the canvas moves there: a box of its own holds it, it leaves its box, and what named it names that box.
+  // One note's Undo puts all of it back. Carried out again, the new box dropped back on the old one merges in as its newest take.
+  await imported('moving', 60);
+  await joined('moving', 61);
+  await joined('moving', 62);
+  writeFileSync(yamlAt, `${yaml().trimEnd()}\n  moving_words:\n    text: <moving.2> on top.\n`);
+  await box('moving_words').waitFor();
+  const second = (await asset('moving')).prefixes.find((held) => held.number === 2).main.sha256;
+  const carryOut = async () => {
+    await open('moving');
+    const movingHere = page.locator('.card.here[data-asset="moving"]');
+    await movingHere.locator('.here-side .take[data-take="2"]').click();
+    await movingHere.locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
+    return until('moved out', async () => (await state()).assets.find((one) => one.sha256 === second && one.name !== 'moving'), Boolean).catch(() => null);
+  };
+  const movedOut = await carryOut();
+  const leftBehind = await asset('moving');
+  const renamedWords = await until('what named it', () => asset('moving_words'), (row) => row?.fields?.text?.includes('<moving_2>')).catch(() => null);
+  check('a_take_carried_out_moves', movedOut?.name === 'moving_2' && !leftBehind.prefixes.some((held) => held.number === 2) && Boolean(renamedWords) && (await toast('Moved version 2 of moving out as moving_2')) === true, { movedOut: movedOut?.name, left: leftBehind.prefixes.map((held) => held.number), words: renamedWords?.fields?.text });
+  await undoIn('Moved version 2 of moving').click();
+  const putBack = await until('all back', async () => [await asset('moving'), await asset('moving_2'), await asset('moving_words')], ([row, gone, words]) => row.prefixes.some((held) => held.number === 2) && !gone && words.fields.text.includes('<moving.2>')).catch((why) => String(why));
+  check('its_undo_puts_it_all_back', Array.isArray(putBack), putBack);
+  const outAgain = (await carryOut())?.name ?? 'moving_2';
+  await shut();
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
+  const outBox = await box(outAgain).locator('.nm').boundingBox();
+  const homeBox = await box('moving').locator('.media').first().boundingBox();
+  await page.mouse.move(outBox.x + 4, outBox.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(outBox.x + 12, outBox.y + 4);
+  await page.mouse.move(homeBox.x + homeBox.width / 2, homeBox.y + homeBox.height / 2, { steps: 8 });
+  await page.waitForTimeout(100);
+  await page.mouse.up();
+  const mergedBack = await until('merged back', async () => [await asset('moving'), await asset(outAgain)], ([row, gone]) => !gone && row.prefixes.at(-1).main?.sha256 === second).catch((why) => String(why));
+  check('dropped_back_it_merges_in', Array.isArray(mergedBack), mergedBack);
   await open('Ada');
 
   // A double tap approves a take, and again unapproves it; on the big picture too, and Enter, and none opens it large. A click opens a box at once.

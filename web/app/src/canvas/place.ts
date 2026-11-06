@@ -3,7 +3,7 @@ import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Row, Tool } from "../types"
-import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage, UNDO_MS } from "./CanvasStore"
+import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
@@ -128,19 +128,21 @@ export class Placer {
   }
 
   /** A take or version dragged out: its own asset with the same file and what it says it is, there at once, and no new bytes. */
-  addFile(file: { sha256: string; field: string; name: string; description?: string }, point: { x: number; y: number }) {
+  /** A take carried out of its box onto the canvas moves there (`movedOut`), once its new box is made. */
+  addFile(file: CarriedFile, point: { x: number; y: number }) {
     this.file(file, { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16), w: CARD_WIDTH })
   }
 
-  private file(file: { sha256: string; field: string; name: string; description?: string }, at: Row): string {
+  private file(file: CarriedFile, at: Row): string {
     const key = `import-${crypto.randomUUID()}`
-    const { description } = file
+    const { description, from, number } = file
     return this.store.place(
       asName(file.name),
       { landed: { sha256: file.sha256, field: file.field } },
       at,
       async (clear, once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description }, once),
       (error) => say(`Couldn't take out ${file.name}`, error),
+      (name) => from !== undefined && number !== undefined && this.store.movedOut(from, number, name),
     )
   }
 
