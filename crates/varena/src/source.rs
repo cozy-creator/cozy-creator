@@ -176,6 +176,11 @@ pub(crate) fn boundary(device: &'static Device, begin: bool) -> Result<()> {
     }
 }
 
+/// Whether no request is open on this GPU since the last one ended.
+pub(crate) fn idle(device: &Device) -> bool {
+    device.ahead.slot().idle
+}
+
 /// A demand fill of `region` goes first: what runs ahead of it stops, unless it is that Region.
 pub(crate) fn yield_to(region: &Arc<Region>) {
     let mut slot = region.gpu.ahead.slot();

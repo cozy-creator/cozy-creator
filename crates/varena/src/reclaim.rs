@@ -385,14 +385,17 @@ pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
 }
 
 /// The prefetch rule: free >= bytes + what this phase's last pass still needs of working
-/// memory (a quarter of the card unmeasured, or at idle). Completed free working pages past that
-/// need are room nothing holds, so any fill takes them. Only a measured phase's fill that a use
-/// asked for also takes completed idle regions that reclaim would take anyway; `free_only` is a
-/// fill past it. False declines with no IO and no waiting.
+/// memory (a quarter of the card unmeasured, none between requests). Completed free working pages
+/// past that need are room nothing holds, so any fill takes them, and between requests so are idle
+/// pools' pages: a weight the next call uses first is worth more than a pool it maps again. Only a
+/// measured phase's fill that a use asked for also takes completed idle regions that reclaim would
+/// take anyway; `free_only` is a fill past it. False declines with no IO and no waiting.
 pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, free_only: bool) -> Result<bool> {
-    let Some((gap, reusable, known)) = working::prefetch_gap(device)? else {
+    let between = crate::source::idle(crate::gpu(device)?);
+    let Some((gap, reusable, known)) = working::prefetch_gap(device, between)? else {
         return Ok(false);
     };
+    let pools = if between { working::idle_pool_bytes(device)? } else { 0 };
     // Mapped free pages serve the phase's working demand first.
     let needed = bytes + gap.saturating_sub(reusable);
     let excess = reusable.saturating_sub(gap);
@@ -422,10 +425,13 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
     }
     let short = needed - room;
     let weights = known && !free_only;
-    if short > excess + if weights { idle } else { 0 } {
+    if short > excess + pools + if weights { idle } else { 0 } {
         return Ok(false);
     }
-    let trimmed = working::release_completed(device, short.min(excess), usize::MAX, None)?;
+    let mut trimmed = working::release_completed(device, short.min(excess), usize::MAX, None)?;
+    if trimmed < short && pools != 0 {
+        trimmed += working::release_idle_pools(device, short - trimmed, usize::MAX, None)?;
+    }
     if trimmed < short {
         if !weights {
             return Ok(false);
