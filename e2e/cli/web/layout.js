@@ -680,9 +680,14 @@ ${local ? `  card:
         await settled(page);
         await look(`zoom-${asset}-${step}`, step.endsWith('out'));
       }
+      // Beside its takes where only the canvas is: a box pushed aside may sit close by, and a drag on it would carry it onto this one.
       const from = await page.evaluate(() => {
         const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media').getBoundingClientRect();
-        return { x: side.right + 30, y: side.top + side.height * 0.8 };
+        const y = side.top + side.height * 0.8;
+        const bare = (x) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
+        for (let x = side.right + 30; x < innerWidth - 20; x += 20) if (bare(x)) return { x, y };
+        for (let x = side.left - 30; x > 20; x -= 20) if (bare(x)) return { x, y };
+        return { x: side.right + 30, y };
       });
       const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
       const before = await viewport();

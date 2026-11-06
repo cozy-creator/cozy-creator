@@ -5,7 +5,7 @@ import type { Entity, Imported, AssetDeleted, AssetPatched, Asset, Control, Hist
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { addOnsOf } from "./checkpoints"
-import { Field, fit, type Give, GLIDE_MS } from "./clear"
+import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { asName, freeName, nameKey } from "./names"
@@ -229,10 +229,12 @@ export class CanvasStore {
   readonly history: PageHistory<Snap[]>
   /** The edit what's typed in a box saves under while it goes on being typed there: one entry for all of it. */
   private typing: { name: string; fields: string; edit: string } | null = null
-  /** The edit of the gesture being put down: what it nudges aside is part of it. */
+  /** The edit of the act putting a box down: what it pushes aside is part of it. */
   private gesture: string | null = null
-  /** The edits of the moves still to write. */
-  private movesOf = new Set<string>()
+  /** What edits joined before their step was made: a file's drop, whose step is made when it's sent. */
+  private early = new Map<string, Snap[]>()
+  /** The box whose corner is being pulled, where it was, what's around it then, and what the pull pushes aside as it goes. */
+  private pulling: { name: string; was?: Box; field?: Field; shown: Set<string> } | null = null
   /** The note offering Undo of each edit, and the one saying what Undo or Redo last did: each goes once that's moved on. */
   private offers = new Map<string, number>()
   private stepped = 0
@@ -299,9 +301,6 @@ export class CanvasStore {
   private gliding = new Map<string, ReturnType<typeof setTimeout>>()
   /** Boxes to clear of what they lie on, as soon as this turn's changes are in: true for one whose size is its own, which doesn't shrink. */
   private unsettled = new Map<string, boolean>()
-  /** What this page's last act put down, by node id: the next one doesn't nudge it. */
-  private justPut = new Set<string>()
-  private putting = false
   /** When each of this page's moves was answered, by name. */
   private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
@@ -309,6 +308,9 @@ export class CanvasStore {
   /** Of those, what this page worked one out from, where it's this page's own doing: written only if Calcifer still has it, so it can't
    * clobber another writer's newer row. A person's move has none: it's newest. */
   private movingFrom = new Map<string, Row | null>()
+  /** Of those, the edits each is part of: a request names the edits of what it writes. */
+  private movingEdits = new Map<string, Set<string>>()
+  private movesSoon = false
   private movesOwed = false
   private renames = new Map<string, string>()
   private adding = 0
@@ -868,11 +870,13 @@ export class CanvasStore {
     return view ? { ...box, h: box.h + underOf(view, this.stacked(name)) } : box
   }
 
-  /** Where a block of boxes goes to lie on nothing: there if it can, with what it lies on nudged aside if that's cheaper. */
-  clearFor(box: Box): { x: number; y: number } {
+  /** Where a block of boxes goes to lie on nothing: there, with what it lies on pushed aside under `edit`, unless something that can't be is in the way. */
+  clearFor(box: Box, edit: string): { x: number; y: number } {
     const field = this.field()
-    const fitted = fit(box, field, { nudges: this.nudgeable(new Set(), true) })
-    this.nudge(field, fitted.nudged)
+    const fitted = fit(box, field, { pushes: this.pushable(new Set()) })
+    this.gesture = edit
+    this.push(field, fitted.pushed)
+    this.gesture = null
     return fitted
   }
 
@@ -906,25 +910,11 @@ export class CanvasStore {
     return tall(NARROWEST) < tall(NARROWEST * 2) ? tall : undefined
   }
 
-  /** What may be nudged aside: not what settles with it, what's held, what's still being made, nor, for this page's own act, what it just put down. */
-  private nudgeable(besides: Set<string>, ours = false) {
+  /** What may be pushed aside: not what settles with it, what a hand holds, the box open where it stands, nor what's still being made. */
+  private pushable(besides: Set<string>) {
     return (name: string) => {
       const view = this.views.get(name)
-      const id = this.ids.get(name)
-      return Boolean(view && id) && !besides.has(name) && !this.dragging.has(name) && !view!.placing && view!.pending !== NOT_YET && !(ours && this.justPut.has(id!))
-    }
-  }
-
-  /** What this act put down, together: the next act gives way to it. */
-  private putDown(names: string[]) {
-    if (!this.putting) {
-      this.justPut.clear()
-      this.putting = true
-      queueMicrotask(() => (this.putting = false))
-    }
-    for (const name of names) {
-      const id = this.ids.get(name)
-      if (id) this.justPut.add(id)
+      return Boolean(view && this.ids.has(name)) && !besides.has(name) && !this.dragging.has(name) && name !== this.pulling?.name && name !== this.inPlace?.name && !view!.placing && view!.pending !== NOT_YET
     }
   }
 
@@ -949,17 +939,18 @@ export class CanvasStore {
     else this.move(name, row, this.rows?.get(name) ?? null)
   }
 
-  private nudge(field: Field, nudged: Map<string, Box>) {
-    for (const [name, to] of nudged) {
+  /** Each slides where it's pushed, its row the page's own doing, from where it was. */
+  private push(field: Field, pushed: Map<string, Box>) {
+    for (const [name, to] of pushed) {
       field.add(name, to)
       this.slide(name, to)
     }
   }
 
-  /** It gives way: moved, shrunk, or what it lies on nudged aside, whichever costs least. Where it is now. */
+  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. */
   private giveWay(name: string, field: Field, box: Box, give: Give): Box {
-    const { nudged, ...fitted } = fit(box, field, give)
-    this.nudge(field, nudged)
+    const { pushed, ...fitted } = fit(box, field, give)
+    this.push(field, pushed)
     if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
     this.slide(name, fitted)
     return fitted
@@ -973,17 +964,17 @@ export class CanvasStore {
 
   /**
    * What arrived lying on something gives way, by name order, so every tab does the same: it moves or shrinks. What changed its size
-   * keeps it: it moves, or nudges aside what it lies on. What's held in a drag waits for its drop.
+   * keeps it and stays, and pushes aside what it lies on. What's held in a drag, or by its corner, waits to be let go.
    */
   private settle() {
-    const batch = [...this.unsettled].filter(([name]) => this.ids.has(name) && !this.dragging.has(name)).sort(([a], [b]) => (a < b ? -1 : 1))
+    const batch = [...this.unsettled].filter(([name]) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name).sort(([a], [b]) => (a < b ? -1 : 1))
     this.unsettled.clear()
     if (!batch.length) return
     const names = new Set(batch.map(([name]) => name))
     const field = this.field(names)
     for (const [name, sized] of batch) {
       const box = this.boxOf(name)
-      if (box) field.add(name, this.giveWay(name, field, box, sized ? { nudges: this.nudgeable(names) } : { tall: this.tallOf(name) }))
+      if (box) field.add(name, this.giveWay(name, field, box, sized ? { pushes: this.pushable(names) } : { tall: this.tallOf(name) }))
     }
   }
 
@@ -1391,6 +1382,8 @@ export class CanvasStore {
     if (id) {
       this.namesById.delete(id)
       this.moving.delete(id)
+      this.movingFrom.delete(id)
+      this.movingEdits.delete(id)
     }
     this.masks.delete(name)
     this.shapes.delete(name)
@@ -1787,15 +1780,16 @@ export class CanvasStore {
   // Undo and redo, of the project's history
 
   /** One thing a person does: its writes share an edit, which the project's history keeps as one entry, and Undo shows at once what it was. */
-  private step(words: string, names: string[]): string {
-    const edit = crypto.randomUUID()
-    this.history.did({ edit, words, before: names.map((name) => this.snap(name)) })
+  private step(words: string, names: string[], edit: string = crypto.randomUUID()): string {
+    const before = this.early.get(edit) ?? []
+    this.early.delete(edit)
+    this.history.did({ edit, words, before: [...before, ...names.map((name) => this.snap(name)).filter((snap) => !before.some((held) => held.name === snap.name))] })
     return edit
   }
 
-  /** A step for what the placer does: several boxes pasted, a file dropped. Its boxes join it as they're placed. */
-  newStep(words: string, names: string[] = []): string {
-    return this.step(words, names)
+  /** A step for what the placer does: several boxes pasted, a file dropped. Its boxes join it as they're placed. `edit`: the one its drop began. */
+  newStep(words: string, names: string[] = [], edit?: string): string {
+    return this.step(words, names, edit)
   }
 
   /** A note saying what `edit` did, its Undo the history's: one that's undone goes. */
@@ -1806,11 +1800,11 @@ export class CanvasStore {
     return note
   }
 
-  /** These boxes, as they are now, are what `edit` began from too. */
+  /** These boxes, as they are now, are what `edit` began from too: kept for its step if that's still to be made. */
   joinStep(edit: string, names: string[]) {
-    const step = this.history.stepOf({ edit })
-    if (!step) return
-    for (const name of names) if (!step.before.some((held) => held.name === this.resolveName(name))) step.before.push(this.snap(name))
+    const before = this.history.stepOf({ edit })?.before ?? this.early.get(edit) ?? []
+    if (!this.history.stepOf({ edit })) this.early.set(edit, before)
+    for (const name of names) if (!before.some((held) => held.name === this.resolveName(name))) before.push(this.snap(name))
   }
 
   private snap(name: string): Snap {
@@ -1980,23 +1974,25 @@ export class CanvasStore {
     )
   }
 
-  /** A file being placed has a row of its own, under its key, until it lands: its canvas drawn again finds it there. */
-  addPlacing(key: string, name: string, placing: Placing, at: Row, opts: { naming: boolean; preview?: string }) {
+  /** A file being placed has a row of its own, under its key, until it lands: its canvas drawn again finds it there. What it pushes aside is part of `edit`. */
+  addPlacing(key: string, name: string, placing: Placing, at: Row, opts: { naming: boolean; preview?: string }, edit: string) {
     this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview, landing: true })
-    const row = this.clearOf(key, at)
+    const row = this.clearOf(key, at, edit)
     this.rows?.set(key, row)
     this.flow?.addNodes(this.node(key, row))
-    this.putDown([key])
+    this.joinStep(edit, [key])
   }
 
-  /** `at` for a box not on the canvas yet, or where it gives way to what's there: moved, shrunk, or with what it lies on nudged aside. */
-  private clearOf(key: string, at: Row): Row {
+  /** `at` for a box not on the canvas yet: there, a little smaller at most, with what it lies on pushed aside under `edit`, unless something that can't be is in the way. */
+  private clearOf(key: string, at: Row, edit: string): Row {
     const view = this.views.get(key)
     if (!view) return at
     const w = at.w ?? widthFor(view)
     const field = this.field()
-    const { nudged, x, y, w: fitted } = fit(this.laid(key, { x: at.x, y: at.y, w, h: heightFor(view, w) }), field, { tall: this.tallOf(key), nudges: this.nudgeable(new Set([key]), true) })
-    this.nudge(field, nudged)
+    const { pushed, x, y, w: fitted } = fit(this.laid(key, { x: at.x, y: at.y, w, h: heightFor(view, w) }), field, { tall: this.tallOf(key), pushes: this.pushable(new Set([key])) })
+    this.gesture = edit
+    this.push(field, pushed)
+    this.gesture = null
     return { x, y, w: fitted }
   }
 
@@ -2061,15 +2057,20 @@ export class CanvasStore {
     this.moveName(key, answer.name)
     this.rows?.set(answer.name, at)
     const now = this.position(answer.name)
-    if (now && !samePlace(now, at)) this.move(answer.name, now, undefined, edit)
+    // What it pushed aside goes with its own row, in one write: one entry of the history.
+    if (now && (!samePlace(now, at) || this.pushedFor(edit))) this.move(answer.name, now, undefined, edit)
   }
 
-  cancel(key: string) {
+  /** Gone before it landed: unless another box of its drop is still there, what it pushed aside goes back. `edit`: its drop's, once its step is made. */
+  cancel(key: string, edit?: string) {
+    const id = this.ids.get(key)
+    const edits = edit ? [edit] : [...this.early].flatMap(([held, before]) => (before.some((snap) => snap.node === id) ? [held] : []))
     this.rows?.delete(key)
     const view = this.views.get(key)
     view?.placing?.abort.abort()
     if (view?.preview) URL.revokeObjectURL(view.preview)
     this.removeNode(key)
+    for (const held of edits) if (!this.alive(held)) this.unpush(held)
   }
 
   /** A picture says its shape before it's measured: what a take's own size doesn't say. */
@@ -2097,7 +2098,7 @@ export class CanvasStore {
     }
   }
 
-  /** Let go: each lands where it was let go, or if that's on another box, it gives way: moved a little, shrunk a little, or what it lies on nudged aside a little. */
+  /** Let go: each lands where it was let go, a little smaller at most, and what it lies on is pushed aside, in the same step. Only with something that can't be pushed in the way does it move off. */
   dragStopped(nodes: ElementNode[]) {
     const names = nodes.map((node) => node.data.name)
     const held = new Set(names)
@@ -2115,10 +2116,9 @@ export class CanvasStore {
       const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
       if (view.placing) this.rows?.set(name, row)
       else this.move(name, row)
-      field.add(name, this.giveWay(name, field, box, { tall: this.tallOf(name), nudges: this.nudgeable(held, true) }))
+      field.add(name, this.giveWay(name, field, box, { tall: this.tallOf(name), pushes: this.pushable(held) }))
     }
     this.gesture = null
-    this.putDown(names)
   }
 
   /** They were dropped into a box: each goes back where it started, and no move is saved. */
@@ -2133,19 +2133,53 @@ export class CanvasStore {
     }
   }
 
-  /** A new width, and when it's let go, the row, under `edit` if it's part of one. */
+  /**
+   * A new width, its corner held: it stays where it is and what it comes onto is pushed aside as it grows, and back as it shrinks. Let go
+   * (`keep`), that's its row and theirs, under `edit` if it's part of one, else a step of its own: one Undo puts them all back.
+   */
   setWidth(name: string, width: number, keep = true, edit?: string) {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
     const node = id ? this.flow?.getNode(id) : undefined
     if (!id || !node) return
+    if (this.pulling?.name !== key) this.pulling = { name: key, was: this.boxOf(key) ?? undefined, shown: new Set() }
+    const pulling = this.pulling
     this.flow?.updateNode(id, { width })
-    if (!keep) return
+    const row = { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) }
+    const view = this.views.get(key)
+    const box = view && this.laid(key, { ...row, h: heightFor(view, row.w) })
+    const may = this.pushable(new Set([key]))
+    if (!keep) {
+      pulling.field ??= this.field(new Set([key]))
+      const pushed = box ? pushAside(box, pulling.field, may, pulling.was) : new Map<string, Box>()
+      this.letBack(pushed)
+      for (const [other, to] of pushed) this.glide(other, to)
+      pulling.shown = new Set(pushed.keys())
+      return
+    }
+    // Let go: where things are now, as any act begins from.
+    const field = this.field(new Set([key]))
+    const fitted = box && fit(box, field, { pushes: may, was: pulling.was })
+    this.letBack(fitted?.pushed ?? new Map())
+    this.pulling = null
     this.gesture = edit ?? this.step(`Resized ${key}`, [key])
-    this.move(key, { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) })
+    this.move(key, row)
+    if (box && fitted) {
+      this.push(field, fitted.pushed)
+      // Only with something that can't be pushed in the way does it move off.
+      if (fitted.x !== box.x || fitted.y !== box.y || fitted.w !== box.w) this.slide(key, fitted)
+    }
     this.gesture = null
     this.reshape(key)
     this.unsettle(key, true)
+  }
+
+  /** What the pull pushed aside and no longer does goes back where it is. */
+  private letBack(pushed: Map<string, Box>) {
+    for (const other of this.pulling?.shown ?? []) {
+      const row = this.rows?.get(other)
+      if (!pushed.has(other) && row) this.glide(other, row)
+    }
   }
 
   /** Its shape under the pointer: drawn, and nothing kept yet. */
@@ -2214,12 +2248,11 @@ export class CanvasStore {
     this.adding += 1
     this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
     this.reauto(name, this.views.get(name)!)
-    const at = this.clearOf(name, dropped)
+    const by = edit ?? this.step(`Added ${name}`, [])
+    const at = this.clearOf(name, dropped, by)
     this.rows?.set(name, at)
     const node = this.node(name, at)
     this.flow?.addNodes(node)
-    this.putDown([name])
-    const by = edit ?? this.step(`Added ${name}`, [])
     this.history.stepOf({ edit: by })?.before.push({ name, node: node.id })
     const left = () => {
       this.adding -= 1
@@ -2235,6 +2268,8 @@ export class CanvasStore {
         if (now) {
           const row = this.views.get(now)?.asset
           this.patch(now, { ...(answer.etag ? { known: answer.etag, asset: row && { ...row, etag: answer.etag } } : {}), pending: performance.now() })
+          // What it pushed aside goes with its own row, in one write: one entry of the history.
+          if (this.pushedFor(by)) this.move(now, this.rows?.get(now) ?? at, undefined, by)
           done?.(now, answer, by)
         }
         this.readAfter([node.id])
@@ -2248,24 +2283,25 @@ export class CanvasStore {
           this.removeNode(now)
         }
         left()
+        if (!this.alive(by)) this.unpush(by)
         this.history.forget(by)
         refused(error)
+        this.sendMoves()
       },
     })
     return name
   }
 
-  /** The newest position of each box, in one write when its turn comes, and only those Calcifer has answered for: the rest go after. */
-  /** Its row, written in its turn. `from`: the page's own doing, worked out from that row (null: none), which it's written over only if
-   * Calcifer still has it. A person's move, with none, is written whatever, and one pending makes what follows it so too. */
+  /** Its row, written in its turn, with whatever else this turn moves. `from`: the page's own doing, worked out from that row (null: none), which
+   * it's written over only if Calcifer still has it. A person's move, with none, is written whatever, and one pending makes what follows it so too. */
   private move(name: string, row: Row, from?: Row | null, edit = this.gesture) {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
     if (!id) return
-    // What a gesture moves, nudged aside or put down, it began from where it was.
+    // What an act moves, pushed aside or put down, it began from where it was.
     if (edit) {
       this.joinStep(edit, [key])
-      this.movesOf.add(edit)
+      this.movingEdits.set(id, (this.movingEdits.get(id) ?? new Set()).add(edit))
     }
     if (from === undefined) this.movingFrom.delete(id)
     else if (!this.moving.has(id)) this.movingFrom.set(id, from)
@@ -2273,19 +2309,67 @@ export class CanvasStore {
     this.rows?.set(key, row)
     this.moving.set(id, row)
     this.movedAt.set(key, NOT_YET)
-    this.sendMoves()
+    if (this.movesSoon) return
+    this.movesSoon = true
+    queueMicrotask(() => {
+      this.movesSoon = false
+      this.sendMoves()
+    })
   }
 
+  /** Some box `edit` makes is on its way to Calcifer: what it pushed aside waits to go with it. */
+  private coming(edit: string): boolean {
+    return this.madeBy(edit).some((node) => {
+      const view = this.views.get(this.namesById.get(node) ?? "")
+      return Boolean(view && (view.placing || view.pending === NOT_YET))
+    })
+  }
+
+  /** Some box `edit` makes is still on the canvas. */
+  private alive(edit: string): boolean {
+    return this.madeBy(edit).some((node) => this.namesById.has(node))
+  }
+
+  /** The nodes of the boxes `edit` makes: what it began from with nothing there. */
+  private madeBy(edit: string): string[] {
+    const before = this.history.stepOf({ edit })?.before ?? this.early.get(edit) ?? []
+    return before.flatMap((held) => (!held.view && held.node ? [held.node] : []))
+  }
+
+  /** A row `edit` moved is still to be written. */
+  private pushedFor(edit?: string): boolean {
+    return edit !== undefined && [...this.movingEdits.values()].some((edits) => edits.has(edit))
+  }
+
+  /** What `edit` alone pushed aside, still unwritten, goes back where it was. */
+  private unpush(edit: string) {
+    for (const [id, edits] of this.movingEdits) {
+      const from = this.movingFrom.get(id)
+      const name = this.namesById.get(id)
+      if (!from || !name || edits.size !== 1 || !edits.has(edit)) continue
+      this.moving.delete(id)
+      this.movingFrom.delete(id)
+      this.movingEdits.delete(id)
+      this.masks.delete(name)
+      this.movedAt.delete(name)
+      this.rows?.set(name, from)
+      this.glide(name, from)
+    }
+    this.early.delete(edit)
+  }
+
+  /** The newest position of each box, in one write when its turn comes, and only those Calcifer has answered for, with all their act moved: the rest go after. */
   private sendMoves() {
     if (this.movesOwed || !this.moving.size) return
     this.movesOwed = true
-    const answered = (id: string) => this.views.get(this.namesById.get(id) ?? "")?.pending !== NOT_YET
+    const ready = (id: string) => this.views.get(this.namesById.get(id) ?? "")?.pending !== NOT_YET && ![...(this.movingEdits.get(id) ?? [])].some((edit) => this.coming(edit))
     let sent = new Map<string, Row>()
+    let edits = new Map<string, Set<string>>()
     this.outbox.add({
       send: (once) => {
-        sent = new Map([...this.moving].filter(([id]) => answered(id)))
-        const edit = [...this.movesOf].join(",") || undefined
-        this.movesOf.clear()
+        sent = new Map([...this.moving].filter(([id]) => ready(id)))
+        edits = new Map([...sent.keys()].map((id) => [id, new Set(this.movingEdits.get(id))]))
+        const edit = [...new Set([...edits.values()].flatMap((held) => [...held]))].join(",") || undefined
         const cards = [...sent].flatMap(([id, row]): [string, Row, Row | null | undefined][] => {
           const name = this.served.get(id)
           return name && this.namesById.has(id) ? [[name, row, this.movingFrom.get(id)]] : []
@@ -2302,8 +2386,9 @@ export class CanvasStore {
           if (this.moving.get(id) === row) {
             this.moving.delete(id)
             this.movingFrom.delete(id)
+            this.movingEdits.delete(id)
             if (!((this.served.get(id) ?? name) in kept)) this.movedAt.set(name, at)
-          }
+          } else for (const edit of edits.get(id) ?? []) this.movingEdits.get(id)?.delete(edit)
         }
         // Another writer's row came first: it stands, as that writer's move of it would have.
         for (const [served, row] of Object.entries(kept)) {
@@ -2312,7 +2397,7 @@ export class CanvasStore {
           this.movedAt.delete(name)
           if (row) this.applyRows({ [name]: row })
         }
-        if ([...this.moving.keys()].some(answered)) this.sendMoves()
+        if ([...this.moving.keys()].some(ready)) this.sendMoves()
       },
       refused: (error) => {
         this.movesOwed = false
@@ -2320,6 +2405,7 @@ export class CanvasStore {
         for (const id of sent.keys()) {
           this.moving.delete(id)
           this.movingFrom.delete(id)
+          this.movingEdits.delete(id)
           this.masks.delete(this.namesById.get(id) ?? "")
           this.movedAt.delete(this.namesById.get(id) ?? "")
         }
