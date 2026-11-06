@@ -21,7 +21,7 @@ export function MachineTabs({ to }: { to: (rest?: string) => string }) {
   const { data } = useQuery(machinesQuery(client))
   const running = useQuery(runsQuery(client, { status: "in_progress" }, 100))
   const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
-  const rentals = data?.machines.filter((machine) => machine.kind === "rental" && machine.recorded !== false && machine.state !== "ended") ?? []
+  const rentals = data?.machines.filter((machine) => machine.kind === "rental" && machine.ordered !== false && machine.state !== "ended") ?? []
   if (!rentals.length) return null
   return (
     <nav className="mtabs" aria-label="Rented machines">

@@ -7,13 +7,18 @@ use protocol::{
 use super::list;
 use crate::{Context, calcifer_client::Watch};
 
-/// The runs `cozy run ls` shows, kept as Calcifer says they change.
+/// The runs `cozy run ls` shows, kept as Calcifer says they change; with `--on` a rental, the
+/// runs other clients of this account sent it, read again every few seconds.
 pub(crate) struct Runs {
     query: list::Query,
     limit: u64,
     runs: Vec<Run>,
+    others: Vec<Run>,
     watch: Watch<StreamEvent>,
 }
+
+/// How often a rental's runs other clients sent are read again.
+const OTHERS_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Runs {
     /// Subscribes, then lists: a run that changes in between is in the stream. Changes match
@@ -28,13 +33,21 @@ impl Runs {
             },
             limit,
             runs: list.runs.into_iter().filter(list::shown).collect(),
+            others: list.others,
             watch,
         })
     }
 
     pub(crate) async fn changed(&mut self, ctx: &Context) -> Result<(), Error> {
         loop {
-            match self.watch.change().await {
+            let change = tokio::select! {
+                change = self.watch.change() => change,
+                () = tokio::time::sleep(OTHERS_EVERY), if !self.others.is_empty() => {
+                    self.others = list::runs(ctx, &self.query).await?.others;
+                    return Ok(());
+                }
+            };
+            match change {
                 Some(StreamEvent::RunUpdated { run }) => {
                     if self.apply(*run) {
                         return Ok(());
@@ -82,10 +95,10 @@ impl Runs {
     }
 
     pub(crate) fn rows(&self) -> Vec<Vec<String>> {
-        list::rows(&self.runs)
+        list::rows(&[self.runs.as_slice(), &self.others].concat())
     }
 
     pub(crate) fn id(&self, selected: usize) -> Option<String> {
-        self.runs.get(selected).map(|r| r.id.to_string())
+        self.runs.iter().chain(&self.others).nth(selected).map(|r| r.id.to_string())
     }
 }

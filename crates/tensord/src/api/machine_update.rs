@@ -24,7 +24,7 @@ pub(super) fn owns(
     if let Some(runs) = backend.runs() {
         let actor = crate::machine_api::actor_id(actor);
         // Another signer's machine-wide update never shadows this actor's own run.
-        match runs.service.engine.get_public(&actor, id) {
+        match runs.service.engine.get_public(Some(&actor), id) {
             Ok(_) => return Ok(false),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(Error::internal("journal_unreadable", error.to_string())),
@@ -341,6 +341,7 @@ pub(super) fn state(id: &str, update: &Update) -> v1::RunState {
             None => update.waits(),
         },
         waiting_for: update.waiting_on.clone(),
+        ..Default::default()
     }
 }
 

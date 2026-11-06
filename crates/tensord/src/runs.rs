@@ -303,7 +303,7 @@ pub(crate) fn upload(
 impl Runs {
     /// The run this id already names, if its spec is `digest`; another spec is a conflict.
     pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str) -> Result<Option<Execution>, Refused> {
-        match self.service.engine.get_public(actor, id) {
+        match self.service.engine.get_public(Some(actor), id) {
             Ok(run) if run.canceled_before_acceptance && run.state == crate::journal::State::Canceled => Ok(Some(run)),
             Ok(run) if run.submission.as_ref().map(|s| s.invocation_digest.as_str()) == Some(digest) => Ok(Some(run)),
             Ok(_) => Err(refused("run_id_conflict", "this run id already names another run spec")),
@@ -823,15 +823,11 @@ impl Runs {
             }
         }
         if spec.warm {
-            // A package that does not import says so now, not at its first call. When its environment
-            // already knows why (a floor its development Runtime missed), nothing else can come of it.
+            // A package that does not import says so now, not at its first call.
             if install_only && self.service.gpu().is_some() {
                 observe("importing it", 0, 0);
             }
             if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation, &stoppable.stop)) {
-                if !generation.record.floors_missed.is_empty() {
-                    return Err(refused(code, said));
-                }
                 let warning = format!("{code}: {said}. Its calls will fail the same way");
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     tracing::warn!("run {id}: {warning} ({error})");

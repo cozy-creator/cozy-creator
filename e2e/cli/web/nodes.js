@@ -164,11 +164,14 @@ function linesOf(text, name) {
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
   const firstTool = page.locator('.tools .tool:not([data-kind=text])').first();
-  const label = await firstTool.locator('b').textContent();
   const kind = await firstTool.getAttribute('data-kind');
+  // A box is called what its tool's published node says, `image_1` for Qwen Image 2, else its package's word, numbered up from there.
+  const dragged = await firstTool.getAttribute('data-tool');
+  const boxName = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.id === dragged)?.name;
   const made = await dragOut(firstTool, 1300, 900);
   seen.tool_dragged = made.name;
-  check('tool_named_from_its_label', made.name.toLowerCase().startsWith(label.toLowerCase().slice(0, 4)), { label, name: made.name });
+  const word = (name) => name?.replace(/_\d+$/, '');
+  check('tool_named_as_its_node_says', Boolean(boxName) && word(made.name) === word(boxName), { tool: dragged, said: boxName, name: made.name });
   check('tool_kind_from_its_output', made.kind === kind, { kind, made: made.kind });
   check('tool_written_as_a_function', made.tool?.includes('/'), made.tool);
   const home = await until('its row', async () => (await rows())[made.name], Boolean);

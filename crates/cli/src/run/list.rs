@@ -19,7 +19,9 @@ pub(crate) const FIELDS: &[&str] = &[
     "older", "machine", "unreadable", "runs.id", "runs.number", "runs.kind", "runs.target", "runs.project", "runs.machine",
     "runs.status", "runs.queue_position", "runs.waiting", "runs.progress", "runs.stalled", "runs.reason.code",
     "runs.reason.message", "runs.created_at_ms", "runs.accepted_at_ms", "runs.started_at_ms", "runs.settled_at_ms",
-    "runs.execution_ms",
+    "runs.execution_ms", "others.id", "others.machine_number", "others.target", "others.machine", "others.status",
+    "others.machine_state", "others.waiting", "others.reason.code", "others.reason.message", "others.accepted_at_ms",
+    "others.started_at_ms", "others.settled_at_ms",
 ];
 /// A target or progress is one table cell; `cozy run show` has it whole.
 const CELL: usize = 72;
@@ -58,7 +60,7 @@ pub async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
     for run in &list.unreadable {
         println!("left out {run}");
     }
-    let listed: Vec<&Run> = list.runs.iter().filter(|run| shown(run)).collect();
+    let listed: Vec<&Run> = list.runs.iter().chain(&list.others).filter(|run| shown(run)).collect();
     if listed.is_empty() {
         let only = query.status.is_some() || query.package.is_some() || query.machine.is_some();
         match (only, &query.project) {
@@ -73,7 +75,11 @@ pub async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
     }
     table(ctx, &listed, query.project.is_none()).print();
     if list.older > 0 {
-        println!("{} newest of {}: cozy run ls --limit 0 lists them all", listed.len(), listed.len() as u64 + list.older);
+        let own = listed.len() - list.others.len();
+        println!("{own} newest of {}: cozy run ls --limit 0 lists them all", own as u64 + list.older);
+    }
+    if let Some(machine) = list.machine.as_ref().filter(|_| !list.others.is_empty()) {
+        println!("{machine}/N: sent by another client of this account; `cozy run show {machine}/N` follows one");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -99,6 +105,7 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
         older: 0,
         machine: None,
         unreadable: vec![],
+        others: vec![],
     };
     let mut page = Query {
         limit: Some(query.limit.unwrap_or(500).min(500)),
@@ -112,6 +119,7 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
         out.machine = list.machine;
         out.unreadable.extend(list.unreadable);
         out.runs.extend(list.runs);
+        out.others.extend(list.others);
         let wanted = query
             .limit
             .is_none_or(|limit| (out.runs.len() as u64) < limit);
@@ -218,10 +226,11 @@ fn row(run: &Run) -> Vec<String> {
         (Status::InProgress, _, Some(at)) => seconds(now_ms().saturating_sub(at.max(0) as u64)),
         (Status::InProgress | Status::Queued, ..) => "—".into(),
         (_, Some(ms), _) => seconds(ms),
+        (_, None, Some(at)) => run.settled_at_ms.map_or_else(|| "—".into(), |end| seconds(end.saturating_sub(at).max(0) as u64)),
         _ => "—".into(),
     };
     vec![
-        run.number.to_string(),
+        run.name(),
         clip_target(target),
         run.project.as_ref().and_then(|at| at.file_name()).map_or_else(|| "—".into(), |name| name.to_string_lossy().into_owned()),
         run.machine.clone().unwrap_or_else(|| "—".into()),

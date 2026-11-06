@@ -83,7 +83,7 @@ impl Machines {
             if m.kind == MachineKind::Added {
                 return Err(by_hand("it is its owner's to update".into()));
             }
-            if m.status.as_ref().is_some_and(|status| status.dev) {
+            if m.status.as_ref().is_some_and(|status| status.dev || status.version.contains("+dev")) {
                 return Err(by_hand("it runs a dev build, which nothing replaces unasked".into()));
             }
             let load = self.store().machine_load().map_err(internal)?;
@@ -519,7 +519,13 @@ fn commands(message: &str) -> Vec<String> {
 }
 
 /// Whether release `a` is newer than `b`, by their leading dotted numbers.
+/// Whether release `a` is after `b`, by semver: build metadata (`+dev.g…`) is no part of it, and a pre-release comes before its release.
 fn newer(a: &str, b: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> { v.split('.').map_while(|p| p.parse().ok()).collect() };
-    parts(a) > parts(b)
+    let read = |v: &str| {
+        let core = v.split('+').next().unwrap_or(v);
+        let (numbers, pre) = core.split_once('-').map_or((core, None), |(numbers, pre)| (numbers, Some(pre)));
+        let numbers: Vec<u64> = numbers.split('.').map(|part| part.parse().unwrap_or(0)).collect();
+        (numbers, pre.is_none())
+    };
+    read(a) > read(b)
 }

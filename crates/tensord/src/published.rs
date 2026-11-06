@@ -37,24 +37,24 @@ use tensorfs::{
 };
 use crate::catalog::normalized;
 
-/// How each published environment gets its Runtime SDK. Empty `requirements` keeps the
-/// release's own locked SDK rows.
+/// This machine's Runtime/TensorFS pair: what unlocked code is offered first, and what goes over
+/// a lock whose pair it is a later patch of (`Publisher::stands_in`). Empty `requirements`: none.
 #[derive(Clone, Debug)]
 pub struct PackageSdk {
     pub uv: crate::machine::uv::Uv,
     pub python: String,
     pub requirements: Vec<String>,
     pub find_links: Option<PathBuf>,
-    /// The development Runtime an update named by its wheel file (`0.24.6+e9baf7a4`): the
-    /// operator's choice, which runs every package whatever its own bounds on the pair.
+    /// The development Runtime an update named by its wheel file (`0.24.6+e9baf7a4`), named as such
+    /// to every run on it.
     pub runtime_build: String,
     /// Where this machine's PyTorch layer comes from (`layer`).
     pub torch: layer::Torch,
 }
 
 impl PackageSdk {
-    /// Executors use the selected Runtime/TensorFS pair (an update's, else the image's), so they
-    /// speak this machine's protocol; without a complete pair, each release's locked SDK.
+    /// The selected Runtime/TensorFS pair (an update's, else the image's); without a complete
+    /// pair, none.
     pub fn selected(wheels: &Path, staged: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
@@ -767,18 +767,22 @@ impl Publisher {
             .find(|dir| dir.join(CARD).is_file())
     }
 
-    /// The Runtime and TensorFS versions an environment built here holds: this machine's own
-    /// pair's (by its wheels' names), else the lock's.
+    /// The Runtime and TensorFS versions an environment of `locked` built here holds: this
+    /// machine's own pair's where it stands in for the lock's (`stands_in`), else the lock's.
     fn planned_pair(&self, locked: &Locked) -> BTreeMap<String, String> {
-        let own = self.sdk.requirements.iter().filter_map(|wheel| {
-            let mut parts = Path::new(wheel).file_name()?.to_str()?.split('-');
-            Some((normalized(parts.next()?), parts.next()?.to_string()))
-        });
-        let pair: BTreeMap<String, String> = match self.sdk.requirements.is_empty() {
-            true => locked.packages.clone(),
-            false => own.collect(),
-        };
-        pair.into_iter().filter(|(name, _)| SDK.contains(&name.as_str())).collect()
+        match self.stands_in(locked) {
+            true => self.machine_pair(),
+            false => environment::pair_of(&locked.packages),
+        }
+    }
+
+    /// What of this machine's pair an environment of `locked` (none: unlocked code) is built
+    /// from, for its identity: nothing where the lock's own pair runs.
+    pub(crate) fn pair_key(&self, locked: Option<&Locked>) -> Value {
+        match locked.is_none_or(|locked| self.stands_in(locked)) {
+            true => json!({"sdk": self.sdk.requirements, "links": self.sdk.find_links}),
+            false => Value::Null,
+        }
     }
 
     /// The installation of `release` of the request's package at its Hub, by this machine's SDK.
@@ -979,7 +983,7 @@ impl Publisher {
             .map(|record| record.dependencies.into_iter().map(|d| (normalized(&d.name), d.version)).collect());
         let stage = install_stage(&request.package, &release, before.as_ref(), &self.planned_pair(&locked));
         let wheels: Vec<&str> = card.wheels.iter().map(|wheel| wheel.sha256.as_str()).collect();
-        let identity = sha256::hex_digest(json!({"package":request.package,"release":release,"pyproject":card.pyproject,"lock":card.lock,"wheels":wheels,"python":card.python,"hub":hub::origin_key(&source.origin),"sdk":self.sdk.requirements,"links":self.sdk.find_links,"torch":torch}).to_string().as_bytes())[..32].to_string();
+        let identity = sha256::hex_digest(json!({"package":request.package,"release":release,"pyproject":card.pyproject,"lock":card.lock,"wheels":wheels,"python":card.python,"hub":hub::origin_key(&source.origin),"pair":self.pair_key(Some(&locked)),"torch":torch}).to_string().as_bytes())[..32].to_string();
         let wanted = Environment {
             card: &card,
             locked: &locked,
@@ -1031,8 +1035,8 @@ impl Publisher {
     /// platform's resolution needs, by the lock's URLs and hashes, so a machine of any platform
     /// the lock covers installs it. The wheels the release's Hub hosts (its project wheel, its
     /// carried git dependencies, its org's packages) come through TensorFS's downloader instead
-    /// and install from disk; the machine's own Runtime pair, where it has one, replaces the
-    /// lock's (`environment`).
+    /// and install from disk. The pair is the lock's, or this machine's where that is a later patch
+    /// of it (`Publisher::stands_in`).
     fn generation(
         &self,
         generations: &Path,
@@ -1522,8 +1526,8 @@ fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure
 /// (`tensorfs.view`, cl-683).
 const VIEWS: [(&str, &str, &str); 2] = [("cozy-runtime", "Runtime", "0.35.5"), ("tensorfs", "TensorFS", "0.17.13")];
 
-/// A LoRA'd call runs only where the installation's environment opens adapter views. An environment
-/// built now takes a pair that does (`pair`), so this is one built earlier, or on a development Runtime.
+/// A LoRA'd call runs only where the installation's environment opens adapter views: one on an
+/// older lock's pair does not.
 fn opens_views(service: &Service, installation: &Installation, choice: &domain::ModelChoice) -> Result<(), Failure> {
     if choice.adapters.is_empty() {
         return Ok(());
@@ -1538,10 +1542,9 @@ fn opens_views(service: &Service, installation: &Installation, choice: &domain::
         return Ok(());
     }
     let runs: Vec<String> = pair.iter().map(|(label, _, version)| format!("{label} {}", if version.is_empty() { "none" } else { version })).collect();
-    // An environment already built stays: the machine moves, and the run asks again.
     Err(("model_adapter_refused", format!(
-        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} runs on {3}: `cozy machine update <machine>` moves it to the current release; then run it again",
-        VIEWS[0].2, VIEWS[1].2, installation.package, runs.join(" / "))))
+        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} {3} runs on {4}: a newer release of it may (`cozy package info {2}`)",
+        VIEWS[0].2, VIEWS[1].2, installation.package, installation.release, runs.join(" / "))))
 }
 
 /// A slot's caller adapters applied to its resolved base: each adapter downloaded, then one

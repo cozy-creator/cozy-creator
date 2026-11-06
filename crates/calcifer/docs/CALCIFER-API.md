@@ -204,7 +204,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 `{name}` is a live machine's name or former name, or any machine's rental id. Records: `protocol::calcifer`.
 
 - `GET /v1/machines[?refresh=true]`: `MachineList {machines, hubs, unanswered, signed_out, rentals}`. It lists
-  every live machine, and the live rentals of this account that another controller rented (`recorded: false`).
+  every live machine, every live rental of this account among them: one another client ordered is reached with this
+  computer's device key, reads `ordered: false` and takes no run that doesn't name it.
   `refresh` lists every Hub again first. `rentals` sums the live rentals: count, `usd_micros_per_hour`, and
   `accrued_usd_micros` on its weakest `accrued_basis` (`accrued_floor` when some Hub said nothing).
 - `GET /v1/machines/{name}[?fresh=true]`: `Machine`. A rental rented with an SSH key has `ssh {args, line}`: the command that logs in, with a known-hosts file of its own, as an argument list and as a line to paste. `fresh` reads its Status now, or refuses
