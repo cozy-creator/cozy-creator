@@ -51,6 +51,7 @@ pub(crate) async fn resolve(
     cwd: Option<&Path>,
     on: &On,
     warm: bool,
+    given: bool,
     key: &str,
     agreed: Option<protocol::calcifer::Agreed>,
 ) -> Result<Resolved, Error> {
@@ -68,11 +69,13 @@ pub(crate) async fn resolve(
         };
         return Ok(Resolved::Local { local: Box::new(prepared), interface, function });
     }
-    published(api, hub, text, Some(on)).await
+    // A package named without a function, given nothing, is only listed: its machine isn't started to say what it holds.
+    let runs = given || Published::parse(text.trim()).is_ok_and(|named| named.function.is_some());
+    published(api, hub, text, Some(on), runs).await
 }
 
 /// `GET /v1/targets`: the package, its release and why for a run `on` its machine, and the function,
-/// checked as a run checks it; local code as its machine read it, else from its source, installing nothing.
+/// checked as a run checks it; local code as its machine read it, else from its source, installing and starting nothing.
 pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<&Path>, on: &On) -> Result<Target, Error> {
     let user_home = &api.machines.user_home;
     if let Some(local) = crate::local_code::target(text, cwd.unwrap_or(Path::new("")), user_home) {
@@ -85,7 +88,7 @@ pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<
         };
         return Ok(answer(package, function, "local".into(), ReleaseFrom::Local, String::new(), document, &interface));
     }
-    let Resolved::Release { package, function, card, from, .. } = published(api, hub, text, Some(on)).await? else {
+    let Resolved::Release { package, function, card, from, .. } = published(api, hub, text, Some(on), false).await? else {
         unreachable!("a published target resolves to a release");
     };
     let function = match function {
@@ -161,10 +164,10 @@ fn parse(document: &serde_json::Value) -> Result<Interface, Error> {
 /// runs nothing): for `x/y`, root package x's function y when the Hub holds root package x, else
 /// account x's package y (one read when it is the root's; an older Hub answers the root's absent). A
 /// machine holding account x's package y and not root package x asks the Hub nothing.
-pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<&On>) -> Result<Resolved, Error> {
+pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<&On>, wake: bool) -> Result<Resolved, Error> {
     let Published { package, function, release, owned } = Published::parse(text.trim())?;
     let held = match (&release, on) {
-        (None, Some(on)) => Some(Held::read(api, hub, on).await),
+        (None, Some(on)) => Some(Held::read(api, hub, on, wake).await),
         _ => None,
     };
     let holds = |package: &str| held.as_ref().is_some_and(|held| !held.releases(package).is_empty());
@@ -203,10 +206,10 @@ struct Held {
 }
 
 impl Held {
-    /// The machine `on` names, or the rental `any` would take now, as it answers now; nothing for
-    /// a machine still to come.
-    async fn read(api: &Arc<Api>, hub: &str, on: &On) -> Self {
-        let (machine, environments) = api.machines.holds(on).await.unwrap_or_default();
+    /// The machine `on` names, or the rental `any` would take now, as it answers now (`wake`: `local` starts for it);
+    /// nothing for a machine still to come.
+    async fn read(api: &Arc<Api>, hub: &str, on: &On, wake: bool) -> Self {
+        let (machine, environments) = api.machines.holds(on, wake).await.unwrap_or_default();
         Self { machine, environments, hub: canonical(hub) }
     }
 

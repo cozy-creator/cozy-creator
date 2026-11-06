@@ -51,7 +51,7 @@ pub(super) async fn caption(
     if on == On::Machine("local".into()) {
         api.machines.local_up().await.map_err(Refusal)?;
     }
-    if api.machines.holds(&on).await.is_none() {
+    if api.machines.holds(&on, true).await.is_none() {
         let said = format!("a caption runs on a machine that's up, and {on} isn't");
         return Err(Refusal(Error::new(Kind::Conflict, "caption_no_machine", said).next("cozy machine rent")));
     }

@@ -230,17 +230,10 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     let hub = hub(api, &ask.hub);
     let cwd = ask.cwd.as_deref();
     let agreed = ask.agreed.clone();
-    let resolved = target::resolve(api, &hub, &ask.target, cwd, &on, ask.warm.is_some(), key, agreed).await?;
-    if let (Resolved::Release { package, function, card, .. }, true) = (&resolved, set.len() > 1) {
-        let function = function.as_deref().or(target::only_function(&card.interface)).unwrap_or_default();
-        on = crate::project::run_on(api, &set, &hub, package, &card.release, function).await;
-    }
-    if let (Resolved::Release { package, card, .. }, On::Machine(machine), false) = (&resolved, &on, key == "quote")
-        && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
-    {
-        return Ok(Prepared::Install(going));
-    }
-    let (package, function, code) = match &resolved {
+    // Given something to run with, a package of one function runs it; given nothing, it is listed.
+    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
+    let resolved = target::resolve(api, &hub, &ask.target, cwd, &on, ask.warm.is_some(), given, key, agreed).await?;
+    let (package, function, mut code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
                 package,
@@ -268,8 +261,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
             (local.package.as_str(), function.as_deref(), code)
         }
     };
-    // Given something to run with, a package of one function runs it; given nothing, it is listed.
-    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
+    // Refused or listed before anything starts or installs.
     let Some(function) = function.or(target::only_function(code.interface).filter(|_| given)) else {
         let release = match &resolved {
             Resolved::Release { release: Some(release), .. } => Some(release.as_str()),
@@ -281,7 +273,16 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     if !ask.recipes && code.interface.runs_recipes(callable) {
         return Err(recipes(package, code.interface));
     }
+    if let (Resolved::Release { package, card, .. }, true) = (&resolved, set.len() > 1) {
+        on = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name).await;
+        code.on = on.clone();
+    }
     protocol::calcifer::local_usable(&on.to_string())?;
+    if let (Resolved::Release { package, card, .. }, On::Machine(machine), false) = (&resolved, &on, key == "quote")
+        && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
+    {
+        return Ok(Prepared::Install(going));
+    }
     let left = match &resolved {
         Resolved::Local { local, .. } => local.left.clone(),
         Resolved::Release { .. } => vec![],

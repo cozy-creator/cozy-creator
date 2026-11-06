@@ -97,7 +97,7 @@ async fn plan(api: &Arc<Api>, key: &str, ask: ModelQuantize) -> Result<Planned, 
         true => format!("{}/{RECIPES}", ask.package.trim_end_matches('/')),
         false => published(&ask.package)?,
     };
-    let (package, interface, release) = match resolve(api, &hub, &target, None, &ask.on, false, key, ask.agreed).await.map_err(Refusal)? {
+    let (package, interface, release) = match resolve(api, &hub, &target, None, &ask.on, false, true, key, ask.agreed).await.map_err(Refusal)? {
         Resolved::Release { package, card, .. } => (package, card.interface, card.release),
         Resolved::Local { local, interface: None, .. } => {
             return Ok(Planned::Install(Box::new(local.install.expect("an uninstalled local target is being installed"))));

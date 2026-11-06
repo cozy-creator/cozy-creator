@@ -289,13 +289,17 @@ impl Machines {
 
     /// The name of the machine a run `on` goes to and the environments it holds now, its Status
     /// read now since an install that just settled may not have reached the stream: `local` starts
-    /// for it, and `any` is the rental it would take now. None for a machine still to come.
-    pub(crate) async fn holds(self: &Arc<Self>, on: &On) -> Option<(String, Vec<v1::Environment>)> {
+    /// for it (unless `wake` is false: then, not running, as it last said), and `any` is the rental it would take now.
+    /// None for a machine still to come.
+    pub(crate) async fn holds(self: &Arc<Self>, on: &On, wake: bool) -> Option<(String, Vec<v1::Environment>)> {
         let text = match on {
             On::Machine(text) => text.clone(),
             On::Any => self.fitting(0).ok()??,
             On::New(_) => return None,
         };
+        if !wake && text.eq_ignore_ascii_case("local") && !self.local_runs() {
+            return self.frame("local").map(|frame| ("local".to_owned(), frame.environments));
+        }
         let name = self.show(&text).await.ok()?.name;
         let frame = self.frame(&name)?;
         Some((name, frame.environments))

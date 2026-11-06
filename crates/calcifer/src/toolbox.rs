@@ -238,7 +238,7 @@ pub(crate) fn canonical(hub: &str) -> String {
 
 /// What `on` has installed from `hub`: each package and its newest release there.
 async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
-    let Some((_, environments)) = api.machines.holds(on).await else { return vec![] };
+    let Some((_, environments)) = api.machines.holds(on, true).await else { return vec![] };
     let here = canonical(hub);
     let mut packages: Vec<&str> = (environments.iter()).filter(|env| !env.release.is_empty() && canonical(&env.hub) == here).map(|env| env.package.as_str()).collect();
     packages.sort_unstable();
