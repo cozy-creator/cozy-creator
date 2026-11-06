@@ -874,10 +874,6 @@ impl Engine {
             Src::Device { .. } => {}
             Src::Zero => unreachable!("zero uses native device memset"),
         }
-        if let (Some(tee), Src::File(..) | Src::Host(_), Dst::Device { ptr, .. }) = (&opts.tee, job.c.src, job.c.dst) {
-            // SAFETY: the slot holds this piece's `job.len` bytes, filled above.
-            unsafe { tee.copy(ptr + job.at as u64, slot.ptr, job.len) };
-        }
         let _queue = self.queues[lane].lock().unwrap();
         let rc = match (job.c.src, job.c.dst) {
             // SAFETY: the device destination covers `job.at + job.len` bytes and the slot stays pending until the event syncs.
@@ -895,6 +891,12 @@ impl Engine {
         cuda::check("cuMemcpyAsync", rc).map_err(|e| failed(job.copy, e))?;
         slot.done.record(stream).map_err(|e| failed(job.copy, e))?;
         slot.recorded = true;
+        drop(_queue);
+        if let (Some(tee), Src::File(..) | Src::Host(_), Dst::Device { ptr, .. }) = (&opts.tee, job.c.src, job.c.dst) {
+            // SAFETY: the slot holds this piece's bytes, which the DMA only reads; this thread
+            // reuses the slot only after this copy, and after its event.
+            unsafe { tee.copy(ptr + job.at as u64, slot.ptr, job.len) };
+        }
         if let Dst::Host { ptr, .. } = job.c.dst {
             slot.done.sync().map_err(|e| failed(job.copy, e))?;
             slot.pending = false;

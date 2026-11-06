@@ -122,9 +122,13 @@ struct State {
     off: Option<String>,
     wanted: HashMap<String, Wanted>,
     pin_failed: u64,
-    /// Pages to keep behind `use`, and whether a thread is keeping them.
+    /// Pages to keep behind `use`, pages to fault in for a store read's tee, and whether a thread
+    /// is at either.
     behind: VecDeque<Behind>,
+    faults: VecDeque<(String, String, usize)>,
     keeping: bool,
+    /// Faulted pages a store read of their key takes its bytes into (`Inner::read`), by key: set, page.
+    ready: HashMap<String, (String, Page)>,
     /// Kept pages not yet registered: `pin_idle` registers them.
     unregistered: Vec<String>,
     /// Registered pages the tier let go: unregistering waits on the whole device, so `pin_idle` does it.
@@ -214,6 +218,18 @@ impl Tier {
         let mut gone = Vec::new();
         if room >= self.headroom {
             return gone;
+        }
+        // Faulted pages no read has taken yet go first: none of them holds bytes.
+        for key in state.ready.keys().cloned().collect::<Vec<_>>() {
+            if room >= self.headroom && room >= 0 {
+                break;
+            }
+            if let Some((_, page)) = state.ready.remove(&key) {
+                state.bytes -= page.len as u64;
+                if room >= 0 {
+                    room += page.len as i64;
+                }
+            }
         }
         for (_, _, key) in state.cheapest() {
             if room >= self.headroom && room >= 0 {
@@ -311,22 +327,67 @@ impl Tier {
     pub(super) fn keep_behind(self: &Arc<Self>, key: &str, set: &str, region: Weak<varena::Region>, len: usize) {
         let mut state = self.state();
         state.behind.push_back(Behind { key: key.to_owned(), set: set.to_owned(), region, len });
+        self.wake(&mut state);
+    }
+
+    /// A page for `key`'s next store read, admitted and faulted in on the keep thread: first touched
+    /// by that read's threads, it would slow a fill a request may be waiting on.
+    pub(super) fn prepare(self: &Arc<Self>, key: &str, set: &str, len: usize) {
+        let mut state = self.state();
+        if state.kept.contains_key(key) || state.ready.contains_key(key) || state.faults.iter().any(|job| job.0 == key) {
+            return;
+        }
+        state.faults.push_back((key.to_owned(), set.to_owned(), len));
+        self.wake(&mut state);
+    }
+
+    fn wake(self: &Arc<Self>, state: &mut State) {
         if !std::mem::replace(&mut state.keeping, true) {
             let tier = self.clone();
             let spawned = std::thread::Builder::new().name(format!("varena-keep-{}", self.device))
-                .spawn(move || while let Some(job) = tier.next_behind() { tier.keep(job) });
+                .spawn(move || while tier.next_behind() {});
             if spawned.is_err() {
                 state.behind.clear(); // Those pages' next fills bake again.
+                state.faults.clear();
                 state.keeping = false;
             }
         }
     }
 
-    fn next_behind(&self) -> Option<Behind> {
+    /// Run the next job: a keep first, while its Region is still on the card. False: none is left.
+    fn next_behind(&self) -> bool {
+        let (keep, fault) = {
+            let mut state = self.state();
+            let keep = state.behind.pop_front();
+            let fault = if keep.is_none() { state.faults.pop_front() } else { None };
+            state.keeping = keep.is_some() || fault.is_some();
+            (keep, fault)
+        };
+        match (keep, fault) {
+            (Some(job), _) => self.keep(job),
+            (None, Some((key, set, len))) => self.fault(key, set, len),
+            (None, None) => return false,
+        }
+        true
+    }
+
+    fn fault(&self, key: String, set: String, len: usize) {
+        let Ok(Some(page)) = self.reserve(&key, len) else { return };
+        // SAFETY: the page is this thread's, `len` bytes.
+        unsafe { std::ptr::write_bytes(page.ptr(), 0, len) };
         let mut state = self.state();
-        let job = state.behind.pop_front();
-        state.keeping = job.is_some();
-        job
+        state.bytes += len as u64;
+        if let Some((_, gone)) = state.ready.insert(key, (set, page)) {
+            state.bytes -= gone.len as u64;
+        }
+    }
+
+    /// `key`'s faulted page, for a store read of `len` bytes to take a copy into.
+    pub(super) fn ready(&self, key: &str, len: usize) -> Option<Page> {
+        let mut state = self.state();
+        let (_, page) = state.ready.remove(key)?;
+        state.bytes -= page.len as u64;
+        (page.len == len).then_some(page)
     }
 
     /// The page is set up before the pin, which stops an eviction only for the copy. A Region
@@ -537,6 +598,14 @@ impl Tier {
                 .map(|(key, _)| key.clone()).collect();
             state.wanted.retain(|_, wanted| set.is_some_and(|set| wanted.set != set));
             state.behind.retain(|job| set.is_some_and(|set| job.set != set));
+            state.faults.retain(|job| set.is_some_and(|set| job.1 != set));
+            let ready: Vec<_> = state.ready.iter().filter(|(_, (other, _))| set.is_none_or(|set| other == set))
+                .map(|(key, _)| key.clone()).collect();
+            for key in ready {
+                if let Some((_, page)) = state.ready.remove(&key) {
+                    state.bytes -= page.len as u64;
+                }
+            }
             if set.is_none() {
                 state.filled = None;
             }

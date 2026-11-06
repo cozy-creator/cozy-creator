@@ -259,10 +259,10 @@ impl varena::Source for PageSource {
             decline(fill); // Its page went since the core asked: this one needs its caller.
             return Err(varena::Error::Busy);
         }
-        // A page the tier admits takes the stored bytes on their way through: no copy back from the
+        // A page faulted in for it takes the stored bytes on their way through: no copy back from the
         // card. Not while a derive may still change them.
-        let mut keep = this.page.as_ref().filter(|_| derive.is_none() && this.stored.is_some())
-            .and_then(|key| this.tier.reserve(key, this.bytes).ok().flatten());
+        let tee = derive.is_none() && this.stored.is_some();
+        let mut keep = this.page.as_ref().filter(|_| tee).and_then(|key| this.tier.ready(key, this.bytes));
         if let Some(stored) = &this.stored {
             match this.read(stored, &fill, ahead, keep.as_ref()) {
                 Ok(bytes) => this.row(bytes, "store", ahead, began),
@@ -291,7 +291,12 @@ impl varena::Source for PageSource {
         if let Some(key) = &this.page {
             match keep.take() {
                 Some(page) => this.tier.kept(key, &this.set, page),
-                None => this.tier.want(key, &this.set, weak, region),
+                None => {
+                    this.tier.want(key, &this.set, weak, region);
+                    if tee {
+                        this.tier.prepare(key, &this.set, this.bytes);
+                    }
+                }
             }
         }
         Ok(pin)
