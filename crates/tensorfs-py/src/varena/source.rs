@@ -260,7 +260,7 @@ impl varena::Source for PageSource {
         let this = &self.0;
         let began = Instant::now();
         let ahead = consumer.is_none();
-        let kept = this.page.as_ref().and_then(|key| this.tier.take(key, fill.len()));
+        let kept = this.page.as_ref().and_then(|key| this.tier.take(key, fill.len(), true));
         if let Some(page) = kept {
             if let Err(error) = this.from_page(&fill, &page) {
                 if ahead { this.tier.failed(); }
@@ -380,7 +380,7 @@ impl PySource {
         let buffer = pyo3::buffer::PyBuffer::<u8>::get(&view.call_method1("cast", ("B",))?)?;
         let (ptr, len) = (buffer.buf_ptr() as usize, buffer.len_bytes());
         let this = &self.inner;
-        let page = this.page.as_ref().filter(|_| !stored).and_then(|key| this.tier.take(key, len));
+        let page = this.page.as_ref().filter(|_| !stored).and_then(|key| this.tier.take(key, len, false));
         if let Some(page) = page {
             // SAFETY: both hold `len` bytes, and the exporter keeps `out` alive through this.
             py.detach(|| unsafe { std::ptr::copy_nonoverlapping(page.ptr(), ptr as *mut u8, len) });
