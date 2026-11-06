@@ -3,7 +3,7 @@
 # the guard's arithmetic. With `rent`: one click on that price buys one pod with SSH; the page shows it boot; it's used: the idle clock and Keep up,
 # what's installed, a log, a real run from the terminal live in the page to its end, then its own Calcifer through the switcher, on the session's cozy
 # sent with `--tensord`; End through the page, followed until the Hub affirms the pod gone, which `machine ls` then agrees with. The guard
-# starts before the click. Whatever fails, the trap ends what this runner's Calcifer recorded. It takes no params.
+# starts before the click. Whatever fails, the trap ends what this runner's Calcifer ordered. It takes no params.
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/web-rent" && pwd) || fail "no fixtures"
 J() { jq -e "$@" > /dev/null; }
@@ -14,9 +14,9 @@ for tool in jq node npm google-chrome curl; do command -v "$tool" > /dev/null ||
 RENT_ARGS=--ssh
 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 
-# What this runner's Calcifer recorded is this session's: it started with none, and another computer's rentals read `recorded: false`. So a
-# lost answer's order is ended too, by name until it has a rental id.
-own() { machines_json | jq -r '.machines[] | select(.kind == "rental" and .recorded and .state != "ended") | .rental_id // .name'; }
+# What this runner's Calcifer ordered is this session's: it started with none, and another client's rentals, which it lists too, read
+# `ordered: false`. So a lost answer's order is ended too, by name until it has a rental id.
+own() { machines_json | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
 claim() {
   local r
   for r in $(own); do
@@ -58,7 +58,7 @@ mark "the page states: $(jq -r .seen.stated "$OUT/quote.json"), and ordered noth
 # A Hub gives a boot 15 minutes, and the use and End take some 10 more: a cap that can't buy that much could end the pod before End is tried.
 quote 5 1500
 
-# The guard, before the click: what's in $OUT/rental, and what this runner's Calcifer recorded, by what the Hub bills for them.
+# The guard, before the click: what's in $OUT/rental, and what this runner's Calcifer ordered, by what the Hub bills for them.
 GUARD_ALSO=own guard
 
 # record: the rental id, the moment the order's answer names it.
