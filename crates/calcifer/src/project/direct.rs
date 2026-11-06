@@ -177,7 +177,7 @@ impl Filling<'_> {
     fn mentioned(&mut self, members: &Struct, said: &BTreeSet<String>) -> Vec<Value> {
         let holds: Vec<(&Field, &str)> = members.fields.iter().filter_map(|field| Some((field, field.ty.media().filter(|(_, many)| !many)?.0))).collect();
         let words: Vec<&Field> = members.fields.iter().filter(|field| field.ty.media().is_none()).collect();
-        let takes: Vec<&str> = members.fields.iter().filter_map(|field| Some(field.ty.media()?.0)).collect();
+        let takes: Vec<&str> = members.fields.iter().filter_map(tool::member_kind).collect();
         let mut entries = vec![];
         for at in 0..self.reads.len() {
             let read = &self.reads[at];

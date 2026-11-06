@@ -704,6 +704,18 @@ async function died(why) {
     check('render_as_a_take_lands_is_one_more', again?.versions === 2, again);
     await shut();
 
+    // A mention row of plain `File`s takes the kinds they're named for: draw.py's `image` and `voice` take pictures and sounds, and a picture
+    // mentioned in it isn't marked refused.
+    const draw = join(__dirname, '..', 'project', 'draw.py');
+    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  drawn_from:\n    tool: ${draw}/draw\n    instructions: <Ada> in the rain.\n`);
+    await box('drawn_from').waitFor();
+    const drawTakes = await until('draw listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((one) => one.id.endsWith('draw.py/draw'))?.references, Boolean).catch(() => null);
+    await open('drawn_from');
+    const drawnChips = page.locator('.card.here[data-asset="drawn_from"] .in-frame .chip');
+    await drawnChips.first().waitFor().catch(() => {});
+    check('file_slots_take_their_named_kind', JSON.stringify(drawTakes) === '["audio","image"]' && (await drawnChips.count()) === 1 && (await page.locator('.card.here[data-asset="drawn_from"] .in-frame .chip.refused').count()) === 0, { drawTakes, chips: await drawnChips.evaluateAll((all) => all.map((one) => one.className)) });
+    await shut();
+
     // What a render can't read is refused, in words, and nothing runs.
     await render(['bare'], `bare-${Date.now()}`);
     const bare = await until('it refused', () => asset('bare'), (row) => row?.failure, 2 * STEP_MS);

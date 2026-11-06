@@ -93,7 +93,7 @@ const SEVERAL: Record<string, string> = { image: "pictures", video: "videos", au
 export function refusal(tool: Tool | undefined, view: ElementView | undefined): string | null {
   const kind = view?.asset?.kind ?? view?.landed?.field
   const takes = tool?.references ?? []
-  if (!view || !kind || !takes.length || kind === "text" || takes.includes(kind)) return null
+  if (!view || !kind || !takes.length || kind === "text" || takes.includes(kind) || takes.includes("file")) return null
   return `${tool!.label} takes ${takes.map((one) => SEVERAL[one] ?? one).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
