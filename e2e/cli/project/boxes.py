@@ -92,7 +92,7 @@ class Everything(msgspec.Struct, kw_only=True):
 
 
 class Take(msgspec.Struct):
-    video: VideoFile
+    video: File
     latents: Latents
     given: File
     warnings: list[str]

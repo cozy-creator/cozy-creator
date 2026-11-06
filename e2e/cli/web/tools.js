@@ -110,11 +110,8 @@ function linesOf(text, name) {
   await box('shot').waitFor();
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
-  // What the page listed before that is read again as it opens.
-  await page.reload();
-  await box('shot').waitFor();
-  await page.keyboard.press('f');
-  await page.waitForTimeout(400);
+  // The page reads its list again as that install ends, with no reload.
+  await until('the page lists it', () => page.evaluate(() => Boolean(document.querySelector('.tools li.tool[data-tool$="/boxes.py/shot"]'))), Boolean);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;
