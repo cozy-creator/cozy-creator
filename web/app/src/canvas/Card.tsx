@@ -16,7 +16,7 @@ import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
 import { Media, Preview, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, fieldsOf, madeHere, makes, paints, reshapes, shownOf } from "./shown"
+import { aspectOf, faceOf, fieldsOf, madeHere, makes, paints, reshapes, shownOf, watched } from "./shown"
 import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -144,7 +144,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const tools = useSignal(store.tools)
   const asset = view.asset!
   const onWords = view.hereWords && !(asset.timeline && !asset.pinned)
-  const shown = onWords ? null : shownOf(view)
+  const watch = watched(view)
+  // Rendered from its words, what's being made is what's looked at.
+  const shown = onWords || watch ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
@@ -152,13 +154,21 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const adds = writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit")
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
+    // Already on them, the caret goes back in.
+    const prompt = view.hereWords ? document.querySelector<HTMLElement>(`.card.here[data-asset="${CSS.escape(name)}"] .in-frame .mention-text`) : null
+    if (writes && prompt) {
+      prompt.focus()
+      window.getSelection()?.selectAllChildren(prompt)
+      window.getSelection()?.collapseToEnd()
+      return
+    }
     if (writes) return store.writeNext(name)
     store.focusing = name
     store.patch(name, { hereWords: true })
   }
   const pick = (number: number) => {
     store.pickTake(name, number)
-    if (onWords) store.patch(name, { hereWords: undefined })
+    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined })
   }
   return (
     <div
@@ -176,12 +186,12 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
     >
       {adds && (
         <button type="button" className={`take add ${view.hereWords ? "on" : ""}`} aria-label={writes ? "Its next take" : "Its words"} title={writes ? "Write its next take" : "Its words"} onClick={words}>
-          +
+          +{writes && <small className="take-new">New · {tools.get(asset.tool ?? "")?.label}</small>}
         </button>
       )}
       {waiting && (
         <span className="take-at">
-          <span className="take making" title="Queued">
+          <span className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued">
             …
           </span>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
@@ -191,7 +201,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       )}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <span className="take making" title={`Run ${run}`}>
+          <span className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`}>
             <TakeProgress view={view} run={run} />
           </span>
           <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
@@ -628,7 +638,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             {!looking && (
               <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />
             )}
-            <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />
+            {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
+            {!(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
             {view.warned && warned ? (
               <div className="warned-lines">
                 {view.warnings!.map((warning) => (

@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, until } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, renderOf, until } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -663,12 +663,19 @@ async function died(why) {
     await box('slow').waitFor();
     await open('slow');
     const slow = page.locator('.card.here[data-asset="slow"]');
-    const renderButton = slow.locator('button[aria-label=Render]');
-    await renderButton.click();
-    await until('one making', () => asset('slow'), (row) => row?.making?.length === 1, 2 * STEP_MS);
-    check('render_stays_render', (await slow.count()) === 1 && (await renderButton.count()) === 1 && (await renderButton.innerText()).trim() === 'Render', await slow.innerText());
+    // Writing a new box has no description: that's for a take looked at.
+    check('writing_has_no_description', (await slow.locator('.in-frame').count()) === 1 && (await slow.locator('.here-under .desc-field, .here-under hr.here-rule').count()) === 0, await slow.locator('.here-under').innerText());
+    await (await renderOf(page, 'slow')).click();
+    const firstMaking = await until('one making', () => asset('slow'), (row) => row?.making?.length === 1, 2 * STEP_MS);
+    // Render from its words looks at the take being made: its tile is the one picked, and + goes back to the words, still there.
+    const pickedFirst = await until('its tile picked', () => slow.locator('.here-side .take.making.on').getAttribute('title').catch(() => null), (title) => title === `Run ${firstMaking.making[0]}`).catch(() => null);
+    check('render_picks_the_take_being_made', (await slow.count()) === 1 && pickedFirst === `Run ${firstMaking.making[0]}` && (await slow.locator('.here-side .take.add.on').count()) === 0, await slow.innerText());
+    const renderButton = await renderOf(page, 'slow');
+    check('plus_goes_back_to_its_words', (await slow.locator('.in-frame').innerText()).includes('Slowly.') && (await renderButton.innerText()).trim() === 'Render', await slow.locator('.in-frame').innerText());
     await renderButton.click();
     const both = await until('two making', () => asset('slow'), (row) => row?.making?.length === 2, 2 * STEP_MS).catch((why) => String(why));
+    const pickedNewest = await until('the newest picked', () => slow.locator('.here-side .take.making.on').getAttribute('title').catch(() => null), (title) => title === `Run ${Math.max(...(both?.making ?? [0]))}`).catch(() => null);
+    check('render_twice_picks_the_newest', pickedNewest === `Run ${Math.max(...(both?.making ?? [0]))}`, { pickedNewest, making: both?.making });
     const making = both?.making ?? [];
     const crosses = await until('a × each', () => slow.locator('.take-at:has(.take.making) .take-off').evaluateAll((all) => all.map((one) => one.getAttribute('aria-label'))), (labels) => labels.length === 2).catch((why) => String(why));
     check('each_press_one_more', making.length === 2 && Array.isArray(crosses) && making.every((run) => crosses.includes(`Cancel run ${run}`)), { making, crosses });
@@ -687,10 +694,12 @@ async function died(why) {
     writeFileSync(yamlAt, `${yaml().trimEnd()}\n  quick:\n    tool: ${fixture}/wait\n    instructions: Quickly.\n`);
     await box('quick').waitFor();
     await open('quick');
-    const quick = page.locator('.card.here[data-asset="quick"] button[aria-label=Render]');
-    await quick.click();
+    await (await renderOf(page, 'quick')).click();
     await until('its first listed', () => asset('quick'), (row) => row?.versions === 1, 2 * STEP_MS);
-    await quick.click();
+    // The take being made lands picked: its tile shows it, still the one looked at.
+    const landedOn = await until('it landed picked', () => page.locator('.card.here[data-asset="quick"] .here-side .take.on').getAttribute('data-take').catch(() => null), (number) => number === '1').catch(() => null);
+    check('a_take_lands_picked', landedOn === '1', landedOn);
+    await (await renderOf(page, 'quick')).click();
     const again = await until('one more', () => asset('quick'), (row) => row?.versions === 2, 2 * STEP_MS).catch((why) => String(why));
     check('render_as_a_take_lands_is_one_more', again?.versions === 2, again);
     await shut();

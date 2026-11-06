@@ -312,8 +312,8 @@ function Canvas({
       store.inPlace = { name, back: store.inPlace?.back ?? (going && performance.now() < going.until ? going.view : flow.getViewport()) }
       store.view(name)
       const view = store.get(name)
-      // Its approved picture, else its newest; with none yet, its words, ready to type in.
-      const words = !view || !shownOf(view)
+      // Its approved take, else its newest; with none yet, its words, ready to type in.
+      const words = !view?.asset?.prefixes?.length && !view?.asset?.sha256
       if (words) store.focusing = name
       store.patch(name, { here: true, hereWords: words || undefined })
       if (store.writeOnOpen === name) store.writeNext(name, true)
