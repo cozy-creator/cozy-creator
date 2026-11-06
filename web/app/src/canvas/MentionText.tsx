@@ -9,13 +9,14 @@ import { shownOf } from "./shown"
 import { chipWords, mentionsIn, withMentions } from "./text"
 import { isSelf, mentionFrom, NO_BARE_SELF, versionIn } from "./versions"
 
-function chip(name: string, missing: boolean): HTMLElement {
+/** A name as a chip: one gone is struck through, and one its tool doesn't take, `refused`, is dimmed and says why. */
+function chip(name: string, missing: boolean, refused?: string | null): HTMLElement {
   const el = document.createElement("span")
-  el.className = missing ? "chip missing" : "chip"
+  el.className = missing ? "chip missing" : refused ? "chip refused" : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
   el.textContent = chipWords(name)
-  el.title = !missing ? name : isSelf(name) ? NO_BARE_SELF : `${name} is no longer here`
+  el.title = missing ? (isSelf(name) ? NO_BARE_SELF : `${name} is no longer here`) : refused ? `${refused}, so it isn't sent` : name
   return el
 }
 
@@ -55,6 +56,7 @@ export function MentionText({
   placeholder,
   missing,
   focus,
+  thumbs = true,
   onDraft,
   onSave,
 }: {
@@ -66,6 +68,8 @@ export function MentionText({
   placeholder?: string
   missing: string[]
   focus?: boolean
+  /** The pictures it mentions, small, under it. */
+  thumbs?: boolean
   onDraft: (text: string) => void
   onSave: () => void
 }) {
@@ -86,7 +90,7 @@ export function MentionText({
       const inner = part.text.slice(1, -1)
       const said = part.mention ? store.mentionOf(inner, asset) : null
       if (part.mention && (missing.includes(inner) || said?.gone || (isSelf(inner) && !said))) return chip(inner, true)
-      if (said) return chip(inner, false)
+      if (said) return chip(inner, false, store.refusalOf(asset, inner))
       return document.createTextNode(part.text)
     })
     const merged = (held: ChildNode[]) => held.reduce((said, node) => said + (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}\u0000` : node.textContent), "")
@@ -117,7 +121,7 @@ export function MentionText({
       const el = box.current
       if (!el) return
       const said = store.mentionOf(name, asset)
-      const made = chip(name, !said || Boolean(said.gone))
+      const made = chip(name, !said || Boolean(said.gone), store.refusalOf(asset, name))
       const after = document.createTextNode(" ")
       if (at && el.contains(at.startContainer)) {
         at.deleteContents()
@@ -306,7 +310,7 @@ export function MentionText({
           </ul>,
           document.body,
         )}
-      <MentionThumbs text={value} besides={asset} />
+      {thumbs && <MentionThumbs text={value} besides={asset} />}
     </>
   )
 }

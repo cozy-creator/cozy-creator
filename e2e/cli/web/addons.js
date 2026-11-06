@@ -8,7 +8,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, until } = require('./page');
+const { calcifer, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -350,7 +350,8 @@ assets:
       await idle();
       const had = (await state()).assets.find((asset) => asset.name === 'still').versions;
       await page.evaluate((to) => { location.hash = to; }, `/projects/${id}/assets/still`);
-      await page.locator('.card.here[data-asset="still"] button[aria-label=Render]').click();
+      await page.locator('.card.here[data-asset="still"]').waitFor();
+      await (await renderOf(page, 'still')).click();
       await closeBox(page);
       seen.asked_at = new Date().toISOString();
       for (;;) {

@@ -2,7 +2,7 @@
 # --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
-# `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
+# `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
 # models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and on Windows a save past a file held open (web/held.js).
@@ -56,6 +56,11 @@ web_proof reconnect "$chrome" "$pw" "$restart"
 step "web-instant: a box in the frame of its drop with its POST held, answers lost, a refusal, kill -9 mid-queue, a render whose answer is lost"
 web_proof instant "$chrome" "$pw" "$restart"
 jq -c '{drop: .seen.drop, reads: .seen.reads_after_a_drop}' "$OUT/web-instant.json" 2> /dev/null || true
+if [ -n "$restart" ]; then
+  step "web-offline: Calcifer stopped: Turbo, a prompt twice, approve, two moves, a rename, a delete and a drop, each shown at once and counted in the top bar; started again, all in project.yaml in its order"
+  STOP=$(web_stop "$lock") START=$(web_start "$lock") web_proof offline "$chrome" "$pw" "$restart"
+  jq -c '{said: .seen.said_offline, after: .seen.after}' "$OUT/web-offline.json" 2> /dev/null || true
+fi
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
 step "web-activity: each machine top right, an install and a download listed once under it with their waiters, a box saying it waits"
@@ -125,11 +130,15 @@ web_engines() {
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
 # reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer. It comes back on the Hub $2, else on this
 # suite's: config.toml's, since a service hears nothing of a caller's environment, and it starts before that verb asks.
-web_restart() {
-  local kill="kill -9 \$(jq -r .pid < '$1')" config=$HOME/.cozy/config.toml hub=${2:-${COZY_HUB_URL:-}} point=''
-  [ "${RUNNER_OS:-}" != Windows ] || kill="taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"
+web_restart() { echo "$(web_stop "$1"); sleep 1; $(web_start "$1" "${2:-}")"; }
+# Its two halves: what's done between them is done with Calcifer away.
+web_stop() {
+  if [ "${RUNNER_OS:-}" = Windows ]; then echo "taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"; else echo "kill -9 \$(jq -r .pid < '$1')"; fi
+}
+web_start() {
+  local config=$HOME/.cozy/config.toml hub=${2:-${COZY_HUB_URL:-}} point=''
   [ -z "$hub" ] || point="{ grep -v '^hub_url' '$config'; echo 'hub_url = \"$hub\"'; } > '$config.next'; mv '$config.next' '$config'; "
-  echo "$point$kill; sleep 1; ${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
+  echo "$point${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
 }
 
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, signed in by its own

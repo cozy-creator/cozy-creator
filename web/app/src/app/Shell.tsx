@@ -30,16 +30,19 @@ export function useTo() {
 /** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. A pod's Calcifer is its own. */
 const SAYS_HOW = 5
 
+/** Whether Calcifer answers, and what's waiting for it: said, and nothing waits on it. Gone once all of it is saved. */
 function Connectivity() {
-  const { stream, attempt, bridge, remote } = useConnection()
+  const { stream, attempt, bridge, remote, outbox } = useConnection()
   const health = useSignal(stream.health)
   const trying = useSignal(attempt)
+  const owed = useSignal(outbox.owed)
   const version = useSignal(bridge.newVersion)
+  const changes = `${owed.count} ${owed.count === 1 ? "change" : "changes"}`
   return (
     <>
-      {health.state === "reconnecting" && (
-        <span className="pill warn">
-          Reconnecting, attempt {health.attempt}
+      {health.state === "reconnecting" ? (
+        <span className="pill warn" role="status">
+          Calcifer offline{owed.count > 0 && `: ${changes} waiting`}
           {!remote && health.attempt >= SAYS_HOW && (
             <>
               {" "}
@@ -47,8 +50,13 @@ function Connectivity() {
             </>
           )}
         </span>
+      ) : owed.count > 0 && owed.slow ? (
+        <span className="pill warn" role="status">
+          {owed.held ? `Not saved: ${noHash(owed.held)}: ${changes} waiting` : `Saving ${changes}`}
+        </span>
+      ) : (
+        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}</span>
       )}
-      {trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}</span>}
       {version && (
         <button type="button" className="pill warn" onClick={() => location.reload()}>
           Calcifer is now {version}: Reload

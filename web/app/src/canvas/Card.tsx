@@ -16,7 +16,7 @@ import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
 import { Media, Preview, Thumb, usePreview } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, madeHere, makes, reshapes, shownOf } from "./shown"
+import { aspectOf, faceOf, fieldsOf, madeHere, makes, paints, reshapes, shownOf } from "./shown"
 import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -138,18 +138,21 @@ function TakeThumb({ main, width }: { main: MainFile; width: number }) {
   )
 }
 
-/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, a double tap approves it or, approved, unapproves it, and held down the pointer slides between them. + at the far left goes back to its words. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
+/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, a double tap approves it or, approved, unapproves it, and held down the pointer slides between them. + first goes to its words: an Edit's, or the next take an image tool writes in the frame. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
 function Takes({ view, name, width }: { view: ElementView; name: string; width: number }) {
   const store = useCanvasStore()
+  const tools = useSignal(store.tools)
   const asset = view.asset!
   const onWords = view.hereWords && !(asset.timeline && !asset.pinned)
   const shown = onWords ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
-  const adds = asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit"
+  const writes = paints(view, tools)
+  const adds = writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit")
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
+    if (writes) return store.writeNext(name)
     store.focusing = name
     store.patch(name, { hereWords: true })
   }
@@ -172,7 +175,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       }}
     >
       {adds && (
-        <button type="button" className={`take add ${view.hereWords ? "on" : ""}`} aria-label="Its words" title="Its words" onClick={words}>
+        <button type="button" className={`take add ${view.hereWords ? "on" : ""}`} aria-label={writes ? "Its next take" : "Its words"} title={writes ? "Write its next take" : "Its words"} onClick={words}>
           +
         </button>
       )}
@@ -191,7 +194,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
           <span className="take making" title={`Run ${run}`}>
             <TakeProgress view={view} run={run} />
           </span>
-          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(run)}>
+          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
             <Icon name="close" />
           </button>
         </span>
@@ -284,7 +287,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
   const tools = useSignal(store.tools)
   const group = view.asset && controlsOf(view.asset, tools).find((control) => control.members?.some((member) => member.total))
   const total = group?.members?.find((member) => member.total)
-  const rows = group ? rowsIn(view.asset?.fields?.[group.field]) : []
+  const rows = group ? rowsIn(fieldsOf(view)[group.field]) : []
   if (total && rows.length) {
     const lasts = (row: Record<string, unknown>) => Number(row[total.field]) || Number(total.default) || 1
     return (
@@ -298,7 +301,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
-  const pieces = piecesOf(view.asset?.fields)
+  const pieces = piecesOf(fieldsOf(view))
   if (!pieces.length) return null
   const lasts = pieces.map((piece) => {
     const held = store.get(piece)
@@ -378,13 +381,13 @@ function Status({ view, name }: { view: ElementView; name: string }) {
 }
 
 /** What this asset is, in words of its own: it reaches what mentions it. Always open, under its label. */
-function Description({ name, view }: { name: string; view: ElementView }) {
+function Description({ name, view, rule }: { name: string; view: ElementView; rule: boolean }) {
   const store = useCanvasStore()
   const held = store.valueOf(name, "description")
   if (!view.asset) return null
   return (
     <div className="desc-field">
-      {view.asset.tool && <hr className="here-rule" />}
+      {rule && <hr className="here-rule" />}
       <span className="block-label">Description</span>
       <MentionText
         asset={name}
@@ -490,6 +493,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const here = Boolean(view?.here)
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
+  const tools = useSignal(store.tools)
   const naming = useCallback(() => store.openName(name), [store, name])
   const pressedAt = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
@@ -526,8 +530,10 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const canFlip = makes(view)
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
   const editing = here && (asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
+  const looking = here && !view.hereWords && paints(view, tools)
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
-  const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
+  // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
+  const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
   return (
     <div
       ref={self}
@@ -599,7 +605,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
+      {!lite && asset && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
         <div className="rest-waiting">
           <Waiting view={view} />
@@ -617,14 +624,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             {asset.timeline && editing && <Pictures name={name} />}
             {!asset.timeline && !view.hereWords && <FromHere view={view} name={name} />}
             {!editing && <Bar view={view} name={name} />}
-            <AssetEdit
-              name={name}
-              view={view}
-              editing={editing}
-              head={<Stack name={name} />}
-              actions={editing && <RenderButton name={name} view={view} />}
-            />
-            <Description name={name} view={view} />
+            {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
+            {!looking && (
+              <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />
+            )}
+            <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />
             {view.warned && warned ? (
               <div className="warned-lines">
                 {view.warnings!.map((warning) => (
@@ -632,7 +636,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
                 ))}
               </div>
             ) : null}
-            <Status view={view} name={name} />
+            {!looking && <Status view={view} name={name} />}
           </div>
         </div>
       )}

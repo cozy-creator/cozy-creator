@@ -1,4 +1,4 @@
-import type { MainFile } from "../types"
+import type { MainFile, Tool } from "../types"
 import type { ElementView } from "./CanvasStore"
 
 /** The file a card shows, and where it came from. */
@@ -51,12 +51,29 @@ export function ratioOf(value: unknown): number | undefined {
   return parts.length === 2 && parts[0] > 0 && parts[1] > 0 ? parts[0] / parts[1] : undefined
 }
 
+/** What its fields show: what's typed, else what was sent, else what it holds. */
+export const fieldsOf = (view: ElementView | undefined): Record<string, unknown> => ({ ...view?.asset?.fields, ...view?.sent, ...view?.drafts })
+
 /** What a field shows: what's typed, else what was sent, else what it holds. */
 export function valueIn(view: ElementView | undefined, field: string): unknown {
   if (view?.drafts && field in view.drafts) return view.drafts[field]
   if (view?.sent && field in view.sent) return view.sent[field]
   return view?.asset?.fields?.[field]
 }
+
+const ONE: Record<string, string> = { image: "a picture", video: "a video", audio: "a sound", text: "words" }
+const SEVERAL: Record<string, string> = { image: "pictures", video: "videos", audio: "sounds" }
+
+/** Why `tool`'s words can't send a mention of `view`: a box of a kind it doesn't take. A text box is words, and a tool that doesn't say takes anything. */
+export function refusal(tool: Tool | undefined, view: ElementView | undefined): string | null {
+  const kind = view?.asset?.kind ?? view?.landed?.field
+  const takes = tool?.references ?? []
+  if (!view || !kind || !takes.length || kind === "text" || takes.includes(kind)) return null
+  return `${tool!.label} takes ${takes.map((one) => SEVERAL[one] ?? one).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
+}
+
+/** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */
+export const paints = (view: ElementView, tools: Map<string, Tool>) => makes(view) && !view.asset?.timeline && tools.get(view.asset?.tool ?? "")?.kind === "image"
 
 /** Showing no picture, or its words, a box is the shape it will make, which its corner changes; showing one, it's that picture's. */
 export const reshapes = (view: ElementView) => makes(view) && (Boolean(view.hereWords) || !shownOf(view))

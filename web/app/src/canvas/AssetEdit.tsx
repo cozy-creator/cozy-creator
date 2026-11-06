@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react"
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react"
 import type { Control, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
@@ -7,6 +7,7 @@ import { addOnsOf } from "./checkpoints"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 import { controlsOf, fieldWords, fullRows, heldBeyond, newRow, shownControls, VARIANT, variantOf } from "./controls"
+import { Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
@@ -14,7 +15,7 @@ import { ToolBox } from "./ToolBox"
 
 const said = (value: unknown): string => (typeof value === "string" ? value : "")
 
-function TextControl({ name, control, view, focus, named }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean }) {
+function TextControl({ name, control, view, focus, named, framed }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean; framed?: boolean }) {
   const store = useCanvasStore()
   const text = (
     <MentionText
@@ -25,10 +26,12 @@ function TextControl({ name, control, view, focus, named }: { name: string; cont
       placeholder={control.placeholder}
       missing={view.asset?.missing ?? []}
       focus={focus}
+      thumbs={!framed}
       onDraft={(words) => store.setDraft(name, control.field, words)}
       onSave={() => void store.save(name)}
     />
   )
+  if (framed) return text
   if (!named)
     return (
       <div className="field-block">
@@ -346,9 +349,28 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const tools = useSignal(store.tools)
   const control = view.asset && framed(view, controlsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
   if (!control) return null
+  const focus = store.focusing === name
   return (
     <div className="in-frame">
-      <ControlRow name={name} control={control} view={view} focus={store.focusing === name} named={false} />
+      <Ghosts name={name} view={view} />
+      {control.type === "text" ? <TextControl name={name} control={control} view={view} focus={focus} named={false} framed /> : <ControlRow name={name} control={control} view={view} focus={focus} named={false} />}
+    </div>
+  )
+}
+
+/** Behind its words, faded, the pictures they mention: one fills the frame, up to four tile it 2×2, up to nine 3×3. */
+function Ghosts({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  useSignal(store.names)
+  useSignal(store.tools)
+  const pictures = view.asset ? store.mentionedPictures(name) : []
+  if (!pictures.length) return null
+  const side = Math.ceil(Math.sqrt(pictures.length))
+  return (
+    <div className="ghosts" style={{ "--side": side } as CSSProperties} aria-hidden>
+      {pictures.map((sha256) => (
+        <Thumb key={sha256} sha256={sha256} cardWidth={960 / side} />
+      ))}
     </div>
   )
 }

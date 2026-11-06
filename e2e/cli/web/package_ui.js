@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, until, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -161,7 +161,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   };
   const open = async (name) => {
     await openBox(page, name);
-    await box(name).locator('button[aria-label=Render]').waitFor();
+    await (await renderOf(page, name)).waitFor();
   };
   // Behind its More, opened if it isn't. With nothing behind it there's no More, and all of it shows.
   const more = async (name) => {

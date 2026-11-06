@@ -2,7 +2,8 @@
 // them and every comment, and happens at once during a real render, whose take lands under the new name with what reads it reading on; a tool goes on a text box, on a
 // picture, and swaps, opening the box; its X takes its fields; a picture joins a box with no tool; a take dragged into text is `<abr.2>`; a version something reads can
 // be deleted, with Undo; `reclaim` keeps what a number names. Takes beside the open picture, a double tap or Enter approving; a take picked is the `<self.N>` its words
-// edit; a box of pictures merges into another; a box's shape is its tool's; Render stays Render while it makes, each take with its ×.
+// edit; a box of pictures merges into another; a box's shape is its tool's; open on a take, only its description, and its + writes the next one in the frame over
+// what it mentions; Render stays Render while it makes, each take with its ×.
 //   node versions.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: not on this computer's machine, which the rename during a
 // render needs, as it renders the free `waits.py`. Prints what it saw as JSON and exits 1 if anything failed.
@@ -10,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, until } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, png, until } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -317,6 +318,20 @@ async function died(why) {
     };
     const lines = (name) => yaml().match(new RegExp(`^  ${name}:(.*(?:\n(?:    .*|\\s*))*)`, 'm'))?.[1] ?? '';
 
+    // On open canvas a picture tool's box opens as it lands, on its words, the caret in them, its shape Auto, and no name asked.
+    const namesThen = (await state()).assets.map((held) => held.name);
+    await row.dragTo(page.locator('.stage'), { targetPosition: { x: 1300, y: 860 } });
+    const dropped = await until('a box of it', async () => (await state()).assets.find((held) => !namesThen.includes(held.name)), Boolean).catch(() => null);
+    const droppedOpen = page.locator(`.card.here[data-asset="${dropped?.name}"]`);
+    const caretOnIt = await until('the caret in its words', () => droppedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
+    const droppedShape = await droppedOpen.locator('.ratio-rest').innerText().then((text) => text.trim(), () => null);
+    check('a_dropped_tool_opens_on_its_words', Boolean(dropped) && caretOnIt === true && droppedShape === 'Auto' && (await page.locator('.nm-field').count()) === 0, { dropped: dropped?.name, caretOnIt, droppedShape });
+    if (dropped) {
+      await api(`${at}/assets/${encodeURIComponent(dropped.name)}`, { method: 'DELETE' });
+      await until('that box gone', () => box(dropped.name).count(), (n) => n === 0);
+    }
+    await shut();
+
     // On a text box its words are the prompt, at once, and the box opens.
     await box('words').waitFor();
     await carry('words');
@@ -335,6 +350,13 @@ async function died(why) {
     await until('the file', () => Promise.resolve(lines('other')), (text) => text.includes('<self.1>'));
     const other = await asset('other');
     check('a_picture_is_version_1', other.versions === 1 && other.approved === 1 && other.tool === tool.id, other);
+    // An image tool on a picture opens it on its next take's words: the caret in them, the approved take the first they mention, ghosted behind them.
+    const onIt = page.locator('.card.here[data-asset="other"]');
+    const caret = await until('writing on it', () => onIt.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
+    const firstChip = await onIt.locator('.in-frame .chip').first().innerText().catch(() => null);
+    const behind = await until('its picture behind', () => onIt.locator('.in-frame .ghosts img').count(), (n) => n === 1).catch(() => 0);
+    check('a_tool_on_a_picture_writes_its_next_take', caret === true && firstChip === `<Self.${other.approved}>` && behind === 1, { caret, firstChip, behind });
+    await onIt.locator('.in-frame .mention-text').evaluate((el) => el.blur()).catch(() => {});
     await shot('tool-on-picture');
     // Drawn out till words are larger than at 1:1, its tool chip stops short of its ratio.
     const middle = await box('other').locator('.card').boundingBox();
@@ -486,6 +508,58 @@ async function died(why) {
     await pullCorner('picked', 120, -40);
     const scaled = await until('it scaled', async () => (await box('picked').locator('.media').first().boundingBox()).width, (width) => width > picturedWas.width + 20).catch((why) => String(why));
     check('a_picture_only_scales', typeof scaled === 'number' && Math.abs((await shapeOf('picked')) / picturedWas.shape - 1) < 0.03 && !lines('picked').includes('aspect_ratio'), { picturedWas, scaled, now: await shapeOf('picked'), lines: lines('picked') });
+    // Open on a take, only its description is under it. Its + writes the next take in the frame, over the pictures its words mention, faded, with its tool
+    // and Render under it; a take goes back to looking.
+    await open('picked');
+    const writing = page.locator('.card.here[data-asset="picked"]');
+    await writing.locator('.here-under .desc-field').waitFor();
+    const onItsTake = await writing.locator('.here-under').innerText();
+    const toolShown = await writing.locator('.tool-head, .more-toggle, .add-on, .ratio-rest, .status, .warned, button[aria-label=Render]').count();
+    check('a_take_has_only_its_description', !/Render|Instructions|More/.test(onItsTake) && onItsTake.includes('Description') && toolShown === 0, { onItsTake, toolShown });
+    await writing.locator('.here-side .take.add[aria-label="Its next take"]').click();
+    await writing.locator('.in-frame .mention-text[data-field=instructions]').waitFor();
+    const ghosted = await until('what it mentions, behind', () => writing.locator('.in-frame .ghosts img').count(), (n) => n > 0).catch(() => 0);
+    const underWords = await writing.locator('.here-under').innerText();
+    check('its_plus_writes_the_next_take', ghosted > 0 && /Render/.test(underWords) && (await writing.locator('.here-side .take.add.on').count()) === 1, { ghosted, underWords });
+    await writing.locator('.here-side .take[data-take="1"]').click();
+    check('a_take_leaves_its_words', (await writing.locator('.in-frame').count()) === 0 && (await writing.locator('.here-side .take.on').getAttribute('data-take')) === '1', await writing.innerText());
+    await shut();
+    // Its words take only the kinds its tool sends (`references`): a video box is refused when dragged onto it, saying why, isn't offered after `<`,
+    // and written by hand it's a dimmed chip, which Calcifer doesn't send.
+    const sends = (await api(`/v1/tools?project=${id}`)).body.tools.find((one) => one.id === tool.id)?.references ?? [];
+    seen.references = sends;
+    if (sends.length && !sends.includes('video')) {
+      const reelAt = join(pictures, 'reel.mp4');
+      writeFileSync(reelAt, MP4);
+      await post(`${at}/imports`, { source: reelAt, name: 'reel', exact: true, at: { x: 100, y: 900 } });
+      await box('reel').waitFor();
+      await page.keyboard.press('f');
+      await page.waitForTimeout(400);
+      const wordsBefore = (await asset('picked')).fields?.instructions;
+      const reelFrom = await box('reel').locator('.nm').boundingBox();
+      const onto = await box('picked').locator('.media').first().boundingBox();
+      await page.mouse.move(reelFrom.x + 4, reelFrom.y + 4);
+      await page.mouse.down();
+      await page.mouse.move(reelFrom.x + 12, reelFrom.y + 4);
+      await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 });
+      await page.waitForTimeout(100);
+      const why = await box('picked').locator('.refused-line').innerText().catch(() => null);
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+      check('a_video_is_refused_on_a_picture_tool', Boolean(why?.includes('reel is a video')) && (await asset('picked')).fields?.instructions === wordsBefore, { why, words: (await asset('picked')).fields?.instructions });
+      await open('picked');
+      await writing.locator('.here-side .take.add[aria-label="Its next take"]').click();
+      const prompt = writing.locator('.in-frame .mention-text[data-field=instructions]');
+      await prompt.click();
+      await page.keyboard.press('End');
+      await page.keyboard.type(' <re');
+      const offeredNames = await until('the names offered', () => page.locator('.name-menu li').allInnerTexts(), () => true, 1000).catch(() => []);
+      for (let i = 0; i < 4; i++) await page.keyboard.press('Backspace');
+      await api(`${at}/assets/picked`, { method: 'PATCH', body: JSON.stringify({ fields: { instructions: `${wordsBefore} <reel>` } }) });
+      const dimmed = await until('a dimmed chip', () => prompt.locator('.chip.refused[data-mention="reel"]').count(), (n) => n === 1).catch(() => 0);
+      check('a_video_isnt_offered_and_is_dimmed', !offeredNames.includes('reel') && dimmed === 1, { offeredNames, dimmed });
+      await shut();
+    }
 
     // A swap across families: what it can't take goes, in words, with Undo. Two tools of different families, where the list has them.
     const onPanel = await page.locator('.tools li.tool').evaluateAll((rows) => rows.map((held) => held.dataset.tool));

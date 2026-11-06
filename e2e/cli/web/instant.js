@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawn } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -248,7 +248,8 @@ async function loseAnswers(page, method, path, times) {
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
     await page.waitForTimeout(800);
     check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && (yaml().match(new RegExp(`^  ${fifth}(_\\d+)?:`, 'gm'))?.length ?? 0) === 1 && !hasAsset(`${name}_6`), yaml());
-    check('nothing_left_saying_not_saved', !(await notes()).some((line) => /Not saved yet/.test(line)), await notes());
+    await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
+    check('nothing_left_saying_not_saved', true);
   }
 
   // A render whose answer is lost: the box says Queued at once, and however often it's asked, one run.
@@ -258,7 +259,7 @@ async function loseAnswers(page, method, path, times) {
     await page.waitForTimeout(500);
     await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
-    await box('fixture').locator('button[aria-label="Render"]').click();
+    await (await renderOf(page, 'fixture')).click();
     await page.waitForTimeout(20);
     check('render_says_queued_at_once', /Queued/.test((await box('fixture').locator('.status').allInnerTexts()).join(' ')), await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);

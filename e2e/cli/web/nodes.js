@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
+const { calcifer, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -167,17 +167,25 @@ function linesOf(text, name) {
   // A box is called what its tool's published node says, `image_1` for Qwen Image 2, else its package's word, numbered up from there.
   const dragged = await firstTool.getAttribute('data-tool');
   const boxName = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.id === dragged)?.name;
+  // Where the drop lands on the canvas, before the box opens and the canvas draws in on it.
+  const place = await page.evaluate(({ x, y }) => {
+    const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+    return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
+  }, { x: 1300, y: 900 });
   const made = await dragOut(firstTool, 1300, 900);
+  // A picture tool's box opens as it lands, on its words, the caret in them and its shape Auto, with no name asked. The Edit stays shut.
+  if (kind === 'image') {
+    const landedOpen = page.locator(`.card.here[data-asset="${made.name}"]`);
+    const caretIn = await until('the caret in its words', () => landedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
+    const shapeSaid = await landedOpen.locator('.ratio-rest').innerText().then((text) => text.trim(), () => null);
+    check('a_dropped_tool_opens_on_its_words', caretIn === true && shapeSaid === 'Auto' && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid });
+  } else seen.dropped_kind = kind;
   seen.tool_dragged = made.name;
   const word = (name) => name?.replace(/_\d+$/, '');
   check('tool_named_as_its_node_says', Boolean(boxName) && word(made.name) === word(boxName), { tool: dragged, said: boxName, name: made.name });
   check('tool_kind_from_its_output', made.kind === kind, { kind, made: made.kind });
   check('tool_written_as_a_function', made.tool?.includes('/'), made.tool);
   const home = await until('its row', async () => (await rows())[made.name], Boolean);
-  const place = await page.evaluate(({ x, y }) => {
-    const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-    return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
-  }, { x: 1300, y: 900 });
   check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
   await until('that box gone', () => box(made.name).count(), (n) => n === 0);
@@ -275,8 +283,9 @@ function linesOf(text, name) {
   // A mention reads as it's written, in its brackets, its first letter up; the file keeps it as typed.
   const chipWords = await sheetText.locator('.chip').allInnerTexts();
   check('chips_read_as_written', chipWords.join() === '<Source-a>,<Source-b>', chipWords);
-  const thumbs = await until('the pictures it mentions, small', () => box('Sheet').locator('.mention-thumb').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
-  check('mentions_shown_small', Array.isArray(thumbs), thumbs);
+  // Behind its words, faded, the pictures they mention, side by side in a 2×2.
+  const ghosts = await until('the pictures it mentions, behind', () => box('Sheet').locator('.in-frame .ghosts img').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
+  check('mentions_ghosted_behind_its_words', Array.isArray(ghosts) && (await box('Sheet').locator('.mention-thumb').count()) === 0, ghosts);
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
@@ -536,8 +545,8 @@ function linesOf(text, name) {
     const versions = async (name) => (await of(name))?.prefixes?.length ?? 0;
     const render = async (name, count) => {
       await open(name);
-      // Render is with its words, whatever it's showing.
-      await box(name).locator('button[aria-label=Render]').click();
+      // Render is with its words: on a take, its + goes to them.
+      await (await renderOf(page, name)).click();
       await until(`${name}'s ${count}`, () => versions(name), (n) => n === count, FIRST_RUN_MS);
     };
     await render('Sheet', 1);
@@ -565,8 +574,9 @@ function linesOf(text, name) {
     check('approved_is_that_version', approved.approved === 1 && approved.pinned, approved.approved);
     await open('Sheet');
     await box('Sheet').locator('.here-side .take.approved').waitFor();
-    check('approved_shows_its_file', (await box('Sheet').locator('.in-frame').count()) === 0 && (await box('Sheet').locator('.edit-shown .mention-text[data-field=instructions]').count()) === 1);
-    check('its_words_only_on_an_edit', (await box('Sheet').locator('.take.add').count()) === 0 && (await box('Sheet').locator('button:text-is("Approve"), button:text-is("Unapprove")').count()) === 0, await box('Sheet').innerText());
+    // Looking at a take, only its description is under it: its words, tool and Render are its next take's, behind the + over its takes.
+    check('approved_shows_its_file', (await box('Sheet').locator('.in-frame').count()) === 0 && (await box('Sheet').locator('.here-under .mention-text[data-field=instructions], .here-under button[aria-label=Render]').count()) === 0 && (await box('Sheet').locator('.here-under .desc-field').count()) === 1, await box('Sheet').innerText());
+    check('its_next_take_is_a_plus', (await box('Sheet').locator('.here-side .take.add[aria-label="Its next take"]').count()) === 1 && (await box('Sheet').locator('button:text-is("Approve"), button:text-is("Unapprove")').count()) === 0, await box('Sheet').innerText());
     check('no_word_says_pin', !/\bpin|accept/i.test(await box('Sheet').innerText()), await box('Sheet').innerText());
     await box('Sheet').locator('.take.approved').dblclick();
     await until('unapproved', () => of('Sheet'), (held) => !held.pinned);
@@ -679,13 +689,17 @@ function linesOf(text, name) {
     check('a_default_isnt_written', !(linesOf(yaml(), 'asker') ?? '').includes('bright'), linesOf(yaml(), 'asker'));
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
-    // A box with takes opens on its take, its description open under its label after its tool's fields and a rule, with nothing to ask a model.
+    // A box with takes opens on its take, only its description under it. Its + puts its words in the frame, and under it its tool, Render, a rule and its description.
     await open('Other');
     const otherDescribed = box('Other').locator('.desc-field');
     await otherDescribed.waitFor();
-    check('description_after_a_rule', (await otherDescribed.locator('hr.here-rule').count()) === 1 && (await otherDescribed.locator('.block-label').innerText()) === 'Description' && (await box('Other').locator('button:text-is("Caption")').count()) === 0, await box('Other').innerText());
-    const order = await box('Other').locator('.here-all').evaluate((all) => [...all.querySelectorAll('.tool-head, .field-block .block-label, button[aria-label=Render], hr.here-rule, .desc-field .block-label')].map((one) => one.matches('.tool-head') ? 'tool' : one.matches('hr') ? 'rule' : one.matches('button') ? 'Render' : one.textContent));
-    check('open_box_reads_tool_words_render_description', order.join() === 'tool,Instructions,Render,rule,Description', order);
+    const reads = () => box('Other').locator('.here-all').evaluate((all) => [...all.querySelectorAll('.tool-head, .field-block .block-label, button[aria-label=Render], hr.here-rule, .desc-field .block-label')].map((one) => one.matches('.tool-head') ? 'tool' : one.matches('hr') ? 'rule' : one.matches('button') ? 'Render' : one.textContent));
+    const onTake = await reads();
+    check('a_take_has_only_its_description', onTake.join() === 'Description' && (await box('Other').locator('button:text-is("Caption")').count()) === 0, onTake);
+    await renderOf(page, 'Other');
+    await box('Other').locator('.in-frame .mention-text[data-field=instructions]').waitFor();
+    const order = await reads();
+    check('open_box_reads_tool_words_render_description', order.join() === 'tool,Render,rule,Description', order);
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 
@@ -711,6 +725,7 @@ function linesOf(text, name) {
     await open('Sheet');
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
+    await renderOf(page, 'Sheet');
     await box('Sheet').locator('.chip.missing:has-text("source-a")').waitFor();
     check('missing_chip_on_edit', (await box('Sheet').locator('.chip.missing').innerText()) === '<Source-a>', await box('Sheet').locator('.chip.missing').innerText());
     await shot('missing');
@@ -782,7 +797,7 @@ function linesOf(text, name) {
     // Render on what's approved: another to look at, and the approval stays.
     const nowHeld = (await of('Sheet')).sha256;
     await open('Sheet');
-    await box('Sheet').locator('button[aria-label=Render]').click();
+    await (await renderOf(page, 'Sheet')).click();
     await until('another to look at', () => versions('Sheet'), (n) => n === 3, FIRST_RUN_MS);
     check('approved_stays', (await of('Sheet')).pinned && (await of('Sheet')).sha256 === nowHeld, await of('Sheet'));
 

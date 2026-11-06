@@ -409,7 +409,7 @@ code {
 .media {
   position: relative;
   overflow: hidden;
-  border-radius: var(--round2);
+  border-radius: 0;
   background: var(--well);
   display: flex;
   align-items: center;
@@ -645,6 +645,26 @@ video.preview.on {
   border: 0;
   background: none;
 }
+/* Behind the words, faded, the pictures they mention, tiled. */
+.ghosts {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--side), 1fr);
+  grid-template-rows: repeat(var(--side), 1fr);
+  opacity: 0.22;
+  pointer-events: none;
+}
+.ghosts img {
+  position: static;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: cover;
+}
+.in-frame .mention-text {
+  position: relative;
+}
 .in-frame .slot-control {
   margin: auto;
   border: 0;
@@ -793,6 +813,17 @@ video.preview.on {
   width: 100%;
   height: auto;
   aspect-ratio: 3 / 2;
+}
+/* The next take, not made yet: an empty frame. */
+.here-side .take.add {
+  border: 2px dashed var(--line2);
+  background: var(--card);
+  color: var(--mute);
+  font-size: 34px;
+}
+.here-side .take.add.on {
+  border-color: var(--ember);
+  color: var(--ember);
 }
 .here-side .take.on {
   outline: 4px solid var(--ember);
@@ -991,7 +1022,7 @@ video.preview.on {
   width: 44px;
   height: 30px;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--well);
 }
 .mention-thumb img {
@@ -1150,8 +1181,10 @@ video.preview.on {
   height: 30px;
   overflow: hidden;
   border: 1px solid var(--line2);
-  border-radius: 5px;
-  background: #000c;
+  border-radius: 0;
+  background-color: var(--check);
+  background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
+  background-size: 8px 8px;
   color: var(--mute);
   font-size: 11px;
   display: flex;
@@ -1275,7 +1308,7 @@ video.preview.on {
   position: relative;
   height: 46px;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--well);
   color: var(--faint);
   font-size: 13px;
@@ -2347,6 +2380,27 @@ a.tab:hover {
   color: var(--ember2);
   font: 600 0.9em var(--mono);
   white-space: nowrap;
+}
+/* A name its tool doesn't take: there, and not sent. */
+.chip.refused {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+/* What's dragged over a box that can't take it, and why. */
+.card.hot:has(> .refused-line) .media {
+  outline-color: var(--bad);
+}
+.refused-line {
+  position: absolute;
+  inset: auto 0 calc(100% + 4px) auto;
+  max-width: 100%;
+  padding: 0.2em 0.5em;
+  border-radius: 0.3em;
+  background: var(--bad);
+  color: #fff;
+  font-size: calc(14px * var(--text, 1));
+  pointer-events: none;
+  z-index: 6;
 }
 .chip.missing {
   background: color-mix(in srgb, var(--bad) 13%, transparent);

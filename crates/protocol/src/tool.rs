@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// The kinds of file a node can be.
-const MEDIA: [&str; 3] = ["image", "video", "audio"];
+pub const MEDIA: [&str; 3] = ["image", "video", "audio"];
 /// What no tool's box asks for: the platform's words on any asset, whatever made it.
 const NOT_ASKED: [&str; 6] = ["seed", "lora", "models", "description", "asset_type", "voice"];
 /// What a node's text is called, whatever input of its function it goes to.
@@ -88,6 +88,9 @@ pub struct Tool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installs: Option<String>,
     pub controls: Vec<Control>,
+    /// The kinds its words' mentions are sent as: `image`. A mention of another kind isn't sent; a text box is words. Empty: it sends none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
     /// The path in its package of a component that draws its box, where it ships one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<String>,
@@ -203,6 +206,7 @@ pub fn edit() -> Tool {
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
         local: false,
         installs: None,
+        references: vec![],
         ui: None,
         takes: false,
         cuts: None,
@@ -252,7 +256,7 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
     Some(Tool {
         id: format!("{package}/{}", callable.name),
         name: box_name(&package, callable),
-        label: if node.label.is_empty() { label(&package, &callable.name) } else { node.label.clone() },
+        label: label_of(&package, callable),
         package,
         function: callable.name.clone(),
         release: release.to_owned(),
@@ -261,6 +265,7 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
         local: false,
         installs: None,
         controls: controls(callable, &node),
+        references: references(callable),
         takes: node.fill.values().any(|source| source == TAKE),
         cuts: node.cuts,
         ui: node.ui,
@@ -271,6 +276,30 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
             family: None,
         }),
     })
+}
+
+/// What a box of `callable` says it is: its `Node`'s label, else its package's words and the function's.
+pub fn label_of(package: &str, callable: &Callable) -> String {
+    match callable.node.as_ref().map(|node| node.label.as_str()).filter(|label| !label.is_empty()) {
+        Some(label) => label.to_owned(),
+        None => label(package, &callable.name),
+    }
+}
+
+/// The kinds `callable`'s mentions are sent as: the files of each list filled from mentions, and its `assets`.
+pub fn references(callable: &Callable) -> Vec<String> {
+    let mentioned = callable.request.fields.iter().filter_map(|field| match optional(&field.ty) {
+        Type::List(item) => match &**item {
+            Type::Struct(row) if row.is_mention() => Some(row),
+            _ => None,
+        },
+        _ => None,
+    });
+    let mut kinds: Vec<String> = mentioned.flat_map(|row| row.fields.iter().filter_map(|member| Some(member.ty.media()?.0.to_owned()))).collect();
+    kinds.extend(callable.assets.iter().flat_map(|assets| assets.kinds.iter().map(|kind| kind.kind.clone())));
+    kinds.sort();
+    kinds.dedup();
+    kinds
 }
 
 /// What a new box of `callable` is called, which counts up as it's taken: its `Node`'s word, else its package's, numbered.
