@@ -483,8 +483,9 @@ fn _varena_pass_mark<'py>(
 }
 
 #[pyfunction]
-fn _varena_escapes_take<'py>(py: Python<'py>, device: i32) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let records = varena::working::escapes_take(device).map_err(|e| super::raise(py, e))?;
+#[pyo3(signature = (device, *, failed))]
+fn _varena_escapes_take<'py>(py: Python<'py>, device: i32, failed: bool) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let records = varena::working::escapes_take(device, failed).map_err(|e| super::raise(py, e))?;
     records.iter().map(|record| {
         let row = PyDict::new(py);
         row.set_item("head", &record.head)?;

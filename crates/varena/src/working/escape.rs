@@ -299,8 +299,9 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
 }
 
 /// This request's loops, ended: each one's record. What they left is learned for the next loop of
-/// the same head and shape, the last one's failed pass included.
-pub fn escapes_take(device: i32) -> Result<Vec<EscapeRecord>> {
+/// the same head and shape; when the request `failed`, its last loop's pass refused memory too. One
+/// that recovered (a smaller tile after a refused whole decode) teaches nothing from the refusal.
+pub fn escapes_take(device: i32, failed: bool) -> Result<Vec<EscapeRecord>> {
     let Some(owner) = existing(device)? else { return Ok(vec![]) };
     let mut state = owner.lock()?;
     let escapes = &mut state.escapes;
@@ -308,7 +309,7 @@ pub fn escapes_take(device: i32) -> Result<Vec<EscapeRecord>> {
     let last = escapes.last_head.take();
     let ended = std::mem::take(&mut escapes.loops);
     let records = ended.into_iter().map(|(head, held)| {
-        escapes.learn(head, &held, last == Some(head) && ooms > held.ooms);
+        escapes.learn(head, &held, failed && last == Some(head) && ooms > held.ooms);
         Escapes::record(head, held)
     }).collect();
     escapes.peak = escapes.total;

@@ -195,9 +195,10 @@ def pass_mark(device: int, head: int, shape: int, floor: int) -> dict[str, Any] 
     return _ext._varena_pass_mark(device, head, shape, floor)
 
 
-def escapes_take(device: int) -> list[dict[str, Any]]:
-    """This request's loops, ended, with what each began with and its passes left live."""
-    return _ext._varena_escapes_take(device)
+def escapes_take(device: int, *, failed: bool) -> list[dict[str, Any]]:
+    """This request's loops, ended, with what each began with and its passes left live; `failed`:
+    the request ended in an error, so a refused allocation in its last pass is learned from."""
+    return _ext._varena_escapes_take(device, failed=failed)
 
 
 def room(device: int) -> dict[str, int]:
