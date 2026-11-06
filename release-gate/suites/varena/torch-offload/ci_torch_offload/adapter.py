@@ -86,21 +86,23 @@ def split():
         want = template(y).to(device)
         # The GEMM's first launch loads its kernels into the context, outside our bytes: before any room is measured
         # (a 5090 lost 68 MiB of a 256 MiB room to it, and a 2 MiB activation found none).
-        warm = copy.deepcopy(template).to(device)
-        warm(y.to(device))
+        warm = torch.zeros(7168, 7168, device=device)
+        torch.nn.functional.linear(y.to(device), warm, torch.zeros(7168, device=device))
     del warm
+    torch.cuda.synchronize()
     torch.cuda.empty_cache()
     gpu, wide = api.open(0), torch.cuda.mem_get_info(0)[1]
     # What's outside us moves by host, so no one cap is right. A layer is 196 MiB and a half 392: climbing in smaller
-    # steps, the first room that runs is one a layer fits and a half doesn't. A refused room's regions can outlive it
-    # while they're reclaimable, so the room is set over what is resident besides: evicting it frees no more for us.
+    # steps, the first room that runs is one a layer fits and a half doesn't. The room is what we may hold beyond what
+    # can't go (live working bytes and pins): a refused room's regions and the warm-up's freed pages can, and would add
+    # their bytes to it (a 64 MiB room bound the 392 MiB block whole while a warm-up's freed pages were still pending).
     for room in range(64, 1024, 64):
         model = copy.deepcopy(template)
         handle = offload(model, device=0)
         torch.cuda.empty_cache()
         vt.set_limit(0, wide)
         held = gpu.room()
-        vt.set_limit(0, wide - held["free"] - held["weights_resident"] + room * 2**20)
+        vt.set_limit(0, wide - held["capacity"] + held["working_live"] + held["pinned"] + room * 2**20)
         try:
             with torch.inference_mode():
                 got = model(y.to(device))
