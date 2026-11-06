@@ -1,116 +1,113 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]==0.41.0+dev.gef558809", "msgspec>=0.19"]
 # ///
-"""The node cell's package: weightless, in a video model's own shape, so what a project gives a function can be read from its run with no
-model. `shot` takes a summary and beats, frames, a plate, a take and everything its text mentions. `up` is an upscale filled from what it
-reads. `picture` takes named pictures, each with its words. `pair` makes two."""
+"""The node cell's package: weightless tools in a video model's own shape, so what a project gives a function can be read from its run
+with no model. `shot` takes a summary and beats, a first and last frame, a plate and a pickup. `up` is an upscale whose video slot reads
+the latents of a take this package made. Each makes a short grey clip of its own. `picture` takes pictures by its prompt."""
 
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import App, AudioFile, File, ImageFile, ImageFrame, Node, Outputs, Picture, VideoFile
+import numpy as np
+from cozy_runtime.author import (
+    Advanced,
+    App,
+    AspectRatio,
+    Count,
+    Image,
+    ImageFile,
+    ImageFrame,
+    Latents,
+    Outputs,
+    Pickup,
+    Placeholder,
+    Prompt,
+    Range,
+    Ratios,
+    Seed,
+    Snap,
+    Spans,
+    Total,
+    Video,
+    VideoFile,
+)
 
 app = App()
 SIDE = 16
 
 
 class Beat(msgspec.Struct, kw_only=True):
-    description: str = ""
-    duration: Annotated[float, msgspec.Meta(extra={"min": 1, "max": 15, "step": 1, "total": True, "unit": "s"})] = 5
+    description: Prompt = Prompt()
+    duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 5
 
 
-class Mentioned(msgspec.Struct, kw_only=True):
-    name: str
-    description: str = ""
-    asset_type: str = ""
-    image: ImageFile | None = None
-    video: VideoFile | None = None
-    audio: AudioFile | None = None
-    voice: AudioFile | None = None
-    use_audio: bool = False
-    follow: Literal["exact", "loose"] = "exact"
-    alpha: float = 0
-    width: int = 0
-    made_by: str = ""
+class Made(Video, kw_only=True):
+    """A take, with the latents this package kept of it."""
+
+    latents: Latents | None = None
+    own: bool = False
 
 
-class Plated(msgspec.Struct, kw_only=True):
-    video: VideoFile
-    use_audio: bool = False
-
-
-class Keeping(msgspec.Struct, kw_only=True):
-    video: VideoFile
-    latents: File | None = None
-    at_s: float | None = None
+class Picked(Pickup, kw_only=True):
+    take: Made
+    beats_from: float | None = None
 
 
 class ShotInput(msgspec.Struct, kw_only=True):
-    summary: str = ""
-    beats: Annotated[list[Beat], msgspec.Meta(min_length=1, max_length=8)]
+    summary: Prompt = Prompt()
+    beats: Annotated[list[Beat], Count(min=1, max=8)]
     turbo: bool = True
-    soundscape: Annotated[str, msgspec.Meta(extra={"placeholder": "N/A (silent)"})] = ""
-    music: Annotated[str, msgspec.Meta(extra={"placeholder": "N/A (silent)"})] = ""
-    aspect_ratio: Annotated[str | None, msgspec.Meta(extra={"options": ["16:9"]})] = None
+    soundscape: Annotated[str, Placeholder("N/A (silent)")] = ""
+    music: Annotated[str, Placeholder("N/A (silent)")] = ""
+    aspect_ratio: Annotated[AspectRatio, Ratios("16:9")] | None = None
     first_frame: ImageFile | None = None
     last_frame: ImageFile | None = None
-    plate: Plated | None = None
-    references: list[Mentioned] = []
-    continue_from: Keeping | None = None
+    plate: Annotated[VideoFile, Spans("beats")] | None = None
     preset: Literal["quality", "balanced", "fast"] = "balanced"
-    steps: int | None = None
-    seed: int | None = None
+    steps: Annotated[int, Range(1, 50), Advanced()] | None = None
+    seed: Seed | None = None
+    pickup: Annotated[Picked, Snap(17, offset=5, first=39)] | None = None
 
 
 class Shot(msgspec.Struct):
-    video: File
-    latents: File
+    video: VideoFile
+    latents: Latents
     warnings: list[str] = []
 
 
-def _video(payload: ShotInput) -> File:
-    found = [payload.plate.video] if payload.plate else []
-    found += [ref.video for ref in payload.references if ref.video is not None]
-    found += [payload.continue_from.video] if payload.continue_from else []
-    return (found or [ref.image for ref in payload.references if ref.image is not None])[0]
+def _clip(out: Outputs, level: int) -> VideoFile:
+    return out.save_video(np.full((24, SIDE, SIDE, 3), level, np.uint8), fps=24)
 
 
-@app.entrypoint(node=Node(label="Shaped Shot", show=["soundscape", "music"], hide=["steps", "plate"], cuts={"every": 17, "offset": 5, "first": 39}, fill={"continue_from": "take"}, reserved=["d"]))
+@app.tool(label="Shaped Shot", reserved=["d"])
 def shot(payload: ShotInput, out: Outputs) -> Shot:
     """A video in its own words, beat by beat."""
-    warned = [f"beat {at + 1} says nothing" for at, beat in enumerate(payload.beats) if not beat.description]
+    warned = [f"beat {at + 1} says nothing" for at, beat in enumerate(payload.beats) if not beat.description.text]
     latents = out.save_bytes(b"latents of this package" + str(payload.seed).encode(), media_type="application/octet-stream")
-    return Shot(out.save_bytes(_video(payload).read_bytes(), media_type="video/mp4"), latents, warned)
+    return Shot(_clip(out, 64), latents, warned)
 
 
 class UpInput(msgspec.Struct, kw_only=True):
-    video: VideoFile
-    latents: File | None = None
+    video: Made
     prompt: str = ""
     resolution: Literal["1080p", "1440p"] = "1440p"
-    seed: int | None = None
+    seed: Seed | None = None
 
 
 class Up(msgspec.Struct):
-    video: File
+    video: VideoFile
 
 
-@app.entrypoint(node=Node(label="Shaped Up", fill={"latents": "video.latents", "prompt": "video.text"}))
+@app.tool(label="Shaped Up")
 def up(payload: UpInput, out: Outputs) -> Up:
-    """A video taken up: it reads its latents, and if it can't, the text that made it, else its description."""
-    return Up(out.save_bytes(payload.video.read_bytes(), media_type="video/mp4"))
-
-
-class Mentions(Picture, kw_only=True):
-    image: ImageFile | None = None
-    description: str = ""
+    """A video taken up: from its latents when this package made it."""
+    return Up(_clip(out, 192))
 
 
 class PictureInput(msgspec.Struct, kw_only=True):
-    prompt: str
-    pictures: Annotated[list[Mentions], msgspec.Meta(max_length=4)] = []
-    seed: int | None = None
+    prompt: Prompt[Image] = Prompt()
+    seed: Seed | None = None
 
 
 class Still(msgspec.Struct):
@@ -121,21 +118,7 @@ def _still(out: Outputs) -> ImageFile:
     return out.save_image(ImageFrame(SIDE, SIDE, b"\x20\x40\x60" * SIDE**2), format="png")
 
 
-@app.entrypoint(node=Node(label="Shaped Picture"))
+@app.tool(label="Shaped Picture")
 def picture(payload: PictureInput, out: Outputs) -> Still:
-    """A picture of what it's told, reading each it names."""
+    """A picture of what it's told, reading each picture it names."""
     return Still(_still(out))
-
-
-class Nothing(msgspec.Struct, kw_only=True):
-    prompt: str = ""
-
-
-class Pair(msgspec.Struct):
-    image: list[ImageFile]
-
-
-@app.entrypoint(node=Node(label="Shaped Pair"))
-def pair(payload: Nothing, out: Outputs) -> Pair:
-    """Two pictures, as one asset."""
-    return Pair([_still(out), _still(out)])

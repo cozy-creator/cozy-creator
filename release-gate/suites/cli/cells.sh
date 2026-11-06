@@ -158,7 +158,7 @@ stall_cell() {
   for tool in curl jq; do command -v "$tool" > /dev/null || { cli_fail "stall: no $tool here"; return; }; done
   [ -s "$lock" ] || { cli_fail "stall: no Calcifer lock record at $lock"; return; }
   rm -rf "$S"; "$CLI" project new "$S" > stall-new.log 2>&1 || { cli_fail "stall: project new: $(tail -c 300 stall-new.log)"; return; }
-  printf 'version: 3\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    prompt: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S/project.yaml"
+  printf 'version: 4\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    instructions: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S/project.yaml"
   # What the page hears, from before the render.
   curl -sS -N --max-time 1500 -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/events" < /dev/null > "$stream" 2> stall-events.err & page=$!
   for _ in $(seq 50); do [ -s "$stream" ] && break; sleep 0.2; done

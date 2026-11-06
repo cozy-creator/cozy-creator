@@ -1,35 +1,46 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]==0.41.0+dev.gef558809", "msgspec>=0.19"]
 # ///
-"""The tool cell's package: weightless functions as a canvas drops them. `still` has no adapter, so it's called directly, and `slow` too, saying how far it's got. `told` has an
-adapter, whose answer says what it saw of what it reads. `need` wants a file it may not get, `clip` makes a video, `words`
-makes no media, and `ask` answers text, by an adapter of kind `text`."""
+"""The tool cells' package: weightless tools as a canvas drops them. `still` makes a picture of one colour, `slow` too, saying how far
+it's got, and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
+tool, and `caption` answers what it's shown, as Calcifer's Caption asks a package's `caption`."""
 
 import os
 import time
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import App, File, ImageFile, ImageFrame, Node, Outputs, Telemetry, VideoFile
+from cozy_runtime.author import (
+    App,
+    AspectRatio,
+    Count,
+    File,
+    Image,
+    ImageFile,
+    ImageFrame,
+    Outputs,
+    Prompt,
+    Range,
+    Ratios,
+    Seed,
+    Telemetry,
+    Total,
+    Video,
+    VideoFile,
+)
 
 app = App()
 SIDE = 16
 
 
-class Named(msgspec.Struct, kw_only=True):
-    name: str
-    image: ImageFile
-
-
-class StillInput(msgspec.Struct, kw_only=True):
-    prompt: str
-    pictures: Annotated[list[Named], msgspec.Meta(max_length=1)] = []
-    count: Annotated[int, msgspec.Meta(ge=1, le=4)] = 1
-    aspect_ratio: Literal["1:1", "16:9"] = "1:1"
+class StillBox(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+    count: Annotated[int, Range(1, 4)] = 1
+    aspect_ratio: Annotated[AspectRatio, Ratios("1:1", "16:9")] | None = None
     style: Literal["flat", "noise"] = "flat"
     soft: bool = False
-    seed: int | None = None
+    seed: Seed | None = None
 
 
 class Picture(msgspec.Struct):
@@ -41,60 +52,49 @@ def _picture(out: Outputs) -> ImageFile:
     return out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
 
 
-@app.entrypoint(node=Node(name="still"))
-def still(payload: StillInput, out: Outputs) -> Picture:
+@app.tool(label="A still", named="still")
+def still(payload: StillBox, out: Outputs) -> Picture:
     """A still of one colour."""
-    return Picture(_picture(out), payload.prompt)
+    return Picture(_picture(out), payload.instructions.text)
 
 
-class SlowInput(msgspec.Struct, kw_only=True):
-    prompt: str
-    seconds: float = 4.0
-    seed: int | None = None
+class SlowBox(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+    seconds: Annotated[float, Range(0, 60)] = 4.0
+    seed: Seed | None = None
 
 
-@app.entrypoint(node=Node())
-def slow(payload: SlowInput, out: Outputs, tel: Telemetry) -> Picture:
+@app.tool(label="A slow still")
+def slow(payload: SlowBox, out: Outputs, tel: Telemetry) -> Picture:
     """A still that takes its time, saying how far it's got."""
     for step in range(10):
         tel.progress(step / 10, stage="drawing")
         time.sleep(payload.seconds / 10)
-    return Picture(_picture(out), payload.prompt)
+    return Picture(_picture(out), payload.instructions.text)
 
 
 class Beat(msgspec.Struct, kw_only=True):
-    description: str = ""
-    duration: Annotated[float, msgspec.Meta(extra={"min": 1, "max": 15, "step": 1, "total": True, "unit": "s"})] = 5
+    description: Prompt = Prompt()
+    duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 5
 
 
-class Seen(msgspec.Struct, kw_only=True):
-    """A prompt never crosses a mention, whatever a package asks for."""
-
-    name: str
-    description: str = ""
-    instructions: str = ""
-    image: ImageFile | None = None
-
-
-class ToldInput(msgspec.Struct, kw_only=True):
-    prompt: str
+class ToldBox(msgspec.Struct, kw_only=True):
+    instructions: Prompt = Prompt()
     bright: bool = True
-    shade: Annotated[float | None, msgspec.Meta(extra={"min": 0, "max": 1})] = None
-    aspect_ratio: Annotated[str | None, msgspec.Meta(extra={"options": ["1:1"]})] = None
-    beats: Annotated[list[Beat], msgspec.Meta(min_length=1, max_length=4)]
+    shade: Annotated[float, Range(0, 1)] | None = None
+    aspect_ratio: Annotated[AspectRatio, Ratios("1:1")] | None = None
+    beats: Annotated[list[Beat], Count(min=1, max=4)]
     video: VideoFile | None = None
-    secret: str = ""
-    references: list[Seen] = []
-    seed: int | None = None
+    seed: Seed | None = None
 
 
-@app.entrypoint(node=Node(name="told", hide=["secret"], label="Told"))
-def told(payload: ToldInput, out: Outputs) -> Picture:
-    """A still of one colour."""
-    return Picture(_picture(out), payload.prompt)
+@app.tool(label="Told", named="told")
+def told(payload: ToldBox, out: Outputs) -> Picture:
+    """A still of one colour, from a prompt and its beats."""
+    return Picture(_picture(out), payload.instructions.text)
 
 
-class NeedInput(msgspec.Struct, kw_only=True):
+class NeedBox(msgspec.Struct, kw_only=True):
     video: VideoFile
 
 
@@ -102,21 +102,11 @@ class Clip(msgspec.Struct):
     video: VideoFile
 
 
-@app.entrypoint(node=Node(ui="ui/clip.js"))
-def need(payload: NeedInput, out: Outputs) -> Clip:
+@app.tool(label="Keep a video")
+def need(payload: NeedBox, out: Outputs) -> Clip:
     """Keeps a video as it is."""
     with payload.video.stream() as events:
         return Clip(out.save_video_stream(iter(events)).video)
-
-
-class ClipInput(msgspec.Struct, kw_only=True):
-    resolution: Literal["720p", "1080p"] = "720p"
-
-
-@app.entrypoint(node=Node())
-def clip(payload: ClipInput, out: Outputs) -> Clip:
-    """Never run: a function whose output is a video."""
-    raise NotImplementedError(payload.resolution)
 
 
 class WordsInput(msgspec.Struct, kw_only=True):
@@ -135,8 +125,8 @@ def words(payload: WordsInput) -> Said:
 
 
 class CaptionInput(msgspec.Struct, kw_only=True):
-    images: list[ImageFile] = []
-    videos: list[VideoFile] = []
+    image: Image | None = None
+    video: Video | None = None
 
 
 class Asked(msgspec.Struct):
@@ -146,4 +136,4 @@ class Asked(msgspec.Struct):
 @app.entrypoint()
 def caption(payload: CaptionInput) -> Asked:
     """Answers about what it's shown, in the words it chooses."""
-    return Asked([f"THE-PACKAGE-ASKS {len(payload.images)} pictures, {len(payload.videos)} videos."])
+    return Asked([f"THE-PACKAGE-ASKS {int(payload.image is not None)} pictures, {int(payload.video is not None)} videos."])

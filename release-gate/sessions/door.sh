@@ -148,7 +148,7 @@ door_component() {
   local a=$P/boxed id link
   pod "cozy project new $a > /dev/null" || check "project new"
   put "$FIX/../../../../e2e/cli/project/draw.py" "$a/draw.py"
-  T=1200 pod "cd $a && cozy --json run ./draw.py/draw prompt=primed --on local" > /dev/null || check "a run of the tool there: $(tail -c 300 "$OUT/pod.err")"
+  T=1200 pod "cd $a && cozy --json run ./draw.py/draw instructions=primed --on local" > /dev/null || check "a run of the tool there: $(tail -c 300 "$OUT/pod.err")"
   id=$(pod "cozy --json project -p $a status" | jq -r '.id // empty')
   [ -n "$id" ] || { check "the project has no id: $(tail -c 300 "$OUT/pod.err")"; return; }
   answers "a box of it through the door" 201 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: door-component-$RANDOM" -d '{"tool":"./draw.py/draw","name":"drawn","at":{"x":0,"y":0,"w":300}}' "$D/v1/projects/$id/assets"

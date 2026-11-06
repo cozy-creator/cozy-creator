@@ -1,82 +1,89 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]==0.41.0+dev.gef558809", "msgspec>=0.19"]
 # ///
-"""The project cell's shot package: weightless, and each function is a node. `shoot`'s video is its first mention's, or its plate, and
-`given` says what it got. `refuse` is its own no. `bare` is a function of just its video, `scenes` a long shot's way, segment by segment,
-each shown as it ends, `fresh` makes its plate's video new bytes, a file nothing has measured, `noise` a video ffprobe can't read,
-`crash` fails, `slow` waits and has no seed, and `typed` says when a field isn't one."""
+"""The project cell's shot package: weightless. `shoot` is a tool: its video is the take it picks up from, else its plate, else the first
+video its text mentions, and `given` says what it got, its pickup too. `refuse` is its own no. `bare` is a function of just its video,
+`scenes` a long shot's way, segment by segment, each shown as it ends, `fresh` makes its plate's video new bytes, a file nothing has
+measured, `noise` a video ffprobe can't read, `crash` fails, `slow` waits and has no seed, and `typed` says when a field isn't one."""
 
 import json
 import os
 import struct
 import time
+from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, File, InvalidRequest, Node, Outputs, Telemetry, VideoFile
+from cozy_runtime.author import (
+    App,
+    File,
+    InvalidRequest,
+    Latents,
+    Outputs,
+    Pickup,
+    Prompt,
+    Range,
+    Seed,
+    Telemetry,
+    Total,
+    Video,
+    VideoFile,
+)
 
 app = App()
 
 
-class Plate(msgspec.Struct, kw_only=True):
-    video: File
-
-
-class Keeping(msgspec.Struct, kw_only=True):
-    video: File
-    latents: File | None = None
-    at_s: float | None = None
-
-
 class Beat(msgspec.Struct, kw_only=True):
-    description: str = ""
-    duration: float = 5
+    description: Prompt = Prompt()
+    duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 5
 
 
-class Seen(msgspec.Struct, kw_only=True):
-    name: str
-    video: File | None = None
-    image: File | None = None
-    latents: File | None = None
-
-
-class Request(msgspec.Struct, kw_only=True):
-    prompt: str = ""
-    summary: str = ""
+class ShotBox(msgspec.Struct, kw_only=True):
+    summary: Prompt = Prompt()
     beats: list[Beat] = []
-    plate: Plate | None = None
-    references: list[Seen] = []
-    seed: int | None = None
-    continue_from: Keeping | None = None
+    plate: VideoFile | None = None
+    seed: Seed | None = None
+    pickup: Pickup | None = None
     refuse: str = ""
 
 
 class Take(msgspec.Struct):
-    video: File
-    latents: File
+    video: VideoFile
+    latents: Latents
     given: File
-    kept_s: float | None
     warnings: list[str]
 
 
-@app.entrypoint(node=Node(reserved=["d", "english"], fill={"continue_from": "take"}))
-def shoot(payload: Request, out: Outputs) -> Take:
+def _said(prompt: Prompt) -> dict[str, object]:
+    return {"text": prompt.text, "references": {key: type(value).__name__.lower() for key, value in prompt.references.items()}}
+
+
+@app.tool(label="Shot", named="shot", reserved=["d", "english"])
+def shoot(payload: ShotBox, out: Outputs) -> Take:
+    """A video of the take it picks up from, its plate, or the first video it mentions, and what it was given."""
     if payload.refuse:
         raise InvalidRequest(payload.refuse)
-    keeps = payload.continue_from
-    plate = payload.plate.video if payload.plate else next((seen.video for seen in payload.references if seen.video), None)
-    if plate is None:
+    prompts = [payload.summary, *(beat.description for beat in payload.beats)]
+    mentioned = [value.file for prompt in prompts for value in prompt.references.values() if isinstance(value, Video)]
+    source = payload.pickup.take.file if payload.pickup else payload.plate or next(iter(mentioned), None)
+    if source is None:
         raise InvalidRequest("this mentions no video to shoot")
-    said = [f"{seen.name}={'video' if seen.video else 'image'}{'+latents' if seen.latents else ''}" for seen in payload.references]
-    given = {"prompt": " | ".join([payload.prompt or payload.summary, *said]), "seed": payload.seed, "keep": keeps.at_s if keeps else None}
-    return Take(out.save_bytes(plate.read_bytes(), media_type="video/mp4"), out.save_bytes(os.urandom(32), media_type="application/octet-stream"),
-                out.save_bytes(json.dumps(given).encode(), media_type="application/json"),
-                (keeps.at_s or 0) + 0.04 if keeps else None, [])
+    pickup = payload.pickup
+    given = {
+        "summary": _said(payload.summary),
+        "beats": [_said(beat.description) for beat in payload.beats],
+        "plate": payload.plate is not None,
+        "seed": payload.seed,
+        "pickup": {"out_frame": pickup.out_frame, "description": pickup.take.description} if pickup else None,
+    }
+    with source.stream() as events:
+        video = out.save_video_stream(iter(events)).video
+    return Take(video, out.save_bytes(os.urandom(32), media_type="application/octet-stream"), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), [])
 
 
 class Bare(msgspec.Struct, kw_only=True):
     plate: VideoFile
-    summary: str = ""
+    summary: Prompt = Prompt()
 
 
 class BareTake(msgspec.Struct):
@@ -85,13 +92,13 @@ class BareTake(msgspec.Struct):
 
 class Fresh(msgspec.Struct, kw_only=True):
     plate: VideoFile
-    summary: str = ""
+    summary: Prompt = Prompt()
     seed: int | None = None
 
 
 class Scenes(msgspec.Struct, kw_only=True):
     plate: VideoFile
-    summary: str = ""
+    summary: Prompt = Prompt()
     segments: int
     each: float = 2
     seed: int | None = None
@@ -136,12 +143,12 @@ class Saved(msgspec.Struct):
 
 
 class Noise(msgspec.Struct, kw_only=True):
-    summary: str = ""
+    summary: Prompt = Prompt()
 
 
 class Crash(msgspec.Struct, kw_only=True):
     crash: str
-    summary: str = ""
+    summary: Prompt = Prompt()
 
 
 @app.entrypoint()

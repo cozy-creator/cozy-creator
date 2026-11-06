@@ -294,7 +294,7 @@ run_play() {
 step "run play"
 # The link opens the browser player (GitHub Pages) with this machine, the output and a token in its fragment; the
 # token's expiry is --expires from now. The output: a weightless still (the project cell's renderer).
-(cd "$here" && cell play-still ./project/draw.py/draw "prompt=play $RANDOM") || true
+(cd "$here" && cell play-still ./project/draw.py/draw "instructions=play $RANDOM") || true
 first=$(cat "$OUT/play-still.number")
 name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
 expiry() {  # the token's expiry (unix s), from the link's fragment (unpadded base64url JSON before its `.`)

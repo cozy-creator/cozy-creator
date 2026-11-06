@@ -1,31 +1,29 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]==0.41.0+dev.gef558809", "msgspec>=0.19"]
 # ///
-"""The project cell's picture package: a weightless still of one random colour, so each version differs. Its call says what it read."""
+"""The project cell's picture tool: a weightless still of one random colour, so each version differs. Its call says what it read."""
 
 import os
+from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, File, ImageFrame, ImageRequest, ImageResult, Outputs, Sizes
+from cozy_runtime.author import Adjustments, App, AspectRatio, Image, ImageFrame, ImageRequest, ImageResult, Outputs, Prompt, Range, Seed, Sizes
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
 
 
-class Seen(msgspec.Struct, kw_only=True):
-    name: str
-    image: File | None = None
-    voice: File | None = None
+class Drawing(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+    aspect_ratio: AspectRatio | None = None
+    megapixels: Annotated[float, Range(0.25, 4, step=0.25, unit="MP")] | None = None
+    seed: Seed | None = None
 
 
-class Drawing(ImageRequest):
-    prompt: str = ""
-    pictures: list[Seen] = msgspec.field(default_factory=list)
-
-
-@app.entrypoint()
+@app.tool(label="Draw", named="drawing")
 def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
-    width, height = payload.size(adj, None, SIZES, megapixels=0.25)
+    asked = ImageRequest(payload.instructions.text, payload.aspect_ratio, payload.megapixels, payload.seed)
+    width, height = asked.size(adj, None, SIZES, megapixels=0.25)
     image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
-    return ImageResult(image, width, height, payload.seed or 0, payload.prompt)
+    return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
