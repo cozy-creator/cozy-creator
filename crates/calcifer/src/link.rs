@@ -138,18 +138,16 @@ impl Link {
         lanes[i].clone()
     }
 
-    /// Sends `runs` as one admission where the machine takes one (`run-batch/1`), else each alone: each one's state, the machine's
-    /// acceptance, in their order. The same id and spec again answer the run as it is; another spec is `run_id_conflict`.
-    pub async fn admit(&self, runs: Vec<v1::RunRequest>, batched: bool) -> Result<Vec<Result<v1::RunState, LinkError>>, LinkError> {
-        if batched {
-            let answers = self.machine.submit_batch(&v1::RunBatch { runs }).await?;
-            return Ok(answers.into_iter().map(|answer| answer.map_err(LinkError::from)).collect());
-        }
-        let mut answers = vec![];
-        for run in &runs {
-            answers.push(self.machine.submit(run).await.map_err(LinkError::from));
-        }
-        Ok(answers)
+    /// Sends `runs` as one admission (`POST /v1/runs/batch`; one run is a batch of one): each one's state, the machine's acceptance,
+    /// in their order. The same id and spec again answer the run as it is; another spec is `run_id_conflict`.
+    pub async fn admit(&self, runs: Vec<v1::RunRequest>) -> Result<Vec<Result<v1::RunState, LinkError>>, LinkError> {
+        let answers = self.machine.submit_batch(&v1::RunBatch { runs }).await?;
+        Ok(answers.into_iter().map(|answer| answer.map_err(LinkError::from)).collect())
+    }
+
+    /// Sends an update (`POST /v1/runs`): what every TensorD takes, as it reaches a machine on another minor (`Machines::current`).
+    pub async fn update(&self, run: v1::RunRequest) -> Result<v1::RunState, LinkError> {
+        Ok(self.machine.submit(&run).await?)
     }
 
     /// The run's log after `after`: its state first, then its events until its outcome. Closing

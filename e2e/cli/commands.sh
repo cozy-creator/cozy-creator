@@ -367,7 +367,7 @@ estimate() {  # estimate <name>: the local machine's quote of one run, in <name>
   cozy --json run -p "$RUN_PROJECT" "$code/reverse" text=abc --estimate --on local > "$OUT/$1-all.json" 2> "$OUT/$1.err" \
     || { check "$1: cozy run --estimate failed: $(tail -c 300 "$OUT/$1.err")"; return 1; }
   jq '.machines[] | select(.machine == "local")' "$OUT/$1-all.json" > "$OUT/$1.json"
-  jq -c '{basis, width, start_ms, finish_ms, prepare_ms, quoted}' "$OUT/$1.json" | sed "s/^/$1: /" | tee -a "$OUT/quoted.txt"
+  jq -c '{basis, width, start_ms, finish_ms, prepare_ms}' "$OUT/$1.json" | sed "s/^/$1: /" | tee -a "$OUT/quoted.txt"
 }
 : > "$OUT/quoted.txt"
 estimate quote-unrun || return 0
@@ -377,7 +377,7 @@ estimate quote-run || return 0
 first=$(run_get "$OUT" quote-first .execution_ms)
 quoted=$(jq '.finish_ms - .start_ms' "$OUT/quote-run.json")
 echo "first run ${first:-?} ms; quoted ${quoted} ms" | tee -a "$OUT/quoted.txt"
-J '.basis == "measured" and .quoted' "$OUT/quote-run.json" || check "local quote: after a run, not measured: $(jq -c . "$OUT/quote-run.json")"
+J '.basis == "measured"' "$OUT/quote-run.json" || check "local quote: after a run, not measured: $(jq -c . "$OUT/quote-run.json")"
 J '.prepare_ms == 0' "$OUT/quote-run.json" || check "local quote: its installation not found, $(jq .prepare_ms "$OUT/quote-run.json") ms to prepare"
 [ -n "$first" ] && jq -en --argjson q "$quoted" --argjson f "$first" '($q - $f | fabs) <= ([0.2 * $f, 100] | max)' > /dev/null \
   || check "local quote: its run time ${quoted} ms, the run's ${first:-?} ms"

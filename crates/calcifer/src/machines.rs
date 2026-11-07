@@ -1878,7 +1878,6 @@ pub(crate) fn refusal(name: &str, e: LinkError) -> Error {
             "not_found",
             format!("{name} has no such thing"),
         )
-        .remedy(format!("if it runs an older cozy than this one: {}", crate::update::bring_up_command(name)))
         .next(format!("cozy machine show {name}")),
         LinkError::Unreachable(message) => Error::new(
             Kind::Unavailable,

@@ -187,12 +187,7 @@ impl Machines {
         let frame = link.status().await.map_err(|error| Denied::Unreachable(error.to_string()))?;
         match frame.workload_key.is_empty() {
             false => Ok(frame.workload_key),
-            true => Err(Denied::Refused(Reason {
-                code: "machine_takes_no_capability".into(),
-                message: format!("{machine} runs a TensorD that takes no run capability"),
-                next: vec![crate::update::bring_up_command(machine)],
-                ..Default::default()
-            })),
+            true => Err(Denied::Unreachable(format!("{machine} has not said its workload key yet"))),
         }
     }
 

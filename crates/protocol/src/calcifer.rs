@@ -675,9 +675,6 @@ pub struct MachineEstimate {
     /// How many runs start there before it.
     pub queue_position: u32,
     pub basis: crate::machine::Basis,
-    /// Its machine quoted it (`estimate/1`); false: Calcifer's time for one GPU, the machine
-    /// quoting none.
-    pub quoted: bool,
 }
 
 /// One event of a run's stream.

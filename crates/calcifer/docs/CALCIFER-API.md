@@ -193,10 +193,10 @@ a spec.
   (`RunQuote`). Nothing is rented or recorded.
 - `POST /v1/run-estimates?count=` (`Idempotency-Key`): a `RunRequest`, bound as a run is: `RunEstimate {machines, soonest?, notes, preparing?}`,
   each machine it may go to (its `on`, else the render set) as it quotes it now, soonest finish first, for each of `count` copies
-  (1 to 32, default 1) sent at once: `{machine, job, fits, refusal?, width, start_ms, finish_ms, prepare_ms, queue_position, basis,
-  quoted}`, ms from the answer, `job` the copy. `soonest` is where the run would go. `quoted`
-  false: a machine without `estimate/1`, counted on eta at one GPU. Nothing is sent or reserved. Local code not ready answers its
-  install as `preparing`: follow it, then ask again under the same key.
+  (1 to 32, default 1) sent at once: `{machine, job, fits, refusal?, width, start_ms, finish_ms, prepare_ms, queue_position, basis}`,
+  ms from the answer, `job` the copy. `soonest` is where the run would go. A machine on another minor than this cozy quotes nothing
+  (a note says so). Nothing is sent, reserved or updated. Local code not ready answers its install as `preparing`: follow it, then
+  ask again under the same key.
 - `GET /v1/tools?q=&on=&hub=&project=`: `{tools: [{id, package, function, release, name, label, package_title, makes, description?, local?, fields, ui?, pickup?, model?: {slot, default?, family?}}], note?}`: what can be dropped on a canvas: first the Edit, `cozy/edit`, which Calcifer renders itself, free, with no machine, its one field a `timeline`; then your list, by a card read of the Hub or kept here, so listing installs nothing and it stands with no Hub; then local code and what `on` has installed; and only with `q`, the Hub's, and what you took off your list. Each is every public function of it declared `@app.tool` (its interface's `tool`), never a `quantize`. With `project`, first the local code its assets name, `local` and labelled so, and no other local code is listed. Then what the machine `on` (default `local`) has installed, each package at its newest there, matching `q`'s words in its package's name or its label; then the Hub's search for `q`, or its first page, at each package's newest. `note`: the Hub didn't answer, so only what's installed. `id` is what a box names as its `tool`. `name` is what a new box of it is called, its tool's `named` or its package's word, numbered: `shot_1`, and a taken name counts up. `label` is what it does within its package, its tool's, else its function in words. `package_title` is its package in words, which heads its tools in the page's list: `qwen-image-2` is `Qwen Image 2`, a word with no vowel upper case (`sdxl` SDXL). `makes` is `image`, `video`, `audio` or `text`: its result's first picture, video or sound, else a text. `ui` is the path in its package of a component that draws its box, where it ships one (`PACKAGE-UI.md`). `pickup` `{every, offset, first}`: it takes a pickup, which Pick up from here fills, landing on `offset + k * every` from `first` (`Snap`), or any frame `{1, 0, 0}`. `fields` are its struct's fields in order, each `{field, type, label, required?, default?, auto?, placeholder?, advanced?}` plus by `type`: `words` (a `str`); `prompt` (text with mentions; `takes?: ["image"]` when it takes only those); `toggle` (`auto` for `| None`); `number` (`min, max, step?, unit?, integer?, total?`, `auto` for `| None`; an unbounded number is no field); `choice` (`options`, the values in order, `words?` and `descriptions?` maps by value from `Label`); `shape` (the box's own shape, `ratios?` or `min?, max?`); `slot` (`accept: image|video|audio`, `described?` for a file with its description, `multiple?`, `spans?`, the list whose timeline a video's length is); `group` (`members`, nested as deep as the struct, `list` for rows with `min_items?, max_items?`); `seed`; and the Edit's `timeline`. `advanced` is `Advanced()`: under More, folded. A field's `label` is `Label`'s, else its name in words. A pickup is no field, and neither is `tool`, `approved`, `description`, `models`, `lora`, `text` or a type this cozy can't draw. A box's `fields` hold what's written: a slot's value is a mention, `<coast.2>`, a list when `multiple`.
 - `POST /v1/tools/list` `{add?: "<package>", remove?: ["<tool id>"]}`: `{packages, without?}`, your list, in `state.db`, the same in every project: Qwen Image 2 and Minimax H3 until it's changed. Local code is a project's, named by its boxes: a path is `400 tool_list_local`. `add` puts a package's media functions on it, all of them again if some were taken off. Neither installs or deletes anything, and a box of a tool taken off goes on as it was.
 - `GET /v1/tools/browse?q=&limit=&hub=` (1–200, 50): `{packages: [{package, summary?, tools}], older}`: the Hub's packages that make media, for adding to your list. `older` is how many more a bigger `limit` reads.
@@ -263,7 +263,7 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   the time the answer came.
 - The soonest finish wins; within 2% (or 1 s), a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while
   another can, unless its quote stands on its own measured runs.
-- A machine without `estimate/1` is counted on eta at one GPU (else a minute) and still packs the width itself.
+- Only a machine on this cozy's minor quotes ("Machines on this minor"); one on another is updated first and quotes on the next turn.
 - With several machines, a job a machine would start more than a second after its preparation waits here, quoted again as the render
   moves or every 10 s, so it commits to no queue early. A quote reserves nothing: two clients picking one machine are settled by its queue.
 - `any` and `new` are never quoted: the Hub keeps no times per SKU. They go as before (`any` the least busy rental, `new` a rental).
@@ -272,6 +272,18 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
 
 A running run with no progress for 10 minutes carries `stalled {since_ms, machine, usd_micros_per_hour?}` until it
 moves, and its record gets one `no_progress` warning naming the machine and its price. Nothing ends it: only its owner does.
+
+### Machines on this minor
+
+Work goes only to a machine whose TensorD is on this cozy's major and minor (Paul, 11-07: pre-launch, no support for older
+machines). Before a run is sent, and before a machine is quoted for work going now, one on another minor is updated to this cozy,
+the update `POST /v1/machines/{name}/update` makes with `tensord` (once per boot of it, for all that send there): `local` to the cozy
+installed here, another to this release, or a dev build's own binary on a machine of this computer's platform. What is
+sent there waits, saying `updating <name> to cozy <release> first`, and `cozy run` follows the update (`preparing`), then asks again.
+A rental boots its image's TensorD, so one on an older minor is updated before its first run. One added from another computer, or
+with runs going, is left as it is: the run fails `409 machine_other_minor`, its `next` `cozy machine update <name> --tensord
+<release or this binary>`; so does a failed update. Every run goes in one admission, `POST /v1/runs/batch` (one run is a batch of one); an update
+alone goes by `POST /v1/runs`, which every TensorD takes.
 
 ### Machines and rentals
 <!-- cl-716 C -->
@@ -287,7 +299,7 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   and moves on `machine.updated`: each `Operation {id, kind: download|install, subject, stage?, bytes_done, bytes_total,
   bytes_here, bytes_per_s?, eta_s?, started_at_ms, runs}` once, however many runs wait on it. `subject` is the model's
   repository (or provider source), or the package; a download's bytes are what it fetches, and
-  `bytes_here` what of it was here already; `runs` are the run numbers waiting on it. An older machine says none.
+  `bytes_here` what of it was here already; `runs` are the run numbers waiting on it.
 - `GET /v1/machines/{name}[?fresh=true]`: `Machine`. A rental rented with an SSH key has `ssh {args, line}`: the command that logs in, with a known-hosts file of its own, as an argument list and as a line to paste. `fresh` reads its Status now, or refuses
   `machine_unavailable`.
 - `POST /v1/machines` (`NewMachine`):

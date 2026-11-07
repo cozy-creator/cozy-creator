@@ -435,10 +435,9 @@ async fn estimate(ctx: &Context, ask: RunRequest, count: u32) -> Result<ExitCode
             Basis::Prior => "prior",
             Basis::None => "none",
         };
-        let basis = match (&machine.refusal, machine.quoted) {
-            (Some(refusal), _) => refusal.message.clone(),
-            (None, true) => basis.to_owned(),
-            (None, false) => format!("{basis}, Calcifer's at 1 GPU"),
+        let basis = match &machine.refusal {
+            Some(refusal) => refusal.message.clone(),
+            None => basis.to_owned(),
         };
         let cells = [name, machine.width.to_string(), seconds(machine.start_ms), seconds(machine.finish_ms), seconds(machine.prepare_ms), machine.queue_position.to_string(), basis];
         copies.then(|| (machine.job + 1).to_string()).into_iter().chain(cells).collect::<Vec<_>>()

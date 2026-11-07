@@ -31,7 +31,6 @@ use serde::de::DeserializeOwned;
 use crate::api::{Api, Refusal, parse};
 
 pub(crate) use account::Codes;
-pub(crate) use packages::release_install;
 pub(crate) use work::Works;
 
 pub fn routes() -> Router<Arc<Api>> {

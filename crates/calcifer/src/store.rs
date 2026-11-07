@@ -564,6 +564,18 @@ impl Store {
         })
     }
 
+    /// How many runs `machine` has been sent and hasn't settled, an update's aside: its work going.
+    pub fn working(&self, machine: &str) -> Result<u32> {
+        self.read(|conn| {
+            let going = conn.query_row(
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted')",
+                [machine],
+                |r| r.get(0),
+            )?;
+            Ok(going)
+        })
+    }
+
     /// Whether an update of `machine` is yet to end: what's sent to it waits for that.
     pub fn updating(&self, machine: &str) -> Result<bool> {
         self.read(|conn| {

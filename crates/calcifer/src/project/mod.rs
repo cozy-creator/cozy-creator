@@ -2712,7 +2712,7 @@ struct Followed {
 impl Walk {
     fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
         Self {
-            host: Host::telling(api, project.events.clone()),
+            host: Host::new(api),
             project: project.clone(),
             began: Instant::now(),
             tally: Mutex::default(),
@@ -3096,12 +3096,7 @@ impl Walk {
         choices.take(&mut payload)?;
         let models = choices::wire(&choices.into_choices())?;
         let (source, inputs) = match &renderer.local {
-            None => {
-                if let On::Machine(name) = &placed {
-                    self.host.release_ready(name, &renderer.package, &renderer.release, &hub).await?;
-                }
-                (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![])
-            }
+            None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
             Some(path) => {
                 let prepared = self.host.ready(path, &placed, &hub).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
@@ -3155,7 +3150,7 @@ impl Walk {
             }
         });
         let jobs: Vec<placement::Job> = futures_util::future::join_all(called).await.into_iter().flatten().collect();
-        let (offers, said) = placement::offers(&api, &jobs).await;
+        let (offers, said) = placement::offers(&api, &jobs, true).await;
         said.into_iter().for_each(|line| warn!("{}: {line}", self.folder().dir.display()));
         let now = now_ms();
         let mut walker = self.project.walker.lock().expect("walker lock");
@@ -4042,12 +4037,7 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => {
-                if let On::Machine(machine) = &placed {
-                    self.again(|| self.host.release_ready(machine, &renderer.package, &renderer.release, &hub)).await.map_err(named)?;
-                }
-                v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() })
-            }
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
                 let prepared = self.again(|| self.host.ready(path, &placed, &hub)).await.map_err(named)?;
                 staged.extend(prepared.files);
@@ -4806,7 +4796,7 @@ fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<
 /// to, each asked once, for `count` copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't
 /// answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, count: u32) -> (On, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, count: u32, update: bool) -> (On, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
     let models = match &read {
@@ -4817,7 +4807,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     let jobs: Vec<placement::Job> = (0..count.max(1))
         .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, on: set.to_vec() })
         .collect();
-    let (offers, said) = placement::offers(api, &jobs).await;
+    let (offers, said) = placement::offers(api, &jobs, update).await;
     let (chosen, _) = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), hub, read.as_ref(), function, &Map::new());
     (chosen, offers, said)
 }

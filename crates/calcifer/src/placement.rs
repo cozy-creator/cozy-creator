@@ -1,8 +1,8 @@
 //! Where a job goes (cl-816, Paul 11-07): its machine owns its GPU width, and Calcifer only sends it where it finishes soonest. Each
 //! machine a batch of jobs may go to is asked once for all of them (`POST /v1/estimate`), packed with its queue as if all were sent
-//! there now; each job goes to the soonest finish, a rental before this computer on a tie (Paul, 11-05). A machine without
-//! `estimate/1` is counted on eta at one GPU, and still chooses the width itself. A quote reserves nothing: two clients that pick one
-//! machine are settled by its queue. Offers not yet rented (`any`, `new`) are never asked: the Hub keeps no times per SKU.
+//! there now; each job goes to the soonest finish, a rental before this computer on a tie (Paul, 11-05). Only a machine on this cozy's
+//! minor quotes (`Machines::current`). A quote reserves nothing: two clients that pick one machine are settled by its queue. Offers not
+//! yet rented (`any`, `new`) are never asked: the Hub keeps no times per SKU.
 use std::sync::Arc;
 
 use protocol::{
@@ -10,13 +10,14 @@ use protocol::{
     machine::{self as v1, Basis, JobSize},
 };
 
-use crate::{api::Api, store::now_ms};
+use crate::{
+    api::Api,
+    store::now_ms,
+    update::{same_minor, this_release},
+};
 
-/// What a machine that has measured none of a function and is given no prior assumes: a minute (TensorD's `UNKNOWN_MS`).
-const UNKNOWN_MS: u64 = 60_000;
 /// Within this share of the soonest finish (or a second), two machines finish together.
 const TIE: f64 = 0.02;
-const ESTIMATE: &str = "estimate/1";
 
 /// One job to place.
 #[derive(Clone, Debug, Default)]
@@ -46,8 +47,6 @@ pub struct Offer {
     pub prepare_ms: u64,
     pub queue_position: u32,
     pub basis: Basis,
-    /// Its machine quoted it; false: eta at one GPU.
-    pub quoted: bool,
 }
 
 impl Offer {
@@ -70,7 +69,6 @@ impl Offer {
             prepare_ms: self.prepare_ms,
             queue_position: self.queue_position,
             basis: self.basis,
-            quoted: self.quoted,
         }
     }
 
@@ -81,8 +79,9 @@ impl Offer {
 }
 
 /// Each job's offers, one from each of its machines that answered, in the order the jobs name them; and a line for each machine that
-/// didn't. Each machine is asked once, for every job that may go to it.
-pub async fn offers(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>, Vec<String>) {
+/// didn't. Each machine is asked once, for every job that may go to it. `update`: work is going now, so a machine on another minor
+/// is updated to this one (its quote comes once it is); else it is only said.
+pub async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offer>>, Vec<String>) {
     let mut machines: Vec<&On> = vec![];
     for on in jobs.iter().flat_map(|job| &job.on).filter(|on| matches!(on, On::Machine(_))) {
         if !machines.contains(&on) {
@@ -92,7 +91,7 @@ pub async fn offers(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>, Vec<Strin
     let asked = machines.into_iter().map(|on| async move {
         let mine: Vec<usize> = (0..jobs.len()).filter(|&at| jobs[at].on.contains(on)).collect();
         let batch: Vec<&Job> = mine.iter().map(|&at| &jobs[at]).collect();
-        (on, mine, quotes(api, on, &batch).await)
+        (on, mine, quotes(api, on, &batch, update).await)
     });
     let mut offers = vec![vec![]; jobs.len()];
     let mut said = vec![];
@@ -117,8 +116,8 @@ pub fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     tied().find(|offer| !offer.machine.is_local()).or_else(|| tied().next())
 }
 
-/// What `on` says of `jobs`, in their order: its quote, else eta's at one GPU.
-async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job]) -> Result<Vec<Offer>, String> {
+/// What `on` says of `jobs`, in their order.
+async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job], update: bool) -> Result<Vec<Offer>, String> {
     let On::Machine(text) = on else { return Err("it isn't rented yet".into()) };
     let machines = &api.machines;
     if text == "local" {
@@ -129,11 +128,17 @@ async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job]) -> Result<Vec<Offer>, St
         Some(frame) => frame,
         None => link.status().await.map_err(|e| e.to_string())?,
     };
-    let prior = |job: &Job| api.calcifer.prior_ms(&job.target, &row.name, &job.size);
-    if !frame.capabilities.iter().any(|capability| capability == ESTIMATE) {
-        let now = now_ms();
-        return Ok(jobs.iter().map(|job| eta_offer(on, prior(job), now)).collect());
+    let own = this_release();
+    if !same_minor(&frame.version, own) {
+        if !update {
+            return Err(format!("it runs cozy {}, another minor than this cozy's {own}: its first run updates it", frame.version));
+        }
+        match machines.current(&row.name).await.map_err(|e| e.message)? {
+            None => {}
+            Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.number)),
+        }
     }
+    let prior = |job: &Job| api.calcifer.prior_ms(&job.target, &row.name, &job.size);
     let request = v1::EstimateRequest {
         jobs: (jobs.iter())
             .map(|job| v1::EstimateJob {
@@ -162,29 +167,8 @@ async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job]) -> Result<Vec<Offer>, St
                 prepare_ms: quote.prepare_ms,
                 queue_position: quote.queue_position,
                 basis: quote.basis,
-                quoted: true,
             })
         })
         .collect::<Result<_, &str>>()
         .map_err(str::to_owned)
-}
-
-/// A machine that quotes nothing, counted as eta has it at one GPU, starting now.
-fn eta_offer(on: &On, prior_ms: u64, now: i64) -> Offer {
-    let (ms, basis) = match prior_ms {
-        0 => (UNKNOWN_MS, Basis::None),
-        ms => (ms, Basis::Prior),
-    };
-    Offer {
-        machine: on.clone(),
-        fits: true,
-        refusal: None,
-        width: 1,
-        start_at_ms: now,
-        finish_at_ms: now + ms as i64,
-        prepare_ms: 0,
-        queue_position: 0,
-        basis,
-        quoted: false,
-    }
 }

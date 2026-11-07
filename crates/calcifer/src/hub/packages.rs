@@ -242,7 +242,7 @@ impl Ask for PackageInstall {
 }
 
 /// The run that installs `release` of `package` on a machine: a warm one naming no function.
-pub(crate) fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<protocol::calcifer::Agreed>) -> SubmitRun {
+fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<protocol::calcifer::Agreed>) -> SubmitRun {
     SubmitRun {
         agreed,
         stays: vec![],

@@ -14,13 +14,11 @@ use protocol::{
     ids::{Digest, RunId},
     interface::{self, Call, Interface, Slot},
     names::shown,
-    project::Event,
     tool,
 };
 use serde_json::Value;
 
 use sha2::{Digest as _, Sha256};
-use tokio::sync::broadcast;
 
 use crate::{
     api::{Api, Refusal},
@@ -183,20 +181,13 @@ pub struct Host {
     /// This walk's: the installs its local code asks for are keyed under it, so a failed one is
     /// asked again by the next walk, never replayed.
     walk: String,
-    /// Where a walk's listeners hear.
-    events: Option<broadcast::Sender<Event>>,
 }
 
 impl Host {
     pub fn new(api: &Arc<Api>) -> Self {
         let mut walk = [0u8; 8];
         getrandom::fill(&mut walk).expect("the OS has randomness");
-        Self { api: api.clone(), packages: Mutex::default(), walk: hex::encode(walk), events: None }
-    }
-
-    /// A host for a walk, whose listeners on `events` hear what it does.
-    pub fn telling(api: &Arc<Api>, events: broadcast::Sender<Event>) -> Self {
-        Self { events: Some(events), ..Self::new(api) }
+        Self { api: api.clone(), packages: Mutex::default(), walk: hex::encode(walk) }
     }
 
     /// What it runs in, for what outlives one of its calls.
@@ -214,25 +205,7 @@ impl Host {
     /// client's is sent.
     pub async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
         let code = local_code::own(self.api.machines.hubs.home(), path)?;
-        local_code::ready(&self.api, &code, on, hub, &self.key(path, on), &|message| self.tell(message)).await
-    }
-
-    /// What a walk's listeners hear of what this does for it.
-    fn tell(&self, message: String) {
-        if let Some(events) = &self.events {
-            let _ = events.send(Event::Warning { message, name: None });
-        }
-    }
-
-    /// A release's first run on a machine older than this Calcifer waits for its install (`update::release_first`).
-    pub async fn release_ready(&self, machine: &str, package: &str, release: &str, hub: &str) -> Result<(), Error> {
-        let at = Sha256::digest(format!("{package}@{release}\n{machine}"));
-        let key = format!("project-release-{}-{}", self.walk, &hex::encode(at)[..16]);
-        while let Some(run) = crate::update::release_first(&self.api, &key, machine, hub, package, release).await? {
-            local_code::said_on(&run).for_each(|message| self.tell(message));
-            self.wait(&run.id).await?;
-        }
-        Ok(())
+        local_code::ready(&self.api, &code, on, hub, &self.key(path, on)).await
     }
 
     /// The package `with` names: local code (`./dir` from the project's `folder`, `~/…`, an absolute path), described on the first of

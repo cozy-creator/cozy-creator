@@ -92,7 +92,7 @@ pub(crate) async fn estimate(
     let count = copies.count.unwrap_or(1).clamp(1, COPIES);
     let (submit, mut notes, offers) = match prepare(&api, &key, &ask, For::Estimate(count)).await.map_err(Refusal)? {
         Prepared::Install(run) => {
-            let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
+            let notes = updating(&run).into_iter().collect();
             return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes, ..RunEstimate::default() }));
         }
         Prepared::Run { submit, notes, offers } => (submit, notes, offers),
@@ -188,7 +188,7 @@ pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submi
     }
     match prepare(api, key, &ask, For::Run).await? {
         Prepared::Install(run) => {
-            let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
+            let notes = updating(&run).into_iter().collect();
             Ok(Submitted { run, replay: false, notes, preparing: true })
         }
         Prepared::Run { submit, mut notes, offers } => {
@@ -261,6 +261,12 @@ enum Prepared {
     Install(protocol::calcifer::Run),
 }
 
+/// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
+fn updating(run: &protocol::calcifer::Run) -> Option<Note> {
+    let machine = run.machine.as_deref().filter(|_| run.kind == RunKind::Update)?;
+    Some(Note { level: NoteLevel::Warning, message: format!("{machine} runs another minor than this cozy: updating it to {} first", crate::update::this_release()) })
+}
+
 /// What a prepared ask is for.
 #[derive(Clone, Copy, PartialEq)]
 enum For {
@@ -280,6 +286,16 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
         None => api.machines.list(false).await.map_or_else(|_| vec![On::Machine("local".into())], |list| list.render_set()),
     };
     let mut on = set.first().cloned().unwrap_or_else(|| default_on(api));
+    // Only to a machine on this cozy's minor: one on another is updated first, which the client follows, then asks again. Before
+    // anything is resolved there, local code's install too. Of several, placement does this for each.
+    if let (On::Machine(machine), For::Run, 1) = (&on, purpose, set.len()) {
+        match api.machines.current(machine).await {
+            Ok(Some(update)) => return Ok(Prepared::Install(update)),
+            Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
+            // Not known yet: its driver asks again before it sends.
+            _ => {}
+        }
+    }
     // Local code installs as it resolves. A package answers for itself first: one named without a
     // function lists its functions on an OS that runs no models here.
     if ask.code.is_some() {
@@ -348,7 +364,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
     let mut offers = vec![];
     match &resolved {
         Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
-            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, count).await;
+            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, count, !estimates).await;
             notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
             if set.len() > 1 {
                 on = chosen;
@@ -360,7 +376,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
             let jobs: Vec<crate::placement::Job> = (0..count)
                 .map(|copy| crate::placement::Job { key: copy.to_string(), target: named.clone(), function: function.clone(), size, gpus, on: set.clone(), ..Default::default() })
                 .collect();
-            let (offered, said) = crate::placement::offers(api, &jobs).await;
+            let (offered, said) = crate::placement::offers(api, &jobs, false).await;
             notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
             offers = offered;
         }
@@ -373,10 +389,14 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
     if let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none()) {
         notes.push(Note { level: NoteLevel::Warning, message: warning });
     }
-    if let (Resolved::Release { package, card, .. }, On::Machine(machine), For::Run) = (&resolved, &submit.on, purpose)
-        && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
-    {
-        return Ok(Prepared::Install(going));
+    // The machine placement chose, on this cozy's minor likewise.
+    if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, set.len() > 1) {
+        match api.machines.current(machine).await {
+            Ok(Some(update)) => return Ok(Prepared::Install(update)),
+            Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
+            // Not known yet: its driver asks again before it sends.
+            _ => {}
+        }
     }
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });

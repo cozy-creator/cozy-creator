@@ -136,8 +136,6 @@ const RESAID: Duration = Duration::from_secs(5);
 /// How long a machine answering an internal failure about a run is asked again before the run ends saying so.
 const BROKEN_FOR: Duration = Duration::from_secs(120);
 const BROKEN_ASKED_EVERY: Duration = Duration::from_secs(5);
-/// A machine that admits several runs as one (`POST /v1/runs/batch`).
-const RUN_BATCH: &str = "run-batch/1";
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
 
@@ -897,6 +895,34 @@ impl Calcifer {
                 }
                 continue;
             };
+            // Work goes only to a machine on this cozy's minor: one on another is updated first, or the run fails saying how.
+            if run.state == State::Queued
+                && run.kind != protocol::calcifer::Kind::Update
+                && let Some(machines) = self.machines()
+            {
+                match machines.current(&name).await {
+                    Ok(None) => {}
+                    Ok(Some(_)) => {
+                        self.waiting(id, format!("updating {name} to cozy {} first", crate::update::this_release()));
+                        pause.wait(wake, None).await;
+                        continue;
+                    }
+                    Err(e) if e.code == crate::update::OTHER_MINOR => {
+                        let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
+                        match self.store.fail(id.as_str(), reason) {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        }
+                        continue;
+                    }
+                    // Not known yet (its status unread, a link down): asked again.
+                    Err(e) => {
+                        self.waiting(id, e.message);
+                        pause.wait(wake, None).await;
+                        continue;
+                    }
+                }
+            }
             match self
                 .step(&run, &name, &link, &sending, wake, &mut pause)
                 .await
@@ -1134,9 +1160,9 @@ impl Calcifer {
     }
 
     /// Sends `run`, and every other run of its batch its machine hasn't accepted (`Store::batched`), under the machine's send lock
-    /// the caller holds: in one admission where the machine takes one (`run-batch/1`), so it packs them together as its estimate
-    /// quoted them (cl-816). A run alone is a batch of one. Another run whose inputs or spec fail is left to its own driver. Its own
-    /// state; none when another driver sent it meanwhile, or a cancel won.
+    /// the caller holds: in one admission (`POST /v1/runs/batch`), so it packs them together as its estimate quoted them (cl-816). A
+    /// run alone is a batch of one; an update goes alone, by `POST /v1/runs`. Another run whose inputs or spec fail is left to its own
+    /// driver. Its own state; none when another driver sent it meanwhile, or a cancel won.
     async fn deliver(&self, run: &RunRow, machine: &str, link: &Link) -> Result<Option<v1::RunState>, Stop> {
         let mut sent = vec![];
         for row in self.store.batched(run.id.as_str())? {
@@ -1165,13 +1191,11 @@ impl Calcifer {
             sent.push((own, v1::RunRequest { id: row.id.to_string(), spec }));
         }
         let at = sent.iter().position(|(own, _)| *own).expect("its own run is sent");
-        let frame = match self.machines().and_then(|machines| machines.frame(machine)) {
-            Some(frame) => frame,
-            None => link.status().await?,
-        };
-        let batched = frame.capabilities.iter().any(|capability| capability == RUN_BATCH);
-        let runs = sent.into_iter().map(|(_, request)| request).collect();
-        match self.answered(&run.id, machine, link.admit(runs, batched)).await {
+        let mut runs: Vec<v1::RunRequest> = sent.into_iter().map(|(_, request)| request).collect();
+        if run.kind == protocol::calcifer::Kind::Update {
+            return self.sent(machine, self.answered(&run.id, machine, link.update(runs.remove(at))).await).map(Some);
+        }
+        match self.answered(&run.id, machine, link.admit(runs)).await {
             Ok(answers) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(Some),
             Err(error) => self.sent(machine, Err(error)).map(Some),
         }
