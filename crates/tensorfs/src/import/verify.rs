@@ -41,6 +41,8 @@ pub struct Input<'a> {
     pub gguf: bool,
     /// `--trained-on`: the component a LoRA was trained on, as its uploader says.
     pub trained_on: Option<&'a str>,
+    /// The pinned sources: a family variant's own reference names the variant a component is.
+    pub pinned: &'a [String],
 }
 
 pub fn check(input: &Input) -> Result<Checked> {
@@ -123,7 +125,10 @@ fn base(input: &Input, bases: &[(&str, &[&Planned])], out: &mut Checked) -> Resu
     let mut components = BTreeMap::new();
     for (name, tensors) in &mine {
         match probe_component(input.set, fam, name, tensors)? {
-            Probed::Unprobed => drop(components.insert(name.to_string(), name.to_string())),
+            Probed::Unprobed => {
+                let pinned: Vec<&str> = input.pinned.iter().map(String::as_str).collect();
+                components.insert(name.to_string(), fam.pinned_variant(name, &pinned).to_owned());
+            }
             Probed::Matched { variant, line } => {
                 out.notes.push(line);
                 components.insert(name.to_string(), variant);
