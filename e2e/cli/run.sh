@@ -19,6 +19,7 @@ parse "$@"
 . "$(dirname "$0")/web.sh"
 . "$(dirname "$0")/agent.sh"
 . "$(dirname "$0")/projectdb.sh"
+. "$(dirname "$0")/statedb.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
@@ -262,8 +263,8 @@ case $SHARD in
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left machines completions calcifer_faults calcifer_restarts logs" ;;
-  # project.db (cl-803) alone, and its latency against the cozy before it.
-  projectdb) parts="projectdb logs" ;;
+  # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it.
+  projectdb) parts="projectdb statedb logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;

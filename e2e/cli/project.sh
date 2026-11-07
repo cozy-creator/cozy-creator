@@ -382,8 +382,13 @@ http_surface "$P" "$ID"
 event_stream
 live_views
 [ -n "${ALONE:-}" ] || browser_session "$P" "$ID"
+project_index "$P" "$ID"
+}
 
+# The projects Calcifer knows: listed, a moved folder missing, DELETE forgetting it and never its folder.
+project_index() {
 step "a project: the index, a moved folder missing, DELETE forgets"
+local P=$1 ID=$2
 cozy --json project ls > "$OUT/project-ls-1.json" || check "project ls failed"
 J --arg p "$P" '.projects | any(.path == $p and (.missing | not))' "$OUT/project-ls-1.json" || check "project ls does not list $P"
 mv "$P" "$OUT/garden-moved"
@@ -3711,10 +3716,10 @@ session_surface "$P" "$ID"
 yaml_routes "$P" "$ID"
 }
 
-# What web-serves (e2e/cli/web.sh) leaves to a project: cozy open's link, a video's Range on ?media=, and what sessions.json keeps.
+# What web-serves (e2e/cli/web.sh) leaves to a project: cozy open's link, a video's Range on ?media=, and what state.db keeps of a session.
 session_surface() {
-step "a project: its link, and a session's file"
-local P=$1 ID=$2 B=http://$ADDR code token media sessions=$HOME/.cozy/calcifer/sessions.json U
+step "a project: its link, and what's kept of a session"
+local P=$1 ID=$2 B=http://$ADDR code token media store=$HOME/.cozy/calcifer/state.db U
 U=$B/v1/projects/$ID/cuts/edit.mp4
 (cd "$P" && cozy --json open --no-open) > "$OUT/project-open.json" || check "session: open --no-open in its folder failed"
 J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open's link in its folder: $(cat "$OUT/project-open.json")"
@@ -3732,8 +3737,9 @@ token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.jso
 { [ "$(curl -sS -o "$OUT/media-range.bin" -w '%{http_code}' -r 1000-1999 "$U?media=$media")" = 206 ] && cmp -s "$OUT/media-range.bin" "$OUT/range.bin"; } || check "session: ?media= does not seek a cut"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "$U")" = 401 ] || check "session: a cut answered with no credential, as to another site's <img>"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "$U?media=$token")" = 401 ] || check "session: its token works as its media secret"
-[ "$(stat -c %a "$sessions")" = 600 ] || check "session: sessions.json is $(stat -c %a "$sessions")"
-! grep -qE "$token|$media" "$sessions" || check "session: sessions.json holds a secret, not its digest"
+[ "$(stat -c %a "$store")" = 600 ] || check "session: state.db is $(stat -c %a "$store")"
+[ "$(state1 "SELECT count(*) FROM sessions WHERE token_sha256 = '$(digest "$token")' AND media_sha256 = '$(digest "$media")'")" = 1 ] || check "session: state.db doesn't keep its digests"
+! grep -aqE "$token|$media" "$store" "$store-wal" 2> /dev/null || check "session: state.db holds a secret, not its digest"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" -X DELETE "$B/v1/session")" = 204 ] || check "session: DELETE did not answer 204"
 }
 

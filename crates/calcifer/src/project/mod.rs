@@ -66,7 +66,7 @@ use protocol::{
         VersionPrefix, Warning as ProjectWarning,
     },
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{Notify, broadcast};
@@ -84,12 +84,10 @@ use tools::Canvas;
 pub(crate) use thumbs::previews;
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
-/// project), and its index of every folder it opened, kept in `projects.json`.
+/// project). Every folder it opened is in `state.db`'s `projects`.
 #[derive(Default)]
 pub struct Projects {
     open: Mutex<HashMap<String, Arc<Project>>>,
-    /// Read on first use.
-    index: Mutex<Option<Index>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
     /// How many times that changed: what a read said of them is good until then.
@@ -103,22 +101,6 @@ pub struct Projects {
 struct Heard {
     asked: Option<Instant>,
     package: Option<Arc<Package>>,
-}
-
-/// Every project folder Calcifer opened, by id.
-#[derive(Default, Serialize, Deserialize)]
-struct Index {
-    #[serde(default)]
-    projects: BTreeMap<String, Entry>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Entry {
-    path: PathBuf,
-    used_at_ms: i64,
-    /// Its walk was going: the next start walks it again.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    walking: bool,
 }
 
 struct Project {
@@ -189,8 +171,7 @@ impl Projects {
         if let Some(project) = self.open.lock().expect("projects lock").get(id).cloned() {
             return Ok(project);
         }
-        let entry = indexed(api, false, |index| index.projects.get(id).cloned());
-        let Some(entry) = entry else {
+        let Some(entry) = api.calcifer.store().known_project(id)? else {
             let said = format!("this computer knows no project {id}");
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
         };
@@ -266,7 +247,8 @@ pub(crate) fn named(api: &Api, named: &FsPath) -> Result<Option<PathBuf>, Error>
     if !text.starts_with("project-") || text.contains(['/', '\\']) {
         return Ok(holding(named).ok());
     }
-    match indexed(api, false, |index| index.projects.get(text.as_ref()).map(|entry| entry.path.clone())) {
+    let known = api.calcifer.store().known_project(&text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+    match known.map(|entry| entry.path) {
         Some(path) => Ok(Some(path)),
         None => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
     }
@@ -458,32 +440,15 @@ fn stamp(path: &FsPath) -> String {
 
 /// Walks again each project an earlier Calcifer was walking.
 pub fn resume(api: &Arc<Api>) {
-    let walking: Vec<PathBuf> = indexed(api, false, |index| {
-        index.projects.values().filter(|entry| entry.walking).map(|entry| entry.path.clone()).collect()
+    let known = api.calcifer.store().known_projects().unwrap_or_else(|e| {
+        warn!("the projects being walked: {e}");
+        vec![]
     });
-    for dir in walking {
+    for dir in known.into_iter().filter(|entry| entry.walking).map(|entry| entry.path) {
         if let Err(error) = api.projects.open(api, &dir) {
             warn!("walking {} again: {}", dir.display(), error.message);
         }
     }
-}
-
-/// `change` applied to the index (read from `projects.json` on first use), which is written back
-/// when `keep`.
-fn indexed<R>(api: &Api, keep: bool, change: impl FnOnce(&mut Index) -> R) -> R {
-    let path = api.machines.hubs.home().calcifer().join("projects.json");
-    let mut held = api.projects.index.lock().expect("index lock");
-    let index = held.get_or_insert_with(|| {
-        std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
-    });
-    let answer = change(index);
-    if keep {
-        let bytes = serde_json::to_vec_pretty(index).expect("an index serializes");
-        if let Err(e) = platform::durable::replace_soon(&path, &bytes, 0o644) {
-            warn!("keeping the project index: {e}");
-        }
-    }
-    answer
 }
 
 /// Starts the project's walker, or tells the one going that something was asked.
@@ -856,18 +821,14 @@ impl Project {
     }
 }
 
-/// Records in the index which open projects are being walked, which the next start walks again.
+/// Records which open projects are being walked, which the next start walks again.
 fn remember(api: &Api) {
     let walking: Vec<(String, bool)> = (api.projects.open.lock().expect("projects lock").iter())
         .map(|(id, project)| (id.clone(), *project.walking.lock().expect("walking lock")))
         .collect();
-    indexed(api, true, |index| {
-        for (id, walking) in walking {
-            if let Some(entry) = index.projects.get_mut(&id) {
-                entry.walking = walking;
-            }
-        }
-    });
+    if let Err(e) = api.calcifer.store().projects_walking(&walking) {
+        warn!("recording the projects being walked: {e}");
+    }
 }
 
 /// What to run while a project's render goes on.
@@ -915,12 +876,9 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is made by its name, or opened by its absolute path")));
         }
     };
-    // Indexed first: a walk this open starts records itself there.
-    let (id, used_at_ms) = (project_id(&dir), now_ms());
-    indexed(&api, true, |index| {
-        let walking = index.projects.get(&id).is_some_and(|known| known.walking);
-        index.projects.insert(id.clone(), Entry { path: dir.clone(), used_at_ms, walking });
-    });
+    // Known first: a walk this open starts records itself there.
+    let id = project_id(&dir);
+    api.calcifer.store().project_opened(&id, &dir, now_ms())?;
     api.projects.open(&api, &dir).map_err(Refusal)?;
     let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
     let said = moved_on.into_iter().chain(api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..)).collect();
@@ -992,24 +950,22 @@ struct Page {
 /// The index, last used first: each project's folder name, path and last use, whether its folder
 /// is gone, and whether it is rendering.
 async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<Json<Listed>, Refusal> {
-    let mut known: Vec<(String, Entry)> =
-        indexed(&api, false, |index| index.projects.iter().map(|(id, entry)| (id.clone(), entry.clone())).collect());
-    known.sort_by_key(|(id, entry)| (std::cmp::Reverse(entry.used_at_ms), id.clone()));
+    let mut known = api.calcifer.store().known_projects()?;
     if let Some(before) = &page.before {
-        let at = known.iter().position(|(id, _)| id == before).map_or(known.len(), |at| at + 1);
+        let at = known.iter().position(|entry| &entry.id == before).map_or(known.len(), |at| at + 1);
         known.drain(..at);
     }
     let limit = page.limit.unwrap_or(50).clamp(1, 1000);
     let older = known.len().saturating_sub(limit) as u64;
     let open = api.projects.open.lock().expect("projects lock");
     let projects = (known.into_iter().take(limit))
-        .map(|(id, entry)| Known {
+        .map(|entry| Known {
             name: entry.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
             missing: !Folder::is_project(&entry.path),
-            busy: open.get(&id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
+            busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
             path: entry.path,
             used_at_ms: entry.used_at_ms,
-            id,
+            id: entry.id,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
@@ -1024,9 +980,9 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     }
     open.remove(&id);
     drop(open);
-    match indexed(&api, true, |index| index.projects.remove(&id)) {
-        Some(_) => Ok(StatusCode::NO_CONTENT),
-        None => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
+    match api.calcifer.store().forget_project(&id)? {
+        true => Ok(StatusCode::NO_CONTENT),
+        false => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
     }
 }
 

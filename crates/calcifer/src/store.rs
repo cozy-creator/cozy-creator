@@ -178,7 +178,7 @@ pub enum StoreError {
     Corrupt(String),
 }
 
-type Result<T> = std::result::Result<T, StoreError>;
+pub(crate) type Result<T> = std::result::Result<T, StoreError>;
 
 /// Where a run is between its submission and its end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -379,6 +379,8 @@ impl Store {
             other => return Err(StoreError::Version(other)),
         }
         writer.execute_batch(ANSWERS)?;
+        writer.execute_batch(crate::state::TABLES)?;
+        private(path);
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;
         Ok(Self {
@@ -387,13 +389,13 @@ impl Store {
         })
     }
 
-    fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    pub(crate) fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// One transaction. A commit can wait seconds on a busy disk's write-back: on a multi-thread
     /// runtime the worker says so first, so its other tasks (the API's among them) move on.
-    fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+    pub(crate) fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let commit = || {
             let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2084,6 +2086,19 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         calls: vec![],
         gpu: row.outcome.as_ref().map(|outcome| outcome.gpu.clone()).filter(|gpu| !gpu.is_empty()),
     })
+}
+
+/// The store and its WAL are this person's alone: they hold sessions' digests and machines' pins.
+fn private(path: &Path) {
+    #[cfg(unix)]
+    for file in [path.to_owned(), path.with_extension("db-wal"), path.with_extension("db-shm")] {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Err(e) = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("{}: {e}", file.display());
+        }
+    }
 }
 
 fn corrupt(what: &str) -> StoreError {

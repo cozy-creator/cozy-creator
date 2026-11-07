@@ -32,6 +32,7 @@ mod rentals;
 pub mod runs;
 pub mod serve;
 mod sessions;
+mod state;
 pub mod store;
 mod tool_ui;
 mod toolbox;
@@ -98,8 +99,6 @@ pub struct Calcifer {
     warm: Mutex<HashMap<String, Vec<v1::WarmItem>>>,
     /// The machines and their Hubs, which mint what a send carries to its Hub.
     granting: OnceLock<Weak<machines::Machines>>,
-    /// What asks do once their run's machine completes it, by the ask's key (`hub::after`).
-    after: PathBuf,
     /// When this Calcifer opened its store (Unix ms).
     /// Since when it can have heard from a machine: its start, or this computer's waking.
     opened_ms: std::sync::atomic::AtomicI64,
@@ -184,6 +183,7 @@ impl Calcifer {
     /// each package's folder, where a run's outputs land unless it names its own directory.
     pub fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
+        state::import(&store, home);
         let inputs = home.join("inputs");
         std::fs::create_dir_all(&inputs).map_err(|e| Error::Input {
             path: inputs.clone(),
@@ -204,7 +204,6 @@ impl Calcifer {
             exports: outputs::Exports::default(),
             warm: Mutex::default(),
             granting: OnceLock::new(),
-            after: home.join("after"),
             opened_ms: std::sync::atomic::AtomicI64::new(store::now_ms()),
         });
         calcifer.sweep_inputs()?;

@@ -2,10 +2,10 @@
 //! function that loads a model on one, or a GPU its weights fill more than three quarters of, the Hub's rule for a card that holds them. A
 //! tool's weights are what the Hub places a run of its release by; local code's, its models' releases; either with a checkpoint on its box
 //! in place of its model's. A run of it here already says how long it took. Render here is kept by tool and what this computer has
-//! (`here.json`), and asked again only on another computer, or for weights half as big again.
+//! (`state.db`'s `rendered_here`), and asked again only on another computer, or for weights half as big again.
 use std::{
     collections::{BTreeMap, HashMap},
-    path::{Path as FsPath, PathBuf},
+    path::Path as FsPath,
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
@@ -24,7 +24,6 @@ use protocol::{
     project::{Fit, FitAsk, RentFor, ToolFit},
     tool,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::{ALL, Doc, Stand, find, host::Host, name_key};
@@ -39,8 +38,6 @@ const KEPT: Duration = Duration::from_secs(600);
 /// Render here holds for weights up to half as big again as those it was said for.
 const GROWN: u64 = 2;
 
-/// One change of `here.json` at a time.
-static WRITING: Mutex<()> = Mutex::new(());
 static PLACED: LazyLock<Mutex<HashMap<String, (Instant, Option<Placed>)>>> = LazyLock::new(Mutex::default);
 static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<u64>)>>> = LazyLock::new(Mutex::default);
 
@@ -61,25 +58,9 @@ struct Need {
     took_s: Option<f64>,
 }
 
-/// Each Render here: a tool, what this computer had, and the weights it was said for.
-#[derive(Default, Serialize, Deserialize)]
-struct Kept {
-    #[serde(default)]
-    here: Vec<Here>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Here {
-    tool: String,
-    machine: String,
-    #[serde(default)]
-    bytes: u64,
-}
-
-impl Here {
-    fn holds(&self, tool: &str, machine: &str, bytes: u64) -> bool {
-        self.tool == tool && self.machine == machine && bytes * GROWN <= self.bytes * (GROWN + 1)
-    }
+/// Whether a Render here said for weights of `kept` bytes holds for `bytes`.
+fn holds(kept: u64, bytes: u64) -> bool {
+    bytes * GROWN <= kept * (GROWN + 1)
 }
 
 /// `POST /v1/projects/{id}/fit`: what a render of `names` here would do poorly.
@@ -128,12 +109,12 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
         }
     });
     let needs = futures_util::future::join_all(judging).await;
-    let kept = read_kept(api);
+    let kept = api.calcifer.store().rendered_here(&machine)?;
     let mut fit = Fit::default();
     let mut picks = vec![];
     for (need, names) in needs.into_iter().flatten() {
         let Some(line) = said(&need, largest) else { continue };
-        let here = kept.here.iter().any(|held| held.holds(&need.tool, &machine, need.bytes));
+        let here = kept.get(&need.tool).is_some_and(|kept| holds(*kept, need.bytes));
         picks.push((here, need.pick.clone()));
         fit.tools.push(ToolFit { tool: need.tool, label: need.label, names, line, bytes: need.bytes, here });
     }
@@ -146,7 +127,9 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
         ..pick
     });
     if keep && !fit.tools.is_empty() {
-        write_kept(api, &fit, &machine).map_err(Refusal)?;
+        let tools: Vec<(String, u64)> = fit.tools.iter().map(|tool| (tool.tool.clone(), tool.bytes)).collect();
+        let kept = api.calcifer.store().keep_rendered_here(&machine, &tools);
+        kept.map_err(|why| Refusal(Error::new(Kind::Unavailable, "here_io", why.to_string())))?;
         fit.tools.iter_mut().for_each(|tool| tool.here = true);
     }
     Ok(fit)
@@ -382,23 +365,4 @@ async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Optio
     let bytes = bytes.filter(|bytes| *bytes > 0).map(|bytes| bytes as u64);
     SIZED.lock().expect("sized lock").insert(key, (Instant::now(), bytes));
     bytes
-}
-
-fn kept_file(api: &Api) -> PathBuf {
-    api.machines.hubs.home().calcifer().join("here.json")
-}
-
-fn read_kept(api: &Api) -> Kept {
-    std::fs::read(kept_file(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
-}
-
-/// Each of `fit`'s tools kept as rendered here, on `machine`, for the weights it has now.
-fn write_kept(api: &Api, fit: &Fit, machine: &str) -> Result<(), Error> {
-    let _one = WRITING.lock().expect("writing lock");
-    let mut kept = read_kept(api);
-    kept.here.retain(|held| !(held.machine == machine && fit.tools.iter().any(|tool| tool.tool == held.tool)));
-    kept.here.extend(fit.tools.iter().map(|tool| Here { tool: tool.tool.clone(), machine: machine.to_owned(), bytes: tool.bytes }));
-    let file = kept_file(api);
-    let bytes = serde_json::to_vec_pretty(&kept).expect("answers serialize");
-    platform::durable::replace(&file, &bytes, 0o644).map_err(|why| Error::new(Kind::Unavailable, "here_io", format!("{}: {why}", file.display())))
 }

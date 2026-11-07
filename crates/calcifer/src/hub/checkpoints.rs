@@ -1,10 +1,10 @@
 //! What a model is, from its header: only a LoRA's factors or weights of its own, and its family. A model's family is the label its owner
 //! gives it on the Hub, else what its header verifies as: an upload fills the label from its header, and the owner can set or clear it.
-//! A header is small and never changes, so each is read once, and only what it says is kept, in a file: a first list reads every header,
-//! and a restart shouldn't do that again.
+//! The Hub's catalog carries only that label, and not for a model uploaded before it was filled: what its weights verify as, and whether
+//! it's a LoRA, are read here until the Hub derives them at publish (tensorhub th-367). A header is small and never changes, so each is
+//! read once, and only what it says is kept, in `state.db`'s `headers`: a first list reads every header, and a restart shouldn't.
 use std::{
     collections::{BTreeSet, HashMap},
-    path::PathBuf,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -17,7 +17,6 @@ use protocol::{
     model_ref::{ModelRef, Repo},
     tool::Tool,
 };
-use serde::{Deserialize, Serialize};
 use tensorfs::{
     Endpoint,
     family::{self, Facts},
@@ -30,40 +29,49 @@ use crate::api::Api;
 /// How many one list reads at once.
 const READS: usize = 16;
 
-/// What's been read, by Hub and header: true for as long as TensorFS's families are these.
-#[derive(Default, Serialize, Deserialize)]
+/// A header, by its Hub and sha256.
+type Key = (String, String);
+
+/// What's been read while TensorFS's families are these, and what of it isn't in `state.db` yet.
 struct Read {
-    families: String,
-    facts: HashMap<String, Facts>,
+    facts: HashMap<Key, Facts>,
+    unkept: Vec<(Key, Facts)>,
 }
 
 static READ: OnceLock<Mutex<Read>> = OnceLock::new();
 
-fn file(api: &Api) -> PathBuf {
-    api.machines.hubs.home().calcifer().join("checkpoints.json")
-}
-
 fn read_so_far(api: &Api) -> &'static Mutex<Read> {
     READ.get_or_init(|| {
-        let families = family::families_digest().to_owned();
-        let held: Option<Read> = std::fs::read(file(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
-        Mutex::new(held.filter(|held| held.families == families).unwrap_or(Read { families, facts: HashMap::new() }))
+        let facts = api.calcifer.store().header_facts(family::families_digest()).unwrap_or_else(|why| {
+            tracing::warn!("{why}: model headers are read again");
+            HashMap::new()
+        });
+        Mutex::new(Read { facts, unkept: vec![] })
     })
 }
 
-fn kept(api: &Api, key: &str) -> Option<Facts> {
+fn key(hub: &Origin, header: &types::ObjectRef) -> Key {
+    (hub.to_string(), header.sha256.clone())
+}
+
+fn kept(api: &Api, key: &Key) -> Option<Facts> {
     read_so_far(api).lock().expect("read lock").facts.get(key).cloned()
 }
 
-fn keep(api: &Api, key: String, facts: Facts) {
-    read_so_far(api).lock().expect("read lock").facts.insert(key, facts);
+fn keep(api: &Api, key: Key, facts: Facts) {
+    let mut read = read_so_far(api).lock().expect("read lock");
+    read.facts.insert(key.clone(), facts.clone());
+    read.unkept.push((key, facts));
 }
 
-/// What's been read goes in its file. Lost, it's read again.
+/// What's been read since goes in `state.db`, in one transaction. Lost, it's read again.
 fn save(api: &Api) {
-    let bytes = serde_json::to_vec(&*read_so_far(api).lock().expect("read lock")).expect("what's read serializes");
-    if let Err(why) = platform::durable::replace(&file(api), &bytes, 0o644) {
-        tracing::debug!("{}: {why}", file(api).display());
+    let unkept = std::mem::take(&mut read_so_far(api).lock().expect("read lock").unkept);
+    if unkept.is_empty() {
+        return;
+    }
+    if let Err(why) = api.calcifer.store().keep_header_facts(family::families_digest(), &unkept) {
+        tracing::debug!("keeping what headers said: {why}");
     }
 }
 
@@ -75,7 +83,7 @@ fn header_of(card: &types::ModelCard) -> Option<&types::ObjectRef> {
 
 /// What `header` is. One that can't be read says nothing, and a later list asks again.
 async fn read(api: &Api, endpoint: &Endpoint, hub: &Origin, header: &types::ObjectRef) -> Option<Facts> {
-    let key = format!("{hub} {}", header.sha256);
+    let key = key(hub, header);
     if let Some(facts) = kept(api, &key) {
         return Some(facts);
     }
@@ -99,7 +107,7 @@ pub(super) fn family(label: Option<String>, weights: Option<&str>) -> (Option<St
 /// What one card's header says.
 pub(super) async fn of_card(api: &Api, hub: &Origin, card: &types::ModelCard) -> Option<Facts> {
     let header = header_of(card)?;
-    if let Some(facts) = kept(api, &format!("{hub} {}", header.sha256)) {
+    if let Some(facts) = kept(api, &key(hub, header)) {
         return Some(facts);
     }
     let endpoint = distribution(&reader(api, hub).ok()?, hub).await.ok()?;
@@ -111,7 +119,7 @@ pub(super) async fn of_card(api: &Api, hub: &Origin, card: &types::ModelCard) ->
 /// Each row says what it is, from the card it was read from.
 pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], models: &mut [FoundModel]) {
     let headers: Vec<Option<types::ObjectRef>> = cards.iter().map(|card| header_of(card).cloned()).collect();
-    let unread = headers.iter().flatten().any(|header| kept(api, &format!("{hub} {}", header.sha256)).is_none());
+    let unread = headers.iter().flatten().any(|header| kept(api, &key(hub, header)).is_none());
     let endpoint = match (unread, reader(api, hub)) {
         (true, Ok(client)) => distribution(&client, hub).await.ok(),
         _ => None,
@@ -121,7 +129,7 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
         let header = header?;
         match endpoint {
             Some(endpoint) => read(api, endpoint, hub, &header).await,
-            None => kept(api, &format!("{hub} {}", header.sha256)),
+            None => kept(api, &key(hub, &header)),
         }
     });
     let facts: Vec<Option<Facts>> = stream::iter(reads).buffered(READS).collect().await;
@@ -152,15 +160,15 @@ async fn named(api: &Api, client: &Client, endpoint: &Endpoint, hub: &Origin, de
         _ => return None,
     };
     let card = (client.get_model(&repo.org, &repo.name).await).inspect_err(|why| tracing::debug!("{default}: {why}")).ok()?;
+    // The Hub's label is its family: only a model with none is read for what its header says.
+    if let Some(label) = card.model.family.clone().filter(|label| !label.is_empty()) {
+        return Some(label);
+    }
     let header = match release {
         Some(release) => card.releases.iter().find(|held| held.version == release)?.lanes.values().next().map(|lane| &lane.header),
         None => header_of(&card),
     };
-    let weights = match header {
-        Some(header) => read(api, endpoint, hub, header).await.and_then(|facts| facts.family),
-        None => None,
-    };
-    family(card.model.family.clone(), weights.as_deref()).0
+    read(api, endpoint, hub, header?).await?.family
 }
 
 /// Each tool says the family of the model it runs.

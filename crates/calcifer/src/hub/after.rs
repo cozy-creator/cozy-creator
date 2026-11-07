@@ -1,9 +1,8 @@
 //! What an ask does once its run's machine completes it, before the run settles: an upload's
 //! trigger and strength set at the Hub, an install's older releases removed. Every client gets it,
-//! and one that stops following never skips it. Each is kept by the ask's idempotency key before
-//! the run is submitted, so a Calcifer that stops in between does it when it next hears the
-//! outcome; the result says what was done (`result.after`, `protocol::hub::AfterRun`).
-use std::path::PathBuf;
+//! and one that stops following never skips it. Each is kept in `state.db` by the ask's idempotency
+//! key before the run is submitted, so a Calcifer that stops in between does it when it next hears
+//! the outcome; the result says what was done (`result.after`, `protocol::hub::AfterRun`).
 
 use protocol::{
     calcifer::{self as wire, Environment, On, Status, SubmitRun},
@@ -15,7 +14,6 @@ use protocol::{
     model_ref::Repo,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use tracing::warn;
 
 use crate::Calcifer;
@@ -38,38 +36,30 @@ pub(crate) enum After {
 }
 
 impl Calcifer {
-    fn after_path(&self, key: &str) -> PathBuf {
-        self.after.join(format!("{}.json", hex::encode(Sha256::digest(key))))
-    }
-
     /// Keeps `after` for the ask under `key`, before its run is submitted.
     pub(crate) fn plan(&self, key: &str, after: &After) -> Result<(), Error> {
-        let kept = platform::durable::private_dir(&self.after).and_then(|()| {
-            let bytes = serde_json::to_vec(after).expect("a step serializes");
-            platform::durable::replace(&self.after_path(key), &bytes, 0o600)
-        });
-        kept.map_err(|e| Error::internal("calcifer_store", e.to_string()))
+        let step = serde_json::to_string(after).expect("a step serializes");
+        self.store.plan_after(key, &step).map_err(|e| Error::internal("calcifer_store", e.to_string()))
     }
 
     /// Forgets the step kept under `key`: its run was refused.
     pub(crate) fn unplan(&self, key: &str) {
-        let _ = std::fs::remove_file(self.after_path(key));
+        if let Err(e) = self.store.forget_after(key) {
+            warn!("an ask's step stays: {e}");
+        }
     }
 
     /// Run `id`'s step, if its ask kept one: done when its machine succeeded, then forgotten.
     pub(crate) async fn after(&self, id: &RunId, outcome: &mut v1::Outcome) {
         let Ok(Some(key)) = self.store.key(id.as_str()) else { return };
-        let path = self.after_path(&key);
-        let Ok(raw) = std::fs::read(&path) else { return };
+        let Ok(Some(step)) = self.store.after_step(&key) else { return };
         if outcome.status == "succeeded" {
-            match serde_json::from_slice::<After>(&raw) {
+            match serde_json::from_str::<After>(&step) {
                 Ok(after) => self.apply(id, after, outcome).await,
                 Err(e) => warn!(run = %id, "an ask's step is unreadable: {e}"),
             }
         }
-        if let Err(e) = std::fs::remove_file(&path) {
-            warn!(run = %id, "an ask's step stays: {e}");
-        }
+        self.unplan(&key);
     }
 
     async fn apply(&self, id: &RunId, after: After, outcome: &mut v1::Outcome) {

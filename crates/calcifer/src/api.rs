@@ -76,7 +76,7 @@ impl Api {
         token: &str,
     ) -> Arc<Self> {
         Arc::new(Self {
-            sessions: crate::sessions::Sessions::open(calcifer.home().join("sessions.json")),
+            sessions: crate::sessions::Sessions::open(calcifer.store()),
             calcifer,
             machines,
             projects: Default::default(),
@@ -369,8 +369,8 @@ fn media_secret(request: &Request) -> Option<&str> {
 /// The bearer or a session, then the admission gate for every mutation but `down`, held while it runs.
 async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
     let admitted = match bearer(request.headers()) {
-        Some(token) => api.admits(token) || api.sessions.admits_token(token),
-        None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(media)),
+        Some(token) => api.admits(token) || api.sessions.admits_token(api.calcifer.store(), token),
+        None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(api.calcifer.store(), media)),
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";

@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -33,8 +33,6 @@ use crate::{
 
 /// Your list until you change it.
 const DEFAULTS: [&str; 2] = ["_/qwen-image-2", "_/minimax-h3"];
-/// One change of your list at a time.
-static WRITING: Mutex<()> = Mutex::new(());
 /// The most `browse` reads of the Hub.
 const MOST_BROWSED: u32 = 200;
 /// How many packages one list reads of the Hub.
@@ -61,7 +59,7 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     let hub = runs::hub(&api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
-    let mine = mine(&api);
+    let mine = mine(&api)?;
     let mut named = match &asked.project {
         Some(project) => crate::project::local_code_named(&api, project)?,
         None => vec![],
@@ -98,15 +96,10 @@ fn late() -> String {
     format!("only what's installed: the Hub didn't answer in {} s", HUB_LATE.as_secs())
 }
 
-/// Where your list is kept: it's yours, not a project's.
-fn list_file(api: &Api) -> PathBuf {
-    api.machines.hubs.home().calcifer().join("tools.json")
-}
-
-/// Your list, the defaults until it's changed.
-fn mine(api: &Api) -> ToolList {
-    let kept = std::fs::read(list_file(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    kept.unwrap_or_else(|| ToolList { packages: DEFAULTS.map(str::to_owned).to_vec(), without: vec![] })
+/// Your list, the defaults until it's changed: it's yours, not a project's, kept in `state.db`.
+fn mine(api: &Api) -> Result<ToolList, Refusal> {
+    let kept = api.calcifer.store().tool_list()?;
+    Ok(kept.unwrap_or_else(|| ToolList { packages: DEFAULTS.map(str::to_owned).to_vec(), without: vec![] }))
 }
 
 /// Whether a package on your list is local code, a directory by its absolute path, rather than a Hub's.
@@ -126,22 +119,10 @@ fn owned(package: &str) -> String {
 /// of a tool taken off goes on as it was.
 pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<ToolList>, Refusal> {
     let asked: ToolListChange = parse(&body?)?;
-    let _one = WRITING.lock().expect("writing lock");
-    let mut mine = mine(&api);
-    if let Some(package) = asked.add {
-        let (full, shown_as) = (owned(&package), format!("{}/", shown(&package)));
-        mine.without.retain(|tool| !tool.starts_with(&shown_as));
-        if !mine.packages.contains(&full) {
-            mine.packages.push(full);
-        }
-    }
-    let fresh: Vec<String> = asked.remove.into_iter().filter(|tool| !mine.without.contains(tool)).collect();
-    mine.without.extend(fresh);
-    let file = list_file(&api);
-    let bytes = serde_json::to_vec_pretty(&mine).expect("a list serializes");
-    let refused = |why: String| Refusal(Error::new(Kind::Unavailable, "tool_list_io", format!("{}: {why}", file.display())));
-    platform::durable::replace(&file, &bytes, 0o644).map_err(|why| refused(why.to_string()))?;
-    Ok(Json(mine))
+    let add = asked.add.map(|package| (owned(&package), format!("{}/", shown(&package))));
+    let add = add.as_ref().map(|(full, shown_as)| (full.as_str(), shown_as.as_str()));
+    let mine = api.calcifer.store().change_tool_list(&DEFAULTS, add, &asked.remove);
+    Ok(Json(mine.map_err(|why| Refusal(Error::new(Kind::Unavailable, "tool_list_io", why.to_string())))?))
 }
 
 #[derive(Deserialize)]
