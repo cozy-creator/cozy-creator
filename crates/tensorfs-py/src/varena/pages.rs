@@ -201,8 +201,6 @@ pub(super) struct Tier {
     /// offset in their bytes. Content-addressed, so two sets sharing objects (a LoRA view and its
     /// base, two releases' text encoder) find each other's bytes.
     objects: Mutex<HashMap<String, Ranges>>,
-    /// Each set's Sources with stored bytes, for `Inner::read_ahead`.
-    sets: Mutex<HashMap<String, Vec<Weak<Inner>>>>,
 }
 
 /// An object's ranges (offset, length) -> each Source placing it, and where in its bytes.
@@ -242,18 +240,12 @@ impl Tier {
             device, cap, shared, state: Mutex::new(state),
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), stores: Mutex::default(),
-            objects: Mutex::default(), sets: Mutex::default(),
+            objects: Mutex::default(),
         }
     }
 
-    /// `source`'s stored object ranges, so other fills can find its bytes, and it in its set.
+    /// `source`'s stored object ranges, so other fills can find its bytes.
     pub(super) fn place(&self, source: &Arc<Inner>, items: &[Item]) {
-        {
-            let mut sets = self.sets.lock().unwrap_or_else(|error| error.into_inner());
-            let members = sets.entry(source.set().to_owned()).or_default();
-            members.retain(|member| member.strong_count() != 0);
-            members.push(Arc::downgrade(source));
-        }
         let mut objects = self.objects.lock().unwrap_or_else(|error| error.into_inner());
         for item in items {
             if let ItemSource::Object(range) = &item.source {
@@ -262,12 +254,6 @@ impl Tier {
                 placed.push((Arc::downgrade(source), item.offset));
             }
         }
-    }
-
-    /// The live Sources of `set`.
-    pub(super) fn members(&self, set: &str) -> Vec<Arc<Inner>> {
-        let sets = self.sets.lock().unwrap_or_else(|error| error.into_inner());
-        sets.get(set).map_or_else(Vec::new, |members| members.iter().filter_map(Weak::upgrade).collect())
     }
 
     /// For each of `items`, the other Sources whose bytes are the stored ones and place it.

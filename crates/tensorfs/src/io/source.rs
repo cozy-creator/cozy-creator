@@ -1,7 +1,7 @@
 //! Owned byte sources for placement. TensorFS keeps verified descriptors and checkpoint
 //! source context, then runs every transfer through the same host/device read engine.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs::File;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::{AcqRel, Relaxed}};
 use std::sync::{Arc, Mutex};
@@ -154,27 +154,6 @@ impl Source {
             "{}: source has no verified file",
             object.sha256
         )))
-    }
-
-    /// Asks the kernel to read `items`' ranges into the page cache in the background, their
-    /// objects opened from this source first: nothing is read into this process. The bytes advised.
-    pub fn will_need(&self, items: &[Item]) -> Result<u64> {
-        let objects: BTreeMap<_, _> = items.iter().filter_map(|item| match &item.source {
-            ItemSource::Object(range) => Some((range.obj.sha256.clone(), range.obj.clone())),
-            ItemSource::Inline(_) => None,
-        }).collect();
-        #[cfg(feature = "store")]
-        self.load(&objects.into_values().collect::<Vec<_>>())?;
-        #[cfg(not(feature = "store"))]
-        drop(objects);
-        let mut advised = 0;
-        for item in items {
-            if let ItemSource::Object(range) = &item.source {
-                platform::durable::will_need(&*self.file(&range.obj)?, range.off, range.len);
-                advised += range.len;
-            }
-        }
-        Ok(advised)
     }
 
     pub fn resident(&self, obj: &ObjectRef, _tally: &IoTally) -> Result<bool> {

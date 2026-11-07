@@ -53,8 +53,6 @@ pub(super) struct Inner {
     derive: Option<Py<PyAny>>,
     /// Its derive wrote nothing: the stored bytes are the page.
     plain: AtomicBool,
-    /// Its set's stored bytes were read ahead (`read_ahead`).
-    warmed: AtomicBool,
     reading: Mutex<Option<Arc<ReadControl>>>,
     region: Mutex<Weak<varena::Region>>,
 }
@@ -265,44 +263,14 @@ impl Inner {
         let control = Arc::new(ReadControl::default());
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
         let mode = if fill.target().refilled() { Mode::Buffered } else { Mode::Cache };
-        // The chunks on this machine first, as the worker reads: a waiting caller fetches only
-        // what they lack. A source that cannot plan the read has written nothing.
+        let source = if ahead { &stored.local } else { &stored.fetching };
         // SAFETY: the Fill is exclusive; `abort` drains before a failed fill's pages are released.
-        let mut read = unsafe { stored.local.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
-        if !ahead && matches!(read, Err(tensorfs::io::source::Error::Source(_))) {
-            // SAFETY: as above.
-            read = unsafe { stored.fetching.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
-        }
+        let read = unsafe { source.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let stats = read?;
         self.row(stats.bytes, "store", ahead, began);
         self.tier.read_source(&self.set, self.block, &stats);
         Ok(())
-    }
-
-    /// Its set read ahead, once, at the first fill of one of its derives: every derive's stored
-    /// bytes no other set holds on the card or in a kept page (a LoRA view's factors beside its
-    /// resident base) are advised into the page cache at once, so the fills after this one, which
-    /// only their callers run, find them there instead of each waiting on the disk. The worker
-    /// never runs a derive's fill, so nothing else reads them ahead. The bytes advised.
-    fn read_ahead(self: &Arc<Self>) -> u64 {
-        let mut advised = 0;
-        for member in self.tier.members(&self.set) {
-            let pending = member.derive.is_some() && !member.plain.load(Ordering::Acquire);
-            if !pending || member.warmed.swap(true, Ordering::AcqRel) || Arc::ptr_eq(&member, self) {
-                continue;
-            }
-            let Some(stored) = &member.stored else { continue };
-            let held = self.tier.held(&member, &stored.items);
-            let cold: Vec<Item> = stored.items.iter().zip(held).filter(|(_, holders)| {
-                !holders.iter().any(|Held { source, .. }| {
-                    source.region().upgrade().is_some_and(|region| region.holds_contents())
-                        || source.page.as_ref().is_some_and(|key| self.tier.holds(key))
-                })
-            }).map(|(item, _)| item.clone()).collect();
-            advised += stored.local.will_need(&cold).unwrap_or(0);
-        }
-        advised
     }
 
     /// Where `other`'s stored bytes are now: its Region on this GPU, pinned while ready (no use of
@@ -458,13 +426,6 @@ impl varena::Source for PageSource {
         if let (Some(key), Some(_)) = (&this.page, derive) {
             this.tier.expect(key.clone(), this);
         }
-        if derive.is_some() && !this.warmed.swap(true, Ordering::AcqRel) {
-            let began = Instant::now();
-            let advised = this.read_ahead();
-            if advised != 0 {
-                this.row(advised, "warm", false, began);
-            }
-        }
         if let Some(stored) = &this.stored {
             match this.read(stored, &fill, ahead) {
                 Ok(()) => {}
@@ -555,8 +516,7 @@ impl PySource {
         };
         let inner = Arc::new(Inner {
             tier: pages.tier.clone(), page, set, block, bytes, stored, derive,
-            plain: AtomicBool::new(false), warmed: AtomicBool::new(false), reading: Mutex::new(None),
-            region: Mutex::new(Weak::new()),
+            plain: AtomicBool::new(false), reading: Mutex::new(None), region: Mutex::new(Weak::new()),
         });
         if let Some(stored) = &inner.stored {
             pages.tier.place(&inner, &stored.items);
