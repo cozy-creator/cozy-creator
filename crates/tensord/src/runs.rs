@@ -99,7 +99,7 @@ pub struct Spec {
 enum Drafted {
     /// Its id already names this spec's run.
     Held(Box<Execution>),
-    New(crate::journal::Invocation, Vec<ObjectRef>),
+    New(Box<crate::journal::Invocation>, Vec<ObjectRef>),
 }
 
 pub struct Runs {
@@ -350,7 +350,7 @@ impl Runs {
             .map(|(_, id, spec, invocation, references)| crate::journal::Accepting {
                 id,
                 digest: &spec.digest,
-                invocation: std::mem::take(invocation),
+                invocation: std::mem::take(&mut **invocation),
                 objects: references,
                 spec: &spec.journaled,
             })
@@ -447,7 +447,7 @@ impl Runs {
             prepares: spec.warm || spec.remove,
             ..Default::default() // root and family: stamped at acceptance
         };
-        Ok(Drafted::New(draft, references))
+        Ok(Drafted::New(Box::new(draft), references))
     }
 
     /// The GPUs `run`'s root took as it started; 0: none, or not yet.

@@ -288,6 +288,11 @@ impl Host {
         Ok(self.api.calcifer.submit(key, run).await.map_err(refused)?.run)
     }
 
+    /// Runs a turn of its walk sends `on` one machine: they go together (`Together`).
+    pub fn together(&self, on: On) -> Arc<Together> {
+        Arc::new(Together { api: self.api.clone(), on, members: Mutex::default() })
+    }
+
     /// The run sent under `key`, if one was.
     pub fn sent(&self, key: &str) -> Result<Option<Run>, Error> {
         let calcifer = &self.api.calcifer;
@@ -408,4 +413,75 @@ impl Host {
 
 fn refused(error: crate::Error) -> Error {
     Refusal::from(error).0
+}
+
+/// The runs one turn of a walk sends to one machine, which go there in one admission (cl-816): it packs them together, as it
+/// quoted them. Each member submits its run or leaves, as it drops; once each has, they go. No clock: every member's send ends.
+pub struct Together {
+    api: Arc<Api>,
+    /// The machine they go to, as their quotes chose it.
+    pub on: On,
+    members: Mutex<Members>,
+}
+
+#[derive(Default)]
+struct Members {
+    left: usize,
+    runs: Vec<Submitted>,
+}
+
+/// A run submitted under its key, and where its answer goes.
+type Submitted = (String, SubmitRun, tokio::sync::oneshot::Sender<Result<Run, Error>>);
+
+/// One run's place among those that go together.
+pub struct Member(Option<Arc<Together>>);
+
+impl Together {
+    pub fn member(self: &Arc<Self>) -> Member {
+        self.members.lock().expect("members lock").left += 1;
+        Member(Some(self.clone()))
+    }
+
+    /// One member submitted `run`, or left: the last sends what was submitted.
+    fn left(&self, run: Option<Submitted>) {
+        let runs = {
+            let mut members = self.members.lock().expect("members lock");
+            members.runs.extend(run);
+            members.left -= 1;
+            match members.left == 0 && !members.runs.is_empty() {
+                true => std::mem::take(&mut members.runs),
+                false => return,
+            }
+        };
+        let (Ok(runtime), calcifer) = (tokio::runtime::Handle::try_current(), self.api.calcifer.clone()) else { return };
+        runtime.spawn(async move {
+            let (asks, answers): (Vec<_>, Vec<_>) = runs.into_iter().map(|(key, run, answer)| ((key, run), answer)).unzip();
+            for (answer, submitted) in answers.into_iter().zip(calcifer.submit_batch(asks).await) {
+                let _ = answer.send(submitted.map(|submitted| submitted.run).map_err(refused));
+            }
+        });
+    }
+}
+
+impl Member {
+    /// The machine its run goes to with the others.
+    pub fn on(&self) -> Option<&On> {
+        self.0.as_ref().map(|together| &together.on)
+    }
+
+    /// Submits `run` under `key` with the others: its run, once they all have.
+    pub async fn submit(mut self, key: &str, run: SubmitRun) -> Result<Run, Error> {
+        let together = self.0.take().expect("a member submits once");
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        together.left(Some((key.to_owned(), run, answer)));
+        answered.await.unwrap_or_else(|_| Err(Error::new(Kind::Unavailable, "run_unsent", "the runs it went with were dropped before they were sent")))
+    }
+}
+
+impl Drop for Member {
+    fn drop(&mut self) {
+        if let Some(together) = self.0.take() {
+            together.left(None);
+        }
+    }
 }

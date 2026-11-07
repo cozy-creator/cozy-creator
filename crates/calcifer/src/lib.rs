@@ -136,6 +136,8 @@ const RESAID: Duration = Duration::from_secs(5);
 /// How long a machine answering an internal failure about a run is asked again before the run ends saying so.
 const BROKEN_FOR: Duration = Duration::from_secs(120);
 const BROKEN_ASKED_EVERY: Duration = Duration::from_secs(5);
+/// A machine that admits several runs as one (`POST /v1/runs/batch`).
+const RUN_BATCH: &str = "run-batch/1";
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
 
@@ -290,10 +292,24 @@ impl Calcifer {
     /// Records a prebuilt run under `key` and starts it; the same key again answers the recorded
     /// run.
     pub async fn submit(self: &Arc<Self>, key: &str, submit: SubmitRun) -> Result<Submitted, Error> {
-        // The same run asked again is the same submission whatever price it was quoted since.
-        let asked = SubmitRun { agreed: None, ..submit.clone() };
-        let digest = format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))));
-        self.submit_under(key, &digest, submit).await
+        self.submit_under(key, &digest_of(&submit), submit).await
+    }
+
+    /// Records `runs` under their keys as one batch, then starts each: those that go to one machine
+    /// are sent in one admission (`deliver`), so it packs them together as its estimate quoted them (cl-816).
+    pub async fn submit_batch(self: &Arc<Self>, runs: Vec<(String, SubmitRun)>) -> Vec<Result<Submitted, Error>> {
+        let batch = RunId::mint(random()).to_string();
+        let mut answers = vec![];
+        let mut fresh = vec![];
+        for (key, submit) in runs {
+            let recorded = self.record_run(&key, &digest_of(&submit), submit, &batch).await;
+            answers.push(recorded.map(|(submitted, row)| {
+                fresh.extend(row);
+                submitted
+            }));
+        }
+        fresh.into_iter().for_each(|id| self.drive(id));
+        answers
     }
 
     /// Records `submit` under `key` as the ask `digest` names and starts it; the same key again
@@ -304,6 +320,19 @@ impl Calcifer {
         digest: &str,
         submit: SubmitRun,
     ) -> Result<Submitted, Error> {
+        let (submitted, fresh) = self.record_run(key, digest, submit, "").await?;
+        fresh.into_iter().for_each(|id| self.drive(id));
+        Ok(submitted)
+    }
+
+    /// Records `submit` as `submit_under` does, in `batch` (empty: none), unstarted: the id to start, when it is new.
+    async fn record_run(
+        self: &Arc<Self>,
+        key: &str,
+        digest: &str,
+        submit: SubmitRun,
+        batch: &str,
+    ) -> Result<(Submitted, Option<RunId>), Error> {
         if submit
             .spec
             .tensorfs
@@ -346,6 +375,7 @@ impl Calcifer {
             wants,
             agreed: submit.agreed,
             stays: submit.stays,
+            batch: batch.to_owned(),
         };
         let (me, key, given, held, digest) = (self.clone(), key.to_owned(), submit.inputs, submit.held, digest.to_owned());
         let (row, fresh) = tokio::task::spawn_blocking(move || {
@@ -369,14 +399,14 @@ impl Calcifer {
             );
             let created = self.store.events_after(row.id.as_str(), 0)?;
             self.publish(&row.id, created);
-            self.drive(row.id.clone());
         }
-        Ok(Submitted {
+        let submitted = Submitted {
             run: self.record(&row)?,
             replay: !fresh,
             notes: vec![],
             preparing: false,
-        })
+        };
+        Ok((submitted, fresh.then(|| row.id.clone())))
     }
 
     /// Asks for the run's cancellation: unsent, it ends here; sent, its machine ends it.
@@ -1035,12 +1065,11 @@ impl Calcifer {
             State::Queued => {
                 self.write_inputs(link, run, machine).await?;
                 let _turn = sending.lock().await;
-                self.known_warm(run, machine, link).await?;
-                let spec = self.sent_spec(run).await?;
-                if !self.store.mark_sent(id, machine)? {
-                    return Ok(());
+                match self.deliver(run, machine, link).await? {
+                    Some(state) => (state, None),
+                    // Sent with another run of its batch, or canceled: as its row now says.
+                    None => return Ok(()),
                 }
-                (self.send_run(run, machine, link, spec).await?, None)
             }
             State::Sent | State::Accepted => {
                 if run.cancel_requested {
@@ -1052,9 +1081,10 @@ impl Calcifer {
                     Err(LinkError::NoRun | LinkError::NotFound) if run.state == State::Sent => {
                         self.write_inputs(link, run, machine).await?;
                         let _turn = sending.lock().await;
-                        self.known_warm(run, machine, link).await?;
-                        let spec = self.sent_spec(run).await?;
-                        (self.send_run(run, machine, link, spec).await?, None)
+                        match self.deliver(run, machine, link).await? {
+                            Some(state) => (state, None),
+                            None => return Ok(()),
+                        }
                     }
                     // A restart forgets a run still preparing that was sent with tokens, which stay
                     // off its disk: nothing of it ran, so it goes on as it is sent again.
@@ -1062,9 +1092,7 @@ impl Calcifer {
                         tracing::info!(run = %run.id, machine, "its machine restarted before it began: sent again");
                         self.write_inputs(link, run, machine).await?;
                         let _turn = sending.lock().await;
-                        self.known_warm(run, machine, link).await?;
-                        let spec = self.sent_spec(run).await?;
-                        let state = self.send_run(run, machine, link, spec).await?;
+                        let Some(state) = self.deliver(run, machine, link).await? else { return Ok(()) };
                         self.store.sent_again(id, &state)?;
                         (state, None)
                     }
@@ -1103,17 +1131,61 @@ impl Calcifer {
         self.follow(&run.id, stream, link, wake, canceled, state_now).await
     }
 
-    /// Sends `run` as `spec`. A machine whose TensorD started again since its workload key was seen
-    /// refuses the capability signed for the old one: its key is read again and the run sent again.
-    async fn send_run(&self, run: &RunRow, machine: &str, link: &Link, spec: v1::RunSpec) -> Result<v1::RunState, Stop> {
-        match self.answered(&run.id, machine, link.submit(run.id.as_str(), spec)).await {
+    /// Sends `run`, and every other run of its batch its machine hasn't accepted (`Store::batched`), under the machine's send lock
+    /// the caller holds: in one admission where the machine takes one (`run-batch/1`), so it packs them together as its estimate
+    /// quoted them (cl-816). A run alone is a batch of one. Another run whose inputs or spec fail is left to its own driver. Its own
+    /// state; none when another driver sent it meanwhile, or a cancel won.
+    async fn deliver(&self, run: &RunRow, machine: &str, link: &Link) -> Result<Option<v1::RunState>, Stop> {
+        let mut sent = vec![];
+        for row in self.store.batched(run.id.as_str())? {
+            let own = row.id == run.id;
+            if own && row.state != run.state {
+                return Ok(None);
+            }
+            let spec = async {
+                if !own {
+                    self.write_inputs(link, &row, machine).await?;
+                }
+                self.known_warm(&row, machine, link).await?;
+                self.sent_spec(&row).await
+            };
+            let spec = match spec.await {
+                Ok(spec) => spec,
+                Err(stop) if own => return Err(stop),
+                Err(_) => continue,
+            };
+            if row.state == State::Queued && !self.store.mark_sent(row.id.as_str(), machine)? {
+                match own {
+                    true => return Ok(None),
+                    false => continue,
+                }
+            }
+            sent.push((own, v1::RunRequest { id: row.id.to_string(), spec }));
+        }
+        let at = sent.iter().position(|(own, _)| *own).expect("its own run is sent");
+        let frame = match self.machines().and_then(|machines| machines.frame(machine)) {
+            Some(frame) => frame,
+            None => link.status().await?,
+        };
+        let batched = frame.capabilities.iter().any(|capability| capability == RUN_BATCH);
+        let runs = sent.into_iter().map(|(_, request)| request).collect();
+        match self.answered(&run.id, machine, link.admit(runs, batched)).await {
+            Ok(answers) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(Some),
+            Err(error) => self.sent(machine, Err(error)).map(Some),
+        }
+    }
+
+    /// The machine's answer to a run sent. One whose TensorD started again since its workload key was seen refuses the capability
+    /// signed for the old one: its key is read again and the run sent again.
+    fn sent(&self, machine: &str, answer: Result<v1::RunState, LinkError>) -> Result<v1::RunState, Stop> {
+        match answer {
             Err(LinkError::Refused { code, message, .. }) if code == "workload_key_changed" => {
                 if let Some(machines) = self.machines() {
                     machines.forget_workload_key(machine);
                 }
                 Err(Stop::Unanswered(message))
             }
-            submitted => Ok(submitted?),
+            answer => Ok(answer?),
         }
     }
 
@@ -1716,4 +1788,10 @@ fn random() -> [u8; 12] {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The ask `submit` is: the same run asked again is the same submission whatever price it was quoted since.
+fn digest_of(submit: &SubmitRun) -> String {
+    let asked = SubmitRun { agreed: None, ..submit.clone() };
+    format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))))
 }
