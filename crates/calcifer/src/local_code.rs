@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::{api::Api, update::BroughtUp};
+use crate::{api::Api, rentals::Hubs, update::BroughtUp};
 
 /// The uv index name a project's sources use for its own account's packages.
 pub const INDEX: &str = "tensorhub";
@@ -347,14 +347,10 @@ pub fn project(home: &Home, path: &Path) -> Result<PathBuf, Error> {
 
 /// `path` (a package directory or a script) as the machine `on` installs it. This computer's
 /// machine reads the files where they are (`in_place`); another is sent them. A project whose
-/// sources name the `tensorhub` index takes the namespace its lock was made for (`_` for a
-/// first-party checkout), read through `hub`'s reader: anonymous when this computer is signed out.
-pub async fn source(
-    home: &Home,
-    path: &Path,
-    on: &On,
-    (reader, hub): (&hub_client::Client, &Origin),
-) -> Result<Source, Error> {
+/// sources name the `tensorhub` index takes the index its lock was made for (`_` for a
+/// first-party checkout), else the signed-in account's at `hub`, from what `hubs` already know of
+/// it: neither reads the Hub on a run's way.
+pub(crate) async fn source(home: &Home, path: &Path, on: &On, hubs: &Hubs, hub: &Origin) -> Result<Source, Error> {
     let in_place = matches!(on, On::Machine(name) if name.eq_ignore_ascii_case("local"));
     let project_dir = project(home, path)?;
     let project = Project::read(project_dir.clone())?;
@@ -428,10 +424,10 @@ pub async fn source(
     }
     let mut indexes = BTreeMap::new();
     if project.account_index {
-        let namespace = match locked_namespace(&project_dir) {
-            Some(namespace) => namespace,
+        let url = match locked_index(&project_dir) {
+            Some(url) => url,
             // Unlocked, its sources are the signed-in account's own.
-            None if matches!(reader.credential(), hub_client::Credential::User(_)) => account(reader).await?,
+            None if matches!(hubs.reader(hub)?.credential(), hub_client::Credential::User(_)) => hubs.account_index(hub).await?,
             None => {
                 return Err(Error::new(
                     Kind::Credential,
@@ -441,7 +437,7 @@ pub async fn source(
                 .next("cozy login <email>"));
             }
         };
-        indexes.insert(INDEX.to_owned(), index_url(reader, hub, &namespace).await?);
+        indexes.insert(INDEX.to_owned(), url);
     }
     let manifest = Manifest {
         package: format!("local/{}", project.name),
@@ -855,8 +851,7 @@ pub async fn prepare(
     let hubs = &api.machines.hubs;
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
-    let reader = hubs.reader(origin.as_str())?;
-    let code = source(&home, path, on, (&reader, &origin)).await?;
+    let code = source(&home, path, on, hubs, &origin).await?;
     let runtime = runtime(api, on).await;
     let prepared = |interface, installation, machine, install| Prepared {
         package: code.package.clone(),
@@ -1067,6 +1062,13 @@ pub fn locked_namespace(root: &Path) -> Option<String> {
     (!namespace.is_empty()).then(|| namespace.to_owned())
 }
 
+/// The account index the uv.lock at `root` was made for, as it names it (`…/v1/index/<namespace>/simple/`): what its install reads,
+/// with no Hub to ask.
+pub fn locked_index(root: &Path) -> Option<String> {
+    let lock = fs::read_to_string(root.join("uv.lock")).ok()?;
+    lock.split('"').find(|text| text.contains("/v1/index/") && text.trim_end_matches('/').ends_with("/simple")).map(|url| format!("{}/", url.trim_end_matches('/')))
+}
+
 /// What Runtime's static describer reads from the source at `dir`, with `runtime`'s release (else
 /// the newest) on `python`: its exact words and the document they are. Nothing installs, and none
 /// of the code runs.
@@ -1152,8 +1154,7 @@ async fn read_interface(api: &Arc<Api>, path: &Path, on: &On, hub: &str, runtime
     let project = Project::read(project(home, path)?)?;
     let read = async {
         let origin = Origin::parse(hub).ok()?;
-        let reader = hubs.reader(origin.as_str()).ok()?;
-        let code = source(home, path, on, (&reader, &origin)).await.ok()?;
+        let code = source(home, path, on, hubs, &origin).await.ok()?;
         Some((code.package.clone(), kept(home, &code, runtime.as_deref()?)?))
     };
     if let Some(known) = read.await {

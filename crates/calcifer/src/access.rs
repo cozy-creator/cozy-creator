@@ -240,7 +240,22 @@ impl Hubs {
     /// This computer's account at `origin` and where machines read it: read once per device
     /// key, so a login, logout or account switch is seen at the next run with no Hub read.
     pub(crate) async fn facts(&self, origin: &Origin) -> Result<Facts, Denied> {
-        let client = self.client(origin).map_err(refused)?;
+        self.facts_of(origin).await.map_err(|error| match error.kind {
+            Kind::Unavailable => Denied::Unreachable(error.message),
+            _ => refused(error),
+        })
+    }
+
+    /// The signed-in account's own index at `origin`: its `resource`, then `/v1/index/<account>/simple/`. From its facts, so a
+    /// run of local code reads no Hub.
+    pub(crate) async fn account_index(&self, origin: &Origin) -> Result<String, Error> {
+        let facts = self.facts_of(origin).await?;
+        Ok(format!("{}/v1/index/{}/simple/", facts.resource.trim_end_matches('/'), facts.account))
+    }
+
+    /// `facts`, refused in the Hub's own words.
+    async fn facts_of(&self, origin: &Origin) -> Result<Facts, Error> {
+        let client = self.client(origin)?;
         let Credential::User(session) = client.credential() else {
             unreachable!("a signed-in client speaks as its user")
         };
@@ -251,7 +266,7 @@ impl Hubs {
         {
             return Ok(facts.clone());
         }
-        let hub = |error| hub_denied(origin, error);
+        let hub = |error| hub_refusal(origin, error);
         let account = client.get_current_account().await.map_err(hub)?;
         let environment = client.get_execution_environment().await.map_err(hub)?.environment;
         let resource = client.get_protected_resource_metadata().await.map_err(hub)?.resource;
@@ -322,13 +337,6 @@ pub(crate) fn anonymous_tensorfs(spec: &v1::RunSpec) -> Option<v1::TensorFSOptio
         ca_der: hub.ca_der.clone(),
         ..Default::default()
     })
-}
-
-fn hub_denied(origin: &Origin, error: hub_client::Error) -> Denied {
-    match hub_refusal(origin, error) {
-        error if error.kind == Kind::Unavailable => Denied::Unreachable(error.message),
-        error => refused(error),
-    }
 }
 
 /// The Hub model a run publishes into; empty for none or a `local/` one.

@@ -707,6 +707,10 @@ pub struct Call {
 
 // ---- Status ---------------------------------------------------------------------------------
 
+/// The capability of a machine whose package environments take the Runtime their floor needs, each in its own environment
+/// (0.18.5's f58dcc963): a floor it can't meet is the package's, never the machine's age.
+pub const ENV_RUNTIME: &str = "env-runtime/1";
+
 /// The machine's picture. Without a machine-scope cap, `GET /v1/status` answers identity,
 /// version, capabilities and the sealed readiness `receipt` only. With one it answers all of it,
 /// and as SSE (`Accept: text/event-stream`) sends the whole frame again whenever it changes. An
