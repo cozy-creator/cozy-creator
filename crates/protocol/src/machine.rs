@@ -292,10 +292,6 @@ pub struct RunSpec {
     /// Objects uploaded with `PUT /v1/objects`, bound to payload fields.
     pub inputs: Vec<InputFile>,
     pub models: Vec<ModelChoice>,
-    /// The catalog revision the caller made its choices under (th-245): a held resolution is
-    /// reused only under the same one, so a publish, yank, bind or retarget the caller knows of
-    /// resolves once more at the Hub.
-    pub catalog_revision: String,
     pub attention_kernel: String,
     /// org/name: the requester's repository for the call's weights outputs, or a warm run's
     /// source model.
@@ -514,7 +510,8 @@ pub struct RunState {
     pub id: String,
     /// This machine's run number.
     pub number: u64,
-    /// queued, preparing, running, succeeded, failed, canceled
+    /// queued, preparing, needs_access (a restart interrupted its preparation: the same id and spec
+    /// sent again bring its access), running, succeeded, failed, canceled
     pub state: String,
     /// The log's head.
     pub sequence: u64,
@@ -707,6 +704,10 @@ pub struct Call {
 }
 
 // ---- Status ---------------------------------------------------------------------------------
+
+/// The capability of a machine whose package environments take the Runtime their floor needs, each in its own environment
+/// (0.18.5's f58dcc963): a floor it can't meet is the package's, never the machine's age.
+pub const ENV_RUNTIME: &str = "env-runtime/1";
 
 /// The machine's picture. Without a machine-scope cap, `GET /v1/status` answers identity,
 /// version, capabilities and the sealed readiness `receipt` only. With one it answers all of it,
@@ -939,18 +940,8 @@ pub struct GpuMemory {
     pub free_bytes: u64,
     /// Bytes no cozy process holds (another app's), as its last reading measured them.
     pub foreign_bytes: u64,
-    pub created_bytes: u64,
-    pub created_chunks: u64,
     /// Allocated to live processes.
     pub allocated_bytes: u64,
-    /// The GPU page cache: landed weights of exited processes, kept for the next of their layout.
-    pub page_cache_bytes: u64,
-    pub page_cache_chunks: u64,
-    /// Bytes a process holds that no live manager created (a previous TensorD's).
-    pub books_only_bytes: u64,
-    /// The share of wall time at least one allocation waited (`some` pressure), over 10 s and 60 s.
-    pub pressure_some_10s: f32,
-    pub pressure_some_60s: f32,
     pub processes: Vec<ProcessMemory>,
 }
 
@@ -961,7 +952,6 @@ pub struct ProcessMemory {
     pub pid: u32,
     /// Its executor group (plan and lane).
     pub executor: String,
-    pub chunks: u64,
     pub bytes: u64,
 }
 

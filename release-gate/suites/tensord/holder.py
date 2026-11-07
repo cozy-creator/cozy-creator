@@ -28,13 +28,11 @@ class Held(msgspec.Struct):
 @app.entrypoint(accelerator=True)
 def hold(payload: Hold) -> Held:
     gpus = range(torch.cuda.device_count())
-    free = [torch.cuda.mem_get_info(gpu)[0] for gpu in gpus]
     blocks = [torch.ones(int(payload.gib * (1 << 30)) // 4, device=f"cuda:{gpu}") for gpu in gpus]
     means = [float((block * 2).mean()) for block in blocks]
-    allocated = [torch.cuda.memory_allocated(gpu) for gpu in gpus]
-    taken = [before - torch.cuda.mem_get_info(gpu)[0] for gpu, before in zip(gpus, free)]
+    allocated = [block.nbytes for block in blocks]
     time.sleep(payload.seconds)
     want = int(payload.gib * (1 << 30))
-    # What it holds, not what the driver lost: a process kept from before serves it from its own idle pages.
+    # What it holds, read off its own tensors: a package reads no room or allocator figures.
     passed = len(gpus) >= 2 and all(mean == 2 for mean in means) and all(bytes >= want for bytes in allocated)
-    return Held(passed, json.dumps({"pid": os.getpid(), "means": means, "allocated": allocated, "taken": taken}))
+    return Held(passed, json.dumps({"pid": os.getpid(), "means": means, "allocated": allocated}))

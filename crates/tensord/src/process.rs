@@ -56,11 +56,13 @@ pub fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Result<Rea
         Some(mut child) => child.wait()?,
         None => ExitStatus::default(),
     };
+    // Read before its scope goes.
+    let oom_killed = exact.scope().is_some_and(|scope| scope.oom_killed());
     let stragglers = match exact.scope() {
         Some(scope) => scope.end()?,
         None => 0,
     };
-    Ok(Reaped { status, stragglers })
+    Ok(Reaped { status, stragglers, oom_killed })
 }
 
 /// How a process ended: its status, and how many of its descendants were still alive in its
@@ -69,6 +71,8 @@ pub fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Result<Rea
 pub struct Reaped {
     pub status: ExitStatus,
     pub stragglers: usize,
+    /// Its scope saw the kernel's OOM killer end a member: the cause when it died by SIGKILL.
+    pub oom_killed: bool,
 }
 
 /// `reap` the killed leader, then every member left in its group (followers die with their leader

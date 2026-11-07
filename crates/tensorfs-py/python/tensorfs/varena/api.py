@@ -31,7 +31,6 @@ class Exhausted(Error):
     # Native recovery already exhausted its admitted choices. A consumer may not
     # replay partially executed application code to turn this into another attempt.
     sticky = False
-    varena_no_retry = True
 
 
 class Capturing(Error):

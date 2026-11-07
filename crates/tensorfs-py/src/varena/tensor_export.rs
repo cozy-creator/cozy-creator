@@ -216,12 +216,5 @@ fn _varena_public_use_dlpack(
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(_varena_public_use_dlpack, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_public_gpu_event_counts, module)?)
-}
-
-#[pyfunction]
-fn _varena_public_gpu_event_counts(py: Python<'_>, handle: u64) -> PyResult<(u64, u64, u64)> {
-    py.detach(|| varena::abi::gpu_event_counts(handle))
-        .map_err(|error| super::raise(py, error))
+    module.add_function(wrap_pyfunction!(_varena_public_use_dlpack, module)?)
 }

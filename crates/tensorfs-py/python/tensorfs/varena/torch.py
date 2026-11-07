@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import platform
 import threading
-from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, TypeAlias, cast
 
 from .. import _ext
@@ -40,6 +39,30 @@ class _Failure(ctypes.Structure):
         ("cuda", ctypes.c_int32),
         ("message", ctypes.c_char * 512),
     ]
+
+
+@functools.cache
+def _exhausted() -> type:
+    import torch
+
+    from .api import Exhausted
+
+    class Refused(Exhausted, torch.OutOfMemoryError):
+        """varena's `Exhausted` from a Torch-side call (`split_select`, `split_begin`,
+        `prepare_pool`, a region's use): nothing more could be reclaimed for it, and the work it was
+        asked for has not run. Catch it as `tensorfs.varena.Exhausted`; it is still torch's OOM."""
+
+        def __init__(self, message: str, requested_bytes: int = 0, available_bytes: int = 0) -> None:
+            super().__init__(message, requested_bytes)
+            self.available_bytes = available_bytes
+
+    Refused.__name__ = Refused.__qualname__ = "Exhausted"
+    return Refused
+
+
+def _refused(message: str, requested_bytes: int, available_bytes: int) -> BaseException:
+    """The exception `_ext` raises for varena's `Exhausted` and `OutOfMemory`."""
+    return cast(BaseException, _exhausted()(message, requested_bytes, available_bytes))
 
 
 def _installed() -> None:
@@ -104,6 +127,9 @@ def _bind_allocator() -> None:
         else:
             if torch.cuda.is_initialized():
                 raise RuntimeError("install Varena before Torch CUDA lazy initialization")
+            # cuBLAS workspaces cached per handle and stream, as varena accounts them
+            # (`initialize`): Torch latches this at its first cuBLAS use.
+            os.environ["TORCH_CUBLAS_WORKSPACE_CACHE"] = "1"
             if torch.backends.cudnn.benchmark:
                 raise RuntimeError("Varena requires cudnn.benchmark=False")
             directory = Path(__file__).resolve().parents[1]
@@ -136,7 +162,6 @@ def _bind_allocator() -> None:
             if native.varena_torch_install(ctypes.byref(failure)) != 1 or failure.kind:
                 raise RuntimeError(bytes(failure.message).decode("utf-8", errors="replace"))
             _library, _owner = native, os.getpid()
-            _bind_stats(torch)
 
 
 def _workspace_cache_enabled() -> bool:
@@ -171,10 +196,47 @@ def stats(device: DeviceLike = 0) -> dict[str, int]:
     return _ext._varena_working_stats(_device(device))
 
 
+def ooms(device: DeviceLike = 0) -> int:
+    """`stats(device)["ooms"]` alone: the allocations varena refused on `device`, one integer read."""
+    _installed()
+    return _ext._varena_working_ooms(_device(device))
+
+
+def room(device: DeviceLike = 0) -> dict[str, int]:
+    """What the card has now, as a split chooses by: `capacity` (the card or its cap, less what is
+    outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes."""
+    _installed()
+    return _ext._varena_room(_device(device))
+
+
 def reset_peak(device: DeviceLike = 0) -> None:
     """Reset measured working peaks to current live and mapped bytes."""
     _installed()
     _ext._varena_working_reset_peak(_device(device))
+
+
+def site_id(name: str) -> int:
+    """The id `set_site` takes for a birth site's name, the same for the process's life."""
+    return _ext._varena_site_id(name)
+
+
+def set_site(device: int, site: int) -> None:
+    """Where this device's next working allocations are born (one store, no lock)."""
+    _ext._varena_set_site(device, site)
+
+
+def pass_mark(device: int, head: int, shape: int, floor: int) -> dict[str, Any] | None:
+    """A forward of model `head` begins (inputs of `shape`, `floor` its largest block's weight
+    bytes). Its first this request begins a loop, later ones are its passes: working blocks an
+    earlier pass left live are its escaped bytes. None, or once per loop why its next pass cannot
+    fit with every evictable byte gone."""
+    return _ext._varena_pass_mark(device, head, shape, floor)
+
+
+def escapes_take(device: int, *, failed: bool) -> list[dict[str, Any]]:
+    """This request's loops, ended, with what each began with and its passes left live; `failed`:
+    the request ended in an error, so a refused allocation in its last pass is learned from."""
+    return _ext._varena_escapes_take(device, failed=failed)
 
 
 def checks(*, unmap_idle: bool = False, perturb: bool = False, guards: bool = False) -> None:
@@ -251,6 +313,15 @@ def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, co
     return _ext._varena_split_begin(_device(device), key, choice_id, stream=stream, completion_owner=completion_owner, plan_generation=plan_generation)
 
 
+def split_refused(device: DeviceLike, key: str, choice_id: str, *, stream: int) -> dict[str, Any] | None:
+    """After `split_end` closed a leaf whose allocation was refused with everything reclaimable
+    gone: a finer level's selection, its room made, for a pure op to run again at (Retry); None when
+    no allocation of that leaf was refused (the failure is final). Raises `Exhausted` when no finer
+    level can be given room. Only the core decides; a caller re-runs only on a selection."""
+    _installed()
+    return _ext._varena_split_refused(_device(device), key, choice_id, stream=stream)
+
+
 def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> dict[str, Any]:
     """Close host submission; only the enclosing phase's checked completion can publish."""
     _installed()
@@ -285,12 +356,6 @@ def phase_invalidate(device: DeviceLike, token: int, reason: str = "execution_re
     _ext._varena_phase_invalidate(_device(device), token, reason)
 
 
-def phase_stats(device: DeviceLike, key: str) -> dict[str, Any]:
-    """Owned block/backing peaks and total-process telemetry, with separate aborted counts."""
-    _installed()
-    return _ext._varena_phase_stats(_device(device), key)
-
-
 def phase_forget(device: DeviceLike, key: str) -> bool:
     """Retire a dead model/plan's measurement after its final execution owner releases it."""
     _installed()
@@ -310,6 +375,14 @@ def cancel_preparation(pool: PoolId, device: DeviceLike = 0) -> None:
     """Return an unused reservation to reclaimability without releasing a graph owner."""
     _installed()
     _ext._varena_working_pool_cancel_preparation(_device(device), cast(PoolId, tuple(pool)))
+
+
+def pool_close(pool: PoolId, device: DeviceLike = 0) -> None:
+    """The owner reset every graph it captured in this pool and allocates there no more: its
+    pages go at the next trim once its blocks are freed, even after a capture whose end failed,
+    which Torch never releases. Refused while a capture on it is open."""
+    _installed()
+    _ext._varena_working_pool_close(_device(device), cast(PoolId, tuple(pool)))
 
 
 def pool_scratch(pool: PoolId, held: Sequence[Any] = (), device: DeviceLike = 0) -> None:
@@ -522,34 +595,6 @@ def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
                 _ext._varena_working_pool_record_stream(device, pool, stream.cuda_stream, False)
     finally:
         _ext._varena_working_pool_release(device, pool)
-
-
-def _bind_stats(torch: ModuleType) -> None:
-    def memory_stats(device: DeviceLike = None) -> dict[str, int]:
-        row = stats(_device(device))
-        return {
-            "allocated_bytes.all.current": row["allocated_bytes"],
-            "allocated_bytes.all.peak": row["allocated_peak"],
-            "reserved_bytes.all.current": row["mapped_bytes"],
-            "reserved_bytes.all.peak": row["mapped_peak"],
-            "allocation.all.current": row["allocations"] - row["frees"],
-            "num_ooms": row["ooms"],
-        }
-
-    def reset_peak_memory_stats(device: DeviceLike = None) -> None:
-        reset_peak(_device(device))
-
-    readers = {
-        "memory_stats": memory_stats,
-        "memory_allocated": lambda device=None: stats(_device(device))["allocated_bytes"],
-        "memory_reserved": lambda device=None: stats(_device(device))["mapped_bytes"],
-        "max_memory_allocated": lambda device=None: stats(_device(device))["allocated_peak"],
-        "max_memory_reserved": lambda device=None: stats(_device(device))["mapped_peak"],
-        "reset_peak_memory_stats": reset_peak_memory_stats,
-    }
-    for module in (torch.cuda, torch.cuda.memory):
-        for name, function in readers.items():
-            setattr(module, name, function)
 
 
 def offload(model_or_pipeline, device=0, *, graphs="auto"):

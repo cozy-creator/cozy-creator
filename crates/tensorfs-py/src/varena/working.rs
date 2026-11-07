@@ -45,16 +45,18 @@ pub(super) fn installed() -> bool {
     OWNER.load(Ordering::Acquire) != 0
 }
 
+/// What the card has now, as the split chooses by: capacity (the card or its cap, less what is
+/// outside our bytes), live working bytes, pinned and resident region bytes, and what maps free.
 #[pyfunction]
-fn _varena_process_guard_status() -> String {
-    let status = varena::process_guard_status();
-    serde_json::json!({
-        "schema": "varena.process_guard/1", "contract": "one_process/1", "backend": status.backend,
-        "marker": status.marker, "thread_authenticated": status.thread_authenticated,
-        "page_bytes": status.page_bytes, "failure_stage": status.failure_stage,
-        "failure_errno": status.failure_errno,
-        "shared_vm_child_use": "unsupported; inherited calls are not guaranteed to reject",
-    }).to_string()
+fn _varena_room(py: Python<'_>, device: i32) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
+    let room = py.detach(|| { check()?; varena::working::room(device) }).map_err(|e| super::raise(py, e))?;
+    Ok([
+        ("capacity", room.capacity as u64),
+        ("working_live", room.working_live as u64),
+        ("pinned", room.pinned as u64),
+        ("weights_resident", room.weights_resident as u64),
+        ("free", room.free as u64),
+    ].into_iter().collect())
 }
 
 fn check() -> varena::Result<()> {
@@ -350,14 +352,20 @@ fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
 
 #[pyfunction]
 fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool) {
-    py.detach(|| varena::request_boundary(device, begin));
+    py.detach(|| {
+        varena::request_boundary(device, begin);
+        #[cfg(feature = "store")]
+        super::host::boundary(begin);
+    });
 }
 
 #[pyfunction]
-fn _varena_working_check(py: Python<'_>) -> PyResult<()> {
-    varena::working::bind_process()
-        .and_then(|()| check())
-        .map_err(|e| super::raise(py, e))
+fn _varena_working_ooms(py: Python<'_>, device: i32) -> PyResult<u64> {
+    py.detach(|| {
+        check()?;
+        varena::working::ooms(device)
+    })
+    .map_err(|e| super::raise(py, e))
 }
 
 #[pyfunction]
@@ -447,6 +455,62 @@ fn _varena_working_reset_peak(py: Python<'_>, device: i32) -> PyResult<()> {
 
 
 #[pyfunction]
+fn _varena_site_id(name: &str) -> u32 {
+    varena::working::site_id(name)
+}
+
+/// One relaxed store on a model's block entry: where the next allocations are born.
+#[pyfunction]
+fn _varena_set_site(device: i32, site: u32) {
+    varena::working::set_site(device, site);
+}
+
+fn sites<'py>(py: Python<'py>, sites: &[(String, usize)]) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    pyo3::types::PyList::new(py, sites.iter().map(|(site, bytes)| (site.as_str(), *bytes)))
+}
+
+fn verdict<'py>(py: Python<'py>, verdict: &varena::working::Verdict) -> PyResult<Bound<'py, PyDict>> {
+    let row = PyDict::new(py);
+    row.set_item("need_bytes", verdict.need_bytes)?;
+    row.set_item("room_bytes", verdict.room_bytes)?;
+    row.set_item("held_bytes", verdict.held_bytes)?;
+    row.set_item("escaped_bytes", verdict.escaped_bytes)?;
+    row.set_item("transient_bytes", verdict.transient_bytes)?;
+    row.set_item("floor_bytes", verdict.floor_bytes)?;
+    row.set_item("learned", verdict.learned)?;
+    row.set_item("sites", sites(py, &verdict.sites)?)?;
+    Ok(row)
+}
+
+#[pyfunction]
+fn _varena_pass_mark<'py>(
+    py: Python<'py>, device: i32, head: u32, shape: u64, floor: usize,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let refused = varena::working::pass_mark(device, head, shape, floor).map_err(|e| super::raise(py, e))?;
+    refused.map(|refused| verdict(py, &refused)).transpose()
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, *, failed))]
+fn _varena_escapes_take<'py>(py: Python<'py>, device: i32, failed: bool) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let records = varena::working::escapes_take(device, failed).map_err(|e| super::raise(py, e))?;
+    records.iter().map(|record| {
+        let row = PyDict::new(py);
+        row.set_item("head", &record.head)?;
+        row.set_item("passes", record.passes)?;
+        row.set_item("carried_bytes", record.carried_bytes)?;
+        row.set_item("carried_sites", sites(py, &record.carried_sites)?)?;
+        row.set_item("escaped_bytes", record.escaped_bytes)?;
+        row.set_item("escaped_peak_bytes", record.escaped_peak_bytes)?;
+        row.set_item("escaped_sites", sites(py, &record.escaped_sites)?)?;
+        row.set_item("growth_bytes", record.growth_bytes)?;
+        row.set_item("transient_bytes", record.transient_bytes)?;
+        row.set_item("refused", record.refused.as_ref().map(|refused| verdict(py, refused)).transpose()?)?;
+        Ok(row)
+    }).collect()
+}
+
+#[pyfunction]
 fn _varena_fail_create_after(py: Python<'_>, device: i32, n: u64, times: u64) -> PyResult<()> {
     py.detach(|| varena::fail_create_after(device, n, times)).map_err(|e| super::raise(py, e))
 }
@@ -514,6 +578,15 @@ fn _varena_working_pool_cancel_preparation(
 }
 
 #[pyfunction]
+fn _varena_working_pool_close(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_close(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 fn _varena_working_pool_short(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<usize> {
     py.detach(|| varena::working::pool_short(device, pool)).map_err(|e| super::raise(py, e))
 }
@@ -569,18 +642,6 @@ fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -
     .map_err(|e| super::raise(py, e))
 }
 
-fn split_error(py: Python<'_>, error: varena::Error) -> PyErr {
-    let capacity = matches!(
-        error,
-        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. }
-    );
-    let result = super::raise(py, error);
-    if capacity {
-        let _ = result.value(py).setattr("varena_no_retry", true);
-    }
-    result
-}
-
 #[pyfunction]
 fn _varena_split_context<'py>(py: Python<'py>, device: i32) -> PyResult<Bound<'py, PyDict>> {
     let context = py
@@ -609,8 +670,28 @@ fn _varena_split_select<'py>(
             check()?;
             varena::working::split_select(device, key, choices, stream)
         })
-        .map_err(|error| split_error(py, error))?;
+        .map_err(|error| super::raise(py, error))?;
     selection(py, &selected)
+}
+
+/// The level a pure op runs again at after its leaf was refused memory (Retry), None (final: no
+/// allocation of that leaf was refused), or `Exhausted` (final: no finer level has room).
+#[pyfunction]
+#[pyo3(signature = (device, key, choice_id, *, stream))]
+fn _varena_split_refused<'py>(
+    py: Python<'py>,
+    device: i32,
+    key: &str,
+    choice_id: &str,
+    stream: u64,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let selected = py
+        .detach(|| {
+            check()?;
+            varena::working::split_refused(device, key, choice_id, stream)
+        })
+        .map_err(|error| super::raise(py, error))?;
+    selected.map(|selected| selection(py, &selected)).transpose()
 }
 
 fn selection<'py>(
@@ -622,11 +703,6 @@ fn selection<'py>(
         "allocation_backing_bytes",
         selected.allocation_backing_bytes,
     )?;
-    row.set_item(
-        "measured_backing_peak_bytes",
-        selected.measured_backing_peak_bytes,
-    )?;
-    row.set_item("reused_capacity_bytes", selected.reused_capacity_bytes)?;
     row.set_item("choice_id", &selected.choice_id)?;
     row.set_item("eligible", &selected.eligible)?;
     row.set_item("required_bytes", selected.required_bytes)?;
@@ -656,7 +732,7 @@ fn _varena_split_begin(
         check()?;
         varena::working::split_begin(device, key, choice_id, completion_owner, stream, plan_generation)
     })
-    .map_err(|error| split_error(py, error))
+    .map_err(|error| super::raise(py, error))
 }
 
 #[pyfunction]
@@ -695,6 +771,7 @@ fn split_observation<'py>(
     row.set_item("published", observed.published)?;
     row.set_item("reason", &observed.reason)?;
     row.set_item("successful_passes", observed.successful_passes)?;
+    row.set_item("refused_bytes", observed.refused_bytes)?;
     Ok(row)
 }
 
@@ -793,28 +870,6 @@ fn _varena_phase_invalidate(py: Python<'_>, device: i32, token: u64, reason: &st
 }
 
 #[pyfunction]
-fn _varena_phase_stats<'py>(
-    py: Python<'py>,
-    device: i32,
-    key: &str,
-) -> PyResult<Bound<'py, PyDict>> {
-    let sample = py
-        .detach(|| {
-            check()?;
-            varena::working::phase_stats(device, key)
-        })
-        .map_err(|e| super::raise(py, e))?;
-    let row = PyDict::new(py);
-    row.set_item("known", sample.known)?;
-    row.set_item("peak_bytes", sample.peak_bytes)?;
-    row.set_item("total_peak_bytes", sample.total_peak_bytes)?;
-    row.set_item("backing_peak_bytes", sample.backing_peak_bytes)?;
-    row.set_item("successful_passes", sample.successful_passes)?;
-    row.set_item("aborted_passes", sample.aborted_passes)?;
-    Ok(row)
-}
-
-#[pyfunction]
 fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool> {
     py.detach(|| varena::working::phase_forget(device, key))
         .map_err(|e| super::raise(py, e))
@@ -832,22 +887,23 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // SAFETY: CPython's `int PyGILState_Check(void)`, callable from any thread; it only reads this thread's state.
     let _ = GIL_CHECK.set(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn() -> std::ffi::c_int>(address) });
     varena::set_host_lock_probe(|| GIL_CHECK.get().is_some_and(|check| unsafe { check() } != 0));
-    module.add_function(wrap_pyfunction!(_varena_process_guard_status, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_room, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_split_refused, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_end, module)?)?;
     module.add_class::<CallbackScope>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_phase_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_fail_create_after, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_arm, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_short, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_pool_close, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_scratch, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_library_workspaces, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_retain, module)?)?;
@@ -862,9 +918,13 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_pool_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_ooms, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_site_id, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_set_site, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_pass_mark, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_escapes_take, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_reserve, module)?)?;
     module.add_function(wrap_pyfunction!(
         _varena_working_pool_record_stream,

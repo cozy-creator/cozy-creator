@@ -1,15 +1,18 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
 mod tensor_export;
-mod cache;
 mod cache_owner;
 mod plan;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
+mod host;
+#[cfg(feature = "store")]
 mod pages;
 #[cfg(feature = "store")]
 mod phase;
+#[cfg(feature = "store")]
+mod retained;
 #[cfg(feature = "store")]
 mod source;
 use pyo3::{
@@ -57,7 +60,7 @@ impl<T: Send + 'static> Drop for Deferred<T> {
     }
 }
 
-fn release_region(region: Arc<varena::Region>) {
+pub(super) fn release_region(region: Arc<varena::Region>) {
     // Unlike a strong-count check followed by drop, into_inner atomically either releases a
     // shared reference or gives us the final Region without running its potentially blocking Drop.
     if let Some(region) = Arc::into_inner(region) {
@@ -146,14 +149,14 @@ enum UsePreparation {
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
-        varena::Error::Callback(_) => {
-            let error = PyRuntimeError::new_err(message);
-            let _ = error.value(py).setattr("varena_no_retry", true);
-            return error;
-        },
-        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } | varena::Error::CaptureMap { .. } => {
-            "OutOfMemoryError"
+        varena::Error::Callback(_) => return PyRuntimeError::new_err(message),
+        // Nothing more could be reclaimed, before the work ran: a typed refusal that is still
+        // torch's OOM (`tensorfs.varena.torch._refused`).
+        varena::Error::Exhausted { requested_bytes, available_bytes } => {
+            return refused(py, &message, requested_bytes, available_bytes);
         }
+        varena::Error::OutOfMemory { requested_bytes } => return refused(py, &message, requested_bytes, 0),
+        varena::Error::CaptureMap { .. } => "OutOfMemoryError",
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::PhaseOverlap => return PhaseOverlapError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
@@ -164,17 +167,20 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
         // Torch's exception types take the ordinary RuntimeError constructor arguments.
         // The CUDA error code is an attribute, not an accepted constructor keyword.
         let exception = class.call1((message.clone(),))?;
-        if let varena::Error::Exhausted { requested_bytes, available_bytes } = error {
-            exception.setattr("varena_no_retry", true)?;
-            exception.setattr("required_bytes", requested_bytes)?;
-            exception.setattr("available_bytes", available_bytes)?;
-        }
         if let varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } = error {
             exception.setattr("error_code", code)?;
         }
         Ok(PyErr::from_value(exception))
     })();
     result.unwrap_or_else(|_| PyRuntimeError::new_err(message))
+}
+
+fn refused(py: Python<'_>, message: &str, requested: usize, available: usize) -> PyErr {
+    let built = (|| -> PyResult<PyErr> {
+        let make = py.import("tensorfs.varena.torch")?.getattr("_refused")?;
+        Ok(PyErr::from_value(make.call1((message, requested, available))?))
+    })();
+    built.unwrap_or_else(|_| PyRuntimeError::new_err(message.to_owned()))
 }
 
 #[pyclass(name = "_VarenaDevice", module = "tensorfs._ext", frozen)]
@@ -289,15 +295,7 @@ impl PyRegion {
     #[cfg(feature = "store")]
     #[pyo3(name = "use_on")]
     fn use_on(&self, py: Python<'_>, stream: u64) -> PyResult<PyUse> {
-        // SAFETY: the caller's live stream, which reads nothing before this returns.
-        let pin = py.detach(|| unsafe { self.region.use_on(stream) })
-            .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
-        let consumers = Consumers::new(self.region.device());
-        consumers.declare(stream).map_err(|error| raise(py, error))?;
-        Ok(PyUse {
-            preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
-            device: self.region.device(), pid: std::process::id(), consumers,
-        })
+        use_region(py, &self.region, stream)
     }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
         let pin = py
@@ -311,6 +309,20 @@ impl PyRegion {
             }
         }))
     }
+}
+
+/// `region` pinned for `stream`, filled by its Source if absent.
+#[cfg(feature = "store")]
+fn use_region(py: Python<'_>, region: &Arc<varena::Region>, stream: u64) -> PyResult<PyUse> {
+    // SAFETY: the caller's live stream, which reads nothing before this returns.
+    let pin = py.detach(|| unsafe { region.use_on(stream) })
+        .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
+    let consumers = Consumers::new(region.device());
+    consumers.declare(stream).map_err(|error| raise(py, error))?;
+    Ok(PyUse {
+        preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+        device: region.device(), pid: std::process::id(), consumers,
+    })
 }
 
 #[pyclass(name = "_VarenaUse", module = "tensorfs._ext", frozen)]
@@ -548,9 +560,6 @@ struct PyAllocatorCapture {
 }
 #[pymethods]
 impl PyAllocatorCapture {
-    #[classattr]
-    const REPLAY_GUARD: bool = true;
-
     #[new]
     #[pyo3(signature = (device, *, replay = false))]
     fn new(py: Python<'_>, device: i32, replay: bool) -> PyResult<Self> {
@@ -619,7 +628,6 @@ fn _varena_core_identity() -> u64 {
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
     cache_owner::install(module)?;
-    module.add_class::<cache::PyCache>()?;
     working::install(module)?;
     tensor_export::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
@@ -639,6 +647,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<pages::PyPages>()?;
     #[cfg(feature = "store")]
     module.add_class::<source::PySource>()?;
+    #[cfg(feature = "store")]
+    module.add_class::<retained::PyRetained>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
     Ok(())
