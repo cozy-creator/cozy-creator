@@ -1,6 +1,8 @@
-// Thousands of assets (Paul expects them): a generated 5,000-asset project in the file format as it stands, a real Calcifer, the real CLI, a real
-// Chrome. How long `cozy project status` takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand,
-// a render landing, panning, memory.
+// Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, the real CLI, a real Chrome. How long `cozy project
+// status` takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
+// It's generated as a folder of the files from before project.db (cl-803), 4,000 shots rendered twice each, which Calcifer's first open imports, as it
+// imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the CLI, the page
+// and Calcifer's HTTP touch it.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
 //   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
@@ -62,8 +64,9 @@ const BARS = {
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-/** The project: pictures approved as they are, and shots of them, each with two versions, as files. `inputs`, once known, makes them current. */
-function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
+/** The project as the files from before: pictures approved as they are, and shots of them, each with two versions. `inputs`, once known, makes them
+ *  current. Its first open imports them into project.db and deletes them. With no `takes`, the shots have none: what's read for their keys. */
+function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES, takes = true) {
   mkdirSync(join(folder, 'files'), { recursive: true });
   // A picture is square; a shot's take is the 16:9 it asks for, as a render makes it, so a box showing one is that shape.
   const seeds = { square: [16, 16], wide: [32, 18] };
@@ -95,10 +98,12 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
     file(hex);
     lines.push(`  pic_${i}: {approved: "${hex.slice(0, 12)}"}`);
   }
-  const tool = 'birefnet/remove_background';
+  // The suite's own weightless tool, whose fields a 0.22 box draws whatever the Hub has published.
+  const tool = `${TOOL}/still`;
   for (let i = 0; i < assetCount - pictures; i++) {
     const name = `shot_${i}`;
     lines.push(`  ${name}:`, `    tool: ${tool}`, `    instructions: ${words}<pic_${i % pictures}> and <pic_${(i * 7) % pictures}>.`, '    aspect_ratio: "16:9"');
+    if (!takes) continue;
     const versions = [1, 2].map((number) => {
       const hex = hash(`${name} ${number}`);
       file(hex, 'wide');
@@ -163,8 +168,8 @@ function flushed(dir, like) {
     rmSync(at);
     return summary(took).median_ms;
   };
-  const yaml_bytes = statSync(like).size;
-  return { flush_4k_ms: flush(4096), flush_yaml_ms: flush(yaml_bytes), replace_yaml_ms: replace(yaml_bytes), yaml_bytes };
+  const like_bytes = statSync(like).size;
+  return { flush_4k_ms: flush(4096), flush_like_ms: flush(like_bytes), replace_like_ms: replace(like_bytes), like_bytes };
 }
 
 function summary(frames) {
@@ -184,7 +189,10 @@ function calciferMb() {
 
 (async () => {
   const base = calcifer();
+  // Generated once with no takes, to read each shot's real key, then with them where its first open finds them current.
+  const keying = join(homedir(), '.cozy', 'projects', `web-scale-keys-${Date.now()}`);
   const folder = join(homedir(), '.cozy', 'projects', `web-scale-${Date.now()}`);
+  mkdirSync(keying, { recursive: true });
   mkdirSync(folder, { recursive: true });
   const numbers = {};
   seen.scale = numbers;
@@ -200,29 +208,44 @@ function calciferMb() {
     });
   });
   const project = (...words) => cozy('project', '-p', folder, ...words);
-  const status = async () => {
-    const answer = await cozy('--json', '--full', 'project', '-p', folder, 'status');
+  const status = async (at = folder) => {
+    const answer = await cozy('--json', '--full', 'project', '-p', at, 'status');
     return { state: JSON.parse(answer.stdout), ms: answer.ms };
   };
+  const mb = (bytes) => +(bytes / 1048576).toFixed(1);
+  const dbMb = () => mb(statSync(join(folder, 'project.db')).size);
   const seconds = (ms) => +(ms / 1000).toFixed(2);
 
   const generating = Date.now();
-  generated(folder);
+  generated(keying, null, ASSETS, PICTURES, false);
   numbers.generate_s = seconds(Date.now() - generating);
 
-  // The first read of it, then with each shot's real key, so they stand as a person's would.
+  // The first read of it, its first open importing it; then a folder with each shot's real key, so they stand as a person's would. Where this
+  // computer runs models its tool is read by this machine's Runtime, from a run of it there, as tools.js primes its fixture.
+  let keyed = await status(keying);
+  numbers.status_first_s = seconds(keyed.ms);
+  const local = (await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}` } })).json()).local_usable;
+  if (local) {
+    await cozy('--json', 'run', '-p', keying, `${TOOL}/still`, 'instructions=primed', '--on', 'local');
+    keyed = await status(keying);
+  }
+  const inputs = Object.fromEntries(keyed.state.assets.filter((asset) => asset.name.startsWith('shot_')).map((asset) => [asset.name, asset.inputs]));
+  // Forgotten now; its folder goes at the end, with the small one.
+  await fetch(`${base}/v1/projects/${keyed.state.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}` } });
+  seen.keyed = Object.keys(inputs).length;
+  generated(folder, inputs);
   const first = await status();
-  numbers.status_first_s = seconds(first.ms);
+  numbers.status_import_s = seconds(first.ms);
   check('all_are_there', first.state.assets.length === ASSETS, first.state.assets.length);
+  check('its_files_are_imported', ['project.yaml', 'project.lock', 'project.canvas.yaml', '.measured.json'].every((name) => { try { statSync(join(folder, name)); return false; } catch { return true; } }));
   seen.project = { id: first.state.id, folder };
   const id = first.state.id;
-  const inputs = Object.fromEntries(first.state.assets.filter((asset) => asset.name.startsWith('shot_')).map((asset) => [asset.name, asset.inputs]));
-  generated(folder, inputs);
   const read = await status();
   numbers.status_s = seconds(read.ms);
-  numbers.lock_mb = +(readFileSync(join(folder, 'project.lock')).length / 1048576).toFixed(1);
-  numbers.yaml_mb = +(readFileSync(join(folder, 'project.yaml')).length / 1048576).toFixed(1);
-  numbers.status_answer_mb = +(JSON.stringify(read.state).length / 1048576).toFixed(1);
+  numbers.db_mb = dbMb();
+  const exported = () => project('export').then(({ stdout }) => stdout);
+  numbers.export_mb = mb(Buffer.byteLength(await exported()));
+  numbers.status_answer_mb = mb(JSON.stringify(read.state).length);
   const standing = read.state.assets.reduce((held, asset) => ({ ...held, [asset.standing]: (held[asset.standing] ?? 0) + 1 }), {});
   numbers.standing = standing;
   check('they_stand_as_a_persons_would', standing.current === ASSETS, standing);
@@ -441,16 +464,19 @@ function calciferMb() {
   numbers.set_command_s = seconds([...sets].sort((a, b) => a - b)[2]);
   check('a_command_is_quick', numbers.set_command_s <= BARS.command_s, numbers.set_commands_s);
 
-  // A hand's save, the same way.
+  // A hand's save, the same way: its export edited and imported (cl-803).
   const byHand = onScreen[1] ?? edited;
   await openOn(byHand);
   const shownHand = says(byHand, 'ONE EDIT BY HAND');
-  const text = readFileSync(join(folder, 'project.yaml'), 'utf8');
+  const text = await exported();
   const lineAt = text.indexOf(`  ${byHand}:\n`);
   const instructionsAt = text.indexOf('    instructions: ', lineAt);
-  replaceFile(join(folder, 'project.yaml'), `${text.slice(0, instructionsAt)}    instructions: ONE EDIT BY HAND${text.slice(text.indexOf('\n', instructionsAt))}`);
-  const savedAt = Date.now();
-  numbers.hand_shows_ms = (await shownHand) - savedAt;
+  const edit_at = join(homedir(), '.cozy', 'projects', `web-scale-hand-${Date.now()}.yaml`);
+  writeFileSync(edit_at, `${text.slice(0, instructionsAt)}    instructions: ONE EDIT BY HAND${text.slice(text.indexOf('\n', instructionsAt))}`);
+  const saved = await project('import', edit_at);
+  rmSync(edit_at);
+  numbers.hand_import_s = seconds(saved.ms);
+  numbers.hand_shows_ms = (await shownHand) - saved.at;
   check('a_hand_shows_live', numbers.hand_shows_ms <= BARS.edit_shows_ms, numbers.hand_shows_ms);
   await page.goto(`${base}/#/projects/${id}`);
   await page.locator('.card.here').waitFor({ state: 'detached' });
@@ -548,7 +574,7 @@ function calciferMb() {
   for (const [i, name] of made.entries()) await write(writes.move, '/canvas', 'PATCH', { cards: { [name]: { x: -9000 - i * 800, y: -12000 } } });
   for (const name of made) await write(writes.delete, `/assets/${name}`, 'DELETE', {});
   numbers.write_ms = Object.fromEntries(Object.entries(writes).map(([what, took]) => [what, summary(took).median_ms]));
-  numbers.write_disk = flushed(folder, join(folder, 'project.yaml'));
+  numbers.write_disk = flushed(folder, join(folder, 'project.db'));
   // Hosted Windows prints these and isn't held to them: on one runner image and one write path a POST read 57 to 195 ms and a plain replace 11 to 142.
   // A slower write shows on Linux and macOS, which share that path, and `numbers` keeps what Windows read.
   if (process.env.RUNNER_OS !== 'Windows') check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), { bar: BARS.write_ms, ...numbers.write_ms, ...numbers.write_disk });
@@ -570,7 +596,7 @@ function calciferMb() {
     for (const name of names) await project('add', `${TOOL}/still`, name, `instructions=${name}`);
     for (const name of names) await project('render', name, '--on', 'local', '--queue');
     const owed = await status();
-    numbers.asks = { status_s: seconds(owed.ms), queue: owed.state.queue?.length ?? 0, lock_mb: +(readFileSync(join(folder, 'project.lock')).length / 1048576).toFixed(1) };
+    numbers.asks = { status_s: seconds(owed.ms), queue: owed.state.queue?.length ?? 0, db_mb: dbMb() };
     check('a_read_with_asks_owed_is_quick', numbers.asks.status_s <= BARS.asks_status_s, numbers.asks);
     const cancelling = await project('cancel', ...names);
     numbers.asks.cancel_s = seconds(cancelling.ms);
@@ -595,6 +621,7 @@ function calciferMb() {
   check('calcifers_memory', memory.edits <= BARS.calcifer_mb, memory);
   check('calcifers_memory_with_asks', memory.fitted <= BARS.calcifer_asks_mb, memory);
   rmSync(smallFolder, { recursive: true, force: true });
+  rmSync(keying, { recursive: true, force: true });
   numbers.page_heap_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   check('the_pages_memory', numbers.page_heap_mb <= BARS.page_heap_mb, numbers.page_heap_mb);
 
