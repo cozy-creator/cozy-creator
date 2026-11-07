@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -151,7 +151,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  const yaml = () => readFileSync(join(folder, 'project.yaml'), 'utf8');
+  // The project as `cozy project export` writes it (cl-803: its state is project.db).
+  const yaml = () => yamlOf(folder);
   const status = () => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], quiet).toString());
   const held = (name) => status().assets.find((asset) => asset.name === name);
   const box = (name) => boxOf(page, name);
@@ -192,7 +193,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     // Local code the project names, as a person keeps it beside the project. A run reads it with this machine's Runtime, so a box doesn't wait on PyPI's.
     const boxed = join(folder, 'boxed');
     cpSync(join(__dirname, '..', 'project', 'boxed'), boxed, { recursive: true });
-    const primed = () => execFileSync(COZY, ['--json', 'run', './boxed/plain', 'prompt=primed', '--on', 'local'], { ...quiet, cwd: folder });
+    const primed = () => execFileSync(COZY, ['--json', 'run', './boxed/plain', 'instructions=primed', '--on', 'local'], { ...quiet, cwd: folder });
     primed();
     await page.reload();
     await page.waitForSelector('.top');
@@ -327,7 +328,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     const name = 'e2e-boxed';
     const package_ = `e2e/${name}`;
     const described = (await api(`/v1/targets?target=${encodeURIComponent(join(folder, 'boxed'))}`)).body.interface;
-    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.node?.ui === 'ui/shade.js'), described?.entrypoints?.map((entry) => entry.node?.ui));
+    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.tool?.ui === 'ui/shade.js'), described?.entrypoints?.map((entry) => entry.tool?.ui));
     // Locked and built beside the local code, not in it: what a publish does, with a real wheel's real layout.
     const dist = mkdtempSync(join(tmpdir(), 'package-ui-'));
     const dir = join(dist, 'src');

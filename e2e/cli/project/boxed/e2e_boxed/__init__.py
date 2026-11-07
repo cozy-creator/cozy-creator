@@ -5,14 +5,14 @@ import os
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, ImageFile, ImageFrame, Outputs, Range
+from cozy_runtime.author import App, Image, ImageFile, ImageFrame, Outputs, Prompt, Range
 
 app = App()
 SIDE = 16
 
 
 class Shaded(msgspec.Struct, kw_only=True):
-    prompt: str = ""
+    instructions: Prompt[Image] = Prompt()
     shade: Annotated[float, Range(0, 1, step=0.25)] = 0.5
 
 
