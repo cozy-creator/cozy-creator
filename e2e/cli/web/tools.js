@@ -220,11 +220,14 @@ function linesOf(text, name) {
   await shot('groups');
 
   // Slots: what doesn't fit is refused as it's carried over, and at the drop, with why; a filled one is on the face, and × unsets it.
-  // A point of a box a person can reach: what floats over it, and the box being worked on, may cover the rest.
+  // A point of a box's picture a person can reach, where a press moves the box: what floats over it, and the box being worked on, may cover the
+  // rest, and its × at rest is over its top.
   const reach = (name) => page.evaluate((name) => {
-    const at = document.querySelector(`.react-flow__node:has(.card[data-asset="${name}"])`).getBoundingClientRect();
+    const node = document.querySelector(`.react-flow__node:has(.card[data-asset="${name}"])`);
+    const at = (node.querySelector('.card > .media') ?? node).getBoundingClientRect();
     for (let y = at.top + 4; y < Math.min(at.bottom, innerHeight); y += 8) for (let x = at.left + 4; x < Math.min(at.right, innerWidth); x += 8) {
-      if (document.elementFromPoint(x, y)?.closest('.react-flow__node')?.querySelector('.card')?.dataset.asset === name) return { x, y };
+      const el = document.elementFromPoint(x, y);
+      if (el?.closest('.react-flow__node')?.querySelector('.card')?.dataset.asset === name && !el.closest('button')) return { x, y };
     }
     return null;
   }, name);
