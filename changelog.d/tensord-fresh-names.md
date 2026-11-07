@@ -1,1 +1,2 @@
 A machine reads its held model names again in the background, at most every 10 minutes per name and only while a run uses one, so an unversioned model, a slot default or a LoRA by name picks up a new release, a yank or a new lane; before, it resolved once per machine and was held forever. A warm run still never waits on the Hub.
+Known open: the machine never prunes the names it holds (`held_names`), so the table grows with every name it ever resolved; pruning is a follow-up.

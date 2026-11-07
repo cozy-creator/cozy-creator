@@ -122,6 +122,12 @@ if launch halted silent seconds:=600; then
 fi
 }
 
+# kept_restore <gate> <config> <saved config>: the gate open, config.toml as it was, and Calcifer started on it.
+kept_restore() {
+  touch "$1"
+  if [ -f "$3" ]; then cp "$3" "$2"; else rm -f "$2"; fi
+  systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
+}
 # said <log> <run id> <words>: whether a line of the log names the run and says the words.
 said() { [ -n "$2" ] && awk -v id="$2" -v words="$3" 'index($0, id) && index($0, words) { found = 1 } END { exit !found }' "$1"; }
 
@@ -177,8 +183,10 @@ backend-path = ["."]
 [tool.hatch.build.targets.wheel]
 only-include = ["kept_gate.py"]
 TOML
-# Every run Calcifer sends carries the token from its next start.
+# Every run Calcifer sends carries the token from its next start. config.toml is restored however the cell ends,
+# a `fail` or an error under `set -e` too.
 [ -f "$config" ] && cp "$config" "$OUT/kept/config.toml"
+trap "kept_restore '$gate' '$config' '$OUT/kept/config.toml'" EXIT
 echo 'huggingface_token = "hf_e2e_kept_preparing"' >> "$config"
 systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
 n=$(run_submit "$OUT" kept run "$dir" "text=kept $RANDOM" --on local)
@@ -200,7 +208,6 @@ else
   said "$OUT/kept.calcifer.log" "$id" "its access sent again" || check "kept: Calcifer did not send run $n's access again"
   echo "kept: run $n ($id) was kept across the restart as needs_access, took its access again and completed"
 fi
-touch "$gate"
-if [ -f "$OUT/kept/config.toml" ]; then cp "$OUT/kept/config.toml" "$config"; else rm -f "$config"; fi
-systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
+trap - EXIT
+kept_restore "$gate" "$config" "$OUT/kept/config.toml"
 }
