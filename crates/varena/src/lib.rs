@@ -399,10 +399,20 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
     working::mark_cooperation_bound(device)
 }
 
-/// A request started or ended on `device`: an atomic store, which orders who donates first.
+/// A request started or ended on `device`, which orders who donates first. The
+/// first one running here is also a phase boundary, for eager callers too: the last call's regions
+/// are no longer in this one's loop, so they go first, by last use (hidream-o1's generate kept its
+/// turbo streaming in the same process, run 39070).
 pub fn request_boundary(device: i32, begin: bool) {
-    if begin && let Ok(device) = gpu(device) {
-        device.held_peak.store(0, Ordering::Release);
+    if let Ok(device) = gpu(device) {
+        if !begin {
+            let _ = device.requests.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        } else {
+            device.held_peak.store(0, Ordering::Release);
+            if device.requests.fetch_add(1, Ordering::AcqRel) == 0 && let Ok(mut state) = device.lock() {
+                state.phase_boundary = Some(device.clock.load(Ordering::Relaxed));
+            }
+        }
     }
     #[cfg(target_os = "linux")]
     cooperative::request_boundary(device, begin);
@@ -475,6 +485,8 @@ pub struct Device {
     working: AtomicUsize,
     // The most weight bytes held for use at once this request.
     held_peak: AtomicUsize,
+    // Requests running here: the first to begin is a phase boundary.
+    requests: AtomicUsize,
     // Weight bytes held for use now: regions with a pin.
     held: AtomicUsize,
     // Moves when the room this process can have shrinks for a reason outside its program: a cap,
@@ -517,6 +529,7 @@ impl Device {
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
+            requests: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
             room: AtomicU64::new(0),
             room_outside: AtomicU64::new(0),
