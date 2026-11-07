@@ -209,7 +209,7 @@ impl Ask for PackageInstall {
         if FsPath::new(&self.package).is_absolute() {
             // Local code: installed live, read as it is at each run; it retires nothing.
             let reader = reader(api, &hub)?;
-            let source = crate::local_code::source(home, FsPath::new(&self.package), &self.on, (&reader, &hub))
+            let source = crate::local_code::source(home, FsPath::new(&self.package), (&reader, &hub))
                 .await
                 .map_err(Refusal)?;
             let mut submit = crate::local_code::install_run(home, hub.as_str(), self.on, &source);

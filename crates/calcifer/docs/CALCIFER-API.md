@@ -459,7 +459,8 @@ runs; asking again after a restart is safe.
 Local code is a target like any other: `./dir/function` or `./script.py/function`, its absolute path once a
 client has resolved it (Runs). Calcifer reads the package or PEP 723 script at that path, keeps its manifest under
 `~/.cozy/calcifer/local/`, and makes it ready on the machine a call goes to: an install run first when that
-machine lacks it, then the call with its files. Its interface comes from Runtime's static describer on the
+machine lacks it, then the call with its files. Every machine, `local` too, is sent the files by content (only what it lacks); none reads a
+host path. Its interface comes from Runtime's static describer on the
 Python and cozy-runtime its project locks; nothing runs to describe it.
 
 ### Projects

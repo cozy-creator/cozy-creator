@@ -5,8 +5,8 @@
 //! code on the same Runtime is called at once. A directory travels with the path dependencies its
 //! sources name, under their common directory; a script is a one-file package, its PEP 723 block
 //! its pyproject.toml. Nothing is locked here: a project without a uv.lock is resolved on the
-//! machine. This computer's machine reads the files in place, so only the manifest and carried
-//! wheels travel; another receives the files too, and Calcifer writes only the bytes it lacks.
+//! machine. Every machine, this computer's too, is sent the files by content, and Calcifer writes
+//! only the bytes it lacks: no machine reads a host path (cl-817).
 //! Every client and Calcifer's projects use this one module (cl-716).
 use std::{
     collections::{BTreeMap, HashMap},
@@ -311,8 +311,6 @@ struct Manifest {
     project: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     locals: Vec<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    path: String,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     callees: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -349,17 +347,14 @@ pub fn project(home: &Home, path: &Path) -> Result<PathBuf, Error> {
     }
 }
 
-/// `path` (a package directory or a script) as the machine `on` installs it. This computer's
-/// machine reads the files where they are (`in_place`); another is sent them. A project whose
-/// sources name the `tensorhub` index takes the namespace its lock was made for (`_` for a
-/// first-party checkout), read through `hub`'s reader: anonymous when this computer is signed out.
+/// `path` (a package directory or a script) as a machine installs it: its manifest and every file, sent by content. A project whose
+/// sources name the `tensorhub` index takes the namespace its lock was made for (`_` for a first-party checkout), read through
+/// `hub`'s reader: anonymous when this computer is signed out.
 pub async fn source(
     home: &Home,
     path: &Path,
-    on: &On,
     (reader, hub): (&hub_client::Client, &Origin),
 ) -> Result<Source, Error> {
-    let in_place = matches!(on, On::Machine(name) if name.eq_ignore_ascii_case("local"));
     let project_dir = project(home, path)?;
     let project = Project::read(project_dir.clone())?;
     let locals = path_dependencies(&project_dir)?;
@@ -408,7 +403,7 @@ pub async fn source(
             length,
             executable: executable(&file),
         });
-        // A carried wheel is an object the machine holds, even one that reads the tree in place.
+        // A carried wheel is an object the machine holds.
         if carried(&file) {
             let name = file
                 .file_name()
@@ -422,13 +417,11 @@ pub async fn source(
                 executable: false,
             });
         }
-        if !in_place || carried(&file) {
-            inputs.push(StagedInput {
-                path: file,
-                digest,
-                length,
-            });
-        }
+        inputs.push(StagedInput {
+            path: file,
+            digest,
+            length,
+        });
     }
     let mut indexes = BTreeMap::new();
     if project.account_index {
@@ -454,11 +447,6 @@ pub async fn source(
         files,
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
-        path: if in_place {
-            root.to_string_lossy().into_owned()
-        } else {
-            String::new()
-        },
         callees: callees(&project_dir)?,
         indexes,
         wheels,
@@ -480,7 +468,7 @@ pub async fn source(
         .map(|m| (m.name.as_str(), m.digest.as_str()))
         .collect();
     let environment = serde_json::json!({"files": built, "indexes": manifest.indexes,
-        "python": manifest.python_requires, "path": manifest.path});
+        "python": manifest.python_requires});
     let environment = Digest::of(environment.to_string().as_bytes());
     let document = serde_json::to_vec(&manifest).map_err(|e| refuse("local_source_invalid", e))?;
     let digest = Digest::of(&document);
@@ -861,7 +849,7 @@ pub async fn prepare(
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
     let reader = hubs.reader(origin.as_str())?;
-    let code = source(&home, path, on, (&reader, &origin)).await?;
+    let code = source(&home, path, (&reader, &origin)).await?;
     let runtime = runtime(api, on).await;
     let prepared = |interface, installation, machine, install| Prepared {
         package: code.package.clone(),
@@ -1150,13 +1138,13 @@ pub async fn describe(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result
         }
         // Read by the static describer: the machine's own reading, once an install keeps one, takes its place.
         let known = known.clone();
-        if let Some(found) = own_reading(api, path, on, hub, runtime.as_deref()).await {
+        if let Some(found) = own_reading(api, path, hub, runtime.as_deref()).await {
             *held = Some((stamp, found.clone(), true));
             return Ok(found);
         }
         return Ok(known);
     }
-    if let Some(found) = own_reading(api, path, on, hub, runtime.as_deref()).await {
+    if let Some(found) = own_reading(api, path, hub, runtime.as_deref()).await {
         *held = Some((stamp, found.clone(), true));
         return Ok(found);
     }
@@ -1166,12 +1154,12 @@ pub async fn describe(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result
 }
 
 /// What the machine's Runtime said installing this very source, if it's kept here.
-async fn own_reading(api: &Arc<Api>, path: &Path, on: &On, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
+async fn own_reading(api: &Arc<Api>, path: &Path, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
     let hubs = &api.machines.hubs;
     let home = hubs.home();
     let origin = Origin::parse(hub).ok()?;
     let reader = hubs.reader(origin.as_str()).ok()?;
-    let code = source(home, path, on, (&reader, &origin)).await.ok()?;
+    let code = source(home, path, (&reader, &origin)).await.ok()?;
     Some((code.package.clone(), kept(home, &code, runtime?)?))
 }
 
