@@ -27,12 +27,18 @@ pub trait Source: Send + Sync + 'static {
 
     /// Stop a fill the worker is running, soon, from any thread. Never waits.
     fn stop(&self) {}
+
+    /// Make a demand fill cheaper ahead of it, when the worker cannot run it (its fill needs its
+    /// caller): on the worker, without the Region, while the use before it computes. Never
+    /// waits on the device.
+    fn warm(&self) {}
 }
 
 #[derive(Default)]
 struct Slot {
-    /// The next Region to fill, and whether it may only take room already free.
-    wanted: Option<(Arc<Region>, bool)>,
+    /// The next Region to fill, whether it may only take room already free, and whether it is
+    /// only warmed (`Source::warm`).
+    wanted: Option<(Arc<Region>, bool, bool)>,
     running: Option<Arc<Region>>,
     worker: Option<ThreadId>,
 }
@@ -68,30 +74,35 @@ fn next(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
 /// blocks (a LoRA's beside a DiT's) must not leave the one that matters a moment's notice.
 const HORIZON: usize = 4;
 
-/// The nearest absent Region after `region`, past resident ones, if it needs no caller. Never one
-/// past it: that one's demand evicts a fill ahead first, so the guess is read twice (H3 Turbo at
-/// 8 GiB on a 4090: 22 GB a call).
-fn upcoming(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
+/// The nearest absent Region after `region`, past resident ones, and whether it is only warmed: one
+/// whose fill needs its caller. Never one past it: that one's demand evicts a fill ahead first, so
+/// the guess is read twice (H3 Turbo at 8 GiB on a 4090: 22 GB a call).
+fn upcoming(region: &Arc<Region>) -> Result<Option<(Arc<Region>, bool)>> {
     let mut at = Arc::clone(region);
     for _ in 0..HORIZON {
         let Some(next) = next(&at)? else { return Ok(None) };
         if next.uses.state() == Contents::Cold {
-            return Ok((!next.uses.unused.load(Ordering::Relaxed) && next.source.ahead()).then_some(next));
+            if next.uses.unused.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            let warm = !next.source.ahead();
+            return Ok(Some((next, warm)));
         }
         at = next;
     }
     Ok(None)
 }
 
-/// A use of `region` happened, or its demand fill is about to run: fill what comes next, if absent.
+/// A use of `region` happened, or its demand fill is about to run: fill what comes next, if absent,
+/// or warm it when its fill needs its caller.
 pub(crate) fn after_use(region: &Arc<Region>) -> Result<()> {
-    if let Some(next) = upcoming(region)? {
-        want(region.gpu, next, false)?;
+    if let Some((next, warm)) = upcoming(region)? {
+        want(region.gpu, next, false, warm)?;
     }
     Ok(())
 }
 
-fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result<()> {
+fn want(device: &'static Device, region: Arc<Region>, free_only: bool, warm: bool) -> Result<()> {
     let mut slot = device.ahead.slot();
     if slot.running.as_ref().is_some_and(|running| Arc::ptr_eq(running, &region)) {
         return Ok(());
@@ -102,7 +113,7 @@ fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result
             .map_err(|error| Error::Unsupported(format!("fill worker could not start: {error}")))?;
         slot.worker = Some(worker.thread().id());
     }
-    let replaced = slot.wanted.replace((region, free_only));
+    let replaced = slot.wanted.replace((region, free_only, warm));
     device.ahead.wake.notify_all();
     drop(slot);
     drop(replaced); // A Region's last drop needs the gate.
@@ -111,7 +122,7 @@ fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result
 
 fn run(device: &'static Device) {
     loop {
-        let (region, free_only) = {
+        let (region, free_only, warm) = {
             let mut slot = device.ahead.slot();
             loop {
                 if let Some(wanted) = slot.wanted.take() {
@@ -121,7 +132,14 @@ fn run(device: &'static Device) {
                 slot = device.ahead.wake.wait(slot).unwrap_or_else(|error| error.into_inner());
             }
         };
-        let filled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill_ahead(&region, free_only)));
+        // A warmed Region stays absent, and nothing chains past it: the next use asks again.
+        let filled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match warm {
+            true => {
+                region.source.warm();
+                Ok(false)
+            }
+            false => fill_ahead(&region, free_only),
+        }));
         // Past the one Region a use asked for, only into room nothing else needs.
         let chained = match filled {
             Ok(Ok(true)) => upcoming(&region).unwrap_or(None),
@@ -135,10 +153,10 @@ fn run(device: &'static Device) {
             let mut slot = device.ahead.slot();
             slot.running = None;
             device.ahead.settled.notify_all();
-            if let Some(next) = chained
+            if let Some((next, warm)) = chained
                 && slot.wanted.is_none()
             {
-                slot.wanted = Some((next, true));
+                slot.wanted = Some((next, true, warm));
             }
         }
     }

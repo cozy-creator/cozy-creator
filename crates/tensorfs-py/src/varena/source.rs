@@ -263,9 +263,14 @@ impl Inner {
         let control = Arc::new(ReadControl::default());
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
         let mode = if fill.target().refilled() { Mode::Buffered } else { Mode::Cache };
-        let source = if ahead { &stored.local } else { &stored.fetching };
+        // The chunks on this machine first, as the worker reads: a waiting caller fetches only
+        // what they lack. A source that cannot plan the read has written nothing.
         // SAFETY: the Fill is exclusive; `abort` drains before a failed fill's pages are released.
-        let read = unsafe { source.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
+        let mut read = unsafe { stored.local.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
+        if !ahead && matches!(read, Err(tensorfs::io::source::Error::Source(_))) {
+            // SAFETY: as above.
+            read = unsafe { stored.fetching.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
+        }
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let stats = read?;
         self.row(stats.bytes, "store", ahead, began);
@@ -399,6 +404,27 @@ impl varena::Source for PageSource {
     fn stop(&self) {
         if let Some(control) = &*self.0.reading.lock().unwrap_or_else(|e| e.into_inner()) {
             control.cancel();
+        }
+    }
+
+    /// A derive's Region, which only its caller fills: the stored bytes no other set holds on the
+    /// card or in a kept page (a LoRA's factors beside its resident base) are read into the page
+    /// cache while the use before it computes, so its fill finds them there.
+    fn warm(&self) {
+        let this = &self.0;
+        let Some(stored) = &this.stored else { return };
+        let began = Instant::now();
+        let held = this.tier.held(this, &stored.items);
+        let cold: Vec<Item> = stored.items.iter().zip(held).filter(|(_, holders)| {
+            !holders.iter().any(|Held { source, .. }| {
+                source.region().upgrade().is_some_and(|region| region.holds_contents())
+                    || source.page.as_ref().is_some_and(|key| this.tier.holds(key))
+            })
+        }).map(|(item, _)| item.clone()).collect();
+        if let Ok(advised) = stored.local.will_need(&cold) {
+            if advised != 0 {
+                this.row(advised, "warm", true, began);
+            }
         }
     }
 
