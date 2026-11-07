@@ -95,6 +95,13 @@ pub struct Spec {
     pub journaled: Vec<u8>,
 }
 
+/// What `Runs::draft` makes of a run sent.
+enum Drafted {
+    /// Its id already names this spec's run.
+    Held(Box<Execution>),
+    New(crate::journal::Invocation, Vec<ObjectRef>),
+}
+
 pub struct Runs {
     pub service: Arc<Service>,
     pub objects: Arc<Objects>,
@@ -312,11 +319,64 @@ impl Runs {
         }
     }
 
-    /// Accepts the run (or answers the one this id already names) and starts its preparation.
-    /// An accepted run is answered before its inputs are checked: they may be gone since.
+    /// Accepts the run (or answers the one this id already names) and starts its preparation:
+    /// an admission of one (`admit`).
     pub fn submit(self: &Arc<Self>, actor: &str, id: &str, spec: Spec) -> Result<Execution, Refused> {
+        let (run, _) = self.admit(actor, vec![(id.to_string(), spec)])?.pop().expect("one run admitted")?;
+        Ok(run)
+    }
+
+    /// Accepts `runs` as one admission (cl-816): each new one is journaled with the others, in one
+    /// transaction, before any prepares, so the scheduler packs them together as the machine's
+    /// quote did. Each answers its run (the one its id already names, too) and whether it is new,
+    /// or why it was refused, alone. An accepted run is answered before its inputs are checked:
+    /// they may be gone since.
+    pub fn admit(self: &Arc<Self>, actor: &str, runs: Vec<(String, Spec)>) -> io::Result<Vec<Result<(Execution, bool), Refused>>> {
+        // Object sweeps stay out from validation through acceptance.
+        let custody = self.objects.guard();
+        let mut answers: Vec<Option<Result<(Execution, bool), Refused>>> = vec![];
+        let mut drafts = vec![];
+        for (id, spec) in runs {
+            match self.draft(actor, &id, &spec) {
+                Ok(Drafted::New(invocation, references)) => {
+                    drafts.push((answers.len(), id, spec, invocation, references));
+                    answers.push(None);
+                }
+                Ok(Drafted::Held(run)) => answers.push(Some(Ok((*run, false)))),
+                Err(refusal) => answers.push(Some(Err(refusal))),
+            }
+        }
+        let accepting = (drafts.iter_mut())
+            .map(|(_, id, spec, invocation, references)| crate::journal::Accepting {
+                id,
+                digest: &spec.digest,
+                invocation: std::mem::take(invocation),
+                objects: references,
+                spec: &spec.journaled,
+            })
+            .collect();
+        let accepted = self.service.engine.accept_runs(actor, accepting)?;
+        drop(custody);
+        for ((at, _, spec, ..), accepted) in drafts.into_iter().zip(accepted) {
+            answers[at] = Some(match accepted {
+                Ok((record, new)) => {
+                    if new {
+                        self.prepare_later(actor, &record.id, spec)?;
+                    }
+                    Ok((record, new))
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(refused("run_id_conflict", error.to_string())),
+                Err(error) => Err(refused("invalid_run_id", error.to_string())),
+            });
+        }
+        Ok(answers.into_iter().map(|answer| answer.expect("each run answered")).collect())
+    }
+
+    /// New run `id` as the journal takes it, and the objects it takes custody of, under the
+    /// caller's custody guard; or the run the id already names with this spec.
+    fn draft(&self, actor: &str, id: &str, spec: &Spec) -> Result<Drafted, Refused> {
         if let Some(run) = self.existing(actor, id, &spec.digest)? {
-            return Ok(run);
+            return Ok(Drafted::Held(Box::new(run)));
         }
         if !spec.input.is_object() {
             return Err(refused(
@@ -324,8 +384,6 @@ impl Runs {
                 "the payload is a JSON object of the function's parameters",
             ));
         }
-        // Object sweeps stay out from validation through acceptance.
-        let custody = self.objects.guard();
         let mut references = Vec::new();
         let unwritten = |input: &str| refused("input_unwritten", format!("input {input} was not written to this machine"));
         for input in &spec.inputs {
@@ -358,7 +416,7 @@ impl Runs {
         // A written file a warm run makes into a model (`object://sha256:<hex>/<file>`).
         for choice in &spec.models {
             // A folder is bound to one retained input tree, never an arbitrary store path.
-            model_folder::input(&spec, choice)?;
+            model_folder::input(spec, choice)?;
             let Some(hex) = choice.source.strip_prefix("object://").and_then(|rest| rest.split('/').next()) else {
                 continue;
             };
@@ -389,19 +447,7 @@ impl Runs {
             prepares: spec.warm || spec.remove,
             ..Default::default() // root and family: stamped at acceptance
         };
-        let (record, new) = self
-            .service
-            .engine
-            .accept_run_objects(actor, id, &spec.digest, draft, &references, &spec.journaled)
-            .map_err(|e| match e.kind() {
-                io::ErrorKind::AlreadyExists => refused("run_id_conflict", e.to_string()),
-                _ => Refused::from(e),
-            })?;
-        drop(custody);
-        if new {
-            self.prepare_later(actor, &record.id, spec).map_err(Refused::from)?;
-        }
-        Ok(record)
+        Ok(Drafted::New(draft, references))
     }
 
     /// The GPUs `run`'s root took as it started; 0: none, or not yet.

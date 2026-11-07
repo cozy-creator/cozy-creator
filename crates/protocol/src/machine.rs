@@ -21,6 +21,8 @@ pub mod path {
     pub const CALCIFER: &str = "/v1/calcifer/{*path}";
     /// `POST` a [`super::RunRequest`]; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
+    /// `POST` a [`super::RunBatch`] (`run-batch/1`): runs admitted as one.
+    pub const RUNS_BATCH: &str = "/v1/runs/batch";
     /// `GET`: SSE of the run's [`super::RunEvent`]s after `Last-Event-ID`.
     pub const EVENTS: &str = "/v1/runs/{id}/events";
     pub const CANCEL: &str = "/v1/runs/{id}/cancel";
@@ -195,6 +197,34 @@ pub struct RunRequest {
     /// The caller's run id, 1-256 bytes.
     pub id: String,
     pub spec: RunSpec,
+}
+
+/// `POST /v1/runs/batch` (`run-batch/1`, cl-816): runs admitted as one. Each new one is accepted
+/// with the others before any prepares, so the machine packs them together, as its estimate quoted
+/// them; `POST /v1/runs` is a batch of one. An update goes alone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunBatch {
+    pub runs: Vec<RunRequest>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunBatchAnswer {
+    /// One per run sent, in its order.
+    pub runs: Vec<Admitted>,
+}
+
+/// One run of a batch, as `POST /v1/runs` would answer it alone: its state, or its refusal.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Admitted {
+    /// The machine accepted it now; false: its id and spec already named it.
+    pub created: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<RunState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<crate::error::Error>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

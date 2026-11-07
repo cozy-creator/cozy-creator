@@ -3,7 +3,7 @@
 //! gives each root its width from the same picture (`widths`), so a quote is what happens as far
 //! as the times hold.
 use crate::{
-    journal::{function_key, Execution, RunTime, State, PREPARING},
+    journal::{function_key, Execution, Installation, RunTime, State, PREPARING},
     pack::{self, Job, Scaling},
     runs::Runs,
     service::Service,
@@ -111,7 +111,7 @@ impl<'a> Here<'a> {
     }
 
     /// The widths `entrypoint` of `installation` takes here at `gpus` asked.
-    fn widths(&self, installation: &crate::journal::Installation, entrypoint: &str, gpus: u32) -> Option<Vec<u32>> {
+    fn widths(&self, installation: &Installation, entrypoint: &str, gpus: u32) -> Option<Vec<u32>> {
         let pool = self.service.pool()?;
         let interface: serde_json::Value = serde_json::from_slice(&installation.interface).ok()?;
         let entry = protocol::interface::entrypoint(&interface, entrypoint)?;
@@ -131,7 +131,7 @@ impl<'a> Here<'a> {
     /// The machine's roots as `pack` sees them, by acceptance: their ids and jobs.
     fn queue(&self) -> io::Result<Vec<(String, Job)>> {
         let engine = &self.service.engine;
-        let mut installed: HashMap<String, Vec<crate::journal::Installation>> = HashMap::new();
+        let mut installed: HashMap<String, Vec<Installation>> = HashMap::new();
         let mut queue = vec![];
         for record in engine.nonterminal(usize::MAX)? {
             let invocation = &record.invocation;
@@ -194,39 +194,35 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
         .collect())
 }
 
-/// A job's function: its package, callable and release (empty: any held here).
-struct Named {
+/// A job's function: its installation here, if `actor` holds one, its package and its callable.
+struct Named<'a> {
+    installation: Option<&'a Installation>,
     package: String,
     entrypoint: String,
-    release: String,
 }
 
 fn invalid(function: &str) -> Error {
     Error::validation("invalid_function", format!("{function:?} is not org/package/function[@release] or sha256:<hex>/function"))
 }
 
-/// `function` as `EstimateJob::function` names it. Local code's package is its manifest's, once
-/// `actor` has written it here.
-fn named(runs: &Runs, actor: &str, function: &str) -> Result<Named, Error> {
+/// `function` as `EstimateJob::function` names it, among the caller's `installations`. Local code is the installation of its manifest, by the alias its install takes, and its
+/// package that installation's; a release, its package's newest installation of it.
+fn named<'a>(runs: &Runs, installations: &'a [Installation], function: &str) -> Result<Named<'a>, Error> {
+    let newest = |held: &dyn Fn(&Installation) -> bool| installations.iter().rev().find(|i| held(i));
     if let Some(rest) = function.strip_prefix("sha256:") {
         let (hex, entrypoint) = rest.split_once('/').filter(|(hex, e)| hex.len() == 64 && !e.is_empty()).ok_or_else(|| invalid(function))?;
-        #[derive(serde::Deserialize, Default)]
-        #[serde(default)]
-        struct Manifest {
-            package: String,
-            release: String,
-        }
-        let manifest = (runs.objects.path(actor, &format!("sha256:{hex}")).ok().flatten())
-            .and_then(|(path, _)| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
-            .unwrap_or_default();
-        return Ok(Named { package: manifest.package, entrypoint: entrypoint.into(), release: manifest.release });
+        let alias = runs.local.alias(&format!("sha256:{hex}"));
+        let installation = newest(&|i| i.alias == alias);
+        let package = installation.map(|i| i.package.clone()).unwrap_or_default();
+        return Ok(Named { installation, package, entrypoint: entrypoint.into() });
     }
     let (path, release) = function.split_once('@').unwrap_or((function, ""));
     match path.rsplit_once('/') {
-        Some((package, entrypoint)) if package.contains('/') && !entrypoint.is_empty() => {
-            Ok(Named { package: package.into(), entrypoint: entrypoint.into(), release: release.into() })
-        }
+        Some((package, entrypoint)) if package.contains('/') && !entrypoint.is_empty() => Ok(Named {
+            installation: newest(&|i| i.package == package && (release.is_empty() || i.release == release)),
+            package: package.into(),
+            entrypoint: entrypoint.into(),
+        }),
         _ => Err(invalid(function)),
     }
 }
@@ -254,10 +250,8 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
     // Each job's place in `queue` once it fits, and its quote so far.
     let mut asked: Vec<(Option<usize>, v1::Quote)> = vec![];
     for job in request.jobs {
-        let named = named(runs, actor, &job.function)?;
-        let installation = (installations.iter().rev()).find(|i| {
-            !named.package.is_empty() && i.package == named.package && (named.release.is_empty() || i.release == named.release)
-        });
+        let named = named(runs, &installations, &job.function)?;
+        let installation = named.installation;
         let widths = installation
             .and_then(|i| here.widths(i, &named.entrypoint, job.gpus))
             .unwrap_or_else(|| here.unknown_widths(job.gpus));

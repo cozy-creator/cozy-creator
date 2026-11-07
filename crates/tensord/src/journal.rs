@@ -1004,69 +1004,24 @@ impl Journal {
         Ok(projection)
     }
 
-    /// `accept_run`, also referencing `objects` (tree members, a local source) the run needs, and
-    /// keeping `spec` (empty: none) until its preparation ends, for a restart to prepare it again.
-    pub fn accept_run_objects(
-        &mut self,
-        actor: &str,
-        id: &str,
-        digest: &str,
-        invocation: Invocation,
-        objects: &[tensorfs::format::ObjectRef],
-        spec: &[u8],
-    ) -> io::Result<(Execution, bool)> {
-        validate_scope(actor, id, id)?;
-        let key = format!("run:{}", encoded(&(actor, id))?);
+    /// `actor`'s runs accepted as one admission, in one transaction (cl-816): each referencing its
+    /// `objects` (tree members, a local source) and keeping its `spec` (empty: none) until its
+    /// preparation ends, for a restart to prepare it again. Each answers the run, and whether it
+    /// is new; an id that names another spec or an update, or is invalid, is refused alone.
+    pub fn accept_runs(&mut self, actor: &str, runs: Vec<Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
-        if update_run_reserved(&tx, actor, id)? {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id names a software update"));
-        }
-        let prior: Option<String> = tx
-            .query_row(
-                "SELECT record FROM executions WHERE idempotency_key=?1",
-                [&key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db_error)?;
-        if let Some(prior) = prior {
-            let execution: Execution = serde_json::from_str(&prior).map_err(db_error)?;
-            if execution.canceled_before_acceptance && execution.state == State::Canceled {
-                return Ok((execution, false));
-            }
-            if execution
-                .submission
-                .as_ref()
-                .map(|s| s.invocation_digest.as_str())
-                != Some(digest)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "this run id already names another run spec",
-                ));
-            }
-            return Ok((execution, false));
-        }
-        let context = SubmissionContext {
-            actor: actor.into(),
-            request_id: id.into(),
-            submission_id: id.into(),
-            expected_workspace_id: String::new(),
-            capture_digest: String::new(),
-            invocation_digest: digest.into(),
-            payload_digest: String::new(),
-            preparation_id: String::new(),
-        };
-        let execution = insert(&tx, &key, invocation, Some(context), "", Some(PREPARING))?;
-        reference_objects(&tx, &execution.id, objects)?;
-        if !spec.is_empty() {
-            tx.execute("INSERT INTO run_specs(execution,spec) VALUES(?1,?2)", params![execution.id, spec]).map_err(db_error)?;
+        let mut accepted = vec![];
+        for run in runs {
+            accepted.push(match accepting(&tx, actor, run) {
+                Err(error) if matches!(error.kind(), io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidInput) => Err(error),
+                accepted => Ok(accepted?),
+            });
         }
         tx.commit().map_err(db_error)?;
-        Ok((execution, true))
+        Ok(accepted)
     }
 
     /// Reserves an absent run as canceled in the same transaction namespace as acceptance.
@@ -1306,6 +1261,52 @@ fn reference_objects(
 
 /// The waiting reason of a run accepted before its preparation completes.
 pub const PREPARING: &str = "preparing";
+
+/// One run of an admission (`Journal::accept_runs`).
+pub struct Accepting<'a> {
+    pub id: &'a str,
+    pub digest: &'a str,
+    pub invocation: Invocation,
+    pub objects: &'a [tensorfs::format::ObjectRef],
+    pub spec: &'a [u8],
+}
+
+fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) -> io::Result<(Execution, bool)> {
+    let Accepting { id, digest, invocation, objects, spec } = run;
+    validate_scope(actor, id, id)?;
+    let key = format!("run:{}", encoded(&(actor, id))?);
+    if update_run_reserved(tx, actor, id)? {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id names a software update"));
+    }
+    let prior: Option<String> = tx
+        .query_row("SELECT record FROM executions WHERE idempotency_key=?1", [&key], |row| row.get(0))
+        .optional()
+        .map_err(db_error)?;
+    if let Some(prior) = prior {
+        let execution: Execution = serde_json::from_str(&prior).map_err(db_error)?;
+        let canceled = execution.canceled_before_acceptance && execution.state == State::Canceled;
+        if !canceled && execution.submission.as_ref().map(|s| s.invocation_digest.as_str()) != Some(digest) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id already names another run spec"));
+        }
+        return Ok((execution, false));
+    }
+    let context = SubmissionContext {
+        actor: actor.into(),
+        request_id: id.into(),
+        submission_id: id.into(),
+        expected_workspace_id: String::new(),
+        capture_digest: String::new(),
+        invocation_digest: digest.into(),
+        payload_digest: String::new(),
+        preparation_id: String::new(),
+    };
+    let execution = insert(tx, &key, invocation, Some(context), "", Some(PREPARING))?;
+    reference_objects(tx, &execution.id, objects)?;
+    if !spec.is_empty() {
+        tx.execute("INSERT INTO run_specs(execution,spec) VALUES(?1,?2)", params![execution.id, spec]).map_err(db_error)?;
+    }
+    Ok((execution, true))
+}
 
 /// The tables holding rows of one execution.
 const EXECUTION_ROWS: [&str; 10] = [

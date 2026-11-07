@@ -509,20 +509,6 @@ impl Log {
     }
 }
 
-/// Accepts a run, or answers the one a re-sent spec already names (false). The run reads its
-/// Hub's public content anonymously, and private content under its signer's run capability there,
-/// which a re-sent spec's may replace and which is renewed while the run lives.
-fn accept(runs: &Arc<crate::runs::Runs>, actor: &str, id: &str, spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -> Result<bool, Error> {
-    let spec = reach(actor, spec, hub)?;
-    // Renewed from before it prepares: its first reads wait for the token.
-    let _serving = spec.hub.as_ref().and_then(|hub| hub.capability.as_ref()).map(|capability| capability.serves(id, &runs.service.engine));
-    if runs.existing(actor, id, &spec.digest)?.is_some() {
-        return Ok(false);
-    }
-    runs.submit(actor, id, spec)?;
-    Ok(true)
-}
-
 /// `spec` reading `hub`, under `actor`'s run capability there when the request carried one.
 fn reach(actor: &str, mut spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -> Result<crate::runs::Spec, Error> {
     if let Some(hub) = hub {
@@ -561,24 +547,50 @@ pub(crate) fn resume(runs: &Arc<crate::runs::Runs>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Accepts the run `request` names: whether it is new, and its state.
+/// Accepts the runs `requests` name as one admission (`Runs::admit`): each whether it is new and
+/// its state, or why it was refused. A run reads its Hub's public content anonymously, and private
+/// content under its signer's run capability there, which a re-sent spec's may replace and which is
+/// renewed while the run lives.
 pub(super) async fn submit<B: MachineBackend>(
     backend: &Arc<B>,
     actor: VerifiedActor,
-    request: v1::RunRequest,
-) -> Result<(bool, v1::RunState), Error> {
+    requests: Vec<v1::RunRequest>,
+) -> Result<Vec<Result<(bool, v1::RunState), Error>>, Error> {
     let runs = backend
         .runs()
         .ok_or_else(|| Error::not_found("capability_unavailable", "this machine takes no runs"))?;
-    let (spec, hub) = spec_of(request.spec)?;
-    let (id, signer) = (request.id, crate::machine_api::actor_id(actor));
-    let accepted = id.clone();
-    let created = tokio::task::spawn_blocking(move || accept(&runs, &signer, &accepted, spec, hub))
-        .await
-        .map_err(|_| Error::internal("machine_operation_stopped", "machine operation stopped"))??;
-    let run = id.clone();
-    let current = blocking(backend, move |backend| backend.get(actor, query(backend, actor, &run)?)).await?;
-    Ok((created, state(&id, &current)))
+    let signer = crate::machine_api::actor_id(actor);
+    let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
+    let admitted = tokio::task::spawn_blocking(move || {
+        let (mut answers, mut sent, mut serving) = (vec![], vec![], vec![]);
+        for request in requests {
+            match spec_of(request.spec).and_then(|(spec, hub)| reach(&signer, spec, hub)) {
+                Ok(spec) => {
+                    // Renewed from before it prepares: its first reads wait for the token.
+                    let capability = spec.hub.as_ref().and_then(|hub| hub.capability.as_ref());
+                    serving.extend(capability.map(|capability| capability.serves(&request.id, &runs.service.engine)));
+                    sent.push((answers.len(), (request.id, spec)));
+                    answers.push(None);
+                }
+                Err(error) => answers.push(Some(Err(error))),
+            }
+        }
+        let (at, sent): (Vec<usize>, Vec<_>) = sent.into_iter().unzip();
+        let admitted = runs.admit(&signer, sent).map_err(crate::objects::Refused::from)?;
+        for (at, admitted) in at.into_iter().zip(admitted) {
+            answers[at] = Some(admitted.map(|(_, new)| new).map_err(Error::from));
+        }
+        drop(serving);
+        Ok::<_, Error>(answers.into_iter().map(|answer| answer.expect("each run answered")).collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|_| Error::internal("machine_operation_stopped", "machine operation stopped"))??;
+    blocking(backend, move |backend| {
+        Ok(ids.iter().zip(admitted)
+            .map(|(id, admitted)| Ok((admitted?, state(id, &backend.get(actor, query(backend, actor, id)?)?))))
+            .collect())
+    })
+    .await
 }
 
 /// A run's log after `cursor`, its current state first, until its outcome or the caller leaves;

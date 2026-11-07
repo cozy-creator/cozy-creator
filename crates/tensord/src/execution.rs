@@ -393,27 +393,14 @@ impl Engine {
             .commit_public_terminal(id, record)
     }
 
-    pub fn accept_run_objects(
-        &self,
-        actor: &str,
-        id: &str,
-        digest: &str,
-        invocation: Invocation,
-        objects: &[tensorfs::format::ObjectRef],
-        spec: &[u8],
-    ) -> io::Result<(Execution, bool)> {
+    /// See `Journal::accept_runs`: one admission, which the dispatcher sees whole.
+    pub fn accept_runs(&self, actor: &str, runs: Vec<crate::journal::Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
         let mut owned = self.owned.lock().unwrap();
-        let (record, new) = self
-            .journal
-            .lock()
-            .unwrap()
-            .accept_run_objects(actor, id, digest, invocation, objects, spec)?;
-        if new {
-            owned.insert(record.id.clone());
-        }
+        let accepted = self.journal.lock().unwrap().accept_runs(actor, runs)?;
+        owned.extend(accepted.iter().flatten().filter(|(_, new)| *new).map(|(record, _)| record.id.clone()));
         drop(owned);
         self.notify_activity();
-        Ok((record, new))
+        Ok(accepted)
     }
 
     /// The preparing run names its code and models and becomes dispatchable, or completes with
