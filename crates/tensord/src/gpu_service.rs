@@ -771,9 +771,7 @@ fn parent_app(held: &HeldGeneration) -> App {
 
 /// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
-    let room = host_memory::read().available;
-    let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
-    room >= 0 && room - PARENT_BYTES >= half
+    host_memory::cache_room() >= PARENT_BYTES
 }
 
 /// The manifests live executors read. A download's GC must not evict them: an evicted file a
@@ -2794,8 +2792,7 @@ impl Pool {
     /// priority: the first `few` while half the host's memory stays available. Cache only: the
     /// kernel takes it back whenever anything needs the memory.
     fn read_ahead(&self, held: impl IntoIterator<Item = HeldGeneration>, few: usize) {
-        let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
-        let mut room = host_memory::read().available.saturating_sub(half);
+        let mut room = host_memory::cache_room();
         let fits = |held: &HeldGeneration| {
             room = room.saturating_sub(i64::try_from(crate::import_pages::recorded(held)).unwrap_or(i64::MAX));
             room >= 0
