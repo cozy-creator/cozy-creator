@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
 # ///
 """The project cell's shot package: weightless. `shoot` is a tool: its video is the take it picks up from, else its plate, else the first
 video its text mentions, and `given` says what it got, its pickup too. `refuse` is its own no. `bare` is a function of just its video,

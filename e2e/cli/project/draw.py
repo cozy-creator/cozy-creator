@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
 # ///
 """The project cell's picture tool: a weightless still of one random colour, so each version differs. Its call says what it read."""
 

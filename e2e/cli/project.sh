@@ -301,8 +301,8 @@ render "$T" film || check "held long: the render after: $(tail -c 300 "$OUT/rend
 [ "sha256:$(sha "$T/film.mp4")" = "$(take_file "$T" film video)" ] || check "held long: the film isn't the state once it's let go"
 }
 
-# The project and page cells' fixtures are tools (`@app.tool`). A machine whose Runtime predates them (PyPI's 0.42.1, which one with no
-# Runtime of its own takes) reads each as no function: said once, here, and the cells don't go on.
+# The project and page cells' fixtures are tools (`@app.tool`, cozy-runtime >=0.43). A machine with no Runtime of its own takes PyPI's
+# newest, which before 0.43 is published refuses them: said once, here, and the cells don't go on.
 tools_read() {
 step "a project: the fixtures' tools read on this machine"
 (cd "$OUT/project" && cozy run "$here/project/draw.py/draw" instructions=read --on local) > "$OUT/tools-read.txt" 2>&1 \

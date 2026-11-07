@@ -7,7 +7,7 @@ name = "e2e-boxed"
 version = "0.1.0"
 description = "The web-package-ui cell's package: weightless tools whose boxes it draws itself"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
+dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "e2e_boxed:app"

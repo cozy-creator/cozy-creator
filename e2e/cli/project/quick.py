@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
 # ///
 """A weightless still with a Turbo toggle, as a model's tool has one: one box, its Turbo a field."""
 

@@ -30,21 +30,14 @@ wheels = [
 
 [[package]]
 name = "cozy-runtime"
-version = "0.42.1"
-source = { registry = "https://pypi.org/simple" }
+version = "0.43.0"
+source = { git = "https://github.com/cozy-creator/cozy-runtime?rev=fcf43544c7794e249b570ffc27d0c5bfd0a9c54c#fcf43544c7794e249b570ffc27d0c5bfd0a9c54c" }
 dependencies = [
     { name = "msgspec" },
     { name = "numpy" },
     { name = "packaging" },
     { name = "pillow" },
     { name = "tensorfs" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/33/a3/ca4bc3f7df4d96a62ea213b99ad744b023a2a308e8e8540745691590a60c/cozy_runtime-0.42.1.tar.gz", hash = "sha256:126264134087fc9c7d95951f3fa5ff9c8535a9510121a89638e924f531b69f90", size = 2676875, upload-time = "2026-11-06T19:47:55.233Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/11/43/ffbba58be54d4765c2a1e5bb6a9eacbe877cccca04f4b1ac1fb5c1a53206/cozy_runtime-0.42.1-cp312-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:35af130ce6824bf7d02c1173b50e71d094fa415c1b87c1612756022c34f442fc", size = 30699696, upload-time = "2026-11-06T19:47:42.381Z" },
-    { url = "https://files.pythonhosted.org/packages/a1/ff/fcb5fac82a96c3f9ac6b83aa9f8bddde2f1a183fa8686028e9a6ab0b64b8/cozy_runtime-0.42.1-cp312-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:915b111607a1ab55e441def5f099f5c3440ee6b4f0a5d97287037c9ac2648ed3", size = 34834691, upload-time = "2026-11-06T19:47:46.565Z" },
-    { url = "https://files.pythonhosted.org/packages/4c/3b/305baa576bfa67df25ec100bc15ea2ed3d07b0e7b5eb12bb64309f62106a/cozy_runtime-0.42.1-cp312-abi3-win_amd64.whl", hash = "sha256:786480cf0f41eae324c36fa79660389cc51b4bf9df6edc26640ca15231ba2ef5", size = 21658257, upload-time = "2026-11-06T19:47:50.089Z" },
-    { url = "https://files.pythonhosted.org/packages/58/36/05797556fc5cf8b385c6d2e35417f4b7af1d6e6c6148ccc51a46a021ef12/cozy_runtime-0.42.1-py3-none-any.whl", hash = "sha256:cebf45bcb7c2a924e4c1d2f0bed2b4fd9a58592464227def412f2f9826aa86e0", size = 2313471, upload-time = "2026-11-06T19:47:52.942Z" },
 ]
 
 [package.optional-dependencies]
@@ -64,7 +57,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cozy-runtime", extras = ["media"], specifier = ">=0.41" },
+    { name = "cozy-runtime", extras = ["media"], git = "https://github.com/cozy-creator/cozy-runtime?rev=fcf43544c7794e249b570ffc27d0c5bfd0a9c54c" },
     { name = "e2e-probe-callee", directory = "../probe-callee" },
     { name = "msgspec", specifier = ">=0.19" },
 ]
@@ -313,13 +306,5 @@ wheels = [
 
 [[package]]
 name = "tensorfs"
-version = "0.21.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/20/18/f43046c31b37997f34b0c7dcb6e9b55e6d0f7426043b68ce74be881d3018/tensorfs-0.21.1.tar.gz", hash = "sha256:560209635e5ee497bd2b9b156e8fd22b75a30678b066434f2f85f17aecdc93cb", size = 1957258, upload-time = "2026-11-06T19:50:17.372Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/43/7b14db8673caa0788470a90b3d7a1c8d0fa752d6c2702d46b3cbb28bb7dc/tensorfs-0.21.1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:93f5a9b4179fd058ba6a454a675422dc17c98e3cc7fc84c8b6a287e67bc51176", size = 14136696, upload-time = "2026-11-06T19:50:05.576Z" },
-    { url = "https://files.pythonhosted.org/packages/71/08/617dc306673de4b24116bb4ff2d862f637414dbf5c8b1595e04c29d46661/tensorfs-0.21.1-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:32edb5b1e0dbb9aee22b511a77adbb8ee89fc6414bd9de893be899f077531c96", size = 19185395, upload-time = "2026-11-06T19:50:07.869Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/13/edf667f9eca469b8f686a4a7ba4d56ba39f10b784d8db1acf541535a74e8/tensorfs-0.21.1-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:251c36ca4cec6a1c13c288f7f91ffc081ea1ff8fbc136b259a5b513a8c2706bf", size = 20555493, upload-time = "2026-11-06T19:50:10.353Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/c4/63ef00980b5aa7ae9fa57883212868473e87478d8d72bf06b294fb6927b4/tensorfs-0.21.1-cp311-abi3-win_amd64.whl", hash = "sha256:128c83e55d19a6320f9a2a8258fe5b72ecd00347e6a23232eedf4d668099d961", size = 17212433, upload-time = "2026-11-06T19:50:12.727Z" },
-    { url = "https://files.pythonhosted.org/packages/69/88/e72cf6ed4e35b4eb628021dd0672d6b3bbbe06081bf81a5e7a51e2923f2d/tensorfs-0.21.1-cp311-abi3-win_arm64.whl", hash = "sha256:feed2ca19c1bcb4eeb6769063b4c71a4965cb412aa4c73fb8b8383bc418e427c", size = 13836329, upload-time = "2026-11-06T19:50:15.187Z" },
-]
+version = "0.22.0"
+source = { git = "https://github.com/cozy-creator/cozy-creator?subdirectory=crates%2Ftensorfs-py&rev=09f1df7e73ddba045a4937378fa27944b6982bd5#09f1df7e73ddba045a4937378fa27944b6982bd5" }

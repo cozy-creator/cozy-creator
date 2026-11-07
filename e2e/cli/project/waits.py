@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
 # ///
 """A weightless still of one random colour that takes `seconds`, so a proof can do something while it runs. Its call says what it read."""
 
