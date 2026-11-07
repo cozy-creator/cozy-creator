@@ -162,7 +162,19 @@ pub struct Measured {
     duration_ms: u64,
 }
 
+impl Measured {
+    fn of(file: &File) -> Self {
+        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms }
+    }
+}
+
 impl File {
+    /// What `measured` says is measured of these bytes, on this row.
+    fn measured_as(&mut self, measured: &File) {
+        (self.width, self.height, self.fps, self.frames, self.alpha, self.duration_ms) =
+            (measured.width, measured.height, measured.fps, measured.frames, measured.alpha, measured.duration_ms);
+    }
+
     fn extension(&self) -> String {
         Path::new(&self.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
     }
@@ -1362,14 +1374,18 @@ impl Folder {
         Ok(sha256)
     }
 
-    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. Listed as
-    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path, and why it
-    /// isn't listed: paid-for bytes are kept whatever the project can say of them.
-    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<(PathBuf, Option<Error>), Error> {
+    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. In this order: what's
+    /// `measured` of it in project.db, its file in `files/`, then its row as here and its run's listing, in place of what an earlier revision
+    /// of that output was, which goes if nothing else names it. So a file here is a file measured. Answers its path, and why it isn't listed:
+    /// paid-for bytes are kept whatever the project can say of them.
+    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
+            if let Some(measured) = measured {
+                self.record_measured(&BTreeMap::from([(digest.to_owned(), measured.clone())]))?;
+            }
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
@@ -1380,6 +1396,9 @@ impl Folder {
                     }
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
+                if let Some(measured) = measured.filter(|measured| measured.fps > 0.0 && measured.width > 0) {
+                    super::thumbs::landed(at.clone(), digest, measured.lasts_ms() as f64 / 1000.0);
+                }
             }
             let old = std::cell::RefCell::new(vec![]);
             let listed = |rows: &mut Vec<RunFile>| {
@@ -1389,12 +1408,26 @@ impl Folder {
                     None => rows.push(made.clone()),
                 }
             };
-            // A walk's run lands on its version: nothing of the project moves until then.
-            let listed = match self.walk_now() {
-                Ok(walk) if walk.walk.runs.contains_key(&made.run) => self.update_walk(|walk| listed(&mut walk.walk.landing)),
-                Ok(_) => self.update_lock(|lock| listed(&mut lock.runs)),
-                Err(error) => Err(error),
+            // Here as `fill` finds a file in `files/`, with no wait for the next read to list it.
+            let here = |lock: &mut Lock| {
+                let row = lock.files.entry(digest.to_owned()).or_default();
+                (row.sha256, row.path, row.here) = (digest.to_owned(), path.clone(), true);
+                (row.ext, row.machine, row.length) = Default::default();
+                if let Some(measured) = measured {
+                    row.measured_as(measured);
+                }
             };
+            // A walk's run lands on its version: nothing of the project moves until then.
+            let listed = self.act(|| match self.walk_now()? {
+                walk if walk.walk.runs.contains_key(&made.run) => {
+                    self.update_lock(here)?;
+                    self.update_walk(|walk| listed(&mut walk.walk.landing))
+                }
+                _ => self.update_lock(|lock| {
+                    here(lock);
+                    listed(&mut lock.runs);
+                }),
+            });
             (self.path(&path), old.into_inner(), listed.err())
         };
         if unlisted.is_none() {
@@ -1519,25 +1552,36 @@ impl Folder {
         }
         for (sha256, probed) in &measured {
             if let Some(file) = lock.files.get_mut(sha256) {
-                (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms) = (probed.width, probed.height, probed.fps, probed.frames, probed.alpha, probed.duration_ms);
+                file.measured_as(probed);
                 // A video that landed: the page plays its preview on a hover.
                 if file.field() == "video" && file.width > 0 {
                     super::thumbs::landed(self.dir.join(&file.path), sha256, file.lasts_ms() as f64 / 1000.0);
                 }
             }
         }
-        self.writing_measured(|held| {
-            for (sha256, file) in &measured {
-                held.insert(sha256.clone(), Measured { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms });
-            }
-            Ok(())
-        })?;
-        self.update_lock(|held| {
-            for (sha256, file) in &measured {
-                if let Some(row) = held.files.get_mut(sha256) {
-                    (row.width, row.height, row.fps, row.frames, row.alpha, row.duration_ms) = (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms);
+        self.record_measured(&measured)
+    }
+
+    /// What's `measured` of these files by hash, in project.db and on their rows, in one write: what ffprobe says of their bytes, here or not.
+    fn record_measured(&self, measured: &BTreeMap<String, File>) -> Result<(), Error> {
+        let new = self.reading_measured(|held| measured.iter().any(|(sha256, file)| held.get(sha256) != Some(&Measured::of(file))))?;
+        if !new {
+            return Ok(());
+        }
+        self.act(|| {
+            self.writing_measured(|held| {
+                for (sha256, file) in measured {
+                    held.insert(sha256.clone(), Measured::of(file));
                 }
-            }
+                Ok(())
+            })?;
+            self.update_lock(|held| {
+                for (sha256, file) in measured {
+                    if let Some(row) = held.files.get_mut(sha256) {
+                        row.measured_as(file);
+                    }
+                }
+            })
         })
     }
 

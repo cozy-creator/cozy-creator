@@ -247,6 +247,8 @@ export interface Opened {
 
 export interface Asked {
   id: string
+  /** This render, which the walk's `ended` that names it ends; none when it joined one going and added nothing. */
+  ask?: string
   path: string
   joined?: boolean
   added: number

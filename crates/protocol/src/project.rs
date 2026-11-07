@@ -64,6 +64,9 @@ pub struct Card {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Asked {
     pub id: String,
+    /// This render, which the `ended` that names it ends. None when it joined one going and added nothing: that one's end is its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<String>,
     pub path: PathBuf,
     /// A render was going already: this ask joined it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1188,15 +1191,18 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         without: Vec<String>,
     },
-    /// The walk is over: nothing it was asked is left to send or follow. `error` is the first thing that
-    /// failed (`Failed` said it already, unless the walk itself stopped), or when more than that was
-    /// asked, `render_incomplete`: how far it got, that failure, and the command for the rest.
+    /// The walk is over: nothing it was asked is left to send or follow, and every take it made is whole here (its file, its row and
+    /// what's measured of it). `error` is the first thing that failed (`Failed` said it already, unless the walk itself stopped), or
+    /// when more than that was asked, `render_incomplete`: how far it got, that failure, and the command for the rest.
     Ended {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,
         /// What this walk landed, if it landed anything.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rendered: Option<Rendered>,
+        /// The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        asks: Vec<String>,
     },
 }
 

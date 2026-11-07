@@ -426,13 +426,25 @@ impl Holding {
     }
 }
 
-/// What a project's run landed: which run, of what, and its bytes' digest.
+/// What a project's run landed: which run, of what, its bytes' digest, and what's measured of them.
 pub(crate) struct Landed<'a> {
     pub run: u64,
     pub target: &'a str,
     pub output: &'a str,
     pub index: u32,
     pub digest: &'a str,
+    pub measured: Option<&'a Facts>,
+}
+
+/// What's measured of a file: a picture's or video's size, a video's rate and frames, a picture's alpha, a sound's length.
+pub(crate) use folder::File as Facts;
+
+/// What's measured of the picture, video or sound at `path`, as a project measures its files, with ffprobe (and ffmpeg, for a picture's
+/// alpha) from `tools`, else PATH's. None of anything else, or with no ffprobe here.
+pub(crate) fn measured(tools: &FsPath, path: &FsPath, media_type: &str) -> Option<Facts> {
+    let field = ["image", "video", "audio"].into_iter().find(|field| media_type.strip_prefix(field).is_some_and(|rest| rest.starts_with('/')))?;
+    let (found, ffprobe) = platform::tools::ffmpeg(tools, &crate::tools::path())?;
+    tools::measured(&found.path, &ffprobe, path, field)
 }
 
 /// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
@@ -452,7 +464,7 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
             Err(why) => (vec![], Some(why)),
         },
     };
-    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
+    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
     let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
@@ -594,18 +606,23 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
             Err(error) => {
                 *walk.project.walking.lock().expect("walking lock") = false;
                 walk.project.unsent.lock().expect("unsent lock").push(error.clone());
+                // What it was asked stays owed for the next walk; for whoever follows these, this one stopped.
+                if let Ok(owed) = walk.folder().walk_now() {
+                    walk.ended.lock().expect("ended lock").extend(owed.walk.asks.into_iter().map(|ask| ask.id));
+                }
                 Some(error)
             }
         };
         remember(&api);
-        // What landed last is measured here, or no later walk says how long a take lasts, which Pick up from here needs.
+        // A take is measured as it lands. What this walk made here (a cut, a frame), or what landed before ffprobe was, is measured now.
         if let Err(error) = walk.measure() {
             warn!("measuring a project's files: {}", error.message);
         }
         crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
-        walk.say(Event::Ended { error, rendered: walk.rendered() });
+        let asks = std::mem::take(&mut *walk.ended.lock().expect("ended lock"));
+        walk.say(Event::Ended { error, rendered: walk.rendered(), asks });
     });
 }
 
@@ -2004,7 +2021,8 @@ async fn runs(
     let queued = queued_now(&project, &ask.id);
     walk(&api, &project);
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder), board: project.jobs.board() })))
+    let ask = (!joined || added > 0).then_some(ask.id);
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder), board: project.jobs.board() })))
 }
 
 /// A run by its number, as its record says now.
@@ -2588,6 +2606,8 @@ struct Walk {
     measuring: AtomicBool,
     /// The ranges of videos cut on this computer, by hash, where each is: sent from there, never kept in the project.
     clips: Mutex<HashMap<String, PathBuf>>,
+    /// The asks it finished, which its end names.
+    ended: Mutex<Vec<String>>,
 }
 
 /// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
@@ -2682,6 +2702,7 @@ impl Walk {
             stopped: Mutex::default(),
             measuring: AtomicBool::new(false),
             clips: Mutex::new(HashMap::new()),
+            ended: Mutex::default(),
         }
     }
 
@@ -2840,7 +2861,12 @@ impl Walk {
             if walk.walk.asks.is_empty() {
                 walk.walk.asked.clear();
             }
-        })
+        })?;
+        let mut ended = self.ended.lock().expect("ended lock");
+        if !ended.iter().any(|done| done == id) {
+            ended.push(id.to_owned());
+        }
+        Ok(())
     }
 
     /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked

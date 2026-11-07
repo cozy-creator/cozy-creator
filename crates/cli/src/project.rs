@@ -667,9 +667,9 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
     let events = events.take().expect("following");
     let status = format!("cozy project -p {} status", opened.name);
     if ctx.json {
-        return following_json(ctx, events, &status).await;
+        return following_json(ctx, events, &status, asked.ask.as_deref()).await;
     }
-    render::follow(ctx, render::Rendering::new(opened.path.clone(), asked.board), events, args_plain, &status).await
+    render::follow(ctx, render::Rendering::new(opened.path.clone(), asked.board, asked.ask), events, args_plain, &status).await
 }
 
 /// What this computer would render poorly, in the line the page asks with, said once as a warning: this never asks, and goes on. A
@@ -684,8 +684,9 @@ async fn poorly_here(calcifer: &crate::calcifer_client::Client, id: &str, names:
     output::warn(&lines.collect::<Vec<_>>().join(" "));
 }
 
-/// `--json`: each run's own events, as `cozy run` gives them, and the render's refusal as its envelope.
-async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch<Event>, status: &str) -> Result<ExitCode, Error> {
+/// `--json`: each run's own events, as `cozy run` gives them, and the render's refusal as its envelope. It ends with the walk that ends
+/// `ask`, or with None the one going.
+async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch<Event>, status: &str, ask: Option<&str>) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let mut warned = std::collections::HashSet::new();
     // `/events` opens with the runs going, and one that began just then can be told twice.
@@ -703,7 +704,7 @@ async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch
                     output::warn(&message);
                 }
             }
-            Event::Ended { error, .. } => {
+            Event::Ended { error, asks, .. } if ask.is_none_or(|ask| asks.iter().any(|ended| ended == ask)) => {
                 return match error {
                     Some(error) => Err(error),
                     None => Ok(ExitCode::SUCCESS),
@@ -741,8 +742,8 @@ async fn wait(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
     let state: State = calcifer.get(&format!("/v1/projects/{}", opened.id)).await?;
     let status = format!("cozy project -p {} status", opened.name);
     match state.board.clone().filter(|_| state.busy) {
-        Some(_) if ctx.json => following_json(ctx, events, &status).await,
-        Some(board) => render::follow(ctx, render::Rendering::new(opened.path.clone(), board), events, false, &status).await,
+        Some(_) if ctx.json => following_json(ctx, events, &status, None).await,
+        Some(board) => render::follow(ctx, render::Rendering::new(opened.path.clone(), board, None), events, false, &status).await,
         None => {
             shown(ctx, &state);
             let failed = state.assets.iter().any(|asset| asset.failure.is_some());
