@@ -292,6 +292,17 @@ impl Plan {
         }
         Ok(plan)
     }
+    /// The same plan on `degree` GPUs: the machine picks a root's width as it starts (cl-816).
+    pub fn at(mut self, degree: u32) -> io::Result<Self> {
+        if degree == self.degree || self.degree == 0 || degree == 0 {
+            return Ok(self);
+        }
+        let Some(application) = self.slots.first().map(|slot| slot.binding.application.clone()) else { return Ok(self) };
+        self.degree = degree;
+        self.construction = construction(&self.generation, &application, &self.slots, degree)?;
+        self.executor = environment(&self.generation, &application, degree)?;
+        Ok(self)
+    }
     /// The request's weight precision (`PrepareRequest::bits`): its main model's lane width, the
     /// first slot built up front (the one `--lane` names). At 16 the Runtime attends exactly. Read
     /// from the slot's precision family, which a plan journaled by an earlier TensorD carries too.
@@ -393,6 +404,11 @@ pub fn constructed(model: &serde_json::Value) -> bool {
 /// within `available` GPUs and, when one is asked for, `wanted`; Runtime `machine_lanes.widths`.
 /// A count asked for is a cap, never a refusal: a caller's `--gpus 2` gives its one-GPU children one.
 pub fn group_degree(models: &[serde_json::Value], wanted: u32, available: usize) -> u32 {
+    group_degrees(models, wanted, available).last().copied().unwrap_or(1)
+}
+
+/// Every group `group_degree` chooses among, smallest first: one at least.
+pub fn group_degrees(models: &[serde_json::Value], wanted: u32, available: usize) -> Vec<u32> {
     let cap = match wanted {
         0 => available,
         wanted => available.min(wanted as usize),
@@ -408,7 +424,8 @@ pub fn group_degree(models: &[serde_json::Value], wanted: u32, available: usize)
         }
         common = common.intersection(&declared).copied().collect();
     }
-    common.into_iter().filter(|d| *d as usize <= cap).max().unwrap_or(1)
+    let groups: Vec<u32> = common.into_iter().filter(|d| *d as usize <= cap).collect();
+    if groups.is_empty() { vec![1] } else { groups }
 }
 
 /// How far a function is prepared on this machine: a warm set member's `level`, and what
@@ -1876,6 +1893,26 @@ impl Pool {
         }
     }
 
+    /// The widths a root of `entry` takes here, smallest first (`Invocation::widths`): its
+    /// constructed slots' groups; a deviceless root's, the groups of the calls it makes. A count
+    /// asked for is the one width, as near it as it goes. None: it holds no GPU.
+    pub fn widths(&self, entry: &serde_json::Value, generation: &crate::catalog::Generation, wanted: u32) -> Vec<u32> {
+        let available = self.devices.len();
+        let models: Vec<_> = (entry.get("models").and_then(serde_json::Value::as_array).into_iter().flatten())
+            .filter(|model| constructed(model)).cloned().collect();
+        match self.degree(entry, wanted) {
+            0 if available == 0 => vec![],
+            0 if wanted > 0 => vec![wanted.min(available as u32)],
+            0 => generation.groups(available),
+            degree if models.is_empty() || wanted > 0 => vec![degree],
+            _ => group_degrees(&models, 0, available),
+        }
+    }
+    /// The GPUs root `root` holds as its lane (0: none registered).
+    pub(crate) fn lane_width(&self, root: u64) -> u32 {
+        self.allocations.width(root) as u32
+    }
+
     /// Derive each model slot's binding from the installed SDK's real static interface and
     /// the model the run's preparation resolved for it (`grants`, one per slot, `published`):
     /// a constructed slot becomes the plan's construction, a `Weights[M]` one its source.
@@ -2253,6 +2290,7 @@ impl Pool {
     /// Run `record` on an executor of its plan, or leave it queued (false). A deviceless root
     /// registers its lane for its children's GPU steps while it runs; a GPU call runs on the
     /// GPUs `place` gives it, inside its root's lane when that root holds one.
+    /// `width`: the root's as the machine packs its queue (`estimate::widths`), when it chooses.
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         self: &Arc<Self>,
@@ -2260,6 +2298,7 @@ impl Pool {
         record: &Execution,
         held: HeldGeneration,
         plan: Plan,
+        width: Option<u32>,
         claims: &mut Claims,
         calls: Option<Arc<crate::calls::Calls>>,
         admit: impl FnOnce() -> io::Result<bool>,
@@ -2268,14 +2307,15 @@ impl Pool {
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
             let width = match record.invocation.gpus {
-                0 => held.record.widest_group(self.width()) as usize,
+                0 => width.unwrap_or_else(|| held.record.widest_group(self.width())) as usize,
                 gpus => gpus as usize,
             };
             let root = (record.invocation.parent.is_empty() && self.width() > 0)
                 .then(|| self.root(engine, record, width))
                 .flatten();
+            let held_width = root.as_ref().map_or(0, |root| self.allocations.width(root.hold.root()) as u32);
             let pool = self.clone();
-            return engine.dispatch_managed(&record.id, move |engine, id| {
+            return engine.dispatch_managed(&record.id, held_width, move |engine, id| {
                 let result = pool.run(&engine, &id, held, plan, 0, calls.as_ref());
                 // The deviceless root's GPU children have returned before its CPU output work.
                 drop(root);
@@ -2298,13 +2338,17 @@ impl Pool {
             },
             false => None,
         };
+        let plan = match width.filter(|_| record.invocation.parent.is_empty() && record.invocation.gpus == 0) {
+            Some(width) => plan.at(width)?,
+            None => plan,
+        };
         let Some((start, permit)) = self.place(&plan, (Some(root), record.family()), lane, claims) else {
             return Ok(false);
         };
         // Count CPU output owners after this GPU slot is held. A prior call can return while
         // preparation resolves; it cannot turn a stale pre-placement count into a new grant.
         if !admit()? { return Ok(false); }
-        engine.dispatch_managed(&record.id, move |engine, id| {
+        engine.dispatch_managed(&record.id, plan.degree, move |engine, id| {
             let pool = permit.pool.clone();
             let result = pool.run(&engine, &id, held, plan, start, calls.as_ref());
             // Session return and process detachment are already proven. CPU encoding uses

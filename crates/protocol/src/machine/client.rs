@@ -25,7 +25,7 @@ use sha2::{Digest as _, Sha256};
 use url::Url;
 
 use super::{
-    Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
+    EstimateAnswer, EstimateRequest, Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
     RunEvent, RunList, RunRequest, RunState, StatusFrame, parse_held, path,
 };
 use crate::{
@@ -204,6 +204,11 @@ impl Machine {
     /// Submits a run; its state, also when it was accepted before.
     pub async fn submit(&self, run: &RunRequest) -> Result<RunState, Error> {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await
+    }
+
+    /// When each of `jobs` would finish here, packed with the machine's queue.
+    pub async fn estimate(&self, jobs: &EstimateRequest) -> Result<EstimateAnswer, Error> {
+        json(send(self.request(Method::POST, path::ESTIMATE, &[]).json(jobs)).await?).await
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).

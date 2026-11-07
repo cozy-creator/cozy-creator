@@ -27,6 +27,8 @@ pub struct Call {
     pub inputs: Vec<crate::journal::InputFile>,
     /// GPUs its plan runs on: 0 deviceless.
     pub degree: u32,
+    /// A root's widths here (`Invocation::widths`).
+    pub widths: Vec<u32>,
     /// A child run's parent execution id.
     pub parent: String,
     /// The callee App a child run calls in its parent's environment; empty for the root's.
@@ -172,6 +174,9 @@ impl Service {
     pub fn calls(&self) -> Option<Arc<crate::calls::Calls>> {
         self.calls.lock().unwrap().clone()
     }
+    pub(crate) fn publisher(&self) -> Option<Arc<crate::published::Publisher>> {
+        self.publisher.lock().unwrap().clone()
+    }
     pub fn configure_publisher(&self, publisher: Arc<crate::published::Publisher>) {
         *self.publisher.lock().unwrap() = Some(publisher);
     }
@@ -238,6 +243,7 @@ impl Service {
         invocation.lane = call.lane;
         invocation.inputs = call.inputs;
         invocation.degree = call.degree;
+        invocation.widths = call.widths;
         invocation.parent = call.parent;
         let record = self.engine.bind_prepared(id, invocation, preparation, memo, answer)?;
         self.retain(&record, held.retention());
@@ -634,6 +640,15 @@ impl Service {
             }
             source_ready.push(record);
         }
+        // The widths of roots the machine chooses for, from its packing of the whole queue (cl-816).
+        let choosing = pool.width() > 1 && source_ready.iter().any(crate::estimate::chooses);
+        let widths = match choosing {
+            true => crate::estimate::widths(self, &pool).unwrap_or_else(|error| {
+                tracing::warn!("the queue was not packed, so its roots run as wide as they go: {error}");
+                Default::default()
+            }),
+            false => Default::default(),
+        };
         let ready = self.queue.lock().unwrap().order(source_ready, model);
         let (mut place, held) = (0, self.held.get().is_some_and(|held| held()));
         let mut next_gpu = None;
@@ -645,8 +660,9 @@ impl Service {
                 used < self.parallelism
             } else { used <= self.parallelism });
             let root = invocation.parent.is_empty();
+            let width = widths.get(&record.id).copied();
             if !(held && root || invocation.degree > 0 && gpu_fenced) && admit()?
-                && self.offer(&pool, &record, &mut claims, calls.clone(), admit)? {
+                && self.offer(&pool, &record, width, &mut claims, calls.clone(), admit)? {
                 if root {
                     self.queue.lock().unwrap().started(&record);
                 }
@@ -656,7 +672,11 @@ impl Service {
                 if invocation.degree > 0 && !next_gpu_seen {
                     next_gpu_seen = true;
                     if !held && !gpu_fenced && root {
-                        next_gpu = self.plan(&pool, &record).ok().map(|plan| (record.clone(), plan));
+                        let plan = self.plan(&pool, &record).and_then(|plan| match width {
+                            Some(width) => plan.at(width),
+                            None => Ok(plan),
+                        });
+                        next_gpu = plan.ok().map(|plan| (record.clone(), plan));
                     }
                 }
                 if root {
@@ -686,7 +706,7 @@ impl Service {
     }
     /// Start `record` if it can start now: false leaves it queued (or failed, when its
     /// environment is gone).
-    fn offer(&self, pool: &Arc<Pool>, record: &Execution, claims: &mut [Option<u64>], calls: Option<Arc<crate::calls::Calls>>, admit: impl FnOnce() -> io::Result<bool>) -> io::Result<bool> {
+    fn offer(&self, pool: &Arc<Pool>, record: &Execution, width: Option<u32>, claims: &mut [Option<u64>], calls: Option<Arc<crate::calls::Calls>>, admit: impl FnOnce() -> io::Result<bool>) -> io::Result<bool> {
         let held = match self.catalog.resolve(&record.invocation.generation) {
             Ok(held) => held,
             Err(error) => {
@@ -701,6 +721,6 @@ impl Service {
             return Ok(false);
         }
         let plan = self.plan(pool, record)?;
-        pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, claims, calls, admit)
+        pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, width, claims, calls, admit)
     }
 }
