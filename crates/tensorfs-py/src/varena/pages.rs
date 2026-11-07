@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use platform::contain::host_memory;
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use tensorfs::io::cuda::HostPin;
-use tensorfs::io::source::Source as Store;
+use tensorfs::io::source::{Item, ItemSource, Source as Store};
 
 use super::source::Inner;
 
@@ -23,7 +23,7 @@ use super::source::Inner;
 const LOOK: Duration = Duration::from_millis(100);
 /// How much of a page is read or registered before a command may take over: one registration
 /// of H3's largest page made a request wait 0.6 s on an RTX 3090.
-const WINDOW: usize = 64 << 20;
+pub(super) const WINDOW: usize = 64 << 20;
 /// Threads faulting a page in: registering untouched memory on the fill path held each of Flux-2's
 /// 57 blocks about 0.2 s in step 1 (run 39103). On a 4090 host the driver registered untouched
 /// memory at 3 GB/s, one page at a time, touched memory at 28, and faulting in ran at 10.5 GB/s on
@@ -197,6 +197,19 @@ pub(super) struct Tier {
     pub(super) reserve_ns: AtomicU64,
     /// One open store per checkpoint, for as long as a Source reads it: local, fetching.
     stores: Mutex<HashMap<String, (Weak<Store>, Weak<Store>)>>,
+    /// The Sources placing each stored object range (by object, then offset and length), and the
+    /// offset in their bytes. Content-addressed, so two sets sharing objects (a LoRA view and its
+    /// base, two releases' text encoder) find each other's bytes.
+    objects: Mutex<HashMap<String, Ranges>>,
+}
+
+/// An object's ranges (offset, length) -> each Source placing it, and where in its bytes.
+type Ranges = HashMap<(u64, u64), Vec<(Weak<Inner>, u64)>>;
+
+/// Where a fill's item already is: another Source holding the stored bytes, and their offset there.
+pub(super) struct Held {
+    pub(super) source: Arc<Inner>,
+    pub(super) at: u64,
 }
 
 impl State {
@@ -227,7 +240,37 @@ impl Tier {
             device, cap, shared, state: Mutex::new(state),
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), stores: Mutex::default(),
+            objects: Mutex::default(),
         }
+    }
+
+    /// `source`'s stored object ranges, so other fills can find its bytes.
+    pub(super) fn place(&self, source: &Arc<Inner>, items: &[Item]) {
+        let mut objects = self.objects.lock().unwrap_or_else(|error| error.into_inner());
+        for item in items {
+            if let ItemSource::Object(range) = &item.source {
+                let placed = objects.entry(range.obj.sha256.clone()).or_default().entry((range.off, range.len)).or_default();
+                placed.retain(|(placed, _)| placed.strong_count() != 0);
+                placed.push((Arc::downgrade(source), item.offset));
+            }
+        }
+    }
+
+    /// For each of `items`, the other Sources whose bytes are the stored ones and place it.
+    pub(super) fn held(&self, source: &Arc<Inner>, items: &[Item]) -> Vec<Vec<Held>> {
+        let objects = self.objects.lock().unwrap_or_else(|error| error.into_inner());
+        items.iter().map(|item| {
+            let ItemSource::Object(range) = &item.source else { return Vec::new() };
+            let Some(placed) = objects.get(&range.obj.sha256).and_then(|ranges| ranges.get(&(range.off, range.len))) else {
+                return Vec::new();
+            };
+            placed.iter().filter(|(other, _)| !std::ptr::eq(other.as_ptr(), Arc::as_ptr(source)))
+                .filter_map(|(other, at)| {
+                    let other = other.upgrade().filter(|other| other.stored_bytes())?;
+                    Some(Held { source: other, at: *at })
+                })
+                .collect()
+        }).collect()
     }
 
     /// `checkpoint`'s open stores: chunk files stay open once however many Regions read them.

@@ -58,7 +58,7 @@ impl<T: Send + 'static> Drop for Deferred<T> {
     }
 }
 
-fn release_region(region: Arc<varena::Region>) {
+pub(super) fn release_region(region: Arc<varena::Region>) {
     // Unlike a strong-count check followed by drop, into_inner atomically either releases a
     // shared reference or gives us the final Region without running its potentially blocking Drop.
     if let Some(region) = Arc::into_inner(region) {

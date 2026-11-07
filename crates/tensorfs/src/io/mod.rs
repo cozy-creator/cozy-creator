@@ -70,12 +70,27 @@ pub enum Src<'a> {
     File(&'a File, u64),
     /// Host memory (a sealed layout's mapping): RAM to the destination, no disk.
     Host(*const u8),
-    /// Device bytes ordered on the producer's stream (0: the CUDA default stream).
+    /// Device bytes ordered on the producer's stream (0: the CUDA default stream; [`COMPLETE`]:
+    /// none, their writers are known complete).
     Device {
         device: i32,
         ptr: u64,
         stream: usize,
     },
+}
+
+/// A [`Src::Device`] stream for bytes whose writers are known complete (a resident page): the
+/// copy waits for no producer, so it never queues behind compute.
+pub const COMPLETE: usize = usize::MAX;
+
+impl Src<'_> {
+    /// Itself, unless it is device bytes with no producer to wait for ([`COMPLETE`]).
+    pub(crate) fn ordered(self) -> Option<Self> {
+        match self {
+            Src::Device { stream: COMPLETE, .. } => None,
+            src => Some(src),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

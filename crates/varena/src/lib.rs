@@ -1366,6 +1366,20 @@ impl Region {
         self.pin_locked(&mut state).map(Some)
     }
 
+    /// `try_pin` that is no use: its place in the reclaim order stays where its last use left it.
+    /// Another Region copying its bytes (TensorFS's content-addressed fill) is not a use of it.
+    pub fn try_pin_unused(self: &Arc<Self>) -> Result<Option<Pin>> {
+        let mut state = self.gpu.lock()?;
+        let entry = state.entries.get(&self.id).expect("live region");
+        if entry.uses.state() != Contents::Ready {
+            return Ok(None);
+        }
+        let prefetched = entry.prefetched;
+        let pin = self.pin_locked(&mut state)?;
+        state.entries.get_mut(&self.id).expect("live region").prefetched = prefetched;
+        Ok(Some(pin))
+    }
+
     fn pin_locked(self: &Arc<Self>, state: &mut State) -> Result<Pin> {
         let entry = state.entries.get_mut(&self.id).expect("live region");
         entry
