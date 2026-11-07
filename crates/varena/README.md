@@ -73,6 +73,14 @@ handles go. Own-stream reuse does no driver work. A plan phase seen looping keep
 working phases touched: its weights and its own allocations take weights first, and it never waits on
 its own frees, so a step makes no driver call for working memory.
 
+A site (`site_register`, then `site_enter`/`site_exit` per op) is an op's levels, registered once:
+varena keeps the useful ones (down to the first within 1/64 of the finest's bytes), runs one under
+64 MiB whole and unobserved, and runs one under a capture, a replay or another leaf at its last level.
+An allocation refused inside a leaf, after every reclaim step, is answered at `site_exit`: a pure op
+(the Runtime's own) runs again at the same level once when room now covers what the refusal showed
+it needs, else finer (Retry); a package's op, or a pure one no finer level fits, is Final, with its
+next step. Each refusal's bound stays with its level, so the next call starts finer.
+
 A split (`split_select`, `split_begin`) picks the first level that fits
 `min(max(C − W, C/4), C − live − pinned)`, whatever is free right now. `C` is the card or its cap,
 `W` the phase's weights, `live` the live working bytes and `pinned` the most weights held at once
@@ -80,6 +88,27 @@ this request. A level's size is what it was measured asking for, or its nearest 
 ratio at 125%. Once a level has measured, one call runs the next coarser one if it never ran and the
 card could hold it, since an estimate can stand well over a level that fits. That is once per site
 and level per process, whatever comes of it; then the same request picks the same level.
+
+## Admission
+
+Before a phase runs, its caller lists its ways to run, most first, each the Regions it reads and the
+graph pool it records into (`admit`): a recording with its `after`, without it, then eagerly; an LM's
+decode set with its draft head, without it, then streamed; a table on the card, then on the host.
+varena holds the first it can make room for, its Regions pinned for the caller's stream and its pool
+mapped, and the caller runs that one. Bytes allocated at once (an LM's slots, a program's copies of
+its tensors) are one block the caller cuts up, so the reservation is the allocation; refused, the
+answer says "wait" when it fits once bytes the process holds go.
+
+## Loops
+
+A step loop declares its repeats (`repeating`). A plan phase it runs in loops: its used weights rank
+most recent first and its working pages stay mapped. A phase nobody declared is judged from its uses.
+
+## Fit
+
+`feasible(capacity, profile)` (crate `varena-fit`) is the one fit rule: a model runs resident when
+its weights and working floor fit the card, streamed when one unit and the floor do. Placement asks
+it with a card's capacity, never its free bytes.
 
 ## Graph pools
 

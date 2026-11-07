@@ -17,6 +17,8 @@ Three frontends over one `libvarena.so`, which ships in the TensorFS wheel:
 | `Plan` | named phases and their Regions; `phase(name, key)` measures a completed pass |
 | `room` | what the GPU has right now: a report, nothing reserved |
 | `split` | an operation's legal levels; the core picks one and measures it |
+| site (Python `tensorfs.varena.torch.Site`) | a split registered once; per op the core picks, opens the leaf and answers a refusal in it: `Retry` or `Final` |
+| admission (Runtime-private `admit`) | a phase's ways to run, most first; the core holds the first it can |
 
 Graph pools are Torch-side only: no C calls. Everyone allocates and declares intent; only the core decides what stays mapped.
 

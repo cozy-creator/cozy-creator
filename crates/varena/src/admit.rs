@@ -1,5 +1,6 @@
 //! Admission: before a phase runs, its caller lists the ways it can run, most first, each as the
-//! Regions it holds and the graph pool it records into. Varena makes room for the first it can,
+//! Regions it holds and the graph pool it records into (`working::pool_bytes` of an eager pass's
+//! measured peak, the core's sizing rule). Varena makes room for the first it can,
 //! with every lever reclaim has, and holds it: the Regions pinned for the caller's stream, the pool
 //! mapped. The caller runs the way admitted and catches nothing; refused, it runs none of them.
 use std::sync::Arc;
@@ -7,18 +8,19 @@ use std::sync::Arc;
 use crate::working::{self, PoolId};
 use crate::{Error, Pin, Region, Result};
 
-/// One way to run: the weights it reads, and the pool it records into with the working peak an
-/// eager pass of it measured.
+/// One way to run: the weights it reads, and the pool it records into with that pool's bytes.
 pub struct Want {
     pub regions: Vec<Arc<Region>>,
     pub pool: Option<(PoolId, usize)>,
 }
 
-/// The way admitted, held until its Pins go and its pool's use ends.
+/// The way admitted, held until its Pins go and its pool's use ends, and what each way before it
+/// needed beyond what was resident.
 pub struct Admitted {
     pub index: usize,
     pub pins: Vec<Pin>,
     pub pool_bytes: usize,
+    pub needs: Vec<usize>,
 }
 
 /// What each way needed beyond what was resident, none of which varena could make room for.
@@ -31,7 +33,7 @@ fn missing(want: &Want) -> usize {
         .filter(|region| !region.is_resident().unwrap_or(false))
         .map(|region| region.allocated_bytes())
         .sum();
-    regions + want.pool.map_or(0, |(_, peak)| working::pool_bytes(peak))
+    regions + want.pool.map_or(0, |(_, bytes)| bytes)
 }
 
 /// Unused pins go fenced on `stream`, which nothing was submitted to: no context join.
@@ -81,12 +83,15 @@ pub unsafe fn admit(device: i32, stream: u64, wants: &[Want]) -> Result<std::res
             release(pins, stream);
             continue;
         }
-        let Some((pool, peak)) = want.pool else {
-            return Ok(Ok(Admitted { index, pins, pool_bytes: 0 }));
+        let Some((pool, bytes)) = want.pool else {
+            needs.pop();
+            return Ok(Ok(Admitted { index, pins, pool_bytes: 0, needs }));
         };
-        let bytes = working::pool_bytes(peak);
         match working::pool_reserve(device, pool, bytes) {
-            Ok(_) => return Ok(Ok(Admitted { index, pins, pool_bytes: bytes })),
+            Ok(_) => {
+                needs.pop();
+                return Ok(Ok(Admitted { index, pins, pool_bytes: bytes, needs }));
+            }
             Err(error) => {
                 release(pins, stream);
                 working::pool_cancel_preparation(device, pool)?;

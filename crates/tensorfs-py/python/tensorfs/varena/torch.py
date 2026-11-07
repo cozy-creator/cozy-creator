@@ -382,7 +382,7 @@ class Site:
         self.levels = self._register()
 
     def _register(self) -> int:
-        return cast(int, _ext._varena_site_register(self.device, self.key, self._menu, pure=self.pure))
+        return _ext._varena_site_register(self.device, self.key, self._menu, pure=self.pure)
 
     def _answer(self, ask: Any) -> Leaf:
         row = ask()
@@ -404,25 +404,11 @@ class Site:
         return self._answer(lambda: _ext._varena_site_choose(self.device, self.key, stream=stream))
 
 
-def admit(device: DeviceLike, wants: Sequence[tuple[Sequence[Any], tuple[PoolId, int] | None]], *, stream: int) -> tuple[int, int, list[Any]]:
-    """Before a phase runs: the first of `wants` varena can hold for `stream`, most first, each the
-    Regions it reads and the pool it records into with its measured working peak. Returns the
-    index admitted, its pool's bytes and a Use per Region, held while it runs. `Final` when none
-    fits with every lever pulled: the caller runs none of them, never a part."""
-    _installed()
-    rows = [(list(regions), None if pool is None else (cast(PoolId, tuple(pool[0])), int(pool[1]))) for regions, pool in wants]
-    answer = _ext._varena_admit(_device(device), rows, stream=stream)
-    if "needs" in answer:
-        need = min(answer["needs"], default=0)
-        raise final(_ext._varena_refusal(_device(device), need) | {"needs": answer["needs"]})
-    return int(answer["index"]), int(answer["pool_bytes"]), list(answer["uses"])
-
-
-def reserve(device: DeviceLike, nbytes: int, *, releasing: int = 0) -> Any:
+def reserve(device: DeviceLike, nbytes: int, *, releasing: int = 0, then: int | None = None) -> Any:
     """`nbytes` on the current stream as one uint8 tensor, mapped now with every lever varena has:
     the reservation itself, which its caller cuts into its buffers, so nothing can take the room
-    between a check and the allocation. `Final` when refused: "wait" when it fits once the
-    `releasing` bytes this process holds go, else "smaller"."""
+    between a check and the allocation. `Final` when refused: "wait" when what it needs once the
+    `releasing` bytes this process holds go (`then`, else `nbytes`) fits then, else "smaller"."""
     import torch
 
     index = _device(device)
@@ -432,7 +418,8 @@ def reserve(device: DeviceLike, nbytes: int, *, releasing: int = 0) -> Any:
     except torch.OutOfMemoryError as exc:
         if ooms(index) == before:
             raise
-        raise final(_ext._varena_refusal(index, nbytes, releasing=releasing)) from exc
+        answer = _ext._varena_refusal(index, nbytes if then is None else then, releasing=releasing)
+        raise final(answer) from exc
 
 
 @contextmanager

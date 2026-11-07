@@ -620,7 +620,7 @@ impl PyNoCapture {
 }
 
 /// The first of `wants` varena can hold for `stream` (`varena::admit`): each the Regions it reads
-/// and the pool it records into with its measured working peak. Admitted: `index`, its pool's
+/// and the pool it records into with that pool's bytes. Admitted: `index`, its pool's
 /// bytes and one Use per Region, which the caller holds while it runs; refused: `needs`, what
 /// each needed beyond what was resident.
 #[cfg(feature = "store")]
@@ -650,6 +650,7 @@ fn _varena_admit<'py>(
             }
             row.set_item("index", admitted.index)?;
             row.set_item("pool_bytes", admitted.pool_bytes)?;
+            row.set_item("refused", admitted.needs)?;
             row.set_item("uses", uses)?;
         }
         Err(refused) => row.set_item("needs", refused.needs)?,

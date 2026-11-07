@@ -293,6 +293,47 @@ class Use:
         self._native.consume_on(stream)
 
 
+class Admitted:
+    """The way to run varena holds (`admit`): its `index` among the wants, its pool's bytes, what
+    each way before it needed beyond what was resident (`needs`), and its Regions pinned for the
+    stream until `release` (or this goes)."""
+
+    __slots__ = ("index", "pool_bytes", "needs", "_uses")
+
+    def __init__(self, index: int, pool_bytes: int, needs: list[int], uses: list[Any]) -> None:
+        self.index, self.pool_bytes, self.needs, self._uses = index, pool_bytes, needs, uses
+
+    def release(self) -> None:
+        self._uses.clear()
+
+
+def admit(
+    device: int,
+    wants: Sequence[tuple[Sequence[Region], tuple[tuple[int, int], int] | None]],
+    *,
+    stream: int,
+) -> Admitted:
+    """Before a phase runs, its ways to run, most first: each the Regions it reads and the graph
+    pool it records into with that pool's bytes (`torch.pool_bytes` of an eager pass's measured
+    peak); list the eager way last (no Regions, no
+    pool) and it always has an answer. varena holds the first it can make room for with every
+    lever, its Regions pinned for `stream` and its pool mapped; the caller runs that one and
+    catches nothing. With no way that fits, `tensorfs.varena.torch.Final` (`needs`: each way's)."""
+    rows: list[tuple[list[Any], tuple[tuple[int, int], int] | None]] = [
+        ([region._native for region in regions], None if pool is None else ((int(pool[0][0]), int(pool[0][1])), int(pool[1])))
+        for regions, pool in wants
+    ]
+    answer = _ext._varena_admit(device, rows, stream=stream)
+    if "needs" in answer:
+        from .torch import final
+
+        need = min(answer["needs"], default=0)
+        raise final(_ext._varena_refusal(device, need) | {"needs": answer["needs"]})
+    return Admitted(
+        int(answer["index"]), int(answer["pool_bytes"]), list(answer["refused"]), list(answer["uses"])
+    )
+
+
 @contextmanager
 def capture(device: int) -> Iterator[None]:
     """Exclude native producers and allocation recovery during actual CUDA capture."""
