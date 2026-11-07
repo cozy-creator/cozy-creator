@@ -90,7 +90,7 @@ cozy --json model download zhengpeng7/birefnet --lane "$lane" --on local > "$OUT
 cozy --json model download zhengpeng7/birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download zhengpeng7/birefnet local/e2e-birefnet failed"
 # A local .safetensors file, made into a model the machine keeps by name: the file is written to the machine
 # and made from its object (object://sha256:…/<name>). No format knows its one key `w`, so it is kept as-is.
-tiny "$OUT/tiny.safetensors"
+safetensors_file "$OUT/tiny.safetensors"
 cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny --source-format as-is > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
 cozy --json model ls --on local > "$OUT/models.json" || check "model ls --on local failed"
 grep -q e2e-tiny "$OUT/models.json" || check "model ls --on local: the local file's local/e2e-tiny is not listed"
@@ -98,8 +98,8 @@ J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane =
 grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
 }
 
-# tiny <file>: a 4×4 F16 .safetensors file.
-tiny() {
+# safetensors_file <file>: a 4×4 F16 .safetensors file.
+safetensors_file() {
 uv run -q --no-project python -I - "$1" <<'PY'
 import json, struct, sys
 header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
@@ -115,7 +115,7 @@ refusals() {
 step "local runs refused"
 dog=$(picture dog2.jpg) key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 printf 'image: %s\n' "$dog" > "$OUT/refused.yaml"
-tiny "$OUT/refused.safetensors"
+safetensors_file "$OUT/refused.safetensors"
 refused() {  # refused <name> <cozy args...>
   local name=$1 code=0; shift
   cozy --json "$@" > "$OUT/refused-$name.json" 2> "$OUT/refused-$name.err" || code=$?
@@ -232,7 +232,7 @@ for name in still other; do
 done
 cp "$src/still.png" "$src/sub/beside.png"
 printf 'clip: ../clip.mp4\nstill: beside.png\nfolder: ../folder\nlabel: from-input\n' > "$src/sub/req.yaml"
-tiny "$src/tiny.safetensors"
+safetensors_file "$src/tiny.safetensors"
 size=$(stat -c %s "$src/still.png")
 [ ! -e /work ] || { check "unseen: /work is on this computer too"; return; }
 cozy project new "$P" > /dev/null || { check "unseen: project new"; return; }
@@ -241,7 +241,7 @@ docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; ret
 inside() {
   local name=$1; shift
   docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME="$HOME" -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
-    -v "$HOME:$HOME" -v "$OUT:$OUT" -v "$E2E:$E2E:ro" -v "$src:/src:ro" ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} \
+    -v "$HOME:$HOME" -v "$OUT:$OUT" -v "$E2E:$E2E:ro" -v "$src:/src:ro" -v /etc/ssl/certs:/etc/ssl/certs:ro ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} \
     --tmpfs "/work:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" -w /work "$image" \
     sh -c 'cp -r /src/. /work && exec "$@"' sh "$COZY" "$@" > "$OUT/unseen-$name.out" 2> "$OUT/unseen-$name.err" \
     || { check "unseen $name: cozy $*: $(tail -c 400 "$OUT/unseen-$name.err") $(tail -c 300 "$OUT/unseen-$name.out")"; return 1; }
