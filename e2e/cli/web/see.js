@@ -1,5 +1,5 @@
 // See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy project
-// import` and blocks written straight into project.yaml show with no reload: elements of every kind, with no edges, each placed once, left
+// import` and blocks of an export edited and imported (`cozy project import`) show with no reload: elements of every kind, with no edges, each placed once, left
 // to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
 // on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
@@ -12,10 +12,10 @@
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawnSync } = require('child_process');
-const { existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, panning, renderOf, summary, until, watchBoxes, wav } = require('./page');
+const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -43,11 +43,6 @@ async function tag(page, name) {
   return element(page, name).locator('.card').getAttribute('data-kind');
 }
 const shell = (command) => new Promise((done, fail) => exec(command, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
-
-function replaceFile(at, text) {
-  writeFileSync(`${at}.part`, text);
-  renameSync(`${at}.part`, at);
-}
 
 async function drag(page, handle, dx, dy) {
   const box = await handle.boundingBox();
@@ -152,7 +147,8 @@ async function rest(page, handle) {
   const state = () => api(`/v1/projects/${id}`);
   const folder = (await state()).path;
   seen.project = { id, folder };
-  const yamlAt = join(folder, 'project.yaml');
+  // The project as `cozy project export` writes it; a hand's edit of it goes back by `cozy project import` (cl-803: its state is project.db).
+  const yaml = () => yamlOf(folder);
   await page.evaluate(() => { window.notReloaded = true; });
   const notReloaded = () => page.evaluate(() => window.notReloaded === true);
   const asset = async (name) => (await state()).assets.find((held) => held.name === name);
@@ -178,7 +174,7 @@ async function rest(page, handle) {
   // An edit in an editor: a shot with beats, a cut, a frame, a character, what can't be made, and a warning.
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   const draw = join(__dirname, '..', 'project', 'draw.py');
-  replaceFile(yamlAt, `${readFileSync(yamlAt, 'utf8').trimEnd()}
+  importYaml(folder, `${yaml().trimEnd()}
   shot:
     summary: |
       <hero> looks hard at <clip>.
@@ -386,7 +382,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   const moved = named.filter((name) => afterReload[name].x !== beforeReload[name].x || afterReload[name].y !== beforeReload[name].y);
   check('rows_stand_after_reload', moved.length === 0, moved.map((name) => ({ name, was: beforeReload[name], now: afterReload[name] })));
   // Its text changes: the old reason no longer stands, with no reload.
-  replaceFile(yamlAt, readFileSync(yamlAt, 'utf8').replace('video: <hollow_thing>', 'video: <clip>'));
+  importYaml(folder, yaml().replace('video: <hollow_thing>', 'video: <clip>'));
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
   await until('and from the card', () => needs.locator('.dot.s-failed').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
@@ -443,7 +439,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     // A double tap on it approves it, and again unapproves it.
     await card.locator('.take[aria-label$=" 1"]').dblclick();
     // On one of card's own lines: hero has an `approved` of its own further down.
-    await until('pinned in the file', () => Promise.resolve(readFileSync(yamlAt, 'utf8')), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}approved: "?[0-9a-f]/.test(text));
+    await until('pinned in the file', () => Promise.resolve(yaml()), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}approved: "?[0-9a-f]/.test(text));
     await open(page, 'card');
     await until('it shows approved', () => card.locator('.take.approved').count(), (n) => n === 1);
     check('approved_is_that_version', (await asset('card')).approved === made.prefixes[0].number, (await asset('card')).approved);
@@ -462,10 +458,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // The Hub unreachable: a read answers at once and writes nothing, and the page shows it. Then Calcifer as it was.
   seen.hub_checked = Boolean(process.env.NO_HUB);
   if (process.env.NO_HUB && process.env.RESTART) {
-    const lockAt = join(folder, 'project.lock');
+    // project.db's revision, one more each commit: a read commits nothing.
+    const revision = () => rowsOf(folder, "SELECT value FROM meta WHERE key = 'seq'")[0]?.[0];
     await shell(process.env.NO_HUB).catch(() => {});
     await until('Calcifer back with no Hub', () => api('/v1/status').catch(() => null), Boolean);
-    const lockBefore = readFileSync(lockAt);
+    const revisionBefore = revision();
     const began = Date.now();
     const answered = await state();
     seen.hub_down_read_ms = Date.now() - began;
@@ -474,7 +471,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await page.reload();
     await until('the page with no Hub', () => element(page, 'shot').count(), (n) => n === 1);
     check('page_with_no_hub', true);
-    check('read_writes_no_lock', readFileSync(lockAt).equals(lockBefore));
+    check('read_writes_nothing', revision() === revisionBefore, { before: revisionBefore, after: revision() });
     await shell(process.env.RESTART).catch(() => {});
     await until('Calcifer back as it was', () => api('/v1/status').catch(() => null), Boolean);
   }
@@ -488,15 +485,16 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const hash = (name) => held.assets.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
+    // Its boxes by `cozy project import`, and each one's place by the canvas's PATCH, as the page moves them.
     let text = 'version: 4\nassets:\n';
-    let rowsText = '# Where cards sit. Only the page reads this. Nothing here is an input.\nversion: 1\ncards:\n';
+    const placed = {};
     for (let i = 0; i < COUNT; i++) {
       const reads = [1 + (i % 7), perRow + (i % 3)].filter((back) => i - back >= 0).map((back) => `<n${i - back}>`);
       text += `  n${i}:\n    ${i % 5 ? `approved: "${hash('a_picture')}"` : `approved: "${hash('a_video')}"`}\n    tool: see-no-such-package/draw\n    instructions: from ${reads.join(' and ') || 'nothing'}\n`;
-      rowsText += `  n${i}: {x: ${(i % perRow) * 304}, y: ${Math.floor(i / perRow) * 240}, w: 240}\n`;
+      placed[`n${i}`] = { x: (i % perRow) * 304, y: Math.floor(i / perRow) * 240, w: 240 };
     }
-    replaceFile(join(big, 'project.yaml'), text);
-    replaceFile(join(big, 'project.canvas.yaml'), rowsText);
+    importYaml(big, text);
+    await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards: placed }) });
     const began = Date.now();
     const bigState = await api(`/v1/projects/${made.id}`);
     const read_ms = Date.now() - began;

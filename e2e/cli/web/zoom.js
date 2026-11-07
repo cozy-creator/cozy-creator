@@ -5,10 +5,10 @@
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as see.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { mkdtempSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, settled, signIn, summary, until } = require('./page');
+const { STEP_MS, boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, panning, png, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -61,16 +61,15 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     const hash = held.assets.find((row) => row.name === 'a_picture').sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    let text = 'version: 3\nassets:\n';
-    let rows = 'version: 1\ncards:\n';
+    // Its boxes by `cozy project import`, and each one's place by the canvas's PATCH, as the page moves them (cl-803: both are project.db's).
+    let text = 'version: 4\nassets:\n';
+    const cards = {};
     for (let i = 0; i < COUNT; i++) {
       text += `  n${i}:\n    approved: "${hash}"\n    tool: see-no-such-package/draw\n    instructions: box ${i}\n`;
-      rows += `  n${i}: {x: ${(i % perRow) * 304}, y: ${Math.floor(i / perRow) * 240}, w: 240}\n`;
+      cards[`n${i}`] = { x: (i % perRow) * 304, y: Math.floor(i / perRow) * 240, w: 240 };
     }
-    for (const [file, body] of [['project.yaml', text], ['project.canvas.yaml', rows]]) {
-      writeFileSync(join(made.path, `${file}.part`), body);
-      renameSync(join(made.path, `${file}.part`), join(made.path, file));
-    }
+    importYaml(made.path, text);
+    await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards }) });
     await until('300 boxes read', async () => (await api(`/v1/projects/${made.id}`)).assets?.length, (n) => n === COUNT);
 
     const openTab = async (zoom, x) => {

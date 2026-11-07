@@ -6,8 +6,6 @@
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
-const { readFileSync } = require('fs');
-const { join } = require('path');
 const { calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
 
 const failures = [];
@@ -30,11 +28,6 @@ async function drag(page, name, dx, dy) {
   await page.mouse.move(x + dx, y + dy, { steps: 4 });
   await page.mouse.up();
 }
-
-const row = (folder, name) => {
-  const m = readFileSync(join(folder, 'project.canvas.yaml'), 'utf8').match(new RegExp(`^\\s+${name}:\\s*\\{x:\\s*(-?[\\d.]+),\\s*y:\\s*(-?[\\d.]+)`, 'm'));
-  return m ? `${m[1]},${m[2]}` : null;
-};
 
 (async () => {
   const base = calcifer();
@@ -68,6 +61,12 @@ const row = (folder, name) => {
   await first.waitForSelector('.nm-field');
   await first.keyboard.press('Enter');
   seen.project = { id, folder };
+  // Its row as Calcifer answers it (cl-803: the canvas is project.db's), asked from here.
+  const { token } = JSON.parse(await first.evaluate(() => localStorage.getItem('cozy.session')));
+  const row = async (name) => {
+    const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}` } })).json()).cards?.[name];
+    return card ? `${card.x},${card.y}` : null;
+  };
   await until('the element landed', () => first.locator('.nm:text-is("here")').count().then(async (n) => n === 1 && (await first.locator('.card .status.mak').count()) === 0), Boolean);
 
   // Two tabs, one stream: a move in one reaches the other by it.
@@ -99,9 +98,9 @@ const row = (folder, name) => {
     seen.said_during_restart = said;
     check('no_sign_in_needed', (await third.locator('.gate').count()) === 0 && (await third.evaluate(() => localStorage.getItem('cozy.session'))) === held);
     check('still_on_canvas', (await third.locator('.nm:text-is("here")').count()) === 1);
-    const wasRow = row(folder, 'here');
+    const wasRow = await row('here');
     await drag(third, 'here', 90, 40);
-    await until('a move lands after the restart', () => Promise.resolve(row(folder, 'here')), (now) => now !== wasRow);
+    await until('a move lands after the restart', () => row('here'), (now) => now !== wasRow);
     await until('the other tab still follows', () => second.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     await third.reload();
     await third.waitForSelector('.nm:text-is("here")');

@@ -117,8 +117,10 @@ web_held "$chrome" "$pw"
 web_held() {
   local T=$OUT/web-held id
   step "web-held: a save past project.db held by another program: said, kept, and saved when it's let go"
-  mkdir -p "$T"
-  printf 'version: 3\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$T/project.yaml"
+  # A new project, its boxes by `cozy project import` (cl-803: a project is project.db, and YAML its import).
+  cozy project new "$T" > "$OUT/web-held-new.txt" 2>&1 || { check "web-held: project new: $(tail -c 300 "$OUT/web-held-new.txt")"; return; }
+  printf 'version: 4\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$OUT/web-held.yaml"
+  cozy project -p "$T" import "$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
   id=$(status "$T" | jq -r '.id // empty')
   [ -n "$id" ] || { check "web-held: the project has no id"; return; }
   HELD_FOLDER=$(web_path "$T") HELD_ID=$id web_proof held "$1" "$2" ''
