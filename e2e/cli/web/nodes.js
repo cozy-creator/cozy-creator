@@ -536,7 +536,7 @@ function linesOf(text, name) {
     await open('still_1');
     check('shut_stays_shut', (await still.locator('.edit-more').count()) === 0);
     await more('still_1');
-    check('a_set_value_behind_more', (await still.locator('select[aria-label=Style] option:checked').innerText()) === 'noise', await still.locator('.edit-more').innerText());
+    check('a_set_value_behind_more', (await still.locator('[role=radiogroup][aria-label=Style] [role=radio][aria-checked=true]').innerText()) === 'noise', await still.locator('.edit-more').innerText());
     await open('still_1');
     check('open_stays_open', (await still.locator('.edit-more').count()) === 1);
     await reload();
@@ -630,7 +630,7 @@ function linesOf(text, name) {
     await until('it came back', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked);
     check('a_take_comes_back', (await strip()) === asked, await strip());
 
-    // One dragged out: its own asset, the same file, what it says it is, and no new bytes.
+    // One dragged out: its own asset, the same file, what it says it is, and no new bytes. It moves out of its box (Paul, 11-06; web-versions).
     await api(`/v1/projects/${id}/assets/Sheet`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'The sheet of two.' } }) });
     await until('described', () => of('Sheet'), (held) => held.fields?.description?.includes('sheet of two'));
     const filesBefore = readdirSync(join(folder, 'files')).length;
@@ -639,10 +639,14 @@ function linesOf(text, name) {
     await until('the page has its words', () => box('Sheet').locator('text=The sheet of two.').count(), (n) => n > 0);
     // Picked up from its big tile, the take it shows.
     await box('Sheet').locator('.take[aria-label="version 2"]').click();
+    const carried = (await of('Sheet')).prefixes.find((held) => held.number === 2)?.main?.sha256;
+    const sheetHad = await versions('Sheet');
     await box('Sheet').locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
     const out = await until('taken out', () => of('Sheet_2'), Boolean);
-    check('taken_out_is_the_same_file', out.sha256 === (await of('Sheet')).prefixes[1].main.sha256 && !out.tool, out);
+    check('taken_out_is_the_same_file', Boolean(carried) && out.sha256 === carried && !out.tool, { out, carried });
     check('taken_out_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
+    // Its old box lets it go once the new one is made.
+    const sheetKept = await until('it left its box', () => versions('Sheet'), (n) => n === sheetHad - 1);
     await until('it keeps what it says', () => of('Sheet_2'), (held) => held.fields?.description?.includes('sheet of two'));
     await shot('versions');
 
@@ -780,7 +784,7 @@ function linesOf(text, name) {
     await (await renderOf(page, 'Sheet')).click();
     const again = await until('it says so again', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render")));
     check('failed_again_said_again', again.every((line) => !line.includes('Sheet: ')), again);
-    check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
+    check('failed_runs_nothing', (await versions('Sheet')) === sheetKept && (await of('Sheet')).sha256 === heldFile, { versions: await versions('Sheet'), kept: sheetKept });
     await render('Other', 2);
     check('the_rest_goes_on', true);
     await open('Sheet');
@@ -838,7 +842,7 @@ function linesOf(text, name) {
     const nowHeld = (await of('Sheet')).sha256;
     await open('Sheet');
     await (await renderOf(page, 'Sheet')).click();
-    await until('another to look at', () => versions('Sheet'), (n) => n === 3, FIRST_RUN_MS);
+    await until('another to look at', () => versions('Sheet'), (n) => n === sheetKept + 1, FIRST_RUN_MS);
     check('approved_stays', (await of('Sheet')).pinned && (await of('Sheet')).sha256 === nowHeld, await of('Sheet'));
 
     // Render all: its count, what's approved left alone.
@@ -907,7 +911,8 @@ function linesOf(text, name) {
   // The box is back as it's asked for, ahead of the file.
   check('delete_and_undo', Boolean(await until('back in the file', () => Promise.resolve(linesOf(yaml(), 'source-b')), Boolean)));
 
-  check('comments_and_text_kept', yaml().includes('# Mine, and kept.') && yaml().includes('  # A note on what follows.') && yaml().includes('    # Inside it.') && yaml().includes('      by hand.'), yaml());
+  // Its words and `|` outlast all of this, as list_keeps_words reads them; its comments went at the import (cl-803).
+  check('words_and_text_kept', /\n  kept_words:\n    description: \|\n      Rewritten\n      by hand\.\n/.test(yaml()), yaml());
   const hashes = [...yaml().matchAll(/approved: "?([0-9a-f]{12})/g)].map((m) => m[1]);
   const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((node) => node.title + node.ariaLabel).join(' '));
   check('hash_not_shown', hashes.every((hash) => !shown.includes(hash)), hashes.filter((hash) => shown.includes(hash)));
