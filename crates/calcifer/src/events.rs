@@ -5,6 +5,7 @@ use std::{
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
+    time::Duration,
 };
 
 use axum::{
@@ -33,6 +34,11 @@ use tracing::warn;
 
 use crate::{api::Api, machines::Machines, project};
 
+/// How often, while anyone listens, what changes in an open project with no write of Calcifer's is looked for: a file into or out of
+/// `files/`, another program's commit to project.db. A look is a stat and a pragma a project, and an open canvas shows it within this
+/// and its one read.
+const LOOK: Duration = Duration::from_millis(250);
+
 /// What projects say to every stream. Process-wide, as `folder::WRITING` is: one process holds one
 /// Calcifer, and a `Folder` that writes may be no more than a path.
 static PROJECTS: LazyLock<Projects> = LazyLock::new(|| Projects {
@@ -58,9 +64,18 @@ fn owe(dir: &Path, settled: bool) {
 
 /// Tells every stream if project.yaml or project.lock in `dir` changed since it last did. A write is never held up working out what it changed.
 pub(crate) fn project_changed(dir: &Path) {
+    moved(dir, || project::revision(dir));
+}
+
+/// As `project_changed`, of the revision a look read (`Projects::look`).
+pub(crate) fn project_looked(dir: &Path, rev: String) {
+    moved(dir, || rev);
+}
+
+fn moved(dir: &Path, rev: impl FnOnce() -> String) {
     let id = project::project_id(dir);
     let mut revs = PROJECTS.revs.lock().expect("revs lock");
-    let rev = project::revision(dir);
+    let rev = rev();
     if revs.get(&id) != Some(&rev) {
         revs.insert(id, rev);
         drop(revs);
@@ -76,6 +91,17 @@ pub(crate) fn project_settled(dir: &Path) {
 /// Says what's owed, one project at a time, however many changes that is by now. A project with no one listening isn't worked out: whoever
 /// comes next reads it whole.
 pub(crate) fn tell(api: Arc<Api>) {
+    let looking = api.clone();
+    tokio::spawn(async move {
+        let mut looks = tokio::time::interval(LOOK);
+        looks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            looks.tick().await;
+            if PROJECTS.said.receiver_count() > 0 {
+                looking.projects.look();
+            }
+        }
+    });
     tokio::spawn(async move {
         let mut last: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         loop {

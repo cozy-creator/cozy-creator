@@ -166,6 +166,23 @@ pub fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
 }
 
 impl Projects {
+    /// Each open project told to the streams if it changed with no write of Calcifer's: a file into or out of `files/` (one leaving is on
+    /// another computer), another program's commit to project.db (`revision`). Only what moved is told. Its revision is read through its
+    /// own folder, and told only while it's still open: a forget takes it out under `open` before letting go of what Calcifer kept of it
+    /// (cl-822), which a look mustn't make again.
+    pub(crate) fn look(&self) {
+        let open: Vec<(String, Arc<Project>)> = self.open.lock().expect("projects lock").iter().map(|(id, project)| (id.clone(), project.clone())).collect();
+        for (id, project) in open {
+            let dir = &project.folder.dir;
+            let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
+            // Held while it's told: a forget waits for it.
+            let still = self.open.lock().expect("projects lock");
+            if still.contains_key(&id) {
+                crate::events::project_looked(dir, rev);
+            }
+        }
+    }
+
     /// Project `id`: open, else opened from the index.
     fn get(&self, api: &Arc<Api>, id: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open.lock().expect("projects lock").get(id).cloned() {
