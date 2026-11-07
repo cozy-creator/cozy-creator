@@ -107,6 +107,11 @@ fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, 
     Ok((etag, kept))
 }
 
+/// Project `id` is forgotten: its rows as last told go.
+pub(super) fn let_go(id: &str) {
+    TOLD.lock().expect("told lock").remove(id);
+}
+
 /// Tells every stream what changed of `dir`'s rows outside Calcifer: a hand, or a `git pull`.
 pub(super) fn look(dir: &FsPath) {
     let id = project_id(dir);

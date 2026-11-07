@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 calcifer.workspace = true
 cli.workspace = true
+mimalloc.workspace = true
 tensord.workspace = true
 
 [features]

@@ -935,9 +935,21 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     open.remove(&id);
     drop(open);
     match indexed(&api, true, |index| index.projects.remove(&id)) {
-        Some(_) => Ok(StatusCode::NO_CONTENT),
+        Some(entry) => {
+            let_go(&id, &entry.path);
+            Ok(StatusCode::NO_CONTENT)
+        }
         None => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
     }
+}
+
+/// What this Calcifer kept of a project it forgot, let go: its lock as last read, its history, its canvas's rows and what streams were told
+/// of it. Opened again, it's read anew.
+fn let_go(id: &str, dir: &FsPath) {
+    folder::let_go(dir);
+    history::let_go(dir);
+    canvas::let_go(id);
+    crate::events::let_go(id);
 }
 
 /// Its assets as they stand.
