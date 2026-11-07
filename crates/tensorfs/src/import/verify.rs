@@ -91,7 +91,7 @@ fn base(input: &Input, bases: &[(&str, &[&Planned])], out: &mut Checked) -> Resu
             .collect();
         !stored.is_empty() && fam.form_of(&stored).is_ok()
     };
-    let Some(fam) = named.iter().copied().find(|fam| form(fam)).or(named.first().copied()) else {
+    let Some(fam) = named.iter().copied().find(|fam| form(*fam)).or(named.first().copied()) else {
         return Ok(());
     };
     let converted = by_table.is_some();

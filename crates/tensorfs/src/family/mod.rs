@@ -256,7 +256,7 @@ fn based(header: &Header, bases: &[&Component]) -> Option<String> {
             .collect();
         !stored.is_empty() && family.form_of(&stored).is_ok()
     };
-    of_classes(classes).iter().find(verifies).map(|family| family.name.clone())
+    of_classes(classes).into_iter().find(verifies).map(|family| family.name.clone())
 }
 
 /// One stored component: its name and every tensor's key and logical shape.

@@ -213,13 +213,10 @@ pub struct FoundModel {
     /// What its header says it is. None: it couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<ModelKind>,
-    /// Its labels, sorted; [`NSFW`] among them marks one that makes sexual or nude images.
+    /// Its labels, sorted; `nsfw` among them marks one that makes sexual or nude images.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
-
-/// The tag of a model that makes sexual or nude images, asked for or not.
-pub const NSFW: &str = "nsfw";
 
 /// Where a model's family comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
