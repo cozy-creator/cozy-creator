@@ -1132,10 +1132,10 @@ pub fn plain_name(text: &str) -> Option<String> {
     (!name_key(&name).is_empty()).then_some(name)
 }
 
-/// `text` as it calls a new asset: `x.2` says a version, so it's `x_2`.
+/// `text` as it calls a new asset: a `.` is a sub-selector, so `x.2` is `x_2` and `kyogre.art` is `kyogre_art` (Paul, 11-06). A name that has
+/// one already goes on as it is, found by its exact spelling.
 pub fn asset_name(text: &str) -> Option<String> {
-    let name = plain_name(text)?;
-    Some(version_of(&name).map_or(name.clone(), |(of, number)| format!("{of}_{number}")))
+    Some(plain_name(text)?.replace('.', "_"))
 }
 
 /// `wanted`, or counting up if something in the project goes by it, or versions wait in project.lock for it: `hero_2`, and `shot_1` is `shot_2`.

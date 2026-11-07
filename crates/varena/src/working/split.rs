@@ -150,8 +150,6 @@ fn live_working(state: &State) -> usize {
 pub struct SplitSelection {
     pub stream: u64,
     pub allocation_backing_bytes: usize,
-    pub measured_backing_peak_bytes: Option<usize>,
-    pub reused_capacity_bytes: usize,
     pub choice_id: String,
     pub eligible: Vec<String>,
     pub required_bytes: usize,
@@ -260,9 +258,7 @@ struct Fit {
     basis: &'static str,
     tried: bool,
     full: usize,
-    measured: Option<usize>,
     missing: usize,
-    reused: usize,
     preserve: BTreeSet<u64>,
     now: usize,
     after_idle: usize,
@@ -351,7 +347,6 @@ fn fits(
             let mut missing = classes.clone();
             let mut used = BTreeSet::new();
             let mut preserve = BTreeSet::new();
-            let mut reused = 0usize;
             for (&class, count) in &mut missing {
                 for origin in [Some(stream), None] {
                     let Some(slots) = state.free.get(&(None, class, origin)) else {
@@ -375,7 +370,6 @@ fn fits(
                         }
                         used.insert(*ptr);
                         preserve.insert(block.segment);
-                        reused += class;
                         *count -= 1;
                     }
                 }
@@ -396,7 +390,6 @@ fn fits(
                     };
                     run.0 -= class;
                     preserve.insert(run.1);
-                    reused += class;
                     *count -= 1;
                 }
             }
@@ -424,9 +417,7 @@ fn fits(
                     "declared"
                 },
                 full,
-                measured: sample.map(|sample| sample.backing),
                 missing,
-                reused,
                 preserve,
                 now: headroom(owner, free, 0),
                 after_idle: headroom(owner, free, reclaimable.saturating_add(reclaimable_cache)),
@@ -530,8 +521,6 @@ impl Menu {
                 selected.after_idle.saturating_add(selected.streamed)
             },
             allocation_backing_bytes: selected.full,
-            measured_backing_peak_bytes: selected.measured,
-            reused_capacity_bytes: selected.reused,
             basis: selected.basis,
             plan_generation: selected.generation,
             phase: selected.phase.as_ref().map(|p| p.name.clone()),

@@ -281,6 +281,9 @@ impl Machines {
             if reason.next.is_empty() {
                 reason.next = commands(&reason.message);
             }
+            if reason.code == "does_not_fit" && reason.next.is_empty() {
+                reason.next.push(format!("cozy run {} … --on new", row.target));
+            }
             if for_its_age(reason)
                 && let Ok(m) = self.show(name).await
                 && let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version))

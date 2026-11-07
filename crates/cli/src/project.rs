@@ -10,7 +10,10 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, NewVersion, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved},
+    project::{
+        Approve, Approved, Asked, By, Cancel, Cancelled, Event, History, HistoryStep, HistoryStepped, Import, Imported, NewVersion, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs,
+        Standing, State, Transferred, Unpin, Unpinned, VersionMoved,
+    },
 };
 
 use crate::{
@@ -33,6 +36,7 @@ const EXAMPLES: &str = "Examples:
   cozy project approve fight 2                 fight holds that file, as its `approved` in project.yaml
   cozy project unapprove fight                  it follows its inputs again
   cozy project rename theo mara                in project.yaml, its <mentions> and its versions
+  cozy project history                         each edit, by the page, the CLI or a hand; `undo` and `redo` take one back or do it again
   cozy project reclaim --yes                   deletes what project.yaml no longer names
   cozy project push                            its files to your Tensorhub account
   cozy project pull                            on another computer, beside project.yaml and project.lock
@@ -139,6 +143,32 @@ enum Verb {
     /// Follow the render going to its end, as `render` follows its own: free, it starts nothing. With none going, the project as it stands.
     #[command(after_help = "Example:\n  cozy project render clash --on corteo --queue\n  cozy project wait\n\nExits 0 done, 1 something failed, 4 a run stopped moving: it goes on until you cancel it. Ctrl-C stops waiting, never the render.")]
     Wait,
+    /// What was done to the project, newest first: each edit by the page, the CLI or a hand in project.yaml, and whether it's undone.
+    #[command(after_help = "Example:\n  cozy project history\n  cozy project undo 42   that entry, if nothing since changed what it did")]
+    History {
+        /// How many, newest first.
+        #[arg(short = 'n', value_name = "N", default_value_t = 20)]
+        limit: usize,
+    },
+    /// Undo the project's newest edit, whoever made it: the page, the CLI, or a hand in project.yaml. Refused if a later edit changed the same thing.
+    /// Renders aren't undone, and nothing is rented or ended.
+    #[command(after_help = "Examples:\n  cozy project undo\n  cozy project undo 42        that entry of `cozy project history`\n  cozy project undo --to 40   every edit back to 40")]
+    Undo {
+        /// The entry, from `cozy project history`.
+        #[arg(value_name = "ID")]
+        entry: Option<u64>,
+        /// Every edit back to this one.
+        #[arg(long, value_name = "ID", conflicts_with = "entry")]
+        to: Option<u64>,
+    },
+    /// Do again what undo last took back, unless an edit came since; with an ID, that entry.
+    #[command(after_help = "Examples:\n  cozy project redo\n  cozy project redo 42\n  cozy project redo --to 45   every edit undone, up to 45")]
+    Redo {
+        #[arg(value_name = "ID")]
+        entry: Option<u64>,
+        #[arg(long, value_name = "ID", conflicts_with = "entry")]
+        to: Option<u64>,
+    },
     /// Keep an asset's versions after renaming it in project.yaml.
     #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
     Rename {
@@ -357,6 +387,9 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }
+        Verb::History { limit } => return history(ctx, args.path.as_ref(), limit).await,
+        Verb::Undo { entry, to } => return step(ctx, args.path.as_ref(), "undo", HistoryStep { entry, to, edit: None }).await,
+        Verb::Redo { entry, to } => return step(ctx, args.path.as_ref(), "redo", HistoryStep { entry, to, edit: None }).await,
         Verb::Push => {
             let done = transfer(ctx, args.path.as_ref(), "push", "sent").await?;
             let at = done.kept_in.as_deref().unwrap_or("the Hub");
@@ -371,6 +404,70 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             return Ok(skipped(&done));
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Who made an edit, as the history lists it.
+fn by(by: &By) -> String {
+    match (by.via.as_str(), &by.client) {
+        ("page", _) => "page".to_owned(),
+        ("file", _) => "project.yaml".to_owned(),
+        (via, Some(client)) => format!("{via} {client}"),
+        (via, None) => via.to_owned(),
+    }
+}
+
+/// `GET /v1/projects/{id}/history`.
+async fn history(ctx: &Context, at: Option<&PathBuf>, limit: usize) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at, false).await?;
+    let listed: History = ctx.calcifer().await?.get(&format!("/v1/projects/{}/history?limit={limit}", opened.id)).await?;
+    if ctx.json {
+        output::json(&listed);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if listed.entries.is_empty() {
+        output::say(ctx, "no edits yet");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let table = output::Table::new(ctx, ["ID", "WHEN", "BY", "WHAT"]);
+    let rows = listed.entries.iter().map(|entry| {
+        let what = match &entry.undone {
+            Some(undone) => format!("{} (undone {} ago)", entry.words, output::age(undone.at_ms)),
+            None => entry.words.clone(),
+        };
+        [entry.id.to_string(), format!("{} ago", output::age(entry.at_ms)), by(&entry.by), what]
+    });
+    rows.fold(table, output::Table::row).print();
+    let next: Vec<String> = [listed.undo.map(|_| "cozy project undo".to_owned()), listed.redo.map(|_| "cozy project redo".to_owned())].into_iter().flatten().collect();
+    output::nexts(ctx, &next);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `POST /v1/projects/{id}/history/<verb>`, and what it did.
+async fn step(ctx: &Context, at: Option<&PathBuf>, verb: &str, asked: HistoryStep) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at, false).await?;
+    let stepped: HistoryStepped = ctx.calcifer().await?.post(&format!("/v1/projects/{}/history/{verb}", opened.id), &asked, None).await?;
+    if ctx.json {
+        output::json(&stepped);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let done = if verb == "undo" { "undid" } else { "redid" };
+    if stepped.already {
+        output::say(ctx, &format!("nothing to {verb}: that's {done} already"));
+    }
+    for entry in &stepped.entries {
+        output::say(ctx, &format!("{done} {}: {}", entry.id, entry.words));
+    }
+    if let Some(stopped) = &stepped.stopped {
+        output::warn(&stopped.message);
+        output::nexts(ctx, &stopped.next);
+        return Ok(ExitCode::FAILURE);
+    }
+    let next: Vec<String> = match verb {
+        "undo" => stepped.entries.last().map(|entry| format!("cozy project redo {}", entry.id)).into_iter().collect(),
+        _ => stepped.entries.last().map(|entry| format!("cozy project undo {}", entry.id)).into_iter().collect(),
+    };
+    output::nexts(ctx, &next);
     Ok(ExitCode::SUCCESS)
 }
 

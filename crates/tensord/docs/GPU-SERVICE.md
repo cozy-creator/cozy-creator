@@ -18,6 +18,11 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   feature; real small cards are the evidence. Each GPU is a card of that size: Start carries it
   to every executor as its memory budget, and every free reading here and in the Runtime is the
   smaller card's. Driver-level exhaustion is not emulated.
+- `display_pace`: a shared machine's `[machine.display_pace]` (`work_ms` 80, `pause_ms` 16; a
+  `pause_ms` of 0 never pauses). When a GPU of a call's lane drives a display (NVML display-active),
+  Start carries it, and the Runtime pauses `pause_ms` after each `work_ms` at block entries and eager
+  step ends, so the desktop keeps drawing. A dedicated machine never pauses. The service itself, and
+  so every executor, runs at nice 10 and the lowest best-effort I/O on a shared machine.
 - `environment`: names `launch_identity::credential_name` judges credentials never reach an executor.
 - `host`: `{mode}`: `[machine] mode` in config.toml, else `dedicated` on a rental and `shared`
   elsewhere. At start a dedicated machine imports its installed environments' parents, most
@@ -176,5 +181,15 @@ thread.
   output work keeps its generation, log and spool alive after GPU executor return.
 - Each executor gets its own scope: a cgroup-v2 where the host delegates one (laptop systemd
   scopes, rootful hosts), else a token (containers with a read-only or v1 hierarchy, RunPod).
+- A shared machine is contained (`platform::contain::contain`): it and its executor scopes sit in
+  `<own>/cozy-<ns>`, its processes in `machine/`, with `memory.swap.max` 0 and each executor's
+  `memory.oom.group` 1. Each host look writes `memory.max` = what it holds that the kernel cannot
+  reclaim + the host's available memory outside it − the reserve (`host_memory::reserve`: RAM/4
+  in 4..16 GiB, plus what free swap is short of a quarter of it). A run that outgrows the computer
+  is OOM-killed inside it and fails `host_out_of_memory`. No `memory.high`: it throttles a run
+  that cannot shrink for a minute before the kill. Not delegated: one warning, in-process limits.
+- A GPU that drives a display keeps free at the driver what its display's programs use now plus
+  256 MiB (384 MiB at least), read at Start and each Invoke (`display_limit`, its total less that),
+  which the Runtime passes to varena's `set_limit`.
 - Seal: `OMP_NUM_THREADS` 4 (torch's allocator is set in Runtime code); `<root>/home`, `<root>/kernels` (per UID) and
   `<root>/jit/<run>/<generation>`. Earlier runs' JIT scopes, and executor roots (logs) older than a day, are removed at pool start.

@@ -104,11 +104,14 @@ const WATCH = () => {
   /** Each place its progress reached, until it has none. */
   window.progressOf = (name) => new Promise((done) => {
     const places = [];
+    window.progressSaid = [];
     const look = () => {
       const bar = box(name)?.querySelector('.prog');
       if (bar) {
         const place = bar.querySelector('i')?.style.transform || 'unknown';
         if (places.at(-1) !== place) places.push(place);
+        const says = bar.querySelector('b')?.textContent;
+        if (says && window.progressSaid.at(-1) !== says) window.progressSaid.push(says);
       }
       if (!bar && places.length) done(places);
       else requestAnimationFrame(look);
@@ -488,7 +491,7 @@ function linesOf(text, name) {
     await box('live_shot').waitFor();
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
-    await project('set', 'live_shot', 'seconds:=8');
+    await project('set', 'live_shot', 'seconds:=14');
     const moving = bounded(page.evaluate((name) => window.progressOf(name), 'live_shot'), FIRST_RUN_MS, () => 'its progress never ended');
     await timed('render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     const landed = until('two takes', async () => (await held('live_shot')).versions, (versions) => versions === 2, FIRST_RUN_MS).then(() => Date.now());
@@ -497,6 +500,11 @@ function linesOf(text, name) {
     seen.render_progress = places;
     const fractions = places.map((held) => held.match(/-?[\d.]+/)?.[0]).filter(Boolean).map(Number);
     check('render_progress_moves', fractions.length >= 3 && fractions.every((at, i) => !i || at >= fractions[i - 1]), places);
+    // Steps read as steps, whatever the package calls its stage.
+    const said = await page.evaluate(() => window.progressSaid);
+    seen.render_said = said;
+    // The time is Calcifer's for the whole run; its first run here says so until it has steps of its own.
+    check('steps_read_as_denoise_steps', said.some((text) => /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/.test(text)) && !said.some((text) => /drawing/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);

@@ -25,7 +25,7 @@ const GROUPS: { id: string; words: string; icon: IconName }[] = [
 /** What you're after. One that asks for a file and for no words changes what it's given; anything else makes something of its kind. */
 const groupOf = (tool: Tool) => tool.local ? "local" : (tool.controls.some((control) => control.type === "file" && control.required) && !tool.controls.some((control) => control.type === "text" || control.type === "group") ? "touch" : tool.kind)
 
-/** A function and its quick form are one row: `generate` and `generate_turbo` of a package. */
+/** A function and its quick form are one row, the quick one its box's Turbo toggle: `generate` and `generate_turbo` of a package. */
 function rowsOf(tools: Tool[]): { tool: Tool; quick?: Tool }[] {
   const quick = new Map(tools.map((tool) => [`${tool.package}/${tool.function}`, tool]))
   const taken = new Set<Tool>()
@@ -76,23 +76,6 @@ function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; plac
   return (
     <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.kind} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onDragEnd={landed} onClick={() => place(tool)}>
       <b>{tool.label}</b>
-      {quick && (
-        <span
-          className="tool quick"
-          draggable
-          role="button"
-          aria-label={quick.label}
-          title={quick.label}
-          data-kind={quick.kind}
-          onDragStart={(event) => dragged(event, quick)}
-          onClick={(event) => {
-            event.stopPropagation()
-            place(quick)
-          }}
-        >
-          <Icon name="bolt" />
-        </span>
-      )}
       {yours && !tool.local && !madeHere(tool.id) && (
         <button
           type="button"

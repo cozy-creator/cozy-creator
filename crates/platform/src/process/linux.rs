@@ -89,6 +89,12 @@ pub(super) fn background_thread() {
     unsafe { libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13) };
 }
 
+pub(super) fn background_process() {
+    let _ = setpriority_process(Some(rustix::thread::gettid()), 10);
+    // SAFETY: as in `background_thread`; the best-effort class (2) at its lowest level (7).
+    unsafe { libc::syscall(libc::SYS_ioprio_set, 1, 0, (2 << 13) | 7) };
+}
+
 pub(super) fn set_name(name: &str) -> crate::Result<()> {
     let name = std::ffi::CString::new(name)
         .map_err(|error| crate::Error::os("name this process")(io::Error::new(io::ErrorKind::InvalidInput, error)))?;

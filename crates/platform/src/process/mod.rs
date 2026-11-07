@@ -156,6 +156,13 @@ pub fn background_thread() {
     sys::background_thread()
 }
 
+/// This process behind the computer's own programs, for a machine that shares it: nice 10 and the
+/// lowest best-effort I/O level on Linux (the calling thread's, so call it before any other thread
+/// starts: every thread and child after inherits it), nice 10 on macOS, below normal on Windows.
+pub fn background_process() {
+    sys::background_process()
+}
+
 /// A handle naming exactly one birth (a pidfd, a kqueue on its exit, a process HANDLE): its kill
 /// and its exit never reach a process that reused the PID.
 #[derive(Debug)]

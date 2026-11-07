@@ -289,6 +289,8 @@ struct Entry {
     filled: u64,
     // Its owner ranks it above rebuilding a cache: `reclaim::HIGH`.
     high: bool,
+    // State a loop keeps across steps, refilled from its pinned host copy.
+    retained: bool,
 }
 
 impl Entry {
@@ -363,6 +365,11 @@ impl State {
             true => reclaim::PHASE_FRESH,
             false => reclaim::PHASE_USED,
         };
+        // A loop's retained state is its own, read again next step like its weights: most recent
+        // first, with what this pass streamed, as its refill is one DMA from pinned host RAM.
+        if entry.retained && touched {
+            return (reclaim::PHASE_FRESH, u64::MAX - entry.last_use);
+        }
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
             None => (used, u64::MAX - entry.last_use),
@@ -399,10 +406,20 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
     working::mark_cooperation_bound(device)
 }
 
-/// A request started or ended on `device`: an atomic store, which orders who donates first.
+/// A request started or ended on `device`, which orders who donates first. The
+/// first one running here is also a phase boundary, for eager callers too: the last call's regions
+/// are no longer in this one's loop, so they go first, by last use (hidream-o1's generate kept its
+/// turbo streaming in the same process, run 39070).
 pub fn request_boundary(device: i32, begin: bool) {
-    if begin && let Ok(device) = gpu(device) {
-        device.held_peak.store(0, Ordering::Release);
+    if let Ok(device) = gpu(device) {
+        if !begin {
+            let _ = device.requests.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        } else {
+            device.held_peak.store(0, Ordering::Release);
+            if device.requests.fetch_add(1, Ordering::AcqRel) == 0 && let Ok(mut state) = device.lock() {
+                state.phase_boundary = Some(device.clock.load(Ordering::Relaxed));
+            }
+        }
     }
     #[cfg(target_os = "linux")]
     cooperative::request_boundary(device, begin);
@@ -475,6 +492,8 @@ pub struct Device {
     working: AtomicUsize,
     // The most weight bytes held for use at once this request.
     held_peak: AtomicUsize,
+    // Requests running here: the first to begin is a phase boundary.
+    requests: AtomicUsize,
     // Weight bytes held for use now: regions with a pin.
     held: AtomicUsize,
     // Moves when the room this process can have shrinks for a reason outside its program: a cap,
@@ -517,6 +536,7 @@ impl Device {
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
+            requests: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
             room: AtomicU64::new(0),
             room_outside: AtomicU64::new(0),
@@ -703,6 +723,7 @@ impl Device {
                     last_use: 0,
                     filled: 0,
                     high: false,
+                    retained: false,
                 },
             );
             Region {
@@ -1165,6 +1186,13 @@ impl Region {
         Ok(())
     }
 
+    /// State a loop keeps across steps: once used in the loop it ranks as the loop's own.
+    /// Metadata only.
+    pub fn set_retained(&self) -> Result<()> {
+        self.gpu.lock()?.entries.get_mut(&self.id).expect("live region").retained = true;
+        Ok(())
+    }
+
     /// This fill is not the region's first: it has been evicted and read back.
     pub fn refilled(&self) -> bool {
         self.uses.generation.load(Ordering::Acquire) > 1
@@ -1204,7 +1232,9 @@ impl Region {
             match unsafe { self.prepare_on(consumer) } {
                 Ok(async_fill::StreamPreparation::Ready(pin) | async_fill::StreamPreparation::Ordered(pin)) => break pin,
                 Ok(async_fill::StreamPreparation::Fill(fill)) => {
-                    source::yield_to(self);
+                    if self.source.reads() {
+                        source::yield_to(self);
+                    }
                     // The worker takes up what comes next while this thread reads: asked only after the
                     // read, it lost the race to this thread's next use every time.
                     let _ = source::after_use(self);

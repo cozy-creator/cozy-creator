@@ -11,7 +11,7 @@ pub(super) fn total() -> i64 {
     meminfo("MemTotal")
 }
 
-fn meminfo(field: &str) -> i64 {
+pub(crate) fn meminfo(field: &str) -> i64 {
     let Ok(file) = fs::File::open("/proc/meminfo") else {
         return -1;
     };
@@ -25,6 +25,42 @@ fn meminfo(field: &str) -> i64 {
         }
     }
     -1
+}
+
+/// (`SwapTotal`, `SwapFree`); 0 where unreadable.
+pub(super) fn swap() -> (u64, u64) {
+    let read = |field| u64::try_from(meminfo(field)).unwrap_or(0);
+    (read("SwapTotal"), read("SwapFree"))
+}
+
+pub(super) fn stall() -> super::Stall {
+    let avg10 = |path: &Path| -> Option<f32> {
+        let text = fs::read_to_string(path).ok()?;
+        let some = text.lines().find(|line| line.starts_with("some "))?;
+        some.split_whitespace().find_map(|field| field.strip_prefix("avg10="))?.parse().ok()
+    };
+    let limited = match cgroups() {
+        Some((path, limits, "memory.current")) => path
+            .into_iter()
+            .filter(|cgroup| tightest(std::slice::from_ref(cgroup), limits).is_some())
+            .map(|cgroup| cgroup.join("memory.pressure"))
+            .collect(),
+        _ => vec![],
+    };
+    let some_avg10 = std::iter::once(PathBuf::from("/proc/pressure/memory"))
+        .chain(limited)
+        .filter_map(|path| avg10(&path))
+        .fold(0.0, f32::max);
+    super::Stall { some_avg10 }
+}
+
+/// The sum of `names`' counts in a `memory.events`.
+pub(crate) fn events(text: &str, names: &[&str]) -> u64 {
+    text.lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter(|(name, _)| names.contains(name))
+        .filter_map(|(_, count)| count.trim().parse::<u64>().ok())
+        .sum()
 }
 
 pub(crate) fn number(path: &Path) -> Option<u64> {
@@ -162,7 +198,49 @@ pub(super) fn read() -> HostMemory {
     best
 }
 
-/// `/proc/<pid>/status`: `RssAnon`, `RssFile`, `RssShmem` and `VmHWM`.
+/// A cgroup of a machine's own containment (`cozy-<namespace>`, `cozy-executor-…`) or below one:
+/// its limits are the machine's, never the computer's.
+fn ours(cgroup: &Path) -> bool {
+    cgroup.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        name.starts_with("cozy-executor-")
+            || name.strip_prefix("cozy-").is_some_and(|ns| ns.len() == 16 && ns.bytes().all(|b| b.is_ascii_hexdigit()))
+    })
+}
+
+/// The computer this machine runs on: physical memory, or less where a limit above the machine's
+/// own cgroups is (a container, a unit's `MemoryMax`). None when unreadable.
+pub(crate) fn computer() -> Option<u64> {
+    let physical = u64::try_from(total()).ok().filter(|&n| n > 0);
+    let limits = cgroups().and_then(|(path, limits, _)| {
+        let theirs: Vec<PathBuf> = path.into_iter().filter(|cgroup| !ours(cgroup)).collect();
+        tightest(&theirs, limits)
+    });
+    physical.into_iter().chain(limits).min()
+}
+
+/// What the computer has available outside this machine's own cgroups: `MemAvailable`, or less
+/// where a limit above them has less room. -1 when unreadable.
+pub(crate) fn available_outside() -> i64 {
+    let mut available = meminfo("MemAvailable");
+    let Some((path, limits, usage)) = cgroups() else {
+        return available;
+    };
+    for cgroup in path.iter().filter(|cgroup| !ours(cgroup)) {
+        let Some(bound) = tightest(std::slice::from_ref(cgroup), limits) else {
+            continue;
+        };
+        let used = number(&cgroup.join(usage)).unwrap_or(0);
+        let (cache, _, _) = stat(cgroup).unwrap_or((0, 0, 0));
+        let room = bound.saturating_sub(used.saturating_sub(cache)) as i64;
+        if available < 0 || room < available {
+            available = room;
+        }
+    }
+    available
+}
+
+/// `/proc/<pid>/status`'s `RssAnon`.
 pub(super) fn resident(pid: u32) -> io::Result<super::Resident> {
     let text = fs::read_to_string(format!("/proc/{pid}/status"))?;
     let field = |name: &str| {
@@ -171,13 +249,7 @@ pub(super) fn resident(pid: u32) -> io::Result<super::Resident> {
             .map(|kib| kib * 1024)
             .ok_or_else(|| io::Error::other(format!("no {name} in /proc/{pid}/status")))
     };
-    let (anon, file, shmem) = (field("RssAnon")?, field("RssFile")?, field("RssShmem")?);
-    Ok(super::Resident { anon, file, shmem, peak: field("VmHWM")?.max(anon + file + shmem) })
-}
-
-/// `clear_refs` 5: the resident high-water becomes the process's use now.
-pub(super) fn reset_peak(pid: u32) -> io::Result<()> {
-    fs::write(format!("/proc/{pid}/clear_refs"), b"5")
+    Ok(super::Resident { anon: field("RssAnon")? })
 }
 
 pub(super) fn process(pid: u32) -> io::Result<ProcessMemory> {

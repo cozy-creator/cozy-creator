@@ -59,11 +59,11 @@ cozy machine logs "$NAME" memory -n 0 > "$OUT/memory.log" 2>&1
 tail -n +"$((mem_before + 1))" "$OUT/memory.log" > "$OUT/memory-h3.log"
 h3_evicted=$(grep -c 'tensorfs: evicted minimaxai/minimax-h3' "$OUT/tensord-h3.log")
 said=$(warned h3 | grep -m1 'evicted' || true)
-ended=$(grep -c '"event":"end_idle"' "$OUT/memory-h3.log") for_vram=$(grep -c '"event":"ended_for_room"' "$OUT/memory-h3.log")
+ended=$(grep -c '"event":"end_idle"' "$OUT/memory-h3.log")
 grep -E 'tensorfs: evicted|ended the idle executors|the disk was short|machine_disk_full' "$OUT/tensord-h3.log" | cut -c1-300 >> "$R"
-grep -E '"event":"(end_idle|ended_for_room)"' "$OUT/memory-h3.log" | cut -c1-300 >> "$R"
+grep '"event":"end_idle"' "$OUT/memory-h3.log" | cut -c1-300 >> "$R"
 say "H3 $hs, its warning: ${said:-none}"
-say "turbo asked while H3 rendered: $t2 in ${t2_s}s $(reason turbo2); H3 evicted $h3_evicted times; executors ended since H3 began: $ended ($for_vram of them for GPU memory)"
+say "turbo asked while H3 rendered: $t2 in ${t2_s}s $(reason turbo2); H3 evicted $h3_evicted times; executors ended since H3 began: $ended"
 [ "$hs" = completed ] || bad+=("H3 $hs: $(reason h3)")
 [ -n "$said" ] || bad+=("H3 says nothing evicted: the disk held it without making room")
 [ "$h3_evicted" = 0 ] || bad+=("H3 was evicted while it rendered")

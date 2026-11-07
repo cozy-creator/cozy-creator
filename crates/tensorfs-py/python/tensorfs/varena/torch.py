@@ -171,10 +171,41 @@ def stats(device: DeviceLike = 0) -> dict[str, int]:
     return _ext._varena_working_stats(_device(device))
 
 
+def room(device: DeviceLike = 0) -> dict[str, int]:
+    """What the card has now, as a split chooses by: `capacity` (the card or its cap, less what is
+    outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes."""
+    _installed()
+    return _ext._varena_room(_device(device))
+
+
 def reset_peak(device: DeviceLike = 0) -> None:
     """Reset measured working peaks to current live and mapped bytes."""
     _installed()
     _ext._varena_working_reset_peak(_device(device))
+
+
+def site_id(name: str) -> int:
+    """The id `set_site` takes for a birth site's name, the same for the process's life."""
+    return _ext._varena_site_id(name)
+
+
+def set_site(device: int, site: int) -> None:
+    """Where this device's next working allocations are born (one store, no lock)."""
+    _ext._varena_set_site(device, site)
+
+
+def pass_mark(device: int, head: int, shape: int, floor: int) -> dict[str, Any] | None:
+    """A forward of model `head` begins (inputs of `shape`, `floor` its largest block's weight
+    bytes). Its first this request begins a loop, later ones are its passes: working blocks an
+    earlier pass left live are its escaped bytes. None, or once per loop why its next pass cannot
+    fit with every evictable byte gone."""
+    return _ext._varena_pass_mark(device, head, shape, floor)
+
+
+def escapes_take(device: int, *, failed: bool) -> list[dict[str, Any]]:
+    """This request's loops, ended, with what each began with and its passes left live; `failed`:
+    the request ended in an error, so a refused allocation in its last pass is learned from."""
+    return _ext._varena_escapes_take(device, failed=failed)
 
 
 def checks(*, unmap_idle: bool = False, perturb: bool = False, guards: bool = False) -> None:
@@ -283,12 +314,6 @@ def phase_invalidate(device: DeviceLike, token: int, reason: str = "execution_re
     """Invalidate a caught failed dispatch/retry without hiding its original exception."""
     _installed()
     _ext._varena_phase_invalidate(_device(device), token, reason)
-
-
-def phase_stats(device: DeviceLike, key: str) -> dict[str, Any]:
-    """Owned block/backing peaks and total-process telemetry, with separate aborted counts."""
-    _installed()
-    return _ext._varena_phase_stats(_device(device), key)
 
 
 def phase_forget(device: DeviceLike, key: str) -> bool:

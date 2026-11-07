@@ -26,6 +26,16 @@ pub(super) fn total() -> i64 {
 }
 
 /// No limit below physical memory is read here.
+/// No swap figures read here: the reserve has no swap term.
+pub(super) fn swap() -> (u64, u64) {
+    (0, 0)
+}
+
+/// No PSI here.
+pub(super) fn stall() -> super::Stall {
+    super::Stall::default()
+}
+
 pub(super) fn limit() -> Option<u64> {
     None
 }
@@ -42,10 +52,6 @@ pub(super) fn read() -> HostMemory {
 }
 
 pub(super) fn resident(_: u32) -> io::Result<super::Resident> {
-    Err(io::ErrorKind::Unsupported.into())
-}
-
-pub(super) fn reset_peak(_: u32) -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
