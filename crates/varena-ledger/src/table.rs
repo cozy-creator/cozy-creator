@@ -6,6 +6,9 @@
 //! All zero is the valid start, and every word is written alone, so there is nothing to
 //! initialize and nothing a dying writer can tear. A row is alive while its owner's OFD lock
 //! is held; the kernel drops it when the process's last descriptor closes.
+//!
+//! Only an exit returns a process's context, so when idle memory is not enough the page names
+//! the process that gives way ([`Table::victims`]); its supervisor only ends it.
 #![allow(unsafe_code)]
 
 use std::fs::{self, OpenOptions};
@@ -26,6 +29,13 @@ const TICK: Duration = Duration::from_millis(50);
 /// TensorD always answers a short asker; this bounds a TensorD that cannot.
 const SUPERVISOR_ANSWER: Duration = Duration::from_secs(30);
 const REFUSED: u64 = u64::MAX;
+/// What a process's exit frees past the bytes it holds: its CUDA context, about 0.5 GiB
+/// (runs 40927, 40978).
+const CONTEXT: u64 = 512 << 20;
+/// An idle process's reload counts half once it has sat idle this long, a quarter at twice.
+const STALE_NS: u128 = 300_000_000_000;
+/// A refused foreign shortage, until anything is released again.
+const FOREIGN_REFUSED: u64 = 1 << 63;
 /// Asking for less just means asking again: every small allocation of a full card would cost a
 /// round trip through every peer.
 const SMALLEST_ASK: u64 = 512 << 20;
@@ -61,8 +71,25 @@ struct Page {
     /// Bytes given back, plus one per death: any change is a reason to retry the driver.
     released: AtomicU64,
     rows: [Words; ROWS],
+    // Past the rows, so a peer that predates these words meets this page as ever and reads zeros.
+    /// Each row's supervisor word on it ([`Table::describe`]): its pid, priority and reload.
+    tenants: [AtomicU64; ROWS],
+    /// Nonzero while a row's `short` is an ask for room a request would use, which never ends a
+    /// process with priority; zero for an allocation that cannot proceed.
+    room: [AtomicU64; ROWS],
+    /// `released + 1` while a program outside the ledger stays short after every give.
+    foreign: AtomicU64,
 }
 const _: () = assert!(size_of::<Page>() <= PAGE);
+
+/// What a supervisor knows of a process it runs, which the page ranks it by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tenant {
+    /// Given way last: what a caller asked to keep warm (0: nothing).
+    pub priority: u8,
+    /// What bringing it back costs: its start and its loads.
+    pub reload: Duration,
+}
 
 /// A row this process owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,7 +242,7 @@ impl Table {
         if row.pid.swap(0, AcqRel) != 0 {
             self.release(held.max(1));
         }
-        for word in [&row.idle, &row.want, &row.running, &row.short, &row.donated] {
+        for word in [&row.idle, &row.want, &row.running, &row.short, &row.donated, &self.page.tenants[index], &self.page.room[index]] {
             word.store(0, Release);
         }
     }
@@ -281,6 +308,50 @@ impl Table {
         self.page.rows.iter().map(|row| row.pid.load(Acquire) as u32).filter(|pid| *pid != 0).collect()
     }
 
+    /// A supervisor's word on its process `pid`, held while `pid` owns its row.
+    pub fn describe(&self, pid: u32, tenant: Tenant) {
+        let reload = (tenant.reload.as_millis() / 100).min(0xff_ffff) as u64;
+        let word = u64::from(pid) << 32 | u64::from(tenant.priority) << 24 | reload;
+        for (index, row) in self.page.rows.iter().enumerate() {
+            if row.pid.load(Acquire) == u64::from(pid) {
+                self.page.tenants[index].store(word, Release);
+            }
+        }
+    }
+
+    fn tenant(&self, index: usize) -> Tenant {
+        let word = self.page.tenants[index].load(Acquire);
+        if word == 0 || word >> 32 != self.page.rows[index].pid.load(Acquire) {
+            return Tenant::default();
+        }
+        Tenant { priority: (word >> 24) as u8, reload: Duration::from_millis((word & 0xff_ffff) * 100) }
+    }
+
+    /// Who gives way, first to last, when idle memory is not enough: processes in no request and
+    /// not `askers`, by priority, then by the reload each costs per byte its exit frees (what it
+    /// holds and its context), discounted the longer it has sat idle; least recently used breaks
+    /// ties. A room ask (`room`) names none with priority.
+    pub fn victims(&self, askers: &[u32], room: bool) -> Vec<u32> {
+        let now = now_ns();
+        let mut ranked: Vec<(u8, u128, u64, u32)> = self.page.rows.iter().enumerate().filter_map(|(index, row)| {
+            let pid = row.pid.load(Acquire) as u32;
+            if pid == 0 || row.running.load(Acquire) != 0 || askers.contains(&pid) {
+                return None;
+            }
+            let tenant = self.tenant(index);
+            if room && tenant.priority != 0 {
+                return None;
+            }
+            let last = row.last_use.load(Acquire);
+            let idle = u128::from(now.saturating_sub(last));
+            let freed = u128::from(row.held.load(Acquire) + CONTEXT);
+            let cost = tenant.reload.as_millis() * STALE_NS / (STALE_NS + idle) * (1 << 30) / freed;
+            Some((tenant.priority, cost, last, pid))
+        }).collect();
+        ranked.sort_unstable();
+        ranked.into_iter().map(|(.., pid)| pid).collect()
+    }
+
     /// Ask every donor to work out its share of `bytes`. The want stays up until cleared.
     pub fn ask(&self, row: Row, bytes: u64) -> u64 {
         self.page.rows[row.0].want.store(bytes, Release);
@@ -295,15 +366,18 @@ impl Table {
         row.short.store(0, Release);
     }
 
-    /// This row's part of the largest want: idle processes first, oldest use first, then
-    /// processes in a request. Every donor sorts the same way, so shares rarely overlap, and
-    /// an overlap only over-trims.
+    /// This row's part of the largest other want: idle processes first, the least priority and oldest
+    /// use first, then processes in a request. Every donor sorts the same way, so shares rarely
+    /// overlap, and an overlap only over-trims.
     fn share(&self, me: Row) -> u64 {
         let live = || self.page.rows.iter().enumerate().filter(|(_, row)| row.pid.load(Acquire) != 0);
-        let mut left = live().map(|(_, row)| row.want.load(Acquire)).max().unwrap_or(0);
-        let mut order: Vec<_> = live().map(|(index, row)| (row.running.load(Acquire) != 0, row.last_use.load(Acquire), index)).collect();
+        // Never its own want: its own memory is its allocator's reclaim, in its order.
+        let mut left = live().filter(|(index, _)| *index != me.0).map(|(_, row)| row.want.load(Acquire)).max().unwrap_or(0);
+        let mut order: Vec<_> = live()
+            .map(|(index, row)| (row.running.load(Acquire) != 0, self.tenant(index).priority, row.last_use.load(Acquire), index))
+            .collect();
         order.sort_unstable();
-        for (_, _, index) in order {
+        for (.., index) in order {
             let take = left.min(self.page.rows[index].idle.load(Acquire));
             if index == me.0 { return take; }
             left -= take;
@@ -348,9 +422,31 @@ impl Table {
     /// more can. `deadline` bounds waiting on peers that stopped answering. Each `Retry` is real
     /// progress, so a caller may give the next call a fresh deadline.
     pub fn recover(&self, row: Row, bytes: u64, deadline: Instant) -> Recovery {
+        self.page.room[row.0].store(0, Release);
         let result = self.recover_inner(row, bytes, deadline);
         self.stop_asking(row);
         result
+    }
+
+    /// `recover` for room a request will use, off its allocating thread: idle peers give, and if
+    /// that is not enough the supervisor ends a process without priority.
+    pub fn ask_room(&self, row: Row, bytes: u64, deadline: Instant) -> Recovery {
+        self.page.room[row.0].store(1, Release);
+        let result = self.recover_inner(row, bytes, deadline);
+        self.stop_asking(row);
+        self.page.room[row.0].store(0, Release);
+        result
+    }
+
+    /// A donor's word that a program outside the ledger stays short after every give: the
+    /// supervisor ends a process as for a room ask, until none is left to end.
+    pub fn foreign_short(&self) {
+        let mark = self.page.released.load(Acquire) + 1;
+        let word = self.page.foreign.load(Acquire);
+        if word != mark && word != mark | FOREIGN_REFUSED {
+            self.page.foreign.store(mark, Release);
+            self.changed();
+        }
     }
 
     fn recover_inner(&self, row: Row, bytes: u64, deadline: Instant) -> Recovery {
@@ -453,28 +549,35 @@ impl Table {
         Some(given)
     }
 
-    /// TensorD's side, for this GPU. While the table's supervisor byte is held, an asker that
-    /// peers could not help waits for `end_idle`: it ends an idle process, or says there is none.
-    /// Only an exit returns a CUDA context. `end_idle` returns None when the service is gone.
-    /// An asker's own process is never the one ended: its exit can't give it room.
-    pub fn supervise(&self, mut end_idle: impl FnMut(&[u32]) -> Option<bool>) {
-        if !self.lock(0) { return; } // Another TensorD on this GPU has it.
+    /// TensorD's side, for this page. While the table's supervisor byte is held, an asker that
+    /// peers could not help, or a program outside the ledger that stays short, waits for `end`:
+    /// it gets the askers and the page's [`victims`](Self::victims), and ends the first it can
+    /// (true), or says there is none (false). Only an exit returns a CUDA context. `end` returns
+    /// None when the service is gone.
+    pub fn supervise(&self, mut end: impl FnMut(&[u32], &[u32]) -> Option<bool>) {
+        if !self.lock(0) { return; } // Another TensorD on this page has it.
         loop {
             let seen = self.page.answers.load(Acquire);
             self.reap();
             let released = self.page.released.load(Acquire);
-            let is_short = |row: &&Words| row.pid.load(Acquire) != 0 && row.short.load(Acquire) == released + 1;
-            let askers: Vec<u32> = self.page.rows.iter().filter(is_short).map(|row| row.pid.load(Acquire) as u32).collect();
-            if !askers.is_empty() {
-                match end_idle(&askers) {
+            let short: Vec<usize> = (0..ROWS).filter(|&index| {
+                let row = &self.page.rows[index];
+                row.pid.load(Acquire) != 0 && row.short.load(Acquire) == released + 1
+            }).collect();
+            let foreign = self.page.foreign.load(Acquire) == released + 1;
+            if !short.is_empty() || foreign {
+                let askers: Vec<u32> = short.iter().map(|&index| self.page.rows[index].pid.load(Acquire) as u32).collect();
+                let room = short.iter().all(|&index| self.page.room[index].load(Acquire) != 0);
+                match end(&askers, &self.victims(&askers, room)) {
                     Some(true) => {
                         self.reap();
                         self.release(1);
                     }
                     Some(false) => {
-                        for row in self.page.rows.iter().filter(is_short) {
-                            let _ = row.short.compare_exchange(released + 1, REFUSED, AcqRel, Acquire);
+                        for &index in &short {
+                            let _ = self.page.rows[index].short.compare_exchange(released + 1, REFUSED, AcqRel, Acquire);
                         }
+                        let _ = self.page.foreign.compare_exchange(released + 1, (released + 1) | FOREIGN_REFUSED, AcqRel, Acquire);
                         self.changed();
                     }
                     None => return,

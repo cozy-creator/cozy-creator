@@ -4,8 +4,11 @@
 Runtime executors. TensorD supplies model references and schedules GPU call permits. Each
 executor owns its GPU allocations, process-local Varena residency and ordinary Torch cache.
 TensorD records measurements and observes exact process exits; it decides no GPU bytes and has no
-Varena manager, GPU allocation custody or memory-admission queue. It ends an idle executor for GPU
-memory only when a core's ask went unanswered. Nothing ends an executor for a stall.
+Varena manager, GPU allocation custody or memory-admission queue. It ends an idle executor only
+when varena's ledger names it (`Table::victims`: no request, priority, reload per byte freed) for
+an ask idle memory could not answer: a call's allocation, the room a request begins needing, or
+a foreign program's shortage. It writes each idle executor's warm level as its priority and its
+measured reload; it never picks a victim. No clock ends an executor, nor does a stall.
 Acceptance, journal, progress and output custody stay in `Engine`; scheduling stays in `service.rs`.
 
 ## Configuration

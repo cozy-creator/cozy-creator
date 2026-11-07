@@ -39,8 +39,8 @@ PYTHON -I -m cozy_runtime.internal.trampoline --expect-parent <pid> --oom-adj 10
 TensorD's `Load` command asks Runtime to construct the model in this executor. TensorD supplies
 the selected stored metadata/assets and the weight sets' bytes (`read_grant`); Runtime parses
 and plans reads with its own TensorFS library into Torch-owned tensors. Runtime manages local
-weight residency; TensorD offloads whole idle executors through `Map(Ram)` when another construction
-needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
+weight residency; a warm `host` level is a ledger priority, never a `Map(Ram)`, and an idle executor
+ends only when varena's ledger names it. TensorD creates no CUDA context, GPU allocation or lease listener.
 
 ## Wire
 

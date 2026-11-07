@@ -304,7 +304,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     if !rental {
         let (lifecycle, engine, home) = (lifecycle.clone(), service.engine.clone(), grant.home.clone());
-        let (released, parents, stopped, warm) = (service.clone(), service.clone(), service.clone(), service.clone());
+        let (parents, stopped, warm) = (service.clone(), service.clone(), service.clone());
         // A change of its controllers (`cozy machine authorize`, `--remove`) wakes its lifecycle.
         let (mut changes, woken) = (keys.subscribe(), service.engine.clone());
         runtime.spawn(async move {
@@ -317,7 +317,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             crate::machine::lifecycle::exit_when_idle(
                 lifecycle,
                 engine,
-                move || released.release_idle(),
                 move || parents.release_parents(),
                 move || stopped.stop(),
                 // Kept up for its authorized controllers and for a warm set member it holds, unless

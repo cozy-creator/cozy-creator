@@ -14,8 +14,14 @@ use varena_ledger::{Donor, Recovery, Row, Table};
 const BRING_UP_BYTES: usize = 3 << 30;
 /// How long an ask waits on peers that have stopped answering.
 const PEER_WAIT: Duration = Duration::from_secs(2);
+/// Less is not worth a room ask: demand asks for it.
+const SMALLEST_ROOM: usize = 256 << 20;
+/// A request's room asks: each one that helps is followed by another, up to this many.
+const ROOM_ASKS: usize = 32;
 /// How long a donor waits on its own cache owners, which may need a GIL someone holds.
 const OWNER_WAIT: Duration = Duration::from_secs(1);
+/// A foreign shortage lasting this many looks is past what gives can mend.
+const PRESSED_TICKS: u32 = 3;
 /// A foreign process crossing this is a program starting: all idle memory goes back to it.
 const NEW_PROCESS: u64 = 256 << 20;
 /// Linux UAPI nsfs.h: only in the initial PID namespace are NVML's pids ours.
@@ -77,6 +83,11 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
         }
         last = recover(device, BRING_UP_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
     }?;
+    let display = Nvml::init().ok().and_then(|nvml| nvml_device(&nvml, &uuid)?.is_display_active().ok());
+    if display == Some(true) {
+        crate::gpu(device)?.drives_display(true);
+        eprintln!("varena: GPU {device} drives a display: a sixteenth of it, at least 512 MiB, stays free past every program's use");
+    }
     if let Some(serving) = serving {
         let mut donor = Native::new(device, shared, uuid)?;
         std::thread::Builder::new().name(format!("varena-owner-{device}")).spawn(move || {
@@ -107,6 +118,36 @@ pub(crate) fn peers_idle(device: i32) -> bool {
 
 pub(crate) fn ask_idle_peers(device: i32, bytes: usize) -> bool {
     service(device).is_some_and(|service| service.table.ask_idle_peers(service.row, bytes as u64, Instant::now() + PEER_WAIT))
+}
+
+/// A request begins needing `need` bytes here. What this process lacks of it is asked for on a
+/// thread of its own while the request runs, never on its fill path: idle peers give back what
+/// they hold idle, and when that is not enough the ledger names a process in no request and
+/// without priority, which its supervisor ends, since only an exit returns a context. At 6 GiB
+/// four idle executors held a third of the card (runs 40927, 40978); an idle SDXL's 5.3 GiB asked
+/// for on demand cost Qwen 1-1.7 s of step 1.
+pub(crate) fn room_for(gpu: &'static Device, need: usize) {
+    let device = gpu.ordinal();
+    let Some(service) = service(device) else { return };
+    let short = move || -> Result<usize> {
+        crate::gate(device)?.not_capturing()?;
+        let (free, total) = working::peer::memory_info(device)?;
+        Ok(gpu.short_of(need, free, total))
+    };
+    let spawned = std::thread::Builder::new().name(format!("varena-room-{device}")).spawn(move || {
+        for _ in 0..ROOM_ASKS {
+            let Ok(bytes) = short() else { return };
+            if bytes < SMALLEST_ROOM || !service.table.running(service.row) {
+                return;
+            }
+            if service.table.ask_room(service.row, bytes as u64, Instant::now() + PEER_WAIT) == Recovery::Final {
+                return;
+            }
+        }
+    });
+    if let Err(error) = spawned {
+        eprintln!("varena: GPU {device}'s room comes on demand only: {error}");
+    }
 }
 
 pub(crate) fn request_boundary(device: i32, begin: bool) {
@@ -143,6 +184,8 @@ struct Native {
     short: u32,
     /// The card's use that no row holds, at the last tick.
     foreign: u64,
+    /// Ticks in a row the card has been short since foreign use grew.
+    pressed: u32,
     nvml: Option<Nvml>,
     uuid: [u8; 16],
     previous: Option<BTreeMap<u32, u64>>,
@@ -159,6 +202,7 @@ impl Native {
             asked: false,
             short: 0,
             foreign: 0,
+            pressed: 0,
             nvml: if host_pids { Nvml::init().ok() } else { None },
             uuid,
             previous: None,
@@ -233,13 +277,15 @@ impl Donor for Native {
 
     /// Design §4.6: `free < H` gives back up to `2H - free`, wherever a foreign program or this
     /// card's own fill put it, and speculation regrows at a pass boundary only once `2H` is free.
+    /// A foreign shortage that outlasts every give, with nothing idle left anywhere, asks the
+    /// supervisor for an exit: one donor's word is enough.
     fn tick(&mut self, table: &Table, row: Row, idle: u64) -> bool {
         // Right after a give its taker may not have taken it yet: the next look comes as soon.
         let gave = std::mem::take(&mut self.asked);
         if gave {
             table.stop_asking(row);
         }
-        if !self.shared || idle == 0 {
+        if !self.shared {
             return false;
         }
         let sample = crate::gate(self.device).and_then(|gate| {
@@ -252,6 +298,13 @@ impl Donor for Native {
         // Short only for memory that isn't ours: a process filling its own weights asks for itself.
         let foreign = (total - free).saturating_sub(table.held());
         let grew = foreign > std::mem::replace(&mut self.foreign, foreign);
+        self.pressed = if free < reserve && (grew || self.pressed != 0) { self.pressed + 1 } else { 0 };
+        if self.pressed > PRESSED_TICKS && table.idle() == 0 {
+            table.foreign_short();
+        }
+        if idle == 0 {
+            return false;
+        }
         let want = if self.new_foreign_process(table) {
             total
         } else if free < reserve && grew {

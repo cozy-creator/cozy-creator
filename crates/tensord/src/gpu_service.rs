@@ -524,6 +524,8 @@ struct Session {
     used: Instant,
     /// How this executor was launched (fork or spawn) and its start's timings.
     launch: Launch,
+    /// What bringing it back would cost: its launch, Start and every Load it ran.
+    reload: std::time::Duration,
     /// The constructions it has served a call of: their next one is not their first.
     invoked: std::collections::BTreeSet<String>,
     /// Its row of `Serving`: the manifests its constructions read.
@@ -852,6 +854,9 @@ pub struct Pool {
     /// The host rule's watcher, while the pool lives; nudged to look when a call begins, an
     /// executor's frame comes or measurements change.
     host: Option<Arc<memory::Host>>,
+    /// The host's ledger page, which its supervisor thread shares.
+    #[cfg(target_os = "linux")]
+    host_ledger: Option<Arc<varena_ledger::Table>>,
     /// Held while the pool lives: the thread blocked on measurement events ends with it.
     _events: Option<memory::Reacting>,
     /// Idle executors watched for their exit (none where it cannot watch).
@@ -921,18 +926,6 @@ struct Device {
     asking: Option<Mutex<varena_ledger::Table>>,
     /// Open while it drove a display at the pool's start: its use is read for each request.
     display: Option<platform::gpu::Device>,
-}
-
-impl Device {
-    /// What its executors hold and could give back.
-    #[cfg(target_os = "linux")]
-    fn idle_bytes(&self) -> u64 {
-        self.ledger.as_ref().map_or(0, |table| table.idle())
-    }
-    #[cfg(not(target_os = "linux"))]
-    fn idle_bytes(&self) -> u64 {
-        0
-    }
 }
 
 pub(crate) struct Permit {
@@ -1033,22 +1026,22 @@ impl Pool {
             for (index, table) in devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
                 let pool = pool.clone();
                 let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
-                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
+                    .spawn(move || table.supervise(|askers, victims| pool.upgrade().map(|pool| pool.end_victim_on(index, askers, victims))));
                 if let Err(error) = watching {
                     tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
                 }
             }
             #[cfg(target_os = "linux")]
-            match varena_ledger::Table::open_host() {
-                Ok(table) => {
-                    let pool = pool.clone();
-                    let watching = std::thread::Builder::new().name("host-ledger".into())
-                        .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
-                    if let Err(error) = watching {
-                        tracing::warn!("idle executors end for host memory only by the host rule: {error}");
-                    }
+            let host_ledger = varena_ledger::Table::open_host().map(Arc::new)
+                .map_err(|error| tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}")).ok();
+            #[cfg(target_os = "linux")]
+            if let Some(table) = host_ledger.clone() {
+                let pool = pool.clone();
+                let watching = std::thread::Builder::new().name("host-ledger".into())
+                    .spawn(move || table.supervise(|askers, victims| pool.upgrade().map(|pool| pool.end_idle_for_host(askers, victims))));
+                if let Err(error) = watching {
+                    tracing::warn!("idle executors end for host memory only by the host rule: {error}");
                 }
-                Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
             }
             let exits = Exits::watch(pool.clone())
                 .map_err(|error| tracing::warn!("executor exits are not watched: {error}"))
@@ -1063,6 +1056,8 @@ impl Pool {
                 peaks,
                 engine: Default::default(),
                 host,
+                #[cfg(target_os = "linux")]
+                host_ledger,
                 _events: events,
                 incarnation,
                 config,
@@ -1103,14 +1098,14 @@ impl Pool {
             self.peaks.save(model, gpus.iter().filter(|gpu| gpu.model == model).map(|gpu| &gpu.figures));
         }
     }
-    /// The host is short of what its running calls must keep free: one idle process ends,
-    /// least recently used first: a deviceless executor, else an import-only parent with no live
-    /// child, else an executor on a GPU no call holds (outside every warm set first).
+    /// The host is short of what its running calls must keep free: one idle process ends: a
+    /// deviceless executor, else an import-only parent with no live child, else the process the
+    /// host's ledger page names.
     fn host_short(&self) {
         let ended = match () {
             () if self.end_idle_deviceless(|_| true) => "deviceless",
             () if self.end_idle_parent() => "parent",
-            () if self.end_lru_idle() => "gpu",
+            () if self.end_host_victim(&[]) => "gpu",
             () => "",
         };
         self.notes.note(serde_json::json!({"event": "host_short", "ended": ended}));
@@ -1133,58 +1128,90 @@ impl Pool {
         }
         true
     }
-    /// End the least recently used idle GPU executor (outside every warm set first) whose lane's
-    /// call slots are free meanwhile; whether one ended.
-    fn end_lru_idle(&self) -> bool {
-        let members: std::collections::BTreeSet<String> = {
-            let sets = self.members.lock().unwrap();
-            sets.values().flatten().filter_map(|m| m.plan.as_ref().map(|p| p.construction.clone())).collect()
-        };
-        let mut idle: Vec<(bool, Instant, String, std::ops::Range<usize>)> = {
-            let sessions = self.sessions.lock().unwrap();
-            sessions.iter().map(|(key, s)| (s.loaded.keys().any(|c| members.contains(c)), s.used, key.clone(), s.lane())).collect()
-        };
-        idle.sort_by_key(|(member, used, _, _)| (*member, *used));
-        idle.into_iter().any(|(_, _, key, lane)| {
-            let Some(_upkeep) = self.allocations.upkeep(lane) else { return false };
-            self.end_session(&key)
-        })
+    /// The first of the host page's victims (`Table::victims`) that is an idle executor here.
+    #[cfg(target_os = "linux")]
+    fn end_host_victim(&self, askers: &[u32]) -> bool {
+        let victims = self.host_ledger.as_ref().map(|table| table.victims(askers, false)).unwrap_or_default();
+        victims.iter().any(|&pid| self.end_idle_pid(pid))
+    }
+    /// No ledger ranks processes here: the least recently used idle GPU executor, warm sets last.
+    #[cfg(not(target_os = "linux"))]
+    fn end_host_victim(&self, _askers: &[u32]) -> bool {
+        let warm = self.warm();
+        let key = self.sessions.lock().unwrap().iter()
+            .min_by_key(|(_, s)| (s.loaded.keys().any(|construction| warm.contains_key(construction)), s.used))
+            .map(|(key, _)| key.clone());
+        key.is_some_and(|key| self.end_session(&key))
+    }
+    /// Ends the idle executor one of whose processes is `pid`, observing its exit; whether one was.
+    fn end_idle_pid(&self, pid: u32) -> bool {
+        let key = self.sessions.lock().unwrap().iter()
+            .find(|(_, session)| executor_births(&session.executor.birth, &session.followers).iter().any(|birth| birth.pid == pid))
+            .map(|(key, _)| key.clone());
+        match key {
+            Some(key) => self.end_session(&key),
+            None => self.end_idle_deviceless(|session| session.executor.birth.pid == pid),
+        }
     }
 
-    /// An asker on GPU `index` stays short after every peer trimmed. Only an exit returns a CUDA
-    /// context: end the least recently used idle executor there, warm sets last and one outside the
-    /// ledger first (all it holds is held: no ask reaches it), never an asker's own (an idle executor
-    /// recording a graph asked, and the supervisor ended it: every SDXL call on an 8 GB card started
-    /// a new process, 35140-35161). Whether one ended.
+    /// GPU `index`'s ledger page names who gives way to its askers (`Table::victims`): end the
+    /// first of them that is an idle executor here. One outside the ledger there goes first: no
+    /// ask reaches it and the page cannot see it (the version-skew shim, `Session::ledger`). An
+    /// asker's own executor is never named: its exit can't give it room. Whether one ended.
     #[cfg(target_os = "linux")]
-    fn end_idle_on(&self, index: usize, askers: &[u32]) -> bool {
-        self.end_idle_where(|session| session.degree != 0 && session.lane().contains(&index), askers)
+    fn end_victim_on(&self, index: usize, askers: &[u32], victims: &[u32]) -> bool {
+        let warm = self.warm();
+        let outside = self.sessions.lock().unwrap().iter()
+            .filter(|(_, s)| !s.ledger && s.degree != 0 && s.lane().contains(&index))
+            .filter(|(_, s)| !s.loaded.keys().any(|construction| warm.contains_key(construction)))
+            .filter(|(_, s)| !executor_births(&s.executor.birth, &s.followers).iter().any(|birth| askers.contains(&birth.pid)))
+            .min_by_key(|(_, s)| s.used).map(|(key, _)| key.clone());
+        let ended = match outside {
+            Some(key) if self.end_session(&key) => Some(0),
+            _ => victims.iter().find(|&&pid| self.end_idle_pid(pid)).copied(),
+        };
+        self.notes.note(serde_json::json!({"event": "victim", "gpu": index, "askers": askers,
+            "victims": victims, "ended": ended}));
+        ended.is_some()
     }
     /// A call stays short of host memory after every idle tier gave its pages back (the host's
-    /// ledger page): end an idle deviceless executor, else an import-only parent, else the least
-    /// recently used idle GPU executor (warm sets last), never an asker's own. v1 ended every idle
-    /// neighbour at a model switch. Whether one ended.
+    /// ledger page): end an idle deviceless executor, else an import-only parent, else the first
+    /// of the page's victims. v1 ended every idle neighbour at a model switch. Whether one ended.
     #[cfg(target_os = "linux")]
-    fn end_idle_for_host(&self, askers: &[u32]) -> bool {
+    fn end_idle_for_host(&self, askers: &[u32], victims: &[u32]) -> bool {
         let ended = match () {
             () if self.end_idle_deviceless(|_| true) => "deviceless",
             () if self.end_idle_parent() => "parent",
-            () if self.end_idle_where(|session| session.degree != 0, askers) => "gpu",
+            () if victims.iter().any(|&pid| self.end_idle_pid(pid)) => "gpu",
             () => "",
         };
         self.notes.note(serde_json::json!({"event": "host_asked", "askers": askers, "ended": ended}));
         !ended.is_empty()
     }
+    /// Each construction a warm set holds in an executor, at the highest level asked of it.
+    fn warm(&self) -> BTreeMap<String, Level> {
+        let mut warm = BTreeMap::new();
+        for member in self.members.lock().unwrap().values().flatten().filter(|member| member.level >= Level::Host) {
+            if let Some(plan) = &member.plan {
+                let level = warm.entry(plan.construction.clone()).or_insert(member.level);
+                *level = (*level).max(member.level);
+            }
+        }
+        warm
+    }
+    /// What the ledger pages rank this idle executor by: the warm level asked of a construction
+    /// it holds (`gpu` above `host`), and what bringing it back would cost.
     #[cfg(target_os = "linux")]
-    fn end_idle_where(&self, which: impl Fn(&Session) -> bool, askers: &[u32]) -> bool {
-        let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
-            .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
-        let key = self.sessions.lock().unwrap().iter()
-            .filter(|(_, session)| which(session))
-            .filter(|(_, session)| !executor_births(&session.executor.birth, &session.followers).iter().any(|birth| askers.contains(&birth.pid)))
-            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.ledger, session.used))
-            .map(|(key, _)| key.clone());
-        key.is_some_and(|key| self.end_session(&key))
+    fn describe(&self, session: &Session, warm: &BTreeMap<String, Level>) {
+        let priority = session.loaded.keys().filter_map(|construction| warm.get(construction))
+            .map(|level| if *level == Level::Gpu { 2 } else { 1 }).max().unwrap_or(0);
+        let tenant = varena_ledger::Tenant { priority, reload: session.reload };
+        let pages = self.devices.get(session.lane()).unwrap_or_default().iter().filter_map(|device| device.ledger.as_deref());
+        for page in pages.chain(self.host_ledger.as_deref()) {
+            for birth in executor_births(&session.executor.birth, &session.followers) {
+                page.describe(birth.pid, tenant);
+            }
+        }
     }
     /// Before an executor outside the ledger (`Session::ledger`) serves a call on `lane`, room for
     /// it, as v1 made it: it sizes itself by what the driver has free, which no peer gives it.
@@ -1280,12 +1307,14 @@ impl Pool {
     pub fn problems(&self) -> Vec<String> {
         self.config.problems.clone()
     }
-    /// The first `degree` GPUs' current capability and free bytes, counting what idle peers hold:
-    /// they give it back when asked, so it is room a new model can plan on.
+    /// The first `degree` GPUs' capability and capacity: the smallest card, or the software cap
+    /// when lower, never what is free now (Paul 11-06, xs-154 Q1), so the same inputs always get
+    /// the same lane. The Hub's field is still named for free bytes.
     pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
-        let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
-        let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
+        let rows: Vec<_> = self.devices.iter().take(degree as usize).filter_map(|d| self.inventory(&d.entry)).collect();
+        let gpus = rows.iter().map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
+        let cap = |bytes: u64| self.config.gpu_memory_limit.map_or(bytes, |limit| bytes.min(limit));
+        let free_vram = rows.iter().map(|g| g.memory_bytes).filter(|&bytes| bytes > 0).map(cap).min();
         tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
@@ -1398,10 +1427,18 @@ impl Pool {
     /// Replace `actor`'s warm set; `keep` then brings its members up. A member dropped from
     /// it becomes an ordinary tenant: it stays as it is until its memory is needed.
     pub fn set_members(&self, actor: &str, members: Vec<Arc<Member>>) {
-        let mut sets = self.members.lock().unwrap();
-        match members.is_empty() {
-            true => drop(sets.remove(actor)),
-            false => drop(sets.insert(actor.into(), members)),
+        {
+            let mut sets = self.members.lock().unwrap();
+            match members.is_empty() {
+                true => drop(sets.remove(actor)),
+                false => drop(sets.insert(actor.into(), members)),
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let warm = self.warm();
+            self.sessions.lock().unwrap().values().for_each(|session| self.describe(session, &warm));
+            self.deviceless.lock().unwrap().iter().for_each(|session| self.describe(session, &warm));
         }
     }
     /// `actor`'s warm set without the members of removed `generations`.
@@ -1419,17 +1456,6 @@ impl Pool {
     /// executor does.
     pub fn end_generation(&self, identity: &str) {
         self.end_idle_of(|generation| generation == identity);
-    }
-    /// This computer's machine idle a while: every idle executor outside the warm sets ends, so
-    /// its CUDA context and memory go back with its process. A member's executor stays (it yields
-    /// under memory pressure as ever). Import-only parents (host memory, no GPU) stay the whole
-    /// idle window (`release_parents`, or the exit), so a package used in the last quarter hour
-    /// forks without importing.
-    pub fn release_idle(&self) {
-        let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
-            .filter(|member| member.level >= Level::Host)
-            .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
-        self.end_idle_executors(|session| !session.loaded.keys().any(|construction| members.contains(construction)));
     }
     /// A warm set keeps something in memory here (a member at `imported` or above that binds a
     /// model), so this computer's machine stays up for it instead of exiting idle.
@@ -1449,8 +1475,13 @@ impl Pool {
     }
     /// The limit of each GPU of `lane` that drove a display at the pool's start, in its order:
     /// its total less what the display keeps free ([`DISPLAY_MARGIN`]); empty when none does (a
-    /// pod, which reads nothing). Read at Start and again for each request.
-    fn display_limit(&self, lane: &str) -> Vec<u64> {
+    /// pod, which reads nothing). Read at Start and again for each request. An executor whose
+    /// varena keeps a display's floor itself gets none: the display is a fact varena reads, never
+    /// a byte TensorD decides (the version-skew shim for older ones, as `in_ledger`).
+    fn display_limit(&self, lane: &str, tensorfs: &str) -> Vec<u64> {
+        if floors_display(tensorfs) {
+            return vec![];
+        }
         let limits: Vec<u64> = lane.split(',').map(|entry| {
             let entry = entry.trim();
             let Some(device) = self.devices.iter().find(|d| d.entry == entry).and_then(|d| d.display.as_ref()) else { return 0 };
@@ -1601,7 +1632,11 @@ impl Pool {
             if member.payload.is_some() { *member.prepared.lock().unwrap() = Some(false); }
             return "its warm preparation was canceled";
         }
-        if let (Ok("loaded" | "already loaded"), Level::Gpu | Level::Host) = (&result, level) {
+        // A `host` member is a priority (`describe`), never an eviction: what its loaded executor
+        // keeps on the card is varena's to give back when asked. Only `gpu` brings weights up.
+        if let (Ok("loaded" | "already loaded"), Level::Gpu) = (&result, level) {
+            result = self.map_member(engine, plan, start, member, preparation);
+        } else if let (Ok("loaded" | "already loaded"), true) = (&result, member.payload.is_some()) {
             result = self.map_member(engine, plan, start, member, preparation);
         }
         self.note_prewarm(&plan.construction, Default::default(), asked.elapsed(), &result);
@@ -1614,8 +1649,8 @@ impl Pool {
             }
         }
     }
-    /// Warming a loaded member: its executor, on the lane from `start`, loads its models at
-    /// `level` (`gpu`, or `host` in RAM; Runtime places them): "mapped", or why not.
+    /// Warming a loaded `gpu` member: its executor, on the lane from `start`, brings its models
+    /// onto the GPU: "mapped", or why not.
     fn map_member(&self, engine: &Arc<Engine>, plan: &Plan, start: usize, member: &Member,
         preparation: Option<&Stoppable>) -> io::Result<&'static str> {
         let level = member.level;
@@ -1657,7 +1692,7 @@ impl Pool {
         let reply = session.executor.command(
             &Command::Map(Map {
                 construction: plan.construction.clone(),
-                level: if level == Level::Gpu { executor_protocol::Level::Gpu } else { executor_protocol::Level::Ram },
+                level: executor_protocol::Level::Gpu,
                 request_id: if member.payload.is_some() { request_id } else { String::new() },
                 entrypoint: plan.entrypoint.clone(),
                 payload: member.payload.as_ref().map(|payload| executor_protocol::Json(
@@ -1751,6 +1786,8 @@ impl Pool {
     fn keep_idle(&self, engine: &Arc<Engine>, session: Session) -> io::Result<Disposition> {
         let key = session_key(&session.env, session.start);
         let killed = !session.executor.idle() || session.executor.abandoned_lookahead();
+        #[cfg(target_os = "linux")]
+        self.describe(&session, &self.warm());
         if session.degree == 0 {
             let mut idle = self.deviceless.lock().unwrap();
             if !killed && !self.stopped.load(Ordering::Acquire) {
@@ -3375,6 +3412,7 @@ impl Pool {
             active: String::new(),
             executor,
             used: Instant::now(),
+            reload: launched.elapsed(),
             launch,
             invoked: Default::default(),
             serving: id,
@@ -3455,12 +3493,13 @@ impl Pool {
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
                     shared: self.config.host.mode == HostMode::Shared,
-                    display_limit: self.display_limit(&lane),
+                    display_limit: self.display_limit(&lane, &session.executor.hello.tensorfs_version),
                     display_pace: self.display_pace(gpus),
                 }),
                 &mut callbacks,
             )?)?;
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
+            session.reload += starting.elapsed();
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
             if session.launch.mode == "spawn" {
@@ -3555,6 +3594,7 @@ impl Pool {
                 &session.launch,
                 (&session.env, &beside),
             )?;
+            session.reload += started.elapsed();
             session.loaded.insert(construction.clone(), Level::Host);
             if let Some(leader) = self.leaders.lock().unwrap().get_mut(&session.executor.birth.pid) {
                 leader.constructions.insert(construction.clone());
@@ -3686,7 +3726,7 @@ impl Pool {
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
                 weights,
-                display_limit: self.display_limit(&lane),
+                display_limit: self.display_limit(&lane, &session.executor.hello.tensorfs_version),
             })),
             &mut callbacks,
         );
@@ -3818,6 +3858,12 @@ impl Pool {
 /// interpreter's own Runtime; its builders inherit that path.
 const RUNTIME_FIRST: &str = "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); \
     runpy.run_module('cozy_runtime.internal.machine_kernels', run_name='__main__')";
+
+/// From TensorFS 0.21.3 varena keeps a display's floor itself, on Linux, where it runs.
+fn floors_display(version: &str) -> bool {
+    use std::str::FromStr;
+    cfg!(target_os = "linux") && pep440_rs::Version::from_str(version).is_ok_and(|version| version.release() >= &[0, 21, 3][..])
+}
 
 /// Whether an executor of TensorFS `version` shares its GPUs through their ledgers: varena v2,
 /// TensorFS 0.21 on. One that names none is taken as current.

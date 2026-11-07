@@ -282,13 +282,6 @@ impl Service {
     pub fn hold_while(&self, held: impl Fn() -> bool + Send + Sync + 'static) {
         let _ = self.held.set(Box::new(held));
     }
-    /// This computer's machine idle a while: every idle executor outside the warm sets ends, and
-    /// what it held goes back.
-    pub fn release_idle(&self) {
-        if let Some(pool) = self.pool() {
-            pool.release_idle();
-        }
-    }
     /// This computer's machine idle its whole window yet kept up: a shared one's idle import-only
     /// parents end too.
     pub fn release_parents(&self) {

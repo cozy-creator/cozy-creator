@@ -411,20 +411,27 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
 /// are no longer in this one's loop, so they go first, by last use (hidream-o1's generate kept its
 /// turbo streaming in the same process, run 39070).
 pub fn request_boundary(device: i32, begin: bool) {
+    #[cfg(target_os = "linux")]
+    cooperative::request_boundary(device, begin);
     if let Ok(device) = gpu(device) {
         if !begin {
-            let _ = device.requests.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+            if device.requests.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1)) == Ok(1) {
+                // What it owned, or what its plans' weights and its working memory would have been:
+                // a request paging beside an idle neighbour's context owned less than it needed.
+                let wanted = device.planned.load(Ordering::Acquire).saturating_add(device.working.load(Ordering::Acquire));
+                device.need.store(device.owned().max(wanted), Ordering::Release);
+            }
         } else {
             device.held_peak.store(0, Ordering::Release);
             if device.requests.fetch_add(1, Ordering::AcqRel) == 0 && let Ok(mut state) = device.lock() {
                 state.phase_boundary = Some(device.clock.load(Ordering::Relaxed));
+                device.room_asked.store(false, Ordering::Release);
+                device.planned.store(0, Ordering::Release);
+                drop(state);
+                device.ask_room(device.need.load(Ordering::Acquire));
             }
         }
     }
-    #[cfg(target_os = "linux")]
-    cooperative::request_boundary(device, begin);
-    #[cfg(not(target_os = "linux"))]
-    let _ = (device, begin);
 }
 
 /// The active plan phase. One that ran through last time with no region coming back is a single
@@ -452,6 +459,12 @@ impl PlanPhase {
 
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
+/// On a GPU that drives a display, what stays free for the display's programs and the driver past
+/// every byte outside this process: a sixteenth of the card, at least 512 MiB, as for foreign
+/// programs. It is hard: the 10-13 freeze logged NV_ERR_NO_MEMORY on the driver's fault buffers.
+fn display_floor(total: usize) -> usize {
+    (total / 16).max(512 << 20)
+}
 
 // One process/core-wide namespace for reservation and Plan lifetimes. Never use
 // addresses or these identities in compute fingerprints or reusable measurements.
@@ -484,6 +497,8 @@ pub struct Device {
     ceiling: AtomicUsize,
     /// The card itself, once sampled: its driver's refusal is never how we learn it is full.
     total: AtomicUsize,
+    /// It drives a display: its floor (`display_floor`) is never ours.
+    display: AtomicBool,
     /// A real card of `ceiling`'s size would keep its driver's reservation out of it too.
     reservation: OnceLock<usize>,
     /// That charge at the last sample: what the card uses beyond our own bytes.
@@ -494,6 +509,12 @@ pub struct Device {
     held_peak: AtomicUsize,
     // Requests running here: the first to begin is a phase boundary.
     requests: AtomicUsize,
+    // What its last request needed here: the next one's need (`request_boundary`).
+    need: AtomicUsize,
+    // The weights of this request's largest plan.
+    planned: AtomicUsize,
+    // This request asked for its room (`ask_room`).
+    room_asked: AtomicBool,
     // Weight bytes held for use now: regions with a pin.
     held: AtomicUsize,
     // Moves when the room this process can have shrinks for a reason outside its program: a cap,
@@ -531,12 +552,16 @@ impl Device {
             retirements: AtomicUsize::new(0),
             ceiling: AtomicUsize::new(usize::MAX),
             total: AtomicUsize::new(usize::MAX),
+            display: AtomicBool::new(false),
             reservation: OnceLock::new(),
             outside: AtomicUsize::new(0),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
+            need: AtomicUsize::new(0),
+            planned: AtomicUsize::new(0),
+            room_asked: AtomicBool::new(true),
             held: AtomicUsize::new(0),
             room: AtomicU64::new(0),
             room_outside: AtomicU64::new(0),
@@ -621,7 +646,12 @@ impl Device {
         let reserved = self.reservation.get().copied().unwrap_or(0);
         let ceiling = self.ceiling.load(Ordering::Acquire);
         let ceiling = if ceiling == usize::MAX { ceiling } else { ceiling.saturating_sub(reserved) };
-        let ceiling = ceiling.min(self.total.load(Ordering::Acquire));
+        let total = self.total.load(Ordering::Acquire);
+        let ceiling = ceiling.min(total);
+        let ceiling = match self.display.load(Ordering::Acquire) && total != usize::MAX {
+            true => ceiling.min(total - display_floor(total).min(total)),
+            false => ceiling,
+        };
         let cap = if ceiling == usize::MAX {
             usize::MAX
         } else {
@@ -632,6 +662,47 @@ impl Device {
 
     fn headroom(&self) -> usize {
         self.capacity().saturating_sub(self.owned())
+    }
+
+    /// The most our own bytes could reach were every other process gone: the card, or its limit.
+    fn nominal(&self, total: usize) -> usize {
+        let reserved = self.reservation.get().copied().unwrap_or(0);
+        let card = match self.display.load(Ordering::Acquire) {
+            true => total.saturating_sub(display_floor(total) + CAP_SLACK),
+            false => total,
+        };
+        match self.ceiling.load(Ordering::Acquire) {
+            usize::MAX => card,
+            ceiling => ceiling.saturating_sub(reserved + CAP_SLACK).min(card),
+        }
+    }
+
+    /// What this process lacks of `need`, past what it owns and the room it has, given the
+    /// driver's `free` and `total`.
+    pub(crate) fn short_of(&self, need: usize, free: usize, total: usize) -> usize {
+        let room = free.min(self.headroom());
+        need.min(self.nominal(total)).saturating_sub(self.owned().saturating_add(room))
+    }
+
+    /// A request needs `need` bytes here: once a request, what this process lacks of it is asked
+    /// for off this thread (`cooperative::room_for`). A first call has learned none: its plan's
+    /// weights and a quarter of the card.
+    fn ask_room(&'static self, need: usize) {
+        if need == 0 || self.room_asked.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        cooperative::room_for(self, need);
+    }
+
+    /// A plan of `weights` became active in this request: a first call asks its room now.
+    fn entered_plan(&'static self, weights: usize) {
+        self.planned.fetch_max(weights, Ordering::AcqRel);
+        if self.need.load(Ordering::Acquire) == 0 {
+            let total = self.total.load(Ordering::Acquire);
+            let card = if total == usize::MAX { self.ceiling.load(Ordering::Acquire) } else { self.nominal(total) };
+            self.ask_room(weights.saturating_add(card / 4));
+        }
     }
 
     /// Bytes `more` would put over the limit.
@@ -672,9 +743,14 @@ impl Device {
         wanted <= self.capacity().saturating_add(self.outside.load(Ordering::Acquire))
     }
 
-    /// A limit someone set on the machine.
+    /// A limit someone set on the machine, or a display's floor.
     fn capped(&self) -> bool {
-        self.ceiling.load(Ordering::Acquire) != usize::MAX
+        self.ceiling.load(Ordering::Acquire) != usize::MAX || self.display.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn drives_display(&self, display: bool) {
+        self.display.store(display, Ordering::Release);
+        self.room_shrank();
     }
 
     /// Physical pages for one region, inside this process's room: over the room reads as the

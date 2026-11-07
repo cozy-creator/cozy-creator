@@ -3,10 +3,10 @@
 //! call, a job, a warm-up, an upload, an update); an explicit keepalive restarts that clock once.
 //! The clock is durable state, never a sample held in memory: the journal's last job end and the
 //! ledger's idle start (this rental's first boot, a keepalive, or an update's activation or end),
-//! so restarts and updates neither shorten nor lose it. `POST /v1/release` takes the release early, never while working. This computer's machine counts the same clock from its start: after 5 minutes its
-//! executors outside the warm sets exit and give back every byte they held, after 15 it exits
+//! so restarts and updates neither shorten nor lose it. `POST /v1/release` takes the release early, never while working. This computer's machine counts the same clock from its start: after 15 minutes it exits
 //! itself (Calcifer starts it again when something uses it), unless another computer's controller
-//! is authorized to use it or a warm set keeps a member in memory (`cozy run <fn> --warm`). A client following a run or a log, reading an output or uploading an object, holds either
+//! is authorized to use it or a warm set keeps a member in memory (`cozy run <fn> --warm`). No
+//! clock ends an executor: one ends when its memory is asked for (varena's ledger names it). A client following a run or a log, reading an output or uploading an object, holds either
 //! clock. Also the Hub lease of authorized keys.
 use super::hub::{Hub, Refusal};
 use crate::api::auth::Keys;
@@ -23,8 +23,6 @@ use protocol::error::Error;
 
 /// The idle window, `RentalIdleTimeoutSeconds` in the CLI.
 pub const IDLE_GRACE_MS: i64 = 900_000;
-/// This computer's machine's executors exit after this part of its idle window (5 minutes).
-const EXECUTORS_PART: i64 = 3;
 
 /// The journal's jobs: one queued or running, and when the last one stopped.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -495,22 +493,20 @@ pub async fn release_when_idle(
     }
 }
 
-/// This computer's machine through its idle clock: after a third of the window with no work its
-/// executors outside the warm sets exit (`release`), after the whole window the machine stops
-/// (`stop`, false when work came meanwhile) and this process exits. While `kept` (another
-/// computer's controller is authorized to use it, or a warm set member is held here) it stays up,
-/// and at the whole window its import-only parents outside the warm sets go instead
+/// This computer's machine through its idle clock: after the whole window with no work the
+/// machine stops (`stop`, false when work came meanwhile) and this process exits. While `kept`
+/// (another computer's controller is authorized to use it, or a warm set member is held here) it
+/// stays up, and at the whole window its import-only parents outside the warm sets go instead
 /// (`release_parents`). It sleeps until activity or the next deadline.
 pub fn exit_when_idle(
     lifecycle: Arc<Lifecycle>,
     engine: Arc<crate::execution::Engine>,
-    release: impl Fn(),
     release_parents: impl Fn(),
     stop: impl Fn() -> io::Result<bool>,
     kept: impl Fn() -> bool,
     rebind: impl Fn() -> bool,
 ) {
-    let (mut released, mut parents_released) = (None, None);
+    let mut parents_released = None;
     loop {
         let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
         match engine.jobs(lifecycle.ended_ms()) {
@@ -534,11 +530,6 @@ pub fn exit_when_idle(
                 Err(error) => tracing::warn!("this machine's restart for its controllers: {error}"),
             }
         }
-        if now >= since + grace / EXECUTORS_PART && released != Some(since) {
-            tracing::info!("idle {} s: its executors end and give back what they hold", (now - since) / 1000);
-            release();
-            released = Some(since);
-        }
         let held = kept();
         lifecycle.kept.store(held, Ordering::Release);
         if now >= since + grace && held && parents_released != Some(since) {
@@ -557,11 +548,7 @@ pub fn exit_when_idle(
             }
         }
         // Kept up past its window, it reads its authorization again a window later.
-        let next = match released == Some(since) {
-            false => since + grace / EXECUTORS_PART,
-            true if now < since + grace => since + grace,
-            true => now + grace,
-        };
+        let next = if now < since + grace { since + grace } else { now + grace };
         let wait = (next - now).max(1000);
         engine.wait_activity(seen, Some(Duration::from_millis(wait as u64)));
     }

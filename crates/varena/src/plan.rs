@@ -19,6 +19,8 @@ pub struct Plan {
     device: &'static Device,
     pid: u32,
     phases: Vec<Phase>,
+    // Its Regions' bytes, each once: the request's weights.
+    weights: usize,
 }
 
 pub(crate) struct Active {
@@ -93,11 +95,15 @@ impl Plan {
             }
             phases.push(phase);
         }
+        let mut seen = BTreeSet::new();
+        let weights = phases.iter().flat_map(|phase| &phase.regions)
+            .filter(|region| seen.insert(region.id())).map(|region| region.rounded).sum();
         Ok(Arc::new(Self {
             id: crate::next_identity()?,
             device: crate::gpu(ordinal)?,
             pid: std::process::id(),
             phases,
+            weights,
         }))
     }
 
@@ -135,7 +141,9 @@ impl Plan {
         drop(active);
         // A new plan or phase is the boundary: what ran before it is no longer in its loop.
         crate::gate(self.device())?.not_capturing()?;
-        self.device.enter_plan_phase(Some(&self.phases[phase].name))
+        self.device.enter_plan_phase(Some(&self.phases[phase].name))?;
+        self.device.entered_plan(self.weights);
+        Ok(())
     }
 
     pub fn deactivate(&self) -> Result<()> {
