@@ -61,7 +61,11 @@ pub unsafe fn admit(device: i32, stream: u64, wants: &[Want]) -> Result<std::res
         needs.push(missing(want));
         let mut pins = Vec::with_capacity(want.regions.len());
         let mut refused = false;
-        for region in &want.regions {
+        // What is here is pinned before anything absent fills, so no fill evicts what this way
+        // reads: resident first, then the rest in the caller's order.
+        let (here, absent): (Vec<_>, Vec<_>) = want.regions.iter()
+            .partition(|region| region.is_resident().unwrap_or(false));
+        for region in here.into_iter().chain(absent) {
             if region.device() != device {
                 release(pins, stream);
                 return Err(Error::Invalid("an admitted Region belongs to another device"));

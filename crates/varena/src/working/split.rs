@@ -1183,7 +1183,7 @@ pub fn site_enter(device: i32, key: &str, stream: u64, completion_owner: Option<
         return Err(Error::Invalid("split choice is not declared"));
     }
     if small {
-        return Ok(Entered::Leaf(Leaf::unobserved(0)));
+        return Ok(Entered::Leaf(Leaf::unobserved(level.unwrap_or(0))));
     }
     if !split_context(device)?.eligible {
         return Ok(Entered::Leaf(Leaf::unobserved(level.or(last).unwrap_or(0))));
