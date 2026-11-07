@@ -266,15 +266,24 @@ fn push(changes: &mut Vec<Change>, next: Change) {
 
 /// What changed between two writings of the project, box by box.
 pub(super) fn diffed(before: &Written, after: &Written) -> Vec<Change> {
+    // Each box by its name key, once: a lookup per box of each side made every write of a 5,000-box project take seconds.
+    let index = |written: &Written| -> std::collections::HashMap<String, usize> {
+        let mut index = std::collections::HashMap::new();
+        for (at, held) in written.boxes.iter().enumerate() {
+            index.entry(name_key(&held.name)).or_insert(at);
+        }
+        index
+    };
+    let (was_at, now_at) = (index(before), index(after));
     let mut keys: Vec<String> = before.boxes.iter().chain(&after.boxes).map(|held| name_key(&held.name)).collect();
     let mut seen = std::collections::HashSet::new();
     keys.retain(|key| seen.insert(key.clone()));
     // A box gone remembers where it was, so a step back puts it there.
-    let placed = |written: &Written, key: &str| written.find(key).map(|at| Boxed { at: Some(at), ..written.boxes[at].clone() });
+    let placed = |written: &Written, at: Option<&usize>| at.map(|&at| Boxed { at: Some(at), ..written.boxes[at].clone() });
     keys.into_iter()
-        .filter_map(|key| match (before.get(&key), after.get(&key)) {
-            (None, Some(now)) => Some(Change::Asset { name: now.name.clone(), before: None, after: placed(after, &key) }),
-            (Some(was), None) => Some(Change::Asset { name: was.name.clone(), before: placed(before, &key), after: None }),
+        .filter_map(|key| match (was_at.get(&key).map(|&at| &before.boxes[at]), now_at.get(&key).map(|&at| &after.boxes[at])) {
+            (None, Some(now)) => Some(Change::Asset { name: now.name.clone(), before: None, after: placed(after, now_at.get(&key)) }),
+            (Some(was), None) => Some(Change::Asset { name: was.name.clone(), before: placed(before, was_at.get(&key)), after: None }),
             (Some(was), Some(now)) if was == now => None,
             (Some(was), Some(now)) if was.name != now.name => Some(Change::Asset { name: now.name.clone(), before: Some(was.clone()), after: Some(now.clone()) }),
             (Some(was), Some(now)) => {
@@ -284,7 +293,7 @@ pub(super) fn diffed(before: &Written, after: &Written) -> Vec<Change> {
                 fields.dedup();
                 let field = |held: &Map<String, Value>, field: &str| held.get(field).cloned().unwrap_or(Value::Null);
                 let fields: BTreeMap<String, (Value, Value)> = fields.into_iter().map(|name| (name.clone(), (field(&was, name), field(&now, name)))).filter(|(_, (was, now))| was != now).collect();
-                (!fields.is_empty()).then(|| Change::Fields { name: after.get(&key).map(|held| held.name.clone()).unwrap_or_default(), fields })
+                (!fields.is_empty()).then(|| Change::Fields { name: now_at.get(&key).map(|&at| after.boxes[at].name.clone()).unwrap_or_default(), fields })
             }
             (None, None) => None,
         })

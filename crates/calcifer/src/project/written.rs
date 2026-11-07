@@ -3,7 +3,7 @@
 //! values, so a write changes only the fields it names, and nothing is text surgery.
 use protocol::{
     error::{Error, Kind},
-    yaml::{keys_at, to_json, to_json_and_keys},
+    yaml::{child_keys_at, keys_at, to_json, to_json_and_keys},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -127,11 +127,13 @@ impl Written {
         let head = ordered(&top, &order).into_iter().filter(|(key, _)| key != SECTION).collect();
         let empty = Map::new();
         let assets = top.get(SECTION).and_then(Value::as_object).unwrap_or(&empty);
+        // Each box's fields in the order the text writes them, from one more read of it: a read per box made a 5,000-box import take minutes.
+        let orders: std::collections::HashMap<String, Vec<String>> = child_keys_at(text, &[SECTION]).unwrap_or_default().into_iter().collect();
         let boxes = listed
             .iter()
             .filter_map(|name| {
                 let fields = match assets.get(name)? {
-                    Value::Object(fields) => ordered(fields, &keys_at(text, &[SECTION, name]).unwrap_or_default()),
+                    Value::Object(fields) => ordered(fields, orders.get(name).map_or(&[][..], Vec::as_slice)),
                     _ => vec![],
                 };
                 Some(Boxed { name: name.clone(), fields, at: None })

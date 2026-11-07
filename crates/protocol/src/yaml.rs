@@ -83,6 +83,28 @@ pub fn keys_at(text: &str, path: &[&str]) -> Option<Vec<String>> {
     keys_in(documents(text).ok()?.first()?, path)
 }
 
+/// `keys_at` of each key of the mapping at `path`, from one read of `text`: each child's own keys, none where it's no mapping. No answer
+/// as `keys_at` gives none.
+pub fn child_keys_at(text: &str, path: &[&str]) -> Option<Vec<(String, Vec<String>)>> {
+    fn keys(node: &Yaml<'_>) -> Vec<String> {
+        match node {
+            Yaml::Mapping(map) => map.iter().filter_map(|(key, _)| written(key).map(str::to_owned)).collect(),
+            _ => vec![],
+        }
+    }
+    let documents = documents(text).ok()?;
+    let mut at = documents.first()?;
+    for part in path {
+        let Yaml::Mapping(map) = at else { return None };
+        at = map.iter().find(|(key, _)| written(key) == Some(*part)).map(|(_, value)| value)?;
+    }
+    match at {
+        Yaml::Mapping(map) => Some(map.iter().filter_map(|(key, value)| Some((written(key)?.to_owned(), keys(value)))).collect()),
+        Yaml::Representation(text, ..) if matches!(text.as_ref(), "" | "~" | "null") => Some(vec![]),
+        _ => None,
+    }
+}
+
 fn keys_of(document: &Yaml<'_>, path: &[&str]) -> Vec<String> {
     keys_in(document, path).unwrap_or_default()
 }
