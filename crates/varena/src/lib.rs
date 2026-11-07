@@ -346,7 +346,8 @@ impl State {
     /// oldest use next, and of those what this pass filled before what stayed through it: the
     /// loop streams the same regions each pass, so the bytes it reads back fit the page cache.
     /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
-    /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
+    /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13). A loop's own
+    /// regions go smallest first (`looped`), and one it stopped reading goes before them.
     fn rank(&self, id: u64, entry: &Entry, order: &plan::Order) -> (u8, u64) {
         if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
             return (reclaim::CONTENTLESS, entry.last_use);
@@ -361,6 +362,11 @@ impl State {
         }
         let touched = self.phase_boundary.is_some_and(|boundary| entry.last_use > boundary);
         let looping = self.plan_phase.as_ref().is_none_or(PlanPhase::loops);
+        // A loop that came back has read all it reads since the boundary: what this phase read
+        // before and not since is not in it. Ranked next, the rewriter's vision tower, read once by
+        // its prefill, held 0.85 GiB of a decode at 7578 MiB that streamed 8.7 GiB a token (run 42124).
+        let left = !touched
+            && self.plan_phase.as_ref().is_some_and(|phase| phase.recurred && entry.last_use > phase.entered);
         let used = match self.phase_boundary.is_some_and(|boundary| entry.filled > boundary) {
             true => reclaim::PHASE_FRESH,
             false => reclaim::PHASE_USED,
@@ -368,12 +374,13 @@ impl State {
         // A loop's retained state is its own, read again next step like its weights: most recent
         // first, with what this pass streamed, as its refill is one DMA from pinned host RAM.
         if entry.retained && touched {
-            return (reclaim::PHASE_FRESH, u64::MAX - entry.last_use);
+            return (reclaim::PHASE_FRESH, looped(entry));
         }
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
-            None => (used, u64::MAX - entry.last_use),
-            Some((0, _)) if touched && looping => (used, u64::MAX - entry.last_use),
+            None => (used, looped(entry)),
+            Some((0, _)) if touched && looping => (used, looped(entry)),
+            Some((0, _)) if left => (reclaim::UNPLANNED, entry.last_use),
             Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
             // A single pass uses what it used next in a later phase, else next cycle, as late as what no
             // plan names; most recent first, so the next pass finds its start. Ranked as a loop's, Qwen
@@ -390,6 +397,15 @@ impl State {
         let single = order.name(phases).is_some_and(|name| self.passes.get(name) == Some(&false));
         (reclaim::LATER_PHASE, u64::from(!single) << 63 | ((u64::MAX >> 1) - (phases << 32 | position)))
     }
+}
+
+/// A loop's region's rank: the smaller first, the most recently used first of a size. Whichever
+/// regions the room keeps, each byte is one read fewer a pass; but what streams needs room while it
+/// moves, the most it moves at once. Streaming the region used last, the rewriter's 1.94 GiB lm_head
+/// moved beside its token table: 3.9 GB of a 7.4 GiB cap kept nothing (run 42124).
+fn looped(entry: &Entry) -> u64 {
+    const RECENT: u64 = (1 << 56) - 1;
+    u64::from(usize::BITS - entry.bytes.leading_zeros()) << 56 | (RECENT - entry.last_use.min(RECENT))
 }
 
 /// Make this GPU usable by this process: its context, and its row in the GPU's ledger.
