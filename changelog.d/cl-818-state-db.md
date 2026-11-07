@@ -1,0 +1,1 @@
+Calcifer: its own state is in `state.db` (owner-only), each change one transaction: the projects it opened, browser sessions, your tool list, Render here, what model headers said and an ask's step after its run. The first start imports `projects.json`, `sessions.json`, `tools.json`, `here.json`, `checkpoints.json` and `after/` from `~/.cozy/calcifer` and deletes them.
