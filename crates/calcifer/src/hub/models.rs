@@ -108,7 +108,10 @@ pub(super) async fn search(
     let cards = match &exact {
         Some(repo) => vec![client.get_model(&repo.org, &repo.name).await.map_err(|e| refusal(&hub, e))?],
         None => {
-            let reads = names.iter().map(|model| client.get_model(&model.org, &model.name));
+            let reads = names.into_iter().map(|model| {
+                let client = client.clone();
+                async move { client.get_model(&model.org, &model.name).await }
+            });
             let cards: Vec<Result<types::ModelCard, _>> = stream::iter(reads).buffered(CARDS).collect().await;
             cards.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| refusal(&hub, e))?
         }
