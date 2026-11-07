@@ -1908,10 +1908,6 @@ impl Pool {
             _ => group_degrees(&models, 0, available),
         }
     }
-    /// The GPUs root `root` holds as its lane (0: none registered).
-    pub(crate) fn lane_width(&self, root: u64) -> u32 {
-        self.allocations.width(root) as u32
-    }
 
     /// Derive each model slot's binding from the installed SDK's real static interface and
     /// the model the run's preparation resolved for it (`grants`, one per slot, `published`):
