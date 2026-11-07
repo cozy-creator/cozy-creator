@@ -33,6 +33,8 @@ import type {
   ProjectList,
   ProjectState,
   AssetVersions,
+  History,
+  HistoryStepped,
   Renamed,
   Row,
   Play,
@@ -105,7 +107,12 @@ export interface Options {
   onAttempt?: (attempt: number) => void
   /** One try, which this ends: its retries are the outbox's. */
   once?: AbortSignal
+  /** What a person did that this write is of (`Cozy-Edit`): the project's history keeps the writes of one as one entry. */
+  edit?: string
 }
+
+/** One try of a write, and the edit it's of. */
+export type Write = Pick<Options, "once" | "edit">
 
 export interface Hooks {
   signedOut(): void
@@ -148,6 +155,7 @@ export class Client {
       this.hooks.attempt(attempt)
       options.onAttempt?.(attempt)
     }
+    if (options.edit) init = { ...init, headers: { ...Object.fromEntries(new Headers(init.headers)), "Cozy-Edit": options.edit } }
     for (let attempt = 1; ; attempt++) {
       let failure: ApiError
       try {
@@ -274,18 +282,18 @@ export class Client {
     return (await this.send(`${project(id)}/yaml`, { signal })).text()
   }
 
-  import(id: string, key: string, body: Import, once?: AbortSignal): Promise<Imported> {
-    return this.write("POST", `${project(id)}/imports`, body, key, { once })
+  import(id: string, key: string, body: Import, write: Write = {}): Promise<Imported> {
+    return this.write("POST", `${project(id)}/imports`, body, key, write)
   }
 
   /** Pins `name` to `version`: a short run of digits is its version, anything else a hash prefix of a file of the project. */
-  approve(id: string, name: string, version: string, once?: AbortSignal): Promise<Approved> {
-    return this.write("POST", `${project(id)}/approve`, { name, version }, undefined, { once })
+  approve(id: string, name: string, version: string, write: Write = {}): Promise<Approved> {
+    return this.write("POST", `${project(id)}/approve`, { name, version }, undefined, write)
   }
 
   /** Its pin's line gone, so its state follows its inputs again. */
-  unpin(id: string, name: string, once?: AbortSignal): Promise<Unpinned> {
-    return this.write("POST", `${project(id)}/unpin`, { name }, undefined, { once })
+  unpin(id: string, name: string, write: Write = {}): Promise<Unpinned> {
+    return this.write("POST", `${project(id)}/unpin`, { name }, undefined, write)
   }
 
   /** A new version of each of `names`, on these machines. `take` and `in_s` keep one video's start; `outdated`, with `all`, re-runs pins that are. */
@@ -294,39 +302,44 @@ export class Client {
   }
 
   /** A tool dropped on the canvas. */
-  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown>; kind?: string }, once?: AbortSignal): Promise<AssetMade> {
-    return this.write("POST", `${project(id)}/assets`, body, key, { once })
+  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown>; kind?: string }, write: Write = {}): Promise<AssetMade> {
+    return this.write("POST", `${project(id)}/assets`, body, key, write)
   }
 
   /** These inputs set. With `read`, only if its own lines are still what that read. */
-  patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string, once?: AbortSignal): Promise<AssetPatched> {
+  patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string, write: Write = {}): Promise<AssetPatched> {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     if (read) headers["If-Match"] = read
-    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) }, { once })
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) }, write)
   }
 
-  deleteAsset(id: string, name: string, once?: AbortSignal): Promise<AssetDeleted> {
-    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {}, undefined, { once })
-  }
-
-  /** What deleting it answered, back under its name. */
-  putAssetBack(id: string, name: string, text: string, at?: Row, once?: AbortSignal): Promise<AssetMade> {
-    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at }, undefined, { once })
+  deleteAsset(id: string, name: string, write: Write = {}): Promise<AssetDeleted> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {}, undefined, write)
   }
 
   /** A file joins a box as its next version. */
-  addVersion(id: string, name: string, source: string, once?: AbortSignal): Promise<VersionMoved> {
-    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/versions`, { source }, undefined, { once })
+  addVersion(id: string, name: string, source: string, write: Write = {}): Promise<VersionMoved> {
+    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/versions`, { source }, undefined, write)
   }
 
   /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
-  discardVersion(id: string, name: string, number: number, once?: AbortSignal): Promise<VersionMoved> {
-    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, { once })
+  discardVersion(id: string, name: string, number: number, write: Write = {}): Promise<VersionMoved> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, write)
   }
 
-  /** What discarding it answered, and it's back. */
-  restoreVersion(id: string, name: string, number: number, approved: boolean, once?: AbortSignal): Promise<VersionMoved> {
-    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { approved }, undefined, { once })
+  /** The project's history, newest first. */
+  history(id: string, limit: number): Promise<History> {
+    return this.json(`${project(id)}/history?limit=${limit}`)
+  }
+
+  /** An entry taken back: by its id, or the edit this page called it. */
+  undo(id: string, target: { entry?: number; edit?: string; to?: number }, write: Write = {}): Promise<HistoryStepped> {
+    return this.write("POST", `${project(id)}/history/undo`, target, undefined, write)
+  }
+
+  /** What undo took back, done again. */
+  redo(id: string, target: { entry?: number; edit?: string; to?: number }, write: Write = {}): Promise<HistoryStepped> {
+    return this.write("POST", `${project(id)}/history/redo`, target, undefined, write)
   }
 
   /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */
@@ -366,8 +379,8 @@ export class Client {
     return this.write("POST", `${project(id)}/pull`, {})
   }
 
-  rename(id: string, from: string, to: string, once?: AbortSignal): Promise<Renamed> {
-    return this.write("POST", `${project(id)}/rename`, { from, to }, undefined, { once })
+  rename(id: string, from: string, to: string, write: Write = {}): Promise<Renamed> {
+    return this.write("POST", `${project(id)}/rename`, { from, to }, undefined, write)
   }
 
   canvas(id: string, signal?: AbortSignal): Promise<Canvas> {
@@ -375,8 +388,8 @@ export class Client {
   }
 
   /** Rows set; one named in `was` only if it's still what it began from (null: none), else answered in `kept` as it is. */
-  moveCards(id: string, cards: Record<string, Row | null>, was: Record<string, Row | null>, once?: AbortSignal): Promise<{ etag: string; kept?: Record<string, Row | null> }> {
-    return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(was).length ? { was } : {}) }, undefined, { once })
+  moveCards(id: string, cards: Record<string, Row | null>, was: Record<string, Row | null>, write: Write = {}): Promise<{ etag: string; kept?: Record<string, Row | null> }> {
+    return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(was).length ? { was } : {}) }, undefined, write)
   }
 
   /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */

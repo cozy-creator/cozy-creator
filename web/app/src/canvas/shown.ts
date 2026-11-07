@@ -16,6 +16,9 @@ export interface Shown extends MainFile {
 export function shownOf(view: ElementView): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
+  // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
+  const watch = watched(view)
+  if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number) => versions.find((held) => held.number === number)
   const held = version(view.viewed) ?? version(asset.version)
@@ -37,11 +40,12 @@ export const HEAD = 32
  * and a box keeps that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
 export const HANG = 2
-// As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25.
+// As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const SMALL_LINE = 10.5 * 1.35 * 1.25
-/** How far a name rises over its box at most: its head is HEAD tall and keeps 24 of it under the name, clear of the picture. */
-const RISE = Math.ceil(TITLE_LINE * HANG - (HEAD - 24))
+const CLOSE = 30
+/** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
+const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
 /** An add-on chip: a small line, 2 px over and under it, and its border; the gap under each; and how far under its box they start. */
 const CHIP = Math.ceil((SMALL_LINE + 4) * HANG + 2)
 const CHIP_GAP = Math.ceil(4 * HANG)
@@ -97,13 +101,21 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   return `${tool!.label} takes ${takes.map((one) => SEVERAL[one] ?? one).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
-/** Rendered from its words, the take since `watchFrom` that it looks at: the newest asked, its run while it's made, and its number once it's landed. */
+/** The take being made that it looks at: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made, and its number once it's landed. */
 export function watched(view: ElementView): { run?: number; number?: number } | undefined {
-  const from = view.watchFrom
-  if (from === undefined) return undefined
-  const landed = (view.asset?.prefixes ?? []).filter((held) => (held.run ?? 0) > from)
-  const run = Math.max(0, ...(view.asset?.making ?? []).filter((one) => one > from), ...landed.map((held) => held.run ?? 0))
-  return { run: run || undefined, number: landed.find((held) => held.run === run)?.number }
+  const { watchRun, watchFrom: from } = view
+  if (watchRun === undefined && from === undefined) return undefined
+  const versions = view.asset?.prefixes ?? []
+  const newer = (run?: number) => (run ?? 0) > (from ?? 0)
+  const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
+  return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
+}
+
+/** The run making the take a box's frame is on while it's made: the one it looks at, else the first going. None: not sent yet. */
+export function makingRun(view: ElementView): number | undefined {
+  const watch = watched(view)
+  const making = view.asset?.making ?? []
+  return watch ? watch.run : making.length ? Math.min(...making) : undefined
 }
 
 /** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */
@@ -128,9 +140,10 @@ export function sentShape(view: ElementView, number?: number): number | undefine
 export function aspectOf(view: ElementView): number {
   const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
   if (made) return made
+  // Showing a take, its own shape, whatever the last one measured was.
   const shown = shownOf(view)
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
-  return view.aspect ?? measured ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
+  return measured ?? view.aspect ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
 const hasSlots = (links?: Record<string, string>) => Object.keys(links ?? {}).length > 0

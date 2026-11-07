@@ -1,5 +1,5 @@
 import type { Run, Stalled } from "../../types"
-import { bytes, leftWords, shown, span, usd } from "../format"
+import { bytes, shown, span, usd } from "../format"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
 
@@ -23,32 +23,38 @@ export function stalledWords(stalled: Stalled, now: number): string {
   return `No progress for ${span(minutes * 60)} on ${stalled.machine}${cost}`
 }
 
-/** The seconds left of its stage: its bytes' rate, else its steps' pace. */
-export function secondsLeft(run: Run): number | undefined {
-  const progress = run.progress
-  if (!progress) return undefined
-  if (progress.eta_s !== undefined) return progress.eta_s
-  const pace = progress.step_avg_ms || progress.step_ms
-  const left = (progress.total ?? 0) - (progress.completed ?? 0)
-  return pace && left > 0 ? (pace * left) / 1000 : undefined
-}
+/** The seconds the run has left, as Calcifer estimates them for every client. */
+export const secondsLeft = (run: Run): number | undefined => run.progress?.eta_s
 
-/** How long is left: its bytes' rate, else its steps' pace. */
+/** That nothing like it ran on its machine to tell how long it takes. */
+const firstRun = (run: Run) => run.progress?.eta_s === undefined && run.progress?.eta_basis === "first_run"
+
+/** How long is left: `41s left`, `about 3m10s left` while that's little trusted; or that this is its first run here. */
 export function eta(run: Run): string | null {
-  const left = secondsLeft(run)
-  if (left === undefined) return null
-  return run.progress?.eta_s !== undefined ? `${span(left)} left` : `about ${span(left)} left`
+  const progress = run.progress
+  if (firstRun(run)) return "first run on this machine"
+  if (progress?.eta_s === undefined) return null
+  return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${span(progress.eta_s)} left`
 }
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-/** Its own work, as a person reads it: `Generating image 3 / 8, 25 s left`. */
+/** Its own work, as a person reads it, by what its progress carries: steps are `Denoise steps: 6/8, 3s left`, bytes `Downloading`, and any
+ *  other stage its own words, short: `Decoding`, `Encoding prompt`. The time is the whole run's, Calcifer's estimate. */
 export function workWords(run: Run): string {
   const progress = run.progress
   if (!progress?.stage) return ""
-  const steps = progress.total ? ` ${progress.completed ?? 0} / ${progress.total}` : ""
   const left = secondsLeft(run)
-  return `${sentence(progress.stage)}${steps}${left === undefined ? "" : `, ${leftWords(left)}`}`
+  const after = left !== undefined ? `, ${span(left)} left` : firstRun(run) ? ", first run on this machine" : ""
+  if (progress.bytes_total) return `Downloading${after}`
+  if (progress.total) return `Denoise steps: ${progress.completed ?? 0}/${progress.total}${after}`
+  return `${phase(progress.stage)}${after}`
+}
+
+/** A stage in a word or two: what it's done to, a picture or a video, goes. `decoding image` is `Decoding`. */
+function phase(stage: string): string {
+  const [verb, ...rest] = stage.trim().split(/\s+/)
+  return sentence(rest.length === 1 && /^(image|images|video|videos|audio|picture|pictures)$/i.test(rest[0]) ? verb : stage.trim())
 }
 
 /** Worth saying more than a bar: it has run over 10 s, or has over 10 s to go. */

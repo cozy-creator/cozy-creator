@@ -30,6 +30,7 @@ import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
 import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
+import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
 import { HANG, madeHere, shownOf } from "./shown"
@@ -39,8 +40,13 @@ import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
 
 const nodeTypes = { element: Card, entity: EntityCard }
-/** The room left on the canvas by what floats over it. */
-const clearOf = () => ({ left: (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24, top: (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12, right: 24, bottom: 24 })
+/** The room left on the canvas by what floats over it: the tools at the left, the top bar, and the zoom control in the bottom corner. */
+const clearOf = () => ({
+  left: (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24,
+  top: (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12,
+  right: 24,
+  bottom: Math.max(24, innerHeight - (document.querySelector(".zoom")?.getBoundingClientRect().top ?? innerHeight) + 12),
+})
 /** A fit, clear of what floats over the canvas. */
 const fitOver = () => {
   const { left, top, right, bottom } = clearOf()
@@ -52,15 +58,16 @@ const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 const MOST_HERE = 2.5
 /** Of the height there is, what a box keeps however much is under it, which then scrolls. */
 const LEAST_BOX = 0.35
-/** How wide what's under a box is, in its own pixels, however narrow the box, where there's room. */
-const LEAST_UNDER = 520
-const UNDER_GAP = 8
 /** A window this narrow has no room for the tools beside a box being worked on: they fold away, and come back after. */
 const NARROW = 760
 /** How long the canvas takes to draw in on a box, or go back. */
 const HERE_MS = 260
 
-/** The view of a box and what's under it, the two as large as they go together, and what's under it told how wide it is and how tall it may be. Null with no node to fit to. */
+/**
+ * The view of a box with its takes beside it and what's under it, as large as they go together, and what's under it told how tall it may be.
+ * What's under it spans the picture and its takes at any zoom (app.css `.here-under`): its height at a zoom is read with that zoom's --text on
+ * it. `below` is that height with the gap above it. Null with no node to fit to.
+ */
 function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: string, stage: HTMLElement) {
   const node = flow.getNode(id)
   const w = node?.measured?.width ?? node?.width
@@ -71,26 +78,29 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
   const wide = room.width - left - right
   const tall = room.height - top - bottom
   const under = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-under`)
-  const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side`)
-  const scale = (zoom: number) => textScale(zoom) * zoom * Number(getComputedStyle(stage).getPropertyValue("--here"))
-  /** The takes beside it, in the canvas's own units at `zoom`, with their gap (app.css `.here-side`, --s5). */
-  const beside = (zoom: number) => (side ? ((side.offsetWidth + 12) * scale(zoom)) / zoom : 0)
-  const most = tall * (1 - LEAST_BOX) - UNDER_GAP
-  const across = (zoom: number) => Math.min(wide, Math.max(w * zoom, LEAST_UNDER * scale(zoom)))
-  /** What's under it as it would be at `zoom`: as tall as what it holds, up to what it may have. */
-  const height = (zoom: number) => {
-    if (!under) return most / 2
-    under.style.setProperty("--here-width", `${across(zoom) / scale(zoom)}px`)
-    return Math.min(most, ((under.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0) * scale(zoom))
+  const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side:not(:empty)`)
+  const style = getComputedStyle(stage)
+  const gap = Number.parseFloat(style.getPropertyValue("--here-gap"))
+  const scale = (zoom: number) => textScale(zoom) * zoom * Number(style.getPropertyValue("--here"))
+  /** The takes beside it with the gap before them, in the canvas's own units at `zoom`. */
+  const beside = (zoom: number) => (side ? ((side.offsetWidth + gap) * scale(zoom)) / zoom : 0)
+  const most = tall * (1 - LEAST_BOX)
+  /** What's under it and the gap above it, on screen at `zoom`: as tall as what it holds, up to what it may have. */
+  const belowAt = (zoom: number) => {
+    if (!under) return 0
+    under.style.setProperty("--text", String(textScale(zoom)))
+    const holds = (under.firstElementChild as HTMLElement | null)?.scrollHeight ?? 0
+    under.style.removeProperty("--text")
+    return Math.min(most, holds * scale(zoom)) + gap * scale(zoom)
   }
-  const zoomFor = (below: number, across: number) => Math.min(MOST_HERE, wide / (w + across), (tall - below - (below && UNDER_GAP)) / h)
+  const zoomFor = (below: number, across: number) => Math.min(MOST_HERE, wide / (w + across), (tall - below) / h)
   // How tall it is depends on how wide, which goes with the zoom, which depends on how tall: twice round settles it.
   let zoom = zoomFor(most / 2, 0)
-  zoom = zoomFor(height(zoom), beside(zoom))
-  zoom = zoomFor(height(zoom), beside(zoom))
-  const below = height(zoom)
+  zoom = zoomFor(belowAt(zoom), beside(zoom))
+  zoom = zoomFor(belowAt(zoom), beside(zoom))
+  const below = belowAt(zoom)
   under?.style.setProperty("--here-room", `${most / scale(zoom)}px`)
-  const high = h * zoom + (below && below + UNDER_GAP)
+  const high = h * zoom + below
   return {
     below,
     view: {
@@ -110,6 +120,9 @@ const MULTI = ["Shift", "Meta", "Control"]
 const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes("Files")
 const typing = (target: EventTarget | null) =>
   target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+/** A field with words in it, which keeps its own undo. */
+const words = (target: EventTarget | null) =>
+  target instanceof HTMLElement && (target.isContentEditable || target.tagName === "TEXTAREA" || (target instanceof HTMLInputElement && ["text", "search", "url", "email", "number", "password", "tel"].includes(target.type)))
 
 /** Project state and rows into the store; nothing here renders. */
 function ProjectSync({ id }: { id: string }) {
@@ -152,14 +165,17 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
-  useEffect(
-    () =>
-      stream.subscribe((event) => {
-        if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
-        if (event.type === "resync" || event.type === "hello") store.fellBehind()
-      }),
-    [stream, store, id],
-  )
+  useEffect(() => {
+    store.history.read()
+    return stream.subscribe((event) => {
+      if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
+      if (event.type === "history" && event.id === id) store.history.read()
+      if (event.type === "resync" || event.type === "hello") {
+        store.fellBehind()
+        store.history.read()
+      }
+    })
+  }, [stream, store, id])
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
   useEffect(() => {
     store.readAgain = (names) => bridge.changed(id, { assets: names, head: true })
@@ -255,10 +271,12 @@ function Empty({ choose }: { choose: () => void }) {
 function Canvas({
   projectId,
   slot,
+  history,
   onAdopt,
 }: {
   projectId: string | null
   slot: HTMLElement | null
+  history: HTMLElement | null
   onAdopt: (id: string) => void
 }) {
   const connection = useConnection()
@@ -301,7 +319,7 @@ function Canvas({
         const node = flow.getNode(id)
         const left = (node?.position.x ?? 0) * at.zoom + at.x
         const right = left + (node?.measured?.width ?? 0) * at.zoom
-        const end = (node?.position.y ?? 0) * at.zoom + at.y + (node?.measured?.height ?? 0) * at.zoom + fit.below + UNDER_GAP
+        const end = (node?.position.y ?? 0) * at.zoom + at.y + (node?.measured?.height ?? 0) * at.zoom + fit.below
         if (end <= fit.room.bottom + 1 && left >= fit.room.left - 1 && right <= fit.room.right + 1) return
       }
       held.fitted = fit.view
@@ -595,6 +613,14 @@ function Canvas({
       if (store.viewing.get()) return
       const here = store.inPlace?.name
       if (event.key === "Escape" && here && !store.menu.get() && store.get(here)?.draft === undefined) return leaveHere()
+      // Undo and redo are the project's, but in a field with words in it, which keeps its own.
+      const letter = event.key.toLowerCase()
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && (letter === "z" || letter === "y") && !words(event.target)) {
+        event.preventDefault()
+        if (letter === "y" || event.shiftKey) store.redo()
+        else store.undo()
+        return
+      }
       if (typing(event.target)) return
       if (here && stepTakes(here, event)) return
       const command = event.metaKey || event.ctrlKey
@@ -715,6 +741,8 @@ function Canvas({
   // Far out, a card shows its picture, its name and little else.
   const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
+  const sharpness = useStore((state) => 2 ** Math.min(2, Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1)))))
+  useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
   // How large a box's words are drawn goes on the stage as the zoom crosses a step: no render, so a zoom draws no box again.
   const flowStore = useStoreApi<ElementNode, Edge>()
   useLayoutEffect(() => {
@@ -836,6 +864,7 @@ function Canvas({
       <Viewer />
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
+      {history && projectId && createPortal(<HistoryControls />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
   )
@@ -852,7 +881,7 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; onAdopt: (id: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />

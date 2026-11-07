@@ -63,8 +63,8 @@ impl Parent {
         if let Some(total) = total {
             (measured["bytes_done"], measured["bytes_total"]) = (progress["bytes_done"].as_u64()?.min(total).into(), total.into());
         }
-        if let Some(steady) = progress.get("step_avg_ms") {
-            measured["step_avg_ms"] = steady.clone();
+        if let Some(steady) = progress.get("step_steady_ms") {
+            measured["step_steady_ms"] = steady.clone();
         }
         Some(measured)
     }
@@ -553,12 +553,23 @@ fn cancel(engine: &Engine, child: &Execution) {
     }
 }
 
-/// What an attempt's progress frames told so far: its completed units, and its stage's steps after
-/// the first (which carries the stage's setup) and their time.
+/// What an attempt's progress frames told so far: its completed units, and its stage's last step
+/// and the times of its last few after the first (which carries the stage's setup).
 #[derive(Default)]
 pub(crate) struct Seen {
     pub completed: u64,
-    steps: (String, u32, f64),
+    steps: (String, u64, Vec<f64>),
+}
+
+/// How many of a stage's latest steps its steady pace is the median of.
+const STEADY_OF: usize = 5;
+
+/// The median of a stage's latest steps after its first: its pace, which one slow step doesn't move.
+fn steady(steps: &[f64]) -> Option<f64> {
+    let mut sorted = steps.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let n = sorted.len();
+    (n > 0).then(|| if n % 2 == 1 { sorted[n / 2] } else { (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0 })
 }
 
 /// A stage as the record keeps it: whole for any a call says (a child's under its caller's, a stack
@@ -602,13 +613,18 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
         }
         (None, Some(position), Some(ms)) => {
             if seen.steps.0 != frame.stage {
-                seen.steps = (frame.stage.clone(), 0, 0.0);
+                seen.steps = (frame.stage.clone(), 0, vec![]);
             }
-            if position > 1 {
-                (seen.steps.1, seen.steps.2) = (seen.steps.1 + 1, seen.steps.2 + ms);
+            let (_, last, after_first) = &mut seen.steps;
+            if position > 1 && position != *last {
+                after_first.push(ms);
+                if after_first.len() > STEADY_OF {
+                    after_first.remove(0);
+                }
             }
-            if seen.steps.1 > 0 {
-                payload["step_avg_ms"] = (seen.steps.2 / f64::from(seen.steps.1)).into();
+            *last = position;
+            if let Some(steady) = steady(after_first) {
+                payload["step_steady_ms"] = steady.into();
             }
         }
         _ => {}

@@ -1204,7 +1204,7 @@ impl Folder {
             let text = lock.written();
             *wrote.borrow_mut() = Some(lock);
             Ok(text)
-        }, held)?;
+        }, |_, _| held())?;
         // The project first. Killed between, a version is listed and the run that made it is still owed, so it lands again, the same. The
         // other way round, its take would be listed nowhere and its run owed by no one.
         match moved.into_inner() {
@@ -1610,16 +1610,34 @@ impl Folder {
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
     fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
-        let _turn = self.turn(match path.file_name().and_then(|name| name.to_str()) {
+        let file = match path.file_name().and_then(|name| name.to_str()) {
             Some(PROJECT) => PROJECT,
             Some(CANVAS) => CANVAS,
             _ => MEASURED,
-        });
-        self.rewrite_held(path, change, || {})
+        };
+        let _turn = self.turn(file);
+        self.rewrite_held(path, change, |before, after| {
+            if file == PROJECT {
+                super::history::wrote(&self.dir, before, after, super::stamp(path));
+            }
+        })
     }
 
-    /// As `rewrite`, its turn taken.
-    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<String, Error> {
+    /// project.yaml as a hand left it, if it moved since Calcifer last wrote or saw it: its history says so.
+    pub fn look_by_hand(&self) {
+        let path = self.project();
+        let stamp = super::stamp(&path);
+        if !super::history::moved_since(&self.dir, &stamp) {
+            return;
+        }
+        let _turn = self.turn(PROJECT);
+        if let Ok(text) = read(&path) {
+            super::history::seen(&self.dir, &text, stamp);
+        }
+    }
+
+    /// As `rewrite`, its turn taken. `wrote` hears what the file held and holds now.
+    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce(&str, &str)) -> Result<String, Error> {
         loop {
             let before = match path.exists() {
                 true => read(path)?,
@@ -1635,7 +1653,7 @@ impl Folder {
             };
             if now == before {
                 replace(path, after.as_bytes())?;
-                wrote();
+                wrote(&before, &after);
                 crate::events::project_changed(&self.dir);
                 return Ok(after);
             }

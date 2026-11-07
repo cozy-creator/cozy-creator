@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@cozy-creator/paper':
-        specifier: github:cozy-creator/ghibli-component-library#4b6d7c27d4ce520b7848307ceb887661d6808ed7&path:/packages/paper
-        version: https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/4b6d7c27d4ce520b7848307ceb887661d6808ed7#path:/packages/paper
+        specifier: github:cozy-creator/ghibli-component-library#2f075b7277952102d6c08fb74f552f6bcc275db4&path:/packages/paper
+        version: https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/2f075b7277952102d6c08fb74f552f6bcc275db4#path:/packages/paper
       '@openrails/auth-ui':
         specifier: 1.47.0
         version: 1.47.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -84,8 +84,8 @@ packages:
       '@types/react':
         optional: true
 
-  '@cozy-creator/paper@https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/4b6d7c27d4ce520b7848307ceb887661d6808ed7#path:/packages/paper':
-    resolution: {path: /packages/paper, tarball: https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/4b6d7c27d4ce520b7848307ceb887661d6808ed7}
+  '@cozy-creator/paper@https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/2f075b7277952102d6c08fb74f552f6bcc275db4#path:/packages/paper':
+    resolution: {path: /packages/paper, tarball: https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/2f075b7277952102d6c08fb74f552f6bcc275db4}
     version: 0.1.0
 
   '@floating-ui/core@1.8.0':
@@ -645,7 +645,7 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.3.0
 
-  '@cozy-creator/paper@https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/4b6d7c27d4ce520b7848307ceb887661d6808ed7#path:/packages/paper': {}
+  '@cozy-creator/paper@https://codeload.github.com/cozy-creator/ghibli-component-library/tar.gz/2f075b7277952102d6c08fb74f552f6bcc275db4#path:/packages/paper': {}
 
   '@floating-ui/core@1.8.0':
     dependencies:

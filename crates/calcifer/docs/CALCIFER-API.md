@@ -102,6 +102,7 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `canvas {id, etag, cards: {name: {x, y, w?} | null}}`: the rows of a project's canvas that changed. A row written with its asset goes first, so a client that reads the name has its place.
 - `job.updated {project, job, seq}`: one job of a project's render, whole, each time it changes; `id` names it for as long as the render goes, and `GET /v1/projects/{id}`'s `board` has them all. A client reads the board, then keeps what's newer than its `seq`.
 - `ahead.updated {project, ahead}`: what a machine is fetching ahead of a project's queued jobs, as it stands now: `{function, machine, run, stage?, done, total, ready?, held_back?}`. The board's `ahead` has them all.
+- `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
 ### The page
@@ -181,7 +182,7 @@ a spec.
 - `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is an id (`404 project_unknown`), or a folder:
   the runs of the project holding it; in none, all of them. Each run names its `project` and `project_id`.
 - `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
-  `done_fraction`, `bytes_per_s` and `eta_s`. Each output, once it landed, has `url`, the API path that serves it, and `width`, `height`, `duration_ms` as measured when it landed, where they apply and ffprobe is here. `?detail=full` adds `measurements`, `calls`, `report` (each
+  `done_fraction`, `bytes_per_s`, `step_steady_ms`, and its time left: `eta_s`, `eta_confidence`, `eta_basis` ("Time left"). Each output, once it landed, has `url`, the API path that serves it, and `width`, `height`, `duration_ms` as measured when it landed, where they apply and ffprobe is here. `?detail=full` adds `measurements`, `calls`, `report` (each
   executor's stages and unaccounted time, models, kernels, and each GPU's memory, with rates against its
   ceiling) and `request {target, input, seed?}`: what it was asked, read-only, each file by its `sha256:` and the models and LoRAs it chose as `models`. To ask it again, send `target` and `input` with a new key.
   A run settled over 30 days ago has dropped `measurements` and each call's, so its `report` is gone. Nothing else
@@ -192,6 +193,29 @@ a spec.
 - `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
 - `GET /v1/runs/{id}/play?output=&expires=` (`expires`: `90s`, `30m`, `24h`, `7d`, default `1h`): `Play {address, fingerprint, token, url, expires_s}`: how a browser plays that output straight from its machine, and `url`, the hosted player's link. `400 play_expires_invalid`, `400 play_output_invalid`.
 - `GET /v1/runs/{id}/outputs/{name}`: an output's bytes. An item with `stays`, untyped bytes of a run that made something else, stays on its machine: no `path`, nothing waits for it, and this answers `409 output_on_its_machine`.
+
+### Time left
+
+Calcifer says how long a run has left, all of it, so the page, `cozy run`, `run show`, `run ls` and a machine's activity show one
+number. `eta_s` is the seconds left, `eta_confidence` 0 to 1, and `eta_basis` what it stands on: `machine` (runs like it on this
+machine), `gpu` (on other machines of its GPU, by the name each run's record keeps as `gpu`), `steps` (its own steps alone), or
+`first_run` with no `eta_s` (nothing like it ran here, and it has fewer than two steps of its own).
+
+- **Prior.** The newest five completed runs of its target (any release) on its machine, else on its GPU, each split into its phases:
+  its start and load (to its first stage), each stage its executor names (`encoding prompt`, `generating image`, `decoding image`, …), a
+  stepping stage's first step and steady pace (the median of its steps after the first), and the tail to its end. Each phase is the
+  median of theirs. With `megapixels` (or `width` and `height`) in its input, runs within 15% of that size, else all of them with their
+  steps and what follows scaled by megapixels. The Hub keeps no timings per SKU, so there's no third tier.
+- **Live.** Before its execution starts, the prior's whole time, plus a download's bytes left at its rate. Then the prior for each phase
+  not reached, what's left of the one it's in, and for a stepping stage its steps left at a pace blended from the prior's and its own:
+  `(w·prior + n·own) / (w + n)`, where `own` is TensorD's `step_steady_ms` (the median of its last five steps after the first), `n` the
+  steps it has after its first, and `w` 3 for this machine's history, 2 for its GPU's, halved when scaled. Its first step is never its
+  pace: with no prior and under two steps, it says `first_run`. A phase that overruns counts as done until its next starts.
+- **Smooth.** It's said again each second as it counts down. A new estimate within 10% (or 2 s) of what was shown is shown as it is; a
+  bigger one is eased to over about a second, never jumped to.
+- `GET /v1/estimate?target=&on=&megapixels=&steps=`: `Estimate {eta_s?, eta_confidence?, eta_basis, runs}`: the prior's whole time for
+  a run of `target` (as a run's record names it) on `on` (default `local`), before it's sent; `runs` it stands on. `first_run` with no
+  `eta_s` when none ran like it. `404 machine_not_found`.
 
 ### A run that stopped moving
 
@@ -453,6 +477,9 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects/{id}/assets/{name}/caption` `{on?}` (`Idempotency-Key`, optional): `{name, text, run, warnings?}`, its description as a package would say it, for the page to put in the field. It writes nothing. It runs on a machine that's up (`409 caption_no_machine`), on the asset's state, else its newest version (`409 caption_no_file` with neither), and answers when the run ends. The package is the first that declares `project-adapter-text` of the local code this project's assets name, what that machine holds, and the Hub's first page (`404 caption_no_tool`). Its adapter, told the file as a read, says what to ask, so the words are the package's; the answer is the first text of the function's output. `caption_failed`: a run failed, and `next` names it.
 - `GET /v1/projects/{id}/yaml`: project.yaml's bytes, its `ETag` the digest of them (`If-None-Match` is `304`).
 - `PUT /v1/projects/{id}/yaml` with `If-Match` (`400 if_match_required` without): the body becomes project.yaml, if it still holds what that ETag read, else `409 project_changed` and it stands. `204`, the new `ETag`. A body that doesn't read as a project is `400 project_yaml`, the file untouched. It renders nothing, though a render going keeps the text it was asked with.
+- `GET /v1/projects/{id}/history?limit=` (50, at most 200): `{entries, undo?, redo?}`, newest first, each `{id, at_ms, by: {via, client?}, words, names?, edits?, undone?: {at_ms, by}}`. Every edit of the project is one entry: each route below that changes project.yaml, a canvas row, a take or a name (imports, assets, versions, approve, unpin, rename, canvas, yaml), and a hand's edit of project.yaml, noticed by the look a stream makes or by the next write, `via: file`. `by` is what the request's `Cozy-Client` says, `page <tab>` or `cli`, else `api`. A request's `Cozy-Edit: <id>[, <id>…]` names what the client calls it: requests that share one are one entry, and undo and redo take it as `edit`. A canvas `PATCH` whose every row is in `was` is the page arranging its own boxes, and none. `words` say it plainly (`Deleted kyogre_3`, `Merged green into red`, `Switched image_2 to generate_turbo`, `Set instructions on image_2`, `Discarded take 3 of fight`, `Moved image_2`). Kept in `.history.json` beside project.yaml, never in it, across restarts. Renders, cancels, reclaim, push and pull are no entry: nothing is rendered, rented or ended by undoing.
+- `POST /v1/projects/{id}/history/undo` `{entry?, edit?, to?}`: `{entries, already?, stopped?, undo?, redo?}`. That entry, by `id` or its `edit`, put back as it was; with `to`, each that stands back to it, newest first; with nothing, the newest that stands, whoever made it. Each thing it changed goes back only while it's as the edit left it, else `409 history_conflict` naming the later edit, with `next` undoing that first; refused part way, it changes nothing. A row is put back whatever moved it since. `already`: it was undone. `stopped`: what refused one of a `to`, after those before it. `404 history_unknown` for an entry it no longer keeps, `409 history_empty` with nothing to undo.
+- `POST /v1/projects/{id}/history/redo` `{entry?, edit?, to?}`: the same answer, the other way: what undo took back, done again, only while it's as undo left it. With nothing, the entry undone last, unless an edit came after that undo; with `to`, each undone since, up to it.
 - `POST /v1/projects/{id}/runs` `{names, n?, on, hub?, approve?, missing?, outdated?, take?, in_s?}` (`Idempotency-Key`, kept in `.runs/walk.json` while the walk goes and in `.keys.json` for a day, so a retry adds nothing even across a restart): answers `{id, path, joined?, added, skipped?, queued?: [{name, ahead?}], next, board}`. Each name is `n` new versions, and `all` one of every asset with an operation, whatever `n` says, with a warning, in reading order, unless `missing` asks only for what has no state. `skipped`: approved assets it was asked of by `all`, left as they are; naming one makes a version to look at, and its pin stays. `joined`, a render was going already; `added` 0 with it is no new work; `queued`, what it added, and the names ahead of each; `board`, the render as it now stands. It captures project.yaml as it is, kept in project.lock until it is done, and plans on that text alone; a file that doesn't read refuses it. Asks go at once. each name, or `all`, and what it reads: run A render is walked here and drives `on`, whatever its tools: a machine runs the calls it's sent, with the files each is given.
   its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`), for a function that fills `continue_from` from `take`: it gets that take's `video`, `latents` and `at_s`, and one its package didn't make is `409 take_not_continued`. `202 {id, path}`, or `200` when
@@ -496,6 +523,8 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project push`, `pull` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull`; exits 3 when `skipped` names a file |
 | `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
 | `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
+| `cozy project history [-n N]` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/history` |
+| `cozy project undo [ID \| --to ID]`, `cozy project redo [ID \| --to ID]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/history/undo` or `…/redo`; every CLI request says `Cozy-Client: cli` |
 | `cozy project import <file\|hash> [name] [--description <words>]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/imports` |
 | `cozy project upgrade [--status <file>]` | No route: the folder's files, here, in this process, for a Calcifer of this format can't read them yet |
 | `cozy project add <tool\|text> [name] [field=value…]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/assets`; `at=` its `at` |

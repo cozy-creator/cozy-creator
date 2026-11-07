@@ -76,6 +76,7 @@ pub(super) fn set(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Ca
 fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, was: &BTreeMap<String, Option<Card>>) -> Result<(String, BTreeMap<String, Option<Card>>), Error> {
     let changed: BTreeMap<String, Option<Card>> = changed.into_iter().map(|(name, card)| (name, card.map(tidied))).collect();
     let now = RefCell::new((BTreeMap::new(), String::new(), BTreeMap::new(), BTreeMap::new()));
+    let was_there = RefCell::new(Vec::new());
     let at = folder.dir.join(CANVAS);
     let held = RefCell::new(TOLD.lock().expect("told lock").remove(id));
     folder.edit_canvas(|text| {
@@ -88,6 +89,7 @@ fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, 
             .map(|(name, _)| (name.clone(), there(&cards, name)))
             .collect();
         let applied: BTreeMap<String, Option<Card>> = changed.iter().filter(|(name, _)| !kept.contains_key(*name)).map(|(name, card)| (name.clone(), *card)).collect();
+        *was_there.borrow_mut() = applied.iter().map(|(name, card)| (name.clone(), there(&cards, name), *card)).collect();
         let keys: HashSet<String> = applied.keys().map(|name| name_key(name)).collect();
         cards.retain(|there, _| !keys.contains(&name_key(there)));
         cards.extend(applied.iter().filter_map(|(name, card)| Some((name.clone(), (*card)?))));
@@ -101,6 +103,7 @@ fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, 
     if !applied.is_empty() {
         crate::events::canvas(id, &etag, applied);
     }
+    super::history::cards(&folder.dir, was_there.into_inner());
     Ok((etag, kept))
 }
 
@@ -171,6 +174,10 @@ pub(super) async fn patch(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<CanvasPatched>, Refusal> {
     let asked: CanvasPatch = parse(&body?)?;
+    // Only rows asked if they're still what they were: the page arranging its own, which no one undoes.
+    if asked.cards.keys().all(|name| asked.was.contains_key(name)) {
+        super::history::quiet();
+    }
     let project = api.projects.get(&api, &id)?;
     let (etag, kept) = set_from(&project.folder, &id, asked.cards, &asked.was).map_err(Refusal)?;
     Ok(Json(CanvasPatched { etag, kept }))
