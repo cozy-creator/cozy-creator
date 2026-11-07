@@ -145,6 +145,19 @@ const openCanvas = (page) => page.evaluate(() => {
   throw new Error('no open canvas to drop on');
 });
 
+// Carried as a hand carries one out of a list: pressed, moved a little across the list first (`across`, its other way), which tells a carry from a
+// scroll, then to `to` on the screen, and let go there.
+async function carry(page, from, to, across = 'x') {
+  const at = await from.boundingBox();
+  const start = { x: at.x + at.width / 2, y: at.y + at.height / 2 };
+  const lean = across === 'x' ? { x: Math.sign(to.x - start.x) || 1, y: 0 } : { x: 0, y: Math.sign(to.y - start.y) || 1 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + lean.x * 12, start.y + lean.y * 12, { steps: 3 });
+  await page.mouse.move(to.x, to.y, { steps: 8 });
+  await page.mouse.up();
+}
+
 async function drop(page, files, x, y) {
   const transfer = await page.evaluateHandle((list) => {
     const data = new DataTransfer();
@@ -280,4 +293,4 @@ function summary(frames) {
   return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
 }
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, settled, signIn, summary, until, watchBoxes, wav };
+module.exports = { BARS, DARK_OPEN, GPU, MP4, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, settled, signIn, summary, until, watchBoxes, wav };

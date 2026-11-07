@@ -1,14 +1,14 @@
 import { useQuery } from "@tanstack/react-query"
-import { type DragEvent, useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Tool, Tools } from "../types"
 import { Icon, type IconName } from "../ui/Icon"
 import { say } from "../ui/notes"
-import { carried } from "./checkpoints"
+import type { Load } from "./carry"
 import { useCanvasStore } from "./context"
 import { TEXT_TOOL } from "./controls"
-import { DRAGGED_TOOL } from "./drag"
+import { useDragScroll } from "./dragScroll"
 import { ModelBrowse } from "./ModelBrowse"
 import { madeHere } from "./shown"
 import { carryingTool } from "./toolchange"
@@ -42,13 +42,8 @@ function rowsOf(tools: Tool[]): { tool: Tool; quick?: Tool }[] {
   return rows.filter((row) => !taken.has(row.tool))
 }
 
-function dragged(event: DragEvent, tool: Tool) {
-  event.stopPropagation()
-  event.dataTransfer.setData(DRAGGED_TOOL, tool.id)
-  event.dataTransfer.effectAllowed = "copy"
-  // Words and what's made here are boxes of their own: nothing takes them.
-  carried.set(tool === TEXT_TOOL || madeHere(tool.id) ? null : carryingTool(tool))
-}
+/** A tool carried out of the list: a box of it where it's let go, or on a box, that box's tool. Words and what's made here are boxes of their own: nothing takes them. */
+const toolLoad = (tool: Tool): Load => ({ tool, box: tool === TEXT_TOOL || madeHere(tool.id) ? undefined : carryingTool(tool) })
 
 /** Off your list at once. Nothing is deleted, and a box of it goes on as it was. */
 function useRemove() {
@@ -68,13 +63,8 @@ function useRemove() {
 
 function ToolRow({ tool, quick, place, yours }: { tool: Tool; quick?: Tool; place: (tool: Tool) => void; yours: boolean }) {
   const remove = useRemove()
-  const store = useCanvasStore()
-  const landed = () => {
-    carried.set(null)
-    store.setHot(null)
-  }
   return (
-    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.kind} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onDragEnd={landed} onClick={() => place(tool)}>
+    <li className="tool" title={tool.description || tool.id} data-kind={tool.kind} data-tool={tool.id} onClick={() => place(tool)}>
       <b>{tool.label}</b>
       {yours && !tool.local && !madeHere(tool.id) && (
         <button
@@ -111,6 +101,14 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
   useEffect(() => {
     store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools] : [TEXT_TOOL])
   }, [store, data, isPlaceholderData])
+  const tools = data?.tools ?? []
+  const list = useDragScroll({
+    lift(pressed) {
+      const from = pressed.closest<HTMLElement>("li.tool")
+      const tool = from && [TEXT_TOOL, ...tools].find((one) => one.id === from.dataset.tool)
+      return tool ? { load: toolLoad(tool), from } : null
+    },
+  })
   if (shut) {
     return (
       <aside className="tools shut" aria-label="Tools">
@@ -120,7 +118,6 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
       </aside>
     )
   }
-  const tools = data?.tools ?? []
   return (
     <aside className="tools" aria-label="Tools">
       <div className="row center">
@@ -143,7 +140,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
       </div>
       {browsing && <ToolBrowse q={q} listed={tools} />}
       {exploring && <ModelBrowse q={q} />}
-      <div className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={shelf !== "tools"}>
+      <div ref={list} className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={shelf !== "tools"}>
         {"text".includes(q.toLowerCase()) && (
           <ul>
             <ToolRow tool={TEXT_TOOL} place={place} yours={false} />

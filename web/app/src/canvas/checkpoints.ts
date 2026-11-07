@@ -6,8 +6,8 @@ import { madeHere } from "./shown"
 
 /** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
 export interface Carried {
-  /** On open canvas it's for whatever let it go: it isn't dropped for nothing. */
-  canvas?: boolean
+  /** On open canvas: true, it's for whatever let it go (a box of its own); words, why it can't go there. Neither, it isn't dropped for nothing. */
+  canvas?: true | string
   /** Why this box can't take it, in plain words, or null when it can. */
   whyNot(name: string, view: ElementView | undefined, tools: Map<string, Tool>): string | null
   put(store: CanvasStore, name: string): void
@@ -114,15 +114,35 @@ export function letGo(store: CanvasStore, x: number, y: number) {
   if (!held) return false
   store.setHot(null)
   const name = boxAt(store, x, y)
-  if (!name) return !held.canvas
+  if (typeof held.canvas === "string" && !name) say(held.canvas)
+  if (!name) return held.canvas !== true
   const why = held.whyNot(name, store.get(name), store.tools.get())
   if (why) say(why)
   else held.put(store, name)
   return true
 }
 
-/** A checkpoint carried: a LoRA joins those on a box, and a fine-tune takes the place of any there. */
-export const carrying = (found: FoundModel): Carried => ({
+/** What a model family is called: what the tool of it on your list says, else its own words, `sdxl` being SDXL and `krea-2` Krea 2. */
+export function familyName(family: string, tools: Map<string, Tool>): string {
+  const labels = [...tools.values()].flatMap((tool) => (tool.model?.family === family ? [tool.label] : []))
+  if (labels.length) return labels.reduce((short, label) => (label.length < short.length ? label : short))
+  return family
+    .split(/[-_]+/)
+    .map((word) => (/[aeiou]/i.test(word) ? word[0].toUpperCase() + word.slice(1) : word.toUpperCase()))
+    .join(" ")
+}
+
+/** The tool on your list that runs a checkpoint of its own: the one it's the default of, else the first of its family. A LoRA runs on a model, never alone. */
+export function runnerOf(found: FoundModel, tools: Map<string, Tool>): Tool | undefined {
+  if (found.kind !== "weights" || !found.family) return undefined
+  const runs = [...tools.values()].filter((tool) => tool.model?.family === found.family)
+  return runs.find((tool) => tool.model?.default?.split("@")[0] === found.model) ?? runs[0]
+}
+
+/** A checkpoint carried: a LoRA joins those on a box, and a fine-tune takes the place of any there. A checkpoint runs on its own, so on open canvas it's
+ *  a new box of the tool that runs it; a LoRA there goes nowhere. */
+export const carrying = (found: FoundModel, tools: Map<string, Tool>): Carried => ({
+  canvas: found.kind !== "weights" ? undefined : runnerOf(found, tools) ? true : `No tool runs ${found.family ? familyName(found.family, tools) : wordOf(found.model)} yet`,
   whyNot: (name, view, tools) => whyNot(found, name, view, tools),
   put(store, name) {
     const lora = store.valueOf(name, "lora")
