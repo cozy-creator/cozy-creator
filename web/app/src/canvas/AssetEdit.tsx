@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react"
+import { type ReactNode, useEffect, useRef, useState } from "react"
 import type { Control, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
@@ -7,7 +7,7 @@ import { addOnsOf } from "./checkpoints"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 import { controlsOf, fieldWords, fullRows, heldBeyond, newRow, shownControls, VARIANT, variantOf } from "./controls"
-import { Thumb } from "./Media"
+import { Ghosts } from "./Media"
 import { MentionText } from "./MentionText"
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
@@ -354,29 +354,6 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
     <div className="in-frame">
       <Ghosts name={name} view={view} />
       {control.type === "text" ? <TextControl name={name} control={control} view={view} focus={focus} named={false} framed /> : <ControlRow name={name} control={control} view={view} focus={focus} named={false} />}
-    </div>
-  )
-}
-
-/** Behind its words, faded, the pictures they mention: one fills the frame, up to four tile it 2×2, up to nine 3×3. */
-function Ghosts({ name, view }: { name: string; view: ElementView }) {
-  const store = useCanvasStore()
-  useSignal(store.names)
-  useSignal(store.tools)
-  const pictures = view.asset ? store.mentionedPictures(name) : []
-  if (!pictures.length) return null
-  const side = Math.ceil(Math.sqrt(pictures.length))
-  return (
-    <div className="ghosts" style={{ "--side": side } as CSSProperties} aria-hidden>
-      {pictures.map((ghost) =>
-        ghost.sha256 ? (
-          <Thumb key={ghost.mention} sha256={ghost.sha256} cardWidth={960 / side} />
-        ) : (
-          <svg key={ghost.mention} className={`ghost-blank ${ghost.making ? "making" : ""}`} data-mention={ghost.mention} viewBox={`0 0 ${100 * (ghost.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
-            <rect x="2" y="2" width={100 * (ghost.shape ?? 1) - 4} height="96" rx="3" />
-          </svg>
-        ),
-      )}
     </div>
   )
 }

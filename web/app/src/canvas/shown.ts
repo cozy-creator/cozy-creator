@@ -40,11 +40,12 @@ export const HEAD = 32
  * and a box keeps that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
 export const HANG = 2
-// As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25.
+// As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const SMALL_LINE = 10.5 * 1.35 * 1.25
-/** How far a name rises over its box at most: its head is HEAD tall and keeps 24 of it under the name, clear of the picture. */
-const RISE = Math.ceil(TITLE_LINE * HANG - (HEAD - 24))
+const CLOSE = 30
+/** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
+const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
 /** An add-on chip: a small line, 2 px over and under it, and its border; the gap under each; and how far under its box they start. */
 const CHIP = Math.ceil((SMALL_LINE + 4) * HANG + 2)
 const CHIP_GAP = Math.ceil(4 * HANG)
@@ -108,6 +109,13 @@ export function watched(view: ElementView): { run?: number; number?: number } | 
   const newer = (run?: number) => (run ?? 0) > (from ?? 0)
   const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
   return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
+}
+
+/** The run making the take a box's frame is on while it's made: the one it looks at, else the first going. None: not sent yet. */
+export function makingRun(view: ElementView): number | undefined {
+  const watch = watched(view)
+  const making = view.asset?.making ?? []
+  return watch ? watch.run : making.length ? Math.min(...making) : undefined
 }
 
 /** A box an image tool makes: open, its takes have a + beside them, which writes the next one in its frame. */

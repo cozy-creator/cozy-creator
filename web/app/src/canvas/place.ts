@@ -53,20 +53,23 @@ export class Placer {
         y: Math.round(top + Math.floor(i / columns) * (CARD_WIDTH * 0.75 + 30 + GAP)),
         w: CARD_WIDTH,
       }
+      // Its step is made when it's sent; what it pushes aside as it's dropped is part of it already.
+      const by = edit ?? crypto.randomUUID()
       this.store.addPlacing(key, stem, { media, stage: "waiting", done: 0, stem, abort }, at, {
         naming: files.length === 1 && !then,
         preview: media === "image" ? URL.createObjectURL(file) : undefined,
-      })
-      void this.run(key, file, abort.signal, at, then, edit)
+      }, by)
+      void this.run(key, file, abort.signal, at, then, by, !edit)
     })
   }
 
-  /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says. A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
-  addTool(tool: Tool, point: { x: number; y: number }) {
+  /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
+   *  (a checkpoint dropped is on it). A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
+  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.kind, tool: text ? undefined : tool.id, fields: text ? { text: "" } : startingFields(tool), timeline }, at, `Couldn't place ${tool.label}`)
+    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.kind, tool: text ? undefined : tool.id, fields: text ? { text: "" } : { ...startingFields(tool), ...fields }, timeline }, at, `Couldn't place ${tool.label}`)
     this.store.focusing = name
     if (!text && !timeline) this.store.openHere(name)
   }
@@ -86,8 +89,8 @@ export class Placer {
     const top = Math.min(...boxes.map(({ at }) => at.y))
     const w = Math.max(...boxes.map(({ at }) => at.x + at.w)) - left
     const h = Math.max(...boxes.map(({ at }) => at.y + at.h)) - top
-    const spot = this.store.clearFor({ x: Math.round(point.x - w / 2), y: Math.round(point.y - h / 2), w, h })
     const edit = this.store.newStep(`Pasted ${boxes.length === 1 ? "a box" : `${boxes.length} boxes`}`)
+    const spot = this.store.clearFor({ x: Math.round(point.x - w / 2), y: Math.round(point.y - h / 2), w, h }, edit)
     const names = boxes.map((box) => {
       const at = { x: spot.x + box.at.x - left, y: spot.y + box.at.y - top, w: box.at.w }
       return "file" in box ? this.file(box.file, at, edit) : this.box(box.made.name, box.made, at, `Couldn't paste ${box.made.name}`, edit)
@@ -154,7 +157,8 @@ export class Placer {
     )
   }
 
-  private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then?: (name: string) => void, edit?: string) {
+  /** `own`: `edit` is this file's alone, its step made as it's sent. */
+  private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then: ((name: string) => void) | undefined, edit: string, own: boolean) {
     const owed = this.store.outbox.owing()
     try {
       const digest = await inLine(() => this.hashAndSend(key, file, signal))
@@ -162,30 +166,30 @@ export class Placer {
       // Its import is in the queue from here, and counted there.
       owed()
       try {
-        const name = await this.ask(key, digest, dropped, edit)
+        const name = await this.ask(key, digest, dropped, edit, own)
         then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
         const again = this.store.outbox.owing()
         await inLine(() => this.send(key, file, digest, signal)).finally(again)
-        const name = await this.ask(key, digest, dropped, edit)
+        const name = await this.ask(key, digest, dropped, edit, own)
         then?.(name)
       }
     } catch (error) {
       if (signal.aborted) return
       say(file.name, error)
-      this.store.cancel(key)
+      this.store.cancel(key, edit)
     } finally {
       owed()
     }
   }
 
-  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }, given?: string): Promise<string> {
+  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }, edit: string, own: boolean): Promise<string> {
     this.stage(key, "adding", 1)
     const at = this.store.position(key) ?? dropped
     const name = this.store.get(key)!.name
-    const edit = given ?? this.store.newStep(`Added ${name}`)
+    if (own && !this.store.history.stepOf({ edit })) this.store.newStep(`Added ${name}`, [], edit)
     this.store.joinStep(edit, [key])
     this.store.beginAdding()
     try {

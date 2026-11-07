@@ -7,8 +7,8 @@ import { useTo } from "../../app/Shell"
 import type { Agreed, RunQuote } from "../../types"
 import { Failure, useAsk, useSignedIn } from "../common"
 import { usd } from "../format"
-import { lost, oneOrder } from "./order"
-import { gpusWords, ordering } from "./words"
+import { lost } from "./order"
+import { gpusWords } from "./words"
 
 export interface Placed {
   on: string
@@ -45,7 +45,6 @@ export function OnMachine<Body extends object, Answer>({
   const signedIn = useSignedIn() && !list?.signed_out?.length
   const { data: skus } = useQuery({ ...rentalSkusQuery(client), enabled: signedIn })
   const machines = list?.machines.filter((machine) => machine.state === "ready" || machine.state === "booting" || (machine.kind === "local" && machine.state === "stopped")) ?? []
-  const pending = list?.machines.find(ordering)
 
   const fallback = status.local_usable ? "local" : (machines.find((machine) => machine.state === "ready")?.name ?? machines[0]?.name ?? (signedIn ? "new" : ""))
   const [chosen, setChosen] = useState<string | null>(null)
@@ -73,7 +72,7 @@ export function OnMachine<Body extends object, Answer>({
     const { key } = sent.current
     const work = () => ask(placed(stated?.agreed), key)
     void sending.run(async () => {
-      const answer = await (isNew(on) ? oneOrder(client, false, work) : work())
+      const answer = await work()
       sent.current = null
       setQuoted(null)
       onDone(answer)
@@ -82,9 +81,9 @@ export function OnMachine<Body extends object, Answer>({
 
   const needsPrice = isNew(on) && !current
   const stated = current?.answer
-  const priced = stated && `${stated.gpus ?? 1}× ${stated.sku.toUpperCase()} at ${usd(stated.quote.gpu_usd_micros_per_hour)}/h`
+  const priced = stated && `${stated.gpus ?? 1}× ${stated.sku.toUpperCase()} at ${usd(stated.quote.usd_micros_per_hour)}/h`
   const busy = pricing.busy || sending.busy
-  const blocked = disabled || busy || !on || (isNew(on) && (Boolean(pending) || (Boolean(stated) && !stated?.quote.agreed)))
+  const blocked = disabled || busy || !on || (isNew(on) && Boolean(stated) && !stated?.quote.agreed)
 
   return (
     <div className="onmachine">
@@ -139,7 +138,6 @@ export function OnMachine<Body extends object, Answer>({
           to rent a machine for this.
         </p>
       )}
-      {isNew(on) && pending && <p className="warn">{pending.name} is still booting. One order at a time: choose it above, and this waits for it.</p>}
       {stated && (
         <div className="quoted">
           {stated.why && <p className="muted">{stated.why}</p>}

@@ -19,7 +19,6 @@
 #   candidates  SKUs in order of preference (comma-separated): A and B are the first two the catalog offers
 #   parts       which of a, p, b, c run (default all; without b and c only A is rented)
 #   old         the previous cozy release (default 0.13.3)
-#   traffic_gb  GB the provider bills, both pods (default 40)
 #   seconds     the least time the cap must buy both pods (default 2400; the session takes 10-20 min)
 . "$(dirname "$0")/lib.sh"
 OLD=$(param old 0.13.3)
@@ -51,12 +50,12 @@ fi
 PARTS=,$(param parts a,p,b,c), B=''
 has() { [[ $PARTS == *",$1,"* ]]; }
 if has b || has c; then
-  quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU" "$SKU_B"
+  quote "$(param seconds 2400)" "$SKU" "$SKU_B"
   order "$SKU"; order "$SKU_B"
   ready 0; A=$NAME
   ready 1; B=$NAME
 else
-  quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU"
+  quote "$(param seconds 2400)" "$SKU"
   rent; A=$NAME
 fi
 for i in 0 ${B:+1}; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done

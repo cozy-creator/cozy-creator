@@ -148,7 +148,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let mut record = output::Record::new()
         .field("machine", name)
         .field("gpus", gpus)
-        .field("$/hour", usd(rented.quote.gpu_usd_micros_per_hour));
+        .field("$/hour", usd(rented.quote.usd_micros_per_hour));
     if let Some(ssh) = machine.rental.as_ref().and_then(|r| r.ssh.as_deref()) {
         record = record.field("ssh", ssh);
     }
@@ -221,10 +221,9 @@ impl Notices {
     }
 }
 
-/// What a renter is charged: the GPUs and our price an hour (`1× L40S at $1.64/h`). Disk and
-/// traffic are never the renter's, whatever a provider charges us.
+/// What a renter is charged: the GPUs and the Hub's one price an hour (`1× L40S at $1.64/h`).
 fn price(sku: &str, gpus: u32, q: &Quote) -> String {
-    format!("{gpus}× {} at {}/h", sku.to_ascii_uppercase(), usd(q.gpu_usd_micros_per_hour))
+    format!("{gpus}× {} at {}/h", sku.to_ascii_uppercase(), usd(q.usd_micros_per_hour))
 }
 
 /// A quote as `price` says it, then why the Hub placed it there and the machines it would rent
@@ -265,7 +264,7 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
         output::ndjson(&serde_json::json!({"quote": {
             "sku": quoted.sku,
             "gpus": quoted.gpus.unwrap_or(1),
-            "usd_micros_per_hour": quoted.quote.gpu_usd_micros_per_hour,
+            "usd_micros_per_hour": quoted.quote.usd_micros_per_hour,
             "container_disk_gb": quoted.quote.disk_gb,
             "why": quoted.why,
             "alternatives": quoted.alternatives,

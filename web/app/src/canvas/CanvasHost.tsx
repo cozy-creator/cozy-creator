@@ -26,9 +26,9 @@ import { AssetMenu } from "./AssetMenu"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore, useElement } from "./context"
+import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
 import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
-import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
@@ -40,8 +40,13 @@ import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
 
 const nodeTypes = { element: Card, entity: EntityCard }
-/** The room left on the canvas by what floats over it. */
-const clearOf = () => ({ left: (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24, top: (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12, right: 24, bottom: 24 })
+/** The room left on the canvas by what floats over it: the tools at the left, the top bar, and the zoom control in the bottom corner. */
+const clearOf = () => ({
+  left: (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24,
+  top: (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 12,
+  right: 24,
+  bottom: Math.max(24, innerHeight - (document.querySelector(".zoom")?.getBoundingClientRect().top ?? innerHeight) + 12),
+})
 /** A fit, clear of what floats over the canvas. */
 const fitOver = () => {
   const { left, top, right, bottom } = clearOf()
@@ -488,32 +493,53 @@ function Canvas({
     [placer, visibleCentre],
   )
 
-  const drop = useCallback(
-    (event: DragEvent) => {
-      if (letGo(store, event.clientX, event.clientY)) return event.preventDefault()
-      const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
-      const tool = event.dataTransfer.getData(DRAGGED_TOOL)
-      const taken = event.dataTransfer.getData(DRAGGED_FILE)
-      const picture = event.dataTransfer.getData(DRAGGED_NAME)
-      const under = boxAt(store, event.clientX, event.clientY)
-      if (picture) {
-        event.preventDefault()
-        const target = store.dropTargetAt(event.clientX, event.clientY, [])
-        if (target) target.drop([picture], event.clientX, event.clientY)
-        else if (under) store.takeInto(under, [picture])
+  // What's carried in the page, let go here: on a box that takes it, else by what it is.
+  const land = useCallback(
+    (load: Load, x: number, y: number) => {
+      if (letGo(store, x, y)) return
+      const point = flow.screenToFlowPosition({ x, y })
+      const under = boxAt(store, x, y)
+      if (load.name) {
+        const target = store.dropTargetAt(x, y, [])
+        if (target) target.drop([load.name], x, y)
+        else if (under) store.takeInto(under, [load.name])
         store.setHot(null)
         return
       }
-      if (tool || taken) {
-        event.preventDefault()
-        const named = store.tools.get().get(tool)
-        if (named) placer.addTool(named, point)
-        if (taken && !(under && store.takePicture(under, JSON.parse(taken)))) placer.addFile(JSON.parse(taken), point)
-        return
-      }
+      if (load.tool) placer.addTool(load.tool, point, load.fields)
+      if (load.take && !(under && store.takePicture(under, load.take))) placer.addFile(load.take, point)
+    },
+    [placer, flow, store],
+  )
+  useEffect(() => {
+    const el = stage.current
+    if (!el) return
+    const heard = (event: Event) => {
+      const { load, x, y } = (event as LetGo).detail
+      land(load, x, y)
+    }
+    el.addEventListener(LET_GO, heard)
+    return () => el.removeEventListener(LET_GO, heard)
+  }, [land])
+  // While something's carried, what would take it says so.
+  useEffect(
+    () =>
+      carriedAt.subscribe(() => {
+        const at = carriedAt.get()
+        if (at) carriedOver(store, at.x, at.y)
+        else store.setHot(null)
+      }),
+    [store],
+  )
+
+  // Files from the computer: the browser's own drag.
+  const drop = useCallback(
+    (event: DragEvent) => {
       if (!hasFiles(event)) return
       event.preventDefault()
       setVeil(false)
+      const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      const under = boxAt(store, event.clientX, event.clientY)
       const files = [...event.dataTransfer.files]
       if (!files.length) return
       if (under && store.joins(under)) placer.join(files, under)
@@ -736,6 +762,8 @@ function Canvas({
   // Far out, a card shows its picture, its name and little else.
   const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
+  const sharpness = useStore((state) => 2 ** Math.min(2, Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1)))))
+  useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
   // How large a box's words are drawn goes on the stage as the zoom crosses a step: no render, so a zoom draws no box again.
   const flowStore = useStoreApi<ElementNode, Edge>()
   useLayoutEffect(() => {
@@ -767,7 +795,6 @@ function Canvas({
       cancelAnimationFrame(settle)
     }
   }, [flowStore])
-  const accepted = useCallback((event: DragEvent) => [DRAGGED_TOOL, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_CHECKPOINT].some((type) => event.dataTransfer.types.includes(type)), [])
 
   // The list a box's controls come from, whatever the panel is searching.
   useEffect(() => {
@@ -787,6 +814,7 @@ function Canvas({
         }}
         place={placeTool}
         choose={choose}
+        box={opened}
       />
       <div
         ref={stage}
@@ -804,10 +832,9 @@ function Canvas({
           if (hasFiles(event)) setVeil(true)
         }}
         onDragOver={(event) => {
-          if (!hasFiles(event) && !accepted(event)) return
+          if (!hasFiles(event)) return
           event.preventDefault()
           event.dataTransfer.dropEffect = "copy"
-          carriedOver(store, event.clientX, event.clientY)
         }}
         onDragLeave={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget as globalThis.Node | null)) setVeil(false)

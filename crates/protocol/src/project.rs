@@ -167,9 +167,6 @@ pub struct State {
     /// Its render going, or its last since Calcifer started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board: Option<Board>,
-    /// Another machine holds its render, and what of it isn't here yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held: Option<HeldBy>,
     /// What kept its last render from reaching a machine, each once, until another is asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsent: Vec<Error>,
@@ -882,9 +879,6 @@ pub struct Board {
     pub shots: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
-    /// Another machine holds it, and what of it isn't here yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held: Option<HeldBy>,
     /// What machines are fetching ahead of what's queued, one per function.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ahead: Vec<Ahead>,
@@ -1121,79 +1115,6 @@ pub struct Captioned {
     pub run: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-}
-
-/// A render another machine took over (`--on X`): X walks it and keeps what it makes, and this computer's Calcifer collects it. A
-/// machine ends 15 minutes after its last job: what isn't collected by then is lost.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct HeldBy {
-    pub machine: String,
-    /// When it ends if nothing more is asked of it; none while it works.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub until_ms: Option<i64>,
-    /// What it made that isn't here yet.
-    #[serde(default)]
-    pub files: u64,
-    #[serde(default)]
-    pub bytes: u64,
-    /// When it last answered.
-    #[serde(default)]
-    pub heard_at_ms: i64,
-}
-
-/// `POST /v1/projects/take`: a project another computer's Calcifer hands this one, to render here. Its folder here is the same for
-/// the same `from` each time. Its text becomes this one's, and its versions join this one's.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Take {
-    /// Its id where it comes from.
-    pub from: String,
-    pub name: String,
-    /// project.yaml there, whole.
-    pub yaml: String,
-    /// The ETag of the project.yaml here that `yaml` was merged with; none the first time. Another: this one changed since, so it's read again.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base: Option<String>,
-    /// project.lock there.
-    pub lock: String,
-    /// The local code its tools name, by path in the folder.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub code: Vec<HeldFile>,
-}
-
-/// What a take left this machine lacking: each by sha256, which `PUT /v1/files/sha256:<hex>` gives it and the next take keeps.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Taken {
-    pub id: String,
-    pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub wants: Vec<String>,
-}
-
-/// `GET /v1/projects/{id}/taken`: what the machine holding a render has of it, for the computer that handed it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Holding {
-    pub yaml: String,
-    pub etag: String,
-    pub lock: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub files: Vec<HeldFile>,
-    /// Its walk owes something.
-    #[serde(default)]
-    pub busy: bool,
-    /// Its render going, or its last.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub board: Option<Board>,
-}
-
-/// A file by its path in a project, and its hash. `machine`: one of its machines keeps it, not its folder.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct HeldFile {
-    pub path: String,
-    pub sha256: String,
-    #[serde(default)]
-    pub length: u64,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub machine: String,
 }
 
 /// Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.

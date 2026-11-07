@@ -1,9 +1,6 @@
 import type { Machine } from "../../types"
 import { span, usd } from "../format"
 
-/** A rental that doesn't answer yet: nothing else may be ordered until it comes to something. */
-export const ordering = (machine: Machine) => machine.kind === "rental" && machine.ordered !== false && machine.state === "booting"
-
 /** What `name` in a route means: a machine's name, former name or rental id. */
 export const named = (machine: Machine, name: string) => [machine.name, machine.alias, machine.rental_id].some((known) => known?.toLowerCase() === name.toLowerCase())
 

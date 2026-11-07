@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, settled, until, watchBoxes, pointAt } = require('./page');
+const { calcifer, carry, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, settled, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -89,7 +89,7 @@ function plate(path, color, seconds, hz) {
   const tools = (await call('GET', '/v1/tools')).body.tools;
   const tool = tools.find((held) => held.id === 'cozy/edit');
   check('edit_is_a_tool', tool?.label === 'Edit' && tool.kind === 'video' && tool.controls[0]?.type === 'timeline', tool);
-  await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1208, y: 144 } });
+  await carry(page, page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }), { x: 1208, y: 144 });
   const card = (name) => boxOf(page, name);
   await card('Edit').waitFor();
   // A box shows as it's dropped, ahead of Calcifer's answer: it's the project that's asked.
@@ -152,7 +152,8 @@ function plate(path, color, seconds, hz) {
   check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
   await away();
   check('at_rest_its_first_clip', await until('its first clip\'s picture', () => card('Edit').locator('.media img').count(), (n) => n === 1));
-  check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button:visible').count()) === 0, await card('Edit').innerText());
+  // At rest its only button is its ×, always shown (Paul, 11-06), and no timeline.
+  check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button:visible:not([aria-label=Delete])').count()) === 0, await card('Edit').innerText());
   await openEdit();
 
   // Pull an end: the bubble says the timecode, the clips stay snapped. What's taken hold of has stopped: the canvas too, which draws in on
@@ -286,7 +287,8 @@ function plate(path, color, seconds, hz) {
 
   // Dragged out, a version is an asset of its own with the same file, and no new bytes.
   await openBox(page, 'Edit');
-  await card('Edit').locator('.take[draggable=true][aria-label$=" 1"]').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
+  // Its takes are a row under it, which drags across: one leaves it up or down.
+  await carry(page, card('Edit').locator('.take[data-take][aria-label$=" 1"]'), await openCanvas(page), 'y');
   const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 

@@ -8,7 +8,6 @@
 #   runtime     a candidate Runtime wheel, https://…#sha256=<hex>, installed with `cozy machine update` (optional)
 #   prompt      the request (each session draws a new seed)
 #   max_exec_s  the run's execution bar (2400: the proof's 2020 s and some host spread)
-#   traffic_gb  GB the provider bills (85)
 . "$(dirname "$0")/lib.sh"
 T=$(param target minimax-h3/generate) URL=$(param runtime) MAX=$(param max_exec_s 2400)
 PROMPT=$(param prompt "integrated_multimodal_description: A steady tracking shot of an adult courier cycling a cargo bike through a narrow cobbled old-town street after rain, past cafe tables and a flower stall, then down a gentle slope into a sunlit square.
@@ -27,7 +26,7 @@ if [ -n "$URL" ]; then
 fi
 command -v ffprobe >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || fail "no ffmpeg"
 jq -n --arg p "$PROMPT" --argjson s "$RANDOM$RANDOM" '{beats: [{description: $p, duration: 15}], seed: $s}' > "$OUT/request.json"
-quote "$(param traffic_gb 85)" 3600
+quote 3600
 rent
 
 jq -e '.status.gpus | length == 1 and .[0].memory_bytes < 9e9' "$OUT/show.json" >/dev/null || fail "not one 8 GB GPU"

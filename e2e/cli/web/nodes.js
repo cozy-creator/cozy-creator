@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
+const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -158,7 +158,7 @@ function linesOf(text, name) {
   // A tool dragged out of the list drops a box at that point: what it is comes from what it makes. The Edit is always there, and costs nothing.
   const dragOut = async (row, x, y) => {
     const namesBefore = (await state()).assets.map((held) => held.name);
-    await row.dragTo(page.locator('.stage'), { targetPosition: { x, y } });
+    await carry(page, row, { x, y });
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
@@ -238,8 +238,10 @@ function linesOf(text, name) {
   await away();
   await page.waitForTimeout(100);
 
-  // At rest a box is its picture or its text and a name, with nothing to press and no state in words.
-  check('at_rest_only_its_x', (await box('source-a').locator('button:visible').count()) === 0, await box('source-a').innerText());
+  // At rest a box is its picture or its text and a name, with no state in words; the one thing to press is its ×, always shown
+  // and big enough to hit (Paul, 11-06: "the X ... should be larger and always visible").
+  const atRest = box('source-a').locator('button:visible');
+  check('at_rest_only_its_x', (await atRest.count()) === 1 && (await atRest.getAttribute('aria-label')) === 'Delete' && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -290,7 +292,8 @@ function linesOf(text, name) {
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
 
-  // No box lies on another. Dropped on one that can't take it, it slides to the nearest clear place, the other stays, and where it ended is what's saved.
+  // No box lies on another. Dropped on one that can't take it, it stays where it was let go and the other is pushed aside (Paul, 11-06: "the placement
+  // position of the new object should be primary, and then other objects should move around it to make room"), and both are saved.
   // Words can't take a picture: a picture box would take it as its version (27c5db3f5).
   const canvasAt = join(folder, 'project.canvas.yaml');
   const lies = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
@@ -305,11 +308,21 @@ function linesOf(text, name) {
   await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 });
   await page.waitForTimeout(100);
   check('a_box_that_cant_take_it_doesnt_offer', (await box('kept_words').locator('.card.hot').count()) === 0 && (await page.locator('.stage[data-offering]').count()) === 0);
+  // Its middle, on the screen: a little smaller, it keeps it.
+  const middleOf = async (name) => {
+    const { x, y, width, height } = await box(name).boundingBox();
+    return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
+  };
+  const letGoAt = await middleOf('source-b');
   await page.mouse.up();
-  await until('it slid clear', () => apart('kept_words', 'source-b'), Boolean);
+  await until('they came apart', () => apart('kept_words', 'source-b'), Boolean);
   check('a_box_cant_lie_on_a_box', true);
-  check('the_other_box_stays', (await rows()).kept_words.x === stood.kept_words.x && (await rows()).kept_words.y === stood.kept_words.y, await rows());
-  await until('where it ended, saved', rows, (now) => now['source-b'].x !== stood['source-b'].x || now['source-b'].y !== stood['source-b'].y);
+  const ended = await until('the other pushed aside, saved', rows, (now) => now.kept_words.x !== stood.kept_words.x || now.kept_words.y !== stood.kept_words.y).catch(rows);
+  await page.waitForTimeout(400);
+  const endedAt = await middleOf('source-b');
+  check('the_box_let_go_stays', Math.abs(endedAt.x - letGoAt.x) <= 2 && Math.abs(endedAt.y - letGoAt.y) <= 2, { letGoAt, endedAt });
+  check('the_other_box_moves_aside', ended.kept_words.x !== stood.kept_words.x || ended.kept_words.y !== stood.kept_words.y, { stood, ended });
+  await until('where it was let go, saved', rows, (now) => now['source-b'].x !== stood['source-b'].x || now['source-b'].y !== stood['source-b'].y);
 
   // Another writer's `at`, on a box, settles the same way; so does a file that arrives with two on one spot, as a converted project does, with no input changing.
   const held = (await rows())['source-a'];
@@ -344,6 +357,10 @@ function linesOf(text, name) {
 
   // Controls from what it holds: its words and its beats shown, whatever the alphabet says of `style` and `summary`, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
   replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    style: wash\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
+  // It reads source-b, so it's placed beside it, which may be out of view of source-a open: placed, the canvas at rest and fitted has it in view (as versions.js's moving_words).
+  await until('knobs placed', rows, (now) => now.knobs);
+  await away();
+  await page.keyboard.press('f');
   await box('knobs').waitFor();
   await open('knobs');
   const knobs = box('knobs');
@@ -375,6 +392,15 @@ function linesOf(text, name) {
   check('its_shape_by_its_corner', (await knobs.locator('.ratio-rest').innerText()) === '3:2', await knobs.locator('.ratio-rest').innerText());
   const widthBefore = (await rows()).knobs.w;
   const pull = async (dx, dy) => {
+    // Firefox's driver drops a release past the window's edge, and fitted, knobs can be the box at it: the canvas pans first, so the pull ends inside.
+    const { width, height } = page.viewportSize();
+    const at = await knobs.locator('.corner').boundingBox();
+    const [overX, overY] = [Math.max(0, at.x + 6 + dx - (width - 40)), Math.max(0, at.y + 6 + dy - (height - 40))];
+    if (overX || overY) {
+      await page.locator('.react-flow__pane').dispatchEvent('wheel', { deltaX: overX, deltaY: overY });
+      await settled(page);
+      await knobs.locator('.nm').hover();
+    }
     const corner = await knobs.locator('.corner').boundingBox();
     await page.mouse.move(corner.x + 6, corner.y + 6);
     await page.mouse.down();
@@ -602,11 +628,13 @@ function linesOf(text, name) {
     await open('Sheet');
     // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
     await until('the page has its words', () => box('Sheet').locator('text=The sheet of two.').count(), (n) => n > 0);
-    // Picked up from its big tile, the take it shows.
+    // Picked up from its big tile, the take it shows. It moves out (571ee2123): its box keeps the rest.
     await box('Sheet').locator('.take[aria-label="version 2"]').click();
+    const [carried, kept] = [(await of('Sheet')).prefixes[1].main.sha256, (await versions('Sheet')) - 1];
     await box('Sheet').locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
     const out = await until('taken out', () => of('Sheet_2'), Boolean);
-    check('taken_out_is_the_same_file', out.sha256 === (await of('Sheet')).prefixes[1].main.sha256 && !out.tool, out);
+    check('taken_out_is_the_same_file', out.sha256 === carried && !out.tool, out);
+    await until('and gone from its box', () => versions('Sheet'), (n) => n === kept);
     check('taken_out_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
     await until('it keeps what it says', () => of('Sheet_2'), (held) => held.fields?.description?.includes('sheet of two'));
     await shot('versions');
@@ -704,7 +732,7 @@ function linesOf(text, name) {
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
-    const heldFile = (await of('Sheet')).sha256;
+    const [heldFile, heldTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
     const filesThen = readdirSync(join(folder, 'files')).length;
     const stood = (await rows())['source-a'];
     const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a'));
@@ -745,7 +773,7 @@ function linesOf(text, name) {
     await (await renderOf(page, 'Sheet')).click();
     const again = await until('it says so again', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render")));
     check('failed_again_said_again', again.every((line) => !line.includes('Sheet: ')), again);
-    check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
+    check('failed_runs_nothing', (await versions('Sheet')) === heldTakes && (await of('Sheet')).sha256 === heldFile, { takes: await versions('Sheet'), heldTakes });
     await render('Other', 2);
     check('the_rest_goes_on', true);
     await open('Sheet');
@@ -797,10 +825,10 @@ function linesOf(text, name) {
     await box('source-b').waitFor();
 
     // Render on what's approved: another to look at, and the approval stays.
-    const nowHeld = (await of('Sheet')).sha256;
+    const [nowHeld, nowTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
     await open('Sheet');
     await (await renderOf(page, 'Sheet')).click();
-    await until('another to look at', () => versions('Sheet'), (n) => n === 3, FIRST_RUN_MS);
+    await until('another to look at', () => versions('Sheet'), (n) => n === nowTakes + 1, FIRST_RUN_MS);
     check('approved_stays', (await of('Sheet')).pinned && (await of('Sheet')).sha256 === nowHeld, await of('Sheet'));
 
     // Render all: its count, what's approved left alone.

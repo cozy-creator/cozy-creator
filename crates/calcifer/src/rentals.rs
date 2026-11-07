@@ -357,23 +357,12 @@ impl Machines {
             let message = format!("the key {key:?} is not 1 to 200 characters");
             return Err(Error::new(Kind::Usage, "idempotency_key_invalid", message));
         }
-        let agreed = shape.agreed;
-        let (request, alias, signer) = request(sku, shape);
+        let (mut request, alias, signer) = request(sku, shape);
         let quote = self.quoted(&origin, &request).await?;
-        // Dearer than the renter agreed to a moment ago: nothing is rented.
-        let now = quote_of(&quote).agreed;
-        if let Some(agreed) = agreed.filter(|agreed| above(&now, agreed)) {
-            return Err(Error::new(
-                Kind::Conflict,
-                "rental_price_rose",
-                format!(
-                    "{sku} now costs {}, above the {} agreed; nothing was rented",
-                    rate(&now),
-                    rate(&agreed)
-                ),
-            )
-            .next(format!("cozy machine rent {sku}")));
-        }
+        // The Hub's cap is the one price check: an order dearer than the price agreed, else this
+        // quote's, rents nothing (409 rental.price_rose). It reads 0 as no cap, so 0 is sent as 1.
+        let cap = request.max_usd_micros_per_hour.unwrap_or(quote.price_usd_micros_per_hour);
+        request.max_usd_micros_per_hour = Some(cap.max(1));
         write_key(&self.home.rental_key(&alias), &signer)?;
         let ask = Ask {
             key: key.to_owned(),
@@ -475,7 +464,6 @@ impl Machines {
                 }
                 Ok(rental) => {
                     let alias = ask.machine.clone().unwrap_or_default();
-                    let quoted = quote_of(&RentBody::of(ask)?.quote);
                     // Asked under its alias; the boot follower takes the Hub's name for it.
                     let row = MachineRow {
                         name: alias.clone(),
@@ -488,43 +476,24 @@ impl Machines {
                         served: false,
                         reason: None,
                     };
-                    // The price shown is the price locked: an acceptance above the quote (the
-                    // machine and its disk an hour, or traffic a GB) is released at once.
-                    let locked = Agreed {
-                        usd_micros_per_hour: hourly(&rental),
-                        usd_micros_per_gb: rental.bandwidth_usd_micros_per_gb.unwrap_or_default(),
-                    };
-                    // An order stopped while this answer was on its way is released as well.
-                    let released = match self.withdrawn(ask)? {
-                        true => Some(("rental_stopped", STOPPED.to_owned())),
-                        false if above(&locked, &quoted.agreed) => Some((
-                            "rental_rate_changed",
-                            format!(
-                                "rental.rate_changed: {} locked {}, above the {} quoted; it is released",
-                                ask.hub,
-                                rate(&locked),
-                                rate(&quoted.agreed)
-                            ),
-                        )),
-                        false => None,
-                    };
-                    if let Some((code, reason)) = released {
+                    // An order stopped while this answer was on its way is released.
+                    if self.withdrawn(ask)? {
                         let id = rental.rental_id.clone();
                         self.hubs.seen(&ask.hub, rental);
                         self.calcifer.put_machine(&row).map_err(internal)?;
                         self.store()
-                            .settle_ask(&ask.key, Err(&reason))
+                            .settle_ask(&ask.key, Err(STOPPED))
                             .map_err(internal)?;
                         self.ask_end(&format!("end-{id}"), &row.hub, &id, Some(row.name.clone()), false)?;
                         if let Some(run) = &ask.run {
                             let reason = Reason {
                                 code: "rental_refused".into(),
-                                message: reason.clone(),
+                                message: STOPPED.into(),
                                 ..Default::default()
                             };
                             self.calcifer.fail(run, reason).map_err(internal)?;
                         }
-                        let refused = Err(Error::new(Kind::Conflict, code, reason).next("cozy machine rent"));
+                        let refused = Err(Error::new(Kind::Conflict, "rental_stopped", STOPPED).next("cozy machine rent"));
                         tell(&refused);
                         return refused;
                     }
@@ -1473,17 +1442,12 @@ impl RentBody {
 fn quote_of(quote: &types::RentalQuote) -> Quote {
     let expected = &quote.expected_price;
     Quote {
-        gpu_usd_micros_per_hour: quote.price_usd_micros_per_hour,
-        storage_usd_micros_per_hour: quote.storage_usd_micros_per_hour,
-        bandwidth_usd_micros_per_gb: quote.bandwidth_usd_micros_per_gb,
+        usd_micros_per_hour: quote.price_usd_micros_per_hour,
         disk_gb: u32::try_from(quote.container_disk_gb).unwrap_or_default(),
         expected_hours: expected.hours,
         expected_download_gb: u32::try_from(expected.download_gb).unwrap_or_default(),
         expected_total_usd_micros: expected.total_usd_micros,
-        agreed: Agreed {
-            usd_micros_per_hour: quote.price_usd_micros_per_hour + quote.storage_usd_micros_per_hour,
-            usd_micros_per_gb: quote.bandwidth_usd_micros_per_gb.unwrap_or_default(),
-        },
+        agreed: Agreed { usd_micros_per_hour: quote.price_usd_micros_per_hour },
         warnings: quote.warnings.clone(),
     }
 }
@@ -1682,9 +1646,9 @@ fn attempt(rental: &types::Rental) -> Option<Attempt> {
     })
 }
 
-/// What we charge for the rental an hour, its GPUs; disk and traffic are never the user's.
+/// The rental's one price an hour, the Hub's.
 fn hourly(rental: &types::Rental) -> i64 {
-    rental.compute_usd_micros_per_hour.unwrap_or(rental.hourly_rate_usd_micros)
+    rental.hourly_rate_usd_micros
 }
 
 fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
@@ -1742,24 +1706,9 @@ fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey
         provider: shape.provider,
         sku: sku.to_owned(),
         development: shape.ssh_key.map(|ssh_public_key| types::RentalDevelopment { ssh_public_key }),
-        // The Hub holds the order to what was agreed, so a price that rose between here and there rents nothing.
         max_usd_micros_per_hour: shape.agreed.map(|agreed| agreed.usd_micros_per_hour),
     };
     (request, alias, signer)
-}
-
-/// Whether `now` asks more than `agreed`, an hour or a GB.
-fn above(now: &Agreed, agreed: &Agreed) -> bool {
-    now.usd_micros_per_hour > agreed.usd_micros_per_hour
-        || now.usd_micros_per_gb > agreed.usd_micros_per_gb
-}
-
-fn rate(price: &Agreed) -> String {
-    format!(
-        "${:.2}/h and up to ${:.3}/GB",
-        price.usd_micros_per_hour as f64 / 1e6,
-        price.usd_micros_per_gb as f64 / 1e6
-    )
 }
 
 /// The UTC day of a unix-ms instant, `2026-10-30`.
