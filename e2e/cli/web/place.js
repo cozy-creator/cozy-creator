@@ -1,5 +1,5 @@
 // Place, in a real browser (web-ui.md §1): a PNG, an MP4 and a WAV dropped together; one chosen from the selector; one renamed; a
-// move read back from project.canvas.yaml; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
+// move read back from project.db's rows; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
 //   node place.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // Last, where a box is let go or pulled to wins, and what it comes onto is pushed aside, down the line (Paul, 11-06).
@@ -10,7 +10,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, yamlOf, importYaml } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -23,15 +23,11 @@ function check(name, ok, detail) {
 const names = (page) => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .nm, .react-flow__node .nm-field')]
   .map((el) => el.value ?? el.textContent).sort());
 const element = boxOf;
-const yaml = (folder) => readFileSync(join(folder, 'project.yaml'), 'utf8');
+const yaml = (folder) => yamlOf(folder);
+/** Its rows, as project.db holds them (cl-803). */
 function rows(folder) {
-  let text;
-  try { text = readFileSync(join(folder, 'project.canvas.yaml'), 'utf8'); } catch { return {}; }
   const found = {};
-  for (const line of text.split('\n')) {
-    const m = line.match(/^\s+(\S+):\s*\{x:\s*(-?[\d.]+),\s*y:\s*(-?[\d.]+)(?:,\s*w:\s*(-?[\d.]+))?/);
-    if (m) found[m[1]] = { x: Number(m[2]), y: Number(m[3]), ...(m[4] === undefined ? {} : { w: Number(m[4]) }) };
-  }
+  for (const [name, x, y, w] of rowsOf(folder, 'SELECT name, x, y, w FROM canvas')) found[name] = { x, y, ...(w === null ? {} : { w }) };
   return found;
 }
 const FIELD = { png: 'image', jpg: 'image', mp4: 'video', wav: 'audio' };
@@ -79,9 +75,9 @@ const constants = (folder) => {
   }, id);
   const folder = state.path;
   seen.project = { id, folder };
-  // A file a person wrote: every comment and `|` of it must outlast the page.
-  const written = '# Mine, and kept.\nassets:\n  coast:\n    # Kept too.\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
-  writeFileSync(join(folder, 'project.yaml'), written);
+  // An export a person wrote, imported: its words and `|` must outlast the page. Its comments go: the project holds values (cl-803).
+  const written = '# Mine.\nassets:\n  coast:\n    # A note.\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
+  importYaml(folder, written);
 
   // A PNG, an MP4 and a WAV dropped together: each there at once under its stem, nothing focused.
   const pngBytes = png(60);
@@ -99,7 +95,7 @@ const constants = (folder) => {
   const three = constants(folder);
   check('constants_by_kind', three.kyogre_art_1?.field === 'image' && three.clash_take?.field === 'video' && three.sea_sound?.field === 'audio', three);
   // An import writes the constant, then the row, so the last row can come a moment after the third constant.
-  await until('three rows in project.canvas.yaml', () => rows(folder), (now) => ['kyogre_art_1', 'clash_take', 'sea_sound'].every((name) => now[name]));
+  await until('three rows in project.db', () => rows(folder), (now) => ['kyogre_art_1', 'clash_take', 'sea_sound'].every((name) => now[name]));
   check('rows_written', true);
   // Calcifer may fetch its ffmpeg for the first of these.
   const thumbs = await until('thumbnails up', () => page.evaluate(() => ({
@@ -159,7 +155,7 @@ const constants = (folder) => {
   check('same_file_same_hash', all.kyogre_art_1.hash === all.kyogre_art_2.hash, all);
   check('same_file_two_elements', (await names(page)).includes('kyogre_art_2'), await names(page));
 
-  // Dragged: the row in project.canvas.yaml moves by what the mouse did, and no input changes.
+  // Dragged: its row in project.db moves by what the mouse did, and no input changes.
   const box = await element(page, 'clash_take').locator('.nm').boundingBox();
   const was = rows(folder).clash_take;
   const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
@@ -256,7 +252,7 @@ const constants = (folder) => {
   check('reload_viewport', (await viewportNow()) === viewportBefore, { before: viewportBefore, after: await viewportNow() });
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-reloaded.png` });
 
-  check('comments_and_text_kept', yaml(folder).startsWith(written), yaml(folder));
+  check('text_kept', /\n  coast:\n    description: \|\n      A volcanic coast,\n      under a bright sky\.\n/.test(yaml(folder)), yaml(folder));
 
   // Where a box is put wins (Paul, 11-06: "the placement position of the new object should be primary, and then other objects should move around it
   // to make room, although the new object can also of course shrink in size if needed slightly"; "Resizing it will push the other surrounding objects

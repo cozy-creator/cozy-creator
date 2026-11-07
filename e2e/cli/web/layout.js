@@ -17,7 +17,7 @@ const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav } = require('./page');
+const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -440,7 +440,6 @@ async function edgesOf({ shown, bare, clip, frame }) {
   id = page.url().match(/#\/projects\/([^/]+)/)[1];
   const folder = (await api(`/v1/projects/${id}`)).path;
   seen.project = { id, folder };
-  const yamlAt = join(folder, 'project.yaml');
   const scratch = mkdtempSync(join(tmpdir(), 'web-layout-'));
   for (const [asset, file, bytes] of [
     ['hero_art', 'hero.png', png(40, 320, 200, true)],
@@ -456,7 +455,7 @@ async function edgesOf({ shown, bare, clip, frame }) {
   }
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   seen.ran = local;
-  replaceFile(yamlAt, `${readFileSync(yamlAt, 'utf8').trimEnd()}
+  importYaml(folder, `${yamlOf(folder).trimEnd()}
   style:
     text: Bright, hand-painted, cel-shaded, with soft light and long shadows across every surface, and the sea always in the distance.
   still:
@@ -512,7 +511,7 @@ ${local ? `  card:
   };
   // Takes: the frame thrice, the Edit once, and where this computer runs, many of the picture tool's, the shot's two and a failure.
   for (const at of [0.2, 0.5, 0.8]) {
-    replaceFile(yamlAt, readFileSync(yamlAt, 'utf8').replace(/(\n  still:\n    video: <clip>\n    at: )[\d.]+/, `$1${at}`));
+    importYaml(folder, yamlOf(folder).replace(/(\n  still:\n    video: <clip>\n    at: )[\d.]+/, `$1${at}`));
     render('still');
   }
   render('edit');

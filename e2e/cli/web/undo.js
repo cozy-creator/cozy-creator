@@ -1,7 +1,7 @@
 // Undo and redo (Paul, 11-06): "an undo / redo history button ... helpful if I do something destructive and dumb by mistake". The project keeps
 // the history, whoever edits it: on a real Calcifer, each of a delete, a merge, a tool taken off, words typed, a move, approve and unapprove and
 // a take discarded is undone (Ctrl+Z, the top bar's Undo, a note's Undo) and redone (Ctrl+Shift+Z), shown at once and checked in project.yaml,
-// its canvas file and project.lock after each. The CLI's edit is undone from the page, the page's from the CLI; an undo a later edit would
+// its canvas rows and takes in project.db after each. The CLI's edit is undone from the page, the page's from the CLI; an undo a later edit would
 // clobber is refused, saying which; and with Calcifer stopped, an edit and its undo wait, land in order when it's back, and the history is there
 // after a restart, for `cozy project redo`.
 //   node undo.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -12,7 +12,7 @@ const { execSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until, rowsOf, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -46,15 +46,14 @@ function check(name, ok, detail) {
   const asset = async (name) => (await api(at)).body.assets.find((row) => row.name === name);
   const folder = (await api(at)).body.path;
   seen.project = { id, folder };
-  const read = (file) => (existsSync(join(folder, file)) ? readFileSync(join(folder, file), 'utf8') : '');
-  const yaml = () => read('project.yaml');
+  const yaml = () => yamlOf(folder);
   // What the project holds, asset by asset, whatever order its lines are in: one put back goes at the end.
   const held = () => yaml().split(/\n(?=  \S)/).map((block) => block.trimEnd()).sort().join('\n')
   // An asset's own lines in project.yaml: none, it isn't there.
   const lines = (name) => yaml().match(new RegExp(`^  ${name}:.*(?:\n(?:    .*|\\s*$))*`, 'm'))?.[0].trimEnd() ?? null;
   const row = (name) => {
-    const m = read('project.canvas.yaml').match(new RegExp(`^\\s+${name}:\\s*\\{x:\\s*(-?[\\d.]+),\\s*y:\\s*(-?[\\d.]+)`, 'm'));
-    return m ? `${Math.round(m[1])},${Math.round(m[2])}` : null;
+    const [held] = rowsOf(folder, `SELECT x, y FROM canvas WHERE name = '${name}'`);
+    return held ? `${Math.round(held[0])},${Math.round(held[1])}` : null;
   };
   // What the CLI says, on either stream; refused, it throws.
   const cozy = (...words) => {
@@ -226,7 +225,7 @@ function check(name, ok, detail) {
   await openBox(page, 'shot');
   await page.locator(`.card.here .take-at:has(.take[data-take="${other}"])`).hover();
   await page.locator(`.card.here .take-at:has(.take[data-take="${other}"]) .take-off`).click();
-  check('discard_written', (await until('discarded', takes, (n) => n === had - 1).catch(() => null)) === had - 1 && /discarded:/.test(read('project.lock')));
+  check('discard_written', (await until('discarded', takes, (n) => n === had - 1).catch(() => null)) === had - 1 && rowsOf(folder, 'SELECT count(*) FROM versions WHERE discarded = 1')[0][0] > 0);
   await page.locator('.note:has-text("Discarded") button:has-text("Undo")').first().click();
   check('discard_undone_by_its_note', (await until('back', takes, (n) => n === had).catch(() => null)) === had);
   await redo();
@@ -303,7 +302,7 @@ function check(name, ok, detail) {
   check('list_strikes_them_through', await until('struck through', () => page.locator('.history-list .history-row.undone').count(), (n) => n >= 2).then(() => true, () => false));
   await listed.nth(0).click();
   await says('list_goes_forward_again', () => [lines('red'), (lines('spare') ?? '').includes(theirs.sha256.slice(7, 19))], ([red, spare]) => red === null && spare);
-  check('history_beside_the_project', existsSync(join(folder, '.history.json')) && !/history|undone/.test(yaml()));
+  check('history_in_project_db', rowsOf(folder, 'SELECT count(*) FROM ops')[0][0] > 0 && !existsSync(join(folder, '.history.json')) && !/history|undone/.test(yaml()));
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();

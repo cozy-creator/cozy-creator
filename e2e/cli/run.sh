@@ -265,6 +265,7 @@ case $SHARD in
   # project.db (cl-803) alone, and its latency against the cozy before it.
   projectdb) parts="projectdb logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
+  projectdb-existing) parts="db_existing logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"

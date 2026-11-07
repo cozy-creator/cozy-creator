@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
+const { MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -86,8 +86,7 @@ function linesOf(text, name) {
   // The fixture as new code, so this machine has never installed it: what lists it before the install lands is PyPI's Runtime's reading.
   const fixture = join(folder, 'boxes.py');
   writeFileSync(fixture, `${readFileSync(BOXES, 'utf8')}\n# ${id}\n`);
-  const yamlAt = join(folder, 'project.yaml');
-  const yaml = () => readFileSync(yamlAt, 'utf8');
+  const yaml = () => yamlOf(folder);
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
   const fieldsOf = async (name) => (await of(name))?.fields ?? {};
   const box = (name) => boxOf(page, name);
@@ -105,7 +104,7 @@ function linesOf(text, name) {
   for (const name of ['coast', 'amy', 'walk', 'hum']) await box(name).waitFor();
   await until('all four in the file', () => Promise.resolve(yaml()), (text) => ['coast', 'amy', 'walk', 'hum'].every((name) => text.includes(`  ${name}:`)));
   // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
-  replaceFile(yamlAt, `${yaml().trimEnd()}\n  shot:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
+  importYaml(folder, `${yaml().trimEnd()}\n  shot:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
   await box('shot').waitFor();
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
@@ -378,7 +377,7 @@ function linesOf(text, name) {
     check('pickup_writes_nothing', linesOf(yaml(), 'shot') === typed && !yaml().includes('pickup'), linesOf(yaml(), 'shot'));
 
     // Another box's take let go on it: from that take, at a frame chosen on it.
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  other:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  other:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
     await until('other in the project', () => of('other'), Boolean);
     await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
     await render('other', 1);

@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
+const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -96,8 +96,7 @@ function linesOf(text, name) {
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  const yamlAt = join(folder, 'project.yaml');
-  const yaml = () => readFileSync(yamlAt, 'utf8');
+  const yaml = () => yamlOf(folder);
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const box = (name) => boxOf(page, name);
@@ -121,10 +120,10 @@ function linesOf(text, name) {
   };
   await page.evaluate(() => { window.notReloaded = true; });
 
-  // A file a person wrote: every comment and `|` of it outlasts all of this.
+  // An export a person edited and imported: its words and `|` outlast all of this. Its comments go: the project holds values (cl-803).
   const head = '# Mine, and kept.\nversion: 4\n\nassets:\n  # A note on what follows.\n  kept_words:\n    # Inside it.\n    description: |\n      Written\n      by hand.\n';
   // Local code is a tool once something in the project names it. A real render needs no GPU this way.
-  writeFileSync(yamlAt, local ? `${head}  named_here:\n    tool: ${drawer}/draw\n` : head);
+  importYaml(folder, local ? `${head}  named_here:\n    tool: ${drawer}/draw\n` : head);
   await box('kept_words').waitFor();
   letGo();
   await page.unroute(listRead);
@@ -189,7 +188,7 @@ function linesOf(text, name) {
   check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
   await until('that box gone', () => box(made.name).count(), (n) => n === 0);
-  check('list_keeps_comments', yaml().startsWith(head), yaml());
+  check('list_keeps_words', /\n  kept_words:\n    description: \|\n      Written\n      by hand\.\n/.test(yaml()), yaml());
 
   // Local code is listed, and says so: the box Paul's example uses comes from here, dragged like any tool, and called what a person calls it.
   const fromTheList = page.locator('.tools section[data-local] .tool').first();
@@ -230,7 +229,7 @@ function linesOf(text, name) {
     await dropBox('Sheet', 500, 600);
     check('dragged_box_is_that_tool', (await of('Sheet')).tool === tool && (await of('Sheet')).kind === 'image', await of('Sheet'));
     await api(`/v1/projects/${id}/assets/named_here`, { method: 'DELETE' });
-  } else replaceFile(yamlAt, `${yaml().trimEnd()}\n  Sheet:\n    tool: ${tool}\n`);
+  } else importYaml(folder, `${yaml().trimEnd()}\n  Sheet:\n    tool: ${tool}\n`);
   await box('Sheet').waitFor();
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
@@ -295,7 +294,6 @@ function linesOf(text, name) {
   // No box lies on another. Dropped on one that can't take it, it stays where it was let go and the other is pushed aside (Paul, 11-06: "the placement
   // position of the new object should be primary, and then other objects should move around it to make room"), and both are saved.
   // Words can't take a picture: a picture box would take it as its version (27c5db3f5).
-  const canvasAt = join(folder, 'project.canvas.yaml');
   const lies = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
   const apart = async (a, b) => !lies(await box(a).boundingBox(), await box(b).boundingBox());
   await away();
@@ -331,8 +329,8 @@ function linesOf(text, name) {
   await until('an `at` on a box comes off it', () => apart('source-a', 'source-b'), Boolean);
   check('an_at_settles', true);
   const asItStood = (await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing]);
-  const piled = readFileSync(canvasAt, 'utf8').replace(/^(\s+source-b: )\{[^}]*\}$/m, `$1{x: ${held.x}, y: ${held.y}}`);
-  replaceFile(canvasAt, piled);
+  // Another writer's row, onto it: no window had it to settle.
+  execFileSync(COZY, ['project', '-p', folder, 'set', 'source-b', `at=${held.x},${held.y}`], { stdio: 'ignore' });
   await page.reload();
   await box('source-a').waitFor();
   await page.keyboard.press('f');
@@ -363,7 +361,7 @@ function linesOf(text, name) {
   await away();
 
   // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, its beats shown, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
-  replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    style: wash\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
+  importYaml(folder, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    style: wash\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
   await box('knobs').waitFor();
   await open('knobs');
   const knobs = box('knobs');
@@ -386,7 +384,6 @@ function linesOf(text, name) {
   await more('knobs');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field(/turbo: (\S+)/), (value) => value === 'false');
-  check('a_control_keeps_the_comment', (await field(/(# Stays\.)/)) === '# Stays.' && (await field(/(# how)/)) === '# how', linesOf(yaml(), 'knobs'));
   check('text_stays_block', (linesOf(yaml(), 'knobs') ?? '').includes('summary: |'), linesOf(yaml(), 'knobs'));
 
   // Its shape is the box's own, with no field for it: with no picture, its corner pulls a new one, at rest or open, which writes what it makes; open, the
@@ -441,14 +438,14 @@ function linesOf(text, name) {
   await sheetText.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' mine');
-  replaceFile(yamlAt, yaml().replace('      Written\n', '      Rewritten\n'));
+  importYaml(folder, yaml().replace('      Written\n', '      Rewritten\n'));
   // Read again: the canvas is drawn in on Sheet, so what else is on it may not be drawn.
   await until('its etag read again', async () => (await of('kept_words'))?.fields?.description ?? '', (text) => text.includes('Rewritten'));
   await until('another\'s edit is no conflict', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('mine'));
   await sheetText.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' again');
-  replaceFile(yamlAt, yaml().replace(' mine', ' theirs'));
+  importYaml(folder, yaml().replace(' mine', ' theirs'));
   await box('Sheet').locator('.status.ood:has-text("changed under this")').waitFor();
   await shot('conflict');
   check('a_conflict_writes_nothing', linesOf(yaml(), 'Sheet').includes(' theirs') && !linesOf(yaml(), 'Sheet').includes(' again'), linesOf(yaml(), 'Sheet'));
@@ -498,7 +495,7 @@ function linesOf(text, name) {
   const statusOf = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
   if (local) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
     // Read with this machine's Runtime, as a run reads it: PyPI's can't, and this may be the first run of it here.
     execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
@@ -656,7 +653,7 @@ function linesOf(text, name) {
     const shaped = join(__dirname, '..', 'project', 'shaped.py');
     // Read with this machine's Runtime, as tool.py is above.
     execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
     // Render kept Other open, and drawn in on a box the canvas draws only what's near it: a new one is seen at rest, all of it in view.
     await away();
     await page.keyboard.press('f');
@@ -681,7 +678,7 @@ function linesOf(text, name) {
 
     // What a box mentions goes to the list of what's mentioned. A function's optional frames are the file's to set: filled from mentions, the first
     // picture took the canvas over the shot's aspect_ratio, and the second forced how it ends.
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  mentioning:\n    tool: ${shaped}/shot\n    summary: <source-a> meets <source-b>.\n    aspect_ratio: "16:9"\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  mentioning:\n    tool: ${shaped}/shot\n    summary: <source-a> meets <source-b>.\n    aspect_ratio: "16:9"\n`);
     // Drawn in on a box, the canvas draws only what's near it: a new one is seen at rest, all of it in view.
     await away();
     await page.keyboard.press('f');
@@ -712,7 +709,7 @@ function linesOf(text, name) {
 
     // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
     const asker = join(__dirname, '..', 'project', 'tool.py');
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  asker:\n    tool: ${asker}/told\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  asker:\n    tool: ${asker}/told\n`);
     await away();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
@@ -861,7 +858,7 @@ function linesOf(text, name) {
     await page.keyboard.press('Enter');
     await box('look').waitFor();
     await until('look in the file', () => Promise.resolve(linesOf(yaml(), 'look')), Boolean);
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);
     // By the project: it can land past the edge of the view, and what's off it isn't drawn.
     await until('Clip in the project', () => of('Clip'), Boolean);
     await render('Clip', 1);

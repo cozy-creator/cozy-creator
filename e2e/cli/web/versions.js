@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until } = require('./page');
+const { calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until, importYaml, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -76,9 +76,10 @@ async function died(why) {
   seen.project = { id, folder };
   forget = () => api(at, { method: 'DELETE' }).catch(() => {});
   const yamlAt = join(folder, 'project.yaml');
-  const yaml = () => readFileSync(yamlAt, 'utf8');
+  const yaml = () => yamlOf(folder);
   last = yaml;
-  const lock = () => readFileSync(join(folder, 'project.lock'), 'utf8');
+  const lock = () => JSON.stringify(rowsOf(folder, 'SELECT key, number, discarded FROM versions'));
+  const kept = (key) => rowsOf(folder, `SELECT count(*) FROM lock_assets WHERE key = '${key}'`)[0][0] > 0;
   const box = (name) => boxOf(page, name);
   const toast = (words) => until(`the toast ${words}`, () => page.locator('.notes, .note-list, [role=status]').allInnerTexts().then((all) => all.join(' | ')), (all) => all.includes(words)).then(() => true, (why) => String(why));
   const undoIn = (words) => page.locator(`.note:has-text("${words}") button:has-text("Undo")`).first();
@@ -92,15 +93,15 @@ async function died(why) {
   const imported = (name, shade) => post(`${at}/imports`, { source: picture(shade), name, exact: true, at: { x: 100 + shade * 4, y: 100 } });
   const joined = (name, shade, width, height) => post(`${at}/assets/${name}/versions`, { source: picture(shade, width, height) });
 
-  // Mentions, in a file a hand wrote, its comments kept whatever comes.
-  const comments = ['# Mine, and kept.', '  # A note on words.', '    # Its own note.', '      Two lines,', '      kept as they are.'];
+  // Mentions, in an export a hand edited and imported: its words kept whatever comes. Its comments go: the project holds values (cl-803).
+  const comments = ['      Two lines,', '      kept as they are.'];
   await imported('Abr', 10);
   // Its second square, so a slide along its row crosses a take of another shape.
   await joined('Abr', 20, 200, 200);
   await joined('Abr', 30);
   await imported('other', 40);
   const head = yaml();
-  writeFileSync(yamlAt, `# Mine, and kept.\n${head.trimEnd()}
+  importYaml(folder, `# Mine, and kept.\n${head.trimEnd()}
   # A note on words.
   words:
     text: |
@@ -160,7 +161,7 @@ async function died(why) {
   await box('other').waitFor();
   await post(`${at}/rename`, { from: 'Abr', to: 'Ada' });
   await until('the mentions', () => Promise.resolve(yaml()), (text) => text.includes('<Ada.2> beside <Ada.1>, and <Ada>'));
-  check('rename_keeps_comments', comments.every((line) => yaml().includes(line)), yaml());
+  check('rename_keeps_words', comments.every((line) => yaml().includes(line)), yaml());
   check('rename_keeps_versions', (await asset('Ada')).versions === 3 && (await asset('Ada')).approved === 3, await asset('Ada'));
 
   // Deleting a version something reads: it stays read, a render fails clearly, and Undo brings it back.
@@ -173,7 +174,7 @@ async function died(why) {
   check('a_deleted_version_puts_nothing_out_of_date', (await asset('fixed')).inputs === before);
   await until('it says so', () => asset('fixed'), (row) => row.missing?.includes('Ada.2'));
   const reclaimed = await post(`${at}/reclaim`, { yes: true });
-  check('reclaim_keeps_a_named_version', reclaimed.status === 200 && lock().includes('discarded') && (await api(`${at}/assets/Ada`)).body.discarded?.includes(2), [reclaimed, (await api(`${at}/assets/Ada`)).body.discarded]);
+  check('reclaim_keeps_a_named_version', reclaimed.status === 200 && rowsOf(folder, 'SELECT count(*) FROM versions WHERE discarded = 1')[0][0] > 0 && (await api(`${at}/assets/Ada`)).body.discarded?.includes(2), [reclaimed, (await api(`${at}/assets/Ada`)).body.discarded]);
   const back = await api(`${at}/assets/Ada/versions/2`, { method: 'PUT', body: '{}' });
   check('undo_brings_it_back', back.status === 200 && !(await until('it reads again', () => asset('fixed'), (row) => !row.missing?.includes('Ada.2'))).missing?.length, back);
 
@@ -259,7 +260,7 @@ async function died(why) {
   await imported('moving', 60);
   await joined('moving', 61);
   await joined('moving', 62);
-  writeFileSync(yamlAt, `${yaml().trimEnd()}\n  moving_words:\n    text: <moving.2> on top.\n`);
+  importYaml(folder, `${yaml().trimEnd()}\n  moving_words:\n    text: <moving.2> on top.\n`);
   // Open on another box, the canvas is drawn in on it: everything's in view at rest.
   await shut();
   await page.keyboard.press('f');
@@ -579,7 +580,7 @@ async function died(why) {
 
     // A box's shape is its tool's, and no field says it. With none set it's the first picture its words mention, as they change; its corner on a box
     // with no picture sets one, at rest or open, and open, the one set has an × back to Auto. A box showing a picture only scales.
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  framed:\n    tool: ${tool.id}\n    instructions: <Ada.2> beside <Ada>.\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  framed:\n    tool: ${tool.id}\n    instructions: <Ada.2> beside <Ada>.\n`);
     // Placed where there's room, which may be off the view: a box off it isn't drawn.
     await until('framed placed', async () => (await api(`${at}/canvas`)).body?.cards?.framed, Boolean);
     await page.keyboard.press('f');
@@ -621,7 +622,7 @@ async function died(why) {
     await shut();
     // A box whose own name has a dot is that box, as Calcifer reads it, not a take of the box before the dot: mentioned with nothing made yet,
     // behind the words it's its blank frame, never another box's picture.
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  ada.later:\n    tool: ${tool.id}\n    instructions: Not yet.\n  awaiting:\n    tool: ${tool.id}\n    instructions: <Ada.later> at dawn.\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  ada.later:\n    tool: ${tool.id}\n    instructions: Not yet.\n  awaiting:\n    tool: ${tool.id}\n    instructions: <Ada.later> at dawn.\n`);
     await box('awaiting').waitFor();
     await open('awaiting');
     const awaitingHere = page.locator('.card.here[data-asset="awaiting"]');
@@ -710,7 +711,7 @@ async function died(why) {
         await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
         await page.mouse.up();
       };
-      writeFileSync(yamlAt, `${yaml().trimEnd()}
+      importYaml(folder, `${yaml().trimEnd()}
   swapped:
     tool: ${first.id}
     instructions: A wave.
@@ -739,7 +740,7 @@ async function died(why) {
 
   // A rename during a real render: at once, nothing lost, and what reads it reads on.
   if ((await api('/v1/status')).body.local_usable && !process.env.ALONE) {
-    writeFileSync(yamlAt, `${yaml().trimEnd()}
+    importYaml(folder, `${yaml().trimEnd()}
   sheet:
     tool: ${fixture}/wait
     instructions: A first picture.
@@ -754,7 +755,7 @@ async function died(why) {
     const first = await until('its first version', () => asset('sheet'), (row) => row?.versions === 1 && !row.making?.length, 5 * STEP_MS);
     const approved = first.prefixes[0].number;
     // The next takes long enough to rename under it, and what reads it waits.
-    writeFileSync(yamlAt, yaml().replace('    seconds: 1\n', '    seconds: 30\n'));
+    importYaml(folder, yaml().replace('    seconds: 1\n', '    seconds: 30\n'));
     await until('the longer one read', () => asset('sheet'), (row) => row?.fields?.seconds === 30);
     await render(['sheet', 'after'], `second-${Date.now()}`);
     await until('it going', () => asset('sheet'), (row) => row?.making?.length > 0, 2 * STEP_MS);
@@ -789,13 +790,13 @@ async function died(why) {
     seen.frames = frames.length;
     await shot('renamed-rendering');
     const landed = await until('it landing', () => asset('drawn'), (row) => row?.versions === 2 && !row.making?.length, 5 * STEP_MS);
-    check('the_take_lands_under_the_new_name', landed.prefixes.at(-1).number === 2 && lock().includes('drawn') && !/\n {2}sheet:/.test(lock()), landed);
+    check('the_take_lands_under_the_new_name', landed.prefixes.at(-1).number === 2 && kept('drawn') && !kept('sheet'), landed);
     const reader = await until('what reads it', () => asset('after'), (row) => row?.versions === 1 && !row.making?.length, 5 * STEP_MS);
     check('what_reads_it_read_on', reader.standing === 'current' && reader.reads?.[0]?.name === 'drawn', reader);
     check('nothing_orphaned', !(await state()).orphans?.length, (await state()).orphans);
 
     // Render stays Render while a box makes, and the box stays open: each press is one more take, each with its own × that cancels just it.
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  slow:\n    tool: ${fixture}/wait\n    instructions: Slowly.\n    seconds: 120\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  slow:\n    tool: ${fixture}/wait\n    instructions: Slowly.\n    seconds: 120\n`);
     await box('slow').waitFor();
     await open('slow');
     const slow = page.locator('.card.here[data-asset="slow"]');
@@ -843,7 +844,7 @@ async function died(why) {
     await shut();
 
     // Render pressed as a take lands, while its file is still on its way here, is one more take: it was taken in and dropped (cl-774, 11-05).
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  quick:\n    tool: ${fixture}/wait\n    instructions: Quickly.\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  quick:\n    tool: ${fixture}/wait\n    instructions: Quickly.\n`);
     await box('quick').waitFor();
     await open('quick');
     await (await renderOf(page, 'quick')).click();
@@ -858,7 +859,7 @@ async function died(why) {
 
     // A prompt takes the kinds its type names: draw.py's `Prompt[Image]` takes pictures, and a picture mentioned in it isn't marked refused.
     const draw = join(__dirname, '..', 'project', 'draw.py');
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  drawn_from:\n    tool: ${draw}/draw\n    instructions: <Ada> in the rain.\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  drawn_from:\n    tool: ${draw}/draw\n    instructions: <Ada> in the rain.\n`);
     // Placed where there's room, which may be off the view: a box off it isn't drawn.
     await until('drawn_from placed', async () => (await api(`${at}/canvas`)).body?.cards?.drawn_from, Boolean);
     await page.keyboard.press('f');
@@ -873,7 +874,7 @@ async function died(why) {
 
     // A box approved at 1:1, its next take asked at 16:9 (Paul, 11-06): while it's made the box is 16:9 with no other take's picture in it;
     // landed, it's that take's shape with no bars, the run having asked 16:9; and each take shown is its own shape.
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  shapes:\n    tool: ${fixture}/wait\n    instructions: A whale.\n    aspect_ratio: "1:1"\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  shapes:\n    tool: ${fixture}/wait\n    instructions: A whale.\n    aspect_ratio: "1:1"\n`);
     await box('shapes').waitFor();
     await render(['shapes'], `shapes-${Date.now()}`);
     await until('its square', () => asset('shapes'), (row) => row?.versions === 1 && !row.making?.length, 5 * STEP_MS);
@@ -946,7 +947,7 @@ async function died(why) {
     await box('seeded').waitFor();
     await api(`${at}/assets/seeded`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/wait` }) });
     await until('its prompt', () => asset('seeded'), (row) => row?.fields?.instructions === '<self.1>');
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  second:\n    tool: ${fixture}/wait\n    instructions: <Ada.2> as it was\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  second:\n    tool: ${fixture}/wait\n    instructions: <Ada.2> as it was\n`);
     // Placed where there's room, which may be off the view: a box off it isn't drawn.
     await until('second placed', async () => (await api(`${at}/canvas`)).body?.cards?.second, Boolean);
     await page.keyboard.press('f');

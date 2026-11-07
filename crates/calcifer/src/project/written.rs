@@ -321,12 +321,18 @@ fn pad(indent: usize) -> String {
     " ".repeat(indent)
 }
 
-/// A string as it's written on one line: plain where nothing could read it as anything else, else quoted as JSON, which is YAML.
+/// A string as it's written on one line: plain where YAML reads it back as that string, else quoted as JSON, which is YAML.
 fn scalar(text: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_/.:+@=-".contains(c);
-    let starts = text.chars().next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '/');
+    let indicator = text.starts_with(['-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`', ' ', '\t']);
     let word = matches!(text.to_ascii_lowercase().as_str(), "null" | "true" | "false" | "yes" | "no" | "on" | "off" | "y" | "n" | "~");
-    let plain = starts && text.chars().all(safe) && !text.ends_with(':') && !word && !text.contains(": ") && to_json(text).is_ok_and(|read| read == json!(text));
+    let plain = !text.is_empty()
+        && !indicator
+        && !word
+        && !text.ends_with([' ', ':', '\t'])
+        && !text.contains(": ")
+        && !text.contains(" #")
+        && !text.chars().any(char::is_control)
+        && to_json(text).is_ok_and(|read| read == json!(text));
     if plain { text.to_owned() } else { Value::from(text).to_string() }
 }
 

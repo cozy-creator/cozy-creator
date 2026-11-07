@@ -416,14 +416,22 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         n => format!("{}-{n}", made.output),
     };
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
+    // A folder from before project.db moves to format 4 here, said once, and its first read imports it.
+    let (upgraded, refused) = match project.join(db::DB).is_file() {
+        true => (vec![], None),
+        false => match upgrade::on_touch(project) {
+            Ok(said) => (said, None),
+            Err(why) => (vec![], Some(why)),
+        },
+    };
     let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
-    let said = unlisted.map(|why| match why.next.first() {
+    let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
         Some(next) => format!("{} is in files/, and its project can't list it: {}: {next}", made.output, why.message),
         None => format!("{} is in files/, and its project can't list it: {}", made.output, why.message),
     });
-    Ok((kept, said))
+    Ok((kept, said.or_else(|| (!upgraded.is_empty()).then(|| upgraded.join("\n")))))
 }
 
 /// An output its machine keeps, in its project's lock.

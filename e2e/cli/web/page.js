@@ -293,4 +293,22 @@ function summary(frames) {
   return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
 }
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, settled, signIn, summary, until, watchBoxes, wav };
+/** The project in `folder` as YAML (cl-803: its state is project.db, and this is its export), as `cozy project export` writes it. */
+function yamlOf(folder) {
+  return execFileSync(process.env.COZY, ['project', '-p', folder, 'export'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+}
+
+/** `text` as the project in `folder`, as a hand's edit of its export: `cozy project import <file>.yaml`, one edit. */
+function importYaml(folder, text) {
+  const at = `${folder}.import-${process.pid}-${Date.now()}.yaml`;
+  writeFileSync(at, text);
+  execFileSync(process.env.COZY, ['project', '-p', folder, 'import', at], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+}
+
+/** Rows of `folder`'s project.db for `query`, read only, each an array. */
+function rowsOf(folder, query) {
+  const script = 'import json, sqlite3, sys\nfor row in sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).execute(sys.argv[2]): print(json.dumps(list(row)))';
+  return execFileSync('python3', ['-c', script, `${folder}/project.db`, query], { encoding: 'utf8' }).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+module.exports = { BARS, DARK_OPEN, GPU, MP4, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, rowsOf, settled, signIn, summary, until, watchBoxes, wav, yamlOf };

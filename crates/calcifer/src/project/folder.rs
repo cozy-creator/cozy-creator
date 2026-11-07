@@ -879,15 +879,7 @@ impl Folder {
     /// `project.db` is imported now, once, and they're deleted (cl-803).
     pub fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
         let folder = Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() };
-        if !folder.db().is_file() {
-            if !Self::is_project(dir) {
-                return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)).next("cozy project new <path>"));
-            }
-            let _turn = folder.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
-            if !folder.db().is_file() {
-                super::legacy::import(&folder)?;
-            }
-        }
+        drop(folder.held()?);
         super::legacy::leftovers(dir);
         folder.unbind_elsewhere()?;
         Ok(folder)
@@ -912,8 +904,15 @@ impl Folder {
         if held.as_ref().is_none_or(|held| db::data_version(&held.conn) != held.seen) {
             let conn = match held.take() {
                 Some(was) => was.conn,
-                None if !self.db().is_file() => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy project new <path>")),
-                None => db::open(&self.db())?,
+                None if !Self::is_project(&self.dir) => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy project new <path>")),
+                None => {
+                    // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once.
+                    if !self.db().is_file() {
+                        super::upgrade::on_touch(&self.dir)?;
+                        super::legacy::import(self)?;
+                    }
+                    db::open(&self.db())?
+                }
             };
             let mut stored = db::load(&conn, &self.db())?;
             let files = super::stamp(&self.dir.join(FILES));

@@ -32,6 +32,38 @@ kill9() {
 }
 tiny() { base64 -d > "$1" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='; }
 
+# The cells from before project.db that it changes most: the project setup and its first eleven, and the page's
+# tools, versions, nodes, place, undo, live and layout.
+db_existing() {
+db_existing_projects
+db_existing_web
+}
+
+db_existing_projects() {
+step "a project: new, walk-up, -p"
+local P=$OUT/garden ID
+cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
+[ "$(ls -A "$P" 2>/dev/null | grep -vxE 'project\.db-(wal|shm)')" = project.db ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.db"
+mkdir -p "$P/sub"
+(cd "$P/sub" && cozy --json project status) > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status from a subfolder failed: $(tail -c 300 "$OUT/project-status.err")"
+local cell
+for cell in cut_of_takes said_once film_is_its_file short_film_heals cut_versions by_asset hard_cut upgrades first_open version_text old_landing; do $cell; done
+}
+
+db_existing_web() {
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pw=$OUT/playwright chrome restart name
+chrome=$(web_chrome)
+[ -n "$chrome" ] && [ -x "$chrome" ] || { check "web: no Google Chrome (${chrome:-none})"; return; }
+npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
+restart=$(web_restart "$lock")
+for name in place nodes versions tools live layout; do
+  step "web-$name"
+  web_proof "$name" "$chrome" "$pw" ''
+done
+step "web-undo"
+STOP=$(web_halt "$lock") START=$(web_start) web_proof undo "$chrome" "$pw" "$restart"
+}
+
 projectdb() {
 db_first_open
 db_concurrent

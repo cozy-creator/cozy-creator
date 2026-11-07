@@ -8,11 +8,11 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -193,9 +193,7 @@ function linesOf(text, name) {
   const id = page.url().match(/#\/projects\/([^/]+)/)[1];
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
-  const yamlAt = join(folder, 'project.yaml');
-  const canvasAt = join(folder, 'project.canvas.yaml');
-  const yaml = () => readFileSync(yamlAt, 'utf8');
+  const yaml = () => yamlOf(folder);
   const scratch = mkdtempSync(join(tmpdir(), 'web-live-'));
 
   await page.evaluate(() => { window.notReloaded = true; });
@@ -313,12 +311,12 @@ function linesOf(text, name) {
   check('lift_keeps_its_words', (await held('live_lift'))?.fields?.description === 'Lifted out');
 
   // By hand, in place and by a rename over it, as editors save.
-  await timed('hand_text_in_place', { name: 'live_a', has: 'Hand words one' }, () => saved(() => writeFileSync(yamlAt, yaml().replace('Second words', 'Hand words one'))));
-  await timed('hand_text_renamed_over', { name: 'live_a', has: 'Hand words two' }, () => saved(() => replaceFile(yamlAt, yaml().replace('Hand words one', 'Hand words two'))));
+  await timed('hand_text_in_place', { name: 'live_a', has: 'Hand words one' }, () => saved(() => importYaml(folder, yaml().replace('Second words', 'Hand words one'))));
+  await timed('hand_text_renamed_over', { name: 'live_a', has: 'Hand words two' }, () => saved(() => importYaml(folder, yaml().replace('Hand words one', 'Hand words two'))));
 
   // A new box by hand has no row: the page gives it a free place on screen, writes it, and it lands. Its tool needs no package, so this runs anywhere.
   const handBox = '  live_tool:\n    tool: no-such-package-here\n    instructions: Hand instructions\n';
-  const handAdded = await timed('hand_add', { name: 'live_tool' }, () => saved(() => replaceFile(yamlAt, `${yaml().trimEnd()}\n${handBox}`)));
+  const handAdded = await timed('hand_add', { name: 'live_tool' }, () => saved(() => importYaml(folder, `${yaml().trimEnd()}\n${handBox}`)));
   check('hand_add_lands', handAdded.landing);
   const toolRow = await until('its row', async () => (await rows()).live_tool, Boolean);
   check('hand_add_row_written', Number.isFinite(toolRow.x), toolRow);
@@ -355,20 +353,18 @@ function linesOf(text, name) {
   await timed('restore', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('restore', 'live_b', back.split(' ').at(-1)));
   check('restore_in_the_status', (await held('live_b'))?.fields?.description === 'Hand words two');
 
-  // By hand: a row, an asset gone, and a file that doesn't read, which leaves the canvas as it is until it does.
+  // By hand: a row from the CLI, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
   place = await spot();
   await timed('hand_row', { name: 'live_b', x: place.x, y: place.y }, () => saved(() => {
-    const text = readFileSync(canvasAt, 'utf8');
-    replaceFile(canvasAt, text.replace(/^( +live_b: \{)x: [^,]+, y: [^,}]+/m, `$1x: ${place.x}, y: ${place.y}`));
+    execFileSync(process.env.COZY, ['project', '-p', folder, 'set', 'live_b', `at=${place.x},${place.y}`], { stdio: 'ignore' });
   }));
-  await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => replaceFile(yamlAt, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
+  await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => importYaml(folder, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
   const whole = yaml();
-  saved(() => writeFileSync(yamlAt, `${whole}\n  : [ this doesn't read\n`));
-  await page.locator('.unread').waitFor();
-  check('broken_file_says_why', (await page.locator('.unread').innerText()).includes('project.yaml'), await page.locator('.unread').innerText());
-  check('broken_file_keeps_the_canvas', (await box('live_b').count()) === 1);
-  await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => replaceFile(yamlAt, whole.replace('Hand words two', 'Mended'))));
-  await page.locator('.unread').waitFor({ state: 'detached' });
+  let broken = '';
+  try { importYaml(folder, `${whole}\n  : [ this doesn't read\n`); } catch (error) { broken = String(error.stderr ?? error.message); }
+  check('broken_file_says_why', broken.includes('project_yaml'), broken);
+  check('broken_file_keeps_the_canvas', (await box('live_b').count()) === 1 && yaml() === whole);
+  await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => importYaml(folder, whole.replace('Hand words two', 'Mended'))));
   refused.length = 0;
 
   // What's typed and not saved stays. A command changing another field of that asset leaves it to go on, and what's typed is saved over it.
