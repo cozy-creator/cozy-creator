@@ -527,6 +527,10 @@ impl Engine {
     ) -> io::Result<Vec<(u64, Birth)>> {
         self.journal.lock().unwrap().gpu_births_after(after, limit)
     }
+    /// See `Journal::run_times`.
+    pub fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<crate::journal::RunTime>> {
+        self.journal.lock().unwrap().run_times(function, limit)
+    }
     pub fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.nonterminal(limit))
     }
@@ -586,13 +590,13 @@ impl Engine {
     }
 
     /// Trusted adapters share one claim, supervisor reservation and journal. They
-    /// register the exact process birth before authorizing any authored code.
-    pub(crate) fn dispatch_managed<F>(self: &Arc<Self>, id: &str, run: F) -> io::Result<bool>
+    /// register the exact process birth before authorizing any authored code. It takes `width` GPUs.
+    pub(crate) fn dispatch_managed<F>(self: &Arc<Self>, id: &str, width: u32, run: F) -> io::Result<bool>
     where
         F: FnOnce(Arc<Self>, String) -> io::Result<()> + Send + 'static,
     {
         let mut owned = self.owned.lock().unwrap();
-        if owned.contains(id) || !self.journal.lock().unwrap().claim(id)? {
+        if owned.contains(id) || !self.journal.lock().unwrap().claim(id, width)? {
             return Ok(false);
         }
         owned.insert(id.into());
