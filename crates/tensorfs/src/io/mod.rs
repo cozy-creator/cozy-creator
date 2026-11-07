@@ -453,7 +453,7 @@ fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
         _ => 0,
     }).collect();
     let need: u64 = missing.iter().sum();
-    let past = need > 0 && varena_ledger::host::budget().cache() < i64::try_from(need).unwrap_or(i64::MAX);
+    let past = need > 0 && varena_ledger::host::cache_budget() < i64::try_from(need).unwrap_or(i64::MAX);
     missing.iter().map(|&m| past && m > 0).collect()
 }
 

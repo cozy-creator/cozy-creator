@@ -2920,7 +2920,7 @@ impl Pool {
     /// priority: the first `few` while varena's host number leaves the page cache room
     /// (`Budget::cache`). Cache only: the kernel takes it back whenever anything needs the memory.
     fn read_ahead(&self, held: impl IntoIterator<Item = HeldGeneration>, few: usize) {
-        let mut room = varena_ledger::host::budget().cache();
+        let mut room = varena_ledger::host::cache_budget();
         let fits = |held: &HeldGeneration| {
             room = room.saturating_sub(i64::try_from(crate::import_pages::recorded(held)).unwrap_or(i64::MAX));
             room >= 0

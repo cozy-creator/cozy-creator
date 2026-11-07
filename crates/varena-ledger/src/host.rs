@@ -79,6 +79,12 @@ impl Budget {
     }
 }
 
+/// The page cache a read or a read-ahead may still fill now (`Budget::cache`): every reader of
+/// the store stays within it, and keeps no bound of its own.
+pub fn cache_budget() -> i64 {
+    budget().cache()
+}
+
 /// The number now, for this process. Unreadable: no room at all. Uncontained, the memory in play is
 /// what the host has available plus what cozy's executors hold (the host's ledger page).
 pub fn budget() -> Budget {

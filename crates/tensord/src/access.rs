@@ -303,7 +303,7 @@ impl Fetch {
         if chunks.is_empty() {
             return;
         }
-        let room = Arc::new(AtomicI64::new(varena_ledger::host::budget().cache()));
+        let room = Arc::new(AtomicI64::new(varena_ledger::host::cache_budget()));
         let (chunks, next) = (Arc::new(chunks), Arc::new(AtomicUsize::new(0)));
         for reader in 0..READ_AHEAD_THREADS {
             let (store, chunks, next, room, call) = (store.clone(), chunks.clone(), next.clone(), room.clone(), Arc::downgrade(self));
