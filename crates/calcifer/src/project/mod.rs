@@ -3439,8 +3439,10 @@ impl Walk {
         // would come round again at once, forever, with nothing it sent ever followed.
         let moved = acts.iter().any(|act| !matches!(act, Act::Held { .. }));
         self.project.walker.lock().expect("walker lock").held = acts.iter().any(|act| matches!(act, Act::Held { .. }));
+        // What goes to one machine goes together, as its quote packed it (cl-816).
+        let mut together = HashMap::new();
         for act in acts {
-            self.act(act, work, first)?;
+            self.act(act, &mut together, work, first)?;
         }
         Ok(moved)
     }
@@ -3456,7 +3458,7 @@ impl Walk {
         })
     }
 
-    fn act<'a>(&'a self, act: Act, work: &mut FuturesUnordered<BoxFuture<'a, Done>>, first: &mut Option<Error>) -> Result<(), Error> {
+    fn act<'a>(&'a self, act: Act, together: &mut HashMap<String, Arc<host::Together>>, work: &mut FuturesUnordered<BoxFuture<'a, Done>>, first: &mut Option<Error>) -> Result<(), Error> {
         let end = |id: usize, how: End| self.project.walker.lock().expect("walker lock").graph.end(id, how);
         match act {
             Act::Stands { id, ask, key, asset, noun, number } => {
@@ -3484,8 +3486,16 @@ impl Walk {
             Act::Held { id } => self.project.walker.lock().expect("walker lock").graph.put_back(id),
             Act::Send { id, key, ask, doc, stand, lock, next } => {
                 let (name, kind, inputs) = (doc.assets[next.i].name.clone(), doc.assets[next.i].kind.clone(), stand[next.i].inputs.clone());
+                // Where its quote sent it, else its one machine.
+                let target = next.take.as_ref().map_or(&ask.target, |take| &take.target);
+                let goes = match (self.project.walker.lock().expect("walker lock").placed.get(&key), target.on.as_slice()) {
+                    (Some(placed), _) => placed.soonest.machine.clone(),
+                    (None, [only]) => only.clone(),
+                    _ => On::Any,
+                };
+                let member = together.entry(goes.to_string()).or_insert_with(|| self.host.together(goes)).member();
                 work.push(async move {
-                    let result = self.send(&ask, &doc, &stand, &lock, next).await;
+                    let result = self.send(&ask, &doc, &stand, &lock, next, member).await;
                     Done::Sent { id, key, ask, name, kind, inputs, result }
                 }.boxed());
             }
@@ -3717,7 +3727,8 @@ impl Walk {
 
     /// Sends `next` under its key: a new version of its asset on its target's machines, recorded as pending together with what
     /// it settles of the walk, before the run is sent; one that fails is settled all the same.
-    async fn send(&self, ask: &Ask, doc: &Doc, stand: &[Standing], lock: &Lock, next: Next) -> Result<(), Error> {
+    /// `member`: its place among the runs this turn sends to the machine its quote chose, which go together.
+    async fn send(&self, ask: &Ask, doc: &Doc, stand: &[Standing], lock: &Lock, next: Next, member: host::Member) -> Result<(), Error> {
         let i = next.i;
         let asset = &doc.assets[i];
         let name = asset.name.clone();
@@ -3863,7 +3874,7 @@ impl Walk {
                 self.not_sent(&name);
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
-            self.submit(&key, input, &package, asset, pending, &settling).await
+            self.submit(&key, input, &package, asset, pending, &settling, member).await
         };
         let sent = sent.await;
         if sent.is_err() {
@@ -3946,7 +3957,8 @@ impl Walk {
     /// Sends `input` to the function `package` names on one of the pending's machines, as an ordinary run under `key`, recorded as pending
     /// (with `settle`: what it settles of the walk) in one write before it is sent. The seed and the asset's `models` and `lora`, as
     /// `cozy run --input` takes them, go on top.
-    async fn submit(&self, key: &str, mut payload: Map<String, Value>, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut folder::WalkFile)) -> Result<(), Error> {
+    #[allow(clippy::too_many_arguments)]
+    async fn submit(&self, key: &str, mut payload: Map<String, Value>, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut folder::WalkFile), member: host::Member) -> Result<(), Error> {
         let renderer = package.maker()?.ok_or_else(|| cannot(&asset.name, "its tool names no function".into()))?;
         let (on, hub) = (pending.target.on.clone(), pending.target.hub.clone());
         let name = asset.name.clone();
@@ -4071,7 +4083,17 @@ impl Walk {
             walk.pending.insert(key.into(), pending.clone());
             settle(walk);
         })?;
-        let run = match self.send_run(key, submit).await {
+        let sent = match member.on() == Some(&submit.on) {
+            true => match member.submit(key, submit.clone()).await {
+                Err(_) => self.send_run(key, submit).await,
+                sent => sent,
+            },
+            false => {
+                drop(member);
+                self.send_run(key, submit).await
+            }
+        };
+        let run = match sent {
             Ok(run) => run,
             Err(error) => {
                 self.folder().update_walk(|walk| {

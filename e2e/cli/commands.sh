@@ -354,6 +354,36 @@ sed -i 's/"msgspec>=0.19"\]/"msgspec>=0.19", "six>=1.16"]/' "$code/pyproject.tom
 if now=$(timed dependency cba); then [ -n "$now" ] && [ "$now" != "$first" ] || check "edit: a new dependency ran on the environment before it ($now)"; fi
 }
 
+# cl-816: the machine quotes local code from its own runs of it, by the installation it holds, not by a manifest object a run
+# ended with. Quoted after its install, before any run, it stands on nothing; after one run, on that run (`measured`), its run
+# time that run's, nothing to prepare. The second run is timed beside the quote.
+local_quote() {
+step "local code is quoted from its runs"
+[ -n "$LOCAL" ] || return 0
+local code=$OUT/quoted/e2e-quoted first quoted
+rm -rf "$code" && mkdir -p "$OUT/quoted" && cp -r "$here/weightless" "$code"
+sed -i 's/^name = "e2e-weightless"/name = "e2e-quoted"/' "$code/pyproject.toml"
+estimate() {  # estimate <name>: the local machine's quote of one run, in <name>.json
+  cozy --json run -p "$RUN_PROJECT" "$code/reverse" text=abc --estimate --on local > "$OUT/$1-all.json" 2> "$OUT/$1.err" \
+    || { check "$1: cozy run --estimate failed: $(tail -c 300 "$OUT/$1.err")"; return 1; }
+  jq '.machines[] | select(.machine == "local")' "$OUT/$1-all.json" > "$OUT/$1.json"
+  jq -c '{basis, width, start_ms, finish_ms, prepare_ms, quoted}' "$OUT/$1.json" | sed "s/^/$1: /" | tee -a "$OUT/quoted.txt"
+}
+: > "$OUT/quoted.txt"
+estimate quote-unrun || return 0
+jq -e '.basis != "measured"' "$OUT/quote-unrun.json" > /dev/null || check "local quote: measured before any run of it"
+cell quote-first "$code/reverse" text=abc || return 0
+estimate quote-run || return 0
+first=$(run_get "$OUT" quote-first .execution_ms)
+quoted=$(jq '.finish_ms - .start_ms' "$OUT/quote-run.json")
+echo "first run ${first:-?} ms; quoted ${quoted} ms" | tee -a "$OUT/quoted.txt"
+J '.basis == "measured" and .quoted' "$OUT/quote-run.json" || check "local quote: after a run, not measured: $(jq -c . "$OUT/quote-run.json")"
+J '.prepare_ms == 0' "$OUT/quote-run.json" || check "local quote: its installation not found, $(jq .prepare_ms "$OUT/quote-run.json") ms to prepare"
+[ -n "$first" ] && jq -en --argjson q "$quoted" --argjson f "$first" '($q - $f | fabs) <= ([0.2 * $f, 100] | max)' > /dev/null \
+  || check "local quote: its run time ${quoted} ms, the run's ${first:-?} ms"
+cell quote-second "$code/reverse" text=abc && echo "second run $(run_get "$OUT" quote-second .execution_ms) ms" | tee -a "$OUT/quoted.txt"
+}
+
 # cl-820: a signer this machine admits sends TensorD a manifest that names a host path, as only a hand-made one can (no cozy sends
 # one): it is refused, typed, before the run is accepted, so nothing installs from that folder.
 path_manifest() {

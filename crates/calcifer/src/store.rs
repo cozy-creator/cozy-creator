@@ -70,7 +70,8 @@ const SCHEMA: &str = "
         wants TEXT,
         agreed TEXT,
         started_at INTEGER,
-        stays TEXT NOT NULL DEFAULT '[]'
+        stays TEXT NOT NULL DEFAULT '[]',
+        batch TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (
@@ -123,6 +124,15 @@ fn stays_column(writer: &mut Connection) -> Result<()> {
     let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'stays')", [], |r| r.get(0))?;
     if !has {
         writer.execute_batch("ALTER TABLE runs ADD COLUMN stays TEXT NOT NULL DEFAULT '[]'")?;
+    }
+    Ok(())
+}
+
+/// A store made before runs were sent in batches gains that column, empty: each run its own (cl-816).
+fn batch_column(writer: &mut Connection) -> Result<()> {
+    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'batch')", [], |r| r.get(0))?;
+    if !has {
+        writer.execute_batch("ALTER TABLE runs ADD COLUMN batch TEXT NOT NULL DEFAULT ''")?;
     }
     Ok(())
 }
@@ -262,6 +272,8 @@ pub struct NewRun {
     pub agreed: Option<Agreed>,
     /// Its outputs that stay on its machine, by name.
     pub stays: Vec<String>,
+    /// The runs submitted with it: those on its machine go there in one admission (cl-816). Empty: alone.
+    pub batch: String,
 }
 
 /// How to reach a machine: the id its caps name, its address and its TLS leaf's sha256.
@@ -375,6 +387,7 @@ impl Store {
             VERSION => {
                 measured_columns(&mut writer)?;
                 stays_column(&mut writer)?;
+                batch_column(&mut writer)?;
             }
             other => return Err(StoreError::Version(other)),
         }
@@ -747,9 +760,9 @@ impl Store {
             };
             tx.execute(
                 "INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec,
-                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays)
+                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays, batch)
                  VALUES (?1, (SELECT COALESCE(MAX(number), 0) + 1 FROM runs), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                     ?10, 'queued', ?11, ?12, ?13, ?14, ?15, ?16)",
+                     ?10, 'queued', ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     new.id.as_str(),
                     key,
@@ -767,6 +780,7 @@ impl Store {
                     new.wants,
                     new.agreed.map(|agreed| serde_json::to_string(&agreed).expect("serializes")),
                     serde_json::to_string(&new.stays).expect("serializes"),
+                    new.batch,
                 ],
             )?;
             Ok((new.id.to_string(), true))
@@ -779,6 +793,18 @@ impl Store {
 
     pub fn run(&self, id: &str) -> Result<Option<RunRow>> {
         self.read(|conn| run_in(conn, id))
+    }
+
+    /// Run `id` and the others of its batch its machine hasn't accepted (queued or sent there), in their order.
+    pub fn batched(&self, id: &str) -> Result<Vec<RunRow>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1 OR (state IN ('queued', 'sent') AND batch <> ''
+                     AND (batch, machine) = (SELECT batch, machine FROM runs WHERE id = ?1)) ORDER BY number"
+            ))?;
+            let rows = statement.query_map([id], run_row)?;
+            rows.map(|row| row?).collect()
+        })
     }
 
     pub fn run_by_number(&self, number: u64) -> Result<Option<RunRow>> {
