@@ -371,6 +371,14 @@ def cancel_preparation(pool: PoolId, device: DeviceLike = 0) -> None:
     _ext._varena_working_pool_cancel_preparation(_device(device), cast(PoolId, tuple(pool)))
 
 
+def pool_close(pool: PoolId, device: DeviceLike = 0) -> None:
+    """The owner reset every graph it captured in this pool and allocates there no more: its
+    pages go at the next trim once its blocks are freed, even after a capture whose end failed,
+    which Torch never releases. Refused while a capture on it is open."""
+    _installed()
+    _ext._varena_working_pool_close(_device(device), cast(PoolId, tuple(pool)))
+
+
 def pool_scratch(pool: PoolId, held: Sequence[Any] = (), device: DeviceLike = 0) -> None:
     """The owner declares the tensors it holds in this pool dead between uses: nothing reads
     them outside prepare_pool(pool, 0) .. record_pool_stream(pool, stream). The core may then
