@@ -772,7 +772,6 @@ def comfy_single_file(name: str) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ FLUX.2, FLUX.3 Klein and FIBO 2 LoRAs
 
-FAMILY_DIR = ROOT.parent / "tensorfs" / "families"
 #: PEFT's and Diffusers' factors (also under DiffSynth's and PEFT's adapter name), and kohya's.
 DIT_A = (".lora_A.weight", ".lora_down.weight", ".lora_A.default.weight")
 DIT_B = (".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight")
@@ -823,7 +822,7 @@ FLUX3_NATIVE = [
 
 def family_linears(name: str, component: str = "transformer") -> dict[str, tuple[int, int]]:
     """A family's linears as its reference header has them (`families/<name>.json`): `{module: (in, out)}`."""
-    keys = json.loads((FAMILY_DIR / f"{name}.json").read_text())["components"][component]["keys"]
+    keys = json.loads((FAMILIES / f"{name}.json").read_text())["components"][component]["keys"]
     return {k.removesuffix(".weight"): (s[1], s[0]) for k, s in keys if k.endswith(".weight") and len(s) == 2}
 
 
@@ -896,14 +895,14 @@ def dit_lora(name: str, family: str, native: list[list[Any]], keep: list[list[An
             if any(local == r[1] and tuple(shape[1:]) == tuple(r[2]["io"][::-1]) for r in c.get("keep", [])):
                 known += 1
                 continue
-            stem, factor = next(((local.removesuffix(s), f) for f, ss in (("a", DIT_A), ("b", DIT_B), ("alpha", (".alpha",)))
+            stem, factor = next(((local.removesuffix(s), f) for f, ss in (("a", DIT_A), ("b", DIT_B), ("alpha", (".alpha",)), ("m", MAGNITUDE))
                                  for s in ss if local.endswith(s)), (None, None))
             io = [r[2]["io"] for r in c["rows"] if r[1] == stem]
             fits = bool(io) and (factor == "alpha" or (shape[1] == io[0][0] if factor == "a" else shape[0] == io[0][1]))
             assert fits or not claimed, (vector, key, shape)
             known += fits
         assert (known * 2 > len(keys)) == claimed, (vector, known, len(keys))
-    lora = {"a": list(DIT_A), "b": list(DIT_B), "alpha": [".alpha"]}
+    lora = {"a": list(DIT_A), "b": list(DIT_B), "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": name, "lora": lora, "components": components}
 
 
