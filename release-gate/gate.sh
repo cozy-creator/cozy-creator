@@ -183,12 +183,13 @@ ahead() {
   "$CLI" run "$target" --on "$M" --warm off > "$name-weights-off.log" 2>&1 || log "$name: --warm off: $(tail -c 300 "$name-weights-off.log")"
 }
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
-# --only names cells or packages. $TWIN, when a suite sets it, names a second run of the same cell (<name>$TWIN).
+# --only names cells or packages. $TWIN, when a suite sets it, names a second run (<name>$TWIN) of the cells $TWINS lists.
 # A cell another suite already ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does
 # not run.
 cell() {
   local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0; shift 2
   p=${target%/*}; p=${p##*/}
+  [ -z "${TWIN:-}" ] || [[ ,${TWINS:-}, == *",$base,"* ]] || return 0
   [ -z "$ONLY" ] || [[ $ONLY == *",$base,"* || $ONLY == *",$p,"* ]] || return 0
   ! cut -f1 cells.tsv | grep -qx -- "$name" || return 0
   issue=$(jq -r --arg s "$SKU" --arg c "$base" '.[] | select((.sku == $s or .sku == "*") and ((.cells // []) | index($c))) | .issue' \

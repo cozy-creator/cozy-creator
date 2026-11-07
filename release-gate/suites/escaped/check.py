@@ -2,8 +2,9 @@
 escaped record (`measurements.memory.stats.varena[].stats.escaped`: per loop, what its passes left live as plain working
 blocks, by birth site), and no loop's undeclared escaped bytes pass BOUND or grow more than GROWTH a pass. State a
 model keeps across steps is held through `author.retained` (spilled to host and refilled), which the record never counts.
-Each cell's uncapped twin (<cell>-uncapped) completes only if the capped cell did, with the same kernels, and the capped
-one's driver peak stays within CAP and a CUDA context: success, peak and kernels, never the bytes (a cap may tile).
+A cell that failed or was refused memory capped has an uncapped twin (<cell>-uncapped, cells.sh): the twin completes only
+if the capped cell did, with the same kernels, and the capped one's driver peak stays within CAP and a CUDA context:
+success, peak and kernels, never the bytes (a cap may tile).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import os, sys
 

@@ -1,6 +1,6 @@
 # Suite `escaped` (gate.sh --suite escaped): every first-party package's cells (products.sh) at a 6 GiB cap, so a
-# package that keeps device memory across its steps as plain tensors, outside the memory manager, cannot ship; then
-# each again uncapped, so one that sizes its work from the card rather than varena's room cannot either.
+# package that keeps device memory across its steps as plain tensors, outside the memory manager, cannot ship; then a
+# cell that failed or was refused memory runs again uncapped, so one that sizes its work from the card cannot either.
 # check.py reads each run's `escaped` record (varena's tally of what a model's passes left live, by birth site) and
 # fails a cell whose undeclared escaped bytes pass BOUND or grow by more than GROWTH a pass. Cross-step state belongs
 # in `author.retained`, which varena spills and refills. A cell parked in known-failing.json for this SKU is skipped.
@@ -19,8 +19,21 @@ cap() {
 cap 6GiB
 for p in "${PRODUCTS[@]}"; do product "$p"; done
 cap off
-# The same cells uncapped on the same pod (<cell>-uncapped): a package that sizes from the physical card, not varena's
-# room, fails capped and passes here. check.py compares success, the capped peak and the kernels, never the bytes.
-TWIN=-uncapped
-for p in "${PRODUCTS[@]}"; do product "$p"; done
-TWIN=
+# refused <cell>: its capped run failed or has no record, or varena refused it memory in this request (a split level
+# refused for good, a Runtime Retry, a loop's refused pass, an OOM the package returned past).
+refused() {
+  [ -f "$1.json" ] || return 0
+  jq -e '(.status != "completed") or ([.measurements, .calls[]?.measurements] | map(.memory.stats.varena[]?.stats // {})
+    | any(((.finer_splits // 0) + (.swallowed_ooms // 0)) > 0 or any(.working_splits[]?; .refused != null)
+          or any(.escaped[]?; .refused != null)))' "$1.json" >/dev/null 2>&1
+}
+# Each such cell again uncapped on the same pod (<cell>-uncapped), which tells a capacity failure from a bug: a package
+# that sizes from the physical card, not varena's room, fails capped and passes here. A passing capped cell needs no
+# twin. check.py compares success, the capped peak and the kernels, never the bytes.
+TWINS=$(cut -f1 cells.tsv | while read -r c; do refused "$c" && echo "$c"; done | paste -sd, -)
+log "escaped: uncapped twins for ${TWINS:-no cell}"
+if [ -n "$TWINS" ]; then
+  TWIN=-uncapped
+  for p in "${PRODUCTS[@]}"; do product "$p"; done
+  TWIN=
+fi
