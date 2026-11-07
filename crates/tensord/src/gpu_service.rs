@@ -785,9 +785,9 @@ fn parent_app(held: &HeldGeneration) -> App {
 pub const DISPLAY_MARGIN: u64 = 256 << 20;
 pub const DISPLAY_FLOOR: u64 = 384 << 20;
 
-/// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
+/// varena's host number has room for one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
-    host_memory::cache_room() >= PARENT_BYTES
+    varena_ledger::host::budget().room() >= PARENT_BYTES
 }
 
 /// The manifests live executors read. A download's GC must not evict them: an evicted file a
@@ -2904,10 +2904,10 @@ impl Pool {
     }
 
     /// The recorded import pages of `held` (the most recently used first), read ahead at the lowest
-    /// priority: the first `few` while half the host's memory stays available. Cache only: the
-    /// kernel takes it back whenever anything needs the memory.
+    /// priority: the first `few` while varena's host number leaves the page cache room
+    /// (`Budget::cache`). Cache only: the kernel takes it back whenever anything needs the memory.
     fn read_ahead(&self, held: impl IntoIterator<Item = HeldGeneration>, few: usize) {
-        let mut room = host_memory::cache_room();
+        let mut room = varena_ledger::host::budget().cache();
         let fits = |held: &HeldGeneration| {
             room = room.saturating_sub(i64::try_from(crate::import_pages::recorded(held)).unwrap_or(i64::MAX));
             room >= 0

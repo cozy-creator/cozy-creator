@@ -43,12 +43,8 @@ pub(super) fn read() -> HostMemory {
         mem_available: available,
         bound: total(),
         active: 0,
+        charged: total() - available,
     }
-}
-
-/// No page-cache accounting here: what is available.
-pub(super) fn unfilled() -> i64 {
-    read().available
 }
 
 pub(super) fn resident(_: u32) -> io::Result<super::Resident> {

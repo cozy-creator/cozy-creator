@@ -3,17 +3,18 @@
 //! half of the host's RAM and beyond a headroom (`Tier::look`). The tier follows use, not arrival:
 //! a page is worth its refills per request, and only pages worth less make room for it.
 //!
-//! Pinned pages are memory the kernel cannot take back. Room is what the kernel accounts in the
-//! run's cgroup, clean page cache counted as reclaimable; the headroom is the computer's reserve,
-//! counted once. Every executor's tiers share the host through its ledger page (`host`): idle ones
-//! give pages back to a call that is short. On a person's computer nothing pins while the host
-//! stalls on memory, and the headroom doubles.
+//! Pinned pages are memory the kernel cannot take back. The tier is a client of varena's host
+//! number (`varena_ledger::host`): its room is what that number leaves, clean page cache counted
+//! as reclaimable. Every executor's tiers share the host through its ledger page (`host`): idle
+//! ones give pages back to a call that is short. On a person's computer nothing pins while the
+//! host stalls on memory, and the headroom doubles.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use platform::contain::host_memory::{self, HostMemory};
+use platform::contain::host_memory;
+use varena_ledger::host::{Budget, budget};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use tensorfs::io::cuda::HostPin;
 use tensorfs::io::source::Source as Store;
@@ -224,7 +225,7 @@ impl Tier {
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), stores: Mutex::default(),
         });
-        tier.look(&mut tier.state(), &host_memory::read());
+        tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier));
         tier
     }
@@ -247,19 +248,19 @@ impl Tier {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// The host RAM this process can still take, re-read at most every `LOOK`, after kept pages
-    /// go, the least worth first, while it is under the headroom. Unreadable: they all go. Clean
-    /// page cache is room, active or not: the kernel takes it back before it kills, and pinned
-    /// pages hold the bytes a cached copy would. In a request, short of the headroom: idle peers
-    /// are asked for their pages.
+    /// What varena's host number leaves this process, re-read at most every `LOOK`, after kept
+    /// pages go, the least worth first, while it is under the headroom. Unreadable: they all go.
+    /// Clean page cache is room, active or not: the kernel takes it back before it kills, and
+    /// pinned pages hold the bytes a cached copy would. In a request, short of the headroom: idle
+    /// peers are asked for their pages.
     fn trim(&self, state: &mut State) -> Vec<Kept> {
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
             return Vec::new();
         }
         state.looked = Some(Instant::now());
-        let memory = host_memory::read();
-        self.look(state, &memory);
-        let mut room = if memory.available < 0 { memory.available } else { memory.available + memory.active };
+        let budget = budget();
+        self.look(state, &budget);
+        let mut room = if budget.total <= 0 { -1 } else { budget.total - budget.held };
         state.room = room;
         let mut gone = Vec::new();
         if room >= state.headroom {
@@ -287,18 +288,13 @@ impl Tier {
         gone
     }
 
-    /// What stays free beside pinned pages: the computer's reserve, counted once. A kernel limit
-    /// below the computer (a contained machine's `memory.max`) already keeps that much of it; the
-    /// tier keeps the rest. Never under a sixteenth of the limit (varena's GPU rule): what a call
-    /// grows by before a tier looks again. On a person's computer (`shared`), twice it and no
-    /// pins while the host stalls on memory.
-    fn look(&self, state: &mut State, memory: &HostMemory) {
-        let bound = u64::try_from(memory.bound).unwrap_or(0);
-        let held_back = host_memory::computer().unwrap_or(bound).saturating_sub(bound);
-        let headroom = host_memory::reserve().saturating_sub(held_back).max((bound / 16).max(512 << 20));
+    /// What stays free beside pinned pages: the number's headroom (`Budget::headroom`). On a
+    /// person's computer (`shared`), while the host stalls on memory: no pins, and a sixteenth of
+    /// the number more.
+    fn look(&self, state: &mut State, budget: &Budget) {
         state.pressed = self.shared && host_memory::stall().pressed();
-        let headroom = i64::try_from(headroom).unwrap_or(i64::MAX);
-        state.headroom = if state.pressed { headroom.saturating_mul(2) } else { headroom };
+        let stalled = if state.pressed { (budget.total / 16).max(512 << 20) } else { 0 };
+        state.headroom = budget.headroom + stalled;
     }
 
     /// The bytes this tier pins: its pages, those made ahead and its spares.
@@ -647,11 +643,11 @@ impl Tier {
     /// Host bytes retained regions may take: what is available beyond the headroom, the tier's own
     /// pages and spares included, which yield to them.
     pub(super) fn retained_room(&self) -> i64 {
-        let memory = host_memory::read();
+        let budget = budget();
         let mut state = self.state();
-        self.look(&mut state, &memory);
+        self.look(&mut state, &budget);
         let spare: u64 = state.spare.iter().map(|(page, _)| page.len as u64).sum();
-        memory.available + memory.active + state.bytes as i64 + spare as i64 - state.headroom
+        budget.total - budget.held + state.bytes as i64 + spare as i64 - state.headroom
     }
 
     /// Where a store read's bytes came from: past the page cache, or through it.

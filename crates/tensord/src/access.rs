@@ -14,7 +14,6 @@ use crate::{
     stop::Stop,
     storage::{self, Store},
 };
-use platform::contain::host_memory;
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -304,7 +303,7 @@ impl Fetch {
         if chunks.is_empty() {
             return;
         }
-        let room = Arc::new(AtomicI64::new(host_memory::cache_room()));
+        let room = Arc::new(AtomicI64::new(varena_ledger::host::budget().cache()));
         let (chunks, next) = (Arc::new(chunks), Arc::new(AtomicUsize::new(0)));
         for reader in 0..READ_AHEAD_THREADS {
             let (store, chunks, next, room, call) = (store.clone(), chunks.clone(), next.clone(), room.clone(), Arc::downgrade(self));
