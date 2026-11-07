@@ -132,6 +132,10 @@ on:
       quote:
         type: boolean
         default: false
+      # The cli shards to run, a JSON list (`["executors","commands"]`); empty: all. Reruns only what failed.
+      shards:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -338,8 +342,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # projectdb*: project.db (cl-803), e2e/cli/projectdb.sh.
-        shard: [runs, executors, commands, follow, web, projectdb, projectdb-latency, projectdb-existing, projectdb-web]
+        # projectdb*: project.db (cl-803), e2e/cli/projectdb.sh. local-code: local code by content (cl-817, cl-820).
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web","projectdb","projectdb-latency","projectdb-existing","projectdb-web","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -367,7 +371,7 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web' || startsWith(matrix.shard, 'projectdb')
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || startsWith(matrix.shard, 'projectdb')
         uses: AnimMouse/setup-ffmpeg@v1
       - name: cli suite
         env:
@@ -585,26 +589,27 @@ jobs:
     timeout-minutes: 10
     steps:
       # Coverage (e2e/coverage.py) over every cli shard's calls: each command and flag has a test, and each PR-tier one ran.
+      # A dispatch of some shards (`shards`) checks none.
       # A taken TensorD is a release, not the CLI this checkout builds: no coverage.
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
         uses: actions/download-artifact@v4
         with:
           pattern: e2e-cli-linux-*
           path: ${{ runner.temp }}/cli
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
         uses: actions/download-artifact@v4
         with:
           pattern: candidate-cozy-*
           merge-multiple: true
           path: ${{ runner.temp }}/candidates
       - name: coverage
-        if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
+        if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
         run: |
           chmod +x "$RUNNER_TEMP/candidates/cozy"
           python3 -I .creator/e2e/coverage.py check "$RUNNER_TEMP/candidates/cozy" .creator/e2e/coverage.toml --tiers pr \
