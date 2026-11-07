@@ -78,7 +78,7 @@ fn read(folder: &Folder) -> Result<(db::Stored, Vec<(String, String)>), Error> {
         Ok(text) => canvas::legacy_rows(&text).into_iter().map(|(name, card)| (name_key(&name), db::CardRow { name, card, seq: 0, by: String::new() })).collect(),
         Err(_) => BTreeMap::new(),
     };
-    let stored = db::Stored { seq: 0, written, canvas, lock, walk, measured: measured(dir) };
+    let stored = db::Stored { seq: 0, written: written.into(), canvas: canvas.into(), lock: lock.into(), walk: walk.into(), measured: measured(dir).into() };
     Ok((stored, asked))
 }
 

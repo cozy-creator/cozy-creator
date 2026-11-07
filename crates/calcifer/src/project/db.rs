@@ -4,6 +4,7 @@
 use std::{
     collections::BTreeMap,
     path::Path,
+    sync::Arc,
 };
 
 use protocol::error::{Error, Kind};
@@ -67,17 +68,18 @@ pub struct CardRow {
     pub by: String,
 }
 
-/// Everything `project.db` holds but its history, keys and asked texts: what `Folder` keeps in memory.
+/// Everything `project.db` holds but its history, keys and asked texts: what `Folder` keeps in memory. Each part is shared, so a
+/// transaction copies only what it writes.
 #[derive(Clone, Debug, Default)]
 pub struct Stored {
     pub seq: u64,
-    pub written: Written,
+    pub written: Arc<Written>,
     /// By name key.
-    pub canvas: BTreeMap<String, CardRow>,
+    pub canvas: Arc<BTreeMap<String, CardRow>>,
     /// Its files, assets, runs and facts: what the walk owes is in `walk`.
-    pub lock: Lock,
-    pub walk: WalkFile,
-    pub measured: BTreeMap<String, Measured>,
+    pub lock: Arc<Lock>,
+    pub walk: Arc<WalkFile>,
+    pub measured: Arc<BTreeMap<String, Measured>>,
 }
 
 /// One history entry as its row holds it, each part JSON.
@@ -145,12 +147,12 @@ pub fn data_version(conn: &Connection) -> i64 {
 pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     let e = |error: rusqlite::Error| err(at, error);
     let bad = |what: &str, why: serde_json::Error| err(at, format!("{what}: {why}"));
-    let mut stored = Stored::default();
-    stored.seq = conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).optional().map_err(e)?.and_then(|seq| seq.parse().ok()).unwrap_or(0);
+    let (mut written, mut canvas, mut lock, mut walk, mut measured) = (Written::default(), BTreeMap::new(), Lock::default(), WalkFile::default(), BTreeMap::new());
+    let seq = conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).optional().map_err(e)?.and_then(|seq| seq.parse().ok()).unwrap_or(0);
     let mut rows = conn.prepare("SELECT key, value FROM head ORDER BY ord").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
         let (key, value) = row.map_err(e)?;
-        stored.written.head.push((key, serde_json::from_str(&value).map_err(|why| bad("head", why))?));
+        written.head.push((key, serde_json::from_str(&value).map_err(|why| bad("head", why))?));
     }
     let mut boxes: BTreeMap<String, (i64, Boxed)> = BTreeMap::new();
     let mut rows = conn.prepare("SELECT key, name, ord FROM boxes").map_err(e)?;
@@ -167,16 +169,15 @@ pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     }
     let mut boxes: Vec<(i64, Boxed)> = boxes.into_values().collect();
     boxes.sort_by_key(|(ord, _)| *ord);
-    stored.written.boxes = boxes.into_iter().map(|(_, held)| held).collect();
+    written.boxes = boxes.into_iter().map(|(_, held)| held).collect();
     let mut rows = conn.prepare("SELECT key, name, x, y, w, seq, by FROM canvas").map_err(e)?;
     for row in rows.query_map([], |r| {
         let card = protocol::project::Card { x: r.get(2)?, y: r.get(3)?, w: r.get(4)? };
         Ok((r.get::<_, String>(0)?, CardRow { name: r.get(1)?, card, seq: r.get::<_, i64>(5)? as u64, by: r.get(6)? }))
     }).map_err(e)? {
         let (key, row) = row.map_err(e)?;
-        stored.canvas.insert(key, row);
+        canvas.insert(key, row);
     }
-    let lock = &mut stored.lock;
     let mut rows = conn.prepare("SELECT key, record FROM lock_assets").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
         let (key, record) = row.map_err(e)?;
@@ -208,14 +209,14 @@ pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
         }
     }
     if let Some(record) = conn.query_row("SELECT record FROM walk WHERE id = 1", [], |r| r.get::<_, String>(0)).optional().map_err(e)? {
-        stored.walk = serde_json::from_str(&record).map_err(|why| bad("walk", why))?;
+        walk = serde_json::from_str(&record).map_err(|why| bad("walk", why))?;
     }
     let mut rows = conn.prepare("SELECT sha256, record FROM measured").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
         let (sha256, record) = row.map_err(e)?;
-        stored.measured.insert(sha256, serde_json::from_str(&record).map_err(|why| bad("measured", why))?);
+        measured.insert(sha256, serde_json::from_str(&record).map_err(|why| bad("measured", why))?);
     }
-    Ok(stored)
+    Ok(Stored { seq, written: Arc::new(written), canvas: Arc::new(canvas), lock: Arc::new(lock), walk: Arc::new(walk), measured: Arc::new(measured) })
 }
 
 /// The asset row of the lock, without its versions, which have rows of their own.
@@ -281,8 +282,8 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
         tx.execute("INSERT OR REPLACE INTO canvas (key, name, x, y, w, seq, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![key, row.name, row.card.x, row.card.y, row.card.w, row.seq as i64, row.by])?;
     }
     lock_written(tx, &before.lock, &after.lock)?;
-    let walk = json(&after.walk);
-    if json(&before.walk) != walk {
+    let walk = json(&*after.walk);
+    if json(&*before.walk) != walk {
         match after.walk.is_empty() && after.walk.bound.is_none() {
             true => drop(tx.execute("DELETE FROM walk", [])?),
             false => drop(tx.execute("INSERT OR REPLACE INTO walk (id, record) VALUES (1, ?1)", [walk])?),
@@ -335,15 +336,15 @@ fn lock_written(tx: &Transaction, before: &Lock, after: &Lock) -> rusqlite::Resu
         if was.is_none_or(|was| asset_record(was) != record) {
             tx.execute("INSERT OR REPLACE INTO lock_assets (key, record) VALUES (?1, ?2)", params![key, record])?;
         }
-        let numbered = |held: Option<&Asset>| -> BTreeMap<u32, (bool, Version)> {
-            held.into_iter().flat_map(|held| held.versions.iter().map(|v| (v.number, (false, v.clone()))).chain(held.discarded.iter().map(|v| (v.number, (true, v.clone()))))).collect()
-        };
+        fn numbered(held: Option<&Asset>) -> BTreeMap<u32, (bool, &Version)> {
+            held.into_iter().flat_map(|held| held.versions.iter().map(|v| (v.number, (false, v))).chain(held.discarded.iter().map(|v| (v.number, (true, v))))).collect()
+        }
         let (old, new) = (numbered(was), numbered(Some(held)));
         for number in old.keys().filter(|number| !new.contains_key(*number)) {
             tx.execute("DELETE FROM versions WHERE key = ?1 AND number = ?2", params![key, *number as i64])?;
         }
         for (number, (discarded, version)) in new.iter().filter(|(number, row)| old.get(*number) != Some(row)) {
-            tx.execute("INSERT OR REPLACE INTO versions (key, number, discarded, record) VALUES (?1, ?2, ?3, ?4)", params![key, *number as i64, discarded, json(version)])?;
+            tx.execute("INSERT OR REPLACE INTO versions (key, number, discarded, record) VALUES (?1, ?2, ?3, ?4)", params![key, *number as i64, discarded, json(*version)])?;
         }
     }
     for sha256 in before.files.keys().filter(|sha256| !after.files.contains_key(*sha256)) {

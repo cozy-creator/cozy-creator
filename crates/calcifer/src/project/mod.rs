@@ -964,7 +964,7 @@ fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Err
 fn made_new(dir: &FsPath, written: written::Written) -> Result<PathBuf, Error> {
     let io = |e: platform::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display()));
     let part = dir.join(format!("{}.new", db::DB));
-    db::create(&part, &db::Stored { written, ..Default::default() }, &[], &[])?;
+    db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     let dir = platform::durable::canonical(dir).map_err(io)?;
     crate::events::project_changed(&dir);

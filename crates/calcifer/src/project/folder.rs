@@ -838,17 +838,17 @@ macro_rules! part {
         fn $read<R>(&self, f: impl FnOnce(&$ty) -> R) -> Result<R, Error> {
             if let Some(act) = acting(self.id()) {
                 let held = act.$field.borrow();
-                return Ok(f(held.as_ref().unwrap_or(&act.base.$field)));
+                return Ok(f(held.as_ref().unwrap_or(&*act.base.$field)));
             }
             let held = self.held()?;
-            Ok(f(&held.as_ref().expect("held").stored.$field))
+            Ok(f(&*held.as_ref().expect("held").stored.$field))
         }
 
         fn $write<R>(&self, f: impl FnOnce(&mut $ty) -> Result<R, Error>) -> Result<R, Error> {
             self.act(|| {
                 let act = acting(self.id()).expect("in its act");
                 let mut held = act.$field.borrow_mut();
-                f(held.get_or_insert_with(|| act.base.$field.clone()))
+                f(held.get_or_insert_with(|| (*act.base.$field).clone()))
             })
         }
     };
@@ -916,12 +916,13 @@ impl Folder {
             };
             let mut stored = db::load(&conn, &self.db())?;
             let files = super::stamp(&self.dir.join(FILES));
-            self.fill(&mut stored.lock, &stored.measured);
+            self.fill(Arc::make_mut(&mut stored.lock), &stored.measured);
             *held = Some(Held { seen: db::data_version(&conn), conn, stored, files });
         }
         let now = super::stamp(&self.dir.join(FILES));
         if let Some(held) = held.as_mut().filter(|held| held.files != now) {
-            self.fill(&mut held.stored.lock, &held.stored.measured);
+            let measured = held.stored.measured.clone();
+            self.fill(Arc::make_mut(&mut held.stored.lock), &measured);
             held.files = now;
         }
         Ok(held)
@@ -968,21 +969,21 @@ impl Folder {
         let mut after = act.base.clone();
         let changed = [act.written.borrow().is_some(), act.canvas.borrow().is_some(), act.lock.borrow().is_some(), act.walk.borrow().is_some(), act.measured.borrow().is_some()];
         if let Some(written) = act.written.into_inner() {
-            after.written = written;
+            after.written = Arc::new(written);
         }
         if let Some(mut canvas) = act.canvas.into_inner() {
             let seq = act.base.seq + 1;
             canvas.iter_mut().filter(|(key, row)| act.base.canvas.get(*key) != Some(row)).for_each(|(_, row)| row.seq = seq);
-            after.canvas = canvas;
+            after.canvas = Arc::new(canvas);
         }
         if let Some(lock) = act.lock.into_inner() {
-            after.lock = lock;
+            after.lock = Arc::new(lock);
         }
         if let Some(walk) = act.walk.into_inner() {
-            after.walk = walk;
+            after.walk = Arc::new(walk);
         }
         if let Some(measured) = act.measured.into_inner() {
-            after.measured = measured;
+            after.measured = Arc::new(measured);
         }
         let mut extra = act.extra.into_inner();
         let entry = super::history::composed(self, act.made.into_inner(), &mut extra);
@@ -1110,7 +1111,7 @@ impl Folder {
     pub fn canvas_at(&self) -> Result<(u64, BTreeMap<String, CardRow>), Error> {
         let held = self.held()?;
         let stored = &held.as_ref().expect("held").stored;
-        Ok((stored.seq, stored.canvas.clone()))
+        Ok((stored.seq, (*stored.canvas).clone()))
     }
 
     pub fn edit_canvas<R>(&self, change: impl FnOnce(&mut BTreeMap<String, CardRow>) -> Result<R, Error>) -> Result<R, Error> {

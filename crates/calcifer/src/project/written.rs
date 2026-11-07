@@ -323,7 +323,8 @@ fn pad(indent: usize) -> String {
 
 /// A string as it's written on one line: plain where YAML reads it back as that string, else quoted as JSON, which is YAML.
 fn scalar(text: &str) -> String {
-    let indicator = text.starts_with(['-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`', ' ', '\t']);
+    // Anything starting with a digit may be a number to some reader (`1:1` is 61 to YAML 1.1), so it's quoted.
+    let indicator = text.starts_with(['-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`', ' ', '\t', '.', '+']) || text.starts_with(|c: char| c.is_ascii_digit());
     let word = matches!(text.to_ascii_lowercase().as_str(), "null" | "true" | "false" | "yes" | "no" | "on" | "off" | "y" | "n" | "~");
     let plain = !text.is_empty()
         && !indicator
