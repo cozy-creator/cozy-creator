@@ -461,6 +461,62 @@ fn _varena_working_reset_peak(py: Python<'_>, device: i32) -> PyResult<()> {
 
 
 #[pyfunction]
+fn _varena_site_id(name: &str) -> u32 {
+    varena::working::site_id(name)
+}
+
+/// One relaxed store on a model's block entry: where the next allocations are born.
+#[pyfunction]
+fn _varena_set_site(device: i32, site: u32) {
+    varena::working::set_site(device, site);
+}
+
+fn sites<'py>(py: Python<'py>, sites: &[(String, usize)]) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    pyo3::types::PyList::new(py, sites.iter().map(|(site, bytes)| (site.as_str(), *bytes)))
+}
+
+fn verdict<'py>(py: Python<'py>, verdict: &varena::working::Verdict) -> PyResult<Bound<'py, PyDict>> {
+    let row = PyDict::new(py);
+    row.set_item("need_bytes", verdict.need_bytes)?;
+    row.set_item("room_bytes", verdict.room_bytes)?;
+    row.set_item("held_bytes", verdict.held_bytes)?;
+    row.set_item("escaped_bytes", verdict.escaped_bytes)?;
+    row.set_item("transient_bytes", verdict.transient_bytes)?;
+    row.set_item("floor_bytes", verdict.floor_bytes)?;
+    row.set_item("learned", verdict.learned)?;
+    row.set_item("sites", sites(py, &verdict.sites)?)?;
+    Ok(row)
+}
+
+#[pyfunction]
+fn _varena_pass_mark<'py>(
+    py: Python<'py>, device: i32, head: u32, shape: u64, floor: usize,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let refused = varena::working::pass_mark(device, head, shape, floor).map_err(|e| super::raise(py, e))?;
+    refused.map(|refused| verdict(py, &refused)).transpose()
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, *, failed))]
+fn _varena_escapes_take<'py>(py: Python<'py>, device: i32, failed: bool) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let records = varena::working::escapes_take(device, failed).map_err(|e| super::raise(py, e))?;
+    records.iter().map(|record| {
+        let row = PyDict::new(py);
+        row.set_item("head", &record.head)?;
+        row.set_item("passes", record.passes)?;
+        row.set_item("carried_bytes", record.carried_bytes)?;
+        row.set_item("carried_sites", sites(py, &record.carried_sites)?)?;
+        row.set_item("escaped_bytes", record.escaped_bytes)?;
+        row.set_item("escaped_peak_bytes", record.escaped_peak_bytes)?;
+        row.set_item("escaped_sites", sites(py, &record.escaped_sites)?)?;
+        row.set_item("growth_bytes", record.growth_bytes)?;
+        row.set_item("transient_bytes", record.transient_bytes)?;
+        row.set_item("refused", record.refused.as_ref().map(|refused| verdict(py, refused)).transpose()?)?;
+        Ok(row)
+    }).collect()
+}
+
+#[pyfunction]
 fn _varena_fail_create_after(py: Python<'_>, device: i32, n: u64, times: u64) -> PyResult<()> {
     py.detach(|| varena::fail_create_after(device, n, times)).map_err(|e| super::raise(py, e))
 }
@@ -880,6 +936,10 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_site_id, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_set_site, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_pass_mark, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_escapes_take, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_reserve, module)?)?;
     module.add_function(wrap_pyfunction!(
         _varena_working_pool_record_stream,
