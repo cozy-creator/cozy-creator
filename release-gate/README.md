@@ -138,6 +138,9 @@ pod's clock against the Hub's (cli-release 42224725083: a host 665 s fast had ev
 mid-call: it must have its memory within 2 s, and the call must complete, never ended for it. The game must start
 outside cozy's process tree (the session rents with SSH; a root shell starts it over `cozy machine ssh`): started by
 a cozy run, it is counted as ours wherever the driver names the container's pids.
+`retained-pressure` (run 41362) is Qwen-Image 2.1 Turbo's two-reference edit with its K/V kept on a capped 24 GB card,
+and the same game taking most of the card after step 2: the call completes, decode included, with no failed working
+allocation, and the game has its memory.
 `dedicated-room` (xs-088 review) holds dedicated mode to master's on one 16 GB card (rtx-a4000), in three phases: the
 pod's stack, the session's cozy as TensorD alone, then `params.runtime` and `params.tensorfs` too. Each phase has
 Qwen beside an idle Klein bf16, and a deviceless root (`fixtures/pause-twice`) calling SDXL twice with a 30 s pause.
