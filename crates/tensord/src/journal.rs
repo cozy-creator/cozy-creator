@@ -2126,17 +2126,12 @@ impl Failure {
             (_, "author", _) => (3, 6, 1),
             _ => (3, 7, 3),
         };
-        let (code, message) = if code == "device_out_of_memory" && status != 2 {
-            ("out_of_gpu_memory".to_string(), message.to_string())
-        } else {
-            (code.to_string(), message.to_string())
-        };
         Self {
             status,
             cause,
             origin,
-            code,
-            message,
+            code: code.to_string(),
+            message: message.to_string(),
         }
     }
     pub fn machine(code: &str, message: impl Into<String>) -> Self {

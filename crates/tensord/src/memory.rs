@@ -27,7 +27,6 @@ impl Gpu {
         let absent = limit.map_or(0, |limit| row.memory_bytes.saturating_sub(limit));
         let gpu = Self { figures, model: row.device_name.clone(), uuid: row.device_uuid.clone(), absent };
         peaks.restore(&gpu.model, &gpu.figures);
-        log.note(serde_json::json!({"event": "memory_mode", "gpu": gpu.uuid, "mode": "executor_owned", "tensorD_gpu_bytes": 0}));
         Some(gpu)
     }
 
@@ -47,7 +46,7 @@ impl Gpu {
         }
         let processes: Vec<_> = processes.into_iter().filter_map(|(pid, bytes)| {
             let tenant = book.get(&pid)?;
-            Some(protocol::machine::ProcessMemory { pid, executor: format!("{}#{}", tenant.plan, tenant.start), bytes, chunks: 0 })
+            Some(protocol::machine::ProcessMemory { pid, executor: format!("{}#{}", tenant.plan, tenant.start), bytes })
         }).collect();
         let allocated_bytes: u64 = processes.iter().map(|p| p.bytes).sum();
         Some(protocol::machine::GpuMemory {
@@ -314,8 +313,6 @@ impl Drop for Reacting {
 pub struct Host {
     short: Arc<Signal>,
     nudge: Nudge,
-    /// Looks begun and made so far, and a signal for each made.
-    looks: Arc<(Mutex<(u64, u64)>, std::sync::Condvar)>,
 }
 
 impl Host {
@@ -326,8 +323,8 @@ impl Host {
         let (mut pressure, short) = armed
             .inspect_err(|error| log.note(serde_json::json!({"event": "host_unwatched", "mode": format!("{mode:?}"), "why": error.to_string()})))
             .ok()?;
-        let (nudge, looks) = (pressure.nudge(), Arc::new((Mutex::new((0, 0)), std::sync::Condvar::new())));
-        let (looked, signal, notes) = (looks.clone(), short.clone(), log.clone());
+        let nudge = pressure.nudge();
+        let (signal, notes) = (short.clone(), log.clone());
         let watching = std::thread::Builder::new().name("host-pressure".into()).spawn(move || {
             let mut keep = Keep::default();
             // The room when short was last signalled: the next signal needs more than it.
@@ -337,7 +334,6 @@ impl Host {
             // The contained machine's limit the last note named.
             let mut limit: Option<u64> = None;
             while pressure.wait().is_ok() {
-                looked.0.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
                 // A contained machine's limit follows the computer's other programs first: the
                 // budget read below is then the kernel's.
                 let reserve = host_memory::reserve();
@@ -373,41 +369,18 @@ impl Host {
                     signal.set();
                     signalled = Some(room);
                 }
-                looked.0.lock().unwrap_or_else(|e| e.into_inner()).1 += 1;
-                looked.1.notify_all();
             }
         });
         if let Err(error) = watching {
             log.note(serde_json::json!({"event": "host_unwatched", "why": error.to_string()}));
             return None;
         }
-        Some(Arc::new(Host { short, nudge, looks }))
+        Some(Arc::new(Host { short, nudge }))
     }
 
     /// Something happened (a call began, an executor's frame came): the watcher looks.
     pub fn nudge(&self) {
         self.nudge.send();
-    }
-
-    /// Nudges the watcher and blocks until a look begun since has been made.
-    pub fn look(&self) {
-        let begun = self.looks.0.lock().unwrap_or_else(|e| e.into_inner()).0;
-        self.nudge();
-        self.await_look(begun);
-    }
-
-    /// Looks made so far.
-    pub fn looks(&self) -> u64 {
-        self.looks.0.lock().unwrap_or_else(|e| e.into_inner()).1
-    }
-
-    /// Blocks until more than `made` looks have been made.
-    pub fn await_look(&self, made: u64) {
-        let (count, signal) = &*self.looks;
-        let mut looks = count.lock().unwrap_or_else(|e| e.into_inner());
-        while looks.1 <= made {
-            looks = signal.wait(looks).unwrap_or_else(|e| e.into_inner());
-        }
     }
 
     /// Whether a look found the host short since this was last asked (the events thread asks).

@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from torch import Tensor
     from typing_extensions import Buffer
 
-PoisonedError = _ext.VarenaPoisonedError
-
 
 def activate(device: int, *, shared: bool) -> None:
     """This GPU's context and this process's row in its ledger. `shared` is the machine's mode: it
@@ -107,12 +105,6 @@ class Device:
 
     def stats(self) -> dict[str, int]:
         return self._native.stats()
-
-    @contextmanager
-    def capture(self) -> Iterator[None]:
-        """Exclude native producers and recovery during actual CUDA capture."""
-        with capture(self.device):
-            yield
 
 
 class Plan:
@@ -320,13 +312,3 @@ def replay(device: int) -> Iterator[None]:
     finally:
         guard.close()
 
-
-@contextmanager
-def no_capture(device: int) -> Iterator[None]:
-    """No CUDA capture is in progress on `device`, and none begins until it exits (one that
-    tries is refused). Raises if one is in progress."""
-    guard = _ext._VarenaNoCapture(device)
-    try:
-        yield
-    finally:
-        guard.close()

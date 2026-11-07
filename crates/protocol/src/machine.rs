@@ -933,18 +933,8 @@ pub struct GpuMemory {
     pub free_bytes: u64,
     /// Bytes no cozy process holds (another app's), as its last reading measured them.
     pub foreign_bytes: u64,
-    pub created_bytes: u64,
-    pub created_chunks: u64,
     /// Allocated to live processes.
     pub allocated_bytes: u64,
-    /// The GPU page cache: landed weights of exited processes, kept for the next of their layout.
-    pub page_cache_bytes: u64,
-    pub page_cache_chunks: u64,
-    /// Bytes a process holds that no live manager created (a previous TensorD's).
-    pub books_only_bytes: u64,
-    /// The share of wall time at least one allocation waited (`some` pressure), over 10 s and 60 s.
-    pub pressure_some_10s: f32,
-    pub pressure_some_60s: f32,
     pub processes: Vec<ProcessMemory>,
 }
 
@@ -955,7 +945,6 @@ pub struct ProcessMemory {
     pub pid: u32,
     /// Its executor group (plan and lane).
     pub executor: String,
-    pub chunks: u64,
     pub bytes: u64,
 }
 

@@ -508,7 +508,7 @@ impl Recovery {
         }
         let before = crate::released_bytes(device)?;
         self.cache_request = cache_owner::request_shrink(device, cache_owner::RequestKey {
-            cause: cache_owner::Cause::Allocation, generation: cache_owner::next_generation()?,
+            generation: cache_owner::next_generation()?,
         }, bytes)?;
         let Some(request) = self.cache_request.as_ref() else { return Ok(false) };
         // Owners whose callbacks take the host lock cannot run while this thread holds it; native

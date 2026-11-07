@@ -152,6 +152,8 @@ struct State {
     looked: Option<Instant>,
     off: Option<String>,
     wanted: HashMap<String, Wanted>,
+    /// The wanted pages this request read from the store.
+    read: HashSet<String>,
     pin_failed: u64,
     /// A wanted page read whole when a command arrived: it registers at the next idle.
     filled: Option<(String, String, Page)>,
@@ -360,11 +362,13 @@ impl Tier {
         (true, gone)
     }
 
-    /// `key`'s page of `len` bytes, for a refill: a refill counts whichever way it is served.
-    pub(super) fn take(&self, key: &str, len: usize) -> Option<Arc<Page>> {
+    /// `key`'s page of `len` bytes. A GPU `refill` counts whichever way it is served.
+    pub(super) fn take(&self, key: &str, len: usize, refill: bool) -> Option<Arc<Page>> {
         let (page, gone) = {
             let mut state = self.state();
-            *state.refills.entry(key.to_owned()).or_default() += 1;
+            if refill {
+                *state.refills.entry(key.to_owned()).or_default() += 1;
+            }
             let gone = self.trim(&mut state);
             let tick = state.tick();
             let page = state.kept.get_mut(key).filter(|kept| kept.page.len == len).map(|kept| {
@@ -518,6 +522,7 @@ impl Tier {
     pub(super) fn want(&self, key: &str, set: &str, source: Weak<Inner>, region: Weak<varena::Region>) {
         let mut state = self.state();
         if !state.kept.contains_key(key) {
+            state.read.insert(key.to_owned());
             state.wanted.insert(key.to_owned(), Wanted { set: set.to_owned(), source, region });
         }
     }
@@ -533,9 +538,9 @@ impl Tier {
     pub(super) fn request_ended(&self) {
         let memory = host_memory::read();
         let mut state = self.state();
-        let refills = std::mem::take(&mut state.refills);
-        state.rate.extend(refills);
-        let streamed = state.wanted.values().filter_map(|wanted| wanted.source.upgrade()).map(|source| source.bytes() as i64).sum();
+        state.rate = std::mem::take(&mut state.refills);
+        let read = std::mem::take(&mut state.read);
+        let streamed = read.iter().filter_map(|key| state.wanted.get(key)?.source.upgrade()).map(|source| source.bytes() as i64).sum();
         (state.own, state.bound, state.looked) = (streamed, memory.bound, None);
         state.last_reads = std::mem::take(&mut state.reads);
         let (fresh, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut state.spare).into_iter().partition(|(_, fresh)| *fresh);

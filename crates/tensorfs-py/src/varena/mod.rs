@@ -1,7 +1,6 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
 mod tensor_export;
-mod cache;
 mod cache_owner;
 mod plan;
 #[cfg(feature = "store")]
@@ -148,11 +147,7 @@ enum UsePreparation {
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
-        varena::Error::Callback(_) => {
-            let error = PyRuntimeError::new_err(message);
-            let _ = error.value(py).setattr("varena_no_retry", true);
-            return error;
-        },
+        varena::Error::Callback(_) => return PyRuntimeError::new_err(message),
         varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } | varena::Error::CaptureMap { .. } => {
             "OutOfMemoryError"
         }
@@ -166,11 +161,6 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
         // Torch's exception types take the ordinary RuntimeError constructor arguments.
         // The CUDA error code is an attribute, not an accepted constructor keyword.
         let exception = class.call1((message.clone(),))?;
-        if let varena::Error::Exhausted { requested_bytes, available_bytes } = error {
-            exception.setattr("varena_no_retry", true)?;
-            exception.setattr("required_bytes", requested_bytes)?;
-            exception.setattr("available_bytes", available_bytes)?;
-        }
         if let varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } = error {
             exception.setattr("error_code", code)?;
         }
@@ -556,9 +546,6 @@ struct PyAllocatorCapture {
 }
 #[pymethods]
 impl PyAllocatorCapture {
-    #[classattr]
-    const REPLAY_GUARD: bool = true;
-
     #[new]
     #[pyo3(signature = (device, *, replay = false))]
     fn new(py: Python<'_>, device: i32, replay: bool) -> PyResult<Self> {
@@ -627,7 +614,6 @@ fn _varena_core_identity() -> u64 {
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
     cache_owner::install(module)?;
-    module.add_class::<cache::PyCache>()?;
     working::install(module)?;
     tensor_export::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
