@@ -193,3 +193,24 @@ pub(super) fn peers_running() -> bool {
     #[cfg(not(target_os = "linux"))]
     false
 }
+
+/// What this process may still hold of varena's host number (`Budget::room`): a CPU executor's
+/// holds and binds stay within it. Negative: give back.
+#[pyo3::pyfunction]
+pub(super) fn _varena_host_room(py: pyo3::Python<'_>) -> i64 {
+    py.detach(|| varena_ledger::host::budget().room())
+}
+
+/// A request of a process with no GPU (a CPU executor) begins or ends: its row in the host's
+/// ledger page says so, as a GPU request's does.
+#[pyo3::pyfunction]
+pub(super) fn _varena_host_boundary(py: pyo3::Python<'_>, begin: bool) {
+    py.detach(|| boundary(begin));
+}
+
+/// This process, in a request, is `bytes` short of varena's host number: idle peers give pages
+/// back, then TensorD ends an idle process. Never waits.
+#[pyo3::pyfunction]
+pub(super) fn _varena_host_short(py: pyo3::Python<'_>, bytes: u64) {
+    py.detach(|| short(bytes));
+}

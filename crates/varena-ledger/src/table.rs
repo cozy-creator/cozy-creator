@@ -436,9 +436,14 @@ impl Table {
     /// nothing meanwhile, waits until each donor has answered or `deadline`. Needs its own `Table`:
     /// the supervisor's would reap the row. The bytes given back; None with no free row.
     pub fn ask_all_idle(&self, deadline: Instant) -> Option<u64> {
+        self.ask_for(u64::MAX, deadline)
+    }
+
+    /// The same for `bytes` only: the donors give their shares of it, idle and oldest first.
+    pub fn ask_for(&self, bytes: u64, deadline: Instant) -> Option<u64> {
         let row = self.claim()?;
         let before = self.page.released.load(Acquire);
-        let generation = self.ask(row, u64::MAX);
+        let generation = self.ask(row, bytes.max(SMALLEST_ASK));
         loop {
             let seen = self.page.answers.load(Acquire);
             self.reap();

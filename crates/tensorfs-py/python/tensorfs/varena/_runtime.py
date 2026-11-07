@@ -35,6 +35,23 @@ def request_boundary(device: int, *, begin: bool) -> None:
     _ext._varena_request_boundary(device, begin)
 
 
+def host_room() -> int:
+    """What this process may still hold of varena's host number: a CPU executor's holds and binds
+    stay within it. Negative: give some back."""
+    return _ext._varena_host_room()
+
+
+def host_boundary(*, begin: bool) -> None:
+    """A request of a process with no GPU began or ended: its row in the host's ledger page."""
+    _ext._varena_host_boundary(begin)
+
+
+def host_short(nbytes: int) -> None:
+    """This process, in a request, is `nbytes` short of varena's host number: idle peers give
+    pages back, then TensorD ends an idle process. Never waits."""
+    _ext._varena_host_short(max(int(nbytes), 0))
+
+
 def bind_torch_allocator() -> None:
     """Private CPU-only binding; Runtime must validate explicit custody before CUDA init."""
     from .torch import _bind_allocator

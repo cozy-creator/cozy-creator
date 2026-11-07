@@ -1,9 +1,9 @@
-//! TensorD decides no GPU bytes: varena's core does, and TensorD ends an idle executor only when
-//! a core's ask went unanswered (`gpu_service`). What is here is GPU status, and host RAM, which
-//! no core owns: the pressure watcher and each call's measured anonymous peak.
+//! TensorD decides no bytes: varena does, the GPU's in each core and the host's in its number
+//! (`varena_ledger::host`), and TensorD ends an idle executor only when an ask went unanswered
+//! (`gpu_service`). What is here is GPU status and the host pressure watcher, which applies
+//! varena's number to a contained machine and hears when cozy is past it.
 use crate::machine::receipt;
-use platform::contain::host_memory;
-use platform::contain::host_pressure::{self, Growth, HostMode, Nudge};
+use platform::contain::host_pressure::{self, HostMode, Nudge};
 use platform::memory::{wait_any, Signal, Waitable};
 use platform::process::Exact;
 use std::{collections::BTreeMap, fs::{self, OpenOptions}, io::{self, Write}, path::PathBuf,
@@ -105,13 +105,6 @@ impl Figures {
         larger(&mut book.values, key, host);
         self.changed.set();
     }
-    pub fn host_peak(&self, package: &str, shape: &str) -> Option<u64> {
-        let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
-        let key = format!("{package}|{shape}");
-        if shape.is_empty() {
-            book.values.range(key.clone()..).take_while(|(k, _)| k.starts_with(&key)).map(|(_, v)| *v).max()
-        } else { book.values.get(&key).copied() }
-    }
     fn restore(&self, peaks: &[Peak]) {
         let mut book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         for peak in peaks { larger(&mut book.values, peak.key.clone(), peak.bytes); }
@@ -196,55 +189,6 @@ impl Peaks {
     }
 }
 
-/// One process on a call's GPU. A single process may own several GPUs; a group has one per rank.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rank {
-    pub pid: u32,
-    pub gpu: String,
-}
-
-/// One call running on the machine's GPUs: every participant and its `<package>|<shape>`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Call {
-    pub ranks: Vec<Rank>,
-    pub package: String,
-    pub shape: String,
-}
-
-/// TensorD's calls running until they end, including each follower the host rule must watch.
-pub type Running = Arc<Mutex<BTreeMap<String, Call>>>;
-
-/// A process running calls: measured anonymous peak, anonymous bytes now, and call count.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct HostCall {
-    pub pid: u32,
-    pub peak: Option<u64>,
-    pub anon: u64,
-    pub running: u64,
-}
-
-/// Every process of every call (each rank of a group), with the host peak its own GPU measured.
-/// One process on several GPUs is one row at the largest of their figures; the host rule
-/// deduplicates a process shared by calls. File-backed model pages remain in the OS budget.
-pub fn host_calls(running: &Running, gpus: &[Arc<Gpu>]) -> Vec<HostCall> {
-    let calls: Vec<Call> = running.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
-    let mut rows = vec![];
-    for call in calls {
-        let mut processes = BTreeMap::<u32, Option<u64>>::new();
-        for rank in &call.ranks {
-            let gpu = gpus.iter().find(|gpu| gpu.uuid == rank.gpu);
-            let peak = gpu.and_then(|gpu| gpu.figures.host_peak(&call.package, &call.shape));
-            let held = processes.entry(rank.pid).or_default();
-            *held = (*held).max(peak);
-        }
-        rows.extend(processes.into_iter().map(|(pid, peak)| {
-            let anon = host_memory::resident(pid).map_or(0, |now| now.anon);
-            HostCall { pid, peak, anon, running: 1 }
-        }));
-    }
-    rows
-}
-
 /// Memory observations wake the host rule and persistence, never page reclamation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Woke { Gpu, HostShort }
@@ -302,41 +246,38 @@ impl Drop for Reacting {
     }
 }
 
-/// The host rule (#1851) on the platform's watcher: each pressure event, or a nudge (TensorD's
-/// own events, where the kernel gives none), is a look. What the calls running on these GPUs
-/// must keep free, each process's measured anonymous peak less its anonymous bytes now plus
-/// the growth seen past it ([`Growth`]), against the live budget, page cache counted as room.
-/// Short, the events thread hears it ([`Woke::HostShort`]): the pool ends one idle process, and
-/// the next event looks again. Another is ended only once the last end measurably raised the
-/// budget: when ending cannot help (a growing call alone exceeds the host), the call meets its
-/// own limit and the idle processes stay. A look that is not short starts over. No timer.
+/// varena's host number on the platform's watcher: each pressure event, or a nudge (TensorD's own
+/// events, where the kernel gives none), is a look. A contained machine's limit follows the
+/// computer's other programs first (`varena_ledger::host::machine`, applied, never sized here).
+/// When what cozy holds is past the number (`Budget::room` below zero: the computer's other
+/// programs grew, or a process with no tier did), the events thread hears it
+/// ([`Woke::HostShort`]): idle tiers are asked through the host's ledger page, and an idle
+/// process ends only when that is not enough. The next event looks again; another short is
+/// signalled only once the room has moved. No timer, and no budget of TensorD's own.
 pub struct Host {
     short: Arc<Signal>,
+    /// The bytes the last short look was past the number.
+    past: Arc<std::sync::atomic::AtomicU64>,
     nudge: Nudge,
 }
 
 impl Host {
     /// Watches while the process lives; None (a memory-log note says why) where the platform
     /// gives no pressure events.
-    pub fn watch(mode: HostMode, gpus: Vec<Arc<Gpu>>, running: Running, log: &MemoryLog) -> Option<Arc<Host>> {
+    pub fn watch(mode: HostMode, log: &MemoryLog) -> Option<Arc<Host>> {
         let armed = host_pressure::Pressure::arm(mode).and_then(|pressure| Ok((pressure, Arc::new(Signal::new()?))));
         let (mut pressure, short) = armed
             .inspect_err(|error| log.note(serde_json::json!({"event": "host_unwatched", "mode": format!("{mode:?}"), "why": error.to_string()})))
             .ok()?;
         let nudge = pressure.nudge();
-        let (signal, notes) = (short.clone(), log.clone());
+        let past = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (signal, shortfall, notes) = (short.clone(), past.clone(), log.clone());
         let watching = std::thread::Builder::new().name("host-pressure".into()).spawn(move || {
-            let mut keep = Keep::default();
-            // The room when short was last signalled: the next signal needs more than it.
+            // The room when short was last signalled: the next signal needs it to have moved.
             let mut signalled: Option<i64> = None;
-            // The processes and peaks the last note named: a note when they change.
-            let mut noted: Vec<(u32, Option<u64>)> = vec![];
             // The contained machine's limit the last note named.
             let mut limit: Option<u64> = None;
             while pressure.wait().is_ok() {
-                // A contained machine's limit follows the computer's other programs first: the
-                // budget read below is then the kernel's.
-                let reserve = varena_ledger::host::budget().reserve.max(0) as u64;
                 match platform::contain::follow(varena_ledger::host::machine) {
                     Some(Ok(budget)) if limit != Some(budget.max) => {
                         notes.note(serde_json::json!({"event": "host_limit", "budget": budget}));
@@ -348,24 +289,11 @@ impl Host {
                     }
                     _ => (),
                 }
-                let calls = host_calls(&running, &gpus);
-                let named: Vec<(u32, Option<u64>)> = calls.iter().map(|call| (call.pid, call.peak)).collect();
-                if named != noted {
-                    notes.note(serde_json::json!({"event": "host_calls", "calls": calls}));
-                    noted = named;
-                }
-                let need = i64::try_from(keep.look(calls)).unwrap_or(i64::MAX);
-                let available = host_memory::read().available;
-                let mut room = if available < 0 { i64::MAX } else { available.saturating_sub(need) };
-                // A person's computer keeps its reserve for its own programs with no call running
-                // too: an idle executor's pinned pages are what gives it back.
-                let outside = host_memory::available_outside();
-                if mode == HostMode::Shared && outside >= 0 {
-                    room = room.min(outside - i64::try_from(reserve).unwrap_or(i64::MAX));
-                }
+                let room = varena_ledger::host::budget().room();
                 if room >= 0 {
                     signalled = None;
-                } else if signalled.is_none_or(|was| room > was) {
+                } else if signalled != Some(room) {
+                    shortfall.store(room.unsigned_abs(), std::sync::atomic::Ordering::Release);
                     signal.set();
                     signalled = Some(room);
                 }
@@ -375,7 +303,7 @@ impl Host {
             log.note(serde_json::json!({"event": "host_unwatched", "why": error.to_string()}));
             return None;
         }
-        Some(Arc::new(Host { short, nudge }))
+        Some(Arc::new(Host { short, past, nudge }))
     }
 
     /// Something happened (a call began, an executor's frame came): the watcher looks.
@@ -387,47 +315,10 @@ impl Host {
     pub fn short(&self) -> bool {
         self.short.clear()
     }
-}
 
-/// What the host keeps free for the calls running on it: each process's anonymous growth still
-/// to come (its requests' measured anonymous peak less its anonymous bytes now) and [`Growth`],
-/// the most a look saw them grow past what was measured to come (an unmeasured call's every
-/// byte). Page cache is never need: the budget holds it. With no call running nothing can grow,
-/// so nothing is kept: an idle executor the next call would use is not ended for growth to come.
-#[derive(Default)]
-struct Keep {
-    growth: Growth,
-    /// Each process's requests running at the last look: each that ended settles the growth.
-    running: BTreeMap<u32, u64>,
-}
-
-impl Keep {
-    /// A look at the processes running calls: what must stay free.
-    fn look(&mut self, calls: Vec<HostCall>) -> u64 {
-        // A process running several calls is one entry.
-        let mut by: BTreeMap<u32, HostCall> = BTreeMap::new();
-        for call in calls {
-            by.entry(call.pid)
-                .and_modify(|seen| {
-                    seen.peak = seen.peak.zip(call.peak).map(|(a, b)| a.max(b));
-                    seen.running += call.running;
-                })
-                .or_insert(call);
-        }
-        let (mut need, mut unforeseen) = (0u64, BTreeMap::new());
-        for call in by.values() {
-            let peak = call.peak.unwrap_or(0);
-            need = need.saturating_add(peak.saturating_sub(call.anon));
-            unforeseen.insert(call.pid.to_string(), call.anon.saturating_sub(peak));
-        }
-        for (pid, was) in &self.running {
-            for _ in by.get(pid).map_or(0, |call| call.running)..*was {
-                self.growth.settle();
-            }
-        }
-        self.running = by.values().map(|call| (call.pid, call.running)).collect();
-        let growth = self.growth.observe(unforeseen);
-        if by.is_empty() { 0 } else { need.saturating_add(growth) }
+    /// The bytes the last short look was past varena's number.
+    pub fn past(&self) -> u64 {
+        self.past.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

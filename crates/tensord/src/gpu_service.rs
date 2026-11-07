@@ -858,8 +858,10 @@ pub struct Pool {
     exits: Option<Exits>,
     /// Memoized Model methods' results, shared by every run on this machine.
     memo: Arc<crate::memo::Memo>,
-    /// The calls running on its GPUs, by request: the host rule reads them.
-    running: memory::Running,
+    /// Its own view of the host's ledger page, for asks when what cozy holds is past varena's
+    /// host number (`host_short`).
+    #[cfg(target_os = "linux")]
+    host_asking: Option<Mutex<varena_ledger::Table>>,
     /// Each run with an executor on its GPUs, by request: its lane, which a GPU fault fails.
     lanes: Mutex<BTreeMap<String, std::ops::Range<usize>>>,
     /// Driver faults that failed no run, by GPU: the next run ending there carries them.
@@ -1008,9 +1010,7 @@ impl Pool {
                     .inspect(|_| tracing::info!("GPU {entry} drives a display: each run keeps free what it uses plus {} MiB", DISPLAY_MARGIN >> 20)),
             }
         }).collect();
-        let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
-        let running = memory::Running::default();
-        let host = memory::Host::watch(config.host.mode, gpus, running.clone(), &notes);
+        let host = memory::Host::watch(config.host.mode, &notes);
         let launcher = crate::child_launcher::ChildLauncher::new()?;
         let memo = Arc::new(crate::memo::Memo::open(root.join("stage-memo"))?);
         Ok(Arc::new_cyclic(|pool: &Weak<Self>| {
@@ -1079,7 +1079,8 @@ impl Pool {
                 keeping: Mutex::new(()),
                 levels: Mutex::new(BTreeMap::new()),
                 memo,
-                running,
+                #[cfg(target_os = "linux")]
+                host_asking: varena_ledger::Table::open_host().map(Mutex::new).ok(),
                 lanes: Mutex::default(),
                 unreported: Mutex::default(),
             }
@@ -1103,17 +1104,29 @@ impl Pool {
             self.peaks.save(model, gpus.iter().filter(|gpu| gpu.model == model).map(|gpu| &gpu.figures));
         }
     }
-    /// The host is short of what its running calls must keep free: one idle process ends,
-    /// least recently used first: a deviceless executor, else an import-only parent with no live
-    /// child, else an executor on a GPU no call holds (outside every warm set first).
+    /// What cozy holds is past varena's host number (`memory::Host`): idle tiers give their pages
+    /// back first, asked through the host's ledger page; only when that is not enough does one
+    /// idle process end, least recently used first: a deviceless executor, else an import-only
+    /// parent with no live child, else an executor on a GPU no call holds (outside every warm set
+    /// first).
     fn host_short(&self) {
+        let past = self.host.as_ref().map_or(0, |host| host.past());
+        #[cfg(target_os = "linux")]
+        let given = self.host_asking.as_ref()
+            .and_then(|table| table.lock().unwrap().ask_for(past, Instant::now() + std::time::Duration::from_secs(2)))
+            .unwrap_or(0);
+        #[cfg(not(target_os = "linux"))]
+        let given = 0;
+        if past != 0 && given >= past {
+            return self.notes.note(serde_json::json!({"event": "host_short", "past": past, "given": given, "ended": ""}));
+        }
         let ended = match () {
             () if self.end_idle_deviceless(|_| true) => "deviceless",
             () if self.end_idle_parent() => "parent",
             () if self.end_lru_idle() => "gpu",
             () => "",
         };
-        self.notes.note(serde_json::json!({"event": "host_short", "ended": ended}));
+        self.notes.note(serde_json::json!({"event": "host_short", "past": past, "given": given, "ended": ended}));
     }
     /// End the least recently used import-only parent with no live child; whether one ended.
     fn end_idle_parent(&self) -> bool {
@@ -3631,14 +3644,7 @@ impl Pool {
         let prepared = command_ok(prepared)?;
         // The GPU permits already scheduled this call. Its shape names only its measurements.
         let shape = shape(&prepared.features);
-        let pids: Vec<u32> = std::iter::once(session.executor.birth.pid).chain(session.followers.iter().map(|f| f.birth().pid)).collect();
-        let ranks = gpus.iter().enumerate().map(|(rank, gpu)| memory::Rank {
-            pid: pids.get(rank).copied().unwrap_or(session.executor.birth.pid),
-            gpu: gpu.memory.as_ref().map_or_else(String::new, |memory| memory.uuid.clone()),
-        }).collect();
-        let call = memory::Call { ranks, package: construction.clone(), shape: shape.clone() };
-        let dispatched = Dispatched::new(gpus, id, &construction, &shape, self.running.clone());
-        self.running.lock().unwrap().insert(id.into(), call);
+        let dispatched = Dispatched::new(gpus, id, &construction, &shape);
         let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
         let inputs = stage_inputs(
@@ -3931,11 +3937,10 @@ fn shape(features: &BTreeMap<String, serde_json::Value>) -> String {
     }
 }
 
-/// A call's measurement keys on its lane's GPUs, and its host accounting until it ends.
+/// A call's measurement keys on its lane's GPUs until it ends.
 struct Dispatched<'a> {
     gpus: &'a [Device],
     id: String,
-    running: memory::Running,
 }
 
 /// One GPU's row of an Invoke reply's `memory.varena`: its figures, never its trace.
@@ -3953,9 +3958,9 @@ struct RequestFigures {
 }
 
 impl<'a> Dispatched<'a> {
-    fn new(gpus: &'a [Device], id: &str, package: &str, shape: &str, running: memory::Running) -> Self {
+    fn new(gpus: &'a [Device], id: &str, package: &str, shape: &str) -> Self {
         gpus.iter().filter_map(|gpu| gpu.memory.as_ref()).for_each(|memory| memory.figures.dispatch(id, package, shape));
-        Self { gpus, id: id.into(), running }
+        Self { gpus, id: id.into() }
     }
 
     /// Each GPU's final figures from the settled Invoke reply (every rank's row), recorded
@@ -3978,7 +3983,6 @@ impl<'a> Dispatched<'a> {
 
 impl Drop for Dispatched<'_> {
     fn drop(&mut self) {
-        self.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
         for memory in self.gpus.iter().filter_map(|gpu| gpu.memory.as_ref()) {
             memory.figures.undispatch(&self.id);
         }

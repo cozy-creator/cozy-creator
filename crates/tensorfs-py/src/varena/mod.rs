@@ -634,6 +634,14 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "store")]
     module.add_class::<pages::PyPages>()?;
     #[cfg(feature = "store")]
+    for function in [
+        wrap_pyfunction!(host::_varena_host_room, module)?,
+        wrap_pyfunction!(host::_varena_host_boundary, module)?,
+        wrap_pyfunction!(host::_varena_host_short, module)?,
+    ] {
+        module.add_function(function)?;
+    }
+    #[cfg(feature = "store")]
     module.add_class::<source::PySource>()?;
     #[cfg(feature = "store")]
     module.add_class::<retained::PyRetained>()?;
