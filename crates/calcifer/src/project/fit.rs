@@ -39,7 +39,7 @@ const KEPT: Duration = Duration::from_secs(600);
 const GROWN: u64 = 2;
 
 static PLACED: LazyLock<Mutex<HashMap<String, (Instant, Option<Placed>)>>> = LazyLock::new(Mutex::default);
-static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<u64>)>>> = LazyLock::new(Mutex::default);
+static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<(String, u64)>)>>> = LazyLock::new(Mutex::default);
 
 /// What the Hub places a run of a release's function on, and each model it loads there, by its parameter.
 #[derive(Clone)]
@@ -224,7 +224,7 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
         true => format!("{}/{function}", found.package),
         false => format!("{}/{function}@", found.package),
     };
-    let took_s = Host::new(api).last_measured(&measured, "local").first().map(|measured| measured.busy_s);
+    let took_s = Host::new(api).last_took(&measured, "local");
     Some(Need { tool: tool.to_owned(), label, bytes, pick, took_s })
 }
 
@@ -307,7 +307,7 @@ fn placed_now(hub: &str, package: &str, release: &str, function: &str) -> Option
 
 /// What a model card last said of a checkpoint's bytes, however long ago.
 fn sized_now(hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
-    SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| *held)
+    SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| held.as_ref().map(|(_, bytes)| *bytes))
 }
 
 /// What the Hub places a run of `package@release`'s `function` on, kept a while. None: it didn't say.
@@ -338,9 +338,14 @@ async fn placed(api: &Api, hub: &str, package: &str, release: &str, function: &s
 
 /// A checkpoint's bytes in `lane`, else its least: a Hub model's release or commit, by its card, kept a while. None: the Hub doesn't say.
 async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
+    checkpoint(api, hub, written, lane).await.map(|(_, bytes)| bytes)
+}
+
+/// The commit and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
+async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<(String, u64)> {
     let key = format!("{hub}\n{written}\n{}", lane.unwrap_or_default());
     if let Some((_, held)) = SIZED.lock().expect("sized lock").get(&key).filter(|(at, _)| at.elapsed() < KEPT) {
-        return *held;
+        return held.clone();
     }
     let (repo, release, commit) = match ModelRef::parse(written).ok()? {
         ModelRef::Hub { repo, release } => (repo, release, None),
@@ -349,20 +354,43 @@ async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Optio
     };
     let reader = api.machines.hubs.reader(hub).ok()?;
     let card = tokio::time::timeout(HUB_LATE, reader.get_model(&repo.org, &repo.name)).await.ok()?.ok()?;
-    let bytes = match (&commit, &release) {
+    let found = match (&commit, &release) {
         (Some(commit), _) => (card.releases.iter().flat_map(|release| release.lanes.values()))
             .find(|held| &held.commit == commit)
-            .map(|held| held.bytes)
-            .or_else(|| card.commits.iter().find(|held| &held.id == commit).map(|held| held.bytes)),
+            .map(|held| (held.commit.clone(), held.bytes))
+            .or_else(|| card.commits.iter().find(|held| &held.id == commit).map(|held| (held.id.clone(), held.bytes))),
         (None, release) => {
             let release = match release {
                 Some(version) => card.releases.iter().find(|held| &held.version == version),
                 None => card.releases.first(),
             };
-            release.and_then(|release| lane.and_then(|lane| release.lanes.get(lane)).or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes)).map(|held| held.bytes))
+            release
+                .and_then(|release| lane.and_then(|lane| release.lanes.get(lane)).or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes)))
+                .map(|held| (held.commit.clone(), held.bytes))
         }
     };
-    let bytes = bytes.filter(|bytes| *bytes > 0).map(|bytes| bytes as u64);
-    SIZED.lock().expect("sized lock").insert(key, (Instant::now(), bytes));
-    bytes
+    let found = found.filter(|(_, bytes)| *bytes > 0).map(|(commit, bytes)| (commit, bytes as u64));
+    SIZED.lock().expect("sized lock").insert(key, (Instant::now(), found.clone()));
+    found
+}
+
+/// The checkpoints `function` of `package` loads, each by its Hub card's lane commit and bytes: what a machine's estimate counts the
+/// fetch of (cl-816). What the Hub doesn't say in time is left out.
+pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<protocol::machine::ModelRef> {
+    let Some(weights) = Weights::of(package.document(), function, made) else { return vec![] };
+    let placed = match package.local {
+        None => placed(api, hub, &package.name, &package.release, function).await,
+        Some(_) => None,
+    };
+    let mut found = vec![];
+    for slot in &weights.slots {
+        let param = Weights::param(slot);
+        let Some(written) = weights.on_box.get(param).or(slot.default.as_ref()) else { continue };
+        let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
+        let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
+        if let Some((commit, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
+            found.push(protocol::machine::ModelRef { commit, bytes });
+        }
+    }
+    found
 }

@@ -13,7 +13,6 @@ use protocol::{
     error::{Error, Kind},
     ids::{Digest, RunId},
     interface::{self, Call, Interface, Slot},
-    model_ref::ModelRef,
     names::shown,
     project::Event,
     tool,
@@ -38,6 +37,8 @@ pub struct Package {
     pub release: String,
     /// Local code: its package directory or script, made ready on the machine each call goes to.
     pub local: Option<PathBuf>,
+    /// Local code's manifest, `sha256:<hex>`, as it was made ready.
+    pub manifest: String,
     /// A yanked release this walk moved off, said once.
     pub moved: Option<String>,
     /// The function its tool names; none: the package alone.
@@ -49,6 +50,14 @@ impl Package {
     /// Its interface, as its card or its source says.
     pub fn document(&self) -> &Value {
         &self.document
+    }
+
+    /// `function` of it as a machine's estimate names it: `org/pkg/fn@release`, local code by its manifest.
+    pub fn estimated(&self, function: &str) -> String {
+        match &self.local {
+            None => format!("{}/{function}@{}", self.name, self.release),
+            Some(_) => format!("{}/{function}", self.manifest),
+        }
     }
 
     /// The function its tool names, as a run of it is sent. None: it names none.
@@ -65,29 +74,6 @@ impl Package {
         let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
         let first = interface.public().into_iter().find(makes)?;
         self.function(first).ok()
-    }
-
-    /// The widths `function` runs at, smallest first: what it loads declares, one for all. A tool that composes calls runs each where its
-    /// GPUs are; while a render lands on one machine, that's the widths of its first call that takes a GPU. Empty: it needs no GPU.
-    pub fn widths(&self, function: &str) -> Vec<u32> {
-        let document = &self.document;
-        let Some(entry) = interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)) else { return vec![] };
-        if interface::cpu(entry) {
-            let calls = self.callable(function).map(|callable| callable.calls).unwrap_or_default();
-            return calls.iter().find(|call| call.gpu()).map(Call::widths).unwrap_or_default();
-        }
-        let mut common: BTreeSet<u32> = (1..=64).collect();
-        for model in interface::models(entry).iter().filter(|model| model["weights"] != true) {
-            let mut declared = BTreeSet::from([1u32]);
-            for degree in model.pointer("/sequence_parallel/degrees").and_then(Value::as_array).into_iter().flatten() {
-                declared.extend(degree.as_u64().map(|degree| degree as u32));
-            }
-            common = common.intersection(&declared).copied().collect();
-        }
-        if common.len() == 64 {
-            return vec![1];
-        }
-        common.into_iter().collect()
     }
 
     /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
@@ -180,34 +166,14 @@ impl Renderer {
     }
 }
 
-/// What a run measured.
-#[derive(Clone, Copy, Debug)]
-pub struct Measured {
-    pub busy_s: f64,
-    pub width: u32,
-    pub exchange_share: f64,
-}
-
-impl Measured {
-    /// From what its executors recorded: a stage is time it worked; a `host ·` row inside one is where that went, and one in `parallel` is exchange. A wait counts nowhere.
-    fn of(run: &Run) -> Option<Self> {
-        let (mut busy, mut exchange, mut width) = (0.0, 0.0, 0u32);
-        let calls = run.calls.iter().filter_map(|call| call.measurements.as_ref());
-        for measured in run.measurements.iter().chain(calls) {
-            for (name, stage) in measured.pointer("/attribution/stages").and_then(Value::as_object).into_iter().flatten() {
-                let ms = stage["total_ms"].as_f64().unwrap_or(0.0);
-                match name.strip_prefix("host · ") {
-                    Some(code) if code.contains(".parallel.") => exchange += ms,
-                    Some(_) => {}
-                    None => busy += ms,
-                }
-            }
-            width = width.max(measured.pointer("/execution/degree").and_then(Value::as_u64).unwrap_or(0) as u32);
-        }
-        // What it took is its run's own time: the stages of an orchestrator and of its calls are the same time, counted twice.
-        let wall = run.execution_ms.map(|ms| ms as f64).filter(|ms| *ms > 0.0).unwrap_or(busy);
-        (busy > 0.0).then(|| Self { busy_s: wall / 1000.0, width: width.max(1), exchange_share: (exchange / busy).min(1.0) })
-    }
+/// What a run took, in seconds, by what its executors recorded: none when they recorded no stage. Its run's own time, as the stages of
+/// an orchestrator and of its calls are the same time, counted twice.
+fn took_s(run: &Run) -> Option<f64> {
+    let calls = run.calls.iter().filter_map(|call| call.measurements.as_ref());
+    let stages = run.measurements.iter().chain(calls).flat_map(|measured| measured.pointer("/attribution/stages").and_then(Value::as_object).into_iter().flatten());
+    let busy: f64 = stages.filter(|(name, _)| !name.starts_with("host · ")).map(|(_, stage)| stage["total_ms"].as_f64().unwrap_or(0.0)).sum();
+    let wall = run.execution_ms.map(|ms| ms as f64).filter(|ms| *ms > 0.0).unwrap_or(busy);
+    (busy > 0.0).then_some(wall / 1000.0)
 }
 
 pub struct Host {
@@ -280,7 +246,7 @@ impl Host {
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Ok(Package { name: prepared.package, release, local: Some(path), moved: None, named, document });
+            return Ok(Package { name: prepared.package, release, local: Some(path), manifest: prepared.source.manifest, moved: None, named, document });
         }
         let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
         self.published(hub, with, Some(&first)).await
@@ -299,46 +265,17 @@ impl Host {
         let Resolved::Release { package, function, card, moved, .. } = target::published(&self.api, &hub, with, on, true).await? else {
             unreachable!("a published target resolves to a release");
         };
-        let found = Package { name: package, release: card.release.clone(), local: None, moved: None, named: function, document: card.interface_document().clone() };
+        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
     }
 
-    /// How many GPUs a machine has, as it last said. One that hasn't said is taken as wide: a job's width is a cap, which its machine brings down to what there is.
-    pub fn gpus(&self, on: &On) -> u32 {
-        let On::Machine(name) = on else { return 64 };
-        self.api.machines.frame(name).map_or(64, |frame| (frame.gpus.len() as u32).max(1))
-    }
-
-    /// The card a machine has, as it last said: its first GPU's name. None: it hasn't said, or has none.
-    pub fn card(&self, machine: &str) -> Option<String> {
-        self.api.machines.frame(machine)?.gpus.first().map(|gpu| gpu.name.clone())
-    }
-
-    /// What run `number` measured: its time on GPUs and in what it did itself, the width it had, and the share of it spent exchanging between GPUs.
-    pub fn measured(&self, number: u64) -> Option<Measured> {
-        let store = self.api.calcifer.store();
-        let row = store.run_by_number(number).ok()??;
-        let run = store.detail(&row).ok()?;
-        (run.status == RunStatus::Completed).then(|| Measured::of(&run)).flatten()
-    }
-
-    /// What the newest finished run of `target` on `machine` measured.
-    /// What the newest finished runs of `target` on `machine` measured, the newest at each width.
-    pub fn last_measured(&self, target: &str, machine: &str) -> Vec<Measured> {
+    /// How long the newest finished run of `target` on `machine` took, in seconds.
+    pub fn last_took(&self, target: &str, machine: &str) -> Option<f64> {
         let store = self.api.calcifer.store();
         let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
-        let Ok((rows, ..)) = store.runs(&filter) else { return vec![] };
-        let mut found: Vec<Measured> = vec![];
-        for row in &rows {
-            let Ok(run) = store.detail(row) else { continue };
-            let Some(measured) = Measured::of(&run) else { continue };
-            if found.iter().any(|had| had.width == measured.width) {
-                continue;
-            }
-            found.push(measured);
-        }
-        found
+        let (rows, ..) = store.runs(&filter).ok()?;
+        rows.iter().find_map(|row| took_s(&store.detail(row).ok()?))
     }
 
     /// Stops a run fetching ahead, however far it got. Nothing depends on it.
@@ -446,32 +383,9 @@ impl Host {
         }
     }
 
-    /// Where a run of `renderer` goes among `on`: one is where it goes; of several, the machine
-    /// with the fewest runs queued or running, one without the renderer's models counting one
-    /// more, a warm one first among equals, then the first listed.
-    pub fn place(&self, on: &[On], renderer: &Renderer) -> On {
-        if let [one] = on {
-            return one.clone();
-        }
-        let load = self.api.calcifer.store().machine_load().unwrap_or_default();
-        let models: Vec<String> = (renderer.slots.iter().chain(renderer.call_slots()))
-            .filter_map(|slot| match ModelRef::parse(slot.default.as_deref()?) {
-                Ok(ModelRef::Hub { repo, .. }) => Some(repo.to_string()),
-                _ => None,
-            })
-            .collect();
-        let machines = &self.api.machines;
-        let cost = |on: &On| {
-            let On::Machine(text) = on else { return (u32::MAX, true) };
-            let Ok(Some(row)) = machines.named(text) else { return (u32::MAX, true) };
-            let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
-            let held = |frame: protocol::machine::StatusFrame| {
-                models.iter().all(|model| frame.models.iter().any(|held| held.repository == *model))
-            };
-            let cold = !machines.frame(&row.name).is_some_and(held);
-            (running + queued + u32::from(cold), cold)
-        };
-        on.iter().min_by_key(|on| cost(on)).cloned().unwrap_or(On::Any)
+    /// What run `id`'s machine quoted as it was sent: its time left waits at least until then.
+    pub fn quoted(&self, id: &RunId, quoted: crate::eta::Quoted) {
+        self.api.calcifer.quoted(id, quoted);
     }
 
     /// cozy's home.

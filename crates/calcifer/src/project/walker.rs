@@ -26,8 +26,6 @@ pub struct Node {
     pub shot: bool,
     /// What it makes is a video.
     pub video: bool,
-    /// How much it makes, as what it takes goes by it: a shot's seconds; one of anything else.
-    pub length: f64,
 }
 
 /// What the walker reads of one frozen render, and what stands now.
@@ -371,6 +369,11 @@ impl Graph {
                 (job.shot, job.video) = (node.shot, node.video);
             }
         }
+    }
+
+    /// The jobs `take_ready` would take, left ready.
+    pub fn ready(&self, room: usize) -> Vec<usize> {
+        self.ready.iter().take(room).map(|(_, id)| *id).collect()
     }
 
     /// The jobs ready for their turn, smallest rank first, at most `room`. Each stays the caller's until `going`, `end` or it waits again.
