@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import platform
 import threading
-from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, TypeAlias, cast
 
 from .. import _ext
@@ -163,7 +162,6 @@ def _bind_allocator() -> None:
             if native.varena_torch_install(ctypes.byref(failure)) != 1 or failure.kind:
                 raise RuntimeError(bytes(failure.message).decode("utf-8", errors="replace"))
             _library, _owner = native, os.getpid()
-            _bind_stats(torch)
 
 
 def _workspace_cache_enabled() -> bool:
@@ -583,34 +581,6 @@ def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
                 _ext._varena_working_pool_record_stream(device, pool, stream.cuda_stream, False)
     finally:
         _ext._varena_working_pool_release(device, pool)
-
-
-def _bind_stats(torch: ModuleType) -> None:
-    def memory_stats(device: DeviceLike = None) -> dict[str, int]:
-        row = stats(_device(device))
-        return {
-            "allocated_bytes.all.current": row["allocated_bytes"],
-            "allocated_bytes.all.peak": row["allocated_peak"],
-            "reserved_bytes.all.current": row["mapped_bytes"],
-            "reserved_bytes.all.peak": row["mapped_peak"],
-            "allocation.all.current": row["allocations"] - row["frees"],
-            "num_ooms": row["ooms"],
-        }
-
-    def reset_peak_memory_stats(device: DeviceLike = None) -> None:
-        reset_peak(_device(device))
-
-    readers = {
-        "memory_stats": memory_stats,
-        "memory_allocated": lambda device=None: stats(_device(device))["allocated_bytes"],
-        "memory_reserved": lambda device=None: stats(_device(device))["mapped_bytes"],
-        "max_memory_allocated": lambda device=None: stats(_device(device))["allocated_peak"],
-        "max_memory_reserved": lambda device=None: stats(_device(device))["mapped_peak"],
-        "reset_peak_memory_stats": reset_peak_memory_stats,
-    }
-    for module in (torch.cuda, torch.cuda.memory):
-        for name, function in readers.items():
-            setattr(module, name, function)
 
 
 def offload(model_or_pipeline, device=0, *, graphs="auto"):
