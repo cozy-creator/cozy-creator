@@ -2387,6 +2387,15 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     Ok(stats)
 }
 
+/// Allocations this device refused since it opened (`WorkingStats::ooms`), read alone: the package
+/// contract compares it at each component scope's entry and exit for a refusal a package returned past.
+pub fn ooms(device: i32) -> Result<u64> {
+    let Some(owner) = existing(device)? else {
+        return Ok(0);
+    };
+    Ok(owner.lock()?.stats.ooms)
+}
+
 pub fn reset_peak(device: i32) -> Result<()> {
     let Some(owner) = existing(device)? else {
         return Ok(());
