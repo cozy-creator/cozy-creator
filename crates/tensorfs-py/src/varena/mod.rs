@@ -619,6 +619,44 @@ impl PyNoCapture {
     }
 }
 
+/// The first of `wants` varena can hold for `stream` (`varena::admit`): each the Regions it reads
+/// and the pool it records into with its measured working peak. Admitted: `index`, its pool's
+/// bytes and one Use per Region, which the caller holds while it runs; refused: `needs`, what
+/// each needed beyond what was resident.
+#[cfg(feature = "store")]
+#[pyfunction]
+#[pyo3(signature = (device, wants, *, stream))]
+fn _varena_admit<'py>(
+    py: Python<'py>, device: i32, wants: Vec<(Vec<Py<PyRegion>>, Option<((u64, u64), usize)>)>, stream: u64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let wants: Vec<varena::admit::Want> = wants.into_iter().map(|(regions, pool)| varena::admit::Want {
+        regions: regions.iter().map(|region| region.borrow(py).region.clone()).collect(),
+        pool,
+    }).collect();
+    // SAFETY: the caller's live stream, which reads nothing of these Regions before this returns.
+    let admitted = py.detach(|| unsafe { varena::admit::admit(device, stream, &wants) })
+        .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
+    let row = PyDict::new(py);
+    match admitted {
+        Ok(admitted) => {
+            let mut uses = Vec::with_capacity(admitted.pins.len());
+            for pin in admitted.pins {
+                let consumers = Consumers::new(device);
+                consumers.declare(stream).map_err(|error| raise(py, error))?;
+                uses.push(Py::new(py, PyUse {
+                    preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+                    device, pid: std::process::id(), consumers,
+                })?);
+            }
+            row.set_item("index", admitted.index)?;
+            row.set_item("pool_bytes", admitted.pool_bytes)?;
+            row.set_item("uses", uses)?;
+        }
+        Err(refused) => row.set_item("needs", refused.needs)?,
+    }
+    Ok(row)
+}
+
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
 #[pyfunction]
 fn _varena_core_identity() -> u64 {
@@ -627,6 +665,8 @@ fn _varena_core_identity() -> u64 {
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
+    #[cfg(feature = "store")]
+    module.add_function(wrap_pyfunction!(_varena_admit, module)?)?;
     cache_owner::install(module)?;
     working::install(module)?;
     tensor_export::install(module)?;

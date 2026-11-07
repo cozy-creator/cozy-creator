@@ -22,8 +22,8 @@ pub use escape::{EscapeRecord, Verdict, escapes_take, pass_mark, set_site, site_
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
 pub use split::{
-    Room, SplitContext, SplitObservation, SplitSelection, room, split_begin, split_context, split_end,
-    split_refused, split_select,
+    Entered, Exit, Leaf, Refusal, Room, SplitContext, SplitObservation, SplitSelection, admission_refusal, room, site_choose,
+    site_enter, site_exit, site_register, split_begin, split_context, split_end, split_select,
 };
 
 pub type PoolId = (u64, u64);
@@ -310,6 +310,8 @@ pub(crate) struct State {
     pub(crate) plan_epoch: u64,
     // Whether each plan phase looped last time it ran.
     pub(crate) passes: BTreeMap<String, bool>,
+    // The steps of the loop running now, as its caller declared them (`crate::repeating`).
+    pub(crate) repeats: Option<u32>,
     // The Region used last: its `next` is this use's.
     pub(crate) last_used: Option<u64>,
     pub(crate) fills: u64,

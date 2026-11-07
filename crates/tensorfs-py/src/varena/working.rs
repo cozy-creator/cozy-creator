@@ -491,9 +491,8 @@ fn _varena_pass_mark<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (device, *, failed))]
-fn _varena_escapes_take<'py>(py: Python<'py>, device: i32, failed: bool) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let records = varena::working::escapes_take(device, failed).map_err(|e| super::raise(py, e))?;
+fn _varena_escapes_take<'py>(py: Python<'py>, device: i32) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let records = varena::working::escapes_take(device).map_err(|e| super::raise(py, e))?;
     records.iter().map(|record| {
         let row = PyDict::new(py);
         row.set_item("head", &record.head)?;
@@ -521,6 +520,17 @@ fn _varena_working_set_limit(py: Python<'_>, device: i32, limit: Option<usize>) 
     py.detach(|| {
         check()?;
         varena::set_limit(device, limit)
+    })
+    .map(|report| report.reclaimed_bytes)
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, *, cap = None, display = None))]
+fn _varena_configure(py: Python<'_>, device: i32, cap: Option<usize>, display: Option<usize>) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::configure(device, cap, display)
     })
     .map(|report| report.reclaimed_bytes)
     .map_err(|e| super::raise(py, e))
@@ -674,24 +684,124 @@ fn _varena_split_select<'py>(
     selection(py, &selected)
 }
 
-/// The level a pure op runs again at after its leaf was refused memory (Retry), None (final: no
-/// allocation of that leaf was refused), or `Exhausted` (final: no finer level has room).
+/// Register an op's levels once (largest first, each its allocations' bytes): how many varena keeps.
 #[pyfunction]
-#[pyo3(signature = (device, key, choice_id, *, stream))]
-fn _varena_split_refused<'py>(
-    py: Python<'py>,
-    device: i32,
-    key: &str,
-    choice_id: &str,
-    stream: u64,
-) -> PyResult<Option<Bound<'py, PyDict>>> {
-    let selected = py
-        .detach(|| {
-            check()?;
-            varena::working::split_refused(device, key, choice_id, stream)
-        })
+#[pyo3(signature = (device, key, menu, *, pure))]
+fn _varena_site_register(py: Python<'_>, device: i32, key: &str, menu: Vec<Vec<usize>>, pure: bool) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::working::site_register(device, key, menu, pure)
+    })
+    .map_err(|error| super::raise(py, error))
+}
+
+fn leaf<'py>(py: Python<'py>, leaf: &varena::working::Leaf) -> PyResult<Bound<'py, PyDict>> {
+    let row = PyDict::new(py);
+    row.set_item("level", leaf.level)?;
+    row.set_item("token", leaf.token)?;
+    row.set_item("selection", leaf.selection.as_ref().map(|s| selection(py, s)).transpose()?)?;
+    Ok(row)
+}
+
+fn refusal<'py>(py: Python<'py>, refused: &varena::working::Refusal) -> PyResult<Bound<'py, PyDict>> {
+    let row = PyDict::new(py);
+    row.set_item("level", refused.level)?;
+    row.set_item("finest", refused.finest)?;
+    row.set_item("need_bytes", refused.need_bytes)?;
+    row.set_item("room_bytes", refused.room_bytes)?;
+    row.set_item("capacity_bytes", refused.capacity_bytes)?;
+    row.set_item("live_bytes", refused.live_bytes)?;
+    row.set_item("pinned_bytes", refused.pinned_bytes)?;
+    row.set_item("next", refused.next)?;
+    Ok(row)
+}
+
+fn answer<'py>(py: Python<'py>, chosen: std::result::Result<varena::working::Leaf, varena::working::Refusal>) -> PyResult<Bound<'py, PyDict>> {
+    match chosen {
+        Ok(chosen) => leaf(py, &chosen),
+        Err(refused) => {
+            let row = PyDict::new(py);
+            row.set_item("refused", refusal(py, &refused)?)?;
+            Ok(row)
+        }
+    }
+}
+
+/// A site forgotten with its owners (`phase_forget`) answers `unregistered`: its handle registers
+/// its menu again.
+fn unregistered<'py>(py: Python<'py>, error: varena::Error) -> PyResult<Bound<'py, PyDict>> {
+    if !matches!(error, varena::Error::Invalid("unregistered split site")) {
+        return Err(super::raise(py, error));
+    }
+    let row = PyDict::new(py);
+    row.set_item("unregistered", true)?;
+    Ok(row)
+}
+
+/// The op's level, its leaf open (`token`; None: it runs unobserved), or `refused`: no lever left
+/// makes any level fit. `level` given: that one (a loop's fixed level, a group's agreed one).
+#[pyfunction]
+#[pyo3(signature = (device, key, *, stream, completion_owner = None, level = None))]
+fn _varena_site_enter<'py>(
+    py: Python<'py>, device: i32, key: &str, stream: u64, completion_owner: Option<u64>, level: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let entered = match py.detach(|| {
+        check()?;
+        varena::working::site_enter(device, key, stream, completion_owner, level)
+    }) {
+        Err(error) => return unregistered(py, error),
+        Ok(entered) => entered,
+    };
+    answer(py, match entered {
+        varena::working::Entered::Leaf(chosen) => Ok(chosen),
+        varena::working::Entered::Refused(refused) => Err(refused),
+    })
+}
+
+/// The level varena would open now, its room made, and no leaf: what a group agrees on.
+#[pyfunction]
+#[pyo3(signature = (device, key, *, stream))]
+fn _varena_site_choose<'py>(py: Python<'py>, device: i32, key: &str, stream: u64) -> PyResult<Bound<'py, PyDict>> {
+    match py.detach(|| {
+        check()?;
+        varena::working::site_choose(device, key, stream)
+    }) {
+        Err(error) => unregistered(py, error),
+        Ok(chosen) => answer(py, chosen),
+    }
+}
+
+/// Close a leaf: `done` (its observation), `retry` (the leaf a refused pure op runs again in), or
+/// `refused` (final, with its next step).
+#[pyfunction]
+#[pyo3(signature = (device, token, *, submitted))]
+fn _varena_site_exit<'py>(py: Python<'py>, device: i32, token: u64, submitted: bool) -> PyResult<Bound<'py, PyDict>> {
+    let exit = py.detach(|| varena::working::site_exit(device, token, submitted))
         .map_err(|error| super::raise(py, error))?;
-    selected.map(|selected| selection(py, &selected)).transpose()
+    let row = PyDict::new(py);
+    match exit {
+        varena::working::Exit::Done(observed) => row.set_item("done", split_observation(py, &observed)?)?,
+        varena::working::Exit::Retry(again) => row.set_item("retry", leaf(py, &again)?)?,
+        varena::working::Exit::Final(refused) => row.set_item("refused", refusal(py, &refused)?)?,
+    }
+    Ok(row)
+}
+
+/// A step loop of `repeats` steps runs on `device` from now (None: it ended).
+#[pyfunction]
+#[pyo3(signature = (device, repeats))]
+fn _varena_repeating(py: Python<'_>, device: i32, repeats: Option<u32>) -> PyResult<()> {
+    varena::repeating(device, repeats).map_err(|error| super::raise(py, error))
+}
+
+/// Why `need` bytes allocated at once were refused: "wait" when they fit once the `releasing`
+/// bytes this process holds go, else "smaller"; and the room this process could have.
+#[pyfunction]
+#[pyo3(signature = (device, need, *, releasing = 0))]
+fn _varena_refusal<'py>(py: Python<'py>, device: i32, need: usize, releasing: usize) -> PyResult<Bound<'py, PyDict>> {
+    let refused = py.detach(|| varena::working::admission_refusal(device, need, releasing))
+        .map_err(|error| super::raise(py, error))?;
+    refusal(py, &refused)
 }
 
 fn selection<'py>(
@@ -891,7 +1001,12 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_split_refused, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_site_register, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_site_enter, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_site_choose, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_site_exit, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_repeating, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_refusal, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_end, module)?)?;
     module.add_class::<CallbackScope>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
@@ -899,6 +1014,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_configure, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_fail_create_after, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_arm, module)?)?;

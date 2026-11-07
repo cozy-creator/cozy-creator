@@ -66,6 +66,8 @@ pub(super) struct Escapes {
     refusal: usize,
     refusal_room: usize,
     refusals: u64,
+    /// The refusals so far that varena answered and the op then completed (a Retry that ran).
+    recovered: u64,
 }
 
 struct Loop {
@@ -186,6 +188,11 @@ impl Escapes {
         self.refusal = owned;
         self.refusal_room = room;
         self.refusals += 1;
+    }
+
+    /// Every refusal so far was answered: its op ran again and completed, or it waits its turn.
+    pub(super) fn answered(&mut self) {
+        self.recovered = self.refusals;
     }
 
     /// What the next loop of this head and shape will need. One whose last pass was refused memory
@@ -324,19 +331,22 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
 }
 
 /// This request's loops, ended: each one's record. What they left is learned for the next loop of
-/// the same head and shape; when the request `failed`, its last loop's pass refused memory too. One
-/// that recovered (a smaller tile after a refused whole decode) teaches nothing from the refusal.
-pub fn escapes_take(device: i32, failed: bool) -> Result<Vec<EscapeRecord>> {
+/// the same head and shape, and so is a refusal in the last loop's last pass that nothing answered:
+/// the request ended on it, in this process whichever rank or executor it is, so its next loop of
+/// that shape is refused at its first forward unless the card has more room. A refusal varena
+/// answered (a Retry that completed) teaches nothing.
+pub fn escapes_take(device: i32) -> Result<Vec<EscapeRecord>> {
     let Some(owner) = existing(device)? else { return Ok(vec![]) };
     let mut state = owner.lock()?;
     let escapes = &mut state.escapes;
-    let ooms = escapes.refusals;
+    let (ooms, recovered) = (escapes.refusals, escapes.recovered);
     let last = escapes.last_head.take();
     let ended = std::mem::take(&mut escapes.loops);
     let records = ended.into_iter().map(|(head, held)| {
-        escapes.learn(head, &held, failed && last == Some(head) && ooms > held.ooms);
+        escapes.learn(head, &held, last == Some(head) && ooms > held.ooms.max(recovered));
         Escapes::record(head, held)
     }).collect();
+    escapes.recovered = escapes.refusals;
     escapes.peak = escapes.total;
     Ok(records)
 }

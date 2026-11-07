@@ -30,6 +30,14 @@ struct Site {
     /// The level chosen here, kept while its room and measures hold: a loop's every step and
     /// every later call of the same program meet the same room, so they look it up.
     decided: Option<Decided>,
+    /// A site handle's (`site_register`): whether a refusal in its leaf may run again (a Runtime
+    /// op that is a pure function of its operands), and whether it is too small to observe.
+    pure: bool,
+    small: bool,
+    /// The level it last opened, for a run that may not choose (a capture, another leaf open).
+    last: Option<usize>,
+    /// The level a Retry ran again at, unchanged: the next refusal there goes finer.
+    retried: Option<usize>,
 }
 struct Decided {
     selection: SplitSelection,
@@ -56,8 +64,8 @@ pub(super) struct Splits {
     active: Option<Box<Active>>,
     sites: BTreeMap<String, Site>,
     pending: Vec<(u64, SplitObservation)>,
-    /// The last closed leaf an allocation was refused in, until `split_refused` answers for it.
-    refused: Option<(String, String)>,
+    /// The site whose refused leaf varena answered with Retry, until a leaf of it completes.
+    retrying: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +220,7 @@ fn register(
     owner: &Device,
     key: &str,
     declarations: Vec<(String, Vec<usize>)>,
+    nested: bool,
 ) -> Result<()> {
     if key.is_empty() || declarations.is_empty() {
         return Err(Error::Invalid(
@@ -237,7 +246,7 @@ fn register(
         })
         .collect::<Result<Vec<_>>>()?;
     let mut state = owner.lock()?;
-    if state.splits.active.is_some() {
+    if state.splits.active.is_some() && !nested {
         return Err(Error::Invalid("native split sites cannot nest"));
     }
     if let Some(site) = state.splits.sites.get(key) {
@@ -255,6 +264,10 @@ fn register(
                 tried: BTreeSet::new(),
                 measures: 0,
                 decided: None,
+                pure: false,
+                small: false,
+                last: None,
+                retried: None,
             },
         );
     }
@@ -552,7 +565,7 @@ pub fn split_select(
     choices: Vec<(String, Vec<usize>)>,
     stream: u64,
 ) -> Result<SplitSelection> {
-    let result = split_select_inner(device, key, choices, stream);
+    let result = split_select_inner(device, key, Some(choices), stream);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "split_select_error");
     }
@@ -562,13 +575,17 @@ pub fn split_select(
 fn split_select_inner(
     device: i32,
     key: &str,
-    choices: Vec<(String, Vec<usize>)>,
+    choices: Option<Vec<(String, Vec<usize>)>>,
     stream: u64,
 ) -> Result<SplitSelection> {
     valid_stream(stream)?;
     context(device)?;
     let owner = initialize_owner(device)?;
-    register(owner, key, choices)?;
+    if let Some(choices) = choices {
+        register(owner, key, choices, false)?;
+    } else if !owner.lock()?.splits.sites.contains_key(key) {
+        return Err(Error::Invalid("unregistered split site"));
+    }
     let room = owner.room_epoch();
     {
         let mut state = owner.lock()?;
@@ -634,35 +651,6 @@ fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, leas
             .expect("copied menu");
         Err(least.short().into())
     })
-}
-
-/// After `split_end` closed a leaf of `key` at `choice_id` in which an allocation was refused with
-/// everything reclaimable gone: the level a pure operation runs again at, finer than that one, with
-/// its room made (Retry). None when no allocation was refused in that leaf (the failure is the
-/// caller's, and final); `Exhausted` when no finer level can be given room (final).
-pub fn split_refused(device: i32, key: &str, choice_id: &str, stream: u64) -> Result<Option<SplitSelection>> {
-    valid_stream(stream)?;
-    context(device)?;
-    let owner = owner(device)?;
-    let least = {
-        let mut state = owner.lock()?;
-        let last = state.splits.refused.take();
-        if last.as_ref().is_none_or(|(k, c)| k != key || c != choice_id) {
-            return Ok(None);
-        }
-        let site = state.splits.sites.get(key).ok_or(Error::Invalid("unknown split configuration"))?;
-        let at = site.choices.iter().position(|choice| choice.id == choice_id)
-            .ok_or(Error::Invalid("split choice is not declared"))?;
-        let finest = site.choices.len() - 1;
-        let refused = site.samples.get(choice_id).map_or(0, |sample| sample.refused);
-        if at == finest {
-            return Err(Error::Exhausted { requested_bytes: refused, available_bytes: 0 });
-        }
-        at + 1
-    };
-    let selection = select_from(device, owner, key, stream, least)?;
-    owner.lock()?.stats.split_decisions += 1;
-    Ok(Some(selection))
 }
 
 /// Re-evaluate the exact agreed geometry and stream immediately before opening the leaf.
@@ -849,7 +837,6 @@ fn learn(state: &mut State, key: &str, choice: &str, refused: usize) {
     if refused == 0 {
         return;
     }
-    state.splits.refused = Some((key.to_owned(), choice.to_owned()));
     if let Some(site) = state.splits.sites.get_mut(key) {
         let sample = site.samples.entry(choice.to_owned()).or_default();
         if refused > sample.refused {
@@ -1068,4 +1055,275 @@ pub(super) fn forget(state: &mut State, key: &str) -> Result<bool> {
         return Err(Error::Busy);
     }
     Ok(state.splits.sites.remove(key).is_some())
+}
+
+// ---------------------------------------------------------------------------- site handles
+
+/// Below this a whole op runs unobserved: its room is the allocator's to make, and a leaf's native
+/// calls cost more than a cut could save (an SDXL UNet's hundred small convs, in every eager step).
+const SMALL: usize = 64 << 20;
+
+/// How many of a menu's levels are worth listing: down to the first within 1/64 of the finest's
+/// bytes (the whole output is the need by then) or at 1/64 of the whole's. Finer only adds launches.
+fn useful(menu: &[Vec<usize>]) -> usize {
+    let sum = |row: &Vec<usize>| row.iter().sum::<usize>();
+    let (least, whole) = (sum(&menu[menu.len() - 1]), sum(&menu[0]));
+    let floor = (least + least / 64).max(whole / 64);
+    menu.iter().position(|row| sum(row) <= floor).map_or(menu.len(), |at| at + 1)
+}
+
+/// An op's level as varena gives it: `token` is its open leaf, None when it runs unobserved (small,
+/// under a capture or replay, inside another leaf, or outside an eager phase).
+#[derive(Clone, Debug)]
+pub struct Leaf {
+    pub level: usize,
+    pub token: Option<u64>,
+    pub selection: Option<SplitSelection>,
+}
+
+impl Leaf {
+    fn unobserved(level: usize) -> Self {
+        Self { level, token: None, selection: None }
+    }
+}
+
+/// A final answer: no lever left makes `need_bytes` fit beside what this process holds. `next`
+/// names what to do: "again" (varena learned the level's need: the next call runs finer), else
+/// "smaller" (a smaller input, or a larger card).
+#[derive(Clone, Debug)]
+pub struct Refusal {
+    pub level: usize,
+    pub finest: bool,
+    pub need_bytes: usize,
+    pub room_bytes: usize,
+    pub capacity_bytes: usize,
+    pub live_bytes: usize,
+    pub pinned_bytes: usize,
+    pub next: &'static str,
+}
+
+pub enum Entered {
+    Leaf(Leaf),
+    Refused(Refusal),
+}
+
+pub enum Exit {
+    /// Closed; the failure, if any, is not memory's.
+    Done(SplitObservation),
+    /// A refusal in a pure op's leaf: it runs again at this level, its room made.
+    Retry(Leaf),
+    Final(Refusal),
+}
+
+/// What this process could have now: the card or its cap less live working bytes and held weights.
+pub(crate) fn refusal(device: i32, level: usize, finest: bool, need: usize, next: &'static str) -> Result<Refusal> {
+    let room = room(device)?;
+    let held = room.working_live.saturating_add(room.pinned);
+    Ok(Refusal {
+        level, finest, need_bytes: need, room_bytes: room.capacity.saturating_sub(held),
+        capacity_bytes: room.capacity, live_bytes: room.working_live, pinned_bytes: room.pinned, next,
+    })
+}
+
+/// Register an op's levels once, largest first, each its allocations' bytes: varena keeps the
+/// useful prefix and returns how many levels that is. `pure`: the op is the Runtime's own and a
+/// function of its operands, so a refusal inside it may run it again (`site_exit`).
+pub fn site_register(device: i32, key: &str, menu: Vec<Vec<usize>>, pure: bool) -> Result<usize> {
+    if menu.is_empty() {
+        return Err(Error::Invalid("split needs a nonempty configuration and legal menu"));
+    }
+    let owner = initialize_owner(device)?;
+    {
+        let state = owner.lock()?;
+        if let Some(site) = state.splits.sites.get(key) {
+            return Ok(site.choices.len());
+        }
+    }
+    let kept = useful(&menu);
+    let small = menu[0].iter().sum::<usize>() < SMALL;
+    let declarations = menu.into_iter().take(kept).enumerate().map(|(at, row)| (at.to_string(), row)).collect();
+    register(owner, key, declarations, true)?;
+    let mut state = owner.lock()?;
+    let site = state.splits.sites.get_mut(key).expect("registered site");
+    site.pure = pure;
+    site.small = small;
+    Ok(site.choices.len())
+}
+
+fn ineligible(error: &Error) -> bool {
+    matches!(error, Error::Invalid(
+        "capture_active" | "replay_active" | "leaf_active" | "non_eager_phase"
+        | "native split sites cannot nest" | "split begin requires its unchanged selected phase-plan generation"
+    ))
+}
+
+/// The most a level is known to need: declared, measured, or shown by a refusal in its leaf.
+fn need(owner: &Device, key: &str, at: usize) -> Result<usize> {
+    let state = owner.lock()?;
+    let site = state.splits.sites.get(key).ok_or(Error::Invalid("unregistered split site"))?;
+    let choice = &site.choices[at];
+    let sample = site.samples.get(&choice.id);
+    Ok(choice.backing.max(sample.map_or(0, |s| s.peak.max(s.refused))))
+}
+
+fn facts(owner: &Device, key: &str) -> Result<(bool, bool, Option<usize>, usize, Option<usize>)> {
+    let state = owner.lock()?;
+    let site = state.splits.sites.get(key).ok_or(Error::Invalid("unregistered split site"))?;
+    Ok((site.pure, site.small, site.last, site.choices.len(), site.retried))
+}
+
+/// A registered site's level for this op, chosen now (`level` None) or given (a loop's fixed
+/// level, a group's agreed one), its room made and its leaf open; `Refused` when no lever makes
+/// any level fit. `completion_owner` is the enclosing eager phase that publishes its measure.
+pub fn site_enter(device: i32, key: &str, stream: u64, completion_owner: Option<u64>, level: Option<usize>) -> Result<Entered> {
+    valid_stream(stream)?;
+    let owner = initialize_owner(device)?;
+    let (_, small, last, levels, _) = facts(owner, key)?;
+    if level.is_some_and(|at| at >= levels) {
+        return Err(Error::Invalid("split choice is not declared"));
+    }
+    if small {
+        return Ok(Entered::Leaf(Leaf::unobserved(0)));
+    }
+    if !split_context(device)?.eligible {
+        return Ok(Entered::Leaf(Leaf::unobserved(level.or(last).unwrap_or(0))));
+    }
+    let selection = match level {
+        Some(_) => None,
+        None => match split_select_inner(device, key, None, stream) {
+            Ok(selection) => Some(selection),
+            Err(Error::Exhausted { .. }) => {
+                return refusal(device, levels - 1, true, need(owner, key, levels - 1)?, "smaller").map(Entered::Refused);
+            }
+            Err(error) if ineligible(&error) => return Ok(Entered::Leaf(Leaf::unobserved(last.unwrap_or(0)))),
+            Err(error) => {
+                let _ = invalidate_current_phase(device, "split_select_error");
+                return Err(error);
+            }
+        },
+    };
+    let at = match &selection {
+        Some(selection) => selection.choice_id.parse().map_err(|_| Error::Invalid("split choice is not declared"))?,
+        None => level.expect("given level"),
+    };
+    open(device, owner, key, stream, completion_owner, at, selection).map(|opened| match opened {
+        Ok(leaf) => Entered::Leaf(leaf),
+        Err(refused) => Entered::Refused(refused),
+    })
+}
+
+fn open(
+    device: i32, owner: &'static Device, key: &str, stream: u64, completion_owner: Option<u64>, at: usize,
+    selection: Option<SplitSelection>,
+) -> Result<std::result::Result<Leaf, Refusal>> {
+    let generation = selection.as_ref().map_or_else(|| owner.plan_generation.load(Ordering::Acquire), |s| s.plan_generation);
+    match split_begin_inner(device, key, &at.to_string(), completion_owner, stream, Some(generation)) {
+        Ok(token) => {
+            if let Some(site) = owner.lock()?.splits.sites.get_mut(key) {
+                site.last = Some(at);
+            }
+            Ok(Ok(Leaf { level: at, token: Some(token), selection }))
+        }
+        Err(error) if ineligible(&error) => Ok(Ok(Leaf::unobserved(at))),
+        Err(Error::Exhausted { .. }) => {
+            let levels = facts(owner, key)?.3;
+            refusal(device, at, at + 1 == levels, need(owner, key, at)?, "smaller").map(Err)
+        }
+        Err(error) => {
+            let _ = invalidate_current_phase(device, "split_begin_error");
+            Err(error)
+        }
+    }
+}
+
+/// A registered site's level, chosen now with its room made, and no leaf opened: what a group of
+/// ranks agrees on before each opens its own (`site_enter` with the agreed level).
+pub fn site_choose(device: i32, key: &str, stream: u64) -> Result<std::result::Result<Leaf, Refusal>> {
+    valid_stream(stream)?;
+    let owner = initialize_owner(device)?;
+    let (_, small, last, levels, _) = facts(owner, key)?;
+    if small {
+        return Ok(Ok(Leaf::unobserved(0)));
+    }
+    if !split_context(device)?.eligible {
+        return Ok(Ok(Leaf::unobserved(last.unwrap_or(0))));
+    }
+    match split_select_inner(device, key, None, stream) {
+        Ok(selection) => {
+            let at = selection.choice_id.parse().map_err(|_| Error::Invalid("split choice is not declared"))?;
+            Ok(Ok(Leaf { level: at, token: None, selection: Some(selection) }))
+        }
+        Err(Error::Exhausted { .. }) => refusal(device, levels - 1, true, need(owner, key, levels - 1)?, "smaller").map(Err),
+        Err(error) if ineligible(&error) => Ok(Ok(Leaf::unobserved(last.unwrap_or(0)))),
+        Err(error) => Err(error),
+    }
+}
+
+/// Close an open leaf. An allocation refused inside it, with every lever pulled for it, is
+/// varena's to answer: a pure op runs again (Retry) at the same level once when room now covers
+/// what the refusal showed it needs (a peer gave back, a retained spill landed), else finer; a
+/// package's op, or a pure one no finer level fits, is Final. Each level the refusal taught is kept
+/// for the next call.
+pub fn site_exit(device: i32, token: u64, submitted: bool) -> Result<Exit> {
+    let owner = owner(device)?;
+    let (key, stream) = {
+        let state = owner.lock()?;
+        let active = state.splits.active.as_ref().filter(|active| active.id == token)
+            .ok_or(Error::Invalid("unknown split observation"))?;
+        (active.key.clone(), active.stream)
+    };
+    let row = split_end(device, token, submitted)?;
+    let at: usize = row.choice_id.parse().map_err(|_| Error::Invalid("split choice is not declared"))?;
+    let (pure, _, _, levels, retried) = facts(owner, &key)?;
+    if submitted || row.refused_bytes == 0 {
+        let mut state = owner.lock()?;
+        if submitted && state.splits.retrying.as_deref() == Some(key.as_str()) {
+            state.splits.retrying = None;
+            state.escapes.answered(); // the refusals that Retry answered were recovered
+        }
+        if let Some(site) = state.splits.sites.get_mut(&key).filter(|_| submitted) {
+            site.retried = None;
+        }
+        return Ok(Exit::Done(row));
+    }
+    let finest = at + 1 == levels;
+    if !pure {
+        let next = if finest { "smaller" } else { "again" };
+        return refusal(device, at, finest, row.refused_bytes, next).map(Exit::Final);
+    }
+    let least = if retried == Some(at) { at + 1 } else { at };
+    if least >= levels {
+        return refusal(device, at, true, row.refused_bytes, "smaller").map(Exit::Final);
+    }
+    let selection = match select_from(device, owner, &key, stream, least) {
+        Ok(selection) => selection,
+        Err(Error::Exhausted { .. }) => return refusal(device, at, finest, row.refused_bytes, "smaller").map(Exit::Final),
+        Err(error) => return Err(error),
+    };
+    let again: usize = selection.choice_id.parse().map_err(|_| Error::Invalid("split choice is not declared"))?;
+    {
+        let mut state = owner.lock()?;
+        state.stats.split_decisions += 1;
+        state.splits.retrying = Some(key.clone());
+        if let Some(site) = state.splits.sites.get_mut(&key) {
+            site.retried = (again == at).then_some(at);
+        }
+    }
+    let completion = row.pending.then(|| owner.lock().ok()?.phases.active.as_ref().map(|phase| phase.token)).flatten();
+    Ok(match open(device, owner, &key, stream, completion, again, Some(selection))? {
+        Ok(leaf) => Exit::Retry(leaf),
+        Err(refused) => Exit::Final(refused),
+    })
+}
+
+/// Why `need` bytes allocated at once (an LM's slots) were refused with every lever pulled: "wait"
+/// when they fit once the `releasing` bytes this process holds go (rows that finish), and that
+/// answers the refusal; else "smaller".
+pub fn admission_refusal(device: i32, need: usize, releasing: usize) -> Result<Refusal> {
+    let mut refused = refusal(device, 0, true, need, "smaller")?;
+    if need <= refused.room_bytes.saturating_add(releasing) && releasing != 0 {
+        refused.next = "wait";
+        owner(device)?.lock()?.escapes.answered();
+    }
+    Ok(refused)
 }

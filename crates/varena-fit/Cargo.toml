@@ -1,0 +1,11 @@
+[package]
+name = "varena-fit"
+description = "Whether a model runs on a card, as varena runs it: the one fit rule"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

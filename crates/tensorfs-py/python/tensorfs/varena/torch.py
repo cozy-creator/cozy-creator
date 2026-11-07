@@ -233,10 +233,11 @@ def pass_mark(device: int, head: int, shape: int, floor: int) -> dict[str, Any] 
     return _ext._varena_pass_mark(device, head, shape, floor)
 
 
-def escapes_take(device: int, *, failed: bool) -> list[dict[str, Any]]:
-    """This request's loops, ended, with what each began with and its passes left live; `failed`:
-    the request ended in an error, so a refused allocation in its last pass is learned from."""
-    return _ext._varena_escapes_take(device, failed=failed)
+def escapes_take(device: int) -> list[dict[str, Any]]:
+    """This request's loops, ended, with what each began with and its passes left live. A refusal
+    in the last loop's last pass that varena never answered is learned from: its next loop of
+    that shape is refused at its first forward unless the card has more room."""
+    return _ext._varena_escapes_take(device)
 
 
 def checks(*, unmap_idle: bool = False, perturb: bool = False, guards: bool = False) -> None:
@@ -276,6 +277,13 @@ def pool_bytes(peak: int) -> int:
     return _ext._varena_pool_bytes(peak)
 
 
+def configure(device: DeviceLike, *, cap: int | None = None, display: int | None = None) -> int:
+    """The machine's facts about this card: its development cap and, while it drives a display,
+    what the display leaves (None: none). The card reads as the smaller; returns bytes reclaimed."""
+    _installed()
+    return _ext._varena_configure(_device(device), cap=cap, display=display)
+
+
 def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
     """Development only: use at most this much of the card, as a smaller card would.
 
@@ -313,13 +321,130 @@ def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, co
     return _ext._varena_split_begin(_device(device), key, choice_id, stream=stream, completion_owner=completion_owner, plan_generation=plan_generation)
 
 
-def split_refused(device: DeviceLike, key: str, choice_id: str, *, stream: int) -> dict[str, Any] | None:
-    """After `split_end` closed a leaf whose allocation was refused with everything reclaimable
-    gone: a finer level's selection, its room made, for a pure op to run again at (Retry); None when
-    no allocation of that leaf was refused (the failure is final). Raises `Exhausted` when no finer
-    level can be given room. Only the core decides; a caller re-runs only on a selection."""
+@functools.cache
+def _final() -> type:
+    from .api import Exhausted
+
+    class Final(Exhausted):
+        """varena's final answer: no lever left (eviction, spilling, a wait for other programs,
+        a finer level, streaming) makes it fit. `refusal` says what it needed beside what this
+        process holds, and `next` what to do: "again" (varena learned it; the next call runs
+        finer), "wait" (it fits once memory this process holds goes), else "smaller"."""
+
+        def __init__(self, refusal: dict[str, Any]) -> None:
+            super().__init__(f"needs {refusal['need_bytes']} bytes, {refusal['room_bytes']} have room", refusal["need_bytes"])
+            self.refusal = refusal
+            self.next = refusal["next"]
+
+    Final.__name__ = Final.__qualname__ = "Final"
+    return Final
+
+
+def final(refusal: dict[str, Any]) -> BaseException:
+    return cast(BaseException, _final()(refusal))
+
+
+class Leaf:
+    """One op at the level varena gave it (`Site.enter`). `token` is its open leaf, None when it
+    runs unobserved (small, under a capture or replay, inside another leaf)."""
+
+    __slots__ = ("site", "level", "token", "selection")
+
+    def __init__(self, site: "Site", row: dict[str, Any]) -> None:
+        self.site, self.level, self.token, self.selection = site, int(row["level"]), row["token"], row["selection"]
+
+    def exit(self, *, submitted: bool) -> "Leaf | None":
+        """Close it. After an allocation varena refused inside it: the Leaf to run again in (Retry:
+        a pure site's level, its room made), else `Final`. None: done, or a failure not memory's."""
+        if self.token is None:
+            return None
+        answer = _ext._varena_site_exit(self.site.device, self.token, submitted=submitted)
+        self.token = None
+        if "retry" in answer:
+            return Leaf(self.site, answer["retry"])
+        if "refused" in answer:
+            raise final(answer["refused"])
+        return None
+
+
+class Site:
+    """An op's legal levels on one device, largest first, each its allocations' bytes, registered
+    once: varena keeps the useful ones (`levels`), picks the level each op runs at with its room
+    made, and answers a refusal inside it. `pure`: the op is the Runtime's own and a function of
+    its operands, so it may run again after a refusal; anything else is Final."""
+
+    __slots__ = ("device", "key", "levels", "pure", "_menu")
+
+    def __init__(self, device: int, key: str, menu: Sequence[Sequence[int]], *, pure: bool) -> None:
+        _installed()
+        self.device, self.key, self.pure = device, key, pure
+        self._menu = [list(row) for row in menu]
+        self.levels = self._register()
+
+    def _register(self) -> int:
+        return cast(int, _ext._varena_site_register(self.device, self.key, self._menu, pure=self.pure))
+
+    def _answer(self, ask: Any) -> Leaf:
+        row = ask()
+        if "unregistered" in row:  # forgotten with its owners: the same menu again
+            self._register()
+            row = ask()
+        if "refused" in row:
+            raise final(row["refused"])
+        return Leaf(self, row)
+
+    def enter(self, *, stream: int, owner: int | None = None, level: int | None = None) -> Leaf:
+        """The level this op runs at, chosen now (or `level`, agreed or fixed), its leaf open under
+        the eager phase `owner`; `Final` when no lever makes any level fit."""
+        return self._answer(lambda: _ext._varena_site_enter(
+            self.device, self.key, stream=stream, completion_owner=owner, level=level))
+
+    def choose(self, *, stream: int) -> Leaf:
+        """The level varena would open now, its room made, and no leaf: what a group agrees on."""
+        return self._answer(lambda: _ext._varena_site_choose(self.device, self.key, stream=stream))
+
+
+def admit(device: DeviceLike, wants: Sequence[tuple[Sequence[Any], tuple[PoolId, int] | None]], *, stream: int) -> tuple[int, int, list[Any]]:
+    """Before a phase runs: the first of `wants` varena can hold for `stream`, most first, each the
+    Regions it reads and the pool it records into with its measured working peak. Returns the
+    index admitted, its pool's bytes and a Use per Region, held while it runs. `Final` when none
+    fits with every lever pulled: the caller runs none of them, never a part."""
     _installed()
-    return _ext._varena_split_refused(_device(device), key, choice_id, stream=stream)
+    rows = [(list(regions), None if pool is None else (cast(PoolId, tuple(pool[0])), int(pool[1]))) for regions, pool in wants]
+    answer = _ext._varena_admit(_device(device), rows, stream=stream)
+    if "needs" in answer:
+        need = min(answer["needs"], default=0)
+        raise final(_ext._varena_refusal(_device(device), need) | {"needs": answer["needs"]})
+    return int(answer["index"]), int(answer["pool_bytes"]), list(answer["uses"])
+
+
+def reserve(device: DeviceLike, nbytes: int, *, releasing: int = 0) -> Any:
+    """`nbytes` on the current stream as one uint8 tensor, mapped now with every lever varena has:
+    the reservation itself, which its caller cuts into its buffers, so nothing can take the room
+    between a check and the allocation. `Final` when refused: "wait" when it fits once the
+    `releasing` bytes this process holds go, else "smaller"."""
+    import torch
+
+    index = _device(device)
+    before = ooms(index)
+    try:
+        return torch.empty(nbytes, dtype=torch.uint8, device=torch.device("cuda", index))
+    except torch.OutOfMemoryError as exc:
+        if ooms(index) == before:
+            raise
+        raise final(_ext._varena_refusal(index, nbytes, releasing=releasing)) from exc
+
+
+@contextmanager
+def repeating(device: DeviceLike, repeats: int) -> Iterator[None]:
+    """A step loop of `repeats` steps runs inside: every plan phase in it repeats that often, so
+    varena keeps its weights and working pages for the next step rather than judging from uses."""
+    index = _device(device)
+    _ext._varena_repeating(index, repeats)
+    try:
+        yield
+    finally:
+        _ext._varena_repeating(index, None)
 
 
 def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> dict[str, Any]:

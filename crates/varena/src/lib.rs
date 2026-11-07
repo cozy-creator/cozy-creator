@@ -20,6 +20,8 @@ pub mod source;
 pub use source::Source;
 /// Versioned public ABI. All frontends resolve this shared library.
 pub mod abi;
+pub mod admit;
+pub use varena_fit::{Fit, Profile, feasible, fit};
 pub mod plan;
 mod retirement;
 pub mod working;
@@ -427,8 +429,9 @@ pub fn request_boundary(device: i32, begin: bool) {
     let _ = (device, begin);
 }
 
-/// The active plan phase. One that ran through last time with no region coming back is a single
-/// pass: its used weights are wanted again only in a later phase, a loop's in its next step.
+/// The active plan phase. Its caller declares how often it repeats (`repeating`: a step loop's
+/// steps); a phase nobody declared is judged from its uses: one that ran through last time with no
+/// region coming back is a single pass, its used weights wanted again only in a later phase.
 pub(crate) struct PlanPhase {
     name: String,
     entered: u64,
@@ -436,18 +439,40 @@ pub(crate) struct PlanPhase {
     recurred: bool,
     // Whether it looped last time.
     looped: Option<bool>,
+    // Declared: the steps of the loop running in it.
+    repeats: Option<u32>,
 }
 
 impl PlanPhase {
     /// For eviction: unless it is known to be a single pass.
     fn loops(&self) -> bool {
-        self.recurred || self.looped != Some(false)
+        self.repeats.map_or(self.recurred || self.looped != Some(false), |n| n > 1)
     }
 
     /// For keeping working pages: once seen looping.
     pub(crate) fn keeps(&self) -> bool {
-        self.recurred || self.looped == Some(true)
+        self.repeats.map_or(self.recurred || self.looped == Some(true), |n| n > 1)
     }
+
+    fn looped_now(&self) -> bool {
+        self.repeats.map_or(self.recurred, |n| n > 1)
+    }
+}
+
+/// A step loop of `repeats` steps begins on `device` (None: it ended): each plan phase it runs in
+/// repeats that often, whatever its uses look like. Its start is a phase boundary: what ran before
+/// it is not in its loop.
+pub fn repeating(device: i32, repeats: Option<u32>) -> Result<()> {
+    let device = gpu(device)?;
+    let mut state = device.lock()?;
+    state.repeats = repeats;
+    if repeats.is_some() {
+        if let Some(phase) = &mut state.plan_phase {
+            phase.repeats = repeats;
+        }
+        state.phase_boundary = Some(device.clock.load(Ordering::Relaxed));
+    }
+    Ok(())
 }
 
 /// What the driver's own charge may grow by between samples under a development cap.
@@ -751,13 +776,15 @@ impl Device {
         let mut state = self.lock()?;
         let now = self.clock.load(Ordering::Relaxed);
         if let Some(ended) = state.plan_phase.take() {
-            state.passes.insert(ended.name, ended.recurred);
+            let looped = ended.looped_now();
+            state.passes.insert(ended.name, looped);
         }
         if let Some(name) = name {
             state.phase_boundary = Some(now);
             state.plan_epoch += 1;
             let looped = state.passes.get(name).copied();
-            state.plan_phase = Some(PlanPhase { name: name.to_owned(), entered: now, recurred: false, looped });
+            let repeats = state.repeats;
+            state.plan_phase = Some(PlanPhase { name: name.to_owned(), entered: now, recurred: false, looped, repeats });
         }
         Ok(())
     }
@@ -1705,6 +1732,16 @@ pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
         state.sample()?;
     }
     reclaim_room(device, state)
+}
+
+/// The machine's facts about this card, set at start and as they change: its development cap and,
+/// while the card drives a display, what the display leaves. The card reads as the smaller.
+pub fn configure(device: i32, cap: Option<usize>, display: Option<usize>) -> Result<ReclaimReport> {
+    let limit = match (cap, display) {
+        (Some(cap), Some(display)) => Some(cap.min(display)),
+        (cap, display) => cap.or(display),
+    };
+    set_limit(device, limit)
 }
 
 fn reclaim_room(device: i32, state: &Device) -> Result<ReclaimReport> {
