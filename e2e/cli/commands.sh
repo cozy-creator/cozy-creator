@@ -224,7 +224,8 @@ fi
 unseen() {
 step "the CLI in a folder Calcifer can't see"
 [ -n "$LOCAL" ] && command -v docker > /dev/null || { echo "skipped: no local machine or no docker"; return 0; }
-local src=$OUT/unseen P=$OUT/unseen-project image=debian:12-slim size wheel
+# The runner's own OS: a candidate cozy is built on it, for its glibc (debian:12's 2.36 runs only a release's).
+local src=$OUT/unseen P=$OUT/unseen-project image=ubuntu:24.04 size wheel
 mkdir -p "$src/folder/sub" "$src/sub"
 echo one > "$src/folder/a.txt"; echo two > "$src/folder/sub/b.txt"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=3 -c:v libx264 -pix_fmt yuv420p "$src/clip.mp4"
