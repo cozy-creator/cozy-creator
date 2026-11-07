@@ -77,7 +77,7 @@ def drained():
 
 
 def pages():
-    return varena.Pages(0, cap=0, headroom=0)
+    return varena.Pages(0, cap=0)
 
 
 def filled(gpu, bytes, value):
@@ -637,7 +637,7 @@ def fill_paths_agree():
         writer.component("net").put("bytes", source)
         checkpoint = writer.commit()
         gpu = varena.Device(0)
-        tier = varena.Pages(0, cap=1 << 34, headroom=0)
+        tier = varena.Pages(0, cap=1 << 34)
         stream = torch.cuda.current_stream().cuda_stream
         parts = [("net/bytes#value", 0, source.nbytes)]
 

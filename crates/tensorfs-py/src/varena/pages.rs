@@ -1,18 +1,20 @@
 //! The host tier: weight pages in pinned host RAM, stored, baked or cast, so a refill is one DMA
 //! and no store read or bake. One per GPU. Process lifetime, never on disk, each page once, within
-//! half of the host's RAM and beyond a headroom. The tier follows use, not arrival: a page is
-//! worth its refills per request, and only pages worth less make room for it.
+//! half of the host's RAM and beyond a headroom (`Tier::look`). The tier follows use, not arrival:
+//! a page is worth its refills per request, and only pages worth less make room for it.
 //!
-//! Pinned pages are memory the kernel cannot take back, so on a person's computer (a shared
-//! machine) the headroom is what the computer keeps for its other programs
-//! (`host_memory::reserve`), and while the host stalls on memory nothing pins and the headroom
-//! doubles: the tier gives pages back, never what starves the computer.
+//! Pinned pages are memory the kernel cannot take back. The tier is a client of varena's host
+//! number (`varena_ledger::host`): its room is what that number leaves, clean page cache counted
+//! as reclaimable. Every executor's tiers share the host through its ledger page (`host`): idle
+//! ones give pages back to a call that is short. On a person's computer nothing pins while the
+//! host stalls on memory, and the headroom doubles.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use platform::contain::host_memory;
+use varena_ledger::host::{Budget, budget};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use tensorfs::io::cuda::HostPin;
 use tensorfs::io::source::{Item, ItemSource, Source as Store};
@@ -152,17 +154,11 @@ struct State {
     looked: Option<Instant>,
     off: Option<String>,
     wanted: HashMap<String, Wanted>,
-    /// The wanted pages this request read from the store.
-    read: HashSet<String>,
     pin_failed: u64,
     /// A wanted page read whole when a command arrived: it registers at the next idle.
     filled: Option<(String, String, Page)>,
     refills: HashMap<String, u64>,
     rate: HashMap<String, u64>,
-    /// The most active page cache that counts as room, and the limit it was decided under: see
-    /// `request_ended`.
-    own: i64,
-    bound: i64,
     clock: u64,
     log: Vec<Row>,
     /// Pages derives will keep, to make while their fills run, in the order the fills began.
@@ -234,14 +230,18 @@ impl State {
 }
 
 impl Tier {
-    pub(super) fn new(device: i32, cap: u64, headroom: u64, shared: bool) -> Self {
-        let state = State { room: -1, headroom: headroom as i64, ..State::default() };
-        Self {
-            device, cap, shared, state: Mutex::new(state),
+    /// This GPU's tier, within `cap` (half of physical memory by default), in the host's ledger page.
+    pub(super) fn new(device: i32, cap: Option<u64>, shared: bool) -> Arc<Self> {
+        let cap = cap.unwrap_or(u64::try_from(host_memory::total()).unwrap_or(0) / 2);
+        let tier = Arc::new(Self {
+            device, cap, shared, state: Mutex::new(State { room: -1, ..State::default() }),
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), stores: Mutex::default(),
             objects: Mutex::default(),
-        }
+        });
+        tier.look(&mut tier.state(), &budget());
+        super::host::join(Arc::downgrade(&tier));
+        tier
     }
 
     /// `source`'s stored object ranges, so other fills can find its bytes.
@@ -257,7 +257,7 @@ impl Tier {
     }
 
     /// For each of `items`, the other Sources whose bytes are the stored ones and place it.
-    pub(super) fn held(&self, source: &Arc<Inner>, items: &[Item]) -> Vec<Vec<Held>> {
+    pub(super) fn holders(&self, source: &Arc<Inner>, items: &[Item]) -> Vec<Vec<Held>> {
         let objects = self.objects.lock().unwrap_or_else(|error| error.into_inner());
         items.iter().map(|item| {
             let ItemSource::Object(range) = &item.source else { return Vec::new() };
@@ -291,23 +291,26 @@ impl Tier {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// The host RAM this process can still take, re-read at most every `LOOK`, after kept pages
-    /// go, the least worth first, while it is under the headroom. Unreadable: they all go. Active
-    /// page cache up to `own` is room: the loop's store reads keep it active, so yielding to it
-    /// only feeds a cache the loop's own refills fill.
+    /// What varena's host number leaves this process, re-read at most every `LOOK`, after kept
+    /// pages go, the least worth first, while it is under the headroom. Unreadable: they all go.
+    /// Clean page cache is room, active or not: the kernel takes it back before it kills, and
+    /// pinned pages hold the bytes a cached copy would. In a request, short of the headroom: idle
+    /// peers are asked for their pages.
     fn trim(&self, state: &mut State) -> Vec<Kept> {
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
             return Vec::new();
         }
         state.looked = Some(Instant::now());
-        self.look(state);
-        let memory = host_memory::read();
-        let own = if memory.bound == state.bound { memory.active.min(state.own) } else { 0 };
-        let mut room = if memory.available < 0 { memory.available } else { memory.available + own };
+        let budget = budget();
+        self.look(state, &budget);
+        let mut room = if budget.total <= 0 { -1 } else { budget.total - budget.held };
         state.room = room;
         let mut gone = Vec::new();
         if room >= state.headroom {
             return gone;
+        }
+        if room >= 0 {
+            super::host::short((state.headroom - room) as u64);
         }
         for (page, _) in state.spare.drain(..) {
             room += page.len as i64;
@@ -328,15 +331,64 @@ impl Tier {
         gone
     }
 
-    /// What stays free now: a dedicated machine's headroom; on a shared one the host's reserve,
-    /// twice it while the host stalls on memory.
-    fn look(&self, state: &mut State) {
-        if !self.shared {
-            return;
+    /// What stays free beside pinned pages: the number's headroom (`Budget::headroom`). On a
+    /// person's computer (`shared`), while the host stalls on memory: no pins, and a sixteenth of
+    /// the number more.
+    fn look(&self, state: &mut State, budget: &Budget) {
+        state.pressed = self.shared && host_memory::stall().pressed();
+        let stalled = if state.pressed { (budget.total / 16).max(512 << 20) } else { 0 };
+        state.headroom = budget.headroom + stalled;
+    }
+
+    /// The bytes this tier pins: its pages, those made ahead and its spares.
+    pub(super) fn held(&self) -> u64 {
+        let state = self.state();
+        state.bytes + state.spare.iter().map(|(page, _)| page.len as u64).sum::<u64>()
+    }
+
+    /// Give about `bytes` back, spares first, then the pages worth least: an idle process's, to a
+    /// call that asked (`host`). The bytes given.
+    pub(super) fn give(&self, bytes: u64) -> u64 {
+        let (given, gone) = {
+            let mut state = self.state();
+            let mut gone: Vec<Kept> = Vec::new();
+            let mut given = 0;
+            while given < bytes {
+                let Some((page, _)) = state.spare.pop() else { break };
+                given += page.len as u64;
+                gone.push(Kept { page: Arc::new(page), set: String::new(), last: 0 });
+            }
+            for (_, _, key) in state.cheapest() {
+                if given >= bytes {
+                    break;
+                }
+                if let Some(kept) = state.remove(&key) {
+                    given += kept.page.len as u64;
+                    gone.push(kept);
+                }
+            }
+            state.looked = None;
+            (given, gone)
+        };
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        given
+    }
+
+    /// Look at the host now: what grew since takes pages back.
+    pub(super) fn relook(&self) {
+        let gone = {
+            let mut state = self.state();
+            state.looked = None;
+            self.trim(&mut state)
+        };
+        drop(gone);
+    }
+
+    /// Short of the headroom for `bytes` more while the cap allows them: idle peers are asked.
+    fn ask_room(&self, state: &State, bytes: i64) {
+        if state.room >= 0 && state.bytes as i64 + bytes <= self.cap as i64 {
+            super::host::short((state.headroom + bytes - state.room).max(0) as u64);
         }
-        state.pressed = host_memory::stall().pressed();
-        let reserve = i64::try_from(host_memory::reserve()).unwrap_or(i64::MAX);
-        state.headroom = if state.pressed { reserve.saturating_mul(2) } else { reserve };
     }
 
     fn fits(&self, state: &State, bytes: i64) -> bool {
@@ -366,6 +418,8 @@ impl Tier {
         let fits = state.room - bytes >= state.headroom;
         if fits {
             state.room -= bytes;
+        } else {
+            self.ask_room(&state, bytes);
         }
         (fits, gone)
     }
@@ -386,6 +440,7 @@ impl Tier {
             state.room -= bytes;
             return (true, gone);
         }
+        self.ask_room(state, bytes);
         let worth = state.worth(key);
         let (mut freed, mut chosen) = (0, Vec::new());
         for (value, _, kept) in state.cheapest() {
@@ -565,26 +620,15 @@ impl Tier {
     pub(super) fn want(&self, key: &str, set: &str, source: Weak<Inner>, region: Weak<varena::Region>) {
         let mut state = self.state();
         if !state.kept.contains_key(key) {
-            state.read.insert(key.to_owned());
             state.wanted.insert(key.to_owned(), Wanted { set: set.to_owned(), source, region });
         }
     }
 
-    /// A request ended: its refills become each page's worth, and the bytes its loop read from the
-    /// store and the tier does not keep bound the active page cache that counts as room until the
-    /// next ends. Moving the loop's bytes from the page cache into the tier shrinks what the cache
-    /// must hold by as much as the cache shrinks, and a kept page always hits: on a 32 GB cgroup
-    /// the tier held 17.3 GB of Flux-2 to v1's 21.2 while 3.2 GB of active cache stayed outside
-    /// its room, and 5.8 GB a step more came from the store (run 37385: 12.7 s a step against
-    /// v1's 3.4). Decided once a request, never per step: the cache the loop keeps active moves
-    /// every pass. Other active cache is never room past those bytes.
+    /// A request ended: its refills become each page's worth.
     pub(super) fn request_ended(&self) {
-        let memory = host_memory::read();
         let mut state = self.state();
         state.rate = std::mem::take(&mut state.refills);
-        let read = std::mem::take(&mut state.read);
-        let streamed = read.iter().filter_map(|key| state.wanted.get(key)?.source.upgrade()).map(|source| source.bytes() as i64).sum();
-        (state.own, state.bound, state.looked) = (streamed, memory.bound, None);
+        state.looked = None;
         state.last_reads = std::mem::take(&mut state.reads);
         let (fresh, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut state.spare).into_iter().partition(|(_, fresh)| *fresh);
         state.spare = fresh.into_iter().map(|(page, _)| (page, false)).collect();
@@ -642,11 +686,11 @@ impl Tier {
     /// Host bytes retained regions may take: what is available beyond the headroom, the tier's own
     /// pages and spares included, which yield to them.
     pub(super) fn retained_room(&self) -> i64 {
-        let memory = host_memory::read();
+        let budget = budget();
         let mut state = self.state();
-        self.look(&mut state);
+        self.look(&mut state, &budget);
         let spare: u64 = state.spare.iter().map(|(page, _)| page.len as u64).sum();
-        memory.available + state.bytes as i64 + spare as i64 - state.headroom
+        budget.total - budget.held + state.bytes as i64 + spare as i64 - state.headroom
     }
 
     /// Where a store read's bytes came from: past the page cache, or through it.
@@ -676,7 +720,12 @@ impl Tier {
         Some((key, wanted.source.upgrade()?, wanted.set))
     }
 
+    /// Pages to pin at idle, while no other process on the machine is in a request: its call has
+    /// the host's bytes first.
     fn pending(&self) -> bool {
+        if super::host::peers_running() {
+            return false;
+        }
         let state = self.state();
         state.off.is_none() && (state.filled.is_some() || state.wanted.values().any(|wanted| {
             wanted.region.upgrade().is_some_and(|region| !region.holds_contents())
@@ -709,7 +758,7 @@ impl Tier {
     /// Pin the wanted pages until a command arrives: each read again from the store into host RAM,
     /// and registered once filled, window by window. The page refilled most per request goes first.
     fn pin_idle(&self, py: Python<'_>, waiting: &Bound<'_, PyAny>) -> PyResult<()> {
-        let is_waiting = || -> PyResult<bool> { waiting.call0()?.is_truthy() };
+        let is_waiting = || -> PyResult<bool> { Ok(waiting.call0()?.is_truthy()? || super::host::peers_running()) };
         let filled = self.state().filled.take();
         if let Some(filled) = filled {
             if !self.register(py, &is_waiting, filled)? {
@@ -791,9 +840,9 @@ pub(super) struct PyPages {
 #[pymethods]
 impl PyPages {
     #[new]
-    #[pyo3(signature = (device, cap, headroom, shared = false))]
-    fn new(device: i32, cap: u64, headroom: u64, shared: bool) -> Self {
-        Self { tier: Arc::new(Tier::new(device, cap, headroom, shared)) }
+    #[pyo3(signature = (device, cap = None, shared = false))]
+    fn new(device: i32, cap: Option<u64>, shared: bool) -> Self {
+        Self { tier: Tier::new(device, cap, shared) }
     }
     /// Whether pages wait for an idle executor to pin them.
     fn pending(&self, py: Python<'_>) -> bool {

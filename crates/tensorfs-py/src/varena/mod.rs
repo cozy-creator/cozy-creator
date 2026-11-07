@@ -6,6 +6,8 @@ mod plan;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
+mod host;
+#[cfg(feature = "store")]
 mod pages;
 #[cfg(feature = "store")]
 mod phase;

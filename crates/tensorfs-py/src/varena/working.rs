@@ -352,7 +352,11 @@ fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
 
 #[pyfunction]
 fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool) {
-    py.detach(|| varena::request_boundary(device, begin));
+    py.detach(|| {
+        varena::request_boundary(device, begin);
+        #[cfg(feature = "store")]
+        super::host::boundary(begin);
+    });
 }
 
 #[pyfunction]

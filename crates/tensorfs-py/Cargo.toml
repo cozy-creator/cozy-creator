@@ -16,6 +16,7 @@ serde_json.workspace = true
 serde_path_to_error.workspace = true
 executor-protocol = { workspace = true, features = ["python"] }
 varena.workspace = true
+varena-ledger.workspace = true
 libc.workspace = true
 platform.workspace = true
 tensorfs = { workspace = true, features = ["cuda"] }

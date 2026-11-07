@@ -163,7 +163,7 @@ impl Inner {
         let mut sources: Vec<(Arc<Inner>, Option<Bytes>)> = Vec::new();
         // Each item's first holder with its bytes on the card or in a kept page, each holder
         // looked up once.
-        let from: Vec<Option<(usize, u64)>> = self.tier.held(self, &stored.items).into_iter().map(|held| {
+        let from: Vec<Option<(usize, u64)>> = self.tier.holders(self, &stored.items).into_iter().map(|held| {
             held.into_iter().find_map(|Held { source, at }| {
                 let index = sources.iter().position(|(known, _)| Arc::ptr_eq(known, &source)).unwrap_or_else(|| {
                     let bytes = self.bytes_of(&source, device);
