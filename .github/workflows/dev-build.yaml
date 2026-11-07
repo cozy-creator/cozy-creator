@@ -1,11 +1,11 @@
 name: dev-build
-# Builds release artifacts for any ref, off the dev box:
+# Builds dev artifacts for any ref, off the dev box:
 #   gh workflow run dev-build.yaml -R cozy-creator/cozy-creator -f ref=<sha> -f build=cozy,tensord,tensorfs
-# Artifacts: tensord-<sha> (the runner arch's manylinux tensord that Runtime's wheel bundles),
-# cozy-<sha> (the runner arch's dev `cozy`, <version>+dev.g<sha8>, which `cozy machine update --tensord <path>`
-# runs on any machine: `ghbuild.sh cozy <ref> cozy`, `-r ubuntu-24.04-arm` for arm64) and
-# tensorfs-wheel-<sha> (the manylinux x86_64 wheel). The cozy binary's release archives are dist's
-# (cozy-publish.yaml).
+# Artifacts: cozy-<sha> (the runner arch's dev `cozy`, <version>+dev.g<sha8>, which `cozy machine update --tensord <path>`
+# runs on any machine: `ghbuild.sh cozy <ref> cozy`, `-r ubuntu-24.04-arm` for arm64), tensord-<sha> (the runner arch's
+# `tensord`, the machine role TensorD's and Calcifer's tests run, from the same build and stamp), tensorfs-kernels-<sha>
+# and tensorfs-wheel-<sha> (the manylinux x86_64 wheel). The jobs run side by side. The cozy binary's release archives
+# are dist's (cozy-publish.yaml).
 on:
   workflow_dispatch:
     inputs:
@@ -40,7 +40,9 @@ permissions:
   contents: read
 
 jobs:
-  dev:
+  # cozy and tensord: one manylinux_2_28 build, dist's, so both run on every pod.
+  rust:
+    if: contains(inputs.build, 'cozy') || contains(inputs.build, 'tensord')
     runs-on: ${{ inputs.billed_runner || inputs.runner }}
     defaults:
       run:
@@ -57,49 +59,13 @@ jobs:
           ref: ${{ inputs.ref }}
       - id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: astral-sh/setup-uv@v6
-        if: contains(inputs.build, 'tensorfs') || contains(inputs.build, 'kernels')
-      # The Rust workspace: rust-toolchain.toml's toolchain installs on first use. target/manylinux
-      # holds the manylinux_2_28 builds (tensord, the dev cozy); target/manylinux2014 the TensorFS
-      # wheel's, whose older glibc cannot run build scripts the 2_28 container compiled.
+      # Saved by a build with cozy, so it holds every dependency. The container keeps its toolchain under
+      # target/manylinux/rustup, which never goes to the cache.
       - uses: Swatinem/rust-cache@v2
-        if: contains(inputs.build, 'tensor') || contains(inputs.build, 'cozy') || contains(inputs.build, 'check')
         with:
           cache-on-failure: true
-          workspaces: |
-            . -> target
-            . -> target/manylinux
-            . -> target/manylinux2014
-      - uses: actions/setup-python@v6
-        if: contains(inputs.build, 'check')
-        with:
-          python-version: '3.12'
-      - name: Check native memory and TensorFS compilation
-        if: contains(inputs.build, 'check')
-        env:
-          CARGO_BUILD_JOBS: '2'
-        run: |
-          cargo check --locked -p varena -p tensorfs -p tensorfs-py
-          cargo check --locked -p tensorfs --no-default-features
-      - uses: arduino/setup-task@v2
-        if: contains(inputs.build, 'tensord')
-        with:
-          repo-token: ${{ github.token }}
-      # crates/tensord's Taskfile `release`, as Runtime's `task machine` runs it. Its container keeps
-      # its toolchain under target/manylinux/rustup, which never goes to the cache.
-      - name: Build tensord
-        if: contains(inputs.build, 'tensord')
-        run: |
-          rm -rf target/manylinux/rustup
-          CARGO_BUILD_JOBS=$(nproc) task -d crates/tensord release OUT="$PWD/dist/tensord" FEATURES="${{ inputs.features }}"
-          rm -rf target/manylinux/rustup
-      - if: contains(inputs.build, 'tensord')
-        uses: actions/upload-artifact@v4
-        with:
-          name: tensord-${{ steps.sha.outputs.sha }}
-          path: dist/tensord/tensord-linux-*
-          if-no-files-found: error
-          retention-days: 7
+          workspaces: . -> target/manylinux
+          save-if: ${{ contains(inputs.build, 'cozy') }}
       # The page the dev cozy's Calcifer embeds, built here: the container below mounts the checkout read-only. A ref
       # from before web/app has none.
       - uses: actions/setup-node@v4
@@ -114,26 +80,36 @@ jobs:
       - name: Build the page
         if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
         run: web/build.sh
-      # The dev `cozy` a machine runs (`cozy machine update --tensord <path>`): dist's manylinux_2_28 build, so
-      # it runs on every pod, stamped <version>+dev.g<sha8> with its commit.
-      - name: Build the dev cozy
-        if: contains(inputs.build, 'cozy')
+      # Both stamped <version>+dev.g<sha8> with their commit. Both packages are selected whichever binaries are asked
+      # for, so every build resolves cozy's features and the cache holds one set of dependencies.
+      - name: Build cozy and tensord
+        env:
+          BUILD: ${{ inputs.build }}
+          FEATURES: ${{ inputs.features }}
         run: |
-          sha=$(git rev-parse HEAD) arch=$(uname -m) target=$PWD/target/manylinux
+          sha=$(git rev-parse HEAD) arch=$(uname -m) target=$PWD/target/manylinux bins=()
+          [[ $BUILD != *cozy* ]] || bins+=(--bin cozy)
+          [[ $BUILD != *tensord* ]] || bins+=(--bin tensord)
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           cargo fetch --locked
           sed -i "0,/^version = \"$version\"$/s//version = \"$version+dev.g${sha:0:8}\"/" Cargo.toml
           cargo update -w --offline
-          rm -rf "$target/rustup" && mkdir -p "$target" dist/cozy
-          docker run --rm -e CARGO_BUILD_JOBS="$(nproc)" --user "$(id -u):$(id -g)" -e HOME=/tmp -e RUSTUP_HOME=/target/rustup -e COZY_COMMIT="$sha" -e FEATURES="${{ inputs.features }}" \
+          rm -rf "$target/rustup" && mkdir -p "$target" dist/cozy dist/tensord
+          docker run --rm -e CARGO_BUILD_JOBS="$(nproc)" --user "$(id -u):$(id -g)" -e HOME=/tmp -e RUSTUP_HOME=/target/rustup -e COZY_COMMIT="$sha" -e FEATURES \
             -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" -v "$PWD:/src:ro" -v "$target:/target" -w /src \
             "quay.io/pypa/manylinux_2_28_$arch:2026.10.03-1" \
-            sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.99.1 >&2 && PATH=/tmp/.cargo/bin:$PATH CARGO_HOME=/cargo cargo build --release --locked --offline --target-dir /target -p cozy --bin cozy --features "$FEATURES"'
+            sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.99.1 >&2 && PATH=/tmp/.cargo/bin:$PATH CARGO_HOME=/cargo cargo build --release --locked --offline --target-dir /target -p cozy -p tensord --features "$FEATURES" "$@"' sh "${bins[@]}"
           rm -rf "$target/rustup" && git checkout -- Cargo.toml Cargo.lock
-          install -m 0755 "$target/release/cozy" "dist/cozy/cozy-linux-$arch"
-          (cd dist/cozy && sha256sum "cozy-linux-$arch" > "cozy-linux-$arch.sha256")
-          said=$("dist/cozy/cozy-linux-$arch" --version)
-          case $said in *"+dev.g${sha:0:8}") echo "$said" ;; *) echo "::error::the dev cozy says $said"; exit 1 ;; esac
+          if [[ $BUILD == *cozy* ]]; then
+            install -m 0755 "$target/release/cozy" "dist/cozy/cozy-linux-$arch"
+            (cd dist/cozy && sha256sum "cozy-linux-$arch" > "cozy-linux-$arch.sha256")
+            said=$("dist/cozy/cozy-linux-$arch" --version)
+            case $said in *"+dev.g${sha:0:8}") echo "$said" ;; *) echo "::error::the dev cozy says $said"; exit 1 ;; esac
+          fi
+          if [[ $BUILD == *tensord* ]]; then
+            install -m 0755 "$target/release/tensord" "dist/tensord/tensord-linux-$arch"
+            "dist/tensord/tensord-linux-$arch" version --json
+          fi
       - if: contains(inputs.build, 'cozy')
         uses: actions/upload-artifact@v4
         with:
@@ -141,19 +117,56 @@ jobs:
           path: dist/cozy/
           if-no-files-found: error
           retention-days: 7
-      # TensorFS's release wheel: the extension and the `tfs` it carries, both built in the
-      # manylinux container so their glibc floor is the wheel's tag.
-      - name: Compile prebuilt TensorFS CUDA decode kernels
-        if: contains(inputs.build, 'tensorfs') || contains(inputs.build, 'kernels')
-        run: |
-          uv run --no-project --python 3.12 --with triton==3.8.0 python crates/tensorfs-py/kernels/build.py
-      - if: contains(inputs.build, 'tensorfs') || contains(inputs.build, 'kernels')
+      - if: contains(inputs.build, 'tensord')
         uses: actions/upload-artifact@v4
+        with:
+          name: tensord-${{ steps.sha.outputs.sha }}
+          path: dist/tensord/tensord-linux-*
+          if-no-files-found: error
+          retention-days: 7
+
+  # TensorFS's release wheel: the extension and the `tfs` it carries, both built in the manylinux container so their
+  # glibc floor is the wheel's tag, with the CUDA decode kernels it embeds.
+  tensorfs:
+    if: contains(inputs.build, 'tensorfs') || contains(inputs.build, 'kernels')
+    runs-on: ${{ inputs.billed_runner || inputs.runner }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 60
+    env:
+      TRITON: triton==3.8.0
+    steps:
+      - if: ${{ inputs.billed_runner != '' }}
+        env:
+          RUNNER: ${{ inputs.billed_runner }}
+        run: echo "::warning::billed runner $RUNNER, never free; the budget is about \$10/day per org, and October passed it on 10-17 and 10-22 with these runs"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@v6
+      # The kernels are a function of their sources and Triton; TensorFS's build.rs refuses a catalog whose sources differ.
+      - id: kernels
+        uses: actions/cache@v4
+        with:
+          path: crates/tensorfs/kernels/aot
+          key: tensorfs-kernels-${{ env.TRITON }}-${{ hashFiles('crates/tensorfs-py/kernels/*.py') }}
+      - name: Compile prebuilt TensorFS CUDA decode kernels
+        if: steps.kernels.outputs.cache-hit != 'true'
+        run: uv run --no-project --python 3.12 --with "$TRITON" python crates/tensorfs-py/kernels/build.py
+      - uses: actions/upload-artifact@v4
         with:
           name: tensorfs-kernels-${{ steps.sha.outputs.sha }}
           path: crates/tensorfs/kernels/aot/
           if-no-files-found: error
           retention-days: 7
+      - uses: Swatinem/rust-cache@v2
+        if: contains(inputs.build, 'tensorfs')
+        with:
+          cache-on-failure: true
+          workspaces: . -> target/manylinux2_28
       - name: Build the TensorFS wheel
         if: contains(inputs.build, 'tensorfs')
         uses: PyO3/maturin-action@v1
@@ -225,3 +238,31 @@ jobs:
           path: crates/tensorfs-py/dist/*.whl
           if-no-files-found: error
           retention-days: 7
+
+  check:
+    if: contains(inputs.build, 'check')
+    runs-on: ${{ inputs.billed_runner || inputs.runner }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 60
+    steps:
+      - if: ${{ inputs.billed_runner != '' }}
+        env:
+          RUNNER: ${{ inputs.billed_runner }}
+        run: echo "::warning::billed runner $RUNNER, never free; the budget is about \$10/day per org, and October passed it on 10-17 and 10-22 with these runs"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check native memory and TensorFS compilation
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo check --locked -p varena -p tensorfs -p tensorfs-py
+          cargo check --locked -p tensorfs --no-default-features
