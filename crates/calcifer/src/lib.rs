@@ -26,6 +26,7 @@ pub mod machines;
 pub mod outputs;
 mod others;
 mod page;
+mod placement;
 pub mod play;
 pub mod project;
 mod rentals;
@@ -115,6 +116,8 @@ struct Live {
     progress: Option<Progress>,
     moving: (String, VecDeque<(Instant, u64)>),
     clock: Option<eta::Clock>,
+    /// What its machine quoted as it was sent, which its clock takes.
+    quoted: Option<eta::Quoted>,
 }
 
 /// How often a running run's time left is said again as it counts down.
@@ -674,7 +677,25 @@ impl Calcifer {
         if let Some(started) = run.started_at_ms {
             clock.started(started as f64);
         }
-        lock(&self.live).entry(run.id.clone()).or_default().clock = Some(clock);
+        let mut live = lock(&self.live);
+        let live = live.entry(run.id.clone()).or_default();
+        if let Some(quoted) = live.quoted {
+            clock.quoted(quoted);
+        }
+        live.clock = Some(clock);
+    }
+
+    /// What `id`'s machine quoted as it was sent (cl-816): its clock waits at least until its finish.
+    pub fn quoted(&self, id: &RunId, quoted: eta::Quoted) {
+        if !lock(&self.drivers).contains_key(id) {
+            return;
+        }
+        let mut live = lock(&self.live);
+        let live = live.entry(id.clone()).or_default();
+        live.quoted = Some(quoted);
+        if let Some(clock) = &mut live.clock {
+            clock.quoted(quoted);
+        }
     }
 
     /// The prior of a run of `target` on `machine` asked `spec`: its size as its input says.
@@ -685,10 +706,10 @@ impl Calcifer {
         eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels(&input)).map(|prior| prior.with_steps(steps))
     }
 
-    /// What a run of `target` on `machine` would take, before it is sent (`GET /v1/estimate`).
-    pub fn estimate(&self, target: &str, machine: &str, megapixels: Option<f64>, steps: Option<u64>) -> protocol::calcifer::Estimate {
-        let prior = eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels);
-        eta::before(prior.as_ref(), steps)
+    /// What a run of `target` of `size` takes on one GPU of `machine`'s kind, as runs like it took: a machine's estimate's
+    /// `prior_ms`. 0: none ran.
+    pub fn prior_ms(&self, target: &str, machine: &str, size: &v1::JobSize) -> u64 {
+        eta::one_gpu_ms(&self.history(target), machine, &self.gpu_of(machine), size).map_or(0, |ms| ms as u64)
     }
 
     /// The completed runs of `target`, whatever its release, newest first, each by its phases.

@@ -300,9 +300,6 @@ pub struct Pending {
     /// The job it is of: the key of its first call, when empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub job: String,
-    /// How many GPUs it was given; 0: as wide as the machine goes.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub gpus: u32,
     /// The render it is of, whose text it lands and goes on with.
     #[serde(default)]
     pub ask: String,

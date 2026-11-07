@@ -639,18 +639,45 @@ pub enum EtaBasis {
     FirstRun,
 }
 
-/// What a run would take before it is sent (`GET /v1/estimate`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Estimate {
-    /// None: `first_run`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub eta_s: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub eta_confidence: Option<f64>,
-    pub eta_basis: EtaBasis,
-    /// How many runs it stands on.
-    #[serde(default)]
-    pub runs: u32,
+/// `POST /v1/run-estimates` (cl-816): when each machine a run may go to would finish it, as each
+/// says now. Nothing is sent or reserved.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunEstimate {
+    /// One per machine that answered, for each copy in turn, the soonest finish first.
+    pub machines: Vec<MachineEstimate>,
+    /// Where the run would go: the soonest finish, a rental before `local` on a tie.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soonest: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
+    /// Local code's install, still running: follow it, then ask again under the same key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preparing: Option<Box<Run>>,
+}
+
+/// One machine's quote for a run, or for one of `count` copies of it. Times are ms from the answer.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MachineEstimate {
+    pub machine: String,
+    /// Which copy, 0 first.
+    pub job: u32,
+    pub fits: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<Reason>,
+    /// The GPUs it would run on; 0: none.
+    pub width: u32,
+    pub start_ms: u64,
+    pub finish_ms: u64,
+    /// Its code's install and its weights' fetch, part of `start_ms`.
+    pub prepare_ms: u64,
+    /// How many runs start there before it.
+    pub queue_position: u32,
+    pub basis: crate::machine::Basis,
+    /// Its machine quoted it (`estimate/1`); false: Calcifer's time for one GPU, the machine
+    /// quoting none.
+    pub quoted: bool,
 }
 
 /// One event of a run's stream.

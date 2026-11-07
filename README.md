@@ -40,6 +40,7 @@ cozy run sdxl/generate --input request.yaml
 cozy run sdxl/generate --input request.yaml seed=8      # an inline input overrides the file
 cozy run birefnet/remove_background --file image=./character.png
 cozy run sdxl/generate --describe                       # the fields a function takes
+cozy run sdxl/generate --input request.yaml --estimate  # when each machine would finish it; sends nothing
 ```
 
 Inline `key=value` inputs are the quick form: `cozy run sdxl/generate prompt='a fox in fresh snow'`.
@@ -48,6 +49,9 @@ or `./script.py/function`: each is sent by content, so Calcifer, here or on anot
 of yours. A run is followed to its end; Ctrl-C stops following, never the run, and `cozy run show <N>` picks
 it up again. `-o <dir>` downloads its outputs, on `cozy run` and `cozy run show`. A video's frames are a box
 of the project mentioned with them, `clip='<match:48-144>'`, cut before it's sent.
+With no `--on`, a run goes to the machine that quotes the soonest finish, and that machine chooses how many
+GPUs it uses; `--estimate [N]` prints each machine's quote for N of it sent at once (GPUs, start, finish,
+preparation, queue position, and whether it stands on measured runs).
 
 ```sh
 cozy machine rent            # what is for rent; then cozy machine rent <sku>

@@ -14,7 +14,7 @@ use axum::{
     http::StatusCode,
 };
 use protocol::{
-    calcifer::{Kind as RunKind, MachineKind, MachineState, Note, NoteLevel, On, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
+    calcifer::{Kind as RunKind, MachineEstimate, MachineKind, MachineState, Note, NoteLevel, On, RunEstimate, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
     code::LocalCode,
     error::{Error, Kind},
     interface::{Callable, Interface},
@@ -68,13 +68,57 @@ pub(crate) async fn quote(
             let source = crate::local_code::source(home, code, (&reader, &origin)).await.map_err(Refusal)?;
             crate::local_code::install_run(home, &hub, on, &source)
         }
-        None => match prepare(&api, "quote", &ask).await.map_err(Refusal)? {
+        None => match prepare(&api, "quote", &ask, For::Quote).await.map_err(Refusal)? {
             Prepared::Run { submit, .. } => submit,
             Prepared::Install(_) => unreachable!("a published target installs nothing first"),
         },
     };
     api.machines.hubs.client(&bound.hub).map_err(Refusal)?;
     Ok(Json(api.machines.run_quote(&bound).await.map_err(Refusal)?))
+}
+
+/// `POST /v1/run-estimates` (`Idempotency-Key`; cl-816): when each machine the run may go to would finish it, as each says now.
+/// Nothing is sent. Local code not yet ready answers its install (`preparing`): follow it, then ask again under the same key.
+pub(crate) async fn estimate(
+    State(api): State<Arc<Api>>,
+    IdempotencyKey(key): IdempotencyKey,
+    query: Result<Query<Copies>, axum::extract::rejection::QueryRejection>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<RunEstimate>, Refusal> {
+    let Query(copies) = query?;
+    let body = body?;
+    prebuilt(&body)?;
+    let ask: RunRequest = parse(&body)?;
+    let count = copies.count.unwrap_or(1).clamp(1, COPIES);
+    let (submit, mut notes, offers) = match prepare(&api, &key, &ask, For::Estimate(count)).await.map_err(Refusal)? {
+        Prepared::Install(run) => {
+            let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
+            return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes, ..RunEstimate::default() }));
+        }
+        Prepared::Run { submit, notes, offers } => (submit, notes, offers),
+    };
+    if copies.count.is_some_and(|asked| asked != count) {
+        notes.push(Note { level: NoteLevel::Warning, message: format!("count is 1 to {COPIES}: {count} copies quoted") });
+    }
+    let now = crate::store::now_ms();
+    let shown = offers.iter().enumerate().flat_map(|(job, offers)| offers.iter().map(move |offer| MachineEstimate { job: job as u32, ..offer.shown(now) }));
+    let mut machines: Vec<MachineEstimate> = shown.collect();
+    machines.sort_by_key(|machine| (machine.job, !machine.fits, machine.finish_ms));
+    if machines.is_empty() {
+        notes.push(Note { level: NoteLevel::Warning, message: format!("{} quotes nothing: only a machine that is up does", submit.on) });
+    }
+    let soonest = matches!(submit.on, On::Machine(_)).then(|| submit.on.to_string());
+    Ok(Json(RunEstimate { machines, soonest, notes, preparing: None }))
+}
+
+/// The most copies one estimate quotes: a walk's window.
+const COPIES: u32 = 32;
+
+#[derive(Deserialize)]
+pub(crate) struct Copies {
+    /// How many of the run are quoted at once, as if sent together: 1 to 32.
+    #[serde(default)]
+    count: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -142,15 +186,19 @@ pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submi
         let run = calcifer.record(&row).map_err(refused)?;
         return Ok(Submitted { run, replay: true, notes: vec![], preparing: false });
     }
-    match prepare(api, key, &ask).await? {
+    match prepare(api, key, &ask, For::Run).await? {
         Prepared::Install(run) => {
             let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
             Ok(Submitted { run, replay: false, notes, preparing: true })
         }
-        Prepared::Run { submit, mut notes } => {
+        Prepared::Run { submit, mut notes, offers } => {
             let given = given(&submit);
             let project = submit.out.as_deref().and_then(crate::project::of_landing).map(Path::to_owned);
+            let offer = offers.into_iter().next().unwrap_or_default().into_iter().find(|offer| offer.machine == submit.on);
             let submitted = calcifer.submit_under(key, &digest, submit).await.map_err(refused)?;
+            if let Some(offer) = offer.filter(|_| !submitted.replay) {
+                calcifer.quoted(&submitted.run.id, offer.quoted());
+            }
             if let Some(project) = project.filter(|_| !submitted.replay) {
                 let uploads = files::dir(calcifer);
                 let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
@@ -207,14 +255,25 @@ fn digest(ask: &RunRequest) -> String {
 }
 
 enum Prepared {
-    /// The submission, and what binding it said.
-    Run { submit: SubmitRun, notes: Vec<Note> },
+    /// The submission, what binding it said, and its machines' offers where they were asked, for each copy quoted.
+    Run { submit: SubmitRun, notes: Vec<Note>, offers: Vec<Vec<crate::placement::Offer>> },
     /// Local code's install, still running.
     Install(protocol::calcifer::Run),
 }
 
-/// Resolves and binds `ask` into the submission Calcifer records.
-async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared, Error> {
+/// What a prepared ask is for.
+#[derive(Clone, Copy, PartialEq)]
+enum For {
+    Run,
+    /// A `new` run's price: nothing installs.
+    Quote,
+    /// Its machines' estimates, for this many copies sent at once: every machine it may go to is asked, and nothing installs but local
+    /// code.
+    Estimate(u32),
+}
+
+/// Resolves and binds `ask` into the submission Calcifer records, on the machine of its set that would finish it soonest (cl-816).
+async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
     // Named, it goes there; else where a render's job would (Paul, 11-06), resolved first on the first of that set.
     let set = match &ask.on {
         Some(on) => vec![on.clone()],
@@ -233,7 +292,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
     let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
     let resolved = target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed).await?;
-    let (package, function, mut code) = match &resolved {
+    let (package, function, code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
                 package,
@@ -273,21 +332,56 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     if !ask.recipes && code.interface.runs_recipes(callable) {
         return Err(recipes(package, code.interface));
     }
-    if let (Resolved::Release { package, card, .. }, true) = (&resolved, set.len() > 1) {
-        on = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name).await;
-        code.on = on.clone();
+    if set.len() == 1 {
+        protocol::calcifer::local_usable(&on.to_string())?;
     }
-    protocol::calcifer::local_usable(&on.to_string())?;
-    if let (Resolved::Release { package, card, .. }, On::Machine(machine), false) = (&resolved, &on, key == "quote")
+    let gpu = code.interface.gpu(callable);
+    let named = format!("{package}/{}", callable.name);
+    let (mut submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
+    // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
+    let size = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).map(|input| v1::JobSize::of(&input)).unwrap_or_default();
+    let gpus = ask.gpus.unwrap_or(0);
+    let (estimates, count) = match purpose {
+        For::Estimate(count) => (true, count),
+        _ => (false, 1),
+    };
+    let mut offers = vec![];
+    match &resolved {
+        Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
+            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, count).await;
+            notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+            if set.len() > 1 {
+                on = chosen;
+            }
+            offers = offered;
+        }
+        Resolved::Local { local, .. } if estimates => {
+            let function = format!("{}/{}", local.source.manifest, callable.name);
+            let jobs: Vec<crate::placement::Job> = (0..count)
+                .map(|copy| crate::placement::Job { key: copy.to_string(), target: named.clone(), function: function.clone(), size, gpus, on: set.clone(), ..Default::default() })
+                .collect();
+            let (offered, said) = crate::placement::offers(api, &jobs).await;
+            notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+            offers = offered;
+        }
+        _ => {}
+    }
+    if let Resolved::Release { .. } = &resolved {
+        submit.on = on.clone();
+    }
+    protocol::calcifer::local_usable(&submit.on.to_string())?;
+    if let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none()) {
+        notes.push(Note { level: NoteLevel::Warning, message: warning });
+    }
+    if let (Resolved::Release { package, card, .. }, On::Machine(machine), For::Run) = (&resolved, &submit.on, purpose)
         && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
     {
         return Ok(Prepared::Install(going));
     }
-    let (submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
     }
-    Ok(Prepared::Run { submit, notes })
+    Ok(Prepared::Run { submit, notes, offers })
 }
 
 /// Where a run that names no machine is resolved and described: this computer's, on an OS that runs models itself; on another, a
@@ -400,9 +494,6 @@ async fn call(
             if let Some(warning) = bound.warning(&target) {
                 notes.push(Note { level: NoteLevel::Warning, message: warning });
             }
-            if let Some(warning) = gpuless(api, &code.on, code.interface, callable, &target).await {
-                notes.push(Note { level: NoteLevel::Warning, message: warning });
-            }
             let out = project.as_deref().map(crate::project::landing);
             (call.spec(&bound)?, Some(bound), out)
         }
@@ -414,9 +505,9 @@ async fn call(
 
 /// Warns that a GPU function sent to a ready machine with no supported GPU (an NVIDIA GPU, or an
 /// Apple Silicon Mac's own) runs on its CPU, slowly, or is refused there, and how to rent one.
-async fn gpuless(api: &Api, on: &On, interface: &Interface, callable: &Callable, target: &str) -> Option<String> {
+async fn gpuless(api: &Api, on: &On, gpu: bool, target: &str) -> Option<String> {
     let On::Machine(name) = on else { return None };
-    if !interface.gpu(callable) {
+    if !gpu {
         return None;
     }
     let machine = api.machines.show(name).await.ok()?;

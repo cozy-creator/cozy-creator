@@ -154,6 +154,11 @@ impl Link {
         Ok(Box::pin(self.machine.events(id, after).await?.map_err(LinkError::from)))
     }
 
+    /// When each of `jobs` would finish there, packed with its queue (`estimate/1`).
+    pub async fn estimate(&self, jobs: &v1::EstimateRequest) -> Result<v1::EstimateAnswer, LinkError> {
+        Ok(self.machine.estimate(jobs).await?)
+    }
+
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
     pub async fn runs(&self, before: u64, limit: u32) -> Result<v1::RunList, LinkError> {
         Ok(self.machine.runs(before, limit).await?)

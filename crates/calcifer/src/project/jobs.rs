@@ -28,7 +28,7 @@ pub struct Going {
     pub earlier_ms: u64,
     /// It makes a shot.
     pub shot: bool,
-    /// When it should end, and how many GPUs it is on.
+    /// When it should end, as its machine quoted, and how many GPUs it is on.
     pub ends_at_ms: Option<i64>,
     pub gpus: Option<u32>,
 }
@@ -74,6 +74,8 @@ struct Live {
     settled: bool,
     /// What landed while it ran and where the run was then, shown once it's seen to go on from there: what lands last is the result.
     landed: Option<(Preview, (Option<String>, Option<String>))>,
+    /// Its run, running, says its time left (`eta_s`): its end is that, the time every client shows, no longer its quote.
+    timed: bool,
 }
 
 impl Jobs {
@@ -141,12 +143,19 @@ impl Jobs {
         held.sending = going.iter().zip(&shots).filter(|(going, _)| going.run == 0).map(|(going, shot)| Job { shot: *shot, ..sending(going) }).collect();
         for (going, shot) in going.iter().zip(&shots).filter(|(going, _)| going.run > 0) {
             if let Some(live) = held.live.iter_mut().find(|live| live.job.run == Some(going.run)) {
-                (live.job.ends_at_ms, live.job.gpus) = (going.ends_at_ms, going.gpus);
+                // Its time left may have come before its row did: read again until it has.
+                if !live.timed {
+                    live.job.ends_at_ms = going.ends_at_ms;
+                    if let Some(progress) = run(going.run).and_then(|run| run.progress) {
+                        live.progress(&progress);
+                    }
+                }
+                live.job.gpus = going.gpus;
                 continue;
             }
             let Some(run) = run(going.run) else { continue };
             let job = Job { shot: *shot, ..sending(going) };
-            let mut live = Live { id: run.id.clone(), job, earlier_ms: going.earlier_ms, settled: false, landed: None };
+            let mut live = Live { id: run.id.clone(), job, earlier_ms: going.earlier_ms, settled: false, landed: None, timed: false };
             live.apply(&run);
             held.live.push(live);
         }
@@ -470,6 +479,11 @@ impl Live {
         job.stage = (!progress.stage.is_empty()).then(|| words(&progress.stage));
         job.detail = detail(progress);
         job.fraction = progress.done_fraction;
+        // Once it runs: before, its time left is its whole run's, and its machine's quote says when that starts.
+        if let (Some(left), JobState::Running) = (progress.eta_s, job.state) {
+            job.ends_at_ms = Some(crate::store::now_ms() + left * 1000);
+            self.timed = true;
+        }
         // A move since it stopped clears it; the progress a run's record carries is from before.
         if job.stalled.as_ref().is_some_and(|stalled| progress.at_ms > stalled.since_ms) {
             job.stalled = None;
