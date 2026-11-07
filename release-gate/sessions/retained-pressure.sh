@@ -10,7 +10,6 @@
 #   packages     a packages_refs name: qwen-image-2 from that checkout ("": the Hub's release)
 #   cap          `--gpu-memory-limit` bytes (default 20 GiB of a 24 GB card)
 #   game_gb      what the game takes after step 2 (default 18)
-#   traffic_gb   GB the provider bills: the image, Qwen-Image 2.1 Turbo and the fixture's environment (default 45)
 . "$(dirname "$0")/lib.sh"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
@@ -19,7 +18,7 @@ FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 PK=$(param packages '')
 T=qwen-image-2/generate_turbo
 [ -z "$PK" ] || { [ -d "$PACKAGES/$PK/qwen-image-2" ] || fail "no packages checkout $PK"; T=$PACKAGES/$PK/qwen-image-2/generate_turbo; }
-quote "$(param traffic_gb 45)" 2400
+quote 2400
 rent
 
 args=(--tensord "$(param tensord "$(command -v cozy)")")
