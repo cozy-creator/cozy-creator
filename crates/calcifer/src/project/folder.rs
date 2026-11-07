@@ -801,6 +801,9 @@ struct Held {
     files: String,
     /// Commits since the last checkpoint began.
     commits: u32,
+    /// Acts that changed what a read shows and nothing project.db keeps (a file here, what's measured on its row): with each, the revision
+    /// moves too, or a read worked out once per revision would go on showing what was.
+    shown: u64,
 }
 
 static SHARED: LazyLock<Mutex<HashMap<PathBuf, Arc<Shared>>>> = LazyLock::new(Mutex::default);
@@ -958,7 +961,7 @@ impl Folder {
             let mut stored = db::load(&conn, &self.db())?;
             let files = super::stamp(&self.dir.join(FILES));
             self.fill(Arc::make_mut(&mut stored.lock), &stored.measured);
-            *held = Some(Held { seen: db::data_version(&conn), conn, stored, files, commits: 0 });
+            *held = Some(Held { seen: db::data_version(&conn), conn, stored, files, commits: 0, shown: 0 });
         }
         let now = super::stamp(&self.dir.join(FILES));
         if let Some(held) = held.as_mut().filter(|held| held.files != now) {
@@ -974,9 +977,10 @@ impl Folder {
         self.held().ok().and_then(|held| held.as_ref().map(|held| held.stored.seq)).unwrap_or(0)
     }
 
-    /// What moves with each commit, this Calcifer's or another connection's that it read again.
+    /// What moves with each commit, this Calcifer's or another connection's that it read again, and with each act that changed what a
+    /// read shows and committed nothing.
     pub fn stamp(&self) -> String {
-        self.held().ok().and_then(|held| held.as_ref().map(|held| format!("{}.{}", held.stored.seq, held.seen))).unwrap_or_default()
+        self.held().ok().and_then(|held| held.as_ref().map(|held| format!("{}.{}.{}", held.stored.seq, held.seen, held.shown))).unwrap_or_default()
     }
 
     /// `change` as one transaction: every write it makes to this project, its history entry and its request's key commit together, or
@@ -1039,11 +1043,13 @@ impl Folder {
         if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() {
             return Ok(answer);
         }
-        let seq = {
+        let (seq, shown) = {
             let mut held = self.held()?;
             let held = held.as_mut().expect("held");
             let seq = db::commit(&mut held.conn, &self.db(), &act.base, &after, &extra)?;
             after.seq = seq.unwrap_or(act.base.seq);
+            let shown = seq.is_none() && changed[2] && after.lock.files != act.base.lock.files;
+            held.shown += u64::from(shown);
             held.stored = after;
             held.files = files;
             held.seen = db::data_version(&held.conn);
@@ -1056,14 +1062,14 @@ impl Folder {
                     shared.checkpointing.store(false, std::sync::atomic::Ordering::Release);
                 });
             }
-            seq
+            (seq, shown)
         };
         super::history::committed(self, entry);
         let now = seq.unwrap_or(act.base.seq);
         for told in act.after.into_inner() {
             told(now);
         }
-        if seq.is_some() && changed.contains(&true) {
+        if (seq.is_some() || shown) && changed.contains(&true) {
             crate::events::project_changed(&self.dir);
         }
         let held_ms = ms(began);
@@ -1563,18 +1569,22 @@ impl Folder {
     }
 
     /// What's `measured` of these files by hash, in project.db and on their rows, in one write: what ffprobe says of their bytes, here or not.
+    /// Two would let a read between them work out the rows unmeasured, under the revision that stands after.
     fn record_measured(&self, measured: &BTreeMap<String, File>) -> Result<(), Error> {
-        let new = self.reading_measured(|held| measured.iter().any(|(sha256, file)| held.get(sha256) != Some(&Measured::of(file))))?;
-        if !new {
+        let kept = self.reading_measured(|held| measured.iter().all(|(sha256, file)| held.get(sha256) == Some(&Measured::of(file))))?;
+        let rows = self.reading_bare_lock(|lock| measured.iter().all(|(sha256, file)| lock.files.get(sha256).is_none_or(|row| Measured::of(row) == Measured::of(file))))?;
+        if kept && rows {
             return Ok(());
         }
         self.act(|| {
-            self.writing_measured(|held| {
-                for (sha256, file) in measured {
-                    held.insert(sha256.clone(), Measured::of(file));
-                }
-                Ok(())
-            })?;
+            if !kept {
+                self.writing_measured(|held| {
+                    for (sha256, file) in measured {
+                        held.insert(sha256.clone(), Measured::of(file));
+                    }
+                    Ok(())
+                })?;
+            }
             self.update_lock(|held| {
                 for (sha256, file) in measured {
                     if let Some(row) = held.files.get_mut(sha256) {
