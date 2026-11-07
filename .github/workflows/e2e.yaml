@@ -132,6 +132,10 @@ on:
       quote:
         type: boolean
         default: false
+      # The cli shards to run, a JSON list (`["executors","commands"]`); empty: all. Reruns only what failed.
+      shards:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -338,7 +342,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [runs, executors, commands, follow, web]
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
