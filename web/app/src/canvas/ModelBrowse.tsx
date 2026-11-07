@@ -3,6 +3,7 @@ import { useState } from "react"
 import { useConnection } from "../app/Connection"
 import type { FoundModel, Tool } from "../types"
 import { useSignal } from "../ui/signal"
+import { NSFW, ShowNsfw, Tags, useShowNsfw } from "../ui/Tags"
 import type { Load } from "./carry"
 import { carrying, familyName, listed, runnerOf, whyNot, wordOf } from "./checkpoints"
 import { useCanvasStore } from "./context"
@@ -27,7 +28,7 @@ export function shortName(ref: string, family?: string): string {
   return spaced(short) || spaced(word)
 }
 
-const KIND = { lora: "LoRA", weights: "Fine-tune" } as const
+const KIND = { lora: "LoRA", weights: "Fine-tune", component: "Component" } as const
 
 /** What a row says it is, and why it's dimmed if it is: a LoRA runs only on a box of its family, and a checkpoint goes anywhere a tool runs it. */
 function rowOf(found: FoundModel, tools: Map<string, Tool>, fits: boolean, family: string | null) {
@@ -43,6 +44,7 @@ function Row({ found, label, row }: { found: FoundModel; label: string; row: Ret
     <li className={`browsed checkpoint ${row.away ? "away" : ""}`} data-checkpoint={found.model} title={row.title}>
       <b>{label}</b>
       <span>{row.what}</span>
+      <Tags tags={found.tags} />
     </li>
   )
 }
@@ -62,13 +64,14 @@ export function ModelBrowse({ q }: { q: string }) {
   const tools = useSignal(store.tools)
   useSignal(store.names)
   const [limit, setLimit] = useState(PAGE)
+  const [showNsfw, setShowNsfw] = useShowNsfw()
   const { data, error, isPending } = useQuery({
-    queryKey: ["models", q, limit],
-    queryFn: ({ signal }) => client.models(q, limit, signal),
+    queryKey: ["models", q, limit, showNsfw],
+    queryFn: ({ signal }) => client.models(q, limit, signal, { noTag: showNsfw ? undefined : NSFW }),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   })
-  const models = (data?.models ?? []).filter(listed)
+  const models = (data?.models ?? []).filter((found) => listed(found, showNsfw))
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("[data-checkpoint]")
@@ -95,6 +98,7 @@ export function ModelBrowse({ q }: { q: string }) {
     <div ref={list} className="browse checkpoints">
       {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
       {isPending && !error && <p className="muted">Looking</p>}
+      <ShowNsfw shown={showNsfw} onChange={setShowNsfw} />
       {models.length > 0 && <p className="muted">Drag one onto a box</p>}
       {groups.map(({ family, words, found }) => {
         const labels = found.map((one) => shortName(one.model, family || undefined))

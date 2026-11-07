@@ -629,11 +629,14 @@ export interface FoundModel {
   author?: ModelAuthor
   /** Its owner's label, or (absent) its weights' family. */
   family_from?: FamilyFrom
-  /** What its header says: only a LoRA's factors, or weights of its own. Absent: it couldn't be read. */
-  kind?: "lora" | "weights"
+  /** What its header says: only a LoRA's factors, a model's weights (its header verifies as a family), or a component's (a text encoder, a VAE:
+   *  weights no family's). Absent: it couldn't be read. */
+  kind?: ModelKind
   /** Its labels, sorted; `nsfw` marks one that makes sexual or nude images. */
   tags?: string[]
 }
+
+export type ModelKind = "lora" | "weights" | "component"
 
 /** Where a model's family comes from: its owner's label, or its weights (its header verifies as it). */
 export type FamilyFrom = "owner" | "weights"
@@ -673,7 +676,7 @@ export interface ModelDetail {
   family_from?: FamilyFrom
   /** What its header verifies as, whatever its label. */
   weights_family?: string
-  kind?: "lora" | "weights"
+  kind?: ModelKind
   created_at: string
   source?: string
   author?: ModelAuthor

@@ -292,26 +292,31 @@ code {
 .pill code {
   font-size: 1em;
 }
-/* A model's tags, small; NSFW stands out. */
-.chips {
+/* A model's tags, small; NSFW stands out. In a checkpoint row, beside what it is. */
+.model-tags {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
   vertical-align: middle;
 }
-.chip {
+.browsed .model-tags {
+  grid-row: 2;
+  grid-column: 2;
+  justify-self: end;
+}
+.model-tag {
   font-size: var(--tiny);
   padding: 1px 7px;
   border-radius: 10px;
   background: var(--float);
   white-space: nowrap;
 }
-.chip.nsfw {
+.model-tag.nsfw {
   color: var(--ood);
   border: 1px solid color-mix(in srgb, var(--ood) 40%, transparent);
   font-weight: 600;
 }
-.chip button {
+.model-tag button {
   all: unset;
   cursor: pointer;
   margin-left: 4px;

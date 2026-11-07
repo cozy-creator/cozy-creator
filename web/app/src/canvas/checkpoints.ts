@@ -1,6 +1,7 @@
 import type { FoundModel, Tool } from "../types"
 import { say } from "../ui/notes"
 import { signal } from "../ui/signal"
+import { isNsfw } from "../ui/Tags"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { madeHere } from "./shown"
 
@@ -122,8 +123,9 @@ export function letGo(store: CanvasStore, x: number, y: number) {
   return true
 }
 
-/** What the lists of checkpoints show. Once the Hub tags what's NSFW, a Show NSFW switch decides here. */
-export const listed = (_found: FoundModel) => true
+/** What the lists of checkpoints show: no component (a text encoder, a VAE: weights its header verifies as no family's model), and what's
+ *  tagged NSFW only while the viewer's Show NSFW switch is on. */
+export const listed = (found: FoundModel, nsfwShown: boolean) => found.kind !== "component" && (nsfwShown || !isNsfw(found.tags))
 
 /** What a model family is called: what the tool of it on your list says, else its own words, `sdxl` being SDXL and `krea-2` Krea 2. */
 export function familyName(family: string, tools: Map<string, Tool>): string {

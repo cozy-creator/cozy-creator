@@ -3,6 +3,7 @@ import { useEffect, useState } from "react"
 import { useConnection } from "../app/Connection"
 import type { FoundModel } from "../types"
 import { useSignal } from "../ui/signal"
+import { NSFW, useShowNsfw } from "../ui/Tags"
 import { AddOnRow } from "./AddOns"
 import { addOnsOf, carrying, listed, takenOff } from "./checkpoints"
 import { useCanvasStore, useOfElement } from "./context"
@@ -33,14 +34,15 @@ export function BoxShelf({ name }: { name: string }) {
     const timer = setTimeout(() => setQ(typed.trim()), 250)
     return () => clearTimeout(timer)
   }, [typed])
+  const [showNsfw] = useShowNsfw()
   const { data, error, isPending } = useQuery({
-    queryKey: ["models", q, MOST, model?.family],
-    queryFn: ({ signal }) => client.models(q, MOST, signal, model?.family),
+    queryKey: ["models", q, MOST, model?.family, showNsfw],
+    queryFn: ({ signal }) => client.models(q, MOST, signal, { family: model?.family, noTag: showNsfw ? undefined : NSFW }),
     enabled: Boolean(model?.family),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   })
-  const found = (data?.models ?? []).filter((one) => listed(one) && one.family === model?.family)
+  const found = (data?.models ?? []).filter((one) => listed(one, showNsfw) && one.family === model?.family)
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("[data-pick]")
