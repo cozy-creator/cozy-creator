@@ -120,7 +120,7 @@ FAMILIES: list[dict[str, Any]] = [
         "reference": "hf://Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758",
         "classes": ["QwenImage21Pipeline", "QwenImage21Transformer2DModel"],
         "folders": ["transformer", "text_encoder", "vae"],
-        "sources": ["qwenimage21.lora"],
+        "sources": ["qwenimage21.comfy", "qwenimage21.lora"],
     },
     {
         "name": "krea-2",

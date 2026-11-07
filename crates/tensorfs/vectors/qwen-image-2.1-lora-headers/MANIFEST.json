@@ -1,5 +1,5 @@
 {
- "note": "Five published Qwen-Image 2.1 LoRAs: LightX2V's Lightning (Diffusers names under transformer., LightX2V's lora.down/lora.up), Turbo8 (Diffusers' save_lora_weights), Alibaba PAI's Fun Acc PDD export (bare names, lora_down/lora_up parameters, per-step proj_out heads), an AI-Toolkit LoRA in ComfyUI's names (diffusion_model., the fused img_mlp.gate_up) and a DiffSynth-Studio LoRA (bare names, PEFT's lora_A.default)",
+ "note": "Six published Qwen-Image 2.1 LoRAs: LightX2V's Lightning (Diffusers names under transformer., LightX2V's lora.down/lora.up), Turbo8 (Diffusers' save_lora_weights), Alibaba PAI's Fun Acc PDD export (bare names, lora_down/lora_up parameters, per-step proj_out heads), an AI-Toolkit LoRA in ComfyUI's names (diffusion_model., the fused img_mlp.gate_up), a DiffSynth-Studio LoRA (bare names, PEFT's lora_A.default) and e-n-v-y's Fix, a DoRA in ComfyUI's names (diffusion_model., gate_up, a dora_scale [out, 1] per module)",
  "members": [
   {
    "source": "lightx2v/Qwen-Image-2.1-Lightning@6b0a1176327c01522a44276c5da67331a025b6fc",
@@ -45,6 +45,15 @@
    "header_bytes": 58248,
    "full_length": 167830408,
    "declared_source_sha256": "0c171eb802ea8051b511f2d93c1743eeadd030316255aa98fa65d40809366752"
+  },
+  {
+   "source": "e-n-v-y/Qwen-Image-2.1-Fix@5b2c7be6ced92cc2e09f9309ad00567b3a3bb6ce",
+   "member": "qwen-image-2.1-fix-1.0-comfy.safetensors",
+   "header_file": "qwen-image-2.1-fix-1.0-comfy.safetensors.header",
+   "header_sha256": "fd258c0d73d6beb2e11c1cfe5821503db1fc55c91f6d02dda9f5e40166df60e2",
+   "header_bytes": 53344,
+   "full_length": 111612000,
+   "declared_source_sha256": "e4a369158b957aee3a8316d94dbe00c98f7d648ef3d1926ccf7283915b6db60c"
   }
  ]
 }

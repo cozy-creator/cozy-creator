@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::err::{refuse, Code, Result};
+use crate::family::{self, Record, Stored};
 use crate::format::compose::{compose, Supply};
 use crate::format::{Header, ObjectRef, Provenance, Value};
 use crate::store::Store;
@@ -43,6 +44,22 @@ fn listed(value: Option<&Value>) -> Vec<Value> {
         Some(value) => vec![value.clone()],
         None => vec![],
     }
+}
+
+/// A base of a family stays one: components that make it no form of its family (keys no conversion placed,
+/// as a layout stored as it is has) refuse, named, rather than compose into a model its packages cannot build.
+fn unfamiliar(base: &Header, composed: &Header, pairs: &[(String, &str)]) -> Result<()> {
+    let (Some(was), None) = (Record::read(&base.metadata), Record::read(&composed.metadata)) else { return Ok(()) };
+    let Some(fam) = family::named(&was.name) else { return Ok(()) };
+    let stored: Vec<Stored> = (composed.components().iter())
+        .filter(|c| pairs.iter().any(|(name, _)| *name == c.name))
+        .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
+        .collect();
+    let Err(why) = fam.form_of(&stored) else { return Ok(()) };
+    refuse(Code::FAMILY_MISMATCH, format!(
+        "the base is {} {}, and with the source's {} it is no {} form ({why}). Convert the source to its \
+         layout (--source-format <format>), or upload it without --base",
+        was.name, was.form, pairs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", "), was.name))
 }
 
 /// `base` with `source`'s components, written to `store`: with `names`, each that the source
@@ -109,6 +126,7 @@ pub fn on_base(store: &Store, base: &ObjectRef, source: &ObjectRef, names: &[Str
         ("components".to_owned(), Value::Map(components.iter().map(|(k, v)| (k.clone(), text(v))).collect())),
     ])));
     let header = compose(&on, &supplies, metadata).or_else(|e| refuse(Code::UNKNOWN_FORMAT, e.to_string()))?;
+    unfamiliar(&on, &header, &pairs)?;
     let bytes = header.to_cbor().or_else(|e| refuse(Code::UNKNOWN_FORMAT, e.to_string()))?;
     let header = store.put_bytes(&bytes).map_err(crate::store::Error::refusal)?;
     Ok(Composed { header, components })

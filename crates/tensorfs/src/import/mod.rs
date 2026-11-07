@@ -863,8 +863,8 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         }
     };
     let identity = |g: &source::Group| component(&g.folder, &g.stem);
-    let mut skipped = Vec::new();
-    let mut planned = engine::plan(&set, tables, &recognized, &identity, &mut skipped)?;
+    let mut ignored = Vec::new();
+    let mut planned = engine::plan(&set, tables, &recognized, &identity, &mut ignored)?;
     let (mut files, mut filled, mut versions) = documents(&set, &recognized, &planned, req, &area)?;
     let sources: BTreeMap<String, &source::Group> = (recognized.claims.iter())
         .map(|c| (c.name.clone(), &set.groups[c.group]))
@@ -872,7 +872,10 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         .collect();
     let mut adapters = match as_is {
         true => BTreeMap::new(),
-        false => lora::normalize(&mut planned, &sources, &mut files, &set)?,
+        false => {
+            let tabled = recognized.claims.iter().map(|c| c.name.clone()).collect();
+            lora::normalize(&mut planned, &sources, &tabled, &mut files, &set)?
+        }
     };
     // A PEFT adapter's keys are its base model's module names: canonical once unwrapped.
     let peft = |g: &usize| adapters.get(&identity(&set.groups[*g])).is_some_and(|a| a.stated);
@@ -962,8 +965,8 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     for note in &checked.notes {
         progress(&format!("family: {note}"), 0, 0);
     }
-    for note in &skipped {
-        progress(&format!("warning: {note}"), 0, 0);
+    for note in &ignored {
+        progress(note, 0, 0);
     }
     stopped(req)?;
     // Nothing refused: the bulk lands, each download resuming from its header.

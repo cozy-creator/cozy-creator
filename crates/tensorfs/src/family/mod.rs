@@ -137,8 +137,8 @@ pub fn of_class(class: &str) -> Option<&'static Family> {
     families().iter().find(|f| f.classes.iter().any(|c| c == class))
 }
 
-/// What a LoRA's tensors end in.
-pub const FACTORS: [&str; 3] = [".lora_A.weight", ".lora_B.weight", ".alpha"];
+/// What a LoRA's tensors end in: its factors, alpha and a DoRA's magnitude.
+pub const FACTORS: [&str; 4] = [".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector"];
 /// What a LoRA keeps beside its factors that adapts no base weight: a parallel decoder's per-step
 /// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`).
 pub const KEPT: [&str; 1] = [".heads"];
