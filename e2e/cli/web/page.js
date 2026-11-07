@@ -308,7 +308,10 @@ function importYaml(folder, text) {
 /** Rows of `folder`'s project.db for `query`, read only, each an array. */
 function rowsOf(folder, query) {
   const script = 'import json, sqlite3, sys\nfor row in sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).execute(sys.argv[2]): print(json.dumps(list(row)))';
-  return execFileSync('python3', ['-c', script, `${folder}/project.db`, query], { encoding: 'utf8' }).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  return execFileSync(PYTHON, ['-c', script, `${folder}/project.db`, query], { encoding: 'utf8' }).split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, rowsOf, settled, signIn, summary, until, watchBoxes, wav, yamlOf };
+/** Python as this OS names it: Windows has no python3 of its own. */
+const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
+
+module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, rowsOf, settled, signIn, summary, until, watchBoxes, wav, yamlOf };

@@ -1,13 +1,13 @@
-// Windows: a save past a file another program holds longer than Calcifer waits. What the person did stays done, the top bar says what's in the
-// way, nothing is written while it's held, and it's saved when it's let go, with no reload and nothing pressed again.
+// A save past project.db's write lock, held by another program (a SQLite browser's open transaction) longer than Calcifer waits. What the
+// person did stays done, the top bar says what's in the way, nothing is written while it's held, and it's saved when it's let go, with no
+// reload and nothing pressed again.
 //   node held.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $HELD_FOLDER, $HELD_ID: a project of two Edits, `stays` and `goes`.
 // Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
-const { readFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, until } = require('./page');
+const { PYTHON, calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, rowsOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -21,8 +21,8 @@ function check(name, ok, detail) {
   const base = calcifer();
   const [folder, id] = [process.env.HELD_FOLDER, process.env.HELD_ID];
   seen.project = { id, folder };
-  const yamlAt = join(folder, 'project.yaml');
-  const yaml = () => readFileSync(yamlAt, 'utf8');
+  // Its boxes, read past Calcifer: a reader isn't kept out by another's write lock.
+  const boxes = () => rowsOf(folder, 'SELECT name FROM boxes ORDER BY ord').map(([name]) => name);
   const browser = await launch(playwright);
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 800 } })).newPage();
   lookAt(page);
@@ -34,8 +34,9 @@ function check(name, ok, detail) {
   await page.goto(`${base}/#/projects/${encodeURIComponent(id)}`);
   await boxOf(page, 'goes').waitFor();
 
-  // Opened with read sharing only, as an editor or a scanner opens it, for longer than Calcifer waits on it.
-  const holder = spawn('powershell', ['-NoProfile', '-Command', `$f = [IO.File]::Open('${yamlAt.replaceAll('/', '\\')}', 'Open', 'Read', 'Read'); 'held'; Start-Sleep -Seconds 14; $f.Close()`]);
+  // Its write lock taken, for longer than Calcifer waits on it (10 s).
+  const hold = 'import sqlite3, sys, time\nc = sqlite3.connect(sys.argv[1], isolation_level=None)\nc.execute("BEGIN IMMEDIATE")\nprint("held", flush=True)\ntime.sleep(14)\nc.execute("ROLLBACK")';
+  const holder = spawn(PYTHON, ['-c', hold, join(folder, 'project.db')]);
   const letGo = new Promise((done) => holder.once('exit', done));
   await new Promise((done, fail) => {
     holder.stdout.once('data', done);
@@ -48,13 +49,13 @@ function check(name, ok, detail) {
   await shut.locator('.head [aria-label=Delete]').click();
   await until('gone from the canvas', () => page.locator('.react-flow__node .card[data-asset="goes"]').count(), (n) => n === 0);
   check('shown_at_once', true);
-  const note = page.locator('.top .pill:has-text("project.yaml is open in another program")');
+  const note = page.locator('.top .pill:has-text("project.db is open in another program")');
   await note.waitFor();
   check('says_what_holds_it', true);
-  check('not_written_while_held', yaml().includes('goes:'), yaml());
+  check('not_written_while_held', boxes().includes('goes'), boxes());
   await letGo;
-  await until('saved once it is let go', () => Promise.resolve(yaml()), (text) => !text.includes('goes:'));
-  check('saved_once_let_go', yaml().includes('stays:'), yaml());
+  await until('saved once it is let go', () => Promise.resolve(boxes()), (names) => !names.includes('goes'));
+  check('saved_once_let_go', boxes().includes('stays'), boxes());
   await until('the note goes', () => note.count(), (n) => n === 0);
   check('the_note_goes', true);
   check('no_page_errors', errors.length === 0, errors);

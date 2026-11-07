@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web] [--tensord F|V] [--tensorfs F|V]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web] [--tensord F|V] [--tensorfs F|V]
 #                  [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -260,13 +260,13 @@ case $SHARD in
   executors) parts="second_executor lifetime update remove" ;;
   commands) parts="catalog basics yaml_requests run_filters projects bound_runs agent logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
-  web) parts="web_serves logs" ;;
+  web) parts="tools_read web_serves logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) alone, and its latency against the cozy before it.
   projectdb) parts="projectdb logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
-  projectdb-web) parts="db_existing_web logs" ;;
+  projectdb-web) parts="tools_read db_existing_web logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"

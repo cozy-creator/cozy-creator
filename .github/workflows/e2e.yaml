@@ -338,7 +338,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [runs, executors, commands, follow, web]
+        # projectdb*: project.db (cl-803), e2e/cli/projectdb.sh.
+        shard: [runs, executors, commands, follow, web, projectdb, projectdb-latency, projectdb-existing, projectdb-web]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -366,7 +367,7 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web'
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || startsWith(matrix.shard, 'projectdb')
         uses: AnimMouse/setup-ffmpeg@v1
       - name: cli suite
         env:

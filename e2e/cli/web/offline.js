@@ -1,17 +1,17 @@
 // Calcifer away (Paul, 11-06): "the UI should always remain responsive, even if calcifer is offline, and then we sync the changes in when calcifer
-// comes back online". With Calcifer stopped: Turbo flips, a prompt is typed and saved twice, a take approved, a box moved twice, one renamed, one
+// comes back online". With Calcifer stopped: Turbo (a toggle under More) flips, a prompt is typed and saved twice, a take approved, a box moved twice, one renamed, one
 // deleted and a picture dropped, each shown as it's done and still after a tab away and back, and the top bar counts what waits with nothing
-// over the canvas. Started again with no reload: all of it is in project.yaml, in the order it was done, the top bar clears and nothing was refused.
+// over the canvas. Started again with no reload: all of it is in project.db, in the order it was done, the top bar clears and nothing was refused.
 //   node offline.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $STOP: a shell command that stops this Calcifer, and $START one that
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { execSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 const { createHash } = require('crypto');
-const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('fs');
+const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, pointAt, until } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, drop, importYaml, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, pointAt, rowsOf, until, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -50,12 +50,12 @@ const DESCRIBED_MS = 300_000;
   const asset = async (name) => (await api(at)).body.assets.find((row) => row.name === name);
   const folder = (await api(at)).body.path;
   seen.project = { id, folder };
-  const yamlAt = join(folder, 'project.yaml');
-  const yaml = () => readFileSync(yamlAt, 'utf8');
-  const canvas = () => (existsSync(join(folder, 'project.canvas.yaml')) ? readFileSync(join(folder, 'project.canvas.yaml'), 'utf8') : '');
+  // What project.db holds, read past Calcifer, so it reads while Calcifer is away: a line a box, `name: field=value …`.
+  const held = () => rowsOf(folder, "SELECT b.name, group_concat(f.field || '=' || f.value, ' ') FROM boxes b LEFT JOIN fields f ON f.box = b.key GROUP BY b.key ORDER BY b.ord")
+    .map(([name, fields]) => `${name}: ${fields ?? ''}`).join('\n');
   const row = (name) => {
-    const m = canvas().match(new RegExp(`^\\s+${name}:\\s*\\{x:\\s*(-?[\\d.]+),\\s*y:\\s*(-?[\\d.]+)`, 'm'));
-    return m ? `${Math.round(m[1])},${Math.round(m[2])}` : null;
+    const [found] = rowsOf(folder, `SELECT x, y FROM canvas WHERE name = '${name}'`);
+    return found ? `${Math.round(found[0])},${Math.round(found[1])}` : null;
   };
   const box = (name) => boxOf(page, name);
   const place = async (name) => {
@@ -91,12 +91,21 @@ const DESCRIBED_MS = 300_000;
   await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: picture(20) }) });
   await imported('named', 30, 480);
   await imported('spare', 40, 880);
-  writeFileSync(yamlAt, `${yaml().trimEnd()}\n  quick:\n    tool: ${QUICK}/still\n    instructions: a lighthouse\n`);
+  importYaml(folder, `${yamlOf(folder).trimEnd()}\n  quick:\n    tool: ${QUICK}/still\n    instructions: a lighthouse\n`);
+  // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
+  if ((await api('/v1/status')).body.local_usable) execFileSync(process.env.COZY, ['--json', 'run', `${QUICK}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: DESCRIBED_MS });
   await box('quick').waitFor();
   await page.keyboard.press('f');
-  await openBox(page, 'quick');
   const turbo = box('quick').locator('input[type=checkbox][aria-label="Turbo"]');
-  await turbo.waitFor({ timeout: DESCRIBED_MS });
+  // Opened, with More open: a toggle isn't on a box's face.
+  const openQuick = async (timeout = STEP_MS) => {
+    await openBox(page, 'quick');
+    const more = box('quick').locator('.more-toggle');
+    await more.waitFor({ timeout });
+    if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click();
+    await turbo.waitFor({ timeout });
+  };
+  await openQuick(DESCRIBED_MS);
   await closeBox(page);
   // Another project, for a tab to go to and come back from while Calcifer's away.
   const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}` }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
@@ -117,7 +126,7 @@ const DESCRIBED_MS = 300_000;
   check('offline_in_the_top_bar', (await page.locator('.gate, .unread, [role=dialog]').count()) === 0);
 
   // Each, done with nothing answering, shows as it's done.
-  await openBox(page, 'quick');
+  await openQuick();
   await turbo.click();
   check('turbo_flips_at_once', await turbo.isChecked());
   const prompt = box('quick').locator('.mention-text').first();
@@ -163,7 +172,7 @@ const DESCRIBED_MS = 300_000;
   await box('quick').waitFor();
   await page.waitForTimeout(500);
   const back = await shown();
-  await openBox(page, 'quick');
+  await openQuick();
   check('a_tab_away_and_back_keeps_them', back.boxes === left.boxes && back.shot === left.shot && (await turbo.isChecked()) && (await prompt.innerText()).trim() === 'a lighthouse at dawn', { left, back });
   await closeBox(page);
 
@@ -172,25 +181,26 @@ const DESCRIBED_MS = 300_000;
   const waiting = await until('eight waiting', pills, eight, 5000).catch(pills);
   seen.said_offline = waiting;
   check('counts_what_waits', eight(waiting), waiting);
-  check('nothing_written_while_away', !/still_turbo|dawn|dusk|renamed|late:/.test(yaml()) && /spare:/.test(yaml()), yaml());
+  check('nothing_written_while_away', !/turbo=true|dawn|dusk|^renamed:|^late:/m.test(held()) && /^spare:/m.test(held()), held());
   check('nothing_refused_while_away', !(await notes()).some((line) => /Couldn't/.test(line)), await notes());
 
   // Back with no reload: all of it lands, in its order, and the top bar clears.
   execSync(process.env.START, { shell: 'bash', stdio: 'ignore' });
   await until('all saved', pills, (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
-  await until('in project.yaml', () => Promise.resolve(yaml()), (text) => /still_turbo/.test(text) && /late:/.test(text) && /renamed:/.test(text) && !/spare:/.test(text));
-  await until('the move in the canvas file', () => Promise.resolve(row('shot')), (held) => held === twice);
+  await until('in project.db', () => Promise.resolve(held()), (text) => /turbo=true/.test(text) && /^late:/m.test(text) && /^renamed:/m.test(text) && !/^spare:/m.test(text));
+  await until('the move in its row', () => Promise.resolve(row('shot')), (at) => at === twice);
   const quick = await asset('quick');
   const shot = await asset('shot');
   seen.after = { quick: { tool: quick.tool, instructions: quick.fields?.instructions }, shot: { approved: shot.approved, pinned: shot.pinned }, row: row('shot') };
-  check('turbo_saved', quick.tool === `${QUICK}/still_turbo` && /still_turbo/.test(yaml()), quick.tool);
-  check('prompt_saved_in_its_order', quick.fields?.instructions === 'a lighthouse at dawn' && yaml().includes('a lighthouse at dawn') && !yaml().includes('dusk'), quick.fields);
+  const yaml = yamlOf(folder);
+  check('turbo_saved', quick.tool === `${QUICK}/still` && quick.fields?.turbo === true && /^ {4}turbo: true$/m.test(yaml), quick);
+  check('prompt_saved_in_its_order', quick.fields?.instructions === 'a lighthouse at dawn' && yaml.includes('a lighthouse at dawn') && !yaml.includes('dusk'), quick.fields);
   check('approve_saved', shot.pinned && shot.approved === approve, seen.after.shot);
   check('last_move_saved', row('shot') === twice && (await place('shot')) === twice, { row: row('shot'), twice });
-  check('rename_saved', Boolean(await asset('renamed')) && !(await asset('named')), yaml());
-  check('delete_saved', !(await asset('spare')), yaml());
+  check('rename_saved', Boolean(await asset('renamed')) && !(await asset('named')), yaml);
+  check('delete_saved', !(await asset('spare')), yaml);
   check('drop_saved', (await asset('late'))?.sha256 === `sha256:${createHash('sha256').update(png(77)).digest('hex')}`, await asset('late'));
-  await openBox(page, 'quick');
+  await openQuick();
   check('read_back_as_shown', (await turbo.isChecked()) && (await prompt.innerText()).trim() === 'a lighthouse at dawn');
   check('nothing_refused', !(await notes()).some((line) => /Couldn't/.test(line)), await notes());
   check('no_page_errors', errors.length === 0, errors);

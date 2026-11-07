@@ -33,8 +33,9 @@ kill9() {
 tiny() { base64 -d > "$1" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='; }
 
 # The cells from before project.db that it changes most: the project setup and its first eleven, and the page's
-# tools, versions, nodes, place, undo, live and layout.
+# tools, versions, nodes, place, undo, live, layout, offline and held.
 db_existing() {
+tools_read
 db_existing_projects
 db_existing_web
 }
@@ -57,10 +58,11 @@ chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web: no Google Chrome (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
 restart=$(web_restart "$lock")
-for name in ${DB_WEB:-place nodes versions tools live layout undo}; do
+for name in ${DB_WEB:-place nodes versions tools live layout undo offline held}; do
   step "web-$name"
   case $name in
-    undo) STOP=$(web_halt "$lock") START=$(web_start) web_proof undo "$chrome" "$pw" "$restart" ;;
+    undo | offline) STOP=$(web_halt "$lock") START=$(web_start) web_proof "$name" "$chrome" "$pw" "$restart" ;;
+    held) web_held "$chrome" "$pw" ;;
     *) web_proof "$name" "$chrome" "$pw" '' ;;
   esac
 done

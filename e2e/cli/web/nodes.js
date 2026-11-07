@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -276,7 +276,9 @@ function linesOf(text, name) {
   await shot('dragging');
   await page.mouse.up();
   const said = await until('its name in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('<source-b>'));
-  check('file_holds_plain_text', said.includes('A sheet of <source-a> and <source-b>') && /instructions: \|/.test(said), said);
+  // Held as its words, the chips as names: project.db's value, whatever style the export writes it in.
+  const [[stored] = []] = rowsOf(folder, "SELECT f.value FROM fields f JOIN boxes b ON f.box = b.key WHERE b.name = 'Sheet' AND f.field = 'instructions'");
+  check('file_holds_plain_text', said.includes('A sheet of <source-a> and <source-b>') && JSON.parse(stored ?? 'null')?.trim() === 'A sheet of <source-a> and <source-b>', { said, stored });
   check('drop_is_no_move', (await rows())['source-b'].x === rowsBefore['source-b'].x && (await rows())['source-b'].y === rowsBefore['source-b'].y, await rows());
   await until('it went back', () => box('source-b').locator('.nm').boundingBox(), (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
   await open('Sheet');
