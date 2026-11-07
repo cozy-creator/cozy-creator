@@ -422,7 +422,7 @@ impl Host {
     /// Whether `machine` is there to fetch `sha256` from: it hasn't ended, its Hub doesn't call it offline, and it hasn't evicted them.
     pub async fn fetchable(&self, sha256: &str, machine: &str) -> bool {
         let machines = &self.api.machines;
-        machines.here(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
+        machines.named(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
             && machines.offline(machine).is_none()
             && self.api.calcifer.still_holds(sha256, machine).await
     }
@@ -463,7 +463,7 @@ impl Host {
         let machines = &self.api.machines;
         let cost = |on: &On| {
             let On::Machine(text) = on else { return (u32::MAX, true) };
-            let Ok(Some(row)) = machines.here(text) else { return (u32::MAX, true) };
+            let Ok(Some(row)) = machines.named(text) else { return (u32::MAX, true) };
             let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
             let held = |frame: protocol::machine::StatusFrame| {
                 models.iter().all(|model| frame.models.iter().any(|held| held.repository == *model))

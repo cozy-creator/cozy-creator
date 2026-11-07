@@ -11,15 +11,20 @@ members = [
     "crates/executor-protocol",
     "crates/hub-client",
     "crates/platform",
+    "crates/platform-signal",
     "crates/protocol",
     "crates/tensord",
     "crates/tensorfs",
     "crates/tensorfs-py",
     "crates/varena",
+    "crates/varena-client",
+    "crates/varena-ledger",
+    "release-gate/suites/varena/ledger",
+    "release-gate/suites/varena/public-api",
 ]
 
 [workspace.package]
-version = "0.20.0"
+version = "0.22.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -34,10 +39,12 @@ cli = { path = "crates/cli" }
 executor-protocol = { path = "crates/executor-protocol" }
 hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
+platform-signal = { path = "crates/platform-signal" }
 protocol = { path = "crates/protocol" }
 tensord = { path = "crates/tensord" }
 tensorfs = { path = "crates/tensorfs", default-features = false }
 varena = { path = "crates/varena" }
+varena-ledger = { path = "crates/varena-ledger" }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"
@@ -59,6 +66,7 @@ hex = "0.4"
 hmac = "0.12"
 http = "1"
 http-body-util = "0.1.5"
+httpdate = "1"
 hyper = { version = "1.11", default-features = false }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 # `url`'s IDNA back end, chosen by this exact version: ASCII hostnames only (non-ASCII is refused, `xn--` works).
@@ -71,6 +79,7 @@ jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc
 libc = "0.2"
 libloading = "0.9"
 nvml-wrapper = "0.13"
+nvml-wrapper-sys = "0.10"
 percent-encoding = "2.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }

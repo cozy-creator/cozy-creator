@@ -53,14 +53,14 @@ function EditSettings({ name }: { name: string }) {
   )
 }
 
-/** A right click on a box: what makes it, its name, and gone. */
+/** A right click on a box: an Edit's settings, what makes it, its name, and gone. */
 export function AssetMenu() {
   const store = useCanvasStore()
   const menu = useSignal(store.menu)
-  return menu ? <Menu key={`${menu.name}:${menu.x}:${menu.y}`} name={menu.name} x={menu.x} y={menu.y} full={Boolean(menu.full)} /> : null
+  return menu ? <Menu key={`${menu.name}:${menu.x}:${menu.y}`} name={menu.name} x={menu.x} y={menu.y} /> : null
 }
 
-function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: boolean }) {
+function Menu({ name, x, y }: { name: string; x: number; y: number }) {
   const store = useCanvasStore()
   const view = useElement(name)
   const tools = useSignal(store.tools)
@@ -92,8 +92,8 @@ function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: 
     <div ref={shell} className="asset-menu" role="menu" aria-label={`${name}'s menu`} style={{ left, top }}>
       {open === "menu" && (
         <>
-          {full && edit && <EditSettings name={name} />}
-          {full && rendered && (
+          {edit && <EditSettings name={name} />}
+          {rendered && (
             <button type="button" role="menuitem" onClick={() => setOpen("tool")}>
               Change the tool
             </button>

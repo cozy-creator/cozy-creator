@@ -10,16 +10,16 @@ import { WANTED } from "./controls"
 import { DRAGGED_FILE } from "./drag"
 import { Thumb } from "./Media"
 import { baseOf, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
-import { mentionsIn, withMentions } from "./text"
+import { chipWords, mentionsIn, withMentions } from "./text"
 import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
-/** What a chip says: its name, and a range of a video as timecode. */
-function chipWords(store: CanvasStore, name: string, asset: string): string {
+/** What a chip says: its name in its brackets, and a range of a video as timecode. */
+function chipSaid(store: CanvasStore, name: string, asset: string): string {
   const range = rangeOf(name)
-  if (!range) return name
+  if (!range) return chipWords(name)
   const file = store.fileOf(name, asset)
   const fps = file?.fps ?? FPS
-  return `${range.base} ${timecode(range.from, fps)}–${timecode(range.to ?? framesIn(file?.duration_ms, fps), fps)}`
+  return `${chipWords(range.base)} ${timecode(range.from, fps)}–${timecode(range.to ?? framesIn(file?.duration_ms, fps), fps)}`
 }
 
 /** Why a mention in this text isn't sent, or null: words take only words, and a prompt only what it takes. A text box is always put in as its words. */
@@ -30,6 +30,7 @@ function unsent(store: CanvasStore, name: string, asset: string, takes: Media[] 
   return `${baseOf(name)} isn't sent: this takes ${takes.map((held) => WANTED[held]).join(" or ")} only`
 }
 
+/** A name as a chip: one gone is struck through, and one this text doesn't send, `refused`, is dimmed and says why. */
 function chip(name: string, words: string, missing: boolean, refused: string | null): HTMLElement {
   const el = document.createElement("span")
   el.className = missing ? "chip missing" : refused ? "chip refused" : "chip"
@@ -77,6 +78,7 @@ export function MentionText({
   missing,
   takes,
   focus,
+  thumbs = true,
   onDraft,
   onSave,
 }: {
@@ -90,6 +92,8 @@ export function MentionText({
   /** What its mentions may send: none for words, any when it doesn't say. What else it mentions stays its name, marked. */
   takes?: Media[]
   focus?: boolean
+  /** The pictures it mentions, small, under it: none where they're behind it. A video's range is under it either way. */
+  thumbs?: boolean
   onDraft: (text: string) => void
   onSave: () => void
 }) {
@@ -109,8 +113,8 @@ export function MentionText({
     const nodes = withMentions(value).map((part) => {
       const inner = part.text.slice(1, -1)
       const said = part.mention ? store.mentionOf(inner, asset) : null
-      if (part.mention && (missing.includes(inner) || said?.gone || (isSelf(inner) && !said))) return chip(inner, chipWords(store, inner, asset), true, null)
-      if (said) return chip(inner, chipWords(store, inner, asset), false, unsent(store, inner, asset, takes))
+      if (part.mention && (missing.includes(inner) || said?.gone || (isSelf(inner) && !said))) return chip(inner, chipSaid(store, inner, asset), true, null)
+      if (said) return chip(inner, chipSaid(store, inner, asset), false, unsent(store, inner, asset, takes))
       return document.createTextNode(part.text)
     })
     const merged = (held: ChildNode[]) => held.reduce((said, node) => said + (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}:${node.textContent}:${node.title}\u0000` : node.textContent), "")
@@ -141,7 +145,7 @@ export function MentionText({
       const el = box.current
       if (!el) return
       const said = store.mentionOf(name, asset)
-      const made = chip(name, chipWords(store, name, asset), !said || Boolean(said.gone), said ? unsent(store, name, asset, takes) : null)
+      const made = chip(name, chipSaid(store, name, asset), !said || Boolean(said.gone), said ? unsent(store, name, asset, takes) : null)
       const after = document.createTextNode(" ")
       if (at && el.contains(at.startContainer)) {
         at.deleteContents()
@@ -227,7 +231,7 @@ export function MentionText({
       return put(closed[1], range)
     }
     const open = before.match(/<([^<>\s]*)$/)
-    const options = open ? store.namesLike(open[1], asset).slice(0, 8) : []
+    const options = open ? store.namesLike(open[1], asset).filter((name) => !unsent(store, name, asset, takes)).slice(0, 8) : []
     if (!open || !options.length) return setMenu(null)
     const range = document.createRange()
     range.setStart(at, selection.anchorOffset - open[0].length)
@@ -345,6 +349,7 @@ export function MentionText({
         text={value}
         besides={asset}
         takes={takes}
+        pictures={thumbs}
         onRange={(old, now) => {
           onDraft(retext(box.current ? read(box.current) : value, old, now))
           onSave()
@@ -354,7 +359,7 @@ export function MentionText({
   )
 }
 
-function MentionThumb({ name, asset, takes, onRange }: { name: string; asset: string; takes?: Media[]; onRange(old: string, now: string): void }) {
+function MentionThumb({ name, asset, takes, pictures, onRange }: { name: string; asset: string; takes?: Media[]; pictures: boolean; onRange(old: string, now: string): void }) {
   const store = useCanvasStore()
   const said = store.mentionOf(name, asset)
   useElement(said?.name ?? baseOf(name))
@@ -370,6 +375,7 @@ function MentionThumb({ name, asset, takes, onRange }: { name: string; asset: st
       </span>
     )
   }
+  if (!pictures) return null
   return (
     <span className="mention-thumb" title={name}>
       <Thumb sha256={shown.sha256} cardWidth={120} />
@@ -378,14 +384,14 @@ function MentionThumb({ name, asset, takes, onRange }: { name: string; asset: st
 }
 
 /** The pictures a text mentions, small, under it, and each video's frames with its in and out. */
-function MentionThumbs({ text, besides, takes, onRange }: { text: string; besides: string; takes?: Media[]; onRange(old: string, now: string): void }) {
+function MentionThumbs({ text, besides, takes, pictures, onRange }: { text: string; besides: string; takes?: Media[]; pictures: boolean; onRange(old: string, now: string): void }) {
   const mentioned = mentionsIn(text).filter((name) => name !== besides)
   if (!mentioned.length) return null
   return (
     <div className="mention-thumbs">
       {/* By place and what it names: a new range is the same strip, and keeps its handle's focus. */}
       {mentioned.map((name, i) => (
-        <MentionThumb key={`${i}:${baseOf(name)}`} name={name} asset={besides} takes={takes} onRange={onRange} />
+        <MentionThumb key={`${i}:${baseOf(name)}`} name={name} asset={besides} takes={takes} pictures={pictures} onRange={onRange} />
       ))}
     </div>
   )

@@ -1,4 +1,4 @@
-//! B7's bounded pinned staging and reuse policy, independent of varena's placement types.
+//! Bounded pinned host staging; every native device buffer belongs to Varena working memory.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
@@ -23,7 +23,8 @@ fn failed(copy: usize, error: cuda::Error) -> Error {
             code: cuda::ERROR_OUT_OF_MEMORY,
             ..
         } => io::ErrorKind::OutOfMemory,
-        cuda::Error::CudaUnavailable(_) => io::ErrorKind::Unsupported,
+        cuda::Error::Allocation(varena::Error::OutOfMemory { .. }) => io::ErrorKind::OutOfMemory,
+        cuda::Error::Allocation(varena::Error::Unsupported(_)) | cuda::Error::CudaUnavailable(_) => io::ErrorKind::Unsupported,
         _ => io::ErrorKind::Other,
     };
     Error {
@@ -233,8 +234,8 @@ struct Engine {
 /// Completed events an engine keeps for reuse; more than this go.
 const EVENTS: usize = 64;
 
-/// An engine-owned CUDA allocation. DLPack holders share it; the last owner frees it in its
-/// primary context, independently of Python checkpoint and component handles.
+/// A Varena working allocation. DLPack holders share it; completed decoder owners return it
+/// directly. An unannotated final owner joins its primary context before permitting reuse.
 pub struct DeviceBuffer {
     ptr: u64,
     len: usize,
@@ -244,15 +245,10 @@ pub struct DeviceBuffer {
 
 impl DeviceBuffer {
     pub fn new(device: i32, len: usize) -> cuda::Result<DeviceBuffer> {
+        let _producer = varena::enter_producer(device)?;
         let engine = Engine::get(device)?;
         let _ctx = CtxGuard::enter(engine.ctx)?;
-        let mut ptr = 0;
-        if len != 0 {
-            // SAFETY: `ptr` is a writable out-pointer and the engine's context is current.
-            cuda::check("cuMemAlloc", unsafe {
-                (cuda::driver()?.mem_alloc)(&mut ptr, len)
-            })?;
-        }
+        let ptr = cuda::allocate_ready(device, len)?;
         Ok(DeviceBuffer {
             ptr,
             len,
@@ -291,11 +287,8 @@ impl DeviceBuffer {
             return Ok(());
         }
         self.release_failed = true;
-        let _ctx = CtxGuard::enter(self.engine.ctx)?;
-        // SAFETY: the caller certified all users complete and this object owns the pointer.
-        cuda::check("cuMemFree(checked)", unsafe {
-            (cuda::driver()?.mem_free)(self.ptr)
-        })?;
+        // SAFETY: the caller certified every use complete and exclusively owns the pointer.
+        unsafe { varena::working::free_completed(self.engine.device, self.ptr) }?;
         self.ptr = 0;
         self.len = 0;
         self.release_failed = false;
@@ -306,11 +299,12 @@ impl DeviceBuffer {
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
         if self.ptr != 0 && !self.release_failed {
-            if let (Ok(d), Ok(_ctx)) = (cuda::driver(), CtxGuard::enter(self.engine.ctx)) {
-                // SAFETY: this buffer allocated `ptr` in the engine's context, which is current; freed once, here.
-                unsafe { (d.mem_free)(self.ptr) };
-            }
+            // Unknown DLPack consumers may still run. Varena records retirement without CUDA
+            // work, including during capture, and joins the context before reuse or unmap.
+            // SAFETY: this is the final native owner; no further submissions may use its pointer.
+            let _ = unsafe { varena::working::free_untracked(self.engine.device, self.ptr) };
         }
+        // A failed metadata transition leaves the live block retained by Varena.
     }
 }
 
@@ -330,6 +324,18 @@ fn checked_take<T, E>(
 ) -> Result<Vec<T>, E> {
     check(owners)?;
     Ok(std::mem::take(owners))
+}
+
+// A scoped reader may unwind before its normal ring return. Keep those actual slots
+// in the engine's retained set instead of running GPU-owning Slot destructors there.
+struct ReaderRing<'a> {
+    engine: &'a Engine,
+    slots: Vec<Slot>,
+}
+impl Drop for ReaderRing<'_> {
+    fn drop(&mut self) {
+        for slot in self.slots.drain(..) { self.engine.hold_slot(slot); }
+    }
 }
 
 struct RunHold<'a> {
@@ -370,8 +376,13 @@ fn registry() -> &'static Mutex<BTreeMap<i32, Arc<Engine>>> {
     ENGINES.get_or_init(Mutex::default)
 }
 
-pub(super) fn prepare(device: i32) -> cuda::Result<()> {
-    Engine::get(device).map(drop)
+/// # Safety
+/// As `cuda::pin_region`, whose context this enters.
+pub(super) unsafe fn register(device: i32, ptr: *mut u8, len: usize) -> cuda::Result<cuda::HostPin> {
+    let engine = Engine::get(device)?;
+    let _ctx = CtxGuard::enter(engine.ctx)?;
+    // SAFETY: this function's own contract.
+    unsafe { cuda::pin_region(ptr, len, false) }
 }
 
 fn interrupted(copy: usize) -> Error {
@@ -502,6 +513,12 @@ impl Engine {
             self.synchronize(owners)?;
         }
         let mut first = None;
+        for buffer in owners.iter_mut().flat_map(|r| &mut r._buffers) {
+            // SAFETY: all private streams completed; these are quarantined private owners.
+            if let Err(error) = unsafe { buffer.release_completed() } {
+                first.get_or_insert(error);
+            }
+        }
         for pin in owners.iter_mut().flat_map(|r| &mut r.pins) {
             if let Err(error) = pin.release() {
                 first.get_or_insert(error);
@@ -581,7 +598,7 @@ impl Engine {
     }
 
     fn run(
-        &self,
+        self: &Arc<Self>,
         copies: &[(usize, Copy)],
         opts: &ReadOpts,
         staged_host: bool,
@@ -694,9 +711,7 @@ impl Engine {
             jobs.iter().for_each(|job| _ = left[job.local].fetch_add(1, Relaxed));
             let raw: Vec<usize> = self.streams[..streams].iter().map(|s| s.raw()).collect();
             let done = |job: &Job| {
-                if let Some(control) = cancel {
-                    control.issue(job.len);
-                }
+                if let Some(control) = cancel { control.issue(job.len); }
                 if let Some(issued) = issued {
                     if left[job.local].fetch_sub(1, AcqRel) == 1 {
                         issued(job.copy, &raw);
@@ -730,17 +745,20 @@ impl Engine {
             }
             let work = || {
                 self.near.enter();
-                let mut ring = {
-                    let mut free = self.free();
-                    let at = free.len() - RING;
-                    free.split_off(at)
+                let mut ring = ReaderRing {
+                    engine: self,
+                    slots: {
+                        let mut free = self.free();
+                        let at = free.len() - RING;
+                        free.split_off(at)
+                    },
                 };
                 let mut turn = 0;
                 while !stopped.load(Relaxed) && !canceled() {
                     let at = next.fetch_add(1, Relaxed);
                     let Some(job) = jobs.get(at) else { break };
                     turn += 1;
-                    match self.piece(job, at % streams, opts, &tally, &mut ring[turn % RING]) {
+                    match self.piece(job, at % streams, opts, &tally, &mut ring.slots[turn % RING]) {
                         Ok(()) => done(job),
                         Err(failure) => {
                             error.lock().unwrap().get_or_insert(failure);
@@ -749,7 +767,7 @@ impl Engine {
                     }
                 }
                 // After any failure a slot may still be in flight: kept until checked completion.
-                for slot in ring {
+                for slot in ring.slots.drain(..) {
                     match stopped.load(Relaxed) {
                         true => self.hold_slot(slot),
                         false => self.free().push(slot),
@@ -770,7 +788,8 @@ impl Engine {
             for (lane, stream) in self.streams[..streams].iter().enumerate() {
                 let drained = (|| {
                     owners.events.push(self.event(true)?);
-                    let end = owners.events.last().expect("end event inserted");
+                    let index = owners.events.len() - 1;
+                    let end = &owners.events[index];
                     end.record(stream.raw() as CUstream)?;
                     end.sync()?;
                     end.since(&owners.events[start + lane])
@@ -784,10 +803,7 @@ impl Engine {
                 }
             }
             complete = all_complete;
-            if let Some(error) = error.into_inner().unwrap() {
-                return Err(error);
-            }
-            Ok(ReadStats {
+            let stats = ReadStats {
                 direct: tally.direct.load(Relaxed),
                 cached: tally.cached.load(Relaxed),
                 bounced: tally.bounced.load(Relaxed),
@@ -795,7 +811,11 @@ impl Engine {
                 staged: tally.staged.load(Relaxed),
                 busy_ns,
                 ..ReadStats::default()
-            })
+            };
+            if let Some(error) = error.into_inner().unwrap() {
+                return Err(error);
+            }
+            Ok(stats)
         })();
         let released = hold.finish(complete).map_err(|e| failed(first, e));
         let stats = result?;

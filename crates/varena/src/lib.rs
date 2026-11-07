@@ -1,18 +1,54 @@
-//! Process-local weight residency. TensorFS supplies bytes; this crate owns only CUDA memory.
+//! Process-local CUDA memory. TensorFS supplies weight bytes; [`working`] supplies ordinary
+//! allocations and prepared graph pools alongside stable-address weight residency.
 //!
 //! Every foreign storage must retain its [`Pin`] until the final alias is destroyed. Raw addresses
 //! are not ownership. Kernels may finish after the final storage disappears, so reclamation joins
 //! the primary CUDA context before unmapping unless every pin was released by a native integration
 //! after checked completion, or with last-consumer events on its declared streams, which reclaim
 //! waits on instead. Capture/replay roots retain pins for their lifetime by default.
-//! No imported memory, IPC, background work, file I/O, or Python callbacks occur here.
+//! Allocation paths import no GPU memory and invoke no Python callbacks. The optional Linux
+//! `ledger` module coordinates host metadata only; it performs no CUDA or allocator work.
 #![deny(unsafe_code)]
 
 mod cuda;
+mod fence;
+pub(crate) mod reclaim;
+pub use reclaim::set_host_lock_probe;
+mod async_fill;
+pub use async_fill::{FillDestination, FillFacts, FillOwners, FillResource, FillRetirement, FillSession, FillState, FillTicket};
+pub mod source;
+pub use source::Source;
+/// Versioned public ABI. All frontends resolve this shared library.
+pub mod abi;
+pub mod plan;
+mod retirement;
+pub mod working;
+pub(crate) mod tensor_consumers;
+mod consumer_streams;
+pub use consumer_streams::StreamUses;
+pub use tensor_consumers::Consumers as TensorConsumers;
+/// Preserve an unproven private storage Pin in the existing device retirement queue.
+/// This performs no driver call, wait, retry, or reclamation credit.
+#[doc(hidden)]
+pub fn retain_unproven_pin(pin: Pin, failure: Error) {
+    if pin.region().pid != std::process::id() {
+        std::mem::forget(pin);
+        return;
+    }
+    retirement::quarantine(retirement::Job::Pin { _pin: pin, failure: failure.clone() }, &failure);
+}
+pub mod cache_owner;
+pub use cache_owner::CacheOwner;
+pub use working::{Cache, CacheStats};
+#[cfg(target_os = "linux")]
+mod cooperative;
+#[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+pub mod fork_guard;
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use fence::{Fences, Waits};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use working::State;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -20,20 +56,67 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("CUDA capacity exhausted allocating {requested_bytes} bytes")]
     OutOfMemory { requested_bytes: usize },
+    /// A capture's allocation outside its pool found no free block, and a capture never maps.
+    #[error("a CUDA capture cannot map {requested_bytes} bytes: no free block outside its pool")]
+    CaptureMap { requested_bytes: usize },
+    #[error("CUDA split capacity exhausted: required {requested_bytes} bytes, available {available_bytes} bytes")]
+    Exhausted { requested_bytes: usize, available_bytes: usize },
     #[error("CUDA device fault in {operation}: CUresult {code}")]
     DeviceFault { operation: &'static str, code: i32 },
     #[error("CUDA driver failure in {operation}: CUresult {code}")]
     Cuda { operation: &'static str, code: i32 },
-    #[error("residency arena poisoned; reservations retained: {0}")]
+    #[error("device poisoned; reservations retained: {0}")]
     Poisoned(String),
     #[error("region is already being filled")]
     Busy,
     #[error("residency changes are forbidden during CUDA graph capture")]
     CaptureActive,
+    #[error("execution phases cannot overlap on one device")]
+    PhaseOverlap,
     #[error("invalid residency operation: {0}")]
     Invalid(&'static str),
     #[error("CUDA virtual memory unavailable: {0}")]
     Unsupported(String),
+    #[error("cache owner callback failed: {0}")]
+    Callback(String),
+    /// A Source's own failure: its ABI status, its words and, for capacity, the bytes it asked.
+    #[error("{detail}")]
+    Source { status: i32, detail: String, bytes: u64 },
+}
+
+/// Private admission cause: another process cannot repair a local cap or VA refusal.
+pub(crate) enum AllocationFailure {
+    DriverOutOfMemory(usize),
+    Other(Error),
+}
+
+pub(crate) type AllocationResult<T> = std::result::Result<T, AllocationFailure>;
+
+impl AllocationFailure {
+    fn physical_bytes(&self) -> Option<usize> {
+        match self {
+            Self::DriverOutOfMemory(bytes) => Some(*bytes),
+            Self::Other(_) => None,
+        }
+    }
+
+    fn is_oom(&self) -> bool {
+        matches!(self, Self::DriverOutOfMemory(_)
+            | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
+    }
+}
+
+impl From<Error> for AllocationFailure {
+    fn from(error: Error) -> Self { Self::Other(error) }
+}
+
+impl From<AllocationFailure> for Error {
+    fn from(failure: AllocationFailure) -> Self {
+        match failure {
+            AllocationFailure::DriverOutOfMemory(requested_bytes) => Self::OutOfMemory { requested_bytes },
+            AllocationFailure::Other(error) => error,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -42,16 +125,21 @@ pub struct Stats {
     pub resident_bytes: usize,
     pub ready_bytes: usize,
     pub pinned_bytes: usize,
-    pub preferred_bytes: usize,
     pub regions: usize,
     pub fills: u64,
+    /// Bytes every completed fill wrote: host-to-device traffic.
+    pub filled_bytes: u64,
     pub hits: u64,
     pub evictions: u64,
     pub reclaimed_bytes: u64,
+    /// Prefetched regions evicted before any use: read for nothing.
+    pub prefetch_unused_bytes: u64,
     pub reclaimed_by_reason: ReclaimedBytes,
-    /// cuCtxSynchronize calls made before reclaiming or refilling unfenced releases.
+    /// This device's cuCtxSynchronize calls.
     pub context_joins: u64,
-    /// Last-consumer events host-waited before reclaiming or refilling fenced releases.
+    /// This device's cuMemCreate refusals, excluding local room and VA limits.
+    pub driver_physical_ooms: u64,
+    /// This device's cuEventSynchronize calls.
     pub event_waits: u64,
     pub poisoned: bool,
 }
@@ -61,18 +149,12 @@ pub struct Stats {
 /// these counters describe the trigger, not physical transfer traffic or time spent waiting.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReclaimedBytes {
-    pub requested: u64,
-    pub streaming_limit: u64,
-    pub weight_allocation: u64,
     pub allocator: u64,
     pub room: u64,
 }
 
 #[derive(Clone, Copy)]
-enum ReclaimReason {
-    Requested,
-    StreamingLimit,
-    WeightAllocation,
+pub(crate) enum ReclaimReason {
     Allocator,
     Room,
 }
@@ -80,9 +162,6 @@ enum ReclaimReason {
 impl ReclaimedBytes {
     fn add(&mut self, reason: ReclaimReason, bytes: usize) {
         let counter = match reason {
-            ReclaimReason::Requested => &mut self.requested,
-            ReclaimReason::StreamingLimit => &mut self.streaming_limit,
-            ReclaimReason::WeightAllocation => &mut self.weight_allocation,
             ReclaimReason::Allocator => &mut self.allocator,
             ReclaimReason::Room => &mut self.room,
         };
@@ -104,32 +183,22 @@ enum Contents {
     Loading,
     Ready,
     Retired,
+    Published,
 }
 
 struct Uses {
     pins: AtomicUsize,
     contents: AtomicU8,
     // Ordinary foreign storage may disappear before its submitted CUDA work completes.
-    // Only a native caller with a checked last-consumer fence can release without this bit.
-    unjoined: AtomicBool,
-    // One reusable last-consumer event per declared stream. A release records it before its
-    // pin decrement, so a zero-pin reclaim candidate's events cannot be re-recorded under it.
-    fences: Mutex<Vec<Fence>>,
-}
-
-#[derive(Clone, Copy)]
-struct Fence {
-    stream: usize,
-    event: usize,
-}
-
-/// What a fill may do for room: anything (`Any`), nothing (`None`), or evict only idle
-/// streamed regions, waiting at most on their own consumer events (`Completed`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Admission {
-    Any,
-    Completed,
-    None,
+    // A context join that starts at or after this device join number covers the release.
+    // Zero: only a native caller with a checked last-consumer fence releases without it.
+    unjoined: AtomicU64,
+    // Last-consumer stamps, written before the pin decrement.
+    waits: Mutex<Waits>,
+    generation: AtomicU64,
+    submission: Mutex<Option<Arc<async_fill::Control>>>,
+    // Filled ahead, evicted unused: no second guess until a use asks for it.
+    unused: AtomicBool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -144,12 +213,15 @@ impl Uses {
         Self {
             pins: AtomicUsize::new(0),
             contents: AtomicU8::new(Contents::Cold as u8),
-            unjoined: AtomicBool::new(false),
-            fences: Mutex::new(Vec::new()),
+            unjoined: AtomicU64::new(0),
+            waits: Mutex::new(Vec::new()),
+            generation: AtomicU64::new(0),
+            submission: Mutex::new(None),
+            unused: AtomicBool::new(false),
         }
     }
-    fn fences(&self) -> MutexGuard<'_, Vec<Fence>> {
-        self.fences.lock().unwrap_or_else(|e| e.into_inner())
+    fn waits(&self) -> MutexGuard<'_, Waits> {
+        self.waits.lock().unwrap_or_else(|e| e.into_inner())
     }
     fn state(&self) -> Contents {
         match self.contents.load(Ordering::Acquire) {
@@ -157,6 +229,7 @@ impl Uses {
             1 => Contents::Loading,
             2 => Contents::Ready,
             3 => Contents::Retired,
+            4 => Contents::Published,
             _ => unreachable!("native contents state"),
         }
     }
@@ -178,6 +251,17 @@ impl Uses {
     }
 }
 
+impl Region {
+    /// One pin fewer; the last one leaves the held bytes.
+    fn unpinned(&self) {
+        let prior = self.uses.pins.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_sub(1));
+        assert!(prior.is_ok(), "native owner count underflow");
+        if prior == Ok(1) {
+            self.gpu.held.fetch_sub(self.rounded, Ordering::AcqRel);
+        }
+    }
+}
+
 fn decrement(counter: &AtomicUsize) {
     assert!(
         counter
@@ -193,802 +277,565 @@ struct Entry {
     bytes: usize,
     handle: Option<u64>,
     uses: Arc<Uses>,
-    preferred: bool,
+    region: Weak<Region>,
+    // The Region used right after this one, last time.
+    next: Option<u64>,
+    // Clock ticks between its last two uses.
+    period: u64,
+    // Filled ahead of demand and not yet used: the first to go.
+    prefetched: bool,
     last_use: u64,
+    // The clock when its contents were filled: one filled this pass is what the loop streams.
+    filled: u64,
+    // Its owner ranks it above rebuilding a cache: `reclaim::HIGH`.
+    high: bool,
 }
 
 impl Entry {
-    fn preferred(&self) -> bool {
-        self.preferred && self.uses.state() != Contents::Retired
+    fn idle(&self) -> bool {
+        self.uses.pins() == 0
+            && self.handle.is_some()
+            && !matches!(self.uses.state(), Contents::Loading | Contents::Published)
     }
-}
-
-struct State {
-    entries: BTreeMap<u64, Entry>,
-    next_id: u64,
-    clock: u64,
-    streaming_limit: usize,
-    phase_boundary: Option<u64>,
-    preferred_end: Option<u64>,
-    poison: Option<String>,
-    fills: u64,
-    hits: u64,
-    evictions: u64,
-    reclaimed_bytes: u64,
-    reclaimed_by_reason: ReclaimedBytes,
-    context_joins: u64,
-    event_waits: u64,
 }
 
 impl State {
-    fn standby(&self, entry: &Entry) -> bool {
-        self.phase_boundary.is_some_and(|boundary| {
-            self.clock != u64::MAX
-                && entry.last_use <= boundary
-                && entry.uses.state() == Contents::Ready
-        })
-    }
-
-    /// Idle nonpreferred eviction order, ascending: other phases' cache oldest first, then the
-    /// running phase's own regions most recently used first. A phase loops over its streamed
-    /// blocks (every denoise step); with more of them than the window holds, oldest-first
-    /// evicts each block just before its next use and refills all of them every pass, while
-    /// newest-first keeps the ones the loop reaches next (Qwen-Image int8 on 8 GB: 3 of 3
-    /// streamed blocks refilled every step). Without a phase there is no loop: oldest first.
-    fn eviction_key(&self, entry: &Entry) -> (bool, u64) {
-        match self.phase_boundary {
-            Some(boundary) if self.clock != u64::MAX && entry.last_use > boundary => {
-                (true, u64::MAX - entry.last_use)
+    /// A use of this region (a clone of a live pin is not one). The core finds loops by itself,
+    /// phase declared or not. A region back
+    /// again with no boundary yet began a loop at its last use: from there eviction goes most
+    /// recent first, keeping what the loop reaches next. One that recurs at a steady period
+    /// narrows that to one pass, so what ran before the loop goes first; a small loop inside a
+    /// larger one, which would leave most of the pass's bytes outside, does not.
+    fn used(&mut self, id: u64, now: u64) {
+        if let Some(last) = self.last_used.replace(id).filter(|last| *last != id)
+            && let Some(entry) = self.entries.get_mut(&last)
+        {
+            entry.next = Some(id);
+        }
+        let entry = self.entries.get_mut(&id).expect("live region");
+        entry.uses.unused.store(false, Ordering::Relaxed);
+        let (previous, period) = (entry.last_use, entry.period);
+        entry.last_use = now;
+        if previous == 0 {
+            return;
+        }
+        let interval = now - previous;
+        entry.period = interval;
+        if let Some(phase) = &mut self.plan_phase && previous > phase.entered {
+            phase.recurred = true;
+        }
+        let start = previous - 1;
+        let Some(boundary) = self.phase_boundary else {
+            self.phase_boundary = Some(start);
+            return;
+        };
+        if start > boundary && interval.abs_diff(period) * 4 <= interval {
+            let recent = |since: u64| -> usize {
+                self.entries.values().filter(|entry| entry.last_use > since).map(|entry| entry.bytes).sum()
+            };
+            if recent(start) * 2 >= recent(boundary) {
+                self.phase_boundary = Some(start);
             }
-            _ => (false, entry.last_use),
         }
     }
 
-    fn streaming_bytes(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| {
-                !entry.preferred()
-                    && entry.handle.is_some()
-                    && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
-                    && !self.standby(entry)
-            })
-            .map(|entry| entry.bytes)
-            .sum()
+    /// Eviction order for idle regions, lowest first. With a plan, the furthest next use goes
+    /// first; in a phase's loop that is most recently used first, as the loop reaches its
+    /// oldest use next, and of those what this pass filled before what stayed through it: the
+    /// loop streams the same regions each pass, so the bytes it reads back fit the page cache.
+    /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
+    /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
+    fn rank(&self, id: u64, entry: &Entry, order: &plan::Order) -> (u8, u64) {
+        if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
+            return (reclaim::CONTENTLESS, entry.last_use);
+        }
+        if entry.high {
+            return (reclaim::HIGH, entry.last_use);
+        }
+        if entry.prefetched {
+            // Of unused fills, what the plan needs last goes first: the nearest is about to be used.
+            let next = order.next_use(id).map_or(0, |(phases, position)| phases << 32 | position);
+            return (reclaim::PREFETCHED, u64::MAX - next);
+        }
+        let touched = self.phase_boundary.is_some_and(|boundary| entry.last_use > boundary);
+        let looping = self.plan_phase.as_ref().is_none_or(PlanPhase::loops);
+        let used = match self.phase_boundary.is_some_and(|boundary| entry.filled > boundary) {
+            true => reclaim::PHASE_FRESH,
+            false => reclaim::PHASE_USED,
+        };
+        match order.next_use(id) {
+            None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
+            None => (used, u64::MAX - entry.last_use),
+            Some((0, _)) if touched && looping => (used, u64::MAX - entry.last_use),
+            Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
+            // A single pass uses what it used next in a later phase, else next cycle, as late as what no
+            // plan names; most recent first, so the next pass finds its start. Ranked as a loop's, Qwen
+            // Turbo's text encoder evicted 4 GB of transformer a call, read back in step 1.
+            Some((0, _)) => order.later_use(id)
+                .map_or((reclaim::UNPLANNED, u64::MAX - entry.last_use), |later| self.later(order, later)),
+            Some(next) => self.later(order, next),
+        }
+    }
+
+    /// Another phase's region, furthest first, and a loop's after every single pass's: a single pass
+    /// reads what doesn't fit once a cycle whatever goes, while a loop that stays never reads again.
+    fn later(&self, order: &plan::Order, (phases, position): (u64, u64)) -> (u8, u64) {
+        let single = order.name(phases).is_some_and(|name| self.passes.get(name) == Some(&false));
+        (reclaim::LATER_PHASE, u64::from(!single) << 63 | ((u64::MAX >> 1) - (phases << 32 | position)))
     }
 }
 
-/// A manager owned by one executor. It may serve multiple threads of that process.
-pub struct Arena {
-    driver: cuda::Driver,
-    device: i32,
-    pid: u32,
-    // Lock-free view of this device's capture guards, for release paths that never wait.
-    captures: Arc<AtomicUsize>,
-    room: Arc<Room>,
-    state: Mutex<State>,
-}
-
-/// This process's GPU bytes on one device against the room it may hold (`make_room`): its mapped
-/// weight pages and Torch's segments through the allocation hook. A smaller room reads as a
-/// smaller card to every fill and every hooked allocation.
-struct Room {
-    /// usize::MAX: no limit.
-    limit: AtomicUsize,
-    pages: AtomicUsize,
-    torch: AtomicUsize,
-}
-
-impl Default for Room {
-    fn default() -> Self {
-        Self { limit: AtomicUsize::new(usize::MAX), pages: AtomicUsize::new(0), torch: AtomicUsize::new(0) }
-    }
-}
-
-impl Room {
-    /// Bytes `more` would put over the limit.
-    fn over(&self, more: usize) -> usize {
-        self.pages
-            .load(Ordering::Acquire)
-            .saturating_add(self.torch.load(Ordering::Acquire))
-            .saturating_add(more)
-            .saturating_sub(self.limit.load(Ordering::Acquire))
-    }
-}
-
-static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
-#[derive(Default)]
-struct DeviceActivity {
-    captures: Arc<AtomicUsize>,
-    replays: Arc<AtomicUsize>,
-    producers: Arc<AtomicUsize>,
-    room: Arc<Room>,
-}
-
-static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
-static PROCESS: AtomicU32 = AtomicU32::new(0);
-
-fn check_process() -> Result<()> {
-    let pid = std::process::id();
-    let owner = PROCESS
-        .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
-        .unwrap_or_else(|owner| owner);
-    if owner != 0 && owner != pid {
-        return Err(Error::Invalid("CUDA residency cannot be used after fork"));
-    }
-    Ok(())
-}
-
-// Lock order for CUDA work: capture registry, then arena state. Keep this guard through the
-// driver calls so capture entry cannot race a context join or residency mutation.
-fn capture_counts() -> Result<MutexGuard<'static, BTreeMap<i32, DeviceActivity>>> {
+/// Make this GPU usable by this process: its context, and its row in the GPU's ledger.
+/// Idempotent; the first caller's `shared` holds (true: yield idle memory to foreign programs).
+pub fn activate(device: i32, shared: bool) -> Result<()> {
     check_process()?;
-    CAPTURES
-        .get_or_init(Mutex::default)
-        .lock()
-        .map_err(|_| Error::Poisoned("capture registry mutex".into()))
-}
-
-fn ensure_recovery_allowed(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> Result<()> {
-    if counts.get(&device).is_some_and(|entry| {
-        entry.captures.load(Ordering::Acquire) != 0 || entry.replays.load(Ordering::Acquire) != 0
-    }) {
-        return Err(Error::CaptureActive);
+    if device < 0 {
+        return Err(Error::Invalid("device must be nonnegative"));
     }
-    Ok(())
+    #[cfg(target_os = "linux")]
+    cooperative::join(device, shared)?;
+    #[cfg(not(target_os = "linux"))]
+    { let _ = shared; working::initialize(device)?; }
+    working::mark_cooperation_bound(device)
 }
 
-fn ensure_not_capturing(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> Result<()> {
-    if counts
-        .get(&device)
-        .is_some_and(|entry| entry.captures.load(Ordering::Acquire) != 0)
-    {
-        return Err(Error::CaptureActive);
+/// A request started or ended on `device`: an atomic store, which orders who donates first.
+pub fn request_boundary(device: i32, begin: bool) {
+    if begin && let Ok(device) = gpu(device) {
+        device.held_peak.store(0, Ordering::Release);
     }
-    Ok(())
+    #[cfg(target_os = "linux")]
+    cooperative::request_boundary(device, begin);
+    #[cfg(not(target_os = "linux"))]
+    let _ = (device, begin);
 }
 
-/// Guard every native arena on this device, including captures before any Arena exists.
-pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
-    let mut counts = capture_counts()?;
-    let activity = counts.entry(device).or_default();
-    if activity.replays.load(Ordering::Acquire) != 0 {
-        return Err(Error::CaptureActive);
+/// The active plan phase. One that ran through last time with no region coming back is a single
+/// pass: its used weights are wanted again only in a later phase, a loop's in its next step.
+pub(crate) struct PlanPhase {
+    name: String,
+    entered: u64,
+    // A region came back since entry.
+    recurred: bool,
+    // Whether it looped last time.
+    looped: Option<bool>,
+}
+
+impl PlanPhase {
+    /// For eviction: unless it is known to be a single pass.
+    fn loops(&self) -> bool {
+        self.recurred || self.looped != Some(false)
     }
-    if activity.producers.load(Ordering::Acquire) != 0 {
-        return Err(Error::Invalid(
-            "native producers must finish before CUDA graph capture",
-        ));
+
+    /// For keeping working pages: once seen looping.
+    pub(crate) fn keeps(&self) -> bool {
+        self.recurred || self.looped == Some(true)
     }
-    activity
-        .captures
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::Invalid("capture count overflow"))?;
-    Ok(GlobalCaptureGuard {
-        count: Arc::clone(&activity.captures),
-        pid: std::process::id(),
-    })
 }
 
-/// Suppress allocation recovery during a resident graph launch without excluding producers.
-/// The graph's retained Pins, rather than this short host guard, own its device dependencies.
-pub fn enter_replay(device: i32) -> Result<GlobalCaptureGuard> {
-    let mut counts = capture_counts()?;
-    ensure_not_capturing(&counts, device)?;
-    let activity = counts.entry(device).or_default();
-    activity
-        .replays
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::Invalid("replay count overflow"))?;
-    Ok(GlobalCaptureGuard {
-        count: Arc::clone(&activity.replays),
-        pid: std::process::id(),
-    })
+/// What the driver's own charge may grow by between samples under a development cap.
+const CAP_SLACK: usize = 128 << 20;
+
+// One process/core-wide namespace for reservation and Plan lifetimes. Never use
+// addresses or these identities in compute fingerprints or reusable measurements.
+static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+fn next_identity() -> Result<u64> {
+    check_process()?;
+    NEXT_IDENTITY.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .map_err(|_| Error::Invalid("native object identity exhausted"))
 }
 
-pub fn is_capturing(device: i32) -> Result<bool> {
-    Ok(capture_counts()?
-        .get(&device)
-        .is_some_and(|entry| entry.captures.load(Ordering::Acquire) != 0))
+/// One GPU's memory authority, for the process lifetime: every byte this process holds on the
+/// card is in its one table, and only `reclaim`'s one sequence gives bytes up. Different GPUs
+/// share none of it.
+pub struct Device {
+    ordinal: i32,
+    gate: Mutex<()>,
+    state: Mutex<State>,
+    fences: Mutex<Fences>,
+    driver: OnceLock<Arc<cuda::Driver>>,
+    // Nonzero once this device's working address space is reserved.
+    page: AtomicUsize,
+    activity_epoch: AtomicU64,
+    external_callbacks: AtomicUsize,
+    captures: AtomicUsize,
+    replays: AtomicUsize,
+    producers: AtomicUsize,
+    retirements: AtomicUsize,
+    /// `set_limit`: the card as a smaller card would be, the driver's own charge included.
+    ceiling: AtomicUsize,
+    /// The card itself, once sampled: its driver's refusal is never how we learn it is full.
+    total: AtomicUsize,
+    /// A real card of `ceiling`'s size would keep its driver's reservation out of it too.
+    reservation: OnceLock<usize>,
+    /// That charge at the last sample: what the card uses beyond our own bytes.
+    outside: AtomicUsize,
+    pages: AtomicUsize,
+    working: AtomicUsize,
+    // The most weight bytes held for use at once this request.
+    held_peak: AtomicUsize,
+    // Weight bytes held for use now: regions with a pin.
+    held: AtomicUsize,
+    // Moves when the room this process can have shrinks for a reason outside its program: a cap,
+    // foreign use, a refused allocation or a peer's ask. A split's chosen level holds until it does.
+    room: AtomicU64,
+    // Of those moves, the ones growing outside use made at a sample.
+    room_outside: AtomicU64,
+    // A region here was ever marked high. Until then the reclaim sequence has no such step.
+    any_high: AtomicBool,
+    // Actual successful physical releases only. An observation permits a real retry, never a grant.
+    released: AtomicU64,
+    clock: AtomicU64,
+    joins_started: AtomicU64,
+    joins_finished: AtomicU64,
+    plan: Mutex<Option<plan::Active>>,
+    plan_generation: AtomicU64,
+    cooperation_bound: AtomicBool,
+    ahead: source::Ahead,
 }
 
-pub fn is_recovery_blocked(device: i32) -> Result<bool> {
-    Ok(capture_counts()?.get(&device).is_some_and(|entry| {
-        entry.captures.load(Ordering::Acquire) != 0 || entry.replays.load(Ordering::Acquire) != 0
-    }))
-}
-
-pub struct GlobalCaptureGuard {
-    count: Arc<AtomicUsize>,
-    pid: u32,
-}
-
-impl Drop for GlobalCaptureGuard {
-    fn drop(&mut self) {
-        if self.pid == std::process::id() {
-            decrement(&self.count);
+impl Device {
+    fn new(ordinal: i32) -> Self {
+        Self {
+            ordinal,
+            gate: Mutex::default(),
+            state: Mutex::default(),
+            fences: Mutex::default(),
+            driver: OnceLock::new(),
+            page: AtomicUsize::new(0),
+            activity_epoch: AtomicU64::new(0),
+            external_callbacks: AtomicUsize::new(0),
+            captures: AtomicUsize::new(0),
+            replays: AtomicUsize::new(0),
+            producers: AtomicUsize::new(0),
+            retirements: AtomicUsize::new(0),
+            ceiling: AtomicUsize::new(usize::MAX),
+            total: AtomicUsize::new(usize::MAX),
+            reservation: OnceLock::new(),
+            outside: AtomicUsize::new(0),
+            pages: AtomicUsize::new(0),
+            working: AtomicUsize::new(0),
+            held_peak: AtomicUsize::new(0),
+            held: AtomicUsize::new(0),
+            room: AtomicU64::new(0),
+            room_outside: AtomicU64::new(0),
+            any_high: AtomicBool::new(false),
+            released: AtomicU64::new(0),
+            clock: AtomicU64::new(0),
+            joins_started: AtomicU64::new(0),
+            joins_finished: AtomicU64::new(0),
+            plan: Mutex::new(None),
+            plan_generation: AtomicU64::new(0),
+            cooperation_bound: AtomicBool::new(false),
+            ahead: source::Ahead::default(),
         }
     }
-}
 
-/// Own the right to submit native producer work outside actual CUDA capture.
-/// The caller retains this lease until every producer has checked completion; uncertain
-/// completion retains the lease along with the actual Fill/source owners. Graph replay
-/// is unaffected because its dependencies have separate physical pins.
-pub fn enter_producer(device: i32) -> Result<ProducerGuard> {
-    let mut counts = capture_counts()?;
-    ensure_not_capturing(&counts, device)?;
-    let activity = counts.entry(device).or_default();
-    activity
-        .producers
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::Invalid("producer count overflow"))?;
-    Ok(ProducerGuard {
-        count: Arc::clone(&activity.producers),
-        pid: std::process::id(),
-    })
-}
-
-pub struct ProducerGuard {
-    count: Arc<AtomicUsize>,
-    pid: u32,
-}
-
-impl Drop for ProducerGuard {
-    fn drop(&mut self) {
-        if self.pid == std::process::id() {
-            decrement(&self.count);
-        }
-    }
-}
-
-impl Arena {
-    pub fn new(device: i32) -> Result<Arc<Self>> {
-        let mut captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, device)?;
-        let driver = cuda::Driver::open(device)?;
-        let activity = captures.entry(device).or_default();
-        let (capturing, room) = (Arc::clone(&activity.captures), Arc::clone(&activity.room));
-        drop(captures);
-        let arena = Arc::new(Self {
-            driver,
-            device,
-            pid: std::process::id(),
-            captures: capturing,
-            room,
-            state: Mutex::new(State {
-                entries: BTreeMap::new(),
-                next_id: 1,
-                clock: 0,
-                streaming_limit: usize::MAX,
-                phase_boundary: None,
-                preferred_end: None,
-                poison: None,
-                fills: 0,
-                hits: 0,
-                evictions: 0,
-                reclaimed_bytes: 0,
-                reclaimed_by_reason: ReclaimedBytes::default(),
-                context_joins: 0,
-                event_waits: 0,
-            }),
-        });
-        let mut registry = ARENAS
-            .get_or_init(Mutex::default)
-            .lock()
-            .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-        registry.retain(|entry| entry.strong_count() != 0);
-        registry.push(Arc::downgrade(&arena));
-        Ok(arena)
+    /// This GPU, activated: its driver open and its working address space reserved.
+    pub fn open(ordinal: i32) -> Result<&'static Self> {
+        retirement::prepare()?;
+        working::open(ordinal)
     }
 
-    pub fn device(&self) -> i32 {
-        self.device
+    pub fn ordinal(&self) -> i32 {
+        self.ordinal
     }
 
-    /// Physical pages for one region, inside this process's room on the device: over the room
-    /// reads as the driver's out of memory, so each admission treats a smaller room as a smaller
-    /// card (reclaims what it may, else refuses).
-    fn create(&self, bytes: usize) -> Result<u64> {
-        if self.room.over(bytes) != 0 {
-            return Err(Error::OutOfMemory { requested_bytes: bytes });
-        }
-        let handle = self.driver.create(bytes)?;
-        self.room.pages.fetch_add(bytes, Ordering::AcqRel);
-        Ok(handle)
+    fn driver(&self) -> &Arc<cuda::Driver> {
+        self.driver.get().expect("an opened device")
     }
 
     pub fn granularity(&self) -> usize {
-        self.driver.granularity
+        self.driver().granularity
+    }
+
+    fn epoch(&self) -> u64 {
+        self.activity_epoch.load(Ordering::Acquire)
+    }
+
+    fn graph_active(&self) -> bool {
+        self.captures.load(Ordering::Acquire) != 0 || self.replays.load(Ordering::Acquire) != 0
+    }
+
+    pub(crate) fn fences(&self) -> MutexGuard<'_, Fences> {
+        self.fences.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
-        if self.pid != std::process::id() {
-            return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
-        }
         let state = self
             .state
             .lock()
-            .map_err(|_| Error::Poisoned("arena mutex".into()))?;
+            .map_err(|_| Error::Poisoned("device table mutex".into()))?;
         if let Some(reason) = &state.poison {
             return Err(Error::Poisoned(reason.clone()));
         }
         Ok(state)
     }
 
-    /// Reserve address space without allocating physical memory. A region is one eviction group.
-    pub fn reserve(self: &Arc<Self>, bytes: usize) -> Result<Arc<Region>> {
+    fn next_use(&self) -> u64 {
+        self.clock.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// A release with unknown consumers: only a join started after this call covers it.
+    fn unjoined_mark(&self) -> u64 {
+        self.joins_started.load(Ordering::Acquire) + 1
+    }
+
+    fn joined(&self, mark: u64) -> bool {
+        mark <= self.joins_finished.load(Ordering::Acquire)
+    }
+
+    fn guard(&'static self, count: &'static AtomicUsize) -> Result<GlobalCaptureGuard> {
+        count.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+            .map_err(|_| Error::Invalid("device activity count overflow"))?;
+        Ok(GlobalCaptureGuard { count, pid: std::process::id() })
+    }
+
+    fn owned(&self) -> usize {
+        self.pages.load(Ordering::Acquire).saturating_add(self.working.load(Ordering::Acquire))
+    }
+
+    /// The most our own bytes may reach right now.
+    fn capacity(&self) -> usize {
+        let reserved = self.reservation.get().copied().unwrap_or(0);
+        let ceiling = self.ceiling.load(Ordering::Acquire);
+        let ceiling = if ceiling == usize::MAX { ceiling } else { ceiling.saturating_sub(reserved) };
+        let ceiling = ceiling.min(self.total.load(Ordering::Acquire));
+        let cap = if ceiling == usize::MAX {
+            usize::MAX
+        } else {
+            ceiling.saturating_sub(self.outside.load(Ordering::Acquire).saturating_add(CAP_SLACK))
+        };
+        cap
+    }
+
+    fn headroom(&self) -> usize {
+        self.capacity().saturating_sub(self.owned())
+    }
+
+    /// Bytes `more` would put over the limit.
+    fn over(&self, more: usize) -> usize {
+        self.owned().saturating_add(more).saturating_sub(self.capacity())
+    }
+
+    /// What this process has no say over moves as contexts and kernels load and peers come and
+    /// go. A slow path calls this before it reads the room; outside capture, in the context.
+    fn sample(&self) -> Result<()> {
+        let (free, total) = self.driver().memory_info()?;
+        self.total.store(total, Ordering::Release);
+        if self.ceiling.load(Ordering::Acquire) != usize::MAX {
+            #[cfg(target_os = "linux")]
+            self.reservation.get_or_init(|| cooperative::driver_reservation(self.ordinal, total));
+        }
+        let outside = total.saturating_sub(free).saturating_sub(self.owned());
+        if outside > self.outside.swap(outside, Ordering::AcqRel) {
+            self.room_outside.fetch_add(1, Ordering::Relaxed);
+            self.room_shrank();
+        }
+        Ok(())
+    }
+
+    /// The room this process can have shrank for a reason outside its program.
+    fn room_shrank(&self) {
+        self.room.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Which room a decision was made against: it changes only when that room shrinks.
+    fn room_epoch(&self) -> u64 {
+        self.room.load(Ordering::Acquire) + self.driver.get().map_or(0, |driver| driver.physical_ooms())
+    }
+
+    /// Other processes' bytes stand between us and `more`, so asking them can help.
+    fn peers_can_lift(&self, more: usize) -> bool {
+        let wanted = self.owned().saturating_add(more);
+        wanted <= self.capacity().saturating_add(self.outside.load(Ordering::Acquire))
+    }
+
+    /// A limit someone set on the machine.
+    fn capped(&self) -> bool {
+        self.ceiling.load(Ordering::Acquire) != usize::MAX
+    }
+
+    /// Physical pages for one region, inside this process's room: over the room reads as the
+    /// driver's out of memory, so each admission treats a smaller room as a smaller card.
+    fn create(&self, bytes: usize) -> AllocationResult<u64> {
+        self.sample()?;
+        if self.over(bytes) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        let handle = self.driver().create(bytes)?;
+        self.pages.fetch_add(bytes, Ordering::AcqRel);
+        Ok(handle)
+    }
+
+    /// A Region of `bytes` from `source`: address space only, no physical memory. One eviction
+    /// group. `use_on` fills it.
+    pub fn region(&'static self, bytes: usize, source: Arc<dyn Source>) -> Result<Arc<Region>> {
         if bytes == 0 {
             return Err(Error::Invalid("zero-length region"));
         }
+        let granularity = self.granularity();
         let rounded = bytes
-            .checked_add(self.granularity() - 1)
+            .checked_add(granularity - 1)
             .ok_or(Error::Invalid("region size overflow"))?
-            / self.granularity()
-            * self.granularity();
-        let captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, self.device)?;
+            / granularity
+            * granularity;
+        let gate = gate(self.ordinal)?;
+        gate.not_capturing()?;
         let mut state = self.lock()?;
-        // A new model may choose a fresh prefix only after every old reservation owner is gone.
-        // Escaped storage and graph Pins own their Region, so they prevent this reset.
-        if state
-            .entries
-            .values()
-            .all(|entry| entry.uses.state() == Contents::Retired)
-        {
-            state.preferred_end = None;
-        }
-        let id = state.next_id;
-        state.next_id = id
-            .checked_add(1)
-            .ok_or(Error::Invalid("region id overflow"))?;
-        let _context = self.driver.enter()?;
-        let ptr = self.driver.reserve(rounded)?;
+        let id = next_identity()?;
+        let _context = self.driver().enter()?;
+        let ptr = self.driver().reserve(rounded)?;
         let uses = Arc::new(Uses::new());
-        state.entries.insert(
-            id,
-            Entry {
+        Ok(Arc::new_cyclic(|region| {
+            state.entries.insert(
+                id,
+                Entry {
+                    ptr,
+                    bytes: rounded,
+                    handle: None,
+                    uses: Arc::clone(&uses),
+                    region: region.clone(),
+                    next: None,
+                    period: 0,
+                    prefetched: false,
+                    last_use: 0,
+                    filled: 0,
+                    high: false,
+                },
+            );
+            Region {
+                gpu: self,
+                pid: std::process::id(),
+                id,
                 ptr,
-                bytes: rounded,
-                handle: None,
-                uses: Arc::clone(&uses),
-                preferred: false,
-                last_use: 0,
-            },
-        );
-        Ok(Arc::new(Region {
-            arena: Arc::clone(self),
-            id,
-            ptr,
-            bytes,
-            rounded,
-            uses,
+                bytes,
+                rounded,
+                uses,
+                source,
+            }
         }))
     }
 
-    /// Bound the current phase's idle nonpreferred cache plus the next group before allocation.
-    /// Ready cache last pinned before reset_preferences is standby: only capacity pressure
-    /// or explicit reclamation evicts it. Without a phase reset the bound remains global.
-    /// Active/graph pins are working memory and excluded; real CUDA capacity still bounds them.
-    /// A single larger group is permitted. The most recently used idle groups go first
-    /// (`State::eviction_key`); preferred groups survive.
-    pub fn set_streaming_limit(&self, bytes: usize) -> Result<()> {
-        self.lock()?.streaming_limit = bytes;
+    /// A new phase begins: what was used before it is no longer in its loop. Metadata only.
+    pub fn enter_phase(&self) -> Result<()> {
+        gate(self.ordinal)?.not_capturing()?;
+        self.lock()?.phase_boundary = Some(self.clock.load(Ordering::Relaxed));
         Ok(())
     }
 
-    /// Actual current policy, for a scoped caller to preserve and conditionally restore.
-    pub fn streaming_limit(&self) -> Result<usize> {
-        Ok(self.lock()?.streaming_limit)
-    }
-
-    /// Enter an authored component phase without allocating, evicting or changing its
-    /// admitted window. Only incoming bytes actually Ready now receive preference.
-    pub fn enter_phase(&self, incoming: &[Arc<Region>]) -> Result<()> {
-        let captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, self.device)?;
-        if incoming.iter().any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena))) {
-            return Err(Error::Invalid("phase regions must belong to the same arena"));
-        }
+    /// The plan's phase `name` begins, a boundary, or with None the plan ends. Metadata only.
+    fn enter_plan_phase(&self, name: Option<&str>) -> Result<()> {
         let mut state = self.lock()?;
-        state.preferred_end = None;
-        state.phase_boundary = (state.clock != u64::MAX).then_some(state.clock);
-        for entry in state.entries.values_mut() {
-            entry.preferred = false;
+        let now = self.clock.load(Ordering::Relaxed);
+        if let Some(ended) = state.plan_phase.take() {
+            state.passes.insert(ended.name, ended.recurred);
         }
-        for region in incoming {
-            let entry = state.entries.get_mut(&region.id).ok_or(Error::Invalid("phase region is retired"))?;
-            entry.preferred = entry.handle.is_some() && entry.uses.state() == Contents::Ready;
-        }
-        Ok(())
-    }
-
-    pub fn owns_region(&self, region: &Region) -> bool {
-        std::ptr::eq(self, Arc::as_ptr(&region.arena))
-    }
-
-    /// Hold this guard over capture. Dependencies must already be prepared and separately pinned.
-    pub fn enter_capture(self: &Arc<Self>) -> Result<CaptureGuard> {
-        let global = enter_capture(self.device)?;
-        drop(self.lock()?);
-        Ok(CaptureGuard {
-            global: Some(global),
-            arena: Some(Arc::clone(self)),
-        })
-    }
-
-    /// Release at least the requested bytes when possible. Pins are never overridden.
-    /// Idle nonpreferred pages go first; preferred pages go from the end of the reserved prefix.
-    pub fn reclaim(&self, bytes: usize) -> Result<ReclaimReport> {
-        self.reclaim_with_preference(bytes, true, ReclaimReason::Requested)
-    }
-
-    /// Start a phase: earlier ready cache becomes standby, still reclaimable under pressure.
-    /// This changes metadata only, never physical/VA ownership. A saturated clock falls back
-    /// to the global streaming bound because later touches cannot establish a new phase.
-    pub fn reset_preferences(&self) -> Result<()> {
-        let captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, self.device)?;
-        let mut state = self.lock()?;
-        state.preferred_end = None;
-        state.phase_boundary = (state.clock != u64::MAX).then_some(state.clock);
-        for entry in state.entries.values_mut() {
-            entry.preferred = false;
+        if let Some(name) = name {
+            state.phase_boundary = Some(now);
+            state.plan_epoch += 1;
+            let looped = state.passes.get(name).copied();
+            state.plan_phase = Some(PlanPhase { name: name.to_owned(), entered: now, recurred: false, looped });
         }
         Ok(())
     }
 
-    /// Make phase headroom without evicting the incoming phase's preferred cached bytes.
-    pub fn reclaim_unpreferred(&self, bytes: usize) -> Result<ReclaimReport> {
-        self.reclaim_with_preference(bytes, false, ReclaimReason::Requested)
+    /// As known at the last fence poll. No driver call.
+    fn completion(&self, state: &State, id: u64) -> Completion {
+        let uses = &state.entries[&id].uses;
+        if !self.joined(uses.unjoined.load(Ordering::Acquire)) {
+            return Completion::Unjoined;
+        }
+        if self.fences().complete(&uses.waits()) {
+            Completion::Done
+        } else {
+            Completion::Pending
+        }
     }
 
-    fn reclaim_with_preference(
-        &self,
-        bytes: usize,
-        preferred: bool,
-        reason: ReclaimReason,
-    ) -> Result<ReclaimReport> {
-        let captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, self.device)?;
-        let mut state = self.lock()?;
-        let _context = self.driver.enter()?;
-        self.reclaim_locked(&mut state, bytes, preferred, None, reason)
+    /// Caller holds the gate with no capture active. A failed fence record or query poisons.
+    fn poll_fences(&self, state: &mut State) -> Result<()> {
+        let _context = self.driver().enter()?;
+        let result = self.fences().poll(self.driver());
+        result.map_err(|error| poison(state, error))
     }
 
-    fn reclaim_locked(
-        &self,
-        state: &mut State,
-        bytes: usize,
-        preferred: bool,
-        exclude: Option<u64>,
-        reason: ReclaimReason,
-    ) -> Result<ReclaimReport> {
-        let mut report = ReclaimReport {
-            requested_bytes: bytes,
-            ..ReclaimReport::default()
-        };
-        if bytes == 0 {
-            return Ok(report);
-        }
-        self.reclaim_contentless(state, bytes, preferred, exclude, reason, &mut report)?;
-        if report.reclaimed_bytes >= bytes {
-            return Ok(report);
-        }
-        let mut candidates: Vec<_> = state
-            .entries
-            .iter()
-            .filter(|(id, entry)| {
-                Some(**id) != exclude
-                    && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
-                    && entry.handle.is_some()
-                    && (preferred || !entry.preferred())
-                    && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
-            })
-            .map(|(id, entry)| {
-                let preferred = entry.preferred();
-                let key = if preferred {
-                    (false, u64::MAX - id)
-                } else {
-                    state.eviction_key(entry)
-                };
-                (*id, preferred, key)
-            })
-            .collect();
-        candidates.sort_by_key(|(_, preferred, key)| (*preferred, *key));
-        // The arena lock excludes new pins; each candidate already has zero physical pins.
-        // Idle cache goes in `eviction_key` order, completed-first, then after its own events,
-        // and joins the context only for unfenced releases. The preferred suffix keeps strict
-        // order, since each of its evictions permanently shortens the retained prefix.
-        let idle = candidates.partition_point(|(_, preferred, _)| !preferred);
-        let (mut pending, mut unjoined) = (Vec::new(), Vec::new());
-        for &(id, _, _) in &candidates[..idle] {
-            if report.reclaimed_bytes >= bytes {
-                return Ok(report);
-            }
-            match self.completion(state, id)? {
-                Completion::Done => self.evict(state, id, reason, &mut report)?,
-                Completion::Pending => pending.push(id),
-                Completion::Unjoined => unjoined.push(id),
+    /// Unmap one completed, unpinned region, and release its pages, or move them to `into` when
+    /// that is an absent region of its size. `completed` records the physical effect before any
+    /// later fallible address retirement.
+    fn evict(&self, state: &mut State, id: u64, reason: ReclaimReason, completed: &mut usize, into: Option<u64>) -> Result<()> {
+        let prefetched = state.entries[&id].prefetched;
+        let bytes = state.entries[&id].bytes;
+        let into = into.filter(|to| state.entries.get(to).is_some_and(|to| to.handle.is_none() && to.bytes == bytes));
+        let size = self.release_backing_counted(state, id, completed, into)?;
+        if prefetched {
+            state.prefetch_unused_bytes = state.prefetch_unused_bytes.saturating_add(size as u64);
+            if let Some(entry) = state.entries.get(&id) {
+                entry.uses.unused.store(true, Ordering::Relaxed);
             }
         }
-        for id in pending {
-            if report.reclaimed_bytes >= bytes {
-                return Ok(report);
-            }
-            self.wait_fences(state, id)?;
-            self.evict(state, id, reason, &mut report)?;
-        }
-        if report.reclaimed_bytes < bytes && !unjoined.is_empty() {
-            self.join_context(state, &unjoined)?;
-            for id in unjoined {
-                if report.reclaimed_bytes >= bytes {
-                    return Ok(report);
-                }
-                self.evict(state, id, reason, &mut report)?;
-            }
-        }
-        let kept: Vec<_> = candidates[idle..].iter().map(|(id, _, _)| *id).collect();
-        for (index, &id) in kept.iter().enumerate() {
-            if report.reclaimed_bytes >= bytes {
-                break;
-            }
-            match self.completion(state, id)? {
-                Completion::Done => {}
-                Completion::Pending => self.wait_fences(state, id)?,
-                // One join completes every later candidate's work as well.
-                Completion::Unjoined => self.join_context(state, &kept[index..])?,
-            }
-            self.evict(state, id, reason, &mut report)?;
-        }
-        Ok(report)
-    }
-
-    /// Evict idle, non-preferred regions in `State::eviction_key` order until `bytes` are free:
-    /// completed ones first, then, if they together free enough, ones whose own last-consumer
-    /// events are pending, after those events. Never joins the context.
-    fn reclaim_completed_locked(
-        &self,
-        state: &mut State,
-        bytes: usize,
-        exclude: u64,
-        reason: ReclaimReason,
-    ) -> Result<ReclaimReport> {
-        let mut report = ReclaimReport {
-            requested_bytes: bytes,
-            ..ReclaimReport::default()
-        };
-        // Backing nothing needs goes before any Ready page here too, as in `reclaim_contentless`.
-        let mut candidates: Vec<_> = state
-            .entries
-            .iter()
-            .filter(|(id, entry)| {
-                **id != exclude
-                    && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
-                    && entry.handle.is_some()
-                    && !entry.preferred()
-                    && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
-            })
-            .map(|(id, entry)| {
-                let ready = !matches!(entry.uses.state(), Contents::Cold | Contents::Retired);
-                (*id, (ready, state.eviction_key(entry)))
-            })
-            .collect();
-        candidates.sort_by_key(|(_, key)| *key);
-        let (mut pending, mut held) = (Vec::new(), 0);
-        for (id, _) in candidates {
-            if report.reclaimed_bytes >= bytes {
-                return Ok(report);
-            }
-            match self.completion(state, id)? {
-                Completion::Done => self.evict(state, id, reason, &mut report)?,
-                Completion::Pending => {
-                    held += state.entries[&id].bytes;
-                    pending.push(id);
-                }
-                Completion::Unjoined => {}
-            }
-        }
-        // A loop's newest idle block is often still being read when the next one is prefetched
-        // (Qwen-Image int8 on 8 GB, once a step). Refused, the prefetch emptied Torch's cache to
-        // retry; waiting for that block's own events is shorter than that full synchronize.
-        if report.reclaimed_bytes + held < bytes {
-            return Ok(report);
-        }
-        for id in pending {
-            if report.reclaimed_bytes >= bytes {
-                break;
-            }
-            self.wait_fences(state, id)?;
-            self.evict(state, id, reason, &mut report)?;
-        }
-        Ok(report)
-    }
-
-    /// Backing whose contents nothing needs (a canceled or failed fill, a dropped region) goes
-    /// before any Ready page, oldest first, waiting or joining for it if it must. Reclaim order
-    /// otherwise takes every completed page first, so unfenced leftovers outlived resident
-    /// weights (SDXL int8 at 6 GiB free: 618 MiB of canceled prefetches cost 656 MiB of UNet
-    /// every request).
-    fn reclaim_contentless(
-        &self,
-        state: &mut State,
-        bytes: usize,
-        preferred: bool,
-        exclude: Option<u64>,
-        reason: ReclaimReason,
-        report: &mut ReclaimReport,
-    ) -> Result<()> {
-        let mut idle: Vec<_> = state
-            .entries
-            .iter()
-            .filter(|(id, entry)| {
-                Some(**id) != exclude
-                    && entry.uses.pins() == 0
-                    && matches!(entry.uses.state(), Contents::Cold | Contents::Retired)
-                    && entry.handle.is_some()
-                    && (preferred || !entry.preferred())
-            })
-            .map(|(id, entry)| (entry.last_use, *id))
-            .collect();
-        idle.sort_unstable();
-        let mut unjoined = Vec::new();
-        for (_, id) in idle {
-            if report.reclaimed_bytes >= bytes {
-                return Ok(());
-            }
-            match self.completion(state, id)? {
-                Completion::Done => self.evict(state, id, reason, report)?,
-                Completion::Pending => {
-                    self.wait_fences(state, id)?;
-                    self.evict(state, id, reason, report)?;
-                }
-                Completion::Unjoined => unjoined.push(id),
-            }
-        }
-        if report.reclaimed_bytes < bytes && !unjoined.is_empty() {
-            self.join_context(state, &unjoined)?;
-            for id in unjoined {
-                if report.reclaimed_bytes >= bytes {
-                    break;
-                }
-                self.evict(state, id, reason, report)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether every consumer of an unpinned region is known complete, without waiting.
-    fn completion(&self, state: &mut State, id: u64) -> Result<Completion> {
-        let uses = Arc::clone(&state.entries[&id].uses);
-        if uses.unjoined.load(Ordering::Acquire) {
-            return Ok(Completion::Unjoined);
-        }
-        for fence in uses.fences().iter() {
-            match self.driver.query(fence.event) {
-                Ok(true) => {}
-                Ok(false) => return Ok(Completion::Pending),
-                Err(error) => return Err(poison(state, error)),
-            }
-        }
-        Ok(Completion::Done)
-    }
-
-    /// Host-wait only this region's own last-consumer events, never unrelated work.
-    fn wait_fences(&self, state: &mut State, id: u64) -> Result<()> {
-        let uses = Arc::clone(&state.entries[&id].uses);
-        for fence in uses.fences().iter() {
-            if let Err(error) = self.driver.wait_event(fence.event) {
-                return Err(poison(state, error));
-            }
-            state.event_waits = state.event_waits.saturating_add(1);
-        }
-        Ok(())
-    }
-
-    /// The conservative fence for releases that recorded no consumer event.
-    fn join_context(&self, state: &mut State, ids: &[u64]) -> Result<()> {
-        if let Err(error) = self.driver.synchronize() {
-            return Err(poison(state, error));
-        }
-        state.context_joins = state.context_joins.saturating_add(1);
-        for id in ids {
-            state.entries[id]
-                .uses
-                .unjoined
-                .store(false, Ordering::Release);
-        }
-        Ok(())
-    }
-
-    /// Unmap and release one joined, unpinned candidate.
-    fn evict(
-        &self,
-        state: &mut State,
-        id: u64,
-        reason: ReclaimReason,
-        report: &mut ReclaimReport,
-    ) -> Result<()> {
-        let was_preferred = state.entries[&id].preferred();
-        let (size, retired) = self.release_backing(state, id)?;
-        if was_preferred && !retired {
-            // Pressure permanently shortens the retained prefix. Later scans cannot rebuild it.
-            state.preferred_end = Some(state.preferred_end.map_or(id, |end| end.min(id)));
-            for (_, later) in state.entries.range_mut(id..) {
-                later.preferred = false;
-            }
-        }
-        report.reclaimed_bytes += size;
-        report.evicted_regions += 1;
         state.evictions = state.evictions.saturating_add(1);
         state.reclaimed_bytes = state.reclaimed_bytes.saturating_add(size as u64);
         state.reclaimed_by_reason.add(reason, size);
         Ok(())
     }
 
-    /// Unmap and release a joined, unpinned region's physical pages; a retired region's
-    /// address goes too. Returns its bytes and whether it was retired.
-    fn release_backing(&self, state: &mut State, id: u64) -> Result<(usize, bool)> {
-        let entry = state
-            .entries
-            .get(&id)
-            .expect("candidate belongs to locked arena");
-        let (ptr, size, handle) = (
-            entry.ptr,
-            entry.bytes,
-            entry.handle.expect("mapped candidate"),
-        );
-        if let Err(error) = self.driver.unmap(ptr, size) {
+    /// Unmap a completed, unpinned region's pages and release them, or map them at `into`, an
+    /// absent region of its size: a refill then costs a remap, never a release and a create. A
+    /// retired region's address goes too.
+    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize, into: Option<u64>) -> Result<usize> {
+        let entry = state.entries.get(&id).expect("candidate in the table");
+        let (ptr, size, handle) = (entry.ptr, entry.bytes, entry.handle.expect("mapped candidate"));
+        if let Err(error) = self.driver().unmap(ptr, size) {
             return Err(poison(state, error));
         }
+        if let Some(to) = into {
+            // Custody before map, as a fill records it: an ambiguous map failure keeps both.
+            let to = state.entries.get_mut(&to).expect("live region");
+            to.handle = Some(handle);
+            let target = to.ptr;
+            if let Err(error) = self.driver().map(target, size, handle) {
+                return Err(poison(state, error));
+            }
         // If release fails, do not retry or reuse either handle or reservation.
-        if let Err(error) = self.driver.release(handle) {
+        } else if let Err(error) = self.driver().release(handle) {
             return Err(poison(state, error));
+        } else {
+            self.pages.fetch_sub(size, Ordering::AcqRel);
+            self.released.fetch_add(size as u64, Ordering::AcqRel);
         }
-        self.room.pages.fetch_sub(size, Ordering::AcqRel);
-        let entry = state.entries.get_mut(&id).expect("locked candidate");
-        // Every event is complete here; a destroy failure only leaks the event.
-        for fence in entry.uses.fences().drain(..) {
-            let _ = self.driver.destroy_event(fence.event);
-        }
+        *completed += size;
+        let entry = state.entries.get_mut(&id).expect("candidate in the table");
+        entry.uses.waits().clear();
+        entry.prefetched = false;
         entry.handle = None;
         entry.uses.invalidate();
-        let retired = entry.uses.state() == Contents::Retired;
-        if retired {
-            if let Err(error) = self.driver.free_address(ptr, size) {
+        if entry.uses.state() == Contents::Retired {
+            if let Err(error) = self.driver().free_address(ptr, size) {
                 return Err(poison(state, error));
             }
             state.entries.remove(&id);
         }
-        Ok((size, retired))
+        Ok(size)
     }
 
     pub fn stats(&self) -> Result<Stats> {
-        if self.pid != std::process::id() {
-            return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
-        }
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Poisoned("arena mutex".into()))?;
+        let state = self.state.lock().map_err(|_| Error::Poisoned("device table mutex".into()))?;
+        let (driver_physical_ooms, context_joins, event_waits) = self.driver.get()
+            .map_or((0, 0, 0), |driver| (driver.physical_ooms(), driver.context_joins(), driver.calls().3));
         let mut stats = Stats {
             regions: state.entries.len(),
             fills: state.fills,
+            filled_bytes: state.filled_bytes,
             hits: state.hits,
             evictions: state.evictions,
             reclaimed_bytes: state.reclaimed_bytes,
+            prefetch_unused_bytes: state.prefetch_unused_bytes,
             reclaimed_by_reason: state.reclaimed_by_reason,
-            context_joins: state.context_joins,
-            event_waits: state.event_waits,
+            context_joins,
+            driver_physical_ooms,
+            event_waits,
             poisoned: state.poison.is_some(),
             ..Stats::default()
         };
@@ -1002,14 +849,189 @@ impl Arena {
                 if entry.uses.pins() != 0 {
                     stats.pinned_bytes += entry.bytes;
                 }
-                if entry.preferred() {
-                    stats.preferred_bytes += entry.bytes;
-                }
             }
         }
         Ok(stats)
     }
 }
+
+const MAX_DEVICES: usize = 64;
+static DEVICES: [OnceLock<Device>; MAX_DEVICES] = [const { OnceLock::new() }; MAX_DEVICES];
+static PROCESS: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn gpu(ordinal: i32) -> Result<&'static Device> {
+    check_process()?;
+    let slot = usize::try_from(ordinal).ok().and_then(|index| DEVICES.get(index))
+        .ok_or(Error::Invalid("CUDA device ordinal out of range"))?;
+    Ok(slot.get_or_init(|| Device::new(ordinal)))
+}
+
+/// Observed process-check backend. Reading this never initializes CUDA or arms a guard.
+#[derive(Debug)]
+pub struct ProcessGuardStatus {
+    pub backend: &'static str,
+    pub marker: u32,
+    pub thread_authenticated: bool,
+    pub page_address: usize,
+    pub page_bytes: usize,
+    pub failure_stage: u32,
+    pub failure_errno: i32,
+}
+
+pub fn process_guard_status() -> ProcessGuardStatus {
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+    {
+        fork_guard::status()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard"))))]
+    {
+        ProcessGuardStatus {
+            backend: "actual_pid",
+            marker: 0,
+            thread_authenticated: false,
+            page_address: 0,
+            page_bytes: 0,
+            failure_stage: 0,
+            failure_errno: 0,
+        }
+    }
+}
+
+fn check_process() -> Result<()> {
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+    if let Some(result) = fork_guard::check() {
+        return result;
+    }
+    check_process_pid()
+}
+
+fn check_process_pid() -> Result<()> {
+    let pid = std::process::id();
+    let owner = match PROCESS.load(Ordering::Relaxed) {
+        0 => PROCESS
+            .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap_or_else(|owner| owner),
+        owner => owner,
+    };
+    if owner != 0 && owner != pid {
+        return Err(Error::Invalid("CUDA residency cannot be used after fork"));
+    }
+    Ok(())
+}
+
+/// Excludes capture entry on this device. Lock order: gate, device table, fences,
+/// region waits. Hold it across short driver calls, never across a GPU wait or a callback.
+pub(crate) struct Gate {
+    device: &'static Device,
+    _held: MutexGuard<'static, ()>,
+}
+
+impl Gate {
+    pub(crate) fn not_capturing(&self) -> Result<()> {
+        if self.device.captures.load(Ordering::Acquire) != 0 {
+            return Err(Error::CaptureActive);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn epoch(&self) -> u64 {
+        self.device.epoch()
+    }
+
+
+    /// Keeps capture out while this thread waits on the GPU with the gate released.
+    pub(crate) fn hold(&self) -> Result<ProducerGuard> {
+        self.not_capturing()?;
+        self.device.guard(&self.device.producers)
+    }
+}
+
+pub(crate) fn gate(ordinal: i32) -> Result<Gate> {
+    let device = gpu(ordinal)?;
+    let held = device.gate.lock().map_err(|_| Error::Poisoned("device gate mutex".into()))?;
+    Ok(Gate { device, _held: held })
+}
+
+/// Exclude driver work on this device while a capture runs, even before it is open.
+/// Short-lived holders finish first. The bound is a last resort: a holder may be this very
+/// thread, with no signal to tell. A refused capture falls back to eager.
+pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
+    let deadline = std::time::Instant::now() + reclaim::RECOVERY_BUDGET;
+    loop {
+        source::stop(device)?;
+        {
+            let gate = gate(device)?;
+            let state = gate.device;
+            let producers = state.producers.load(Ordering::Acquire);
+            if producers == 0
+                && state.replays.load(Ordering::Acquire) == 0
+                && state.retirements.load(Ordering::Acquire) == 0
+            {
+                state.activity_epoch.fetch_add(1, Ordering::AcqRel);
+                return state.guard(&state.captures);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(if producers != 0 {
+                    Error::Invalid("native producers must finish before CUDA graph capture")
+                } else {
+                    Error::CaptureActive
+                });
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Bound a user callback's host interval. Only actual working alloc/free invalidates a
+/// measurement; CPU-only callbacks add no failure and this guard performs no CUDA work.
+pub fn enter_external_callback(device: i32) -> Result<GlobalCaptureGuard> {
+    let state = gpu(device)?;
+    state.guard(&state.external_callbacks)
+}
+
+/// A resident graph launch. Its retained Pins and pool references, not this host guard,
+/// own its device dependencies, so reclaim continues beside it. Only capture entry waits.
+pub fn enter_replay(device: i32) -> Result<GlobalCaptureGuard> {
+    let gate = gate(device)?;
+    gate.not_capturing()?;
+    gate.device.activity_epoch.fetch_add(1, Ordering::AcqRel);
+    gate.device.guard(&gate.device.replays)
+}
+
+pub fn is_capturing(device: i32) -> Result<bool> {
+    Ok(gpu(device)?.captures.load(Ordering::Acquire) != 0)
+}
+
+/// Capture entry waits for a final owner's destruction, without this thread holding the
+/// gate that destruction may need. Replay and recovery continue beside it.
+fn enter_retirement(device: i32) -> Result<GlobalCaptureGuard> {
+    let gate = gate(device)?;
+    gate.not_capturing()?;
+    gate.device.guard(&gate.device.retirements)
+}
+
+pub struct GlobalCaptureGuard {
+    count: &'static AtomicUsize,
+    pid: u32,
+}
+
+impl Drop for GlobalCaptureGuard {
+    fn drop(&mut self) {
+        if self.pid == std::process::id() {
+            decrement(self.count);
+        }
+    }
+}
+
+/// Own the right to submit native producer work outside actual CUDA capture.
+/// The caller retains this lease until every producer has checked completion; uncertain
+/// completion retains the lease along with the actual Fill/source owners. Graph replay
+/// is unaffected because its dependencies have separate physical pins.
+pub fn enter_producer(device: i32) -> Result<ProducerGuard> {
+    gate(device)?.hold()
+}
+
+pub type ProducerGuard = GlobalCaptureGuard;
 
 fn poison(state: &mut State, error: Error) -> Error {
     state.poison = Some(error.to_string());
@@ -1018,12 +1040,14 @@ fn poison(state: &mut State, error: Error) -> Error {
 
 /// A stable reservation. Dropping Runtime's views leaves this region's physical cache intact.
 pub struct Region {
-    arena: Arc<Arena>,
+    gpu: &'static Device,
+    pid: u32,
     id: u64,
     ptr: u64,
     bytes: usize,
     rounded: usize,
     uses: Arc<Uses>,
+    source: Arc<dyn Source>,
 }
 
 /// Final reservation ownership with no remaining public views or handles.
@@ -1032,58 +1056,51 @@ pub struct RetiredRegion {
 }
 
 impl Region {
+    /// Never-reused process/core-wide reservation identity; independent of its VA.
+    pub fn id(&self) -> u64 { self.id }
+
+    // Caller holds the gate.
+    fn retire_intent(&self) {
+        self.uses.set(Contents::Retired);
+    }
+
     pub fn retire(self) -> RetiredRegion {
-        if self.arena.pid == std::process::id() {
-            self.uses.set(Contents::Retired);
+        if self.pid == std::process::id() {
+            // Frontends may call this while holding their GIL/owner lock, before
+            // handing RetiredRegion to deferred cleanup. Never wait for the gate here;
+            // the eventual Drop linearizes retirement.
+            if let Ok(_gate) = self.gpu.gate.try_lock() {
+                self.retire_intent();
+            }
         }
         RetiredRegion { _region: self }
     }
     /// Refuse further use when a native integration cannot prove completion of its writers.
     /// The integration must also retain its actual Fill/source owners; this is not cleanup.
     pub fn poison(&self, detail: impl Into<String>) {
-        if self.arena.pid != std::process::id() {
+        if self.pid != std::process::id() {
             return;
         }
-        let mut state = self.arena.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.gpu.state.lock().unwrap_or_else(|e| e.into_inner());
         state.poison.get_or_insert_with(|| detail.into());
     }
 
-    /// Record this region's reusable last-consumer event on each stream. Never waits.
-    fn record_fences(&self, streams: &[u64]) -> Result<()> {
-        if streams.is_empty()
-            || self.uses.state() != Contents::Ready
-            || self.arena.captures.load(Ordering::Acquire) != 0
-        {
+    /// Stamp this region's last consumers. No driver call, gate or wait.
+    /// Whatever the contents: an abandoned fill's copy runs on its declared stream all the same.
+    fn stamp_consumers(&self, streams: &[u64]) -> Result<()> {
+        if streams.is_empty() {
             return Err(Error::Invalid("release has no recordable consumer event"));
         }
-        let driver = &self.arena.driver;
-        let _context = driver.enter()?;
-        let mut fences = self.uses.fences();
+        let mut fences = self.gpu.fences();
+        let mut waits = self.uses.waits();
         for &stream in streams {
-            let stream = stream as usize;
-            // A record inside capture would be a graph node, not a completion fence.
-            if driver.is_capturing(stream)? {
-                return Err(Error::CaptureActive);
-            }
-            let known = fences
-                .iter()
-                .find(|fence| fence.stream == stream)
-                .map(|fence| fence.event);
-            let event = match known {
-                Some(event) => event,
-                None => driver.create_event()?,
-            };
-            if let Err(error) = driver.record(event, stream) {
-                if known.is_none() {
-                    let _ = driver.destroy_event(event);
-                }
-                return Err(error);
-            }
-            if known.is_none() {
-                fences.push(Fence { stream, event });
-            }
+            fences.stamp(stream, &mut waits);
         }
         Ok(())
+    }
+
+    fn mark_unjoined(&self) {
+        self.uses.unjoined.store(self.gpu.unjoined_mark(), Ordering::Release);
     }
 
     pub fn ptr(&self) -> u64 {
@@ -1099,30 +1116,11 @@ impl Region {
         self.rounded
     }
     pub fn device(&self) -> i32 {
-        self.arena.device
-    }
-
-    pub fn is_preferred(&self) -> Result<bool> {
-        Ok(self
-            .arena
-            .lock()?
-            .entries
-            .get(&self.id)
-            .expect("live region")
-            .preferred())
-    }
-
-    /// Advisory admission check; physical pin acquisition and reclamation remain atomic.
-    /// Native capture detachment uses this only to refuse surviving foreign storage.
-    pub fn has_live_pins(&self) -> Result<bool> {
-        let state = self.arena.lock()?;
-        Ok(state.entries.get(&self.id).expect("live region").uses.pins() != 0)
+        self.gpu.ordinal
     }
 
     pub fn is_resident(&self) -> Result<bool> {
-        Ok(self
-            .arena
-            .lock()?
+        Ok(self.gpu.lock()?
             .entries
             .get(&self.id)
             .expect("live region")
@@ -1133,181 +1131,192 @@ impl Region {
 
     /// Release this region's pages now if nothing needs them: no pin, no contents, and every
     /// user known complete (a fill aborted after its writers were checked). `CaptureActive`
-    /// during a capture or replay; while an earlier release is unfenced they stay (false) for
-    /// reclamation, which takes them before any Ready page (`reclaim_contentless`).
+    /// during a capture; while an earlier release is unfenced they stay (false) for
+    /// reclamation, which takes them before any Ready page.
     pub fn release_unready(&self) -> Result<bool> {
-        let captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, self.arena.device)?;
-        let mut state = self.arena.lock()?;
+        let gate = gate(self.gpu.ordinal)?;
+        gate.not_capturing()?;
+        let mut state = self.gpu.lock()?;
+        self.gpu.poll_fences(&mut state)?;
         let Some(entry) = state.entries.get(&self.id) else {
             return Ok(false);
         };
         if entry.handle.is_none()
             || entry.uses.pins() != 0
             || !matches!(entry.uses.state(), Contents::Cold | Contents::Retired)
-            || self.arena.completion(&mut state, self.id)? != Completion::Done
+            || self.gpu.completion(&state, self.id) != Completion::Done
         {
             return Ok(false);
         }
-        let _context = self.arena.driver.enter()?;
-        self.arena.release_backing(&mut state, self.id)?;
+        let _context = self.gpu.driver().enter()?;
+        self.gpu.release_backing_counted(&mut state, self.id, &mut 0, None)?;
         Ok(true)
     }
 
-    pub fn set_preferred(&self, preferred: bool) -> Result<()> {
-        let mut state = self.arena.lock()?;
-        let preferred = preferred && state.preferred_end.is_none_or(|end| self.id < end);
-        state
-            .entries
-            .get_mut(&self.id)
-            .expect("live region")
-            .preferred = preferred;
+    /// Whether its bytes are on the card, as far as an atomic read can tell.
+    pub fn holds_contents(&self) -> bool {
+        matches!(self.uses.state(), Contents::Ready | Contents::Published | Contents::Loading)
+    }
+
+    /// High: idle, it goes only once owner caches and peers were asked. Metadata only.
+    pub fn set_high(&self, high: bool) -> Result<()> {
+        self.gpu.lock()?.entries.get_mut(&self.id).expect("live region").high = high;
+        self.gpu.any_high.fetch_or(high, Ordering::AcqRel);
         Ok(())
     }
 
-    pub fn prepare(self: &Arc<Self>) -> Result<Preparation> {
-        self.prepare_with_reclaim(Admission::Any)
+    /// This fill is not the region's first: it has been evicted and read back.
+    pub fn refilled(&self) -> bool {
+        self.uses.generation.load(Ordering::Acquire) > 1
     }
 
-    /// Admit speculative bytes only if no eviction or prior-writer join is required.
-    /// Capacity refusal leaves existing ready contents and the preference watermark intact.
-    pub fn prepare_without_reclaim(self: &Arc<Self>) -> Result<Preparation> {
-        self.prepare_with_reclaim(Admission::None)
+    /// Demand: anything idle may go to make room, in the one reclaim order.
+    fn prepare(self: &Arc<Self>) -> Result<Preparation> {
+        let protected = std::collections::BTreeSet::from([self.id]);
+        let protect = reclaim::Protect { regions: Some(&protected), keep_phase: true, into: Some(self.id), ..Default::default() };
+        let result = (|| loop {
+            let prepared = reclaim::acquire(self.gpu.ordinal, self.rounded, reclaim::Wait::Yes, protect, || {
+                let gate = gate(self.gpu.ordinal)?;
+                let mut state = self.gpu.lock()?;
+                self.prepare_locked(&gate, &mut state, false)
+            })?;
+            match prepared {
+                Some(prepared) => return Ok(prepared),
+                None => reclaim::settle(self)?,
+            }
+        })();
+        // `Busy` is a fill already running, which `use_on` waits for: nothing was refused.
+        if result.as_ref().is_err_and(|error| !matches!(error, Error::Busy)) {
+            let _ = working::invalidate_current_phase(self.gpu.ordinal, "weight_admission_error");
+        }
+        result
     }
 
-    /// Admit a streamed block's read ahead of its use: it may evict idle streamed regions
-    /// (`State::eviction_key` order), completed ones first, then ones whose own last-consumer
-    /// events are pending, after waiting on those events; it never joins. The retained prefix
-    /// stays; otherwise this refuses like `prepare_without_reclaim`.
-    pub fn prepare_evicting_completed(self: &Arc<Self>) -> Result<Preparation> {
-        self.prepare_with_reclaim(Admission::Completed)
+    /// Pin this Region for `consumer`, which orders its next work behind the bytes, calling its
+    /// Source if they are absent. The one way a use gets them.
+    ///
+    /// # Safety
+    /// `consumer` is live in this primary context and reads nothing before this returns.
+    #[allow(unsafe_code)]
+    pub unsafe fn use_on(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
+        let pin = loop {
+            // SAFETY: this method's own contract.
+            match unsafe { self.prepare_on(consumer) } {
+                Ok(async_fill::StreamPreparation::Ready(pin) | async_fill::StreamPreparation::Ordered(pin)) => break pin,
+                Ok(async_fill::StreamPreparation::Fill(fill)) => {
+                    source::yield_to(self);
+                    // The worker takes up what comes next while this thread reads: asked only after the
+                    // read, it lost the race to this thread's next use every time.
+                    let _ = source::after_use(self);
+                    break self.source.fill(fill, Some(consumer))?
+                        .ok_or(Error::Invalid("a Source returned no pin to its consumer"))?;
+                }
+                Err(Error::Busy) if source::wait_for(self) => {}
+                Err(error) => return Err(error),
+            }
+        };
+        let _ = source::after_use(self); // Only ever a guess: its failure is not this use's.
+        Ok(pin)
     }
 
-    fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
-        let reclaim = admission == Admission::Any;
-        let captures = capture_counts()?;
-        let mut state = self.arena.lock()?;
+    /// A fill ahead of demand, if the rule allows (`reclaim::prefetch_room`). A wrong guess costs
+    /// a read, never a refusal: None declines without IO or waiting.
+    #[allow(unsafe_code)]
+    fn prepare_ahead(self: &Arc<Self>, free_only: bool) -> Result<Option<Fill>> {
+        let (device, arena) = (self.device(), self.gpu);
+        let missing = {
+            let gate = gate(device)?;
+            if gate.not_capturing().is_err() {
+                return Ok(None);
+            }
+            let mut state = arena.lock()?;
+            arena.poll_fences(&mut state)?;
+            let entry = state.entries.get(&self.id).expect("live region");
+            if entry.uses.state() != Contents::Cold || entry.uses.pins() != 0
+                || (entry.handle.is_some() && arena.completion(&state, self.id) != Completion::Done)
+            {
+                return Ok(None);
+            }
+            if entry.handle.is_none() { self.rounded } else { 0 }
+        };
+        if !reclaim::prefetch_room(device, missing, &std::collections::BTreeSet::from([self.id]), free_only)? {
+            working::prefetch_declined(device)?;
+            return Ok(None);
+        }
+        let gate = gate(device)?;
+        let mut state = arena.lock()?;
+        let fill = match self.prepare_locked(&gate, &mut state, true) {
+            Ok(Some(Preparation::Fill(fill))) => fill,
+            // SAFETY: this temporary pin was never handed to a consumer.
+            Ok(Some(Preparation::Resident(pin))) => { drop(unsafe { pin.into_completed_region() }); return Ok(None) }
+            Ok(None) => return Ok(None),
+            Err(failure) if failure.is_oom() => return Ok(None),
+            Err(failure) => return match Error::from(failure) {
+                Error::Busy | Error::CaptureActive => Ok(None),
+                // Ambiguous device faults retain tracked mappings in the poisoned arena.
+                error => Err(error),
+            },
+        };
+        drop(state);
+        drop(gate);
+        working::prefetch_admitted(device)?;
+        Ok(Some(fill))
+    }
+
+    /// One attempt, with no reclaim. None: this region's own earlier users have not completed.
+    fn prepare_locked(
+        self: &Arc<Self>,
+        gate: &Gate,
+        state: &mut State,
+        prefetched: bool,
+    ) -> AllocationResult<Option<Preparation>> {
         let entry = state.entries.get(&self.id).expect("live region");
-        if entry.uses.state() == Contents::Loading {
-            return Err(Error::Busy);
+        if matches!(entry.uses.state(), Contents::Loading | Contents::Published) {
+            return Err(Error::Busy.into());
         }
         if entry.uses.state() == Contents::Ready {
             state.hits = state.hits.saturating_add(1);
-            return Ok(Preparation::Resident(self.pin_locked(&mut state)?));
+            state.used(self.id, self.gpu.next_use());
+            return Ok(Some(Preparation::Resident(self.pin_locked(state)?)));
         }
         // A failed fill can leave escaped foreign storage. It owns these bytes until destruction.
         if entry.uses.pins() != 0 {
-            return Err(Error::Busy);
+            return Err(Error::Busy.into());
         }
-        if reclaim {
-            ensure_recovery_allowed(&captures, self.arena.device)?;
-        } else {
-            ensure_not_capturing(&captures, self.arena.device)?;
-        }
-        let _context = self.arena.driver.enter()?;
-        let has_handle = entry.handle.is_some();
-        if !has_handle {
-            if !entry.preferred() && state.streaming_limit != usize::MAX {
-                let resident = state.streaming_bytes();
-                let limit = state.streaming_limit.max(self.rounded);
-                let excess = resident.saturating_add(self.rounded).saturating_sub(limit);
-                match admission {
-                    Admission::Any => {
-                        self.arena.reclaim_locked(
-                            &mut state,
-                            excess,
-                            false,
-                            Some(self.id),
-                            ReclaimReason::StreamingLimit,
-                        )?;
-                    }
-                    Admission::Completed => {
-                        self.arena.reclaim_completed_locked(
-                            &mut state,
-                            excess,
-                            self.id,
-                            ReclaimReason::StreamingLimit,
-                        )?;
-                    }
-                    Admission::None if excess != 0 => {
-                        return Err(Error::OutOfMemory {
-                            requested_bytes: self.rounded,
-                        });
-                    }
-                    Admission::None => {}
-                }
-                let remaining = state.streaming_bytes();
-                if remaining.saturating_add(self.rounded) > limit {
-                    return Err(Error::OutOfMemory {
-                        requested_bytes: self.rounded,
-                    });
-                }
-            }
-            let handle = match self.arena.create(self.rounded) {
+        gate.not_capturing()?;
+        let _context = self.gpu.driver().enter()?;
+        if entry.handle.is_none() {
+            let handle = match self.gpu.create(self.rounded) {
                 Ok(handle) => handle,
-                Err(Error::OutOfMemory { .. }) => {
-                    match admission {
-                        Admission::None => {
-                            return Err(Error::OutOfMemory {
-                                requested_bytes: self.rounded,
-                            });
-                        }
-                        Admission::Completed => {
-                            self.arena.reclaim_completed_locked(
-                                &mut state,
-                                self.rounded,
-                                self.id,
-                                ReclaimReason::WeightAllocation,
-                            )?;
-                        }
-                        Admission::Any => {
-                            self.arena.reclaim_locked(
-                                &mut state,
-                                self.rounded,
-                                false,
-                                Some(self.id),
-                                ReclaimReason::WeightAllocation,
-                            )?;
-                        }
-                    }
-                    match self.arena.create(self.rounded) {
-                        Ok(handle) => handle,
-                        Err(error @ Error::OutOfMemory { .. }) => return Err(error),
-                        Err(error) => return Err(poison(&mut state, error)),
-                    }
-                }
-                Err(error) => return Err(poison(&mut state, error)),
+                Err(failure) if failure.is_oom() => return Err(failure),
+                Err(failure) => return Err(poison(state, failure.into()).into()),
             };
             // Record custody before map. Even an ambiguous map failure keeps both handle and VA.
             state.entries.get_mut(&self.id).expect("live region").handle = Some(handle);
-            if let Err(error) = self.arena.driver.map(self.ptr, self.rounded, handle) {
-                return Err(poison(&mut state, error));
+            if let Err(error) = self.gpu.driver().map(self.ptr, self.rounded, handle) {
+                return Err(poison(state, error).into());
             }
         } else {
-            // An abandoned external fill may still have queued writes. Only a checked
-            // native last-use release can remove this join; ordinary storage remains guarded.
-            match (admission, self.arena.completion(&mut state, self.id)?) {
-                (_, Completion::Done) if admission != Admission::None => {}
-                (Admission::Any, Completion::Pending) => {
-                    self.arena.wait_fences(&mut state, self.id)?
-                }
-                (Admission::Any, Completion::Unjoined) => {
-                    self.arena.join_context(&mut state, &[self.id])?
-                }
-                // Even an abandoned fill with no remaining pins may have queued writers.
-                _ => {
-                    return Err(Error::OutOfMemory {
-                        requested_bytes: self.rounded,
-                    });
-                }
+            // An abandoned external fill may still have queued writes.
+            self.gpu.poll_fences(state)?;
+            if self.gpu.completion(state, self.id) != Completion::Done {
+                return Ok(None);
             }
         }
-        let pin = self.pin_locked(&mut state)?;
+        self.uses.generation.try_update(Ordering::AcqRel, Ordering::Acquire,
+            |generation| generation.checked_add(1))
+            .map_err(|_| Error::Invalid("fill generation overflow"))?;
+        *self.uses.submission.lock().map_err(|_| Error::Poisoned("fill submission mutex".into()))? = None;
+        if !prefetched {
+            state.used(self.id, self.gpu.next_use());
+        }
+        let pin = self.pin_locked(state)?;
+        let filled = self.gpu.clock.load(Ordering::Relaxed);
+        let entry = state.entries.get_mut(&self.id).expect("live region");
+        entry.prefetched = prefetched;
+        entry.filled = filled;
         self.uses.set(Contents::Loading);
-        Ok(Preparation::Fill(Fill {
-            pin: Some(pin),
-            copied: false,
-        }))
+        Ok(Some(Preparation::Fill(Fill { pin: Some(pin) })))
     }
 
     /// Borrow ready contents without creating a fill or doing device work.
@@ -1318,16 +1327,16 @@ impl Region {
     /// Atomically borrow ready contents, or report a miss without mapping or filling.
     /// Fork, poison and ownership errors remain failures, never residency misses.
     pub fn try_pin(self: &Arc<Self>) -> Result<Option<Pin>> {
-        let mut state = self.arena.lock()?;
+        let mut state = self.gpu.lock()?;
         let entry = state.entries.get(&self.id).expect("live region");
         if entry.uses.state() != Contents::Ready {
             return Ok(None);
         }
+        state.used(self.id, self.gpu.next_use());
         self.pin_locked(&mut state).map(Some)
     }
 
     fn pin_locked(self: &Arc<Self>, state: &mut State) -> Result<Pin> {
-        state.clock = state.clock.saturating_add(1);
         let entry = state.entries.get_mut(&self.id).expect("live region");
         entry
             .uses
@@ -1335,15 +1344,17 @@ impl Region {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
-            .map_err(|_| Error::Invalid("pin count overflow"))?;
-        entry.last_use = state.clock;
+            .map_err(|_| Error::Invalid("pin count overflow"))
+            .map(|prior| if prior == 0 { self.gpu.held.fetch_add(self.rounded, Ordering::AcqRel); })?;
+        entry.prefetched = false;
         Ok(Pin {
             region: Some(Arc::clone(self)),
+            submission: None,
         })
     }
 }
 
-pub enum Preparation {
+enum Preparation {
     Resident(Pin),
     Fill(Fill),
 }
@@ -1351,7 +1362,6 @@ pub enum Preparation {
 /// Exclusive initialization of a mapped region. Uncommitted contents are never published.
 pub struct Fill {
     pin: Option<Pin>,
-    copied: bool,
 }
 
 impl Fill {
@@ -1370,36 +1380,14 @@ impl Fill {
     pub fn device(&self) -> i32 {
         self.region().device()
     }
+    /// The Region this fills.
+    pub fn target(&self) -> &Arc<Region> {
+        self.pin.as_ref().expect("uncommitted fill").region()
+    }
 
     /// Retain the in-flight mapping for a foreign fill tensor, including escaped failed-fill views.
     pub fn pin(&self) -> Result<Pin> {
         self.pin.as_ref().expect("uncommitted fill").try_clone()
-    }
-
-    pub fn copy_from_host(&mut self, bytes: &[u8]) -> Result<()> {
-        if bytes.len() != self.len() {
-            return Err(Error::Invalid("fill must cover the whole logical region"));
-        }
-        self.copied = false;
-        let region = self.region();
-        let captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, region.arena.device)?;
-        let mut state = region.arena.lock()?;
-        let _context = region.arena.driver.enter()?;
-        if let Err(error) = region.arena.driver.copy_from_host(region.ptr, bytes) {
-            return Err(poison(&mut state, error));
-        }
-        drop(state);
-        drop(_context);
-        self.copied = true;
-        Ok(())
-    }
-
-    pub fn commit(self) -> Result<Pin> {
-        if !self.copied {
-            return Err(Error::Invalid("fill has not initialized the entire region"));
-        }
-        self.finish(true)
     }
 
     /// Publish a fill performed through the raw pointer by a native integration.
@@ -1428,22 +1416,19 @@ impl Fill {
 
     fn finish(mut self, join: bool) -> Result<Pin> {
         let region = self.region();
-        let captures = capture_counts()?;
         if join {
-            ensure_recovery_allowed(&captures, region.arena.device)?;
-        } else {
-            ensure_not_capturing(&captures, region.arena.device)?;
+            reclaim::join(region.gpu)?;
         }
-        let mut state = region.arena.lock()?;
-        let _context = region.arena.driver.enter()?;
-        if join && let Err(error) = region.arena.driver.synchronize() {
-            return Err(poison(&mut state, error));
-        }
+        let gate = gate(region.gpu.ordinal)?;
+        gate.not_capturing()?;
+        let mut state = region.gpu.lock()?;
         let entry = state.entries.get_mut(&region.id).expect("fill owns region");
         entry.uses.set(Contents::Ready);
+        let bytes = entry.bytes as u64;
         state.fills = state.fills.saturating_add(1);
+        state.filled_bytes = state.filled_bytes.saturating_add(bytes);
         drop(state);
-        drop(_context);
+        drop(gate);
         Ok(self.pin.take().expect("committed fill"))
     }
 }
@@ -1458,17 +1443,26 @@ impl Fill {
     #[allow(unsafe_code)]
     pub unsafe fn abort_completed(mut self) -> Arc<Region> {
         let pin = self.pin.take().expect("uncommitted fill");
-        if pin.region().arena.pid == std::process::id() {
+        if pin.region().pid == std::process::id() {
             pin.region().uses.set(Contents::Cold);
         }
         // SAFETY: the caller proved every writer complete; unpublished contents have no reader.
         unsafe { pin.into_completed_region() }
     }
 
+    /// Abort, handing back the fill's own pin to release with what its owner knows of its writers.
+    pub fn abandon(mut self) -> Pin {
+        let pin = self.pin.take().expect("uncommitted fill");
+        if pin.region().pid == std::process::id() {
+            pin.region().uses.set(Contents::Cold);
+        }
+        pin
+    }
+
     /// Abort without waiting, returning reservation ownership for deferred final teardown.
     pub fn into_unpinned_region(mut self) -> Arc<Region> {
         let pin = self.pin.take().expect("uncommitted fill");
-        if pin.region().arena.pid == std::process::id() {
+        if pin.region().pid == std::process::id() {
             pin.region().uses.set(Contents::Cold);
         }
         pin.into_unpinned_region()
@@ -1478,7 +1472,7 @@ impl Fill {
 impl Drop for Fill {
     fn drop(&mut self) {
         if let Some(pin) = &self.pin
-            && pin.region().arena.pid == std::process::id()
+            && pin.region().pid == std::process::id()
         {
             // Cold is visible before the fill pin is released. Escaped aliases stay pinned.
             pin.region().uses.set(Contents::Cold);
@@ -1489,6 +1483,7 @@ impl Drop for Fill {
 /// Physical pin + reservation ownership. The deleter of foreign storage must own this value.
 pub struct Pin {
     region: Option<Arc<Region>>,
+    submission: Option<Arc<async_fill::Control>>,
 }
 
 impl Pin {
@@ -1509,17 +1504,19 @@ impl Pin {
     }
 
     pub fn try_clone(&self) -> Result<Self> {
-        let mut state = self.region().arena.lock()?;
-        self.region().pin_locked(&mut state)
+        let mut state = self.region().gpu.lock()?;
+        let mut pin = self.region().pin_locked(&mut state)?;
+        pin.submission = self.submission.clone();
+        Ok(pin)
     }
 
     /// End physical ownership immediately, retaining the actual VA owner for deferred drop.
     /// Reclamation still joins queued GPU readers before unmapping the now-unpinned pages.
     pub fn into_unpinned_region(mut self) -> Arc<Region> {
         let region = self.region.take().expect("live pin");
-        if region.arena.pid == std::process::id() {
-            region.uses.unjoined.store(true, Ordering::Release);
-            decrement(&region.uses.pins);
+        if region.pid == std::process::id() {
+            region.mark_unjoined();
+            region.unpinned();
         }
         region
     }
@@ -1536,16 +1533,15 @@ impl Pin {
     #[allow(unsafe_code)]
     pub unsafe fn into_completed_region(mut self) -> Arc<Region> {
         let region = self.region.take().expect("live pin");
-        if region.arena.pid == std::process::id() {
-            decrement(&region.uses.pins);
+        if region.pid == std::process::id() {
+            region.unpinned();
         }
         region
     }
 
-    /// End this use after recording a Varena-owned last-consumer event on each stream.
-    /// Reclaim then waits on those events, never the context. With no stream, unready
-    /// contents, active capture or any driver failure, this is `into_unpinned_region`.
-    /// Never waits, so storage deleters may call it.
+    /// End this use after stamping each last-consumer stream. Reclaim then waits on those
+    /// streams' fences, never the context. With no stream, this is `into_unpinned_region`.
+    /// No driver call or wait, so storage deleters may call it.
     ///
     /// # Safety
     /// Every consumer of this pin, including escaped aliases sharing it, submitted all of its
@@ -1554,74 +1550,77 @@ impl Pin {
     #[allow(unsafe_code)]
     pub unsafe fn into_fenced_region(mut self, streams: &[u64]) -> Arc<Region> {
         let region = self.region.take().expect("live pin");
-        if region.arena.pid == std::process::id() {
-            if region.record_fences(streams).is_err() {
-                region.uses.unjoined.store(true, Ordering::Release);
+        if region.pid == std::process::id() {
+            if region.stamp_consumers(streams).is_err() {
+                region.mark_unjoined();
             }
-            decrement(&region.uses.pins);
+            region.unpinned();
         }
         region
+    }
+
+    /// Record final consumers, retaining the exact physical Pin on any refusal.
+    /// Unlike `into_fenced_region`, failure never selects a context-join fallback.
+    /// A storage owner that cannot retry must transfer the returned Pin and its
+    /// Source/service custody to explicit quarantine; it must not simply drop it.
+    ///
+    /// # Safety
+    /// The caller has closed submission by every alias of this physical use.
+    /// Every consumer is represented by a live stream in this device's primary
+    /// context. No consumer may submit after this call, including after failure.
+    #[allow(unsafe_code)]
+    pub unsafe fn try_into_fenced_region(
+        mut self,
+        streams: &[u64],
+    ) -> std::result::Result<Arc<Region>, (Self, Error)> {
+        if self.region().pid != std::process::id() {
+            return Err((self, Error::Invalid("physical Pin inherited after fork")));
+        }
+        let recorded = self.region().stamp_consumers(streams);
+        if let Err(error) = recorded {
+            return Err((self, error));
+        }
+        let region = self.region.take().expect("live pin");
+        region.unpinned();
+        Ok(region)
     }
 }
 
 impl Drop for Pin {
     fn drop(&mut self) {
         if let Some(region) = &self.region
-            && region.arena.pid == std::process::id()
+            && region.pid == std::process::id()
         {
-            region.uses.unjoined.store(true, Ordering::Release);
-            decrement(&region.uses.pins);
+            region.mark_unjoined();
+            region.unpinned();
         }
-    }
-}
-
-impl Preparation {
-    pub fn into_unpinned_region(self) -> Arc<Region> {
-        match self {
-            Self::Resident(pin) => pin.into_unpinned_region(),
-            Self::Fill(fill) => fill.into_unpinned_region(),
-        }
-    }
-}
-
-pub struct CaptureGuard {
-    global: Option<GlobalCaptureGuard>,
-    arena: Option<Arc<Arena>>,
-}
-
-impl CaptureGuard {
-    pub fn into_arena(mut self) -> Arc<Arena> {
-        drop(self.global.take());
-        self.arena.take().expect("live capture owner")
     }
 }
 
 impl Drop for Region {
     fn drop(&mut self) {
-        if self.arena.pid != std::process::id() {
+        if self.pid != std::process::id() {
             return;
         }
-        self.uses.set(Contents::Retired);
-        let Ok(captures) = capture_counts() else {
+        let Ok(gate) = gate(self.gpu.ordinal) else {
             return;
         };
-        let Ok(mut state) = self.arena.lock() else {
+        self.retire_intent();
+        let Ok(mut state) = self.gpu.lock() else {
             return;
         };
         // Reclamation may already have retired this unowned VA while teardown was deferred.
         let Some(entry) = state.entries.get_mut(&self.id) else {
             return;
         };
-        entry.preferred = false;
-        // Defer physical teardown to reclamation or Arena drop; destructors cannot block capture.
-        if entry.handle.is_some() || ensure_recovery_allowed(&captures, self.arena.device).is_err()
-        {
+        // Defer physical teardown to reclamation; destructors cannot block capture.
+        if entry.handle.is_some() || gate.not_capturing().is_err() {
             return;
         }
-        let Ok(_context) = self.arena.driver.enter() else {
+        let Ok(_context) = self.gpu.driver().enter() else {
             return;
         };
-        if let Err(error) = self.arena.driver.free_address(self.ptr, self.rounded) {
+        if let Err(error) = self.gpu.driver().free_address(self.ptr, self.rounded) {
             poison(&mut state, error);
             return;
         }
@@ -1629,157 +1628,67 @@ impl Drop for Region {
     }
 }
 
-impl Drop for Arena {
-    fn drop(&mut self) {
-        if self.pid != std::process::id() {
-            return;
-        }
-        let Ok(captures) = capture_counts() else {
-            return;
-        };
-        if ensure_recovery_allowed(&captures, self.device).is_err() {
-            return;
-        }
-        let Ok(state) = self.state.get_mut() else {
-            return;
-        };
-        if state.poison.is_some() {
-            return;
-        }
-        let Ok(_context) = self.driver.enter() else {
-            return;
-        };
-        if self.driver.synchronize().is_err() {
-            return;
-        }
-        for entry in state.entries.values() {
-            // Last Arc<Arena> means no Region, Pin, Fill, or CaptureGuard can still exist.
-            for fence in entry.uses.fences().drain(..) {
-                let _ = self.driver.destroy_event(fence.event);
-            }
-            if let Some(handle) = entry.handle {
-                if self.driver.unmap(entry.ptr, entry.bytes).is_err() {
-                    return;
-                }
-                if self.driver.release(handle).is_err() {
-                    return;
-                }
-                self.room.pages.fetch_sub(entry.bytes, Ordering::AcqRel);
-            }
-            if self.driver.free_address(entry.ptr, entry.bytes).is_err() {
-                return;
-            }
-        }
+/// Host-only cumulative physical-release observation. Wrap is handled conservatively by
+/// request-local checked subtraction; queued owner actions never change this counter.
+pub fn released_bytes(device: i32) -> Result<u64> {
+    Ok(gpu(device)?.released.load(Ordering::Acquire))
+}
+
+fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
+    let mut completed = 0;
+    reclaim::release(device, wanted, usize::MAX, reclaim::Wait::No, reclaim::Protect::default(),
+        ReclaimReason::Allocator, &mut completed)?;
+    Ok(completed)
+}
+
+/// Development only, for the fault suite: from the `n`th next cuMemCreate on `device`, `times`
+/// of them fail as a physical out of memory would. `times` 0 clears it.
+pub fn fail_create_after(device: i32, n: u64, times: u64) -> Result<()> {
+    gpu(device)?.driver.get().ok_or(Error::Invalid("device not opened"))?.fail_create_after(n, times);
+    Ok(())
+}
+
+/// Development only: use at most this much of the card, as a smaller card would. The core
+/// keeps it true against the driver's own charge, which it samples at every slow path.
+pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
+    let state = gpu(device)?;
+    state.ceiling.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    state.room_shrank();
+    if let Some(driver) = state.driver.get()
+        && !is_capturing(device)?
+    {
+        let _context = driver.enter()?;
+        state.sample()?;
     }
+    reclaim_room(device, state)
 }
 
-fn room(device: i32) -> Result<Arc<Room>> {
-    Ok(Arc::clone(&capture_counts()?.entry(device).or_default().room))
-}
-
-/// The room this process may hold on `device` (its weight pages plus Torch's hooked segments),
-/// None for no limit, and at once its pages above it back, in reclaim order (pins are never
-/// overridden; under a capture or replay they wait for the next fill or allocation, which the
-/// room bounds from now on). What a machine asks of an executor when another program needs the
-/// GPU (design/vram-yield.md): the one make_room for foreign pressure.
-pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
-    check_process()?;
-    let room = room(device)?;
-    room.limit.store(limit.unwrap_or(usize::MAX), Ordering::Release);
-    let over = room.over(0);
+fn reclaim_room(device: i32, state: &Device) -> Result<ReclaimReport> {
+    let over = state.over(0);
     let mut report = ReclaimReport {
         requested_bytes: over,
         ..ReclaimReport::default()
     };
-    if over == 0 || is_recovery_blocked(device)? {
+    if over == 0 || is_capturing(device)? {
         return Ok(report);
     }
-    let Some(registry) = ARENAS.get() else {
-        return Ok(report);
-    };
-    let arenas: Vec<_> = registry
-        .lock()
-        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?
-        .iter()
-        .filter_map(Weak::upgrade)
-        .filter(|arena| arena.device == device)
-        .collect();
-    for arena in arenas {
-        let need = room.over(0);
-        if need == 0 {
-            break;
-        }
-        let next = arena.reclaim_with_preference(need, true, ReclaimReason::Room)?;
-        report.reclaimed_bytes += next.reclaimed_bytes;
-        report.evicted_regions += next.evicted_regions;
-    }
+    // What is free to take now: a control thread never waits on GPU work, and the limit holds.
+    report.evicted_regions = reclaim::release(device, over, usize::MAX, reclaim::Wait::No,
+        reclaim::Protect::default(), ReclaimReason::Room, &mut report.reclaimed_bytes)?;
     Ok(report)
 }
 
-/// `make_room`'s current limit on `device`, None for none.
-pub fn room_limit(device: i32) -> Result<Option<usize>> {
-    let limit = room(device)?.limit.load(Ordering::Acquire);
-    Ok((limit != usize::MAX).then_some(limit))
+/// What a development cap sets aside for the driver's own reservation; 0 until one is sampled.
+pub fn driver_reservation(device: i32) -> Result<usize> {
+    Ok(gpu(device)?.reservation.get().copied().unwrap_or(0))
 }
 
-/// Torch's segments on `device` through the allocation hook, which the room counts beside pages.
-pub fn note_torch_reserved(device: i32, bytes: usize) -> Result<()> {
-    room(device)?.torch.store(bytes, Ordering::Release);
-    Ok(())
+/// Bytes every completed fill has written on this device: host-to-device traffic.
+pub fn filled_bytes(device: i32) -> Result<u64> {
+    Ok(gpu(device)?.lock()?.filled_bytes)
 }
 
-/// Allocator-pressure entry point: native-only, one finite pass, no callbacks or external waits.
-/// The caller retries its allocation once only if this returns enough useful reclaimed bytes.
-pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
-    check_process()?;
-    if is_recovery_blocked(device)? {
-        return Err(Error::CaptureActive);
-    }
-    let mut report = ReclaimReport {
-        requested_bytes: bytes,
-        ..ReclaimReport::default()
-    };
-    let Some(registry) = ARENAS.get() else {
-        return Ok(report);
-    };
-    let registry = registry
-        .lock()
-        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-    for arena in registry
-        .iter()
-        .filter_map(Weak::upgrade)
-        .filter(|arena| arena.device == device)
-    {
-        if report.reclaimed_bytes >= bytes {
-            break;
-        }
-        let next = arena.reclaim_with_preference(
-            bytes - report.reclaimed_bytes,
-            true,
-            ReclaimReason::Allocator,
-        )?;
-        report.reclaimed_bytes += next.reclaimed_bytes;
-        report.evicted_regions += next.evicted_regions;
-    }
-    Ok(report)
-}
-
-/// Physical bytes owned by live arenas on this device, for a local managed-memory ceiling.
+/// Physical bytes of resident regions on this device.
 pub fn resident_bytes(device: i32) -> Result<usize> {
-    check_process()?;
-    let Some(registry) = ARENAS.get() else {
-        return Ok(0);
-    };
-    let registry = registry
-        .lock()
-        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-    registry
-        .iter()
-        .filter_map(Weak::upgrade)
-        .filter(|arena| arena.device == device)
-        .try_fold(0usize, |bytes, arena| {
-            bytes
-                .checked_add(arena.stats()?.resident_bytes)
-                .ok_or(Error::Invalid("resident byte count overflow"))
-        })
+    Ok(gpu(device)?.pages.load(Ordering::Acquire))
 }

@@ -51,11 +51,12 @@ tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
 
+[target.'cfg(target_os = "linux")'.dependencies]
+varena-ledger.workspace = true
+socket2 = { version = "0.6", features = ["all"] }
+
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "net", "process"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-socket2 = { version = "0.6", features = ["all"] }
 
 [lints]
 workspace = true

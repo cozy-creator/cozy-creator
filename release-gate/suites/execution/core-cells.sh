@@ -12,8 +12,8 @@ cell kernel-ready-dropped-slot "$CORE_READY_TARGET" mode=dropped-slot seed:=$((R
 # program some call keeps is recorded (cozy-runtime #1891 and the streamed rule after it):
 #   loop-kept       SDXL's keyed loop on a card of 20 GiB or more: the first call records the whole call after its eager
 #                   first step and runs the rest natively, the later calls run it natively from start to end (reused);
-#   loop-eager      Qwen-Image-2.1 int8 1 MP, a loop no call keeps, runs eagerly: resident on a large card, streamed
-#                   on a small one;
+#   loop-eager      MOSS-Image, an unkeyed loop no call keeps, runs eagerly: resident on a large card, streamed on a
+#                   small one;
 #   loop-cancel     a run canceled inside its loop ends canceled, and the next call completes.
 LQ=$(pkg qwen-image-2 generate)
 GIB=$("$CLI" --json machine show "$M" 2>/dev/null | jq '[.status.gpus[].memory_bytes] | min / 1073741824 | floor')
@@ -31,7 +31,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",loop-"* || $ONLY == *",qwen-image-2,"* || $O
     done
     loop_expect loop-kept-3 '.status == "completed" and (.measurements.execution.loops[0] | .mode == "resident" and .reused)'
   fi
-  cell loop-eager "$LQ" prompt="$OBJECT, an eager loop" megapixels:=1.0 seed:=$((R + 326)) --lane int8 --gpus=1
+  cell loop-eager "$(pkg moss-image generate)" prompt="$OBJECT, an eager loop" seed:=$((R + 326)) --gpus=1
   loop_expect loop-eager '.status == "completed" and (.measurements.execution.loops[0] | .mode == "eager"
     and (.eager // "" | endswith("and no call keeps the program")))'
   # Cancel once the loop is past its first steps.

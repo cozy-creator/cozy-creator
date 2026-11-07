@@ -1,5 +1,6 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
-const { writeFileSync } = require('fs');
+const { execFileSync } = require('child_process');
+const { appendFileSync, readFileSync, writeFileSync } = require('fs');
 const zlib = require('zlib');
 
 const STEP_MS = 60_000;
@@ -19,6 +20,8 @@ const crc = (() => {
 
 // A real video: one second of H.264, 160 by 90, no sound.
 const MP4 = Buffer.from('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', 'base64');
+// Two seconds of colour bars, black for the first half second: a poster from its first frame is black.
+const DARK_OPEN = Buffer.from('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', 'base64');
 
 // A real picture: `shade` tells one from another, so each hashes differently. With `alpha`, its left half is fully transparent.
 function png(shade, width = 320, height = 200, alpha = false) {
@@ -99,6 +102,14 @@ async function closeBox(page) {
   await settled(page);
 }
 // A click works on a box where it stands: the middle of it, where there's nothing else to press.
+/** An open box's Render. An image tool's box looking at a take shows only its description: its + goes to its next take's words, with Render. */
+async function renderOf(page, name) {
+  const here = page.locator(`.card.here[data-asset="${name}"]`).first();
+  const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
+  if (!(await here.locator('.in-frame').count()) && (await next.count())) await next.click();
+  return here.locator('button[aria-label=Render]');
+}
+
 async function openBox(page, name) {
   // By the address too: a box left a moment ago can still say so, and reaching for it finds it gone (macOS, 41977214625).
   const card = page.locator(`.card.here[data-asset="${name}"]`);
@@ -193,6 +204,20 @@ const boxLog = (page) => page.evaluate(() => ({
   focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
   under: [...document.querySelectorAll(':hover')].at(-1)?.className,
 }));
+/** This computer's Calcifer, where its lock ($HOLDER) says: what serves each cell's page. */
+const calcifer = () => `http://${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).address}`;
+
+/** `page`, signed in as a person is: `cozy open --no-open`, and its link at once. Its code lives 60 s, so a cell asks for it with its browser
+ *  up: asked for before a slow runner launched one, a code had run out by the time the page redeemed it (42113601659). */
+function signIn(page, options) {
+  const words = ['open', '--no-open'];
+  if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
+  const said = execFileSync(process.env.COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0];
+  if (!link) throw new Error(`cozy open --no-open printed no link: ${said.slice(0, 300)}`);
+  return page.goto(link, options);
+}
+
 /** This pass's browser: $ENGINE's own build (webkit, firefox), else the Chrome at $CHROME. */
 const launch = (playwright) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true }));
 
@@ -220,4 +245,32 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, until, watchBoxes, wav };
+/** The frames while a pan goes on, how many places the viewport went, as a pan that didn't move proves nothing, and the fewest cards on
+ *  screen at any moment of it. It goes 480 px left and back. */
+const panning = (page, ms) => page.evaluate((ms) => new Promise((done) => {
+  const pane = document.querySelector('.react-flow__pane');
+  const viewport = document.querySelector('.react-flow__viewport');
+  const frames = [];
+  const places = new Set();
+  let [last, sign, count, fewest] = [performance.now(), 1, 0, Infinity];
+  const end = last + ms;
+  const step = (now) => {
+    frames.push(now - last);
+    last = now;
+    places.add(getComputedStyle(viewport).transform);
+    fewest = Math.min(fewest, document.querySelectorAll('.react-flow__node').length);
+    if (++count % 40 === 0) sign = -sign;
+    pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
+    if (now < end) requestAnimationFrame(step);
+    else done({ frames: frames.slice(1), places: places.size, fewest });
+  };
+  requestAnimationFrame(step);
+}), ms);
+
+/** A run of frame times as its median, its 95th and how many. */
+function summary(frames) {
+  const sorted = [...frames].sort((a, b) => a - b);
+  return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
+}
+
+module.exports = { DARK_OPEN, MP4, STEP_MS, boxLog, boxOf, calcifer, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, settled, signIn, summary, until, watchBoxes, wav };

@@ -7,11 +7,14 @@ use std::sync::Arc;
 use crate::format::{Component, Header, Tensor};
 use crate::{Failure, Result};
 
+#[cfg(feature = "cuda")]
 pub use crate::io::decode::{DeviceDecode, Output as DecodeOutput, Part as DecodePart};
+#[cfg(feature = "cuda")]
 pub use crate::io::decode::device_scratch_bytes as decode_device_scratch_bytes;
 pub use crate::session::PartData;
 
 /// Check encoded-part descriptors through the shared format registry without reading data.
+#[cfg(feature = "cuda")]
 pub fn check_decode(
     encoding: &crate::format::Encoding,
     dtype: &crate::format::Dtype,
@@ -29,6 +32,7 @@ pub fn check_decode(
 /// After an error, retain them until [`crate::io::drain`] and every producer stream
 /// succeed; an error does not prove quiescence. Output is unspecified after a runtime
 /// or value error, while descriptor and overlap refusals precede writes.
+#[cfg(feature = "cuda")]
 #[allow(unsafe_code)]
 pub unsafe fn decode_into(
     encoding: &crate::format::Encoding,
@@ -47,6 +51,7 @@ pub unsafe fn decode_into(
 /// Satisfy `crate::io::decode::prepare_into`'s external-owner and stream contract.
 /// Preparation does not initialize output; retain this instance and every external
 /// input/output owner through both decoder and dependent consumer completion.
+#[cfg(feature = "cuda")]
 #[allow(unsafe_code)]
 pub unsafe fn prepare_device_decode(
     encoding: &crate::format::Encoding,

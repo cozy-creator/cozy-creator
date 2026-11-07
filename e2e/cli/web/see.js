@@ -1,19 +1,21 @@
 // See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy project
 // import` and blocks written straight into project.yaml show with no reload: elements of every kind, with no edges, each placed once, left
-// to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. Scrubbing opens no <video>; playing is Range with ?media=,
-// at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
+// to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
+// on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
-// run. With the Hub unreachable it still answers. 300 elements, measured: seen.scale.
-//   node see.js <sign-in link from `cozy open --no-open`>
+// run. With the Hub unreachable it still answers. 300 elements, measured, and panned under a resting pointer: seen.scale. The project
+// tabs: as many as fit, still while the window resizes, "N more" opening All projects with the rest first, a search there, and + ready
+// for a new name.
+//   node see.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawnSync } = require('child_process');
-const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
-const { tmpdir } = require('os');
-const { join } = require('path');
-const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
+const { existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { homedir, tmpdir } = require('os');
+const { basename, join } = require('path');
+const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, panning, renderOf, summary, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -57,28 +59,6 @@ async function drag(page, handle, dx, dy) {
   await page.mouse.up();
 }
 
-/** The frames while a pan goes on, how many places the viewport went, as a pan that didn't move proves nothing, and the fewest cards on
- *  screen at any moment of it. It goes 480 px left and back. */
-const panning = (page, ms) => page.evaluate((ms) => new Promise((done) => {
-  const pane = document.querySelector('.react-flow__pane');
-  const viewport = document.querySelector('.react-flow__viewport');
-  const frames = [];
-  const places = new Set();
-  let [last, sign, count, fewest] = [performance.now(), 1, 0, Infinity];
-  const end = last + ms;
-  const step = (now) => {
-    frames.push(now - last);
-    last = now;
-    places.add(getComputedStyle(viewport).transform);
-    fewest = Math.min(fewest, document.querySelectorAll('.react-flow__node').length);
-    if (++count % 40 === 0) sign = -sign;
-    pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
-    if (now < end) requestAnimationFrame(step);
-    else done({ frames: frames.slice(1), places: places.size, fewest });
-  };
-  requestAnimationFrame(step);
-}), ms);
-
 const quiet = (page, ms) => page.evaluate((ms) => new Promise((done) => {
   const frames = [];
   let last = performance.now();
@@ -92,14 +72,35 @@ const quiet = (page, ms) => page.evaluate((ms) => new Promise((done) => {
   requestAnimationFrame(step);
 }), ms);
 
-function summary(frames) {
-  const sorted = [...frames].sort((a, b) => a - b);
-  return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
+/** How far an image's or a video's luma spreads, 0 to 255, on 64×36 of it, and its mean: near 0 for black. */
+const spreadOf = (picture) => {
+  const canvas = document.createElement('canvas');
+  [canvas.width, canvas.height] = [64, 36];
+  const drawn = canvas.getContext('2d');
+  drawn.drawImage(picture, 0, 0, 64, 36);
+  const pixels = drawn.getImageData(0, 0, 64, 36).data;
+  const lumas = [];
+  for (let i = 0; i < pixels.length; i += 4) lumas.push(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]);
+  const mean = lumas.reduce((sum, luma) => sum + luma, 0) / lumas.length;
+  return { mean: Math.round(mean), spread: Math.round(Math.sqrt(lumas.reduce((sum, luma) => sum + (luma - mean) ** 2, 0) / lumas.length)) };
+};
+
+/** What each video on the page is doing. */
+const videos = (page) => page.evaluate(() => [...document.querySelectorAll('video')].map((video) => ({ preview: video.classList.contains('preview'), on: video.classList.contains('on'), paused: video.paused, at: video.currentTime, muted: video.muted, loop: video.loop })));
+
+/** A video's preview in Calcifer's cache, by its hash: made as the file landed. */
+const previewOf = (sha256) => join(homedir(), '.cozy', 'cache', 'thumbs', `${sha256.replace('sha256:', '')}-preview.mp4`);
+
+/** The pointer resting on `handle`, moving a little as a hand does. */
+async function rest(page, handle) {
+  const box = await handle.boundingBox();
+  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5, { steps: 3 });
 }
 
+
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
   const page = await context.newPage();
@@ -123,7 +124,7 @@ function summary(frames) {
         refused.push(refusal);
         answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
       }
-      if (url.pathname.includes('/thumbs/')) thumbs.push({ strip: url.searchParams.get('strip'), status: answer.status() });
+      if (url.pathname.includes('/thumbs/')) thumbs.push({ strip: url.searchParams.get('strip'), preview: url.searchParams.has('preview'), status: answer.status() });
       if (url.pathname.includes('/files/') && answer.request().resourceType() === 'media') fileAnswers.push({ status: answer.status(), media: url.searchParams.has('media') });
     });
   };
@@ -134,7 +135,7 @@ function summary(frames) {
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
@@ -165,6 +166,7 @@ function summary(frames) {
     ['sea_sound', 'sea.wav', wav()],
     ['clip', 'clip.mp4', MP4],
     ['clip_b', 'clip_b.mp4', MP4],
+    ['dark_open', 'dark_open.mp4', DARK_OPEN],
   ]) {
     writeFileSync(join(scratch, file), bytes);
     execFileSync(COZY, ['project', '-p', folder, 'import', join(scratch, file), name], { encoding: 'utf8' });
@@ -212,7 +214,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     approved: "${olderPrefix}"
     description: The same hero, older.
 `);
-  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
+  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'dark_open', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
 
   // Every name is placed once and its row written, with no reload.
   const cards = async () => (await api(`/v1/projects/${id}/canvas`)).cards;
@@ -243,11 +245,14 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
-  check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
+  // Nothing made yet is nothing wrong: its dot is plain, as is one out of date.
+  check('dot_plain_when_nothing_made', (await element(page, 'shot').locator('.dot.s-current').count()) === 1 && (await element(page, 'shot').locator('.dot.s-missing, .dot.s-ood').count()) === 0, await element(page, 'shot').locator('.dot').getAttribute('class'));
   // Drawn in on one box, the canvas holds only what's near it: the rest is read at rest.
   await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
+  const checker = await element(page, 'hero_art').locator('.media.alpha').evaluate((el) => ({ under: getComputedStyle(el).backgroundColor, over: getComputedStyle(el).getPropertyValue('--check2').trim() }));
+  check('checkerboard_white_and_light_grey', checker.under === 'rgb(251, 251, 251)' && checker.over === '#e8e8e8', checker);
   check('no_checkerboard_without_alpha', (await element(page, 'older_art').locator('.media.alpha').count()) === 0);
   const thumbUp = (name) => until(`${name}'s thumbnail`, () => element(page, name).locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await thumbUp('sea_sound');
@@ -259,20 +264,35 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // No edges at all: what reads what stays inside Calcifer.
   check('no_edges', (await page.locator('.react-flow__edge, .ge').count()) === 0);
 
-  // A video costs nothing until clicked: hovering scrubs a strip, with a timecode, and opens no <video>.
-  await until('clip measured', () => asset('clip'), (held) => held.duration_ms > 0);
-  const clip = element(page, 'clip');
-  await open(page, 'clip');
-  const media = await clip.locator('.media').boundingBox();
-  await page.mouse.move(media.x + media.width * 0.6, media.y + media.height * 0.6);
-  await until('a strip of 8 asked', () => Promise.resolve(thumbs), (all) => all.some((thumb) => thumb.strip === '8' && thumb.status === 200));
-  await until('the strip up', () => clip.locator('img.strip').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n === 1);
-  // Eight frames of a clip of ten, all there: the last seek of a short clip lands past its last frame.
-  const strip = await clip.locator('img.strip').evaluate((image) => ({ width: image.naturalWidth, height: image.naturalHeight, moved: image.style.transform }));
-  check('strip_is_8_frames', strip.width === 8 * 160 && strip.height === 90, strip);
-  check('scrub_moves_the_strip', strip.moved === 'translateX(-50%)', strip);
-  check('timecode', /^\d+:\d\d$/.test(await clip.locator('.tc').textContent()), await clip.locator('.tc').textContent());
-  check('hover_opens_no_video', (await page.locator('video').count()) === 0);
+  // A video costs nothing until the pointer rests on it. Its poster is a frame that shows something, not its black first one. Its preview,
+  // made as it was imported, plays from that frame, muted and looping, and goes when the pointer leaves or its box leaves the screen.
+  await until('dark_open measured', () => asset('dark_open'), (held) => held.duration_ms > 0);
+  const dark = element(page, 'dark_open');
+  await thumbUp('dark_open');
+  const poster = await dark.locator('.media img').first().evaluate(spreadOf);
+  check('poster_not_black', poster.spread >= 12, poster);
+  await until('its preview made as it was imported', () => Promise.resolve(existsSync(previewOf(imported.dark_open))), Boolean);
+  check('preview_made_unasked', !thumbs.some((thumb) => thumb.preview), thumbs);
+  check('no_video_before_a_hover', (await page.locator('video').count()) === 0, await videos(page));
+  await rest(page, dark.locator('.media'));
+  const playing = await until('its preview plays', () => videos(page), (all) => all.length === 1 && all[0].preview && all[0].on && !all[0].paused && all[0].at > 0);
+  check('hover_plays_the_preview', playing[0].muted && playing[0].loop, playing);
+  const frame = await dark.locator('video.preview').evaluate(spreadOf);
+  check('preview_from_the_poster_frame', frame.spread >= 12, frame);
+  await shot('preview');
+  await page.mouse.move(2, 500);
+  await until('leaving stops it', () => page.locator('video').count(), (n) => n === 0);
+  check('leaving_stops_it', true);
+  await rest(page, dark.locator('.media'));
+  await until('it plays again', () => dark.locator('video.preview.on').count(), (n) => n === 1);
+  // Panned away under the pointer, by a wheel that never reaches its box.
+  await page.evaluate(() => document.querySelector('.react-flow__pane').dispatchEvent(new WheelEvent('wheel', { deltaX: 6000, deltaY: 0, bubbles: true, cancelable: true })));
+  await until('its box off screen', () => dark.count(), (n) => n === 0);
+  await page.waitForTimeout(400);
+  check('nothing_plays_off_screen', (await page.locator('video').count()) === 0, await videos(page));
+  await page.mouse.move(2, 500);
+  await page.keyboard.press('f');
+  await until('every element on screen again', () => page.locator('.react-flow__node').count(), (n) => n === named.length);
   await away(page);
 
   // A take landing shows with no reload. The strip's + goes to POST runs; what Calcifer makes itself needs no machine.
@@ -280,9 +300,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await away(page);
   const numberBefore = Math.max(0, ...((await asset('picture')).prefixes ?? []).map((version) => version.number));
   await open(page, 'picture');
-  // Render is with its words: + goes to them when it shows a take.
-  if (await picture.locator('.take.add').count()) await picture.locator('.take.add').click();
-  await picture.locator('button[aria-label=Render]').click();
+  // Render is with its words: on a take, its + goes to them.
+  await (await renderOf(page, 'picture')).click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1).catch(async (error) => {
@@ -293,13 +312,24 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   });
   check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
   check('landed_with_no_reload', await notReloaded());
-  // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it.
+  // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it. Render kept picture open, and drawn in on it the canvas draws only what's near.
+  await away(page);
   await until('the cut landed', () => asset('edit'), (held) => held.standing === 'current');
   await until('its film shows', () => element(page, 'edit').locator('.media img').count(), (n) => n > 0);
   await open(page, 'edit');
   await element(page, 'edit').locator('.tl').waitFor();
   check('its_clips_on_a_hover', (await element(page, 'edit').locator('.tl-clip').evaluateAll((clips) => clips.map((held) => held.dataset.name))).join() === 'clip,clip_b');
   check('hover_on_an_edit_opens_no_video', (await page.locator('video').count()) === 0);
+  // A take on its row plays its preview too: the film's, made as it landed from the cut.
+  const film = (await asset('edit')).prefixes.at(-1).main.sha256;
+  await until('the film\'s preview made as it landed', () => Promise.resolve(existsSync(previewOf(film))), Boolean);
+  const take = element(page, 'edit').locator('.take-thumb').first();
+  await rest(page, take);
+  await until('the take\'s preview plays', () => take.locator('video.preview').evaluateAll((all) => all.map((video) => !video.paused && video.currentTime > 0)), (all) => all.length === 1 && all[0]);
+  check('take_hover_plays_its_preview', true);
+  await shot('take-preview');
+  await page.mouse.move(2, 500);
+  await until('it stops off the take', () => page.locator('video').count(), (n) => n === 0);
   const landedVersion = (await asset('picture')).prefixes?.at(-1);
   check('wire_version_main', landedVersion?.main?.field === 'image' && /^files\//.test(landedVersion?.main?.path ?? '') && landedVersion?.main?.sha256?.startsWith('sha256:'), landedVersion);
   await shot('landed');
@@ -308,7 +338,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await open(page, 'clip');
   // A clip lasts a second, and one that ends lets go: paused, each keeps its place in the count.
   const held = () => page.evaluate(() => document.querySelectorAll('video').forEach((video) => video.pause()));
-  await clip.locator('.play').click();
+  await element(page, 'clip').locator('.play').click();
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
   await held();
@@ -327,36 +357,38 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await away(page);
   await until('none playing', () => page.locator('video').count(), (n) => n === 0);
 
-  // A failure is named and stays: this asks for no run, as what it reads can never be made.
+  // A failure is named in a toast, and its mark stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
   await open(page, 'needs');
-  if (await needs.locator('.take.add').count()) await needs.locator('.take.add').click();
   await needs.locator('button[aria-label=Render]').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
-  // Render ends working on it, and the view goes back: no other box is taken up under the pointer.
+  const said = await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("needs didn't render") && line.includes('cannot render'))).catch((why) => String(why));
+  check('failure_is_a_toast', Array.isArray(said), said);
+  // Render stays Render, and the box stays open, saying nothing at rest of what failed.
   await page.waitForTimeout(300);
-  check('render_leaves_the_box', (await page.locator('.card.here').count()) === 0, await boxLog(page));
-  await until('its reason shows', async () => {
-    await open(page, 'needs');
-    return needs.locator('.status.bad').count();
-  }, (n) => n === 1);
-  check('failed_dot', (await needs.locator('.dot.s-failed').count()) === 1);
-  check('try_again_offered', (await needs.locator('.status.bad .act').textContent()) === 'Try again');
+  check('render_keeps_the_box', (await page.locator('.card.here[data-asset="needs"]').count()) === 1 && (await needs.locator('button[aria-label=Render]').innerText()).trim() === 'Render', await boxLog(page));
+  await until('its dot', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  check('failed_dot', true);
+  check('no_line_at_rest', (await needs.locator('.status').count()) === 0, await needs.innerText());
   const told = spawnSync(COZY, ['project', '-p', folder, 'status'], { encoding: 'utf8' });
   check('terminal_hears_the_failure', `${told.stdout}${told.stderr}`.includes('cannot render'), `${told.stdout}${told.stderr}`.slice(0, 400));
+  // A box takes its tool's shape once its tool is known, and a box it then lay on moved clear: what stands is the rows as they are now.
+  const beforeReload = await cards();
+  seen.moved_since_placed = named.filter((name) => beforeReload[name].x !== rows[name].x || beforeReload[name].y !== rows[name].y);
   await page.reload();
   await page.waitForSelector('.react-flow__node');
   await page.evaluate(() => { window.notReloaded = true; });
   await open(page, 'needs');
-  await until('still there after a reload', () => needs.locator('.status.bad').textContent(), (text) => text.includes('cannot render'));
-  check('failure_survives_reload', true);
+  await until('still marked after a reload', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  check('failure_survives_reload', (await asset('needs')).failure?.message.includes('cannot render'), (await asset('needs')).failure);
   const afterReload = await cards();
-  check('rows_stand_after_reload', named.every((name) => afterReload[name].x === rows[name].x && afterReload[name].y === rows[name].y), afterReload);
+  const moved = named.filter((name) => afterReload[name].x !== beforeReload[name].x || afterReload[name].y !== beforeReload[name].y);
+  check('rows_stand_after_reload', moved.length === 0, moved.map((name) => ({ name, was: beforeReload[name], now: afterReload[name] })));
   // Its text changes: the old reason no longer stands, with no reload.
   replaceFile(yamlAt, readFileSync(yamlAt, 'utf8').replace('video: <hollow_thing>', 'video: <clip>'));
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
-  await until('and from the card', () => needs.locator('.status.bad').count(), (n) => n === 0);
+  await until('and from the card', () => needs.locator('.dot.s-failed').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
   await away(page);
   await page.keyboard.press('f');
@@ -396,8 +428,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const versions = async () => (await asset('card')).prefixes?.length ?? 0;
     const take = async (count) => {
       await open(page, 'card');
-      if (await card.locator('.take.add').count()) await card.locator('.take.add').click();
-      await card.locator('button[aria-label=Render]').click();
+      await (await renderOf(page, 'card')).click();
       await until(`version ${count}`, versions, (n) => n === count, FIRST_RUN_MS);
     };
     await take(1);
@@ -409,13 +440,14 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await card.locator('.take[aria-label$=" 1"]').click();
     await until('looking at the first', () => card.locator('.count').textContent(), (text) => text === '1/2');
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
-    await card.locator('button:has-text("Approve")').click();
+    // A double tap on it approves it, and again unapproves it.
+    await card.locator('.take[aria-label$=" 1"]').dblclick();
     // On one of card's own lines: hero has an `approved` of its own further down.
     await until('pinned in the file', () => Promise.resolve(readFileSync(yamlAt, 'utf8')), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}approved: "?[0-9a-f]/.test(text));
     await open(page, 'card');
-    await until('it can be unapproved', () => card.locator('button:has-text("Unapprove")').count(), (n) => n === 1);
+    await until('it shows approved', () => card.locator('.take.approved').count(), (n) => n === 1);
     check('approved_is_that_version', (await asset('card')).approved === made.prefixes[0].number, (await asset('card')).approved);
-    await card.locator('button:has-text("Unapprove")').click();
+    await card.locator('.take.approved').dblclick();
     await until('unpinned', () => asset('card'), (held) => !held.pinned);
     check('landed_real_with_no_reload', await notReloaded());
     await shot('versions');
@@ -492,6 +524,33 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     check('scale_near_panned', near.places > 10, near.places);
     await tab.close();
 
+    tab = await openTab(0.7, 40);
+    // A hand's pan: wheels under a pointer resting on a video mid-screen (n40), whose preview plays. The first wheel stops it, and as boxes,
+    // a fifth of them videos, slide under the pointer, none starts.
+    await rest(tab, element(tab, 'n40').locator('.media'));
+    await until('a rest plays its preview', () => tab.locator('video.preview.on').count(), (n) => n === 1);
+    const counting = tab.evaluate(() => new Promise((done) => {
+      let [last, added] = [performance.now(), 0];
+      const [frames, end] = [[], last + 3000];
+      const watching = new MutationObserver((changes) => {
+        for (const change of changes) for (const node of change.addedNodes) if (node.nodeName === 'VIDEO' || node.querySelector?.('video')) added += 1;
+      });
+      watching.observe(document.body, { childList: true, subtree: true });
+      const step = (now) => {
+        frames.push(now - last);
+        last = now;
+        if (now < end) return requestAnimationFrame(step);
+        watching.disconnect();
+        done({ frames: frames.slice(1), added, left: document.querySelectorAll('video').length });
+      };
+      requestAnimationFrame(step);
+    }));
+    for (let i = 0, stop = Date.now() + 3000; Date.now() < stop; i++) await tab.mouse.wheel(i % 80 < 40 ? 12 : -12, 0);
+    const under = await counting;
+    seen.scale.pan_under_pointer = { videos_added: under.added, videos_left: under.left, ...summary(under.frames) };
+    check('scale_pan_starts_no_preview', under.added === 0 && under.left === 0, seen.scale.pan_under_pointer);
+    await tab.close();
+
     // At 11% the 18 columns are about 630 px of this 1800 px window. From here its pan, 480 px left and back, keeps them all on screen,
     // so every frame measured draws all 300.
     tab = await openTab(0.11, 800);
@@ -501,11 +560,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === 0, seen.scale.pan_11);
     await tab.close();
 
-    // Far out, words stay near one size and in their own box (Paul, 11-06): at 15%, no name, chip, ratio or wait lies outside its box or on another.
+    // Far out, words stay near one size (Paul, 11-06): at 15%, no name, chip, ratio or wait lies on another box. A name sits above its box
+    // (d88da410a) and what hangs from it in the room under it (e139a61c6).
     tab = await openTab(0.15, 800);
     const strays = await tab.evaluate(() => {
       const boxes = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ node, at: node.getBoundingClientRect(), name: node.querySelector('.card')?.dataset.asset }));
-      const inside = (a, b) => a.left >= b.left - 1 && a.right <= b.right + 1 && a.top >= b.top - 1 && a.bottom <= b.bottom + 1;
       const meets = (a, b) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
       const out = [];
       let labels = 0;
@@ -514,7 +573,6 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
           const seen = label.getBoundingClientRect();
           if (!seen.width || !seen.height || getComputedStyle(label).visibility === 'hidden') continue;
           labels += 1;
-          if (!inside(seen, at)) out.push({ name, label: label.className, outside: true });
           for (const other of boxes) if (other.node !== node && meets(seen, other.at)) out.push({ name, label: label.className, on: other.name });
         }
       }
@@ -541,6 +599,108 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   } finally {
     await api(`/v1/projects/${made.id}`, { method: 'DELETE' }).catch(() => {});
     if (made.path?.includes('web-see-scale-')) rmSync(made.path, { recursive: true, force: true });
+  }
+
+  // The tabs: as many as fit the bar, each where it was and as wide while the window resizes, the rest behind "N more", which opens All
+  // projects with them first; a search there, by name and by folder; and + ready for a new one's name.
+  const trees = ['alder', 'birch', 'cedar', 'dogwood', 'elm', 'fir', 'ginkgo', 'hazel', 'ironwood', 'juniper', 'larch', 'maple', 'oak', 'pine', 'rowan', 'spruce'];
+  // As Calcifer has it: macOS's temp folder is a link (/var → /private/var).
+  const forest = realpathSync(mkdtempSync(join(tmpdir(), 'web-tabs-')));
+  const listed = async () => (await api('/v1/projects?limit=200')).projects.filter((row) => !row.missing);
+  let ours = [];
+  try {
+    for (const tree of trees) execFileSync(COZY, ['project', 'new', join(forest, tree)], { stdio: 'ignore' });
+    ours = (await listed()).filter((row) => row.path.startsWith(forest));
+    check('tabs_projects_made', ours.length === trees.length, ours.map((row) => row.name));
+    const tab = await context.newPage();
+    watch(tab);
+    tab.setDefaultTimeout(STEP_MS);
+    const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+    await tab.setViewportSize({ width: 1000, height: 800 });
+    const spruce = `${base}/#/projects/${ours.find((row) => row.name === 'spruce').id}`;
+    await tab.goto(spruce);
+    await tab.waitForSelector('nav.ptabs a.ptab.on');
+    // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
+    await tab.evaluate(() => {
+      window.frames_seen = [];
+      new ResizeObserver(() => window.frames_seen.push([...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => {
+        const { x, width } = link.getBoundingClientRect();
+        return { id: link.getAttribute('href').split('/').pop(), on: link.classList.contains('on'), x, width };
+      }))).observe(document.querySelector('.top'));
+    });
+    const frame = () => tab.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const bar = () => tab.evaluate(() => ({
+      tabs: [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => link.getAttribute('href').split('/').pop()),
+      more: document.querySelector('nav.ptabs .ptab.more')?.textContent ?? null,
+    }));
+    const narrow = await bar();
+    const all = await listed();
+    const hidden = all.map((row) => row.id).filter((held) => !narrow.tabs.includes(held));
+    await snap('tabs-narrow');
+    check('tabs_overflow', hidden.length > 0 && narrow.more === `${hidden.length} more`, { narrow, projects: all.length });
+    for (let width = 1000; width <= 1800; width += 40) {
+      await tab.setViewportSize({ width, height: 800 });
+      await frame();
+    }
+    const wide = await bar();
+    await snap('tabs-wide');
+    check('tabs_more_when_wider', wide.tabs.length > narrow.tabs.length && wide.tabs.slice(0, narrow.tabs.length).join() === narrow.tabs.join(), { narrow, wide });
+    check('tabs_wide_counts_hidden', wide.more === (all.length > wide.tabs.length ? `${all.length - wide.tabs.length} more` : null), wide);
+    for (let width = 1800; width >= 1000; width -= 40) {
+      await tab.setViewportSize({ width, height: 800 });
+      await frame();
+    }
+    const frames = await tab.evaluate(() => window.frames_seen);
+    const first = new Map();
+    const moved = [];
+    for (const seen of frames) for (const one of seen) {
+      const was = first.get(one.id) ?? (first.set(one.id, one), one);
+      if (Math.abs(was.width - one.width) > 0.5 || (!one.on && Math.abs(was.x - one.x) > 0.5)) moved.push({ was, now: one });
+    }
+    check('tabs_still_while_resizing', frames.length >= 40 && moved.length === 0, { frames: frames.length, moved: moved.slice(0, 5) });
+    check('tabs_back_when_narrower', (await bar()).tabs.join() === narrow.tabs.join(), { narrow, now: await bar() });
+
+    // With no project open its "untitled" tab is measured too, so what has a tab keeps its width.
+    await tab.goto(`${base}/#/projects`);
+    await tab.waitForSelector('nav.ptabs span.ptab.on');
+    const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ id: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
+    const squeezed = untitled.filter((one) => first.has(one.id) && !first.get(one.id).on && Math.abs(first.get(one.id).width - one.width) > 0.5);
+    check('tabs_untitled_measured', untitled.length > 0 && squeezed.length === 0, { untitled, squeezed });
+    await tab.goto(spruce);
+    await tab.waitForSelector('nav.ptabs a.ptab.on');
+
+    // "N more": All projects, those with no tab first.
+    await tab.click('nav.ptabs .ptab.more');
+    await tab.waitForSelector('.drawer .list li');
+    const drawn = () => tab.evaluate(() => [...document.querySelectorAll('.drawer .list li a')].map((link) => link.getAttribute('href').split('/').pop()));
+    const order = await drawn();
+    await snap('tabs-more');
+    const line = await tab.evaluate(() => [...document.querySelectorAll('.drawer .list li')].findIndex((item) => item.classList.contains('tabbed')));
+    check('tabs_more_lists_hidden_first', order.slice(0, hidden.length).sort().join() === [...hidden].sort().join() && line === hidden.length, { hidden, order, line });
+
+    // Found by name, and by a folder no name holds.
+    const find = tab.locator('.drawer input[aria-label="Search projects"]');
+    await find.fill('ginkgo');
+    const ginkgo = ours.find((row) => row.name === 'ginkgo').id;
+    await until('one found by name', drawn, (now) => now.join() === ginkgo).then(() => check('tabs_find_by_name', true), (error) => check('tabs_find_by_name', false, error.message));
+    await find.fill(basename(forest));
+    const ids = ours.map((row) => row.id).sort().join();
+    await until('ours found by folder', drawn, (now) => [...now].sort().join() === ids).then(() => check('tabs_find_by_folder', true), (error) => check('tabs_find_by_folder', false, error.message));
+    await snap('tabs-found');
+    await find.fill('');
+
+    // +: the New field, ready, from the drawer open and from the canvas.
+    const naming = () => tab.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+    await tab.click('nav.ptabs .ptab.new');
+    await until('+ in the drawer names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus_in_drawer', true), (error) => check('tabs_plus_in_drawer', false, error.message));
+    await tab.click('.drawer [aria-label="Close"]');
+    await tab.waitForSelector('.drawer', { state: 'detached' });
+    await tab.click('nav.ptabs .ptab.new');
+    await until('+ names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus', true), (error) => check('tabs_plus', false, error.message));
+    await tab.close();
+  } finally {
+    for (const row of ours) await api(`/v1/projects/${row.id}`, { method: 'DELETE' }).catch(() => {});
+    rmSync(forest, { recursive: true, force: true });
   }
 
   // Each refusal's words have had their moment to arrive.

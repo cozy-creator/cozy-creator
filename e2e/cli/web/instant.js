@@ -4,7 +4,7 @@
 // under its key and makes one asset; another writer's name renames the box; a refused action rolls back with one line; a pending edit and another
 // writer's end in the conflict line; a write's answer never claims another writer's lines; kill -9 of Calcifer mid-queue lands once; and a render whose
 // answer is lost runs once.
-//   node instant.js <sign-in link from `cozy open --no-open`>
+//   node instant.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $RESTART: a shell command that kills this Calcifer with -9 and brings it
 // back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
 // Prints what it saw as JSON and exits 1 if anything failed.
@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawn } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, until } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -76,8 +76,7 @@ async function loseAnswers(page, method, path, times) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   context.setDefaultTimeout(STEP_MS);
@@ -85,7 +84,7 @@ async function loseAnswers(page, method, path, times) {
   lookAt(page);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/#/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-instant-${Date.now()}`);
@@ -249,7 +248,8 @@ async function loseAnswers(page, method, path, times) {
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
     await page.waitForTimeout(800);
     check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && (yaml().match(new RegExp(`^  ${fifth}(_\\d+)?:`, 'gm'))?.length ?? 0) === 1 && !hasAsset(`${name}_6`), yaml());
-    check('nothing_left_saying_not_saved', !(await notes()).some((line) => /Not saved yet/.test(line)), await notes());
+    await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
+    check('nothing_left_saying_not_saved', true);
   }
 
   // A render whose answer is lost: the box says Queued at once, and however often it's asked, one run.
@@ -259,16 +259,22 @@ async function loseAnswers(page, method, path, times) {
     await page.waitForTimeout(500);
     await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
-    await box('fixture').locator('button[aria-label="Render"]').click();
+    await (await renderOf(page, 'fixture')).click();
     await page.waitForTimeout(20);
-    check('render_says_queued_at_once', /Queued/.test((await box('fixture').locator('.status').allInnerTexts()).join(' ')), await box('fixture').innerText());
+    // At once, the take it asks for is in the column beside it, saying it's queued: picked where its tool is known to make pictures
+    // (51887d1b5), else with Queued under its words.
+    check('render_says_queued_at_once', (await box('fixture').locator('.here-side .take.making[title="Queued"]').count()) === 1, await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
+    // The take can land before the lost answer's reset reaches the page: what it asks again is seen before the route goes.
+    await until('asked again', () => Promise.resolve(renders.keys.length), (n) => n >= 2, 10_000).catch(() => {});
     await renders.done();
     await page.waitForTimeout(1500);
     const held = status().find((asset) => asset.name === 'fixture');
     const runs = (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
     check('render_key_one', renders.keys.length >= 2 && new Set(renders.keys).size === 1, renders.keys);
     check('render_ran_once', held.versions === 1 && runs.length === 1, { versions: held.versions, runs: runs.length });
+    // Render keeps the box open: shut, as what follows begins at rest.
+    await closeBox(page);
   }
 
   // Each project a tab, top left: one click, its boxes there at once, its own view kept. One that can't be read says why and what to do, on the canvas, with the tools

@@ -3,12 +3,21 @@ import { signal } from "./signal"
 export type Theme = "paper" | "dark"
 
 const KEY = "cozy.theme"
+const LANDSCAPE = "cozy.landscape"
 
-function saved(): Theme {
+function read(key: string): string | null {
   try {
-    return localStorage.getItem(KEY) === "dark" ? "dark" : "paper"
+    return localStorage.getItem(key)
   } catch {
-    return "paper"
+    return null
+  }
+}
+
+function keep(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // Private windows may refuse. It still holds for this tab.
   }
 }
 
@@ -18,15 +27,19 @@ function show(value: Theme) {
   else delete document.documentElement.dataset.theme
 }
 
-export const theme = signal<Theme>(saved())
+export const theme = signal<Theme>(read(KEY) === "dark" ? "dark" : "paper")
 show(theme.get())
 
 export function setTheme(value: Theme) {
   theme.set(value)
   show(value)
-  try {
-    localStorage.setItem(KEY, value)
-  } catch {
-    // Private windows may refuse. It still holds for this tab.
-  }
+  keep(KEY, value)
+}
+
+/** The landscape behind the canvas, on paper: shown unless it's been hidden. */
+export const landscape = signal(read(LANDSCAPE) !== "hidden")
+
+export function setLandscape(shown: boolean) {
+  landscape.set(shown)
+  keep(LANDSCAPE, shown ? "shown" : "hidden")
 }

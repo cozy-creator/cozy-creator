@@ -58,6 +58,7 @@ elif [ "$what" = cozy ]; then
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
+  # cozy is one file (00e565d72): varena is the TensorFS wheel's.
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
 elif [ "$what" = tensorfs ]; then
   # tfs resolved with the extension's features (tensorfs-py's default store), as maturin resolves them: TensorFS and
@@ -78,10 +79,10 @@ else
     git checkout -- pyproject.toml)
 fi
 case $what in
-  cozy) file=$out/cozy$exe; chmod +x "$file" ;;
+  cozy) file=$out/cozy$exe; chmod +x "$file"; version=$("$file" --version) ;;
   tensorfs) file=$(ls "$out"/tensorfs-*.whl) ;;
   runtime) file=$(ls "$out"/cozy_runtime-*.whl) ;;
 esac
-echo "$what: $([ "$what" != cozy ] || "$file" --version) $(basename "$file") from $repo ${sha:0:12}" >&2
+echo "$what: ${version:-} $(basename "$file") from $repo ${sha:0:12}" >&2
 [ -z "${GITHUB_OUTPUT:-}" ] || echo "name=$name" >> "$GITHUB_OUTPUT"
 echo "$file"

@@ -182,6 +182,7 @@ pub async fn update(
     tensorfs: Option<String>,
     tensord: Option<String>,
     gpu_memory_limit: Option<u64>,
+    mode: Option<protocol::config::MachineMode>,
 ) -> Result<ExitCode, Error> {
     protocol::calcifer::local_usable(name)?;
     let ask = MachineUpdate {
@@ -189,6 +190,7 @@ pub async fn update(
         tensorfs: tensorfs.map(|v| component(&v, "tensorfs")).transpose()?,
         tensord: tensord.map(|v| component(&v, "")).transpose()?,
         gpu_memory_limit,
+        mode,
     };
     let dev = matches!(ask.tensord, Some(Component::File(_)));
     let named = ask.tensord.is_some();
@@ -292,7 +294,8 @@ fn build(dir: &Path, distribution: &str) -> Result<PathBuf, Error> {
         Err(e) => return Err(failed(e.to_string())),
     }
     if distribution.is_empty() {
-        return Ok(dir.join("target/release").join(if cfg!(windows) { "cozy.exe" } else { "cozy" }));
+        return std::path::absolute(dir.join("target/release").join(if cfg!(windows) { "cozy.exe" } else { "cozy" }))
+            .map_err(|e| failed(e.to_string()));
     }
     let newest = std::fs::read_dir(&out)
         .map_err(|e| failed(e.to_string()))?
@@ -399,16 +402,17 @@ fn stamp(wheel: &Path, local: &str) -> std::io::Result<PathBuf> {
 /// The machine's three components after an update.
 fn updated(ctx: &Context, name: &str, s: &MachineStatus) {
     if ctx.json {
-        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
+        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode": s.mode}));
     } else {
         let build = if s.dev { " (dev build)" } else { "" };
-        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}", s.version, s.runtime, s.tensorfs));
+        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}, mode {}", s.version, s.runtime, s.tensorfs,
+            if s.mode.is_empty() { "unknown" } else { &s.mode }));
     }
 }
 
 fn up_to_date(ctx: &Context, m: &Machine, s: &MachineStatus) -> Result<ExitCode, Error> {
     if ctx.json {
-        output::json(&serde_json::json!({"machine": m.name, "changed": false, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
+        output::json(&serde_json::json!({"machine": m.name, "changed": false, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode": s.mode}));
     } else {
         output::say(ctx, &format!(
             "{} runs TensorD (cozy) {}, Runtime {}, TensorFS {}: the Hub's target, nothing to update",

@@ -162,7 +162,7 @@ enum Verb {
     #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
     /// Move a project of format 2 or 3 to format 4: nothing goes out of date and nothing runs.
-    #[command(after_help = "Example:\n  cozy project status --json > status.json    with the cozy that reads format 2\n  cozy project upgrade --status status.json   with this one\n\nThe old files stay beside the new, as project.yaml.v2/.v3 and project.lock.v2/.v3.\nFrom format 3, each box's state is read from format 3 itself. From format 2 with no --status, each asset's approved version, else its newest, is taken as current.")]
+    #[command(after_help = "Example:\n  cozy project upgrade\n\nEach box's state is worked out from the old files, as the cozy that reads that format did, and kept.\nThe old files stay beside the new, as project.yaml.v2/.v3 and project.lock.v2/.v3. Comments stay only there.")]
     Upgrade {
         /// What `cozy project status --json` said, with the cozy that reads format 2.
         #[arg(long, value_name = "FILE")]

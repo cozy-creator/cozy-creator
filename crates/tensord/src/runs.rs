@@ -303,7 +303,7 @@ pub(crate) fn upload(
 impl Runs {
     /// The run this id already names, if its spec is `digest`; another spec is a conflict.
     pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str) -> Result<Option<Execution>, Refused> {
-        match self.service.engine.get_public(actor, id) {
+        match self.service.engine.get_public(Some(actor), id) {
             Ok(run) if run.canceled_before_acceptance && run.state == crate::journal::State::Canceled => Ok(Some(run)),
             Ok(run) if run.submission.as_ref().map(|s| s.invocation_digest.as_str()) == Some(digest) => Ok(Some(run)),
             Ok(_) => Err(refused("run_id_conflict", "this run id already names another run spec")),
@@ -591,7 +591,12 @@ impl Runs {
             (folder.header.clone(), Some(folder.tree.clone()), row)
         } else if !choice.source.is_empty() {
             let source = self.written_source(actor, &choice.source)?;
-            let made = publisher.make_source(&source, &choice.profiles, &choice.trained_on, &spec.providers, stop, observe)?;
+            let import = crate::activity::Import::new(&choice.source, &self.service.engine.caller_id(id));
+            let made = publisher.make_source(&source, &choice.profiles, &choice.trained_on, &spec.providers, stop, &|stage, done, total| {
+                import.moved(stage, done, total);
+                observe(stage, done, total)
+            })?;
+            drop(import);
             let row = json!({"parameter": choice.parameter, "source": choice.source,
                 "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
                 "trigger": made.trigger.join(", "), "repository": made.repository, "checkpoint": made.header.id()});
@@ -634,11 +639,15 @@ impl Runs {
                 .map_err(|(code, message)| refused(code, message))?;
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.repository), format!("saving {}", choice.repository));
+            let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.repository, &self.service.engine.caller_id(id));
             let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, &spec.catalog_revision, structure, stop, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
-                observe(if total >= 1 << 20 && done >= total { &saving } else { &stage }, done, total)
+                let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
+                wait.moved(now, done, total);
+                observe(now, done, total)
             })?;
+            drop(wait);
             for reason in &named.reasons {
                 let warning = format!("{}: {reason}", named.repository);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
@@ -823,15 +832,11 @@ impl Runs {
             }
         }
         if spec.warm {
-            // A package that does not import says so now, not at its first call. When its environment
-            // already knows why (a floor its development Runtime missed), nothing else can come of it.
+            // A package that does not import says so now, not at its first call.
             if install_only && self.service.gpu().is_some() {
                 observe("importing it", 0, 0);
             }
             if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation, &stoppable.stop)) {
-                if !generation.record.floors_missed.is_empty() {
-                    return Err(refused(code, said));
-                }
                 let warning = format!("{code}: {said}. Its calls will fail the same way");
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     tracing::warn!("run {id}: {warning} ({error})");
@@ -866,28 +871,19 @@ impl Runs {
             // on-demand models' too: only if that fits. It is a guess, so it never makes room.
             let mut moved = tensorfs::fetch::Landed::default();
             if !plans.is_empty() {
-                let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
-                let each: Vec<_> = plans.iter().map(|plan| [plan.upfront(), plan.on_demand()].concat()).collect();
+                let each: Vec<_> = plans.iter().map(Plan::read).collect();
                 // Only what they all share: that's sure to be read. The rest comes when its run begins, which on a slow link costs no
                 // more time than fetching it now, as fetching ahead is canceled then, and on a fast one costs seconds, while bytes for a
                 // function that isn't called are paid for wherever downloads are billed.
-                let selected = shared_of(&each);
-                let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
-                let absent = fetch.absent(&selected)?;
-                if absent > free {
-                    return Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free")));
-                }
-                let report = |done, total| observe("downloading its weights", done, total);
-                moved = fetch.download(&selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
-                    true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
-                    false => {
-                        let text = e.to_string();
-                        match text.starts_with("machine_disk_full") {
-                            true => refused("machine_disk_full", text + &crate::reclaim::advice(self.publisher.store().root(), 0)),
-                            false => refused("model_fetch_failed", text),
-                        }
+                let fits = |absent: u64| {
+                    let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
+                    match absent > free {
+                        true => Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free"))),
+                        false => Ok(()),
                     }
-                })?;
+                };
+                let weights = format!("{}'s weights", installation.package);
+                moved = self.download(hub.clone(), &shared_of(&each), fits, &*observe, stoppable, &weights, &self.service.engine.caller_id(id))?;
             }
             // The installed release, its interface and the installation a call may name, in the
             // warm run's result.
@@ -971,6 +967,30 @@ impl Runs {
         }
         bound?;
         Ok(None)
+    }
+
+    /// Every chunk of `selected` (header, components) here from `hub`, its bytes the warm run's
+    /// progress and the machine's download of `weights` for run `caller`; `room` is asked for those absent first.
+    #[allow(clippy::too_many_arguments)]
+    fn download(&self, hub: Option<hub::Source>, selected: &[(String, Vec<String>)], room: impl FnOnce(u64) -> Result<(), Refused>,
+        observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable, weights: &str, caller: &str) -> Result<tensorfs::fetch::Landed, Refused> {
+        let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX);
+        room(fetch.absent(selected)?)?;
+        let wait = crate::activity::wait(crate::activity::Kind::Download, weights, caller);
+        let report = |done, total| {
+            wait.moved("", done, total);
+            observe("downloading its weights", done, total)
+        };
+        fetch.download(selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
+            true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
+            false => {
+                let text = e.to_string();
+                match text.starts_with("machine_disk_full") {
+                    true => refused("machine_disk_full", text + &crate::reclaim::advice(self.publisher.store().root(), 0)),
+                    false => refused("model_fetch_failed", text),
+                }
+            }
+        })
     }
 
     /// A warm set member, built one way whether a warm run makes it or a restart brings it back
@@ -1114,6 +1134,14 @@ impl Runs {
             rows.push((json!({"package": installation.package, "release": installation.release,
                 "entrypoint": item.entrypoint}), plans.len()));
             for plan in plans {
+                // `downloaded` is all the function may read on this disk once its warm run ends, its on-demand models'
+                // too, so its first call waits on no download (cl-790). Room is made for it as for a run.
+                if let (Level::Downloaded, Some(plan)) = (item.level, &plan) {
+                    let room = |absent| self.service.room_for(id, absent)
+                        .map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")));
+                    let weights = format!("{}'s weights", installation.package);
+                    self.download(hub.clone(), &plan.read(), room, &**observe, stoppable, &weights, &self.service.engine.caller_id(id))?;
+                }
                 kept.push(serde_json::to_string(&KeptMember {
                     installation: installation.alias.clone(),
                     level: item.level.name().into(),

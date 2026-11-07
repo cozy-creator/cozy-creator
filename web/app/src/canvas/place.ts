@@ -1,4 +1,5 @@
 import { ApiError, type Client } from "../api/client"
+import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Row, Tool } from "../types"
@@ -28,6 +29,7 @@ export class Placer {
   private client: Client
   private hooks: Hooks
   private made?: Promise<string>
+  private projectKey = `project-${crypto.randomUUID()}`
   private nextKey = 0
 
   constructor(store: CanvasStore, client: Client, hooks: Hooks) {
@@ -59,12 +61,14 @@ export class Placer {
     })
   }
 
-  /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes, called what its tool says. */
+  /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says. A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
   addTool(tool: Tool, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    this.store.focusing = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "" } : startingFields(tool), timeline }, at, `Couldn't place ${tool.label}`)
+    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "" } : startingFields(tool), timeline }, at, `Couldn't place ${tool.label}`)
+    this.store.focusing = name
+    if (!text && !timeline) this.store.openHere(name)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
@@ -107,15 +111,19 @@ export class Placer {
   join(files: File[], name: string) {
     for (const file of files) {
       const landed = this.store.joining(name)
+      const owed = this.store.outbox.owing()
       const signal = new AbortController().signal
       const sent = async () => {
         const digest = await hashFile(file, signal, () => {})
-        if (!this.store.holdsFile(digest.slice("sha256:".length))) await sendFile(this.client, file, digest, signal, () => {}, () => {})
+        if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.reaching(() => sendFile(this.client, file, digest, signal, () => {}, () => {}), signal)
         return digest
       }
       void inLine(sent)
         .then((digest) => this.store.joinVersion(name, { sha256: digest.slice("sha256:".length), field: mediaOf(file) }, digest, file.name), (error) => say(file.name, error))
-        .finally(landed)
+        .finally(() => {
+          landed()
+          owed()
+        })
     }
   }
 
@@ -137,16 +145,20 @@ export class Placer {
   }
 
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then?: (name: string) => void) {
+    const owed = this.store.outbox.owing()
     try {
       const digest = await inLine(() => this.hashAndSend(key, file, signal))
       await this.store.whenNamed(key, signal)
+      // Its import is in the queue from here, and counted there.
+      owed()
       try {
         const name = await this.ask(key, digest, dropped)
         then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
-        await inLine(() => this.send(key, file, digest, signal))
+        const again = this.store.outbox.owing()
+        await inLine(() => this.send(key, file, digest, signal)).finally(again)
         const name = await this.ask(key, digest, dropped)
         then?.(name)
       }
@@ -154,6 +166,8 @@ export class Placer {
       if (signal.aborted) return
       say(file.name, error)
       this.store.cancel(key)
+    } finally {
+      owed()
     }
   }
 
@@ -163,9 +177,8 @@ export class Placer {
     const name = this.store.get(key)!.name
     this.store.beginAdding()
     try {
-      const id = await this.project()
       const once = `import-${crypto.randomUUID()}`
-      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: (signal) => this.client.import(id, once, { source: digest, name, at }, signal), done, refused }))
+      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: async (signal) => this.client.import(await this.project(), once, { source: digest, name, at }, signal), done, refused }))
       this.store.land(key, answer, at)
       if (answer.note) say(answer.note)
       return answer.name
@@ -193,25 +206,46 @@ export class Placer {
   }
 
   private send(key: string, file: File, digest: string, signal: AbortSignal) {
-    this.stage(key, "sending", 0)
-    return sendFile(
-      this.client,
-      file,
-      digest,
-      signal,
-      (done) => this.stage(key, "sending", done),
-      (attempt) => this.store.patchPlacing(key, { attempt: attempt || undefined }),
-    )
+    return this.reaching(() => {
+      this.stage(key, "sending", 0)
+      return sendFile(
+        this.client,
+        file,
+        digest,
+        signal,
+        (done) => this.stage(key, "sending", done),
+        (attempt) => this.store.patchPlacing(key, { attempt: attempt || undefined }),
+      )
+    }, signal)
   }
 
+  /** Bytes go again each time they can't reach Calcifer, for as long as it's away: what's dropped meanwhile goes when it's back. */
+  private async reaching(work: () => Promise<void>, signal: AbortSignal) {
+    for (let tries = 1; ; tries++) {
+      try {
+        return await work()
+      } catch (error) {
+        if (signal.aborted || !lost(error)) throw error
+        await this.store.outbox.wait(tries, signal)
+      }
+    }
+  }
+
+  /** The project this canvas makes with its first box, under one key however often it's asked: one that didn't reach Calcifer is asked again. */
   private project(): Promise<string> {
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
-    this.made ??= this.client.newProject("untitled", `project-${crypto.randomUUID()}`).then(({ id, said }) => {
-      this.store.projectId = id
-      for (const line of said ?? []) say(line)
-      this.hooks.adopt(id)
-      return id
-    })
+    this.made ??= this.client.newProject("untitled", this.projectKey).then(
+      ({ id, said }) => {
+        this.store.projectId = id
+        for (const line of said ?? []) say(line)
+        this.hooks.adopt(id)
+        return id
+      },
+      (error) => {
+        this.made = undefined
+        throw error
+      },
+    )
     return this.made
   }
 }

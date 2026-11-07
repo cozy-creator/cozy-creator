@@ -68,26 +68,40 @@ fn etag(text: &str) -> String {
 /// These rows set, a none gone, over what the file holds this moment, and told to every stream: the new ETag. A name is one row in
 /// any case, with `_` and `-` alike.
 pub(super) fn set(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>) -> Result<String, Error> {
+    set_from(folder, id, changed, &BTreeMap::new()).map(|(etag, _)| etag)
+}
+
+/// As `set`, but a name in `was` is set only if its row is still what `was` says (a none: none), in the same write: one that moved is
+/// left as it is, and answered with what it is.
+fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, was: &BTreeMap<String, Option<Card>>) -> Result<(String, BTreeMap<String, Option<Card>>), Error> {
     let changed: BTreeMap<String, Option<Card>> = changed.into_iter().map(|(name, card)| (name, card.map(tidied))).collect();
-    let keys: HashSet<String> = changed.keys().map(|name| name_key(name)).collect();
-    let now = RefCell::new((BTreeMap::new(), String::new()));
+    let now = RefCell::new((BTreeMap::new(), String::new(), BTreeMap::new(), BTreeMap::new()));
     let at = folder.dir.join(CANVAS);
     let held = RefCell::new(TOLD.lock().expect("told lock").remove(id));
     folder.edit_canvas(|text| {
         // What was told of this very file is what it holds: at thousands of rows, reading them again would be most of a move.
         let told = held.borrow_mut().take().filter(|(read, _)| *read == stamp(&at));
         let mut cards = told.map_or_else(|| rows(text), |(_, cards)| cards);
+        let there = |cards: &BTreeMap<String, Card>, name: &str| cards.iter().find(|(held, _)| name_key(held) == name_key(name)).map(|(_, card)| *card);
+        let kept: BTreeMap<String, Option<Card>> = (was.iter())
+            .filter(|(name, from)| changed.contains_key(*name) && there(&cards, name) != from.map(tidied))
+            .map(|(name, _)| (name.clone(), there(&cards, name)))
+            .collect();
+        let applied: BTreeMap<String, Option<Card>> = changed.iter().filter(|(name, _)| !kept.contains_key(*name)).map(|(name, card)| (name.clone(), *card)).collect();
+        let keys: HashSet<String> = applied.keys().map(|name| name_key(name)).collect();
         cards.retain(|there, _| !keys.contains(&name_key(there)));
-        cards.extend(changed.iter().filter_map(|(name, card)| Some((name.clone(), (*card)?))));
+        cards.extend(applied.iter().filter_map(|(name, card)| Some((name.clone(), (*card)?))));
         let written = if cards.is_empty() && text.is_empty() { String::new() } else { written(&cards) };
-        *now.borrow_mut() = (cards, written.clone());
+        *now.borrow_mut() = (cards, written.clone(), applied, kept);
         Ok(written)
     })?;
-    let (cards, text) = now.into_inner();
+    let (cards, text, applied, kept) = now.into_inner();
     let etag = etag(&text);
     TOLD.lock().expect("told lock").insert(id.to_owned(), (stamp(&at), cards));
-    crate::events::canvas(id, &etag, changed);
-    Ok(etag)
+    if !applied.is_empty() {
+        crate::events::canvas(id, &etag, applied);
+    }
+    Ok((etag, kept))
 }
 
 /// Tells every stream what changed of `dir`'s rows outside Calcifer: a hand, or a `git pull`.
@@ -150,7 +164,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path(id): Path<String>) ->
     Ok(Json(Canvas { etag: etag(&text), cards: rows(&text) }))
 }
 
-/// `PATCH /v1/projects/{id}/canvas`: last move wins.
+/// `PATCH /v1/projects/{id}/canvas`: last move wins, but for a row asked only if it's still what it was.
 pub(super) async fn patch(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -158,6 +172,6 @@ pub(super) async fn patch(
 ) -> Result<Json<CanvasPatched>, Refusal> {
     let asked: CanvasPatch = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    let etag = set(&project.folder, &id, asked.cards).map_err(Refusal)?;
-    Ok(Json(CanvasPatched { etag }))
+    let (etag, kept) = set_from(&project.folder, &id, asked.cards, &asked.was).map_err(Refusal)?;
+    Ok(Json(CanvasPatched { etag, kept }))
 }

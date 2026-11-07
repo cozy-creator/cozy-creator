@@ -3,7 +3,7 @@ import type { Asset } from "../types"
 import type { CanvasStore, CarriedFile } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import type { Box } from "./graph"
-import { shownOf } from "./shown"
+import { shownOf, valuesOf } from "./shown"
 import { lineOf } from "./text"
 
 /** A box copied: a file, which is a box of its own, or what makes it, with no takes. `at` is where it stood, which a paste keeps among the others. */
@@ -44,7 +44,7 @@ export function copyBoxes(store: CanvasStore, client: Client, names: string[], d
   if (!boxes.length) return false
   const said = (name: string) => {
     const asset = store.get(name)?.asset
-    return (asset && lineOf({ ...asset.fields, ...store.get(name)?.drafts }, fieldsOf(asset, store.tools.get()))) || name
+    return (asset && lineOf(valuesOf(store.get(name)), fieldsOf(asset, store.tools.get()))) || name
   }
   const words = names.map(said).join("\n\n")
   copied = { project: store.projectId, boxes, words }

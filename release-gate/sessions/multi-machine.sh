@@ -62,7 +62,7 @@ fi
 for i in 0 ${B:+1}; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
 if [ -n "$B" ]; then
   watcher machine ls --json > "$OUT/watcher-list.json"
-  jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .recorded == false and .state == "ready")' \
+  jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .ordered == false and .state == "ready")' \
     "$OUT/watcher-list.json" > /dev/null || fail "the second controller does not list B: $(head -c 300 "$OUT/watcher-list.json")"
 fi
 

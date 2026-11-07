@@ -25,6 +25,12 @@ run_stands() {
     | "\(.number) \($s) \(.progress.completed // 0)/\(.progress.total // 0)\(if ($s | test("download")) then " \(.progress.bytes_done // 0)" else "" end)"'
 }
 
+# run_downloads <machine> [cli]: each running run's download still under way, a line each: number, bytes so far, of bytes.
+run_downloads() {
+  timeout 60 "${2:-cozy}" --json run ls --all --on "$1" < /dev/null 2> /dev/null | jq -r '.runs[] | select(.status == "in_progress")
+    | select((.progress.bytes_total // 0) > (.progress.bytes_done // 0)) | "\(.number) \(.progress.bytes_done // 0) \(.progress.bytes_total)"'
+}
+
 # run_clock <machine> [cli]: that machine's runs by their own clock: the ms of their newest move (`.progress.at_ms`, which
 # stands still on a silent run; a run with none yet by its start or end), then the numbers of those not settled. Fails when
 # no listing answers.

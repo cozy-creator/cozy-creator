@@ -100,7 +100,7 @@ def gpu(payload: Request, ctx: Context) -> Report:
                 assert memory.room().free <= accel.unified_ceiling(torch)
             del actual
             before = torch.mps.current_allocated_memory()
-            memory.trim()
+            torch.mps.empty_cache()
             assert alias is not None and alias.device.type == "mps"
             assert alias[-1, -1].item() == 2 and alias[0, 0].item() == 1
             held = torch.mps.current_allocated_memory()
@@ -108,7 +108,7 @@ def gpu(payload: Request, ctx: Context) -> Report:
             del alias
             alias = None
             gc.collect()
-            memory.trim()
+            torch.mps.empty_cache()
             after = torch.mps.current_allocated_memory()
             assert held - after >= rows * cols * 4, (held, after)
             with (
@@ -141,5 +141,5 @@ def gpu(payload: Request, ctx: Context) -> Report:
             del alias
             for model in models.values():
                 model.close()
-            memory.trim()
+            torch.mps.empty_cache()
             checkpoint.close()

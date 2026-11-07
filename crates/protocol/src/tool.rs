@@ -82,6 +82,9 @@ pub struct Tool {
     /// Local code, named by a box of the project asked about.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local: bool,
+    /// The package a machine installs, where `package` is local code's path: its own name (`local/<name>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installs: Option<String>,
     /// What its box asks for, in its struct's order.
     pub fields: Vec<ToolField>,
     /// The path in its package of a component that draws its box, where it ships one.
@@ -222,6 +225,7 @@ pub fn edit() -> Tool {
         makes: "video".to_owned(),
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
         local: false,
+        installs: None,
         ui: None,
         pickup: None,
         model: None,
@@ -282,6 +286,7 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
         makes: makes.to_owned(),
         description: callable.description.clone(),
         local: false,
+        installs: None,
         fields: drawn.filter_map(|field| field_of(field, default(field))).collect(),
         ui: declared.ui.clone(),
         pickup: pickup(&callable.request),

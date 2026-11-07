@@ -22,13 +22,13 @@ pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error
     let calcifer = ctx.calcifer().await?;
     // `--full`: what it measured, its calls and what it was asked; a person's view and `--json` hold the rest.
     let detail: &[(&str, &str)] = if ctx.full { &[("detail", "full")] } else { &[] };
-    let mut run: Run = calcifer.get_query(&format!("/v1/runs/{id}"), detail).await?;
+    let mut run: Run = calcifer.get_query(&crate::calcifer_client::path(&["v1", "runs", id]), detail).await?;
     if !once && !follow::settled(&run) {
         let ended = follow::follow(ctx, run).await?;
         if !ctx.json {
             return Ok(follow::exit_code(&ended));
         }
-        run = calcifer.get_query(&format!("/v1/runs/{}", ended.id), detail).await?;
+        run = calcifer.get_query(&crate::calcifer_client::path(&["v1", "runs", ended.id.as_str()]), detail).await?;
         output::ndjson(&run);
         return Ok(follow::exit_code(&run));
     }
@@ -46,7 +46,7 @@ pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error
         if !follow::settled(&run) {
             follow::next(ctx, &run);
         }
-        println!("its stages, memory, calls and log: cozy run show {} --full", run.number);
+        println!("its stages, memory, calls and log: cozy run show {} --full", run.name());
         return Ok(follow::exit_code(&run));
     }
     grid(&["STAGE", "TIME", "DETAIL"], measured, stage_rows).print(ctx, "stages");

@@ -1,4 +1,6 @@
-/* Paper's drawn edges. Each is one image the browser nine-slices, so a frame adds no element, no measuring and no script. Dark keeps plain borders. */
+/* Paper's drawn edges. Each is one image the browser nine-slices, so a frame adds no element, no measuring and no script. Dark keeps plain borders.
+   A drawn edge casts no shadow: a box's shadow is square, and showed as a grey box under the wavy edge. Under its middle, its own colour, held
+   short of the edge so no square corner shows past it: the slices' seams draw no line through the sheet. */
 :root:not([data-theme="dark"]) {
   --frame-panel: url("./frames/frame-panel.svg");
   --frame-sheet: url("./frames/frame-sheet.svg");
@@ -10,19 +12,23 @@
   .ptabs,
   .tools,
   .main-menu nav,
+  .zoom-menu,
   .asset-menu {
-    background: none;
+    background: linear-gradient(#f6ebd0, #f6ebd0) center / calc(100% - 10px) calc(100% - 10px) no-repeat;
     border-color: transparent;
     border-image: var(--frame-panel) 18 fill / 18px / 7px round;
+    box-shadow: none;
   }
   .here-under,
   .drawer {
-    background: none;
+    background: linear-gradient(#fbf6ea, #fbf6ea) center / calc(100% - 10px) calc(100% - 10px) no-repeat;
     border-color: transparent;
     border-image: var(--frame-sheet) 18 fill / 18px / 7px round;
+    box-shadow: none;
   }
   .tb,
   .mtabs,
+  .zoom,
   .render-all label {
     background: none;
     border-color: transparent;

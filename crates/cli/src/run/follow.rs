@@ -138,7 +138,7 @@ fn saved(run: Run) -> Result<Run, Error> {
     if lost.is_empty() || !settled(&run) {
         return Ok(run);
     }
-    let show = format!("cozy run show {}", run.number);
+    let show = format!("cozy run show {}", run.name());
     Err(Error::new(
         Kind::Unavailable,
         "output_not_saved",
@@ -197,7 +197,7 @@ async fn watch(
             _ = &mut interrupt => {
                 view.done();
                 let run = calcifer.run(id.as_str()).await?;
-                let n = run.number;
+                let n = run.name();
                 output::say(ctx, &match settled(&run) {
                     true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run show {n}` follows them"),
                     false => format!("stopped following: run {n} keeps running; `cozy run show {n}` follows it again, `cozy run cancel {n}` cancels it"),
@@ -306,7 +306,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
     }
     if let (Status::Failed | Status::Canceled, Some(reason)) = (run.status, &run.reason) {
         let line = format!("{}: {}: {}", run.target, status_word(run.status), reason.message);
-        let next: Vec<String> = reason.next.iter().cloned().chain([format!("cozy run show {}", run.number)]).take(2).collect();
+        let next: Vec<String> = reason.next.iter().cloned().chain([format!("cozy run show {}", run.name())]).take(2).collect();
         return output::failure(ctx, &line, &next);
     }
     fields(ctx, run).print(ctx);
@@ -335,7 +335,7 @@ pub(super) fn keyed(basis: &str) -> &'static str {
 /// The record's fields, for a person.
 pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     let mut record = output::Record::new()
-        .field("run", run.number)
+        .field("run", run.name())
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
@@ -418,14 +418,14 @@ fn adjustment(row: &Adjustment) -> String {
 
 /// What to do next with `run`: follow it while it goes on, show it when it did not succeed.
 pub(super) fn next(ctx: &Context, run: &Run) {
-    let watch = format!("cozy run show {}", run.number);
-    let show = format!("cozy run show {}", run.number);
+    let watch = format!("cozy run show {}", run.name());
+    let show = format!("cozy run show {}", run.name());
     match run.status {
         Status::Completed => {}
         Status::Failed | Status::Canceled => output::next(ctx, &[&show]),
         _ if run.stalled.is_some() => {
             let logs = run.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
-            output::next(ctx, &[&format!("cozy run cancel {}", run.number), logs.as_deref().unwrap_or(&watch)]);
+            output::next(ctx, &[&format!("cozy run cancel {}", run.name()), logs.as_deref().unwrap_or(&watch)]);
         }
         _ => output::next(ctx, &[&watch]),
     }
@@ -473,8 +473,8 @@ struct View {
     /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
     /// minutes it had made no progress.
     shown: (String, i64, i64),
-    /// The run's number.
-    number: u64,
+    /// What names the run (`Run::name`).
+    number: String,
     machine: Option<String>,
     /// The run's own word for where it is (`queued`, the machine's state), and why it waits now
     /// (Calcifer's reason, as `cozy run ls` shows it): the status line says the reason first.
@@ -494,7 +494,7 @@ struct View {
 
 impl View {
     fn new(ctx: &Context, run: &Run) -> Self {
-        output::say(ctx, &format!("run {} · {}", run.number, run.target));
+        output::say(ctx, &format!("run {} · {}", run.name(), run.target));
         let bar = (!ctx.json && ctx.term.stderr).then(|| {
             let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
             bar.set_style(
@@ -509,7 +509,7 @@ impl View {
             term: ctx.term,
             bar,
             shown: (String::new(), -1, 0),
-            number: run.number,
+            number: run.name(),
             machine: None,
             state: String::new(),
             waiting: None,
@@ -626,7 +626,7 @@ impl View {
             self.line(&format!(
                 "  {}. It keeps running until you end it: cozy run cancel {}",
                 stalled_words(stalled),
-                run.number
+                run.name()
             ));
         }
         self.stalled = Some(stalled.clone());

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-varena-core"
+version = "0.1.0"
+description = "The memory authority's behaviours on a real GPU, one fresh process per call"
+requires-python = ">=3.12,<3.15"
+dependencies = ["cozy-runtime>=0.42", "tensorfs>=0.21", "msgspec>=0.19", "torch==2.15.0"]
+
+[project.entry-points."cozy.application"]
+default = "ci_varena_core:app"
+
+[tool.uv.build-backend]
+module-name = "ci_varena_core"
+module-root = ""
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.uv.sources]
+torch = { index = "pypi" }

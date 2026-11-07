@@ -326,8 +326,14 @@ pub enum Status {
 /// One run as Calcifer holds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Run {
+    /// Its id; `<machine>/<number>` for one another client of this account sent.
     pub id: RunId,
+    /// This controller's number for it; 0 for one another client sent.
     pub number: u64,
+    /// One another client of this account sent, as the machine it runs on numbers it: read there,
+    /// never held here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_number: Option<u64>,
     pub kind: Kind,
     pub target: String,
     pub hub: String,
@@ -395,6 +401,16 @@ pub struct Run {
     /// With `?detail=full`: what was asked of it, to show and to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<RunAsked>,
+}
+
+impl Run {
+    /// What names it to a person: its number, or `<machine>/<number>` for one another client sent.
+    pub fn name(&self) -> String {
+        match self.machine_number {
+            Some(_) => self.id.to_string(),
+            None => self.number.to_string(),
+        }
+    }
 }
 
 /// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
@@ -710,6 +726,10 @@ pub struct RunList {
     /// Matching runs the store cannot read, each as `run N: why`, left out of `runs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unreadable: Vec<String>,
+    /// With `?machine=`, newest first: its runs other clients of this account sent, as it reports
+    /// them now (`Run::machine_number`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub others: Vec<Run>,
 }
 
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
@@ -833,9 +853,10 @@ pub struct Machine {
     pub running: u32,
     #[serde(default)]
     pub queued: u32,
-    /// False: a live rental of this account that this controller did not rent.
+    /// False: a rental another client of this account ordered. This controller reaches it as its
+    /// own (the Hub grants it every device the account signed in on), but places no run on it unasked.
     #[serde(default = "yes")]
-    pub recorded: bool,
+    pub ordered: bool,
     /// Its Hub did not answer the last listing.
     #[serde(default)]
     pub unverified: bool,
@@ -997,6 +1018,41 @@ pub struct MachineStatus {
     /// Killed processes stuck in the kernel there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stuck: Vec<crate::machine::StuckProcess>,
+    /// What it does for this controller's runs besides their own work, each once however many wait on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<Operation>,
+}
+
+/// Weights arriving or a package's environment built on a machine (`machine::Operation`), and the runs waiting on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Operation {
+    /// The same for as long as it lasts.
+    pub id: String,
+    /// `download` or `install`.
+    pub kind: String,
+    /// The model's repository (or provider source), or the package.
+    pub subject: String,
+    /// Where it is, in words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    #[serde(default)]
+    pub bytes_done: u64,
+    #[serde(default)]
+    pub bytes_total: u64,
+    /// What of it was here already (shared with another model, or pulled before).
+    #[serde(default)]
+    pub bytes_here: u64,
+    /// Its bytes a second over its last 10 s, once a second of them is seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_per_s: Option<f64>,
+    /// The seconds its bytes still take at that rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_s: Option<i64>,
+    pub started_at_ms: i64,
+    /// The runs waiting on it, by number.
+    #[serde(default)]
+    pub runs: Vec<u64>,
 }
 
 /// A run a machine holds for this controller, beside this controller's record of it.
@@ -1082,7 +1138,8 @@ pub struct HeldPackage {
     pub hub: String,
     /// `local`, `hub`, or another Hub's URL.
     pub source: String,
-    /// Why the environment does not run the machine's own Runtime; empty when it does.
+    /// What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
+    /// and why); empty for nothing.
     pub warning: String,
 }
 
@@ -1185,7 +1242,8 @@ pub struct Environment {
     /// What it holds now: `installed`, `downloaded`, `imported`, `host` or `gpu`.
     #[serde(default)]
     pub level: String,
-    /// Why it does not run the machine's own Runtime; empty when it does.
+    /// What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
+    /// and why); empty for nothing.
     #[serde(default)]
     pub warning: String,
 }
@@ -1227,7 +1285,7 @@ impl MachineList {
     /// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
     /// `local`, which says why it can't where it can't.
     pub fn render_set(&self) -> Vec<On> {
-        let held = |machine: &&Machine| machine.recorded && machine.offline.is_none();
+        let held = |machine: &&Machine| machine.ordered && machine.offline.is_none();
         let rented = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting));
         let added = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
         let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
@@ -1447,6 +1505,9 @@ pub struct MachineUpdate {
     /// Development only: the most of each GPU's memory the machine uses, in bytes; 0 lifts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_memory_limit: Option<u64>,
+    /// Shared/Dedicated category, applied after the ordinary drain and restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::config::MachineMode>,
 }
 
 /// One component of a `MachineUpdate`: `{"version": "0.33.1"}` or `{"file": "/abs/path"}`.

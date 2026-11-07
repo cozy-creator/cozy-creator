@@ -72,6 +72,16 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::Deserialize
 struct Memory {
     #[serde(deserialize_with = "lenient")]
     stats: Gpus,
+    #[serde(deserialize_with = "each")]
+    driver: Vec<DriverMemory>,
+}
+
+/// What the driver read on one GPU: the only peak that was ever on the card.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct DriverMemory {
+    gpu: u32,
+    peak_bytes: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -117,7 +127,6 @@ struct ResidencyStats {
     steps: Vec<MemoryStep>,
     stall_ns: u64,
     evicted: [u64; 7],
-    peak: Option<u64>,
     compute: Option<u64>,
     leftover: Option<u64>,
     outlived: Option<Vec<Outlived>>,
@@ -455,7 +464,7 @@ fn memory(measured: &Measured) -> Vec<report::Memory> {
             store: moved(&s.moved.store, disk),
             derived: moved(&s.moved.derived, disk),
             stall_ms: s.stall_ns as f64 / 1e6,
-            peak: s.peak,
+            peak: measured.m.memory.driver.iter().find(|d| d.gpu == g.gpu).and_then(|d| d.peak_bytes),
             torch_peak: g.torch_peak,
             compute: s.compute,
             evicted: taken(&s.evicted),

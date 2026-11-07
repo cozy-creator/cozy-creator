@@ -350,7 +350,7 @@ pub fn check_metadata(
     inputs(dtype, shape, encoding, parts, false, |_, _| Ok(()))
 }
 
-#[cfg(feature = "store")]
+#[cfg(all(feature = "store", feature = "cuda"))]
 pub(crate) fn supports_sources(encoding: &Encoding) -> bool {
     SCHEMES
         .iter()
@@ -362,7 +362,7 @@ fn source_scheme(scheme: &Scheme) -> bool {
 }
 
 /// Plan external sources with the SAME source-enabled Scheme::decode functions as Host reads.
-#[cfg(feature = "store")]
+#[cfg(all(feature = "store", feature = "cuda"))]
 pub(crate) fn planned_sources<R>(
     dtype: &Dtype,
     shape: &[u64],

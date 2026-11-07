@@ -77,7 +77,8 @@ unlisted=$(( stored > listed ? stored - listed : 0 ))
   || expect disk-listed FAIL "the store holds $((stored >> 20)) MiB, listed models $((listed >> 20)) MiB: $((unlisted >> 20)) MiB no model names; $(tail -1 "$T/model-ls.txt")"
 
 total=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.disk_total_bytes // 0'); before=$(tail -1 "$T/use.tsv" | cut -f3)
-big=$(step h3-bf16-render run "$(pkg minimax-h3 generate)" --on "$M" --lane bf16 prompt="$OBJECT, too big for this disk" duration_s:=5 seed:=$((R + 702)))
+big=$(step h3-bf16-render run "$(pkg minimax-h3 generate)" --on "$M" --lane bf16 \
+  beats:="$(jq -cn --arg d "$OBJECT, too big for this disk" '[{description: $d, duration: 5}]')" seed:=$((R + 702)))
 code=$(run_get "$T" h3-bf16-render .reason.code); why=$(run_get "$T" h3-bf16-render .reason.message)
 after=$(tail -1 "$T/use.tsv" | cut -f3); grew=$(( after > before ? after - before : 0 ))
 fits=$(step sdxl-room run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, after a full disk" steps:=1 seed:=$((R + 703)))

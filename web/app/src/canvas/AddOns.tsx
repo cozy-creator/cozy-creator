@@ -1,19 +1,18 @@
-import { useLayoutEffect, useRef, useState } from "react"
+import { useState } from "react"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import "./AddOns.css"
 import { type AddOn, addOnsOf, atStrength, carried, takenOff, wordOf } from "./checkpoints"
 import { useCanvasStore, useElement } from "./context"
-import { fieldsOf } from "./controls"
 import { madeHere } from "./shown"
 
 const said = (addOn: AddOn) => `${addOn.lora ? "LoRA" : "Fine-tune"} ${addOn.ref}`
 
 /** One thing on a box: its word, and an X when it can come off. */
-export function Chip({ word, title, kind, off, mark, away }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void }; mark?: boolean; away?: boolean }) {
-  if (mark) return <li className={`add-on ${kind ?? ""} ${away ? "away" : ""}`} title={title} />
+export function Chip({ word, title, kind, off, mark }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void }; mark?: boolean }) {
+  if (mark) return <li className={`add-on ${kind ?? ""}`} title={title} />
   return (
-    <li className={`add-on ${kind ?? ""} ${away ? "away" : ""}`} title={title} onClick={(event) => event.stopPropagation()}>
+    <li className={`add-on ${kind ?? ""}`} title={title} onClick={(event) => event.stopPropagation()}>
       <span className="add-on-word">{word}</span>
       {off && (
         <button type="button" className="nodrag" aria-label={off.label} title="Take it off" onClick={off.take}>
@@ -32,41 +31,7 @@ function useAddOns(name: string) {
   return { held: addOnsOf(lora, models), lora, models, store }
 }
 
-/** How many of a row's chips fit in its width beside a "+N", measured as its words grow and shrink with the zoom. */
-function useFits(count: number) {
-  const row = useRef<HTMLUListElement>(null)
-  const [fits, setFits] = useState(count)
-  useLayoutEffect(() => {
-    const el = row.current
-    if (!el) return
-    const measure = () => {
-      const chips = [...el.querySelectorAll<HTMLElement>(":scope > .add-on:not(.more)")]
-      const more = el.querySelector<HTMLElement>(":scope > .more")
-      const gap = parseFloat(getComputedStyle(el).columnGap) || 0
-      const room = el.parentElement?.clientWidth ?? el.clientWidth
-      let used = 0
-      let shown = chips.length
-      for (const [at, chip] of chips.entries()) {
-        const left = chips.length - at - 1
-        const next = used + chip.offsetWidth + (at ? gap : 0)
-        if (next + (left ? gap + (more?.offsetWidth ?? 0) : 0) > room) {
-          shown = at
-          break
-        }
-        used = next
-      }
-      setFits(shown)
-    }
-    measure()
-    const watch = new ResizeObserver(measure)
-    watch.observe(el.parentElement ?? el)
-    for (const chip of el.children) watch.observe(chip)
-    return () => watch.disconnect()
-  }, [count])
-  return { row, fits }
-}
-
-/** What's on a box, its tool first, each with its X: in one row in its width, as many as fit, then "+N" saying the rest. Far out, each is only a mark. */
+/** What's on a box, its tool first, each with its X: as many as it holds. Far out, each is only a mark. */
 export function Stack({ name }: { name: string }) {
   const { held, lora, models, store } = useAddOns(name)
   const view = useElement(name)
@@ -74,59 +39,35 @@ export function Stack({ name }: { name: string }) {
   const mark = useSignal(store.far) && !view?.here
   const tool = view?.asset?.tool
   const made = tool && !madeHere(tool) ? (tools.get(tool)?.label ?? tool.split("/").at(-2) ?? tool) : null
-  const chips = [
-    ...(made ? [{ key: "tool", word: made, title: tool ?? made, kind: "tool" as const, off: { label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) } }] : []),
-    ...held.map((addOn) => ({
-      key: `${addOn.slot}:${addOn.ref}`,
-      word: wordOf(addOn.ref),
-      title: said(addOn),
-      kind: addOn.lora ? undefined : ("fine-tune" as const),
-      off: { label: `Take ${wordOf(addOn.ref)} off ${name}`, take: () => store.putOn(name, takenOff(addOn, lora, models)) },
-    })),
-  ]
-  const { row, fits } = useFits(chips.length)
-  if (!chips.length) return null
-  const rest = chips.slice(fits)
+  if (!made && !held.length) return null
   return (
-    <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`} ref={row}>
-      {chips.map((chip, at) => (
-        <Chip key={chip.key} word={chip.word} title={chip.title} kind={chip.kind} mark={mark} off={chip.off} away={at >= fits} />
+    <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
+      {made && <Chip word={made} title={tool ?? made} kind="tool" mark={mark} off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
+      {held.map((addOn) => (
+        <Chip
+          key={`${addOn.slot}:${addOn.ref}`}
+          word={wordOf(addOn.ref)}
+          title={said(addOn)}
+          kind={addOn.lora ? undefined : "fine-tune"}
+          mark={mark}
+          off={{ label: `Take ${wordOf(addOn.ref)} off ${name}`, take: () => store.putOn(name, takenOff(addOn, lora, models)) }}
+        />
       ))}
-      <li className={`add-on more ${rest.length ? "" : "away"}`} title={rest.map((chip) => chip.title).join("\n")}>
-        +{rest.length}
-      </li>
     </ul>
   )
 }
 
-/** The shape it makes, in the words of its name, where there's room. */
-function Ratio({ name }: { name: string }) {
-  const store = useCanvasStore()
-  const view = useElement(name)
-  const tools = useSignal(store.tools)
-  const field = view?.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
-  if (!field || view?.shape || view?.placing) return null
-  const held = store.valueOf(name, field.field)
-  return <span className="ratio-rest">{typeof held === "string" ? held : "Auto"}</span>
-}
-
-/** Inside a box along its foot: its stack at the left and its shape at the right, in one row in its width, so nothing is drawn on another box at any zoom. While something's carried, whether it would take it. Written in where it stands, the stack goes with what's under it. */
+/** Under a box on the canvas, at its left: its stack, and while something's carried whether it would take it. It follows the box, and is no part of its size. Written in where it stands, the stack goes with what's under it. */
 export function AddOns({ name }: { name: string }) {
   const store = useCanvasStore()
   const view = useElement(name)
   const tools = useSignal(store.tools)
   const going = useSignal(carried)
-  const lite = useSignal(store.far)
   if (!view?.asset) return null
   return (
     <>
       {going && !going.whyNot(name, view, tools) && <span className="box-takes" />}
-      {!view.here && (
-        <div className="foot">
-          <Stack name={name} />
-          {!lite && <Ratio name={name} />}
-        </div>
-      )}
+      {!view.here && <Stack name={name} />}
     </>
   )
 }

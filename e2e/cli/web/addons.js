@@ -2,13 +2,13 @@
 // carried shows what takes it; dropped where it can't go, a toast says why and nothing changes; dropped where it can, a chip stands under the box at once, follows it, leaves
 // its size alone, keeps other boxes clear of it, and stays near one size at any zoom. An X takes it off, strength is behind More, a hand-written `lora:` or `models:` is a chip, and
 // the file keeps every comment and `|`. It names no model: what it drops comes from `GET /v1/models` and `GET /v1/tools`.
-//   node addons.js <sign-in link from `cozy open --no-open`, or the address of a page that needs none>
+//   node addons.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $RENDER: a machine with a GPU, on which a box with a LoRA and a fine-tune
 // really renders, and what its run was asked and applied is read back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, until } = require('./page');
+const { calcifer, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -27,8 +27,7 @@ async function died(why) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
@@ -45,7 +44,7 @@ async function died(why) {
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
@@ -194,7 +193,8 @@ assets:
   await until('the LoRA in the file', () => Promise.resolve(yaml()), (text) => text.includes(`ref: ${loraA.model}`));
   check('default_strength', /strength: 1(\.0)?\n/.test(yaml().split(`ref: ${loraA.model}`)[1]), yaml());
   const sized = await cardRect('shot');
-  check('chip_leaves_its_size', sized.width === size.width && sized.height === size.height, { size, sized });
+  // To the pixel: the canvas may have moved under it, and a box's edge then lands a float's width off (191.18579 to 191.18582).
+  check('chip_leaves_its_size', Math.abs(sized.width - size.width) < 0.5 && Math.abs(sized.height - size.height) < 0.5, { size, sized });
   check('no_more_than_it_said', (await page.locator('.box-takes').count()) === 0);
 
   await carry(loraB, 'shot');
@@ -286,10 +286,10 @@ assets:
   await until('off the one line', () => Promise.resolve(yaml()), (text) => !text.includes('wushu'));
   check('one_line_goes', (await chips('flowed').count()) === 0 && yaml().includes('instructions: One line.'), yaml());
 
-  // Near one size at any zoom, and never wider than its box.
+  // One size on screen down to a zoom of 0.5, past which they shrink with the canvas (e139a61c6), and never wider than their box.
   const pane = page.locator('.react-flow__pane');
   const sizes = [];
-  for (const steps of [0, 3, 3]) {
+  for (const steps of [0, 1, 3]) {
     // By the page's own zoom keys, a step the same on every OS: a wheel's step is far larger on macOS, and three of them went from 0.9 to 0.05.
     for (let i = 0; i < steps; i++) { await pane.hover({ position: { x: 900, y: 500 } }); await page.keyboard.press('Control+-'); await page.waitForTimeout(200); }
     await page.waitForTimeout(250);
@@ -303,8 +303,10 @@ assets:
     if (measure) sizes.push(measure);
   }
   seen.sizes = sizes;
-  const screens = sizes.filter((one) => one.zoom >= 0.25).map((one) => one.screen);
+  const screens = sizes.filter((one) => one.zoom >= 0.5).map((one) => one.screen);
+  const [atHang, far] = [sizes.find((one) => Math.abs(one.zoom - 0.5) < 0.01), sizes.find((one) => one.zoom < 0.45)];
   check('chip_near_one_size', screens.length > 1 && Math.max(...screens) / Math.min(...screens) < 1.2 && sizes.every((one) => one.wide <= 320), sizes);
+  check('chip_shrinks_far_out', Boolean(atHang && far) && Math.abs(far.screen / atHang.screen - far.zoom / atHang.zoom) < 0.1, sizes);
 
   // Its tool changes, and they stay.
   const held3 = yaml();
@@ -351,7 +353,8 @@ assets:
       await idle();
       const had = (await state()).assets.find((asset) => asset.name === 'still').versions;
       await page.evaluate((to) => { location.hash = to; }, `/projects/${id}/assets/still`);
-      await page.locator('.card.here[data-asset="still"] button[aria-label=Render]').click();
+      await page.locator('.card.here[data-asset="still"]').waitFor();
+      await (await renderOf(page, 'still')).click();
       await closeBox(page);
       seen.asked_at = new Date().toISOString();
       for (;;) {

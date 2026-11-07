@@ -169,9 +169,11 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
         .map(|updates| updates.software())
         .unwrap_or_default();
     let lifecycle = identity.lifecycle.as_ref();
+    let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id));
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.map_or(0, |l| l.deadline_ms()),
         runs,
+        activity,
         update: (identity.updates.as_ref().and_then(|updates| updates.current()))
             .map(|update| super::machine_update::state(&update.operation, &update)),
         phase: match lifecycle {

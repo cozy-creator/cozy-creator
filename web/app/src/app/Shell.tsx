@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
 import { projectQuery, projectsQuery } from "../api/queries"
@@ -7,12 +8,13 @@ import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
 import { noHash } from "../canvas/text"
 import { MachineTabs } from "../panels/machines/MachineTabs"
+import type { ProjectsAsk } from "../panels/Projects"
 import { RunsLink } from "../panels/runs/RunsLink"
 import type { ProjectRow } from "../types"
 import { Icon } from "../ui/Icon"
 import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
-import { setTheme, theme } from "../ui/theme"
+import { landscape, setLandscape, setTheme, theme } from "../ui/theme"
 import { useConnection } from "./Connection"
 
 export function useProjectId(): string | null {
@@ -28,16 +30,19 @@ export function useTo() {
 /** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. A pod's Calcifer is its own. */
 const SAYS_HOW = 5
 
+/** Whether Calcifer answers, and what's waiting for it: said, and nothing waits on it. Gone once all of it is saved. */
 function Connectivity() {
-  const { stream, attempt, bridge, remote } = useConnection()
+  const { stream, attempt, bridge, remote, outbox } = useConnection()
   const health = useSignal(stream.health)
   const trying = useSignal(attempt)
+  const owed = useSignal(outbox.owed)
   const version = useSignal(bridge.newVersion)
+  const changes = `${owed.count} ${owed.count === 1 ? "change" : "changes"}`
   return (
     <>
-      {health.state === "reconnecting" && (
-        <span className="pill warn">
-          Reconnecting, attempt {health.attempt}
+      {health.state === "reconnecting" ? (
+        <span className="pill warn" role="status">
+          Calcifer offline{owed.count > 0 && `: ${changes} waiting`}
           {!remote && health.attempt >= SAYS_HOW && (
             <>
               {" "}
@@ -45,8 +50,13 @@ function Connectivity() {
             </>
           )}
         </span>
+      ) : owed.count > 0 && owed.slow ? (
+        <span className="pill warn" role="status">
+          {owed.held ? `Not saved: ${noHash(owed.held)}: ${changes} waiting` : `Saving ${changes}`}
+        </span>
+      ) : (
+        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}</span>
       )}
-      {trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}</span>}
       {version && (
         <button type="button" className="pill warn" onClick={() => location.reload()}>
           Calcifer is now {version}: Reload
@@ -56,40 +66,103 @@ function Connectivity() {
   )
 }
 
-/** How many projects have a tab. The rest are behind +. */
-const TABS = 6
-
-/** The project open, and those used lately, each staying where it is so a tab doesn't jump from under the pointer. What's new takes the end. */
-function useTabs(id: string | null, rows: ProjectRow[]): ProjectRow[] {
+/** Projects in the order they took their tabs, each staying where it is so a tab doesn't jump from under the pointer. What's new takes the end. */
+function useOrder(rows: ProjectRow[]): ProjectRow[] {
   const order = useRef<string[]>([])
   const known = new Map(rows.map((row) => [row.id, row]))
   order.current = [...order.current.filter((held) => known.has(held)), ...rows.map((row) => row.id).filter((held) => !order.current.includes(held))]
-  const shown = order.current.slice(0, TABS)
-  if (id && known.has(id) && !shown.includes(id)) shown[shown.length - 1] = id
-  return shown.flatMap((held) => known.get(held) ?? [])
+  return order.current.flatMap((held) => known.get(held) ?? [])
 }
 
-function ProjectTabs({ id }: { id: string | null }) {
+/** The first `count`, with the open project in the last place if it isn't one of them. */
+function tabsOf(order: ProjectRow[], id: string | null, count: number): ProjectRow[] {
+  const shown = order.slice(0, Math.max(count, 1))
+  const open = order.find((row) => row.id === id)
+  if (open && !shown.includes(open)) shown[shown.length - 1] = open
+  return shown
+}
+
+/** As many tabs as fit the bar, the rest behind "N more". `room` is the bar's free space past them; a hidden copy of every tab says what each takes. */
+function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null }) {
   const { client } = useConnection()
   const to = useTo()
   const { data } = useQuery({ ...projectQuery(client, id ?? ""), enabled: Boolean(id) })
   const { data: list } = useQuery(projectsQuery(client))
-  const tabs = useTabs(id, (list?.projects ?? []).filter((row) => !row.missing))
+  const order = useOrder((list?.projects ?? []).filter((row) => !row.missing))
+  const [count, setCount] = useState(Number.POSITIVE_INFINITY)
+  const strip = useRef<HTMLElement>(null)
+  const sizes = useRef<HTMLDivElement>(null)
+  const tabs = tabsOf(order, id, count)
+  const hidden = order.filter((row) => !tabs.includes(row))
   const saidOfFile = data ? warningsOf(data).ofProject : []
   const name = data?.path.split(/[/\\]/).filter(Boolean).pop()
+  // The open project before the list has it, or none.
+  const lone = order.some((row) => row.id === id) ? null : (name ?? (id ? "…" : "untitled"))
+  const named = `${id} ${lone} ${order.map((row) => `${row.id}:${row.name}`).join(" ")}`
+
+  useLayoutEffect(() => {
+    const held = strip.current
+    const ghost = sizes.current
+    if (!held || !ghost || !room) return
+    const fit = () => {
+      const style = getComputedStyle(held)
+      const space = Math.min(held.getBoundingClientRect().width + room.getBoundingClientRect().width, Number.parseFloat(style.maxWidth) || Number.POSITIVE_INFINITY)
+      const gap = Number.parseFloat(style.columnGap) || 0
+      const widths = [...ghost.children].map((child) => child.getBoundingClientRect().width)
+      const alone = lone === null ? [] : [widths.pop() ?? 0]
+      const more = widths.pop() ?? 0
+      const width = new Map(order.map((row, at) => [row, widths[at]]))
+      const plus = held.lastElementChild?.getBoundingClientRect().width ?? 0
+      const fits = (n: number) => {
+        const shown = tabsOf(order, id, n)
+        const items = [...shown.map((row) => width.get(row) ?? 0), ...alone, ...(shown.length < order.length ? [more] : []), plus]
+        return Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight) + items.reduce((sum, each) => sum + each + gap, -gap) <= space
+      }
+      if (fits(order.length)) return order.length
+      let n = 1
+      while (n < order.length - 1 && fits(n + 1)) n++
+      return n
+    }
+    setCount(fit())
+    // The window resizing: in its own frame, so no tab is squeezed before it goes. What else moves in the bar waits a frame, as two
+    // resizes of one element in one frame are a loop to ResizeObserver.
+    const bar = held.parentElement ?? held
+    const watch = new ResizeObserver((seen) => {
+      if (seen.some((one) => one.target === bar)) flushSync(() => setCount(fit()))
+      else setCount(fit())
+    })
+    watch.observe(bar)
+    watch.observe(room)
+    return () => watch.disconnect()
+  }, [named, room])
+
   return (
     <>
-      <nav className="ptabs" aria-label="Projects">
+      <nav className="ptabs" aria-label="Projects" ref={strip}>
         {tabs.map((tab) => (
           <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={`/projects/${tab.id}`} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
             {tab.name}
           </Link>
         ))}
-        {!tabs.some((tab) => tab.id === id) && <span className="ptab on">{name ?? (id ? "…" : "untitled")}</span>}
-        <Link className="ptab more" to={to("projects")} title="All projects" aria-label="All projects">
+        {lone !== null && <span className="ptab on">{lone}</span>}
+        {hidden.length > 0 && (
+          <Link className="ptab more" to={to("projects")} state={{ first: hidden.map((row) => row.id) } satisfies ProjectsAsk} title="All projects">
+            {hidden.length} more
+          </Link>
+        )}
+        <Link className="ptab new" to={to("projects")} state={{ new: true } satisfies ProjectsAsk} title="New project" aria-label="New project">
           <Icon name="plus" />
         </Link>
       </nav>
+      <div className="ptabs-ghost" ref={sizes} aria-hidden>
+        {order.map((row) => (
+          <span key={row.id} className={row.id === id ? "on" : undefined}>
+            {row.name}
+          </span>
+        ))}
+        <span>{order.length} more</span>
+        {lone !== null && <span className="on">{lone}</span>}
+      </div>
       {saidOfFile.length > 0 && (
         <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
           !
@@ -101,10 +174,18 @@ function ProjectTabs({ id }: { id: string | null }) {
 
 function ThemeSwitch() {
   const now = useSignal(theme)
+  const shown = useSignal(landscape)
   return (
-    <button type="button" className="tb" onClick={() => setTheme(now === "dark" ? "paper" : "dark")}>
-      {now === "dark" ? "Paper" : "Dark"}
-    </button>
+    <>
+      <button type="button" className="tb" onClick={() => setTheme(now === "dark" ? "paper" : "dark")}>
+        {now === "dark" ? "Paper" : "Dark"}
+      </button>
+      {now === "paper" && (
+        <button type="button" className="tb" onClick={() => setLandscape(!shown)}>
+          {shown ? "Hide landscape" : "Show landscape"}
+        </button>
+      )}
+    </>
   )
 }
 
@@ -158,6 +239,7 @@ export function Shell() {
   const location = useLocation()
   const matches = useMatches()
   const [slot, setSlot] = useState<HTMLElement | null>(null)
+  const [room, setRoom] = useState<HTMLElement | null>(null)
   // The first import on an empty canvas makes a project: the same canvas stays mounted, so nothing on it is lost.
   const adopted = useRef(new Map<string, string>())
   const hostKey = (id && adopted.current.get(id)) ?? id ?? "empty"
@@ -189,15 +271,15 @@ export function Shell() {
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
-        <ProjectTabs id={id} />
+        <ProjectTabs id={id} room={room} />
         {remote && (
           <Link className="pill warn" to={to("machines")}>
             On {remote}
           </Link>
         )}
         <Connectivity />
-        <span className="gap" />
-        <MachineTabs to={to} />
+        <span className="gap" ref={setRoom} />
+        <MachineTabs to={to} projectId={id} />
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>

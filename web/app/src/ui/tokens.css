@@ -54,8 +54,8 @@
   /* Media reads on neutral grey whatever the theme: warm cream around a picture skews it. */
   --stage: #161616;
   --veil: #161616c4;
-  --check: #d6d6d6;
-  --check2: #f2f2f2;
+  --check: #fbfbfb;
+  --check2: #e8e8e8;
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: "M PLUS Rounded 1c", "Trebuchet MS", system-ui, sans-serif;
@@ -64,6 +64,16 @@
   --round2: 10px;
   /* How much larger the frame around the canvas is drawn: the top bar and the tools. Nudge this one number. */
   --ui: 1.35;
+  /* One type scale, five steps (web-ui-library.md). Each reads the same size on screen wherever it is: a surface drawn larger or
+     smaller than the frame sets --m (app.css). A label is never larger than what it labels. */
+  --t-title: 15.5px;
+  --t-heading: 12.5px;
+  --t-body: 12.5px;
+  --t-small: 10.5px;
+  --t-tiny: 9px;
+  --w-title: 700;
+  --w-heading: 600;
+  --m: var(--ui);
   --top: calc(44px * var(--ui));
   --head: 32px;
   color-scheme: light;
@@ -100,7 +110,17 @@
   --box: #202226;
   --box-edge: #ffffff40;
   --box-shade: #0000008c;
-  --check: #2a2c30;
-  --check2: #33353a;
+  --check: #fbfbfb;
+  --check2: #e8e8e8;
   color-scheme: dark;
+}
+
+/* Space: gaps, padding and margins around a box and in what floats over the canvas take these steps, so things sit alike everywhere. */
+:root {
+  --s1: 2px;
+  --s2: 4px;
+  --s3: 6px;
+  --s4: 8px;
+  --s5: 12px;
+  --s6: 16px;
 }

@@ -4,7 +4,7 @@
 // wrong hash, a climb out, a file that's no module and a foreign origin get nothing. A release: Calcifer on a Hub this cell stands up, as
 // door.sh stands up a hostile holder: not installed, it doesn't load; installed, it loads under the wheel's digest; a Hub whose file isn't what
 // it says doesn't load. The Hub's own API is held by every other cell. A pod can't supply a component: door.sh, through a real door.
-//   node package_ui.js <sign-in link from `cozy open --no-open`>
+//   node package_ui.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so no run and no restart; $RESTART, $HUB_RESTART: shell commands that kill this Calcifer and bring it back, the second on the Hub
 // @HUB@ names. Prints what it saw as JSON and exits 1 if anything failed.
@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, boxOf, closeBox, noStall, openBox, until, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -108,8 +108,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
@@ -133,7 +132,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  const documentAnswer = await page.goto(link);
+  const documentAnswer = await signIn(page);
   const pagePolicy = documentAnswer.headers()['content-security-policy'];
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
@@ -162,7 +161,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   };
   const open = async (name) => {
     await openBox(page, name);
-    await box(name).locator('button[aria-label=Render]').waitFor();
+    await (await renderOf(page, name)).waitFor();
   };
   // Behind its More, opened if it isn't. With nothing behind it there's no More, and all of it shows.
   const more = async (name) => {

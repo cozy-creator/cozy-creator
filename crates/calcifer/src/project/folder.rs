@@ -1358,6 +1358,10 @@ impl Folder {
         for (sha256, probed) in &measured {
             if let Some(file) = lock.files.get_mut(sha256) {
                 (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms) = (probed.width, probed.height, probed.fps, probed.frames, probed.alpha, probed.duration_ms);
+                // A video that landed: the page plays its preview on a hover.
+                if file.field() == "video" && file.width > 0 {
+                    super::thumbs::landed(self.dir.join(&file.path), sha256, file.lasts_ms() as f64 / 1000.0);
+                }
             }
         }
         self.rewrite(&self.dir.join(MEASURED), |text| {

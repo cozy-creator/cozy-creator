@@ -3,7 +3,7 @@
 // The film's frames are counted, its `.otio` read back with OpenTimelineIO's own reader. Two different edits make two versions, each with
 // its own clips, and the same edit twice makes one; a version carries on and drags out to its own asset; a clip whose asset is deleted says
 // so on the clip, and a render goes on without it.
-//   node timeline.js <sign-in link from `cozy open --no-open`>
+//   node timeline.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep its
 // screenshots; ffmpeg, ffprobe and uv on PATH. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, until, watchBoxes, pointAt } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, settled, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -41,8 +41,7 @@ function plate(path, color, seconds, hz) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1900, height: 1000 } });
   const page = await context.newPage();
@@ -57,7 +56,7 @@ function plate(path, color, seconds, hz) {
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
   });
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const projectName = `web-timeline-${Date.now()}`;
   await page.goto(`${base}/#/projects`);
@@ -131,10 +130,10 @@ function plate(path, color, seconds, hz) {
     return true;
   };
   // Clips close up with a little overshoot: a person takes hold of what has stopped.
-  const settled = () => page.evaluate(() => Promise.all(document.querySelector('.tl').getAnimations({ subtree: true }).map((held) => held.finished.catch(() => {}))));
+  const closedUp = () => page.evaluate(() => Promise.all(document.querySelector('.tl').getAnimations({ subtree: true }).map((held) => held.finished.catch(() => {}))));
   const strip = async () => {
     await openEdit();
-    await settled();
+    await closedUp();
     return page.locator('.tl-clips').boundingBox();
   };
   let track = await strip();
@@ -156,15 +155,20 @@ function plate(path, color, seconds, hz) {
   check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button:visible').count()) === 0, await card('Edit').innerText());
   await openEdit();
 
-  // Pull an end: the bubble says the timecode, the clips stay snapped.
+  // Pull an end: the bubble says the timecode, the clips stay snapped. What's taken hold of has stopped: the canvas too, which draws in on
+  // the box again when a version picked makes it another size, and moved under a pull it took it nowhere (macOS, 42113601659: `carried_on`).
   const pull = async (name, side, by, off = 0) => {
     // Render ends working on it: its clips are on it again once it's opened.
     await openEdit();
-    await settled();
+    await settled(page);
+    await closedUp();
     const handle = await page.locator(`.tl-clip[data-name="${name}"] .tl-handle.${side}`).boundingBox();
     await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
-    const under = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.className, { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 });
-    if (!`${under}`.includes('tl-handle')) throw new Error(`${name}'s ${side} handle is under ${under}`);
+    const under = await page.evaluate(({ x, y, name, side }) => {
+      const held = document.elementFromPoint(x, y);
+      return held?.closest('.tl-handle') === document.querySelector(`.tl-clip[data-name="${name}"] .tl-handle.${side}`) ? null : `${held?.className}`;
+    }, { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2, name, side });
+    if (under !== null) throw new Error(`${name}'s ${side} handle is under ${under}`);
     await page.mouse.down();
     await page.mouse.move(handle.x + handle.width / 2 + by, handle.y + handle.height / 2 + off, { steps: 5 });
     const bubble = await page.locator('.tl-bubble').textContent();
@@ -222,12 +226,12 @@ function plate(path, color, seconds, hz) {
   check('no_render_to_play', (await edit()).versions === 0, (await edit()).versions);
   await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-edit.png` : undefined });
 
-  // Render: free, with no machine, showing how far it is, and a version like any other.
+  // Render: free, with no machine, showing how far it is on the box it left, and a version like any other.
   const render = async () => {
     await openBox(page, 'Edit');
     await card('Edit').locator('button[aria-label="Render"]').click();
   };
-  await page.evaluate(() => { window.rendering = 0; new MutationObserver(() => { if (document.querySelector('.tl-rendering')) window.rendering += 1; }).observe(document.body, { subtree: true, childList: true, attributes: true }); });
+  await page.evaluate(() => { window.rendering = 0; new MutationObserver(() => { if (document.querySelector('[role="progressbar"][aria-label="Rendering"]')) window.rendering += 1; }).observe(document.body, { subtree: true, childList: true, attributes: true }); });
   await render();
   const landed = (count) => until(`${count} versions`, async () => (await edit()).versions, (n) => n === count, 180_000);
   await landed(1);
@@ -286,22 +290,24 @@ function plate(path, color, seconds, hz) {
   const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
-  // Approved, that version is what the Edit is, and its film follows.
+  // Approved by a double tap, that version is what the Edit is, and its film follows.
   await openBox(page, 'Edit');
-  await card('Edit').locator('.take[aria-label$=" 2"]').click();
-  await card('Edit').locator('button:text-is("Approve")').click();
+  await card('Edit').locator('.take[aria-label$=" 2"]').dblclick();
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));
   await openBox(page, 'Edit');
+  // Approved, it shows its film, and only an Edit has + for its words.
+  check('an_edit_has_its_words', (await card('Edit').locator('.take.add[aria-label="Its words"]').count()) === 1, await card('Edit').innerText());
   // Unapproved, it has no film of what it holds now, so it's cut there and then, and the call answers when that's done: what's counted below is what's asked below.
-  await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Edit').locator('button:text-is("Unapprove")').click()]);
+  // Again on it, unapproved.
+  await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Edit').locator('.take.approved').dblclick()]);
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
   await openEdit();
 
   // Its right click: the film's shape and size, as a render makes them, and a rate that keeps every clip's times.
   const setting = async (label, value) => {
     await openBox(page, 'Edit');
-    await card('Edit').locator('[aria-label="More for this box"]').click();
+    await card('Edit').locator('.nm').click({ button: 'right' });
     await page.selectOption(`.asset-menu select[aria-label="${label}"]`, value);
     await page.keyboard.press('Escape');
   };
@@ -313,7 +319,8 @@ function plate(path, color, seconds, hz) {
   await landed(shaped + 1);
   const size = probe(film, '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0');
   check('menu_shapes_the_film', size === '720,720', size);
-  // By now a render long enough to see: the first, of a few small flat clips, can be over before a read comes back.
+  // By now a render long enough to see: the first, of a few small flat clips, can be over before a read comes back. Rendering leaves the
+  // box, so it's where it stands that says how far: once only an open Edit did, and only the cut an Unapprove makes was seen (42113601659).
   check('progress_shown', (await page.evaluate(() => window.rendering)) > 0);
   const timed = (await edit()).fields.timeline.tracks[0].clips;
   await setting('Frame rate', String(FPS * 2));

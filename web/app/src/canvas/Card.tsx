@@ -4,6 +4,7 @@ import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { machinesQuery, runsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
+import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Run, Snap } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
@@ -12,19 +13,18 @@ import { carriedFile, type ElementNode, type ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
 import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
-import { Media, Thumb, useWalk, WalkedFrames } from "./Media"
+import { Media, Preview, Thumb, usePreview, WalkedFrames } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { FPS, framesIn, timecode } from "./ranges"
-import { aspectOf, faceOf, madeHere, makes, shownOf } from "./shown"
+import { aspectOf, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
 import { noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 import { Asking } from "./Asking"
 
-const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
+const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
 const WIDEST = 1600
-const NARROWEST = 160
 const LOWEST = 90
 /** How wide a picture is asked for while the canvas is drawn in on it. */
 const HERE_THUMB = 960
@@ -40,16 +40,34 @@ function kindOf(view: ElementView): string {
 
 const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
 
-/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. */
+/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. An Edit rendered here says how far it is. */
 function Waiting({ view }: { view: ElementView }) {
   const { client } = useConnection()
   const going = useQuery(runsQuery(client, { status: "in_progress" }, 100))
   const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
+  const rendering = view.asset?.rendering
+  if (rendering !== undefined) {
+    const done = Math.round(rendering * 100)
+    return (
+      <div className="status mak" role="progressbar" aria-label="Rendering" aria-valuenow={done}>
+        Rendering {done}%
+      </div>
+    )
+  }
   const said = view.run?.waiting
   if (said) return <div className="status mak">{said[0].toUpperCase() + said.slice(1)}</div>
   const machine = [...(going.data?.runs ?? []), ...(queued.data?.runs ?? [])].find(settingUp)?.machine
   if (machine) return <div className="status mak">Getting {machine} ready</div>
   return view.queued || view.asked !== undefined ? <div className="status mak">Queued</div> : null
+}
+
+/** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
+function TakeProgress({ view, run }: { view: ElementView; run: number }) {
+  const mine = view.run?.number === run ? view.run : undefined
+  const on = useWaitsOn(mine)
+  if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
+  const fraction = mine?.progress?.done_fraction
+  return <>{fraction === undefined ? "…" : `${Math.round(fraction * 100)}%`}</>
 }
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
@@ -112,35 +130,48 @@ function Pictures({ name }: { name: string }) {
   )
 }
 
-/** A take on the row: a video's frames walk by under the pointer. */
+/** A take on the row: a video's preview plays while the pointer rests on it. */
 function TakeThumb({ main, width }: { main: MainFile; width: number }) {
-  const { at, walk, stop } = useWalk()
+  const { on, hover } = usePreview(main.field === "video")
   return (
-    <span className="take-thumb" onPointerMove={main.field === "video" ? walk : undefined} onPointerLeave={stop}>
+    <span className="take-thumb" {...hover}>
       <Thumb sha256={main.sha256} cardWidth={width} />
-      {at !== null && <WalkedFrames sha256={main.sha256} cardWidth={width} at={at} />}
+      {on && <Preview sha256={main.sha256} />}
     </span>
   )
 }
 
-/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, and held down the pointer slides between them. + at the far left goes back to its words. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
+/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, a double tap approves it or, approved, unapproves it, and held down the pointer slides between them. + first goes to its words: an Edit's, or the next take an image tool writes in the frame. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
 function Takes({ view, name, width }: { view: ElementView; name: string; width: number }) {
   const store = useCanvasStore()
+  const tools = useSignal(store.tools)
   const asset = view.asset!
   const onWords = view.hereWords && !(asset.timeline && !asset.pinned)
-  const shown = onWords ? null : shownOf(view)
+  const watch = watched(view)
+  // Rendered from its words, what's being made is what's looked at.
+  const shown = onWords || watch ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
-  const adds = asset.tool && shownOf(view) && !(asset.timeline && faceOf(view) === "edit")
+  const writes = paints(view, tools)
+  const adds = writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit")
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
+    // Already on them, the caret goes back in.
+    const prompt = view.hereWords ? document.querySelector<HTMLElement>(`.card.here[data-asset="${CSS.escape(name)}"] .in-frame .mention-text`) : null
+    if (writes && prompt) {
+      prompt.focus()
+      window.getSelection()?.selectAllChildren(prompt)
+      window.getSelection()?.collapseToEnd()
+      return
+    }
+    if (writes) return store.writeNext(name)
     store.focusing = name
     store.patch(name, { hereWords: true })
   }
   const pick = (number: number) => {
-    store.view(name, number === asset.version ? undefined : number)
-    if (onWords) store.patch(name, { hereWords: undefined })
+    store.pickTake(name, number)
+    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined })
   }
   return (
     <div
@@ -157,18 +188,28 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       }}
     >
       {adds && (
-        <button type="button" className={`take add ${view.hereWords ? "on" : ""}`} aria-label="Its words" title="Its words" onClick={words}>
-          +
+        <button type="button" className={`take add ${view.hereWords ? "on" : ""}`} aria-label={writes ? "Its next take" : "Its words"} title={writes ? "Write its next take" : "Its words"} onClick={words}>
+          +{writes && <small className="take-new">New · {tools.get(asset.tool ?? "")?.label}</small>}
         </button>
       )}
       {waiting && (
-        <span className="take making" title="Queued">
-          …
+        <span className="take-at">
+          <span className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued">
+            …
+          </span>
+          <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
+            <Icon name="close" />
+          </button>
         </span>
       )}
       {making.map((run) => (
-        <span key={run} className="take making" title={`Run ${run}`}>
-          {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
+        <span key={run} className="take-at">
+          <span className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`}>
+            <TakeProgress view={view} run={run} />
+          </span>
+          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
+            <Icon name="close" />
+          </button>
         </span>
       ))}
       {versions.map((version) => (
@@ -183,6 +224,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             onDragStart={(event) => version.main && takeOut(event, store, name, asset, version)}
             onPointerDown={() => pick(version.number)}
             onClick={() => pick(version.number)}
+            onDoubleClick={() => store.toggleApproved(name, version.number)}
           >
             {version.main && !version.main.absent ? <TakeThumb main={version.main} width={width} /> : null}
             <span className="take-no">{version.number}</span>
@@ -198,28 +240,6 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
         </span>
       ))}
     </div>
-  )
-}
-
-/** The one thing to do with what's being looked at: approve it, or unapprove what's approved. */
-function Approve({ view, name }: { view: ElementView; name: string }) {
-  const store = useCanvasStore()
-  const asset = view.asset
-  if (!asset || (!asset.tool && !asset.prefixes?.length)) return null
-  const shown = shownOf(view)
-  const approved = Boolean(asset.pinned) && (asset.approved === undefined ? view.viewed === undefined : shown?.number === asset.approved)
-  if (approved) {
-    return (
-      <button type="button" className="act nodrag" onClick={() => store.unpin(name)}>
-        Unapprove
-      </button>
-    )
-  }
-  if (shown?.number === undefined) return null
-  return (
-    <button type="button" className="act nodrag" onClick={() => store.pin(name, shown.number!)}>
-      Approve
-    </button>
   )
 }
 
@@ -334,7 +354,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
   const tools = useSignal(store.tools)
   const group = view.asset && fieldsOf(view.asset, tools).find((field) => field.type === "group" && field.members?.some((member) => member.total))
   const total = group?.members?.find((member) => member.total)
-  const rows = group ? rowsIn(view.asset?.fields?.[group.field]) : []
+  const rows = group ? rowsIn(valuesOf(view)[group.field]) : []
   if (total && rows.length) {
     const lasts = (row: Record<string, unknown>) => Number(row[total.field]) || Number(total.default) || 1
     return (
@@ -348,7 +368,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
-  const pieces = piecesOf(view.asset?.fields)
+  const pieces = piecesOf(valuesOf(view))
   if (!pieces.length) return null
   const lasts = pieces.map((piece) => {
     const held = store.get(piece)
@@ -397,7 +417,6 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   if (will) return <div className="status">Will be {will}</div>
   const asset = view.asset
   if (!asset) return null
-  const askable = Boolean(asset.tool)
   if (view.asking) return <Asking name={name} fit={view.asking.fit} />
   if (view.waiting) {
     return (
@@ -423,111 +442,59 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     return <Waiting view={view} />
   }
   if (view.queued || view.asked !== undefined) return <Waiting view={view} />
-  const approvedFace = asset.pinned && faceOf(view) === "media"
-  if (asset.failure && !approvedFace) {
-    const reason = noHash(asset.failure.message).replace(`${asset.name}: `, "")
-    return (
-      <div className="status bad">
-        {reason} {askable && <Act label="Try again" onClick={() => store.run(name)} />}
-        {asset.failure.remedy && <div className="next-line">{noHash(asset.failure.remedy)}</div>}
-        {asset.failure.next?.map((line) => (
-          <div className="next-line" key={line}>
-            {noHash(line)}
-          </div>
-        ))}
-      </div>
-    )
-  }
+  // What's at rest says nothing here: a failure is its toast, and a file that isn't here can be pulled.
   const shown = shownOf(view)
   if (shown?.absent && !shown.machine) return <Pull />
-  if (view.viewed !== undefined) {
-    const version = asset.prefixes?.find((held) => held.number === view.viewed)
-    return (
-      <div className="status">
-        {asset.noun} {view.viewed}
-        {version?.execution_ms ? `, ${took(version.execution_ms)}` : ""} <Act label="Back" onClick={() => store.view(name)} />
-      </div>
-    )
-  }
-  if (asset.standing === "out_of_date") {
-    const changed = asset.changed?.length ? `Out of date: ${asset.changed.join(", ")} changed` : noHash(asset.status)
-    return (
-      <div className="status ood">
-        {changed} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
-      </div>
-    )
-  }
-  if (asset.standing === "missing" && !makes(view)) {
-    return (
-      <div className="status">
-        {noHash(asset.status)} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
-      </div>
-    )
-  }
   return null
 }
 
-/** What this asset is, in words of its own, whichever way it was made. It reaches what mentions it. It opens on a click, so a small picture isn't crowded; a caption opens it too, and writes itself like anything typed. */
-function Description({ name, view }: { name: string; view: ElementView }) {
+/** What this asset is, in words of its own: it reaches what mentions it. Always open, under its label. */
+function Description({ name, view, rule }: { name: string; view: ElementView; rule: boolean }) {
   const store = useCanvasStore()
-  const [open, setOpen] = useState(false)
   const held = store.valueOf(name, "description")
-  const text = typeof held === "string" ? held : ""
-  const typed = view.drafts !== undefined && "description" in view.drafts
   if (!view.asset) return null
-  if (!open && !typed) {
-    const shown = shownOf(view)
-    return (
-      <div className="desc-row">
-        <button type="button" className={`desc-line nodrag ${text ? "" : "empty"}`} title={text || "Say what this is"} onClick={() => setOpen(true)}>
-          {text || "Describe"}
-        </button>
-        {shown && !shown.absent && shown.field !== "audio" && (
-          <button type="button" className={`act nodrag ${view.captioning ? "going" : ""}`} disabled={view.captioning} title="Ask a model what this is" onClick={() => store.caption(name)}>
-            {view.captioning ? "Captioning" : "Caption"}
-          </button>
-        )}
-      </div>
-    )
-  }
   return (
-    <div className="desc-open">
+    <div className="desc-field">
+      {rule && <hr className="here-rule" />}
+      <span className="block-label">Description</span>
       <MentionText
         asset={name}
         place="description"
-        value={text}
-        label="What this is"
+        value={typeof held === "string" ? held : ""}
+        label="Description"
         missing={[]}
-        focus={open}
+        focus={false}
         onDraft={(words) => store.setDraft(name, "description", words)}
-        onSave={() => {
-          if (open) void store.save(name)
-          setOpen(false)
-        }}
+        onSave={() => void store.save(name)}
       />
     </div>
   )
 }
 
-/** The corner, pulled to size a box. A box whose tool has a shape takes it from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. */
+/** The corner, pulled to size a box. Showing no picture, or its words, a box takes its tool's shape from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. Showing a picture, it only scales. */
 function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
   const store = useCanvasStore()
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
-  const control = view.asset && faceOf(view) === "edit" && (!view.here || view.hereWords) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
+  const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const from = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const moved = (event: PointerEvent) => {
     if (!from.current) return
     const zoom = flow.getZoom()
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + (event.clientX - from.current.x) / zoom))
-    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + (event.clientY - from.current.y) / zoom))
+    const dx = (event.clientX - from.current.x) / zoom
+    const dy = (event.clientY - from.current.y) / zoom
+    if (!control) {
+      const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w * Math.max(1 + dx / from.current.w, 1 + dy / from.current.h)))
+      pulled.current = { w, h: w / aspectOf(view) }
+      return store.setWidth(name, w, false)
+    }
+    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + dx))
+    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + dy))
     pulled.current = { w, h }
-    if (control) {
-      store.drawShape(name, w, h)
-      setNearest(snapped(w / h, shapesOf(control)))
-    } else store.setWidth(name, w, false)
+    store.drawShape(name, w, h)
+    setNearest(snapped(w / h, shapesOf(control)))
   }
   const done = () => {
     if (!from.current) return
@@ -535,10 +502,11 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
     const size = pulled.current
     pulled.current = null
     setNearest(null)
-    if (store.inPlace) store.inPlace.pulled = false
-    if (!size) return
-    if (control) store.setShape(name, control.field, size.w, snapped(size.w / size.h, shapesOf(control)))
-    else store.setWidth(name, size.w)
+    if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+    else if (size) store.setWidth(name, size.w)
+    if (!store.inPlace) return
+    store.inPlace.pulled = false
+    requestAnimationFrame(() => store.fitHere(true))
   }
   return (
     <>
@@ -567,12 +535,33 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   )
 }
 
+/** The shape a box makes, by its corner: the one set, else Auto. Open, the one set has an × that takes it back to Auto. Being pulled, the middle says it. */
+function ShapeLine({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  const field = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
+  if (!field || view.shape) return null
+  const held = store.valueOf(name, field.field)
+  if (typeof held !== "string" || !held) return <span className="ratio-rest">Auto</span>
+  return (
+    <span className="ratio-rest">
+      {held}
+      {view.here && (
+        <button type="button" className="ratio-clear nodrag" aria-label="Auto shape" title="Back to its auto shape" onClick={() => store.unshape(name, field.field)}>
+          <Icon name="close" />
+        </button>
+      )}
+    </span>
+  )
+}
+
 const CardBody = memo(function CardBody({ name, width }: { name: string; width: number }) {
   const store = useCanvasStore()
   const view = useElement(name)
   const here = Boolean(view?.here)
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
+  const tools = useSignal(store.tools)
   const naming = useCallback(() => store.openName(name), [store, name])
   const pressedAt = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
@@ -608,9 +597,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const face = faceOf(view)
   const canFlip = makes(view)
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
-  const editing = here && (asset?.timeline ? face === "edit" : Boolean(view.hereWords))
+  const editing = here && (asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
+  const looking = here && !view.hereWords && paints(view, tools)
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
-  const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
+  // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
+  const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
   return (
     <div
       ref={self}
@@ -654,20 +645,6 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             !
           </button>
         ) : null}
-        {here && (
-          <button
-            type="button"
-            className="iconb nodrag"
-            aria-label="More for this box"
-            title="More"
-            onClick={(event) => {
-              const at = event.currentTarget.getBoundingClientRect()
-              store.menu.set({ name, x: at.left, y: at.bottom, full: true })
-            }}
-          >
-            ⋯
-          </button>
-        )}
         {here ? (
           <button type="button" className="iconb nodrag" aria-label="Close" title="Close" onClick={store.leaveHere}>
             <Icon name="close" />
@@ -696,6 +673,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
+      {!lite && asset && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
         <div className="rest-waiting">
           <Waiting view={view} />
@@ -706,28 +685,24 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
+      {here && asset && asset.kind !== "text" && !asset.timeline && (
+        <div className="here-side nodrag nopan nowheel">
+          <Takes view={view} name={name} width={width} />
+        </div>
+      )}
       {here && asset && asset.kind !== "text" && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
-            <Takes view={view} name={name} width={width} />
+            {asset.timeline && <Takes view={view} name={name} width={width} />}
             {asset.timeline && editing && <Pictures name={name} />}
             {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
             {!editing && <Bar view={view} name={name} />}
-            <AssetEdit
-              name={name}
-              view={view}
-              editing={editing}
-              actions={
-                <>
-                  {editing && <RenderButton name={name} view={view} />}
-                  {(!view.hereWords || asset.timeline) && <Approve view={view} name={name} />}
-                  <Stack name={name} />
-                </>
-              }
-            >
-              {editing && <Description name={name} view={view} />}
-            </AssetEdit>
-            {!editing && <Description name={name} view={view} />}
+            {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
+            {!looking && (
+              <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />
+            )}
+            {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
+            {!(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
             {view.warned && warned ? (
               <div className="warned-lines">
                 {view.warnings!.map((warning) => (
@@ -735,7 +710,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
                 ))}
               </div>
             ) : null}
-            <Status view={view} name={name} />
+            {!looking && <Status view={view} name={name} />}
           </div>
         </div>
       )}

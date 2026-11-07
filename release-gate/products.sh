@@ -1,6 +1,7 @@
 # The first-party packages' cells, sourced by suites runtime and packages: one function per package, its default call
-# with a scenario prompt and its own seed. A cell that takes another's output (SeedVR2 H3's clip, BiRefNet and the
-# describer Klein's image, Qwen-Image's edits its render) falls back to the gate's reference when that one did not run.
+# with a scenario prompt and its own seed. A cell that takes another's output (SeedVR2 H3's clip, BiRefNet Klein's image,
+# Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
+# checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
 PRODUCTS=(minimax-h3 seedvr2 sdxl flux-3-klein qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
   flux-2 ideogram-4 krea-2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
@@ -26,9 +27,10 @@ av() {
 }
 # refs <cell> <package> <function> <seed>: two named pictures and their mentions (xs-135, xs-139): Klein's character
 # (else the gate's reference) placed in the gate's reference scene. The output shows the character in that scene.
-refs() {
-  cell "$1" "$(pkg "$2" "$3")" seed:=$4 prompt="<Hero> stands on the rocks below <Lighthouse>, in its light and weather" \
-    pictures:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+refs() {  # refs <cell> <package> <function> <seed> [more args]
+  local name=$1 package=$2 fn=$3 seed=$4; shift 4
+  cell "$name" "$(pkg "$package" "$fn")" seed:=$seed prompt="<Hero> stands on the rocks below <Lighthouse>, in its light and weather" \
+    pictures:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]" "$@"
 }
 product_minimax_h3() {
   # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it. The
@@ -78,8 +80,9 @@ product_flux_3_klein() {
   refs klein-refs flux-3-klein generate_turbo $((R + 19))
 }
 product_qwen_image_2() {
-  cell qwen "$(pkg qwen-image-2 generate)" seed:=$((R + 5)) prompt="This is an RGBA image with transparency. $OBJECT, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
-  refs qwen-refs qwen-image-2 generate_turbo $((R + 20))
+  # 1 MP in both cells: 0.6.0 defaults to 2 MP (Paul's ruling) where 0.5.0 rendered 1024x1024; the comparison is like for like.
+  cell qwen "$(pkg qwen-image-2 generate)" seed:=$((R + 5)) megapixels:=1 prompt="This is an RGBA image with transparency. $OBJECT, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
+  refs qwen-refs qwen-image-2 generate_turbo $((R + 20)) megapixels:=1
   qwen_lora
 }
 # A published Qwen-Image 2.1 LoRA in ComfyUI's names (AI-Toolkit's camera angles, whose MLP adapts ComfyUI's fused
@@ -109,7 +112,7 @@ qwen_lora() {
 product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best quality, anime illustration of $CHAR" seed:=$((R + 6)); }
 product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --file image="${K:-$REF}"; }
 product_qwen3_5() {
-  cell describer "$(pkg qwen3.5 ask)" prompt="Describe this character: appearance, clothing and pose." --file images="${K:-$REF}"
+  cell describer "$(pkg qwen3.5 ask)" prompt="Describe this character: appearance, clothing and pose." --file images="$HERE/ref/seed.jpg"
 }
 # Fibo's prompt upsampler (a greedy VLM) runs, as by default.
 product_fibo_2() {

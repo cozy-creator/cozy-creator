@@ -92,7 +92,8 @@ export interface Box {
 }
 
 const GAP_X = 64
-const GAP_Y = 32
+/** Under the room each box keeps for what hangs off it (CanvasStore's `laid`). */
+const GAP_Y = 16
 const overlaps = (a: Box, b: Box) => a.x < b.x + b.w + GAP_X / 2 && b.x < a.x + a.w + GAP_X / 2 && a.y < b.y + b.h + GAP_Y && b.y < a.y + a.h + GAP_Y
 
 /**

@@ -1,4 +1,4 @@
-import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { type CSSProperties, type DragEvent, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import type { Field, Media, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
@@ -8,7 +8,7 @@ import { addOnsOf } from "./checkpoints"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { baseOf, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
@@ -68,6 +68,10 @@ interface Drawn {
   focus?: boolean
   /** Its name is beside it: under More, or in a block. */
   named?: boolean
+  /** A field of the box's own face, under its label. */
+  block?: boolean
+  /** In the frame, over the pictures it mentions: none of them small under it. */
+  framed?: boolean
 }
 
 /** Its reset, when it isn't at its default: unset takes its key out of the file. */
@@ -81,7 +85,7 @@ function Reset({ field, bound }: { field: Field; bound: Bound }) {
 }
 
 /** Words, or a prompt: chips for what it mentions, and what a prompt can't send is marked, never sent. */
-function TextField({ name, field, bound, view, place, label, focus, named }: Drawn) {
+function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
   const text = (
     <MentionText
       asset={name}
@@ -92,15 +96,23 @@ function TextField({ name, field, bound, view, place, label, focus, named }: Dra
       missing={view.asset?.missing ?? []}
       takes={field.type === "words" ? WORDS_ONLY : field.takes}
       focus={focus}
+      thumbs={!framed}
       onDraft={bound.draft}
       onSave={bound.save}
     />
   )
-  if (!named) return text
+  if (named)
+    return (
+      <div className="slide text-row">
+        <span className="ctl-name">{field.label}</span>
+        <div className="text-box">{text}</div>
+      </div>
+    )
+  if (!block) return text
   return (
-    <div className="slide text-row">
-      <span className="ctl-name">{field.label}</span>
-      <div className="text-box">{text}</div>
+    <div className="field-block">
+      <span className="block-label">{field.label}</span>
+      {text}
     </div>
   )
 }
@@ -240,22 +252,6 @@ function ChoiceField(props: Drawn) {
       </select>
       <Reset field={field} bound={bound} />
     </label>
-  )
-}
-
-/** The box's own shape, set by its corner: here only what it is, and Auto. */
-function ShapeField({ field, bound }: Drawn) {
-  const held = typeof bound.value === "string" ? bound.value : null
-  return (
-    <div className="slide">
-      <span className="ctl-name">{field.label}</span>
-      <span className="num">{held ?? "Auto"}</span>
-      {held && (
-        <button type="button" className="reset nodrag" aria-label={`${field.label}: Auto`} title="Auto: the tool chooses" onClick={bound.unset}>
-          Auto
-        </button>
-      )}
-    </div>
   )
 }
 
@@ -590,8 +586,6 @@ export function FieldControl(props: Drawn & { siblings?: Row }) {
       return <NumberField {...props} />
     case "choice":
       return <ChoiceField {...props} />
-    case "shape":
-      return <ShapeField {...props} />
     case "toggle":
       return <ToggleField {...props} />
     case "slot":
@@ -603,10 +597,10 @@ export function FieldControl(props: Drawn & { siblings?: Row }) {
   }
 }
 
-/** A field of the box itself. */
-export function ControlRow({ name, field, view, focus, named }: { name: string; field: Field; view: ElementView; focus: boolean; named: boolean }) {
+/** A field of the box itself: on its face under its label, beside its name under More, or in the frame. */
+export function ControlRow({ name, field, view, focus, named, framed }: { name: string; field: Field; view: ElementView; focus: boolean; named: boolean; framed?: boolean }) {
   const store = useCanvasStore()
-  return <FieldControl name={name} field={field} bound={topBound(store, name, field.field)} view={view} place={field.field} label={field.label} focus={focus} named={named} />
+  return <FieldControl name={name} field={field} bound={topBound(store, name, field.field)} view={view} place={field.field} label={field.label} focus={focus} named={named} block={!framed} framed={framed} />
 }
 
 /** A text asset: only its words, which whatever mentions it reads. It has nothing to render, no takes and nothing to approve. */
@@ -650,24 +644,14 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   const store = useCanvasStore()
   // An Edit's film is only a moment's work here, and has no run to cancel.
   if (view.asset?.rendering !== undefined) return null
-  if (view.asset?.standing === "making") {
-    return (
-      <button type="button" className="act nodrag" onClick={() => store.cancelRender(name)}>
-        Cancel
-      </button>
-    )
-  }
+  // Render while it's making queues one more: each take in the row has its own ×.
   return (
     <button
       type="button"
       className="run nodrag"
       aria-label="Render"
       title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
-      onClick={() => {
-        // Left first, so what a render asks of the page stands. With a conflict nothing goes, and it stays to be seen.
-        if (!view.conflict) store.leaveHere()
-        store.run(name)
-      }}
+      onClick={() => store.run(name)}
     >
       <Icon name="play" />
       Render
@@ -688,7 +672,25 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
   if (!field) return null
   return (
     <div className="in-frame">
-      <ControlRow name={name} field={field} view={view} focus={store.focusing === name} named={false} />
+      <Ghosts name={name} view={view} />
+      <ControlRow name={name} field={field} view={view} focus={store.focusing === name} named={false} framed />
+    </div>
+  )
+}
+
+/** Behind its words, faded, the pictures they mention: one fills the frame, up to four tile it 2×2, up to nine 3×3. */
+function Ghosts({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  useSignal(store.names)
+  useSignal(store.tools)
+  const pictures = view.asset ? store.mentionedPictures(name) : []
+  if (!pictures.length) return null
+  const side = Math.ceil(Math.sqrt(pictures.length))
+  return (
+    <div className="ghosts" style={{ "--side": side } as CSSProperties} aria-hidden>
+      {pictures.map((sha256) => (
+        <Thumb key={sha256} sha256={sha256} cardWidth={960 / side} />
+      ))}
     </div>
   )
 }
@@ -710,7 +712,7 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 const small = (field: Field) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
 /** What a box asks and holds, under it. On its face: prompts, groups, what a render can't go without, a filled slot, and Render. Everything else is under More, expert settings in its Advanced. On a take: what's done with that. */
-export function AssetEdit({ name, view, editing, actions, children }: { name: string; view: ElementView; editing: boolean; actions: ReactNode; children: ReactNode }) {
+export function AssetEdit({ name, view, editing, head, actions, children }: { name: string; view: ElementView; editing: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const [advanced, setAdvanced] = useState(false)
@@ -719,45 +721,36 @@ export function AssetEdit({ name, view, editing, actions, children }: { name: st
   const fields = makes(view) ? fieldsOf(view.asset, tools) : []
   const inFrame = framed(view, fields, tool)
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
-  const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline")
+  // The box's own shape is its shape: its corner sets it.
+  const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline" && field.type !== "shape")
   const faced = editing ? rest.filter((field) => onFace(field, store.valueOf(name, field.field))) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
   const expert = folded.filter((field) => field.advanced)
-  const described = store.valueOf(name, "description")
-  const marksOf = (drawn: boolean) => [
-    ...(drawn ? folded.flatMap((field) => markOf(field, store.valueOf(name, field.field)) ?? []) : []),
-    ...beyond.map(([field]) => fieldWords(field)),
-    ...(typeof described === "string" && described ? ["Description"] : []),
-  ]
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
-  // A caption is typed into its field, and shows until it's kept or dropped.
-  const typing = view.drafts !== undefined && "description" in view.drafts
   const row = (field: Field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
   return (
     <div className="edit-face">
+      {head && <div className="tool-head">{head}</div>}
       <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
-          // A package's whole face holds what would be behind More, so nothing's hidden there.
-          const marks = marksOf(more !== null)
           const behind = (more !== null && folded.length > 0) || addOns || beyond.length > 0
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
               <div className="row actions">
-                {actions}
                 {more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
+                {actions}
                 {behind && (
-                  <button type="button" className="more-toggle nodrag" aria-expanded={open} title={marks.join(", ") || undefined} onClick={() => store.setMore(name, !open)}>
-                    {!open && marks.length > 0 && <span className="more-marks">{marks.join(", ")}</span>}
+                  <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}>
                     <span className="more-word">{open ? "Less" : "More"}</span>
                   </button>
                 )}
               </div>
               {behind ? (
-                (open || typing) && (
+                open && (
                   <div className="edit-more">
                     {open && more}
                     {open && more !== null && expert.length > 0 && (

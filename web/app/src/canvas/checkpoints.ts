@@ -25,7 +25,6 @@ export interface AddOn {
   strength: number
 }
 
-
 /** What a checkpoint can go on in what a tool runs. One for now. */
 export const modelsOf = (tool: Tool | undefined) => (tool?.model ? [tool.model] : [])
 

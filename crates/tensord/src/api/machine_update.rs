@@ -24,7 +24,7 @@ pub(super) fn owns(
     if let Some(runs) = backend.runs() {
         let actor = crate::machine_api::actor_id(actor);
         // Another signer's machine-wide update never shadows this actor's own run.
-        match runs.service.engine.get_public(&actor, id) {
+        match runs.service.engine.get_public(Some(&actor), id) {
             Ok(_) => return Ok(false),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(Error::internal("journal_unreadable", error.to_string())),
@@ -55,6 +55,8 @@ struct Cohort {
     cozy: Option<String>,
     /// The most memory each GPU offers, in bytes; 0 lifts it (`--gpu-memory-limit`).
     gpu_memory_limit: Option<u64>,
+    /// Categorical sharing policy, applied by the same drain/restart as other machine settings.
+    mode: Option<protocol::config::MachineMode>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
 }
@@ -277,6 +279,7 @@ fn stage(
         tensorfs: Member::choice(cohort.tensorfs, "tensorfs", "tensorfs", |v| choose("tensorfs", "", v))?,
         cozy: cohort.cozy,
         gpu_memory_limit: limit,
+        mode: cohort.mode,
         binary,
         toolchain,
         notes,
@@ -338,6 +341,7 @@ pub(super) fn state(id: &str, update: &Update) -> v1::RunState {
             None => update.waits(),
         },
         waiting_for: update.waiting_on.clone(),
+        ..Default::default()
     }
 }
 

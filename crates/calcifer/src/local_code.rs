@@ -1126,7 +1126,7 @@ fn stamp_of(path: &Path) -> Result<String, Error> {
 /// The Runtime the machine `on` last said it runs, asking it nothing: no machine starts for a read.
 fn last_runtime(api: &Api, on: &On) -> Option<String> {
     let On::Machine(name) = on else { return None };
-    let row = api.machines.here(name).ok()??;
+    let row = api.machines.named(name).ok()??;
     let status = api.machines.picture(&row).ok()?.status?;
     Some(status.runtime).filter(|runtime| !runtime.is_empty())
 }

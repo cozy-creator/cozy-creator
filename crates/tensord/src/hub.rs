@@ -367,7 +367,7 @@ impl Capability {
                 // A run by its caller's id, as its signer named it.
                 runs.retain(|id| {
                     accepting.contains(id)
-                        || engine.as_ref().is_some_and(|engine| engine.get_public(&self.actor, id).is_ok_and(|run| !run.state.terminal()))
+                        || engine.as_ref().is_some_and(|engine| engine.get_public(Some(&self.actor), id).is_ok_and(|run| !run.state.terminal()))
                 });
                 if served.runs.is_empty() {
                     served.renewing = false;

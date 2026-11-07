@@ -1,13 +1,13 @@
-// Windows: a save past a file another program holds longer than Calcifer waits. What the person did stays done, a note says what's in the
+// Windows: a save past a file another program holds longer than Calcifer waits. What the person did stays done, the top bar says what's in the
 // way, nothing is written while it's held, and it's saved when it's let go, with no reload and nothing pressed again.
-//   node held.js <sign-in link from `cozy open --no-open`>
+//   node held.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $HELD_FOLDER, $HELD_ID: a project of two Edits, `stays` and `goes`.
 // Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, until } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -18,8 +18,7 @@ function check(name, ok, detail) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const [folder, id] = [process.env.HELD_FOLDER, process.env.HELD_ID];
   seen.project = { id, folder };
   const yamlAt = join(folder, 'project.yaml');
@@ -30,7 +29,7 @@ function check(name, ok, detail) {
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/#/projects/${encodeURIComponent(id)}`);
   await boxOf(page, 'goes').waitFor();
@@ -49,7 +48,7 @@ function check(name, ok, detail) {
   await shut.locator('.head [aria-label=Delete]').click();
   await until('gone from the canvas', () => page.locator('.react-flow__node .card[data-asset="goes"]').count(), (n) => n === 0);
   check('shown_at_once', true);
-  const note = page.locator('.note:has-text("project.yaml is open in another program")');
+  const note = page.locator('.top .pill:has-text("project.yaml is open in another program")');
   await note.waitFor();
   check('says_what_holds_it', true);
   check('not_written_while_held', yaml().includes('goes:'), yaml());

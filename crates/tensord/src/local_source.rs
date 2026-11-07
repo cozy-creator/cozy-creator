@@ -254,10 +254,10 @@ impl LocalSources {
 
     /// The identity of the environment a live manifest runs in (`env-<identity[..16]>`): one per
     /// lock, project metadata, local path dependencies, carried wheels and this machine's
-    /// interpreter, SDK pair and client, and per path read in place: its editable install names that
-    /// path, so the same package at another path is another environment. Remote environments live
-    /// beside their immutable source; direct paths remain live.
-    fn environment(&self, manifest: &Manifest) -> String {
+    /// interpreter, the SDK pair it takes (`Publisher::pair_key`) and client, and per path read in
+    /// place: its editable install names that path, so the same package at another path is another
+    /// environment. Remote environments live beside their immutable source; direct paths remain live.
+    fn environment(&self, manifest: &Manifest, locked: Option<&published::Locked>) -> String {
         let own = manifest.own();
         let held = |name: &str| {
             let path = format!("{own}{name}");
@@ -268,8 +268,7 @@ impl LocalSources {
         let key = serde_json::json!({
             "lock": held("uv.lock"), "project": held("pyproject.toml"), "beside": beside, "wheels": carried,
             "path": manifest.path, "own": manifest.project,
-            "indexes": manifest.indexes, "sdk": self.publisher.sdk.requirements,
-            "links": self.publisher.sdk.find_links, "python": self.publisher.sdk.python,
+            "indexes": manifest.indexes, "pair": self.publisher.pair_key(locked), "python": self.publisher.sdk.python,
             "torch": self.publisher.torch_pins(None),
         });
         sha256::hex_digest(key.to_string().as_bytes())
@@ -352,11 +351,16 @@ impl LocalSources {
         }
         // This machine's PyTorch first (its own, the first time): the environment is keyed on it.
         self.publisher.layer(job, None).map_err(failed)?;
-        let built_from = self.environment(&manifest);
+        let pyproject = fs::read_to_string(project.join("pyproject.toml"))?;
+        let locked = match fs::read_to_string(project.join("uv.lock")) {
+            Ok(lock) => Some(published::read_lock(&pyproject, &lock, None).map_err(failed)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let built_from = self.environment(&manifest, locked.as_ref());
         let environment = home.join(format!("env-{}", &built_from[..16]));
         let ready = environment.join(".ready");
         let label = format!("{} {}", manifest.package, manifest.release);
-        let pyproject = fs::read_to_string(project.join("pyproject.toml"))?;
         // Reused, it is in use again: reclaim drops only an environment no generation names that
         // has been left alone a while (`reclaim::IDLE`).
         let _ = platform::durable::set_times(&environment, fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
@@ -376,11 +380,6 @@ impl LocalSources {
                 let object = written_member(&self.objects, actor, wheel)?;
                 fs::copy(self.cas.path(&object)?, carried.join(&wheel.name))?;
             }
-            let locked = match fs::read_to_string(project.join("uv.lock")) {
-                Ok(lock) => Some(published::read_lock(&pyproject, &lock, None).map_err(failed)?),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.into()),
-            };
             let built = published::patiently(job, || self.publisher.build(&environment, &environment::Project {
                 dir: &project,
                 python: &self.publisher.sdk.python,
@@ -389,6 +388,7 @@ impl LocalSources {
                 skip: &[],
                 editable: true,
                 indexes: &manifest.indexes,
+                package: &manifest.package,
                 label: &label,
                 stage: &stage,
                 fetch: None,

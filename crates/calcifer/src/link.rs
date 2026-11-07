@@ -154,6 +154,11 @@ impl Link {
         Ok(Box::pin(self.machine.events(id, after).await?.map_err(LinkError::from)))
     }
 
+    /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
+    pub async fn runs(&self, before: u64, limit: u32) -> Result<v1::RunList, LinkError> {
+        Ok(self.machine.runs(before, limit).await?)
+    }
+
     /// Attaches to the run: its state, and its events after `after`. `NoRun` when the machine
     /// never received it.
     pub async fn attach(

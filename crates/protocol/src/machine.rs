@@ -19,7 +19,7 @@ pub mod path {
     pub const RELEASE: &str = "/v1/release";
     /// Any method: forwarded to the machine's own Calcifer, whose answer this is.
     pub const CALCIFER: &str = "/v1/calcifer/{*path}";
-    /// `POST` a [`super::RunRequest`].
+    /// `POST` a [`super::RunRequest`]; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
     /// `GET`: SSE of the run's [`super::RunEvent`]s after `Last-Event-ID`.
     pub const EVENTS: &str = "/v1/runs/{id}/events";
@@ -526,6 +526,20 @@ pub struct RunState {
     /// When it began executing (`running`), Unix ms: its time counts from here, never its queue's.
     /// 0 before it does.
     pub started_at_ms: u64,
+    /// What it runs, `<package>/<function>`; empty for an update.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    /// When the machine accepted it and when it ended, Unix ms; 0 until then.
+    pub accepted_at_ms: u64,
+    pub finished_at_ms: u64,
+}
+
+/// `GET /v1/runs`: the runs the caller reads, newest first; on a rental its owner reads every
+/// one, whichever of its clients sent it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunList {
+    pub runs: Vec<RunState>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -768,6 +782,33 @@ pub struct StatusFrame {
     /// held until it exits.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stuck: Vec<StuckProcess>,
+    /// What it does for the caller's runs besides their own work, each once however many wait on it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<Operation>,
+}
+
+/// Weights arriving or a package's environment built for runs: one per repository or package, whichever runs wait on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Operation {
+    /// The same for as long as it lasts: its kind and subject.
+    pub id: String,
+    /// `download` or `install`.
+    pub kind: String,
+    /// The model's repository (or provider source), or the package.
+    pub subject: String,
+    /// Where it is, in words; empty when only its bytes say.
+    pub stage: String,
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// What of it was here already (shared with another model, or pulled before).
+    pub bytes_here: u64,
+    /// Its bytes a second over its last 10 s, once a second of them is seen.
+    pub bytes_per_s: f64,
+    pub started_at_unix_ms: i64,
+    /// The runs waiting on it, by the caller's ids.
+    pub runs: Vec<String>,
 }
 
 /// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
@@ -938,7 +979,8 @@ pub struct Environment {
     pub runtime: String,
     /// What it holds now (as [`WarmItem::holds`]), in a warm set or not.
     pub level: String,
-    /// Why it does not run the machine's own Runtime; empty when it does.
+    /// What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
+    /// and why); empty for nothing.
     pub warning: String,
     /// The Hub origin a published installation came from; empty for local code.
     pub hub: String,

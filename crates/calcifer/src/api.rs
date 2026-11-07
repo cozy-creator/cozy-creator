@@ -15,16 +15,16 @@ use axum::{
     middleware::{self, Next},
     response::{
         IntoResponse, Response,
-        sse::{self, KeepAlive, Sse},
+        sse::{self, KeepAlive, KeepAliveStream, Sse},
     },
     routing::{any, delete, get, post, put},
 };
 use protocol::{
-    calcifer::{CalciferStatus, Down, Event, Run, RunList, Status},
+    calcifer::{CalciferStatus, Down, Event, MachineKind, MachineState, Run, RunList, Status},
     error::{Envelope, Error, Kind},
     ids::RunId,
 };
-use futures_util::Stream;
+use futures_util::{StreamExt as _, stream::BoxStream};
 use serde::{Deserialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{RwLock, broadcast, watch};
@@ -475,18 +475,19 @@ async fn list(
 ) -> Result<Json<RunList>, Refusal> {
     let Query(listing) = query?;
     let store = api.calcifer.store();
-    let machine = match listing.machine {
-        Some(text) => Some(match api.machines.here(&text).map_err(Refusal)? {
-            Some(row) => row.name,
+    let named = match &listing.machine {
+        Some(text) => match api.machines.named(text).map_err(Refusal)? {
+            Some(row) => Some(row),
             // Its runs are listed while it is off.
-            None if text.eq_ignore_ascii_case("local") => "local".to_owned(),
-            None => return Err(Refusal(machines::not_found(&text))),
-        }),
+            None if text.eq_ignore_ascii_case("local") => None,
+            None => return Err(Refusal(machines::not_found(text))),
+        },
         None => None,
     };
+    let machine = (named.as_ref().map(|row| row.name.clone())).or_else(|| listing.machine.as_ref().map(|_| "local".to_owned()));
     let (rows, older, mut unreadable) = store.runs(&RunFilter {
         status: listing.status,
-        target: listing.package,
+        target: listing.package.clone(),
         machine: machine.clone(),
         out_dir: match listing.project.as_deref() {
             Some(named) => crate::project::named(&api, named).map_err(Refusal)?.as_deref().map(crate::project::landed_in),
@@ -505,11 +506,22 @@ async fn list(
     if let Some(first) = unreadable.first() {
         warn!("{} runs left out of a list, the first {first}", unreadable.len());
     }
+    // A rental's runs other clients of this account sent, on its first page.
+    let mut others = vec![];
+    if let Some(row) = named.filter(|row| row.kind == MachineKind::Rental && row.state == MachineState::Ready && listing.before.is_none()) {
+        match crate::others::listed(&api, &row).await {
+            Ok(listed) => others = listed,
+            Err(e) => unreadable.push(format!("{}'s runs other clients sent: {}", row.name, e.message)),
+        }
+        let package = listing.package.as_deref().unwrap_or_default();
+        others.retain(|run| listing.status.is_none_or(|status| run.status == status) && run.target.starts_with(package));
+    }
     Ok(Json(RunList {
         runs,
         older,
         machine,
         unreadable,
+        others,
     }))
 }
 
@@ -524,6 +536,9 @@ async fn show(
     Path(key): Path<String>,
     query: Result<Query<Detail>, QueryRejection>,
 ) -> Result<Json<Run>, Refusal> {
+    if let Some((machine, number)) = crate::others::named(&key) {
+        return Ok(Json(crate::others::show(&api, machine, number).await.map_err(Refusal)?));
+    }
     let row = find(&api, &key)?;
     if query?.0.detail.as_deref() != Some("full") {
         return Ok(Json(api.calcifer.record(&row)?));
@@ -542,6 +557,9 @@ async fn cancel(
     State(api): State<Arc<Api>>,
     Path(key): Path<String>,
 ) -> Result<(StatusCode, Json<Run>), Refusal> {
+    if crate::others::named(&key).is_some() {
+        return Err(refuse(Kind::Conflict, "run_sent_elsewhere", format!("run {key} was sent by another client of this account: it is canceled from there")));
+    }
     let row = find(&api, &key)?;
     if row.state == RunState::Settled {
         return Ok((StatusCode::OK, Json(api.calcifer.record(&row)?)));
@@ -596,10 +614,14 @@ async fn events(
     Path(key): Path<String>,
     headers: axum::http::HeaderMap,
     query: Result<Query<Resume>, QueryRejection>,
-) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, Refusal> {
+) -> Result<Sse<KeepAliveStream<BoxStream<'static, Result<sse::Event, Infallible>>>>, Refusal> {
     let Query(Resume { starting_after }) = query?;
     let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
     let starting_after = starting_after.max(last.unwrap_or(0));
+    if let Some((machine, number)) = crate::others::named(&key) {
+        let events = crate::others::events(&api, machine, number, starting_after).await.map_err(Refusal)?;
+        return Ok(Sse::new(events.take_until(api.stopped()).boxed()).keep_alive(KeepAlive::default()));
+    }
     // Subscribed first: whatever happens after the store is read is in the tail.
     let tail = api.calcifer.subscribe();
     let row = find(&api, &key)?;
@@ -619,7 +641,7 @@ async fn events(
         calcifer: api.calcifer.clone(),
     };
     let stream = futures_util::stream::unfold(follow, Follow::next);
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    Ok(Sse::new(stream.boxed()).keep_alive(KeepAlive::default()))
 }
 
 /// One SSE subscriber's place in its run's stream.

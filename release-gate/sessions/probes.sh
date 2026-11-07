@@ -17,8 +17,9 @@ for tool in jq node npm curl python3 sudo ss iptables tc; do command -v "$tool" 
 [ -f ~/.ssh/id_ed25519.pub ] || { mkdir -p ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519; } || fail "no SSH key"
 RENT_ARGS=--ssh
 
-# What this runner's Calcifer recorded is this session's, so a lost answer's order is ended too.
-own() { machines_json | jq -r '.machines[] | select(.kind == "rental" and .recorded and .state != "ended") | .rental_id // .name'; }
+# What this runner's Calcifer ordered is this session's (another client's rentals read `ordered: false`), so a lost answer's order is
+# ended too.
+own() { machines_json | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
 claim() {
   local r
   for r in $(own); do

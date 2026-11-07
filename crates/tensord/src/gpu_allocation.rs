@@ -21,7 +21,7 @@ pub(crate) type Claims = [Option<u64>];
 pub(crate) struct Allocations {
     table: Mutex<Table>,
     /// Dispatch's wake, run once the table is unlocked after every change that can let a waiting
-    /// call place: a call slot, lane or root ended, or pressure changed. A pass that found a GPU
+    /// call place: a call slot, lane or root ended. A pass that found a GPU
     /// busy is always followed by one that sees it free.
     wake: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
@@ -31,9 +31,6 @@ struct Table {
 }
 #[derive(Default)]
 struct Gpu {
-    /// Another program's memory demand holds machine warming until it recedes. Requests still
-    /// run: they stream in the room left (design/vram-yield.md), never parked behind a game.
-    external_pressure: bool,
     /// The root whose lane this GPU is.
     root: Option<u64>,
     /// Calls running there, all of one family.
@@ -67,8 +64,6 @@ pub(crate) enum Blocker {
     Request { seq: u64, hint: bool },
     /// Machine work of no request: warming, or an idle executor ending.
     Machine,
-    /// Memory another process uses on the GPU.
-    Pressure,
 }
 /// What a released root's executor holds: none of its lane, until its next step binds one.
 pub(crate) struct Hold {
@@ -108,7 +103,6 @@ impl Table {
                     gpu.running == Some(seq) && gpu.hints > 0 && gpu.hints == gpu.calling
                 }),
             },
-            None if lane.clone().any(|d| self.gpus[d].external_pressure) => Blocker::Pressure,
             None => Blocker::Machine,
         }
     }
@@ -143,10 +137,6 @@ impl Allocations {
     }
     fn freed(&self) {
         if let Some(wake) = self.wake.get() { wake() }
-    }
-    pub(crate) fn pressure(&self, device: usize, blocked: bool) {
-        self.table.lock().unwrap().gpus[device].external_pressure = blocked;
-        self.freed();
     }
     /// `root` holds an allocation `width` GPUs wide, unbound until its first step, for as long
     /// as the hold lives.
@@ -278,9 +268,6 @@ impl Allocations {
     /// it continues a step in flight.
     pub(crate) fn call(self: &Arc<Self>, root: Option<u64>, family: Option<&str>, devices: Range<usize>, claims: &Claims) -> Option<Permit> {
         let mut table = self.table.lock().unwrap();
-        // External pressure holds machine warming (no root), never a request.
-        if root.is_none() && table.gpus.get(devices.clone())?.iter().any(|gpu| gpu.external_pressure)
-            && !table.continuing(family) { return None }
         let registered = root.is_some_and(|root| table.roots.contains_key(&root));
         let usable = !devices.is_empty() && devices.end <= table.gpus.len() && devices.clone().all(|d| {
             let gpu = &table.gpus[d];

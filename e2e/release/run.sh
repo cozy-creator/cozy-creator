@@ -2,7 +2,8 @@
 # The `cli-release` suite: cozy's signed-in commands before a release (e2e/coverage.toml's `release` tier), on Linux,
 # macOS or Windows. Signed in with the CI key (or, by hand with --installed, as this computer is), it reads the
 # account's balance and checks its buy page answers, then rents ONE machine of --sku (default: the catalog's cheapest
-# GPU; nothing dearer than --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
+# 1-GPU offer; out of stock, the cheapest in stock with at least its VRAM and compute capability; nothing dearer than
+# --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
 # it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
 # rental, which first takes --pod-tensord (the candidate's Linux TensorD). On the rental: package install and list,
@@ -10,30 +11,31 @@
 # non-ASCII), machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
 # checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT
 # trap whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
-#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--release DIR]
+#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--rent-wait S]
+#                      [--rent-lock FILE] [--release DIR]
 #                      [--tensord F|V] [--pod-tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 here=$(cd "$(dirname "$0")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 run=$(date -u +%m%d%H%M)$RANDOM
-pkg=ci-e2e-$run model=fidika/ci-e2e-$run M=''
+pkg=ci-e2e-$run model=fidika/ci-e2e-$run M='' ended=''
 
-# The machine an answer of `machine rent` names (pretty or NDJSON), or the rental its refusal names (one that did not
-# come up): the trap ends it either way.
-rented() {
-  { jq -r '.. | objects | select(.kind? == "rental") | .name // empty' "$1" 2> /dev/null || true; } | tail -1 | grep . \
-    || grep -o 'rental rent-[0-9a-f]* did not come up' "$1" | head -1 | cut -d' ' -f2
-}
-# Whether `machine ls` lists machine $1.
-listed() { cozy --json machine ls | J --arg m "$1" '.machines | any(.name == $m)'; }
+# The rental `machine rent` ordered: its id from `rental.accepted`, which names it whether or not the order has a
+# machine yet, so the trap ends an order given up on too.
+ordered() { jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$1" 2> /dev/null | tail -1; }
+# Whether `machine ls` lists machine $1, by name or rental id.
+listed() { cozy --json machine ls | J --arg m "$1" '.machines | any(.name == $m or .rental_id == $m)'; }
 cleanup() {
   set +e
-  [ -n "$M" ] || [ ! -s "$OUT/rent.ndjson" ] || M=$(rented "$OUT/rent.ndjson")
+  local rental=$M
+  # Until the suite ended its rental itself.
+  [ -n "$ended" ] || [ ! -s "$OUT/rent.ndjson" ] || rental=$(ordered "$OUT/rent.ndjson")
+  [ -n "$rental" ] || rental=$M
   # `machine end` returns once the Hub affirms the pod gone.
-  if [ -n "$M" ]; then
-    cozy --json machine end "$M" --force -y > "$OUT/end-trap.json" 2>&1
-    ! listed "$M" || echo "::error::the trap ended $M, but machine ls still lists it: end it by hand"
+  if [ -n "$rental" ]; then
+    cozy --json machine end "$rental" --force -y > "$OUT/end-trap.json" 2>&1
+    ! listed "$rental" || echo "::error::the trap ended $rental, but machine ls still lists it: end it by hand"
   fi
   cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
   cozy --json model delete "$model" -y > /dev/null 2>&1
@@ -86,9 +88,25 @@ J --arg hub "${COZY_HUB_URL:-https://tensorhub.com}" '(.billing | length > 0) an
 curl -fsS -o /dev/null "$(jq -r .buy_credits "$OUT/whoami.json")" || check "whoami: the buy page $(jq -r .buy_credits "$OUT/whoami.json") does not answer"
 
 step "the rental's quote"
-[ -n "$SKU" ] || SKU=$(cozy --json machine rent | jq -r '[.[] | select(.vram_gb > 0)][0].name // empty') || true
+# In stock: the catalog offers it with 1 GPU, at that price.
+one='def one: [.widths[] | select(.accelerator_count == 1) | .price_usd_micros_per_hour] | min;
+  def cc: .compute_capability | split(".") | map(tonumber) | .[0] * 100 + .[1];'
+cozy --json machine rent > "$OUT/catalog.json" 2>&1 || fail "machine rent: no catalog: $(head -c 300 "$OUT/catalog.json")"
+[ -n "$SKU" ] || SKU=$(jq -r "$one"'[.[] | select(.vram_gb > 0 and one != null)] | sort_by(one)[0].name // empty' "$OUT/catalog.json")
 [ -n "$SKU" ] || fail "machine rent: the catalog lists no GPU"
-code=0; cozy --json machine rent "$SKU" --disk-gb 60 > "$OUT/quote.ndjson" 2>&1 || code=$?
+quote() { code=0; cozy --json machine rent "$SKU" --disk-gb 60 > "$OUT/quote.ndjson" 2>&1 || code=$?; }
+quote
+# Out of stock: the cheapest in-stock SKU with at least its VRAM and compute capability.
+if [ "$code" != 2 ] && grep -q sku_out_of_stock "$OUT/quote.ndjson"; then
+  read -r sub floor < <(jq -r --arg s "$SKU" "$one"'(map(select(.name == $s))[0]) as $c
+    | if $c == null or $c.vram_gb == 0 then "- -" else ($c | {v: .vram_gb, k: cc, f: "≥\(.vram_gb) GB, sm_\(.compute_capability | sub("\\."; ""))+"}) as $f
+      | ([.[] | select(.name != $s and .compute_capability != "" and .vram_gb >= $f.v and cc >= $f.k and one != null)]
+         | sort_by(one)[0].name // "-") + " " + $f.f end' "$OUT/catalog.json") || fail "machine rent: the catalog does not parse"
+  [ "$floor" != - ] || fail "sku $SKU is out of stock and the catalog lists no GPU floor for it"
+  [ "$sub" != - ] || fail "sku $SKU is out of stock and nothing in stock has $floor"
+  echo "sku $SKU is out of stock; using $sub (cheapest in stock with $floor)"
+  SKU=$sub; quote
+fi
 hourly=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote.ndjson" 2> /dev/null | head -1) || true
 [ "$code" = 2 ] && grep -q quote_unagreed "$OUT/quote.ndjson" && [ -n "$hourly" ] \
   || fail "machine rent $SKU without --yes: exit $code, not its quote alone: $(head -c 400 "$OUT/quote.ndjson")"
@@ -106,21 +124,26 @@ step rental
 before=$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length') || true
 ! cozy --json machine rent "$SKU" --gpus 64 -y > "$OUT/rent-too-many.json" 2>&1 || check "machine rent --gpus 64 bought something"
 [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
-# No pod in RENT_WAIT s is a not-run, as gate.sh's: an order the Hub never acquires (41977686738's sat 56 min) must not hold
-# the run; the trap ends the rental it names.
-RENT_WAIT=1200
-cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" & rent_pid=$!
-rent_began=$SECONDS
+# No pod --rent-wait s after the Hub accepted the order is a not-run, as gate.sh's: an order the Hub never acquires
+# (41977686738's sat 56 min) must not hold the run. The wait counts from `rental.accepted`: its rental id is what the trap
+# ends the order by, named or not (cl-789), and a rent stopped before it leaves an order no id here names.
+# Other renters' lock (fd 9) is held only while ordering: nothing it starts keeps it.
+[ -z "$RENT_LOCK" ] || { exec 9> "$RENT_LOCK"; flock 9; }
+cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" 9>&- & rent_pid=$!
+accepted=''
+unlock() { [ -z "$RENT_LOCK" ] || { flock -u 9 2> /dev/null; exec 9>&-; }; }
 while kill -0 "$rent_pid" 2> /dev/null; do
-  if (( SECONDS - rent_began > RENT_WAIT )); then
-    kill "$rent_pid" 2> /dev/null; wait "$rent_pid" 2> /dev/null
-    fail "machine rent $SKU: no pod after $(( (SECONDS - rent_began) / 60 )) min: $(tail -c 300 "$OUT/rent.ndjson")"
+  [ -n "$accepted" ] || [ -z "$(ordered "$OUT/rent.ndjson")" ] || { accepted=$SECONDS; unlock; }
+  if [ -n "$accepted" ] && (( SECONDS - accepted > RENT_WAIT )); then
+    kill "$rent_pid" 2> /dev/null; wait "$rent_pid" 2> /dev/null || true
+    fail "machine rent $SKU: no pod $(( (SECONDS - accepted) / 60 )) min after the Hub accepted the order: $(tail -c 300 "$OUT/rent.ndjson")"
   fi
   sleep 5
 done
+unlock
 wait "$rent_pid" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
 rented_at=$(date +%s)
-M=$(rented "$OUT/rent.ndjson") || true
+M=$(jq -r '.. | objects | select(.kind? == "rental") | .name // empty' "$OUT/rent.ndjson" 2> /dev/null | tail -1) || true
 [ -n "$M" ] || fail "machine rent: no machine named"
 echo "rented $M ($SKU)"
 cozy --json machine show "$M" > "$OUT/rental.json" && J '.rental.disk_gb >= 60' "$OUT/rental.json" || check "machine rent --disk-gb 60: $(jq .rental.disk_gb "$OUT/rental.json") GB"

@@ -77,6 +77,13 @@ impl Error {
     }
 }
 
+impl From<platform_signal::Error> for Error {
+    fn from(error: platform_signal::Error) -> Self {
+        let platform_signal::Error::Os { op, source } = error;
+        Self::Os { op, source }
+    }
+}
+
 impl From<io::Error> for Error {
     fn from(source: io::Error) -> Self {
         Self::Os {

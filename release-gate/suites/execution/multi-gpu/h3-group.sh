@@ -2,7 +2,7 @@
 H3REF="[{\"name\": \"$NAME\", \"kind\": \"character\", \"image\": \"$REF\"}]"
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # h3_group <cell> <least frames> <inputs...>: held to two ranks on two GPUs, a 768p video with audio, and frames a broken
-# kernel's output does not make. frames.py coherent, measured: real H3 clips contrast 31-78, motion 1.4-10, coherence
+# kernel's output does not make. frames.py coherent, measured: real H3 clips contrast 18-78, motion 0.8-10, coherence
 # 0.66-0.98 (fast scenes lowest); grey contrast 0, frozen motion 0, full-frame noise coherence 0.18, plaid (run 28451) 0.45.
 # Coherence can't see subtler garble: FA3-FP8's clip (run 1250, "garbled, mostly useless") scores 0.74 like a fast clean scene.
 # `fine` does: plaid 0.125, FA3-FP8 0.0225, against at most 0.0114 over 49 clean clips across sm86-sm120, 0.0026 for a 0.74

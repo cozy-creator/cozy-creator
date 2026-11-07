@@ -5,13 +5,13 @@
 // a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
 // Pick up from here on its own take and from another box's take let go on it, landing on the tool's frames, with nothing written.
-//   node tools.js <sign-in link from `cozy open --no-open`>
+//   node tools.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT, $ALONE as nodes.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxOf, closeBox, openBox, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
+const { MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -41,8 +41,7 @@ function linesOf(text, name) {
 }
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
@@ -66,7 +65,7 @@ function linesOf(text, name) {
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
@@ -305,7 +304,7 @@ function linesOf(text, name) {
   const ranged = await until('an out point', () => fieldsOf('shot'), (fields) => fields.summary?.includes(`<walk:3-${frames - 2}>`));
   check('a_range_is_written_in_frames', ranged.summary.includes(`<walk:3-${frames - 2}>`), ranged.summary);
   const chip = (await shotBox.locator(`.mention-text[data-field=summary] .chip[data-mention="walk:3-${frames - 2}"]`).textContent()) ?? '';
-  check('a_range_shows_timecode', /^walk 0:00\.03–0:0\d\.\d\d$/.test(chip), chip);
+  check('a_range_shows_timecode', /^<Walk> 0:00\.03–0:0\d\.\d\d$/.test(chip), chip);
   // On the plate, the same, and its length against the beats'.
   const plate = field('shot', 'plate');
   check('a_plate_against_its_beats', (await plate.locator('.spans.warn').textContent()).includes('the beats 5 s'), await plate.locator('.spans').textContent());

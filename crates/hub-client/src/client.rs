@@ -548,6 +548,13 @@ impl Client {
         self.send(request).await.map(drop)
     }
 
+    pub async fn report_worker_speed(&self, report: &WorkerSpeedReport) -> Result<(), Error> {
+        let request = self
+            .at(Method::POST, "/v1/worker/rental/speed", &[])
+            .json(report);
+        self.send(request).await.map(drop)
+    }
+
     pub async fn release_worker_rental(&self, worker_id: &str) -> Result<(), Error> {
         let request = self.at(Method::POST, "/v1/worker/rental/release", &[]);
         self.send(request.json(&json!({"worker_id": worker_id})))
@@ -609,11 +616,13 @@ impl Client {
 
     async fn execute(&self, request: Request) -> Result<Response, Error> {
         let (method, path) = (request.method().clone(), request.url().path().to_owned());
-        self.http.execute(request).await.map_err(|e| {
+        let response = self.http.execute(request).await.map_err(|e| {
             let error = Error::unanswered(&e);
             tracing::warn!(%method, path, "the Hub did not answer: {error}");
             error
-        })
+        })?;
+        crate::workload::observe(response.url(), response.headers());
+        Ok(response)
     }
 
     /// `request` with the credential's headers, and the user's Bearer among them.

@@ -1,14 +1,16 @@
 // Place, in a real browser (web-ui.md §1): a PNG, an MP4 and a WAV dropped together; one chosen from the selector; one renamed; a
 // move read back from project.canvas.yaml; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
-//   node place.js <sign-in link from `cozy open --no-open`>
+//   node place.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
+// Last, a box let go on others gives way at the least cost: a short move, a small shrink, or a little nudge of what it lies on (Paul, 11-06).
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
-// terminal sees the same project; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
+// terminal sees the same project and to lay boxes out; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { readFileSync, readdirSync, writeFileSync } = require('fs');
+const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
+const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -27,8 +29,8 @@ function rows(folder) {
   try { text = readFileSync(join(folder, 'project.canvas.yaml'), 'utf8'); } catch { return {}; }
   const found = {};
   for (const line of text.split('\n')) {
-    const m = line.match(/^\s+(\S+):\s*\{x:\s*(-?[\d.]+),\s*y:\s*(-?[\d.]+)/);
-    if (m) found[m[1]] = { x: Number(m[2]), y: Number(m[3]) };
+    const m = line.match(/^\s+(\S+):\s*\{x:\s*(-?[\d.]+),\s*y:\s*(-?[\d.]+)(?:,\s*w:\s*(-?[\d.]+))?/);
+    if (m) found[m[1]] = { x: Number(m[2]), y: Number(m[3]), ...(m[4] === undefined ? {} : { w: Number(m[4]) }) };
   }
   return found;
 }
@@ -44,8 +46,7 @@ const constants = (folder) => {
 };
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1500, height: 900 } });
   const page = await context.newPage();
@@ -59,7 +60,7 @@ const constants = (folder) => {
   });
 
   // Sign in: the link's code becomes a session, and leaves the URL.
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   check('code_left_the_url', !page.url().includes('code='), page.url());
   const session = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
@@ -254,6 +255,131 @@ const constants = (folder) => {
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-reloaded.png` });
 
   check('comments_and_text_kept', yaml(folder).startsWith(written), yaml(folder));
+
+  // Giving way (Paul, 11-06), on boxes the CLI lays out past everything else, each let go by hand straight down onto its spot:
+  // - on a crowded spot, where only a shrink fits near, it stays where it was let go, smaller, rather than going far;
+  // - with a free spot beside it, it only moves, and the other stays;
+  // - in a gap a little short of it, between boxes with room beyond, they're nudged a little apart and it stays as it was.
+  if (process.env.COZY) {
+    const pictures = mkdtempSync(join(tmpdir(), 'web-place-'));
+    const at = (name, x, y, w) => execFileSync(process.env.COZY, ['project', '-p', folder, 'set', name, `at=${x},${y},${w}`], { stdio: 'ignore' });
+    const lay = {};
+    const left = Math.max(...Object.values(rows(folder)).map((row) => row.x)) + 1500;
+    const put = (name, x, y, w) => { lay[name] = { x: left + x, y, w }; };
+    // Rows of the grid touch: a picture 300 wide and the room it keeps under it for the name of a box below (e139a61c6, shown.ts).
+    const ROW = 262;
+    for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, ROW * j, 300);
+    put('crowded', 290, 800, 360);
+    put('beside', 0, 1200, 240);
+    put('free', 200, 1500, 240);
+    put('left', 0, 1800, 240);
+    put('right', 468, 1800, 240);
+    put('nudging', 234, 2100, 240);
+    Object.keys(lay).forEach((name, i) => {
+      const file = join(pictures, `${name}.png`);
+      writeFileSync(file, png(40 + i * 9, 320, 180));
+      execFileSync(process.env.COZY, ['project', '-p', folder, 'import', file, name], { stdio: 'ignore' });
+    });
+    // Each placed by the page as it arrives first: placed after its `at`, it would be put where the page found room (the page's read of where
+    // things sit, then its write of a new one's place, can straddle another writer's).
+    await until('each placed', () => rows(folder), (now) => Object.keys(lay).every((name) => now[name]));
+    for (const [name, { x, y, w }] of Object.entries(lay)) at(name, x, y, w);
+    rmSync(pictures, { recursive: true, force: true });
+    await until('laid out', () => rows(folder), (now) => Object.entries(lay).every(([name, row]) => now[name]?.x === row.x && now[name]?.y === row.y));
+    await page.mouse.click(1450, 860);
+    await page.keyboard.press('f');
+    await page.waitForTimeout(800);
+    // A picture box's height at a width: its name, and the picture at 16:9.
+    const tall = (w) => 32 + Math.round((w * 9) / 16);
+    const middle = (row) => ({ x: row.x + row.w / 2, y: row.y + tall(row.w) / 2 });
+    const apart = (a, b) => Math.round(Math.hypot(middle(a).x - middle(b).x, middle(a).y - middle(b).y));
+    const lying = () => page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.react-flow__node .card')].map((card) => ({ name: card.dataset.asset, rect: card.getBoundingClientRect() }));
+      const on = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+      return cards.flatMap((a, i) => cards.slice(i + 1).filter((b) => on(a.rect, b.rect)).map((b) => `${a.name} on ${b.name}`));
+    });
+    /** Let go `dy` below or above where it stands, held by its picture's middle: where it was let go is where it stood as the button came up. */
+    const letGo = async (name, dy) => {
+      const before = rows(folder);
+      const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+      const media = await element(page, name).locator('.media').first().boundingBox();
+      const [x, y] = [media.x + media.width / 2, media.y + media.height / 2];
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x, y - 3);
+      await page.mouse.move(x, y + dy * zoom, { steps: 10 });
+      const held = await element(page, name).evaluate((node) => {
+        const { e, f } = new DOMMatrix(getComputedStyle(node).transform);
+        return { e, f };
+      });
+      await page.mouse.up();
+      // It lands, then gives way: two rows, the second written at once.
+      await page.waitForTimeout(600);
+      const after = await until(`${name} settled`, async () => {
+        const one = JSON.stringify(rows(folder));
+        await page.waitForTimeout(400);
+        return one === JSON.stringify(rows(folder)) ? rows(folder) : null;
+      }, Boolean);
+      const moved = Object.fromEntries(Object.keys(lay).filter((other) => other !== name && apart(after[other], before[other]) > 0).map((other) => [other, apart(after[other], before[other])]));
+      return { dropped: { ...before[name], x: Math.round(held.e), y: Math.round(held.f) }, now: after[name], moved, lying: await lying() };
+    };
+    const crowded = await letGo('crowded', ROW + 3 - 800);
+    seen.crowded = { ...crowded, by: apart(crowded.now, crowded.dropped) };
+    check('a_crowded_drop_shrinks_where_it_was_let_go', crowded.now.w < 360 * 0.97 && crowded.now.w >= 180 && seen.crowded.by <= 40, seen.crowded);
+    check('a_crowded_drop_nudges_little', Object.values(crowded.moved).every((by) => by <= 40), crowded.moved);
+    check('a_crowded_drop_lies_on_nothing', crowded.lying.length === 0, crowded.lying);
+    const free = await letGo('free', -300);
+    seen.free = { ...free, by: apart(free.now, free.dropped) };
+    check('a_drop_with_room_beside_only_moves', free.now.w === 240 && seen.free.by > 0 && seen.free.by <= 60 && Object.keys(free.moved).length === 0, seen.free);
+    check('a_drop_with_room_lies_on_nothing', free.lying.length === 0, free.lying);
+    const nudging = await letGo('nudging', -300);
+    seen.nudging = { ...nudging, by: apart(nudging.now, nudging.dropped) };
+    const outward = rows(folder);
+    check('small_nudges_absorb_a_drop', nudging.now.w === 240 && seen.nudging.by <= 3 && outward.left.x < lay.left.x && outward.right.x > lay.right.x && Object.values(nudging.moved).every((by) => by <= 40), seen.nudging);
+    check('a_nudged_drop_lies_on_nothing', nudging.lying.length === 0, nudging.lying);
+    if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-given-way.png` });
+  }
+
+  // A box the page places as it arrives, and the CLI's `at` for it written between the page's read of where things sit and its write of
+  // the place it found: the CLI's stands (cl-800). The page's read is held until the CLI has written, so the two cross every time.
+  if (process.env.COZY) {
+    const pictures = mkdtempSync(join(tmpdir(), 'web-place-race-'));
+    const file = join(pictures, 'raced.png');
+    writeFileSync(file, png(222, 320, 180));
+    let [read, release] = [false, () => {}];
+    const held = new Promise((done) => { release = done; });
+    const canvasRead = `**/v1/projects/${id}/canvas`;
+    await page.route(canvasRead, async (route) => {
+      if (route.request().method() !== 'GET' || read) return route.fallback();
+      read = true;
+      const answer = await route.fetch();
+      await held;
+      await route.fulfill({ response: answer }).catch(() => {});
+    });
+    execFileSync(process.env.COZY, ['project', '-p', folder, 'import', file, 'raced'], { stdio: 'ignore' });
+    await until('the page reads where things sit', () => Promise.resolve(read), Boolean);
+    // Clear of everything, so nothing moves it off another.
+    const cli = { x: Math.max(...Object.values(rows(folder)).map((row) => row.x + (row.w ?? 240))) + 2000, y: 0, w: 240 };
+    execFileSync(process.env.COZY, ['project', '-p', folder, 'set', 'raced', `at=${cli.x},${cli.y},${cli.w}`], { stdio: 'ignore' });
+    release();
+    // The page's place goes now, after the CLI's: what's written is still the CLI's, once and for good.
+    const settled = await until('its row settled', async () => {
+      const one = JSON.stringify(rows(folder).raced);
+      await page.waitForTimeout(1500);
+      return one === JSON.stringify(rows(folder).raced) ? rows(folder).raced : null;
+    }, Boolean);
+    await page.unroute(canvasRead);
+    check('a_placement_never_overwrites_an_at', settled.x === cli.x && settled.y === cli.y && settled.w === cli.w, { settled, cli });
+    await page.keyboard.press('f');
+    await page.waitForTimeout(600);
+    const shown = await page.evaluate(() => {
+      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.card[data-asset="raced"]'));
+      const m = node && new DOMMatrix(getComputedStyle(node).transform);
+      return m ? { x: Math.round(m.e), y: Math.round(m.f) } : null;
+    });
+    check('the_page_shows_the_cli_place', shown?.x === cli.x && shown?.y === cli.y, { shown, cli });
+    rmSync(pictures, { recursive: true, force: true });
+  }
 
   // The terminal sees the same project.
   if (process.env.COZY) {

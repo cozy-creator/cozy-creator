@@ -3,6 +3,7 @@ const STROKES = {
   menu: "M3 6h14M3 10h14M3 14h14",
   close: "M5.5 5.5l9 9M14.5 5.5l-9 9",
   plus: "M10 4.5v11M4.5 10h11",
+  minus: "M4.5 10h11",
   back: "M12 4.5L6.5 10l5.5 5.5",
   forward: "M8 4.5l5.5 5.5L8 15.5",
   edit: "M12.8 4.2l3 3L7.2 15.8l-3.7.7.7-3.7z",
@@ -10,6 +11,8 @@ const STROKES = {
   video: "M3.5 5h13v10h-13zM6.5 5v10M13.5 5v10M3.5 8.3h3M3.5 11.7h3M13.5 8.3h3M13.5 11.7h3",
   sound: "M4 8.5v3M7.3 6v8M10.6 3.5v13M13.9 6v8M17 8.5v3",
   touch: "M10 3.5l1.5 4.9 5 1.6-5 1.6L10 16.5l-1.5-4.9-5-1.6 5-1.6z",
+  download: "M10 3v10M5.5 8.8L10 13.3l4.5-4.5M4 16.5h12",
+  package: "M10 2.8l6.5 3.4v7.6L10 17.2l-6.5-3.4V6.2zM3.5 6.2L10 9.6l6.5-3.4M10 9.6v7.6M6.8 4.5l6.5 3.4",
 } as const
 
 const FILLS = {

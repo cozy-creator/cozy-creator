@@ -1,12 +1,5 @@
 # Release gate
 
-[Capability-integrated source CI 40225337039](suites/varena/evidence/source-e2e-40225337039.md)
-records the coordinated Creator/Runtime/packages checks and their explicit import skip.
-
-[Combined source integration run 40192828364](suites/varena/evidence/source-e2e-40192828364.md)
-records the frozen Creator/Runtime/packages CLI, CPU and import checks. Its CPU candidate
-artifacts and explicit package skip are separate from GPU and portable release qualification.
-
 A PR's own proof is not here: what a CPU runner can show (projects, Calcifer's HTTP surface, version skew, restarts,
 local code) is a cell of the e2e cli suite, which the merge queue runs on every PR it selects (`e2e/README.md`, "A PR's
 proof is a cell"). Cells that need a GPU or a signed-in account are this gate's.
@@ -21,7 +14,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 |---|---|---|---|---|
 | `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
 | `packages` | the packages `--pins` (or `--only`) names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
-| `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
+| `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below), a warm call served by graphs, real models repeating byte for byte warm, capped, with memory unmapped and perturbed, and with a kept graph's weights gone or no room for them, and with graphs off (`differential/`), a loop's writes outside its tensors counted exactly (`diff-writes`), the memory authority's rules (`core`), `vt.offload` beside stock SDXL (`offload-*`) and deliberate faults over SSH (`fault-*`, `faults`); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
 | `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; a `--warm gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
 | `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut (a private model no cache holds: from the Hub); uploads of new weights, dedup of a re-upload, resume after a cut; a recipe that encodes each component in its own call writes every component; a straggler re-asked, not waited out; a LoRA's scale never taken from training metadata; a source that is no form of its family refused before it downloads (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download, upload or quantize change |
 | `hub` | the API contract (`api/openapi.yaml`): anonymous paths, then account, an admin rental on each provider (RunPod, vast), package publish/yank/pin/un-yank and model upload/publish/yank/delete through `cozy` (below); the migration rehearsal before a deploy | cpu | ~$0.2 · ~30 min | any Hub release |
@@ -53,16 +46,23 @@ refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything els
 2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
-   The candidate's cozy puts it on; its `machine update` fails unless the machine then runs it.
-3. Runs the chosen suites' cells, each once, with new prompts and seeds. A slow run goes on; a hung one stops: when no run
-   on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in 786 real cells was
-   7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while they move.
+   This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
+3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, `--warm downloaded`
+   puts all its weights on the disk, its on-demand models' too (an upsampler), and `--warm off` takes it out of the warm
+   set: a cell times what a user who has used the function sees, never a download (cl-790). A slow run goes on; a hung one
+   stops: when no run on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in
+   786 real cells was 7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while
+   they move. A download that can't land before the job's cap (`--cap`, the workflow's `cap_minutes`) at the rate it has
+   kept 4 to 8 minutes in fails the host, `host too slow: X MB/s, N GiB needs M min`: the pod ends, its files go to
+   `slow-<machine>/`, and the gate starts over on another host, at most 5, one already found slow ended at once (th-364).
 4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. Any GPU fault in the machine's log or kernel probe crash in its record fails the gate, whatever the
    cells did. A cell passes when it completed, did not report `passed: false`, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
    driver's: TensorD reads each GPU's bytes in use (NVML) every 100 ms over a call into the record's `memory.driver`,
    and `runs.py` reads what the cell added at its fullest (caps judge everything in use). A GPU cell without it fails.
+   Each executor's package import and CUDA init are held against the same cells' known-good: twice those or more is a
+   slow host, which the verdict names, and its time fails read `(slow host)`, not a regression.
 
 ## Baselines
 
@@ -132,6 +132,9 @@ more than one pod calls `order` per pod, then `ready` per pod; the guard and the
 `project-remote` (xs-143) proves `cozy project push` and `pull`: a second user on the runner, holding only project.yaml
 and project.lock, pulls and cuts the same `edit.mp4`; kills on both sides resume.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
+`upload-proofs` uploads twice in a row on one pod, then once while a download of a private commit runs there and a second
+download waits on it; each must complete under the pod's own DPoP proofs, signed in the Hub's time, and its record has the
+pod's clock against the Hub's (cli-release 42224725083: a host 665 s fast had every redemption refused).
 `client-gone` is a run on a pod finishing with its client gone: a second user on one pod asks over a line the session throttles and cuts, and what comes next doesn't wait on that line. `-f params='{"before": "<cozy>"}'` shows what its parts did on an earlier cozy.
 `vram-yield` (xs-088) starts a stand-in game (`fixtures/game.py`) on an 8 GB card in shared mode, with models idle and
 mid-call: it must have its memory within 2 s, and the call must complete, never ended for it. The game must start

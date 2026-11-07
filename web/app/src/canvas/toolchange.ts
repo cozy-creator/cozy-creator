@@ -97,7 +97,7 @@ export function comingOff(asset: Asset, fields: Fields): ToolStep {
   return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 
-/** A tool carried: dropped on a box it goes on, or takes the place of the one there. On open canvas it's a new box. */
+/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas it's a new box. */
 export const carryingTool = (tool: Tool): Carried => ({
   canvas: true,
   whyNot(name, view) {

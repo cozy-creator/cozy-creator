@@ -475,6 +475,29 @@ impl Store {
         })
     }
 
+    /// Records a rental another client of the account ordered, under its name; an ended machine that
+    /// held the name gives it up (as in `rename_machine`), and a live one keeps it, so this one is
+    /// named by its rental id. The row as recorded; none when its rental is recorded already.
+    pub fn adopt(&self, machine: &MachineRow) -> Result<Option<MachineRow>> {
+        self.write(|tx| {
+            let known: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM machines WHERE rental_id = ?1)", [&machine.rental_id], |r| r.get(0))?;
+            if known {
+                return Ok(None);
+            }
+            let mut row = machine.clone();
+            let holder: Option<(String, i64)> = tx
+                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [&row.name], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            match holder {
+                Some((state, at)) if state == "ended" => move_machine(tx, &row.name, &format!("{}@{at}", row.name), None)?,
+                Some(_) => row.name = row.rental_id.clone().unwrap_or_default().to_ascii_lowercase(),
+                None => {}
+            }
+            put_machine_in(tx, &row)?;
+            Ok(Some(row))
+        })
+    }
+
     /// Unsettled runs by machine: how many it accepted, and how many wait to be sent or accepted.
     pub fn machine_load(&self) -> Result<std::collections::HashMap<String, (u32, u32)>> {
         self.read(|conn| {
@@ -1720,7 +1743,7 @@ impl From<&MachineRow> for Machine {
             attempt: None,
             running: 0,
             queued: 0,
-            recorded: true,
+            ordered: true,
             unverified: false,
             controller_key: None,
             reach: None,
@@ -1956,6 +1979,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
     Ok(Run {
         id: row.id.clone(),
         number: row.number,
+        machine_number: None,
         kind: row.kind,
         target: row.target.clone(),
         hub: row.hub.clone().map(String::from).unwrap_or_default(),

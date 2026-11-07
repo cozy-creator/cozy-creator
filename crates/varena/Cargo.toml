@@ -1,15 +1,34 @@
 [package]
 name = "varena"
 description = "Process-local CUDA weight residency with stable addresses and storage-owned pins"
-version = "0.20.0"
+version = "0.22.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+# Every embedding (including TensorFS) links this one shared core. Never emit an rlib:
+# a second statically linked copy would create independent process registries.
+crate-type = ["dylib"]
+
 [dependencies]
 libloading.workspace = true
 thiserror.workspace = true
+platform-signal.workspace = true
+varena-ledger.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+nvml-wrapper.workspace = true
+nvml-wrapper-sys.workspace = true
+
+[features]
+# one_process/1: ordinary same-process TLS threads; shared-VM child allocator use is unsupported.
+default = ["kernel-fork-guard"]
+kernel-fork-guard = []
+# Additive Cargo features require an explicit override, including in transitive dependencies.
+strict-pid-guard = []
 
 [lints]
 workspace = true

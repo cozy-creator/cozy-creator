@@ -328,6 +328,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         let hub = Arc::new(crate::machine::hub::Hub::new(hub)?);
         let service = service.clone();
         let provider = grant.provider.clone();
+        let (state, origin) = (layout.state.clone(), machine.clone());
         std::thread::Builder::new()
             .name("rental-lifecycle".into())
             .spawn(move || {
@@ -336,6 +337,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                         hub.clone(),
                         keys,
                     ));
+                    crate::machine::speed::serve(hub.clone(), state, origin);
                     let jobs = move |since| {
                         let (working, ended_ms) = service.engine.jobs(since)?;
                         Ok(crate::machine::lifecycle::Jobs { working, ended_ms })

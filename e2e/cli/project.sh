@@ -468,10 +468,11 @@ rm -rf "$O"
 # then said back as format 2 would, an entity and a form over its sheets, a still a shot wrote, and a mention of what nothing wrote.
 upgrades() {
 step "a project: cozy project upgrade, nothing out of date and nothing run"
-local U=$OUT/upgrade draw=$here/project/draw.py before art wall
-mkdir -p "$U"; still "$U/art.png" teal
+local U=$OUT/upgrade draw=$here/project/draw.py before art wall clip
+mkdir -p "$U"; still "$U/art.png" teal; plate "$U/clip.mp4" testsrc 440 200 8
 printf 'version: 4\nassets: {}\n' > "$U/project.yaml"
 art=$(prefix "$U" "$U/art.png")
+prefix "$U" "$U/clip.mp4" > /dev/null; clip=$(sha "$U/clip.mp4")
 cat > "$U/project.yaml" <<YAML
 version: 4
 assets:
@@ -489,10 +490,12 @@ wall=$(take_file "$U" wall image 0); wall=${wall#sha256:}; wall=${wall:0:12}
 local was_lock
 old_row() { held "$U" "$1" | jq --arg n "$1" '{name: $n, kind: "image", versions: [.versions[] | {number, seed, runs, inputs: "old-key-\(.number)", made_by: {with: "local/draw/draw"}, files: (.files | map_values(.sha256))}]}'; }
 old_files() { held "$U" "$1" | jq '[.versions[].files[] | {(.sha256): {path, sha256}}] | add'; }
-was_lock=$(jq -n --argjson a "$(old_row hero_sheet)" --argjson b "$(old_row old_sheet)" --argjson c "$(old_row wall)" --argjson d "$(old_row poster)" \
+was_lock=$(jq -n --argjson a "$(old_row hero_sheet)" --argjson b "$(old_row old_sheet)" --argjson c "$(old_row wall)" --argjson d "$(old_row poster)" --arg clip "sha256:$clip" \
   --argjson files "$(jq -n --argjson a "$(old_files hero_sheet)" --argjson b "$(old_files old_sheet)" --argjson c "$(old_files wall)" --argjson d "$(old_files poster)" '$a + $b + $c + $d')" \
-  '{format: 2, files: $files, assets: {"hero sheet": $a, "old sheet": $b, wall: $c, poster: $d,
-    "table.1": {name: "table.1", kind: "image", versions: [{number: 7, inputs: "old-frame", files: {image: $c.versions[0].files.image}, made_by: {with: "cozy/frame"}}]}}}') || check "upgrade: what it holds: $(tail -c 300 "$OUT/held.err")"
+  '{format: 2, files: ($files + {($clip): {path: "files/\($clip[7:]).mp4", sha256: $clip}}), assets: {"hero sheet": $a, "old sheet": $b, wall: $c, poster: $d,
+    "table.1": {name: "table.1", kind: "image", versions: [{number: 7, inputs: "old-frame", files: {image: $c.versions[0].files.image}, made_by: {with: "cozy/frame"}}]},
+    take: {name: "take", kind: "video", numbered: 4, versions: [{number: 4, inputs: "old-take", files: {video: $clip}, made_by: {with: "local/minimax-h3/generate"}}]},
+    "frame.1": {name: "frame.1", kind: "image", numbered: 4, versions: [{number: 4, inputs: "old-frame-4", files: {image: $a.versions[0].files.image}, made_by: {with: "cozy/frame"}}]}}}') || check "upgrade: what it holds: $(tail -c 300 "$OUT/held.err")"
 # What a format 2 file said of the same, and what its status said.
 cat > "$U/project.yaml" <<YAML
 # A hand's note.
@@ -529,6 +532,17 @@ assets:
     render: {with: cozy}
     pieces:
       - <hero.old>
+  # A frame a beat wrote, its one version numbered past 1.
+  frame.1:
+  take:
+    kind: video
+    render: {with: /nowhere/minimax-h3}
+    beats:
+      - duration: 4
+        description: A wave.
+      - duration: 4
+        description: It breaks.
+        writes: [{image: frame.1, at: 1.5}]
 YAML
 printf '%s\n' "$was_lock" > "$U/project.lock"
 jq -n '{assets: [
@@ -538,7 +552,9 @@ jq -n '{assets: [
   {name: "wall", standing: "current", pinned: true, approved: 1},
   {name: "poster", standing: "out_of_date", inputs: "something-else"},
   {name: "shot", standing: "missing"},
-  {name: "table.1", standing: "current", inputs: "old-frame"}]}' > "$U/status.json"
+  {name: "table.1", standing: "current", inputs: "old-frame"},
+  {name: "take", standing: "current", inputs: "old-take"},
+  {name: "frame.1", standing: "current", inputs: "old-frame-4"}]}' > "$U/status.json"
 cp "$U/project.yaml" "$OUT/upgrade-v2.yaml"; cp "$U/project.lock" "$OUT/upgrade-v2.lock"
 cozy --json project -p "$U" upgrade --status "$U/status.json" > "$OUT/upgraded.json" 2> "$OUT/upgraded.err" || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.err")"
 cmp -s "$U/project.yaml.v2" "$OUT/upgrade-v2.yaml" && cmp -s "$U/project.lock.v2" "$OUT/upgrade-v2.lock" || check "upgrade: the old files aren't kept beside the new"
@@ -557,6 +573,8 @@ J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .versi
 J '.assets[] | select(.name == "poster") | .fields.instructions == "After an edit, with <table_1> and <coast.1>."' "$OUT/upgraded-status.json" || check "upgrade: a mention: $(row "$U" poster .fields)"
 { grep -q 'cozy/edit' "$U/project.yaml" && grep -q '<hero_old>' "$U/project.yaml" && ! grep -qE '^ *(kind|with|render|pieces):|^entities|^defaults' "$U/project.yaml"; } || check "upgrade: the file: $(cat "$U/project.yaml")"
 { grep -q "^# A hand's note\.$" "$U/project.yaml" && grep -q '^  # Its art\.$' "$U/project.yaml" && grep -q '^  #ken$' "$U/project.yaml"; } || check "upgrade: a comment went: $(cat "$U/project.yaml")"
+J '.assets[] | select(.name == "frame_1") | .standing == "current" and (.pinned | not) and .approved == null and .versions == 1 and .tool == "cozy/frame" and .fields.video == "<take>" and .fields.at == 5.5' "$OUT/upgraded-status.json" || check "upgrade: a frame a beat wrote isn't a frame of its shot, unapproved: $(row "$U" frame_1 .)"
+! grep -q 'writes:' "$U/project.yaml" || check "upgrade: a beat still writes: $(cat "$U/project.yaml")"
 J '[.said[] | select(contains("poster mentions <coast.1>"))] | length == 1' "$OUT/upgraded.json" || check "upgrade: a mention of nothing wasn't said: $(jq -c .said "$OUT/upgraded.json")"
 J '([.said[] | select(contains("hero, hero_old are now a picture reference like any other"))] | length == 1) and ([.said[] | select(contains("hero.old is hero_old"))] | length == 1)' "$OUT/upgraded.json" || check "upgrade: what format 4 reads another way wasn't said once: $(jq -c .said "$OUT/upgraded.json")"
 render "$U" all --missing > /dev/null 2>&1 || true
@@ -710,6 +728,49 @@ before=$(sha "$C/project.yaml")
 code=0; cozy project -p "$C" status > "$OUT/first-open-stuck.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy_one' "$OUT/first-open-stuck.txt" && [ "$(sha "$C/project.yaml")" = "$before" ] && [ ! -e "$C/project.yaml.v2" ]; } || check "first open: names that are one (exit $code): $(tail -c 300 "$OUT/first-open-stuck.txt")"
 rm -rf "$C"
+
+step "a project: format 2 opened keeps what was out of date, and says each mention of what a beat wrote"
+local S=$OUT/first-open-states draw=$here/project/draw.py art plate poster f
+mkdir -p "$S/files"
+still "$S/art.png" teal; still "$S/plate.png" navy; still "$S/poster.png" olive
+art=$(sha "$S/art.png") plate=$(sha "$S/plate.png") poster=$(sha "$S/poster.png")
+for f in art plate poster; do mv "$S/$f.png" "$S/files/$(sha "$S/$f.png").png"; done
+# As 0.19 left it: coast's plate approved, poster's one version from before keys (out of date), and two stills clash's beats wrote, never made.
+cat > "$S/project.yaml" <<YAML
+version: 2
+entities:
+  coast:
+    kind: environment
+    image: <coast_plate>
+assets:
+  art:
+    image: ${art:0:12}
+  coast_plate:
+    image: ${plate:0:12}
+    render: {with: $draw, prompt: A coast.}
+  poster:
+    render: {with: $draw, prompt: From <art>.}
+  clash:
+    kind: video
+    render: {with: /nowhere/minimax-h3}
+    beats:
+      - description: On <coast>.
+        writes: [{image: coast.1}]
+      - description: Then on <coast.1>.
+        writes: [{image: coast.2}]
+      - description: And on <coast.2>.
+YAML
+jq -n --arg art "sha256:$art" --arg plate "sha256:$plate" --arg poster "sha256:$poster" '{format: 2,
+  files: ([$art, $plate, $poster] | map({(.): {path: "files/\(.[7:]).png", sha256: .}}) | add),
+  assets: {"coast plate": {name: "coast_plate", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $plate}}]},
+    poster: {name: "poster", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $poster}}]}}}' > "$S/project.lock"
+cozy project -p "$S" status > "$OUT/first-open-states.txt" 2>&1 || check "first open: states: $(tail -c 300 "$OUT/first-open-states.txt")"
+status "$S" > "$OUT/first-open-states.json"
+J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .versions == 1' "$OUT/first-open-states.json" || check "first open: what was out of date isn't: $(row "$S" poster .)"
+J '.assets[] | select(.name == "coast") | .standing == "current" and .approved == 1' "$OUT/first-open-states.json" || check "first open: coast: $(row "$S" coast .)"
+J '.assets[] | select(.name == "art") | .standing == "current"' "$OUT/first-open-states.json" || check "first open: art: $(row "$S" art .)"
+grep -qE "clash, line [0-9]+: <coast\.1> was what a beat of clash wrote, and now reads as coast's version 1" "$OUT/first-open-states.txt" || check "first open: <coast.1> not said: $(cat "$OUT/first-open-states.txt")"
+grep -qE "clash, line [0-9]+: <coast\.2> was what a beat of clash wrote, and now reads as coast's version 2, which it hasn't" "$OUT/first-open-states.txt" || check "first open: <coast.2> not said: $(cat "$OUT/first-open-states.txt")"
 }
 
 # A version keeps the words that made it, only where they changed, whatever becomes of the one that held them.

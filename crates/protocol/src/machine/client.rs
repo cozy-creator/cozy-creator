@@ -26,7 +26,7 @@ use url::Url;
 
 use super::{
     Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
-    RunEvent, RunRequest, RunState, StatusFrame, parse_held, path,
+    RunEvent, RunList, RunRequest, RunState, StatusFrame, parse_held, path,
 };
 use crate::{
     capability,
@@ -204,6 +204,12 @@ impl Machine {
     /// Submits a run; its state, also when it was accepted before.
     pub async fn submit(&self, run: &RunRequest) -> Result<RunState, Error> {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await
+    }
+
+    /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
+    pub async fn runs(&self, before: u64, limit: u32) -> Result<RunList, Error> {
+        let request = self.request(Method::GET, path::RUNS, &[]).query(&[("before", before), ("limit", u64::from(limit))]);
+        json(send(request).await?).await
     }
 
     /// The run's log after `after`: its state first, then its events until its outcome. A run

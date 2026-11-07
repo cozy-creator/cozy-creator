@@ -1,18 +1,17 @@
 # Suite `execution`: every proof that reports `passed` and belongs to no other suite, so none goes unrun; analyze.py fails a
 # completed run that says passed: false. The native loop and kernel readiness (core-cells.sh), capture, conditional bodies,
 # LoRA overlays and child calls (also in `runtime`: a cell one suite ran does not run again), TensorFS's producers and
-# decoders, varena's stock-memory mechanisms, and SDXL's cold and warm qualification.
+# decoders, and SDXL's cold and warm qualification. varena's mechanisms are suite `varena`'s (core, faults, ledger, public API).
 # Not here: kernel-regret, a measurement whose own kernel opens read as request-path blocking (`cells=`, on a measurement
 # session); mps-residency, which needs an Apple GPU (e2e/mps).
-EXEC_DIR=$HERE/suites/execution TFS_DIR=$HERE/suites/tensorfs STOCK_DIR=$HERE/suites/varena/stock-memory
+EXEC_DIR=$HERE/suites/execution TFS_DIR=$HERE/suites/tensorfs
 source "$EXEC_DIR/core-cells.sh"
-for part in first-warm-capture capture-refusal lora-overlay-refill child-lora-stacks child-saved-file conditional-body; do
+for part in first-warm-capture capture-refusal lora-overlay-refill overlay-replay child-lora-stacks child-saved-file conditional-body; do
   source "$EXEC_DIR/$part/cells.sh"
 done
 
 proof_seed=$((R + 400))
 proof() { local name=$1 target=$2; shift 2; proof_seed=$((proof_seed + 1)); cell "$name" "$target" seed:=$proof_seed "$@"; }
-proof runtime-nvfp4 "$TFS_DIR/runtime-nvfp4/gpu" --gpus=1
 proof resident-nvfp4 "$TFS_DIR/resident-nvfp4/run" --gpus=1
 proof nvfp4-encode "$TFS_DIR/nvfp4-encode/run"
 proof convrot-encode "$TFS_DIR/convrot-encode/run"
@@ -26,7 +25,6 @@ proof rowwise-quantize-cancel "$TFS_DIR/rowwise-quantize/run" mode=cancel
 proof offline-producers "$TFS_DIR/offline-producers/run" mode=basic --gpus=1
 proof offline-producers-cancel-fp8 "$TFS_DIR/offline-producers/run" mode=cancel-fp8 --gpus=1
 proof offline-producers-cancel-w4a8 "$TFS_DIR/offline-producers/run" mode=cancel-w4a8 --gpus=1
-for part in native gpu driver derived; do proof "stock-memory-$part" "$STOCK_DIR/$part" --gpus=1; done
 
 # A controller of its own through the ordinary CLI: its exit is its verdict.
 controller() {

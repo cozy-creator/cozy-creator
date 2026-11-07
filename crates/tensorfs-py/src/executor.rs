@@ -5,7 +5,7 @@
 use executor_protocol::{
     TensorFSOptions,
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
-    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork, Room,
+    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
     PreparedUse, PrepareRequest, Probe, Publish, PublishPart, SavedFile, Start, StageMemoLookup, StageMemoStore, Unload, View,
 };
@@ -48,7 +48,6 @@ fn decode_command(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
         Command::Probe(c) => c.into_py_any(py),
         Command::Fork(c) => c.into_py_any(py),
         Command::Capability(c) => c.into_py_any(py),
-        Command::Room(c) => c.into_py_any(py),
     }
 }
 
@@ -74,7 +73,6 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Probe>()?;
     m.add_class::<Fork>()?;
     m.add_class::<Capability>()?;
-    m.add_class::<Room>()?;
     m.add_class::<Adapter>()?;
     m.add_class::<Binding>()?;
     m.add_class::<View>()?;

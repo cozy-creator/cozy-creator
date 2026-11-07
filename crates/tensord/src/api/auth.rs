@@ -117,6 +117,10 @@ impl Keys {
     pub fn revoke(&self) {
         self.renew(vec![]);
     }
+    /// Whether `key` is one the grant names: on a rental, the Hub's, all of them its one owner's.
+    pub fn granted(&self, key: &VerifyingKey) -> bool {
+        self.granted.read().unwrap().contains(key)
+    }
     /// The keys that may authorize a new control now.
     pub fn admitted(&self) -> Vec<VerifyingKey> {
         [self.granted.read().unwrap().as_slice(), self.home.read().unwrap().as_slice()].concat()
@@ -239,4 +243,7 @@ impl<T> Stream for Authorized<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VerifiedActor {
     pub public_key: [u8; 32],
+    /// A key the grant names: on a rental its owner's (each device the account signed in on, and
+    /// the order's own key), so it reads every run on the machine, whichever of them sent it.
+    pub owner: bool,
 }

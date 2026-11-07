@@ -78,6 +78,12 @@ impl DeviceKey {
         serde_json::to_vec(&kept).expect("a key serializes")
     }
 
+    /// The key itself: it also signs this computer's calls to the account's rentals, which the
+    /// Hub grants every device the account signed in on.
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.key
+    }
+
     /// The public key, unpadded base64url: what a rental's `creator_public_key` names.
     pub fn public_key(&self) -> String {
         b64(self.key.verifying_key().as_bytes())

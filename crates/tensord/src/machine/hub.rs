@@ -1,6 +1,6 @@
 //! The Hub's worker API as this machine (hub-client, the worker credential), HTTPS to the
-//! granted origin (public roots plus the granted CA): rental authority, the endpoint report and
-//! release.
+//! granted origin (public roots plus the granted CA): rental authority, the endpoint and speed
+//! reports and release.
 use super::grant::HubGrant;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::VerifyingKey;
@@ -131,6 +131,20 @@ impl Hub {
         };
         let answer = self.call(self.client.report_worker_endpoint(&report)).await;
         self.heard(answer)
+    }
+
+    /// What this machine measured of its host (`machine::speed`). A Hub from before the route
+    /// answers 404, which is no refusal.
+    pub async fn report_speed(
+        &self,
+        download: Option<types::WorkerDownload>,
+        cpu: Option<types::WorkerProbe>,
+    ) -> Result<(), Refusal> {
+        let report = types::WorkerSpeedReport { worker_id: self.grant.worker_id.clone(), download, cpu };
+        match self.call(self.client.report_worker_speed(&report)).await {
+            Err(hub_client::Error::Hub { status: 404, .. }) => Ok(()),
+            answer => self.heard(answer),
+        }
     }
 
     /// Ends this rental's allocation; acceptance is the Hub's 204.

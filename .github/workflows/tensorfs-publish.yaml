@@ -109,30 +109,46 @@ jobs:
       - if: inputs.dev
         run: scripts/dev-version.sh
       # `tfs` ships in the wheel's data scripts beside the module. On Linux it is built INSIDE the
-      # manylinux container, so its glibc floor matches the extension's (tfs-051).
+      # manylinux container, so its glibc floor matches the extension's (tfs-051). The container is
+      # manylinux_2_28, Torch's own: each Torch allocator shim links that Torch (backend/stage_shim.py).
       - if: runner.os == 'Linux'
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i python3.10 python3.11
-          manylinux: auto
+          manylinux: 2_28
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
-            cargo build --release --locked -p tensorfs --bin tfs
-            install -D -m 755 ../../target/release/tfs wheel-data/scripts/tfs
+            triple=$(rustc -vV | sed -n "s/^host: //p")
+            export PATH="/opt/python/cp312-cp312/bin:$PATH"
+            /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
+            /opt/python/cp310-cp310/bin/python backend/stage_cli.py --release --target "$triple" \
+              -i /opt/python/cp310-cp310/bin/python /opt/python/cp311-cp311/bin/python
       - if: runner.os != 'Linux'
+        env:
+          PY310: ${{ steps.py310.outputs.python-path }}
+          PY311: ${{ steps.py311.outputs.python-path }}
         run: |
-          cargo build --release --locked -p tensorfs --bin tfs
-          cp ../../target/release/tfs$([ "$RUNNER_OS" = Windows ] && echo .exe) wheel-data/scripts/
+          interpreters=()
+          if [ -n "$PY310" ]; then interpreters+=("$PY310"); fi
+          interpreters+=("$PY311")
+          python backend/stage_cli.py --release --target "${{ matrix.target }}" -i "${interpreters[@]}"
       - if: runner.os != 'Linux'
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i ${{ steps.py310.outputs.python-path }} ${{ steps.py311.outputs.python-path }}
+      - uses: astral-sh/setup-uv@v6
+      # The container leaves dist root-owned, and the verify step writes beside its wheels.
+      - if: runner.os == 'Linux'
+        run: sudo chown -R "$(id -u):$(id -g)" dist
+      - name: Verify and tag the complete Linux wheel
+        if: runner.os == 'Linux'
+        run: uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_2_28_$(uname -m)"
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.name }}
@@ -169,7 +185,7 @@ jobs:
         run: crates/tensorfs-py/scripts/dev-version.sh
       - uses: PyO3/maturin-action@v1
         with:
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           command: sdist
           args: --out dist

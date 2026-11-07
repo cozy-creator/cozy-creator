@@ -12,13 +12,14 @@
 #           call completes, never cancelled, with its image
 #   big     the same with a big_gb game that cannot fit beside the call: it keeps the floor it runs on (a ratchet
 #           below it failed it) and completes; the game has what is left
-#   shrink  a 4 GB game mid-call settles to 1.5 GB and stays: the next Qwen call's first pass runs in the machine's
-#           last target for it, which is all the card less H, the game's bytes, the driver's own and the other
-#           executors', and it moves within 10% of the bytes of the same call beside a 1.5 GB holder from before it
+#   shrink  a 4 GB game mid-call settles to 1.5 GB and stays: cozy holds 1 GiB more within the calls that follow, read
+#           from the GPU's ledger, and the next Qwen call completes and moves within 10% of the bytes of the same call
+#           beside a 1.5 GB holder from before it
 #   start   a game starts as an executor opens its CUDA context: the call completes, nothing is ended for it, and the
 #           GPU's reading is known again once the game exits (an ambiguous start is never taken as foreign for life)
 # params:
 #   runtime, tensorfs  `machine update` versions (default: the pod's own)
+#   tensord            a cozy binary for the pod (default: the session's)
 #   idle_gb, midjob_gb, big_gb  the games (default 5, 3 and 5, of an 8 GB card)
 #   traffic_gb         GB the provider bills: the image, SDXL, Qwen and the fixture's environment (default 45)
 . "$(dirname "$0")/lib.sh"
@@ -29,7 +30,7 @@ FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 quote "$(param traffic_gb 45)" 3000
 rent
 
-args=(--tensord "$(command -v cozy)")
+args=(--tensord "$(param tensord "$(command -v cozy)")")
 [ -z "$(param runtime)" ] || args+=(--runtime "$(param runtime)")
 [ -z "$(param tensorfs)" ] || args+=(--tensorfs "$(param tensorfs)")
 step update machine update "$NAME" "${args[@]}" -y || fail "update"
@@ -110,11 +111,13 @@ sleep 25; run big-game ./game.py op=status cfg='{"name": "big"}'
 say "big game: $(jq -c '{phase, gb: .cfg.gb, alloc_s, held_mib}' "$OUT/big-game.value")"  # both do not fit: the call is the bar
 [ "$(status big-qwen)" = completed ] || fail "big: the Qwen call is $(status big-qwen): $(jq -c .reason "$OUT/big-qwen.json")"
 
-m0=$(memlines)
+cozy machine ssh "$NAME" "cat > /var/tmp/held.py" < "$FIX/held.py" || fail "shrink: no ledger sampler"
+cozy machine ssh "$NAME" "rm -f /var/tmp/held.stop; setsid nohup python3 /var/tmp/held.py /var/tmp/held.log /var/tmp/held.stop > /dev/null 2>&1 < /dev/null &"
 game shrink-arm '{"name": "shrink", "gb": 4, "trigger": "util", "util_pct": 80, "util_s": 3, "delay_s": 1, "give_up_s": 60, "shrink_to_gb": 1.5, "shrink_after_s": 8, "hold_s": 900}'
 run shrink-job qwen-image-2/generate prompt="a red tram on a rainy street, photo" seed:=$RANDOM megapixels:=1
 run shrink-next qwen-image-2/generate prompt="a glass teapot of blooming tea, photo" seed:=$RANDOM megapixels:=1
-cozy machine logs "$NAME" memory -n 0 2>/dev/null | tail -n +$((m0 + 1)) > "$OUT/shrink-memory.log"
+cozy machine ssh "$NAME" "touch /var/tmp/held.stop; cat /var/tmp/held.log" > "$OUT/shrink-held.log" 2>/dev/null
+cozy machine ssh "$NAME" "cat $(jq -r .state "$OUT/shrink-arm-write.value")" > "$OUT/shrink-game.json" 2>/dev/null
 run shrink-stop ./game.py op=stop cfg='{"name": "shrink"}'
 # The reference: the same call beside a program that holds what the game kept, from before it (a smaller card).
 game shrink-hold '{"name": "ref", "gb": 1.5, "trigger": "now", "give_up_s": 60, "hold_s": 900, "wait_s": 70}'
@@ -128,33 +131,19 @@ rec = lambda n: json.load(open(f"{out}/{n}.json"))
 moved = lambda r: sum(v["stats"]["moved"]["store"]["bytes"] + v["stats"]["moved"]["baked"]["bytes"]
                       for v in r["measurements"]["memory"]["stats"]["varena"])
 nxt, ref = rec("shrink-next"), rec("shrink-ref2")
-pid = nxt["measurements"]["execution"]["gpus"][0]["pid"]
-first = nxt["measurements"]["memory"]["stats"]["varena"][0]["stats"].get("room_first_pass") or {}
-start_s = nxt["started_at_ms"] / 1000
-last = None  # the machine's last target for this executor before the call began, and what was there for it then
-for line in open(f"{out}/shrink-memory.log"):
-    t, _, body = line.partition(" ")
-    if float(t) > start_s or '"event":"room"' not in body:
-        continue
-    e = json.loads(body)
-    target = (e.get("targets") or {}).get(str(pid)) if "targets" in e else (e.get("call") == pid and e.get("target"))
-    if not target:
-        continue
-    # All the card less H, the game's bytes, the driver's own and the other executors': what we hold and what is free,
-    # less H and the others.
-    others = sum(v for k, v in (e.get("held") or {}).items() if int(k) != pid)
-    last = (target, e["own_bytes"] + e["free_bytes"] - e["headroom_bytes"] - others)
-slack = 64 << 20
-ok = (last is not None and abs(last[0] - last[1]) <= slack and first.get("limit") is not None
-      and first.get("target") is not None and abs(first["target"] - last[0]) <= slack)
-print(json.dumps({"executor": pid, "first_pass": first, "last_target": last and last[0], "expected": last and last[1],
-                  "bytes": moved(nxt), "reference_bytes": moved(ref), "room_ok": ok,
+# Taking it back: what cozy held when the game settled, and the first moment it held 1 GiB more.
+shrunk = json.load(open(f"{out}/shrink-game.json"))["t_shrunk"]
+held = [tuple(map(float, f)) for f in (line.split() for line in open(f"{out}/shrink-held.log")) if len(f) == 2 and f[1].isdigit()]
+before = next((b for t, b in reversed(held) if t <= shrunk), 0)
+rose = next((t - shrunk for t, b in held if t > shrunk and b >= before + 2**30), None)
+print(json.dumps({"held_at_shrink_gib": round(before / 2**30, 2), "held_peak_after_gib": round(max((b for t, b in held if t > shrunk), default=0) / 2**30, 2),
+                  "took_back_s": rose and round(rose, 2), "bytes": moved(nxt), "reference_bytes": moved(ref),
                   "bytes_ok": abs(moved(nxt) - moved(ref)) <= 0.1 * moved(ref)}))
 PY
 )
 say "shrink: $verdict"
-{ [ "$(status shrink-next)" = completed ] && jq -e '.room_ok and .bytes_ok' <<<"$verdict" > /dev/null; } ||
-  fail "shrink: the next call did not run in the room the game left, or moved more than 10% over its reference"
+{ [ "$(status shrink-next)" = completed ] && jq -e '.took_back_s != null and .bytes_ok' <<<"$verdict" > /dev/null; } ||
+  fail "shrink: cozy took nothing back once the game settled, the next call failed, or it moved more than 10% over its reference"
 
 step restart2 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"
 m0=$(memlines)

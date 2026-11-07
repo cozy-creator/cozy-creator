@@ -24,7 +24,9 @@ SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.p
 SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
 CHECKS = [quality.check, lm.check, swap.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
-SLACK = {'execution_ms': 0.25, 'step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
+# Step 1 is judged as load + step 1 (the run's or call's start to step 1's end; agreed by the lead, 2026-11-06): v2 readies
+# weights on first use inside step 1, where v1 readied them in a load before it. step1_ms is kept, not judged.
+SLACK = {'execution_ms': 0.25, 'to_step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
 # And at least this much: a CUDA context's size moves between drivers (MiB); a sub-second CPU cell's time is its
 # host's scheduling (ms).
 FLOOR = {'vram_mb': 256, 'execution_ms': 250}
@@ -33,6 +35,10 @@ KNOWN_BLOCKING = os.path.join(HERE, 'known-blocking.json')
 BLOCKING_SLACK = 0.5
 # Cells that fail on a known open bug and are not run until it is fixed (lead-ruled), listed in every verdict.
 KNOWN_FAILING = os.path.join(HERE, 'known-failing.json')
+# The host's own speed: each executor's package import (its CPU) and CUDA init, held against the same cells' known-good.
+# At SLOW_HOST times those or more, the host is slow and its time fails say so, not a regression (purin 11-05: imports
+# 2.6x and CUDA init 2.2x mochizou's, th-364). A leg under HOST_FLOOR_MS (an executor forked from an imported parent) isn't judged.
+HOST_LEGS, SLOW_HOST, HOST_FLOOR_MS = ('package_import', 'cuda_init'), 2, 250
 fails, notes = [], []
 
 
@@ -80,6 +86,9 @@ for name, target, number in cells:
     obs, gemm, attn = run.observations, run.gemm, run.attention
     for off in run.capabilities_off:
         fails.append(f'{name}: the Runtime turned off {off}')
+    # A graph that differed from eager was caught, and is still a bug. A refusal only costs speed: check.py judges that.
+    for code, why in run.safeguards.items():
+        (fails if code == 'replay_mismatch' else notes).append(f'{name}: {code}: {why[0][:200]} ({len(why)})')
     for o in obs:
         text = f"{o.get('name')} {o.get('value')}"
         if fp8_weight_only(o):
@@ -101,7 +110,7 @@ for name, target, number in cells:
     for m in run.measurements:
         ex = m.get('execution') or {}
         for part in ('executor', 'construction'):
-            for leg in ('cuda_init', 'measure_device'):
+            for leg in ('cuda_init', 'measure_device', 'package_import'):
                 v = ((ex.get(part) or {}).get('legs_ms') or {}).get(leg)
                 if v: legs[leg] = max(legs.get(leg, 0), round(v))
     host_legs[name] = legs
@@ -116,10 +125,12 @@ for name, target, number in cells:
         notes.append(f'{name}: step 1 {s[0] / 1000:.1f} s, of which {reads / 1000:.1f} s readying weights (judged in execution time)')
         s = [s[0] - reads] + s[1:]
     c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn, 'graphs': run.graphs,
-                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads),
-                         'vram_mb': vram and vram['added'],
+                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads), 'to_step1_ms': run.to_step1_ms,
+                         'vram_mb': vram and vram['added'], 'host': {leg: legs[leg] for leg in HOST_LEGS if leg in legs},
                          'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
     for i, ms, ref, what in slow_steps(canonical(target), s):
+        if i == 1:
+            continue  # step 1 is judged as load + step 1 against the known-good (to_step1_ms)
         fails.append(f'{name}: step {i} {ms / 1000:.1f} s vs {what} {ref / 1000:.1f} s (at most {STEP_RATIO}x + {STEP_EXTRA_MS // 1000} s)')
 
 
@@ -176,8 +187,26 @@ if a and b:
 # Against the last known-good numbers.
 base = json.load(open(BASE)) if os.path.exists(BASE) else {'sku': sku, 'cells': {}}
 known = json.load(open(KNOWN_BLOCKING)) if os.path.exists(KNOWN_BLOCKING) else []
+mid = lambda xs: sorted(xs)[len(xs) // 2]
+known_good = lambda name, c: [g for g in base['cells'].get(name, {}).get('good', []) if canonical(g['target']) == c['target']]
+slow = []
+for leg in HOST_LEGS:
+    pairs = []  # (this run's, the most its known-good took)
+    for name, c in summary.items():
+        vals = [g['host'][leg] for g in known_good(name, c) if (g.get('host') or {}).get(leg, 0) >= HOST_FLOOR_MS]
+        if vals and c['host'].get(leg, 0) >= HOST_FLOOR_MS:
+            pairs.append((c['host'][leg], max(vals)))
+    if not pairs:
+        continue
+    ratio = mid([now / good for now, good in pairs])
+    notes.append(f'host {leg}: median {mid([p[0] for p in pairs]) / 1000:.1f} s vs known-good {mid([p[1] for p in pairs]) / 1000:.1f} s,'
+                 f' {ratio:.1f}x over {len(pairs)} cells')
+    if ratio >= SLOW_HOST:
+        slow.append(f'{leg} {ratio:.1f}x')
+if slow:
+    notes.append(f'slow host: {" and ".join(slow)} its cells\' known-good: its time limits judge the host, not the code')
 for name, c in summary.items():
-    good = [g for g in base['cells'].get(name, {}).get('good', []) if canonical(g['target']) == c['target']]
+    good = known_good(name, c)
     before = good[-1].get('blocking', {}) if good else {}
     for work, ms in sorted(c['blocking'].items()):
         site = next((k for k in known if fnmatch.fnmatch(work, k['pattern'])), None)
@@ -188,7 +217,7 @@ for name, c in summary.items():
         else:
             notes.append(f'{name}: known blocking {work} {ms / 1000:.1f} s ({site["issue"]}, {site["site"]})')
 for name, c in summary.items():
-    good = [g for g in base['cells'].get(name, {}).get('good', []) if canonical(g['target']) == c['target']]
+    good = known_good(name, c)
     if not good:
         notes.append(f'{name}: no known-good numbers for {c["target"]} on {sku}: this run starts them'); continue
     last = good[-1]
@@ -206,7 +235,7 @@ for name, c in summary.items():
         unit, div = ('GiB', 1024) if k == 'vram_mb' else ('s', 1000)
         line = (f'{name} {k.rsplit("_", 1)[0]}: {c[k] / div:.1f} {unit} vs known-good {min(vals) / div:.1f}-{max(vals) / div:.1f} {unit}'
                 f' (limit {limit / div:.1f})')
-        (fails if c[k] > limit else notes).append(line)
+        (fails if c[k] > limit else notes).append(line + (' (slow host)' if slow and c[k] > limit and k != 'vram_mb' else ''))
 
 for k in (json.load(open(KNOWN_FAILING)) if os.path.exists(KNOWN_FAILING) else []):
     if k['sku'] in (sku, '*'):
@@ -219,8 +248,14 @@ for leg in ('cuda_init', 'measure_device'):
 # A GPU fault, or a kernel self-check that crashed its process, fails the gate even when every cell passed: a group walked
 # into a faulting kernel on corteo with only the machine's record saying so. The machine's own log and record, kept by end_it.
 LOG = os.path.join(out, 'machine-tensord.log')
+# The page faults tool_guard reports it caused, on purpose and off every run, are the only ones forgiven.
+SUMMARY = os.path.join(out, 'faults', 'out', 'summary.txt')
+meant = sum(len(json.loads(l)['xids']) for l in open(SUMMARY) if json.loads(l)['cell'] == 'tool_guard') if os.path.exists(SUMMARY) else 0
 for line in (l for l in open(LOG, errors='replace') if re.search(r'GPU \d+ (reported Xid|was lost).*: failing', l)) if os.path.exists(LOG) else ():
-    fails.append(f'gpu fault: {line.strip()[:200]}')
+    if meant and 'Xid 31' in line:
+        meant -= 1
+    else:
+        fails.append(f'gpu fault: {line.strip()[:200]}')
 END = os.path.join(out, 'machine-end.json')
 for kernel in (json.load(open(END)).get('status', {}).get('kernels', []) if os.path.getsize(END) else []) if os.path.exists(END) else []:
     if not kernel.get('ok'):
@@ -236,11 +271,12 @@ for check in CHECKS:
 for n in notes: print('note', n)
 for f in fails: print('FAIL', f)
 print('SUITES', ','.join(SUITES) or 'none')
-print('VERDICT', 'FAIL' if fails else 'PASS', f'({len(cells)} cells)', '' if not fails or not accept else '(accepted by the lead)')
+print('VERDICT', 'FAIL' if fails else 'PASS', f'({len(cells)} cells)', '' if not fails or not accept else '(accepted by the lead)',
+      f'(slow host: {" and ".join(slow)})' if slow and fails else '')
 if not fails or accept:
     label = open(os.path.join(out, 'label')).read().strip()
     for name, c in summary.items():
-        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'graphs', 'execution_ms', 'step1_ms', 'steady_ms', 'vram_mb', 'blocking')}
+        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'graphs', 'execution_ms', 'step1_ms', 'to_step1_ms', 'steady_ms', 'vram_mb', 'blocking', 'host')}
         entry.update(label=label, at=time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime()))
         base['cells'].setdefault(name, {'good': []})['good'].append(entry)
     json.dump(base, open(BASE, 'w'), indent=1)

@@ -247,14 +247,7 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Upgrading from format 2
 
-A project of format 2 upgrades itself the first time anything opens it, or a run lands in it, and says so once. The old files stay beside the new as `project.yaml.v2` and `project.lock.v2`. Each asset's approved version, else its newest, is taken as current, so what was out of date no longer shows it. To keep those marks, upgrade it yourself first:
-
-```
-cozy project status --json > status.json      # with the cozy that reads format 2
-cozy project upgrade --status status.json     # with this one
-```
-
-It runs here with no Calcifer. What can't convert is refused, says why and stays as it is: runs on their way, or two names that fold to one. Format 1 isn't moved.
+A project of format 2 upgrades itself the first time anything opens it, or a run lands in it, and says so once. The old files stay beside the new as `project.yaml.v2` and `project.lock.v2`. Each asset's state is worked out from the old files as the cozy that reads format 2 did, so what was current stays current and what was out of date stays so. `cozy project upgrade` does the same here, with no Calcifer; `--status <file>`, what `cozy project status --json` said under that cozy, is taken over that. What can't convert is refused, says why and stays as it is: runs on their way, or two names that fold to one. Format 1 isn't moved.
 
 - Each asset's `render` goes flat, `prompt` as `instructions`, and `with` as `tool`, always a function: H3 is `generate`, with `turbo: false` only where a file said so or where it set `steps`; any other package's `turbo: true` is `generate_turbo`, `turbo: false` `generate`, and with neither what made its newest version. A video with only `video` and `resolution` is `upscale`. `with: cozy` is `cozy/edit`, or `cozy/frame` for a picture. `pieces` become `tracks`, `start` `in` and `end` `out`. A hash in `image`, `video` or `audio` is `approved`, and an input under `# was` is back. `kind` lines go. Comments stay.
 - Each entity folds into its sheet, which takes its name, `description` and `asset_type`. Each form becomes an asset, `<entity>.<form>`, and mentions are rewritten.
@@ -262,6 +255,7 @@ It runs here with no Calcifer. What can't convert is refused, says why and stays
 - `defaults` go. A style becomes the text asset `style`, and a second, `video_style`, where the video's differs: `<style>` and the rest of its words, if it extends the first. Each prompt mentions the one it took: in Qwen's `instructions` as `Style: <style>.`, at the front of H3's `summary`, which it starts if there's none, and as `style: <style>` in any other package. A shared `soundscape` becomes a text asset too, mentioned in each shot's. `music: N/A` goes, as an empty field says the same. `aspect_ratio` and the rest go into each asset that took them, and Qwen's `transparent: true` into the words it stood for.
 - Names that fold to one are said, by name, and nothing is written: rename one, and upgrade again.
 - A still a shot wrote, and that something mentions, becomes a file asset. A mention no version wrote and nothing makes is left as it is, and said.
+- A mention whose meaning changes is said, with its asset and lines. A beat writes nothing in format 3, so a mention of what one wrote now names nothing, or a version: `<coast.1>` reads as version 1 of `coast`.
 - **The new key is stamped on each asset's current version**, so nothing goes out of date and nothing runs. Other versions keep their old keys: putting old text back won't find them, and what was out of date stays so.
 
 **Format 3 to 4** (`tracker/design/tools.md`) goes on from there, or alone on a format 3 folder, keeping each box's state as format 3 read it: the new name-blind key is stamped on exactly what stood, so nothing goes out of date and nothing out of date comes back. `qwen-image-2/generate` and `generate_turbo` become `qwen-image-2/image` with `turbo`; a shot with a `plate` becomes `minimax-h3/edit`, its `lora` its `edit` choice and its typed trigger word off its beats; a written `continue_from` goes; a shot's `resolution` and `upscale` go, an upscale box's `resolution` is `to`, and `upscale.model: seedvr2` a `seedvr2/upscale` box; `kind`, `asset_type` and `voice` lines go, with one warning per project naming the boxes; a dotted name becomes `_`, its mentions, lock row and canvas row with it. The old files stay as `project.yaml.v3` and `project.lock.v3`.

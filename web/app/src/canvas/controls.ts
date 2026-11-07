@@ -1,4 +1,5 @@
 import type { Asset, Field, Media, Tool } from "../types"
+import { ratioOf } from "./shown"
 import { type Row, rowsIn } from "./text"
 
 /** Words with a name, which whatever mentions them reads: in the tool list, and no function of any package. */
@@ -72,15 +73,6 @@ export const startingFields = (tool: Tool) => Object.fromEntries(tool.fields.fla
 /** A choice's option in its own words. */
 export const optionWord = (field: Field, option: unknown) => field.words?.[String(option)] ?? String(option)
 
-/** How a field behind More says it's set, or null at its default. A shape needs no words: it's the box's own. */
-export function markOf(field: Field, value: unknown): string | null {
-  if (field.type === "shape" || atDefault(field, value)) return null
-  if (field.type === "toggle") return `${field.label} ${value ? "on" : "off"}`
-  if (field.type === "choice") return `${field.label} ${optionWord(field, value)}`
-  if (field.type === "number" || field.type === "seed") return `${field.label} ${String(value)}`
-  return field.label
-}
-
 /** A field no tool names, in words. */
 export const fieldWords = (field: string) => field[0].toUpperCase() + field.slice(1).replaceAll("_", " ")
 
@@ -103,8 +95,12 @@ const SHAPES = ["32:9", "2.39:1", "21:9", "2:1", "16:9", "5:3", "3:2", "4:3", "5
 
 const parts = (shape: string) => shape.split(":").map(Number)
 
+/** The ratios a shape allows that are shapes. */
+const ratiosOf = (field: Field) => (field.ratios ?? []).filter((ratio) => ratioOf(ratio) !== undefined)
+
 export const shapesOf = (field: Field): string[] => {
-  if (field.ratios?.length) return field.ratios
+  const ratios = ratiosOf(field)
+  if (ratios.length) return ratios
   const fits = (shape: string) => {
     const [w, h] = parts(shape)
     return w / h >= (field.min ?? 0) && w / h <= (field.max ?? Infinity)
@@ -119,4 +115,11 @@ export function snapped(ratio: number, shapes: string[]): string {
     return Math.abs(Math.log(ratio / (w / h)))
   }
   return shapes.reduce((best, shape) => (off(shape) < off(best) ? shape : best))
+}
+
+/** `ratio` as its tool can make it: the nearest of its ratios, else held to its bounds. */
+export function heldTo(field: Field, ratio: number): number {
+  const ratios = ratiosOf(field)
+  if (ratios.length) return ratioOf(snapped(ratio, ratios))!
+  return Math.min(field.max ?? Infinity, Math.max(field.min ?? 0, ratio))
 }

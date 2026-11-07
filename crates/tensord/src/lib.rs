@@ -4,6 +4,7 @@
 // Every OS call goes through platform or a safe wrapper (xs-067).
 #![forbid(unsafe_code)]
 pub mod access;
+pub mod activity;
 pub mod adapter;
 mod archive;
 pub mod api;

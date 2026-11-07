@@ -53,6 +53,7 @@ test = "pr: candidates"
 "--tensorfs" = "pr: candidates"
 "--tensord" = "pr: candidates"
 "--gpu-memory-limit" = "gate: stress, the 8/6/3 GiB caps"
+"--mode" = "gate: varena/machine-mode/prove.py, shared/dedicated update, live status, native Start and restore"
 ["machine add"]
 test = "pr: this runner's own machine by its address, refused (release-gate session multi-machine: one pod adds another, runs on it, removes it)"
 "--fingerprint" = "pr: this runner's own machine, refused"

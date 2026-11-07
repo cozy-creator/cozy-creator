@@ -158,17 +158,25 @@ jobs:
         if: contains(inputs.build, 'tensorfs')
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           target: x86_64
-          manylinux: auto
+          manylinux: 2_28
           working-directory: crates/tensorfs-py
-          args: --release --locked --target-dir ../../target/manylinux2014 --out dist -i python3.11
+          args: --release --locked --target-dir ../../target/manylinux2_28 --out dist -i python3.11
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
-            # Match maturin's explicit target so the CLI and extension share dependency builds.
-            cargo build --release --locked --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2014 -p tensorfs --bin tfs
-            install -D -m 755 ../../target/manylinux2014/x86_64-unknown-linux-gnu/release/tfs wheel-data/scripts/tfs
-      # The container leaves root-owned files the cache post-step writes.
+            export PATH="/opt/python/cp312-cp312/bin:$PATH"
+            /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
+            # Match maturin's target, interpreter and feature graph through the canonical helper.
+            /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release \
+              --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2_28 \
+              -i /opt/python/cp311-cp311/bin/python
+      # The container leaves root-owned files the verify and cache post-steps write.
+      - if: always() && contains(inputs.build, 'tensorfs')
+        run: sudo chown -R "$(id -u):$(id -g)" target crates/tensorfs-py
+      - name: Verify and tag the complete Linux wheel
+        if: contains(inputs.build, 'tensorfs')
+        run: uv run --no-project --with auditwheel --with patchelf python crates/tensorfs-py/backend/portable_wheels.py crates/tensorfs-py/dist --platform manylinux_2_28_x86_64
       - name: Import the complete TensorFS wheel
         if: contains(inputs.build, 'tensorfs')
         run: |
@@ -205,13 +213,11 @@ jobs:
           assert encoded.parts["weight"].nbytes == 256
           assert measured == {"amax": 0.0, "max_abs_error": 0.0, "sse": 0.0, "energy": 0.0, "saturated": 0}
           assert tensorfs.ConversionControl().progress() == (0, 0, 0)
-          assert varena.supports_load_execution()
-          assert hasattr(tensorfs._ext._VarenaLoadSlot, "encoded")
+          from tensorfs.varena import _runtime
+          assert hasattr(_runtime, "Source") and hasattr(_runtime, "Pages")
           assert hasattr(tensorfs._ext._VarenaRegion, "pin")
           print("TensorFS full-package import and native capabilities:", tensorfs.__version__)
           PY
-      - if: always() && contains(inputs.build, 'tensorfs')
-        run: sudo chown -R "$(id -u):$(id -g)" target crates/tensorfs-py
       - if: contains(inputs.build, 'tensorfs')
         uses: actions/upload-artifact@v4
         with:

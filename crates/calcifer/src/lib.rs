@@ -23,6 +23,7 @@ pub mod local_code;
 pub mod tools;
 pub mod machines;
 pub mod outputs;
+mod others;
 mod page;
 pub mod play;
 pub mod project;
@@ -51,7 +52,6 @@ use protocol::{
     ids::{Digest, RunId},
     machine as v1,
 };
-use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey as _};
 use sha2::{Digest as _, Sha256};
 use tokio::{
     sync::{Notify, broadcast, watch},
@@ -917,12 +917,7 @@ impl Calcifer {
             Some(endpoint) => match &entry.link {
                 Some((linked, link)) if linked == endpoint => Some(link.clone()),
                 _ => {
-                    let key = std::fs::read_to_string(&row.key)
-                        .ok()
-                        .and_then(|pem| SigningKey::from_pkcs8_pem(&pem).ok())
-                        .ok_or_else(|| {
-                            format!("cannot read the signing key {}", row.key.display())
-                        })?;
+                    let key = machines::signer(&row.key).map_err(|e| e.message)?;
                     let link = Link::new(endpoint, key).map_err(|e| e.to_string())?;
                     entry.link = Some((endpoint.clone(), link.clone()));
                     Some(link)
@@ -1137,22 +1132,7 @@ impl Calcifer {
                     // Each stage it enters is kept with the run, so a run whose machine is lost
                     // still says where it got to and when (run 14868, `encoding prompt`).
                     let stage = p.stage.clone();
-                    let entered = self.progress(
-                        id,
-                        Progress {
-                            stage: p.stage,
-                            fraction: (p.fraction >= 0.0).then_some(p.fraction),
-                            stage_fraction: p.stage_fraction.filter(|f| *f >= 0.0),
-                            completed: p.completed,
-                            total: p.total,
-                            bytes_done: p.bytes_done,
-                            bytes_total: p.bytes_total,
-                            step_ms: p.step_ms,
-                            step_avg_ms: p.step_avg_ms,
-                            at_ms: frame.at_ms,
-                            ..Default::default()
-                        },
-                    );
+                    let entered = self.progress(id, progress_of(p, frame.at_ms));
                     if entered {
                         batch.logs.push((frame.at_ms, "stage".into(), stage));
                     }
@@ -1417,6 +1397,25 @@ fn finished(state: &str) -> bool {
 fn queued(run: &Run) -> bool {
     run.status == RunStatus::Queued
         || (run.status == RunStatus::InProgress && run.machine_state.as_deref() == Some("queued"))
+}
+
+/// A machine's progress report, sent at `at_ms`, as a run's.
+pub(crate) fn progress_of(p: v1::Progress, at_ms: i64) -> Progress {
+    let mut progress = Progress {
+        stage: p.stage,
+        fraction: (p.fraction >= 0.0).then_some(p.fraction),
+        stage_fraction: p.stage_fraction.filter(|f| *f >= 0.0),
+        completed: p.completed,
+        total: p.total,
+        bytes_done: p.bytes_done,
+        bytes_total: p.bytes_total,
+        step_ms: p.step_ms,
+        step_avg_ms: p.step_avg_ms,
+        at_ms,
+        ..Default::default()
+    };
+    progress.done_fraction = done_fraction(&progress);
+    progress
 }
 
 /// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.

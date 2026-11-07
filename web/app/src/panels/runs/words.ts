@@ -1,5 +1,5 @@
 import type { Run, Stalled } from "../../types"
-import { bytes, shown, span, usd } from "../format"
+import { bytes, leftWords, shown, span, usd } from "../format"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
 
@@ -23,14 +23,38 @@ export function stalledWords(stalled: Stalled, now: number): string {
   return `No progress for ${span(minutes * 60)} on ${stalled.machine}${cost}`
 }
 
-/** How long is left: its bytes' rate, else its steps' pace. */
-export function eta(run: Run): string | null {
+/** The seconds left of its stage: its bytes' rate, else its steps' pace. */
+export function secondsLeft(run: Run): number | undefined {
   const progress = run.progress
-  if (!progress) return null
-  if (progress.eta_s !== undefined) return `${span(progress.eta_s)} left`
+  if (!progress) return undefined
+  if (progress.eta_s !== undefined) return progress.eta_s
   const pace = progress.step_avg_ms || progress.step_ms
   const left = (progress.total ?? 0) - (progress.completed ?? 0)
-  return pace && left > 0 ? `about ${span((pace * left) / 1000)} left` : null
+  return pace && left > 0 ? (pace * left) / 1000 : undefined
+}
+
+/** How long is left: its bytes' rate, else its steps' pace. */
+export function eta(run: Run): string | null {
+  const left = secondsLeft(run)
+  if (left === undefined) return null
+  return run.progress?.eta_s !== undefined ? `${span(left)} left` : `about ${span(left)} left`
+}
+
+const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
+/** Its own work, as a person reads it: `Generating image 3 / 8, 25 s left`. */
+export function workWords(run: Run): string {
+  const progress = run.progress
+  if (!progress?.stage) return ""
+  const steps = progress.total ? ` ${progress.completed ?? 0} / ${progress.total}` : ""
+  const left = secondsLeft(run)
+  return `${sentence(progress.stage)}${steps}${left === undefined ? "" : `, ${leftWords(left)}`}`
+}
+
+/** Worth saying more than a bar: it has run over 10 s, or has over 10 s to go. */
+export function long(run: Run, now: number): boolean {
+  const began = run.started_at_ms ?? run.accepted_at_ms ?? run.created_at_ms
+  return now - began > 10_000 || (secondsLeft(run) ?? 0) > 10
 }
 
 /** Its stage, how far, and how fast bytes move; what it waits on says first. */

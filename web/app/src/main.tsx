@@ -43,15 +43,13 @@ function SignedOut() {
   )
 }
 
+/** Asked again every few seconds: the page opens by itself once Calcifer answers. */
 function Unreachable() {
   return (
     <main className="gate">
       <h1>Calcifer isn't answering</h1>
-      <p>Run this in a terminal, then reload:</p>
+      <p>This opens as soon as it does. If it doesn't come back, run this in a terminal:</p>
       <Copyable text="cozy open" />
-      <button type="button" className="tb" onClick={() => location.reload()}>
-        Reload
-      </button>
     </main>
   )
 }
@@ -85,11 +83,18 @@ function Connected({ connection }: { connection: Connection }) {
   )
 }
 
+const ASK_AGAIN_MS = 2000
+
 function App() {
   const [state, setState] = useState<Boot | null>(null)
   useEffect(() => {
     void booted.then(setState)
   }, [])
+  useEffect(() => {
+    if (!state || !("failed" in state) || state.failed !== "unreachable") return
+    const again = setTimeout(() => void connect().then(setState), ASK_AGAIN_MS)
+    return () => clearTimeout(again)
+  }, [state])
   if (!state) return <main className="gate">Connecting…</main>
   if ("connection" in state) return <Connected connection={state.connection} />
   if (state.failed === "remote") return <RemoteDown machine={state.machine} />

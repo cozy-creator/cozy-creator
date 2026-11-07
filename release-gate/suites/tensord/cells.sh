@@ -200,6 +200,8 @@ else
   expect tensord-adapter-views FAIL "runs $v0 $v1 $v2 $v3: $s; the disk's free bytes went ${f0:-?} -> ${f1:-?} ($(( grew >> 20 )) MiB used)"
 fi
 
+[ "$NGPU" -lt 2 ] || . "$HERE/suites/tensord/one-process.sh"
+
 # The second reading, past two of reclaim's passes since the first.
 while (( $(date +%s) - LINKS_AT < 1260 )); do sleep 30; done
 LINKS_LAST=$(links_resolve)

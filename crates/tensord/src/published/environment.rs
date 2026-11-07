@@ -1,8 +1,9 @@
 //! Package environments, built one way for a release (`published`) and for local code
-//! (`local_source`): uv's Python, the locked (or resolved) dependencies, wheels from files, the
-//! project, this machine's Runtime/TensorFS pair over them, then this machine's PyTorch layer
-//! (`layer`), then the environment's description by its own Runtime and its record; its bytecode
-//! compiles once it is installed. uv runs under one environment.
+//! (`local_source`): uv's Python, the locked (or resolved) dependencies with the Runtime/TensorFS
+//! pair the lock names (this machine's where it is a later patch of it, `stands_in`), wheels from
+//! files, the project, then this machine's PyTorch layer (`layer`), then the environment's
+//! description by its own Runtime and its record; its bytecode compiles once it is installed. uv
+//! runs under one environment.
 use super::{canceled, io_failure, layer::Layer, Failure, Job, Locked, Publisher, SDK};
 use crate::{catalog::normalized, machine::{pypi, update}, process::Supervised};
 use pep440_rs::{Version, VersionSpecifiers};
@@ -31,6 +32,8 @@ pub(crate) struct Project<'a> {
     pub editable: bool,
     /// Indexes an unlocked project's sources name without declaring (name → URL).
     pub indexes: &'a BTreeMap<String, String>,
+    /// Its package, which the machine lists installing (`activity`).
+    pub package: &'a str,
     /// `{package} {release}`, as a person reads it.
     pub label: &'a str,
     /// What the person sees while it is built; its steps are counted after it.
@@ -42,20 +45,11 @@ pub(crate) struct Project<'a> {
 /// What its record says of the Runtime pair it holds.
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(crate) struct Built {
-    /// `machine`: this machine's pair; `own`: newer ones its floor needs, in this environment alone;
-    /// `locked`: the package's own, on a machine with no pair.
+    /// `machine`: this machine's pair; `locked`: the one its lock names; `resolved`: the one uv
+    /// resolved for an unlocked project whose bounds this machine's misses.
     pub sdk: String,
-    /// What the run is told of the pair (uv's findings, a development Runtime): empty for nothing.
+    /// What the run is told of the pair (uv's findings, a pair not taken): empty for nothing.
     pub fallback: String,
-    /// The package's floors on the pair that a development Runtime missed and ran regardless.
-    #[serde(default)]
-    pub floors_missed: Vec<String>,
-}
-
-/// The pair's step: refused for a floor the pair misses, with what it misses.
-enum Pair {
-    Floor(Vec<String>),
-    Failed(Failure),
 }
 
 /// A requirement on a member of the pair (`cozy-runtime[media]>=0.39.0`).
@@ -95,6 +89,7 @@ impl Publisher {
     /// declares a Torch range the layer misses does it install its own, with a warning: rare by
     /// design, since packages declare a minimum and machines run the newest Torch.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
+        let _install = job.within(crate::activity::Kind::Install, project.package);
         let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,
@@ -113,9 +108,9 @@ impl Publisher {
     /// `build` on `layer`, or with no layer and the Torch requirements `own` installed for itself.
     fn build_on(&self, env: &Path, project: &Project, job: &Job, layer: Option<&Layer>, own: &[String]) -> Result<Built, Failure> {
         let _cache = self.uv_cache_hold().map_err(io_failure)?;
-        let own_sdk = !self.sdk.requirements.is_empty();
+        let over = project.locked.is_some_and(|locked| self.stands_in(locked));
         let editable_after = project.editable && project.locked.is_some();
-        let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, own_sdk];
+        let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, over];
         let total = steps.iter().filter(|s| **s).count() + 1 + usize::from(project.fetch.is_some());
         let step = std::cell::Cell::new(0);
         let next = || {
@@ -138,35 +133,39 @@ impl Publisher {
         let provided: Vec<&str> = layer.map(|l| l.provided().collect()).unwrap_or_default();
         let excludes = env.join("cozy-excludes.txt");
         fs::write(&excludes, provided.iter().map(|name| format!("{name}\n")).collect::<String>()).map_err(io_failure)?;
-        next();
-        let pair: Vec<&str> = SDK.into_iter().filter(|_| own_sdk).collect();
-        match project.locked {
-            Some(locked) => {
-                let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-editable", "--no-install-project",
-                    "--project", &dir, "--python", &py];
-                let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
-                    .chain(pair.iter().copied().filter(|name| locked.packages.contains_key(*name)))
-                    .chain(locked.torch.iter().map(String::as_str).filter(|_| layer.is_some()));
-                for name in held {
-                    args.extend(["--no-install-package", name]);
-                }
-                // uv keys a directory it built by its metadata alone: changed code builds again.
-                for name in &locked.local {
-                    args.extend(["--refresh-package", name]);
-                }
-                let placed = [("UV_PROJECT_ENVIRONMENT", env.as_os_str())];
-                self.uv(&args, &placed, job).map_err(|failure| platform(failure, project.label))?;
-                // An App the lock holds is described from its installed files, which the Runtime's
-                // static reader refuses as links into an image's seeded cache: those are copied.
-                let linked = linked_applications(env);
-                if self.sdk.uv.seeded() && !linked.is_empty() {
-                    args.extend(["--link-mode", "copy"]);
-                    for name in &linked {
-                        args.extend(["--reinstall-package", name]);
-                    }
-                    self.uv(&args, &placed, job)?;
-                }
+        // The lock's rows, its pair's too unless this machine's goes over them (`over`).
+        let sync = |locked: &Locked, over: bool| -> Result<(), Failure> {
+            let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-editable", "--no-install-project",
+                "--project", &dir, "--python", &py];
+            let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
+                .chain(SDK.into_iter().filter(|name| over && locked.packages.contains_key(*name)))
+                .chain(locked.torch.iter().map(String::as_str).filter(|_| layer.is_some()));
+            for name in held {
+                args.extend(["--no-install-package", name]);
             }
+            // uv keys a directory it built by its metadata alone: changed code builds again.
+            for name in &locked.local {
+                args.extend(["--refresh-package", name]);
+            }
+            let placed = [("UV_PROJECT_ENVIRONMENT", env.as_os_str())];
+            self.uv(&args, &placed, job).map_err(|failure| platform(failure, project.label))?;
+            // An App the lock holds is described from its installed files, which the Runtime's
+            // static reader refuses as links into an image's seeded cache: those are copied.
+            let linked = linked_applications(env);
+            if self.sdk.uv.seeded() && !linked.is_empty() {
+                args.extend(["--link-mode", "copy"]);
+                for name in &linked {
+                    args.extend(["--reinstall-package", name]);
+                }
+                self.uv(&args, &placed, job)?;
+            }
+            Ok(())
+        };
+        next();
+        let mut sdk = if over { "machine" } else { "locked" };
+        let mut fallback = vec![];
+        match project.locked {
+            Some(locked) => sync(locked, over)?,
             None => {
                 let mut args = vec!["pip", "install", "--python", &py, "--excludes", excludes.to_str().unwrap_or_default()];
                 if let Some(wheels) = project.wheels {
@@ -178,17 +177,24 @@ impl Publisher {
                 // The pair's wheels are offered where the project's bounds admit them: PyPI's may
                 // not install here (no macOS TensorFS wheel).
                 let offered = [args.clone(), self.sdk.requirements.iter().map(String::as_str).collect()].concat();
-                if !(own_sdk && self.uv(&offered, &[], job).is_ok()) {
+                sdk = "machine";
+                if self.sdk.requirements.is_empty() || self.uv(&offered, &[], job).is_err() {
+                    sdk = "resolved";
                     if let Err(failure) = self.uv(&args, &[], job) {
                         // A floor only a GitHub prerelease meets: uv's index can't resolve the project.
                         let declared = declared_pair(project.dir);
                         if failure.0 == super::CANCELED || failure.0 == super::UNREACHABLE || declared.is_empty() {
                             return Err(failure);
                         }
-                        self.published_pair(env, &declared, &BTreeMap::new(), project.label, job)?;
+                        let chosen = self.published_pair(env, &declared, project.label, job)?;
+                        job.stage(format!("{} needs {}: its environment takes {}", project.label, declared.join(" and "), chosen.join(" and ")));
                         let wheels = env.join(PAIR_WHEELS);
                         let links = wheels.to_string_lossy();
                         self.uv(&[args.clone(), vec!["--find-links", &links]].concat(), &[], job)?;
+                        let _ = fs::remove_dir_all(&wheels);
+                    }
+                    if !self.sdk.requirements.is_empty() {
+                        fallback.push(format!("it doesn't install with this machine's {}: it runs on {}", shown(&self.machine_pair()), shown(&pair_of(&installed(env)))));
                     }
                 }
             }
@@ -216,31 +222,28 @@ impl Publisher {
             args.extend(own.iter().map(String::as_str));
             self.uv(&args, &[], job)?;
         }
-        let (mut fallback, mut floors_missed) = (String::new(), vec![]);
-        let mut sdk = if own_sdk { "machine" } else { "locked" };
-        if own_sdk {
-            next();
-            // The pair the package itself selects: its lock's, else what its resolution installed.
-            let wanted = match project.locked {
-                Some(locked) => locked.packages.clone(),
-                None => installed(env),
-            };
-            fallback = match self.pair(env, &py, job) {
-                Ok((warning, missed)) => {
-                    floors_missed = missed;
-                    warning
+        if let Some(locked) = project.locked {
+            let build = &self.sdk.runtime_build;
+            if over {
+                next();
+                match self.pair(env, &py, job)? {
+                    Ok(found) => fallback.extend(found),
+                    Err(conflict) => {
+                        sync(locked, false)?;
+                        sdk = "locked";
+                        fallback.push(format!("this machine's {} wants versions its lock does not hold ({conflict}): it runs on its lock's {}",
+                            shown(&self.machine_pair()), shown(&pair_of(&locked.packages))));
+                    }
                 }
-                Err(Pair::Failed(failure)) => return Err(failure),
-                Err(Pair::Floor(floors)) => {
-                    sdk = "own";
-                    self.own_pair(env, &py, &floors, &wanted, project.label, job)?
-                }
-            };
-            let _ = fs::remove_dir_all(env.join(PAIR_WHEELS));
-            if !fallback.is_empty() {
-                tracing::warn!("package {}: {fallback}", project.label);
-                job.stage(format!("warning: {fallback}"));
+            } else if !build.is_empty() {
+                fallback.push(format!("this machine's development Runtime {build} (`--runtime <path>`) is no later patch of its lock's {}: it runs on that",
+                    shown(&pair_of(&locked.packages))));
             }
+        }
+        let fallback = fallback.join("; ");
+        if !fallback.is_empty() {
+            tracing::warn!("package {}: {fallback}", project.label);
+            job.stage(format!("warning: {fallback}"));
         }
         // The layer last, once uv has nothing left to install here; what uv's check finds against
         // it (a range on Torch it misses, or a Torch requirement the lock's copy misses) is a miss.
@@ -252,115 +255,60 @@ impl Publisher {
                 return Err((TORCH_MISSED, missed.join(", ")));
             }
         }
-        Ok(Built { sdk: sdk.into(), fallback, floors_missed })
+        Ok(Built { sdk: sdk.into(), fallback })
     }
 
-    /// This machine's own Runtime and TensorFS over the environment. Every other installed version
-    /// stays exact: they constrain the install, and a pin the pair's own requirements reject keeps
-    /// its version while the pair goes in without its dependencies. A floor the package puts on the
-    /// pair that it misses (Fibo's `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) is `Floor`
-    /// (`own_pair`), never a run on a Runtime too old for it. What else uv's check finds that the pair adds (a
-    /// ceiling a newer pair passes: version skew is allowed) is the run's warning.
-    fn pair(&self, env: &Path, py: &str, job: &Job) -> Result<(String, Vec<String>), Pair> {
-        let failed = Pair::Failed;
+    /// Whether this machine's own Runtime/TensorFS pair goes over the one `locked` names: each of
+    /// it the lock's or a later patch of it (before 1.0 a minor may change what a package calls, a
+    /// patch doesn't), so a release runs what its lock resolved, with a Runtime's fixes. A member
+    /// the lock doesn't name is this machine's.
+    pub(crate) fn stands_in(&self, locked: &Locked) -> bool {
+        let ours = self.machine_pair();
+        !ours.is_empty() && SDK.iter().all(|name| match (ours.get(*name), locked.packages.get(*name)) {
+            (Some(ours), Some(locked)) => patch_of(ours, locked),
+            (ours, _) => ours.is_some(),
+        })
+    }
+
+    /// This machine's own pair (an update's, else the image's) by its wheels' names: empty without one.
+    pub(crate) fn machine_pair(&self) -> BTreeMap<String, String> {
+        let named = self.sdk.requirements.iter().filter_map(|wheel| {
+            let mut parts = Path::new(wheel).file_name()?.to_str()?.split('-');
+            Some((normalized(parts.next()?), parts.next()?.to_string()))
+        });
+        pair_of(&named.collect())
+    }
+
+    /// This machine's pair over a locked environment, every other installed version held exact.
+    /// One the lock's pins refuse leaves the lock's (`Err`: why); what uv's check finds that it
+    /// adds (a ceiling of the package's) is the run's warning.
+    fn pair(&self, env: &Path, py: &str, job: &Job) -> Result<Result<Option<String>, String>, Failure> {
         let constraints = env.join("cozy-constraints.txt");
         let pins: String = installed(env).iter().filter(|(name, _)| !SDK.contains(&name.as_str()))
             .map(|(name, version)| format!("{name}=={version}\n")).collect();
-        fs::write(&constraints, pins).map_err(|e| failed(io_failure(e)))?;
-        let constraints = constraints.to_string_lossy();
+        fs::write(&constraints, pins).map_err(io_failure)?;
+        let (constraints, excludes) = (constraints.to_string_lossy(), env.join("cozy-excludes.txt"));
         let links = self.sdk.find_links.as_ref().map(|p| p.to_string_lossy().to_string());
-        let excludes = env.join("cozy-excludes.txt");
-        let install = |how: &[&str]| {
-            let mut args = vec!["pip", "install", "--python", py, "--excludes", excludes.to_str().unwrap_or_default()];
-            args.extend(how);
-            if let Some(links) = &links {
-                args.extend(["--find-links", links]);
-            }
-            args.extend(self.sdk.requirements.iter().map(String::as_str));
-            self.uv(&args, &[], job)
-        };
+        let mut args = vec!["pip", "install", "--python", py, "--excludes", excludes.to_str().unwrap_or_default(), "--constraints", &constraints];
+        if let Some(links) = &links {
+            args.extend(["--find-links", links]);
+        }
+        args.extend(self.sdk.requirements.iter().map(String::as_str));
         // What the package's own closure reports already stands (NVIDIA's aarch64 cusparseLt
         // wheel is tagged `sbsa`, so uv flags it on every Linux arm64 machine).
-        let before = self.check(py, job).map_err(failed)?;
-        let mut warnings = vec![];
-        if let Err((code, detail)) = install(&["--constraints", &constraints]) {
-            // Unanswered says nothing of the pins: asked again, not installed without its dependencies.
-            if code == super::CANCELED || code == super::UNREACHABLE {
-                return Err(failed((code, detail)));
-            }
-            install(&["--no-deps"]).map_err(failed)?;
-            warnings.push(format!(
-                "this machine's Runtime and TensorFS want versions the package's own do not hold, which it keeps ({})",
-                crate::triage::ends(&detail, 1000)
-            ));
-        }
-        let added: Vec<String> = self.check(py, job).map_err(failed)?.difference(&before).cloned().collect();
-        // A development Runtime is its owner's choice: the package runs on it, warned below.
-        let floors: Vec<String> = added.iter().filter_map(|line| floor(line)).map(String::from).collect();
-        // A pair that can't open a LoRA's view is a floor for every environment, LoRA or not:
-        // choosing per call would flip the environment back and forth.
-        let here = installed(env);
-        let views = super::VIEWS.iter().map(|(name, _, floor)| format!("{name}>={floor}"))
-            .filter(|view| Floor::parse(view).is_some_and(|floor| !here.get(&floor.name).is_some_and(|version| floor.meets(version))));
-        if self.sdk.runtime_build.is_empty() {
-            let wanted: Vec<String> = floors.iter().cloned().chain(views).collect();
-            if !wanted.is_empty() {
-                return Err(Pair::Floor(wanted));
-            }
-        }
-        if !added.is_empty() {
-            warnings.push(format!("uv pip check: {}", added.join("; ")));
-        }
-        let build = &self.sdk.runtime_build;
-        if !warnings.is_empty() && !build.is_empty() {
-            warnings.push(format!("this machine's development Runtime {build} (`--runtime <path>`) runs it regardless"));
-        }
-        Ok((warnings.join("; "), floors))
-    }
-
-    /// A package needing a newer Runtime than this machine's: this environment alone takes it, and
-    /// the machine, its pair and its other environments stay as they are. The version its lock names
-    /// when that meets the floor, else the newest that does. Refused when none is published.
-    fn own_pair(&self, env: &Path, py: &str, floors: &[String], wanted: &BTreeMap<String, String>, label: &str, job: &Job) -> Result<String, Failure> {
-        let chosen = self.published_pair(env, floors, wanted, label, job)?;
-        let wheels = env.join(PAIR_WHEELS);
-        job.stage(format!("{label} needs {}: its environment takes {}", floors.join(" and "), chosen.join(" and ")));
-        let (constraints, excludes) = (env.join("cozy-constraints.txt"), env.join("cozy-excludes.txt"));
-        let (links, machine) = (wheels.to_string_lossy(), self.sdk.find_links.as_ref().map(|p| p.to_string_lossy().to_string()));
-        let install = |how: &[&str]| {
-            let mut args = vec!["pip", "install", "--python", py, "--excludes", excludes.to_str().unwrap_or_default(), "--find-links", &links];
-            args.extend(how);
-            if let Some(machine) = &machine {
-                args.extend(["--find-links", machine]);
-            }
-            args.extend(chosen.iter().map(String::as_str));
-            self.uv(&args, &[], job)
-        };
         let before = self.check(py, job)?;
-        let mut warnings = vec![];
-        if let Err((code, detail)) = install(&["--constraints", constraints.to_str().unwrap_or_default()]) {
-            if code == super::CANCELED || code == super::UNREACHABLE {
-                return Err((code, detail));
-            }
-            install(&["--no-deps"])?;
-            warnings.push(format!("{} want versions the package's own do not hold, which it keeps ({})", chosen.join(" and "), crate::triage::ends(&detail, 1000)));
+        match self.uv(&args, &[], job) {
+            Err(("package_installation_uv_failed", detail)) => return Ok(Err(crate::triage::ends(&detail, 1000))),
+            done => done?,
         }
-        let found = self.check(py, job)?;
-        let missed: Vec<&str> = found.iter().filter_map(|line| floor(line)).collect();
-        if !missed.is_empty() {
-            return Err(("runtime_floor_unmet", format!("{label} needs {}, and {} doesn't meet it: {}", missed.join(" and "), chosen.join(" and "), floor_remedy(label))));
-        }
-        let added: Vec<&String> = found.difference(&before).collect();
-        if !added.is_empty() {
-            warnings.push(format!("uv pip check: {}", added.iter().map(|line| line.as_str()).collect::<Vec<_>>().join("; ")));
-        }
-        Ok(warnings.join("; "))
+        let added: Vec<String> = self.check(py, job)?.difference(&before).cloned().collect();
+        Ok(Ok((!added.is_empty()).then(|| format!("uv pip check: {}", added.join("; ")))))
     }
 
     /// Finds a published version for each of `floors` and for what a prerelease's wheel requires of
-    /// the pair beyond what `env` holds: `locked`'s when it meets the floor, else uv's index, else a
-    /// GitHub prerelease, landed in `env`'s `PAIR_WHEELS` for uv to find. Each as uv installs it.
-    fn published_pair(&self, env: &Path, floors: &[String], locked: &BTreeMap<String, String>, label: &str, job: &Job) -> Result<Vec<String>, Failure> {
+    /// the pair beyond what `env` holds: uv's index, else a GitHub prerelease, landed in `env`'s
+    /// `PAIR_WHEELS` for uv to find. Each as uv installs it.
+    fn published_pair(&self, env: &Path, floors: &[String], label: &str, job: &Job) -> Result<Vec<String>, Failure> {
         let stop = job.stop.clone().unwrap_or_default();
         let wheels = env.join(PAIR_WHEELS);
         fs::create_dir_all(&wheels).map_err(io_failure)?;
@@ -373,9 +321,7 @@ impl Publisher {
             if chosen.contains_key(&floor.name) {
                 continue;
             }
-            let pin = locked.get(&floor.name).filter(|version| floor.meets(version));
-            let bounds = pin.map_or_else(|| floor.bounds.clone(), |version| format!("=={version}"));
-            let input = format!("{}{bounds}\n", floor.name);
+            let input = format!("{}{}\n", floor.name, floor.bounds);
             let resolved = update::compile_sdk(&self.sdk.uv, &self.sdk.python, &input, &stop, false).map_err(io_failure)?;
             let prefix = format!("{}==", floor.name);
             // A failed lookup says nothing of what the index holds.
@@ -384,10 +330,7 @@ impl Publisher {
             let version = match on_index {
                 Some(version) => version,
                 None => {
-                    let meets = |version: &str| match pin {
-                        Some(pin) => version == pin,
-                        None => floor.meets(version),
-                    };
+                    let meets = |version: &str| floor.meets(version);
                     let index = if unread.is_some() { "uv's index can't be read now" } else { "uv's index doesn't have it" };
                     let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, &stop).map_err(|why| {
                         let said = format!("{label} needs {requirement}: {index}, and a GitHub prerelease couldn't be fetched ({why})");
@@ -495,7 +438,7 @@ impl Built {
         let runtime_build = if self.sdk == "machine" { runtime_build } else { "" };
         Ok(json!({"identity":identity,"package":distribution,"version":version,"application":application,
             "python":platform::paths::venv_python(env),"dependencies":dependencies,"interface":interface,"sdk":self.sdk,
-            "sdk_fallback":self.fallback,"floors_missed":self.floors_missed,"runtime_build":runtime_build,"environment":environment,"source_digest":source_digest,"callees":callees,"closures":closures}))
+            "sdk_fallback":self.fallback,"runtime_build":runtime_build,"environment":environment,"source_digest":source_digest,"callees":callees,"closures":closures}))
     }
 }
 
@@ -669,18 +612,6 @@ fn minor(python: &str) -> &str {
     python.match_indices('.').nth(1).map_or(python, |(at, _)| &python[..at])
 }
 
-/// The floor uv's finding `line` (`The package `x` requires `cozy-runtime>=0.31,<0.32`, but
-/// `0.30.2` is installed`) says the pair misses: a lower bound (`>=`, `>`, `~=`, `==`) above the
-/// version installed. A ceiling is no floor.
-fn floor(line: &str) -> Option<&str> {
-    let parts: Vec<&str> = line.split('`').collect();
-    let (requirement, installed) = (*parts.get(3)?, *parts.get(5)?);
-    let end = requirement.find(|c: char| "<>=!~ ;".contains(c))?;
-    let name = normalized(requirement[..end].split('[').next()?);
-    let below = |clause: &str| [">=", "~=", "==", ">"].iter().find_map(|op| clause.trim().strip_prefix(op)).is_some_and(|v| older(installed, v.trim()));
-    (SDK.contains(&name.as_str()) && requirement[end..].split(';').next()?.split(',').any(below)).then_some(requirement)
-}
-
 /// Where an environment's own pair's wheels wait for uv, while it is built.
 const PAIR_WHEELS: &str = "cozy-pair";
 
@@ -728,15 +659,29 @@ fn torch_miss(line: &str, layer: &Layer) -> Option<String> {
     (layer.holds(&required) || layer.holds(&requirer)).then(|| requirement.to_string())
 }
 
-/// Whether release `running` is older than `wanted`, by their numeric release parts.
-fn older(running: &str, wanted: &str) -> bool {
-    let parts = |version: &str| -> Vec<u64> {
-        version.split('.').map_while(|part| {
-            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
-            digits.parse().ok()
-        }).collect()
+/// Whether release `ours` is `locked` or a later patch of it: the same major (minor, before 1.0)
+/// and not older.
+fn patch_of(ours: &str, locked: &str) -> bool {
+    let (Ok(ours), Ok(locked)) = (Version::from_str(ours), Version::from_str(locked)) else {
+        return false;
     };
-    parts(running) < parts(wanted)
+    let series = |version: &Version| {
+        let release = version.release();
+        let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
+        (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect::<Vec<u64>>()
+    };
+    series(&ours) == series(&locked) && ours >= locked
+}
+
+/// The Runtime and TensorFS of `versions`, by name.
+pub(crate) fn pair_of(versions: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    versions.iter().filter(|(name, _)| SDK.contains(&name.as_str())).map(|(name, version)| (name.clone(), version.clone())).collect()
+}
+
+/// `Runtime 0.41.0 and TensorFS 0.20.0`.
+fn shown(pair: &BTreeMap<String, String>) -> String {
+    let label = |name: &str| if name == "cozy-runtime" { "Runtime" } else { "TensorFS" };
+    pair.iter().map(|(name, version)| format!("{} {version}", label(name))).collect::<Vec<_>>().join(" and ")
 }
 
 /// Whether uv's words are about the network rather than what it was asked for: nothing about the
@@ -748,16 +693,6 @@ fn network(said: &str) -> bool {
 /// Whether uv stopped because the disk filled.
 fn full(said: &str) -> bool {
     said.contains("No space left on device")
-}
-
-/// `cozy machine update`'s flags for what `floors` asks of the pair (`cozy-runtime>=0.39.4`).
-pub(crate) fn update_flags(floors: &[String]) -> String {
-    let flag = |floor: &String| {
-        let parsed = Floor::parse(floor)?;
-        let lowest = parsed.bounds.split(',').find_map(|clause| [">=", "~=", "=="].iter().find_map(|op| clause.strip_prefix(op)))?;
-        Some(format!("--{} {lowest}", parsed.name.trim_start_matches("cozy-")))
-    };
-    floors.iter().filter_map(flag).collect::<Vec<_>>().join(" ")
 }
 
 /// What a person does about a floor nothing published meets.

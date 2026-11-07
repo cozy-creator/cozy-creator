@@ -1,6 +1,6 @@
 [package]
 name = "tensorfs-py"
-version = "0.20.0"
+version = "0.22.0"
 edition = "2021"
 license.workspace = true
 publish.workspace = true
@@ -17,7 +17,8 @@ serde_path_to_error.workspace = true
 executor-protocol = { workspace = true, features = ["python"] }
 varena.workspace = true
 libc.workspace = true
-tensorfs.workspace = true
+platform.workspace = true
+tensorfs = { workspace = true, features = ["cuda"] }
 pyo3 = "0.29.2"
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -28,6 +29,8 @@ tracing-subscriber.workspace = true
 default = ["store"]
 store = ["tensorfs/quantize"]
 extension-module = ["pyo3/extension-module"]
+kernel-fork-guard = ["varena/kernel-fork-guard"]
+strict-pid-guard = ["varena/strict-pid-guard"]
 
 [lints]
 workspace = true

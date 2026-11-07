@@ -3,13 +3,16 @@
 //! this the crate's one unsafe seam outside `platform`.
 #![allow(unsafe_code)]
 
+#[cfg(feature = "cuda")]
 pub mod cuda;
-#[cfg(feature = "store")]
+#[cfg(all(feature = "cuda", feature = "store"))]
 pub mod decode;
+#[cfg(feature = "cuda")]
 mod device;
 mod host;
 #[cfg(unix)]
 pub mod metrics;
+#[cfg(feature = "cuda")]
 pub mod pins;
 mod plan;
 mod probe;
@@ -17,16 +20,21 @@ pub mod source;
 #[cfg(feature = "store")]
 pub(crate) mod view;
 
+#[cfg(feature = "cuda")]
 pub use device::DeviceBuffer;
 pub use plan::Target;
 pub use probe::{ceiling, disk, keep_ceilings_in, Ceiling};
 #[cfg(feature = "store")]
 pub use view::{Span, StoredPart};
 
-/// Allocate this device's bounded staging rings and copy streams before overlapping work.
-/// This performs real preparation even when the eventual read has no bytes yet.
-pub fn prepare_device(device: i32) -> cuda::Result<()> {
-    device::prepare(device)
+/// `[ptr, ptr + len)` registered with this device's context: a copy from it is one DMA.
+///
+/// # Safety
+/// The range stays mapped until the guard is released, and every copy from it finishes first.
+#[cfg(feature = "cuda")]
+pub unsafe fn register(device: i32, ptr: *mut u8, len: usize) -> cuda::Result<cuda::HostPin> {
+    // SAFETY: this function's own contract.
+    unsafe { device::register(device, ptr, len) }
 }
 
 /// `len` bytes of object `obj` from `off`.
@@ -190,7 +198,7 @@ pub(crate) fn coalesce(copies: Vec<Copy<'_>>) -> (Vec<Copy<'_>>, Vec<usize>) {
     (out, firsts)
 }
 
-/// Device regions' alignment in [`pack`]: DLPack's data alignment and `cuMemAlloc`'s, enough
+/// Device regions' alignment in [`pack`]: DLPack's data alignment and Varena's working-block alignment, enough
 /// for every dtype and vector load.
 pub const DEVICE_ALIGN: usize = 256;
 
@@ -228,7 +236,6 @@ pub struct ReadControl {
 impl ReadControl {
     pub fn cancel(&self) { self.cancel.store(true, std::sync::atomic::Ordering::Release); }
     pub fn canceled(&self) -> bool { self.cancel.load(std::sync::atomic::Ordering::Acquire) }
-    pub fn issued_bytes(&self) -> u64 { self.issued.load(std::sync::atomic::Ordering::Acquire) }
     pub(crate) fn issue(&self, bytes: usize) {
         self.issued.fetch_add(bytes as u64, std::sync::atomic::Ordering::Release);
     }
@@ -297,6 +304,7 @@ pub struct Error {
     pub source: std::io::Error,
 }
 
+#[cfg(feature = "cuda")]
 impl Error {
     pub fn cuda(&self) -> Option<&cuda::Error> {
         self.source.get_ref()?.downcast_ref()
@@ -306,6 +314,7 @@ impl Error {
 /// Check completion of this device's engine streams and retained decode work. No driver,
 /// context or staging pool is initialized if this process has never made an engine for it.
 /// A producer's own stream must be checked separately before its owner is released.
+#[cfg(feature = "cuda")]
 pub fn drain(device: i32) -> cuda::Result<()> {
     device::drain(device)
 }
@@ -398,14 +407,26 @@ unsafe fn read_impl(
         }
         stats
     };
-    // SAFETY: device copies keep `read`'s contract.
-    let device = unsafe { device::fill(&devices, opts, staged_host, issued, cancel) }?;
-    stats.direct += device.direct;
-    stats.cached += device.cached;
-    stats.bounced += device.bounced;
-    stats.pin_ns += device.pin_ns;
-    stats.staged += device.staged;
-    stats.busy_ns += device.busy_ns;
+    #[cfg(feature = "cuda")]
+    {
+        // SAFETY: device copies keep `read`'s contract.
+        let device = unsafe { device::fill(&devices, opts, staged_host, issued, cancel) }?;
+        stats.direct += device.direct;
+        stats.cached += device.cached;
+        stats.bounced += device.bounced;
+        stats.pin_ns += device.pin_ns;
+        stats.staged += device.staged;
+        stats.busy_ns += device.busy_ns;
+    }
+    #[cfg(not(feature = "cuda"))]
+    let _ = (staged_host, issued);
+    #[cfg(not(feature = "cuda"))]
+    if let Some((copy, _)) = devices.first() {
+        return Err(Error {
+            copy: *copy,
+            source: std::io::Error::new(std::io::ErrorKind::Unsupported, "this build has no GPU path"),
+        });
+    }
     stats.bytes = copies.iter().map(|c| c.dst.len() as u64).sum();
     stats.ns = start.elapsed().as_nanos() as u64;
     Ok(stats)

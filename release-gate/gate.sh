@@ -5,15 +5,19 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX] [--stall MIN]
+#           [--cap MIN]
 # --image boots that worker image (a staged candidate's digest; a Hub admin's choice) in place of the Hub's current one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
+# --cap: the job's hard stop in minutes from the gate's start (the workflow's cap_minutes; 300). A download that can't land
+# before it, at the rate it has kept, fails the host as too slow (`hold`), and another host is rented (th-364).
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
 # release agent chooses. A suite's cells.sh runs once the candidate is on, and its check.py in analyze.py; the baseline
 # is gate-<SKU>-<suites>.json.
 # A candidate URL is https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
 # (`cozy machine update --runtime/--tensorfs/--tensord <path>`).
-# One FRESH rental. The candidate goes on with the candidate's own cozy's `machine update`, which fails unless the
+# One FRESH rental. The candidate goes on with $CLI's `machine update`, never the candidate binary's: a cozy of another
+# version talking to a shared Calcifer restarts it on a route it lacks. The update fails unless the
 # machine then runs it; the set the machine reports is the gate's label. Then each cell runs ONCE (e2e/run.sh)
 # with a scenario prompt from scenarios.tsv and fresh seeds. A cell runs the root (first-party) package users get;
 # --pins runs exact releases of them instead (a yanked candidate installs by its exact pin), --packages a packages
@@ -22,16 +26,17 @@
 # analyze.py holds each cell against the SKU's baseline, gate-<SKU>.json on the `release-gate-baselines`
 # release; a SKU with none needs --establish. --publish uploads a PASS as the SKU's new baseline.
 set -uo pipefail
-# Run from a private copy: editing this file while a gate runs must never change the running gate.
+# Run from a private copy: editing this file while a gate runs must never change the running gate. It carries when the
+# gate began and which host this is: a host too slow for the cap is ended and the copy runs again on the next (`again`).
 if [ "${1:-}" != --copy ]; then
   c=$(mktemp "${TMPDIR:-/tmp}/release-gate.XXXXXX.sh"); cp "$0" "$c"
-  exec bash "$c" --copy "$(cd "$(dirname "$0")" && pwd)" "$@"
+  exec bash "$c" --copy "$(cd "$(dirname "$0")" && pwd)" "$(date +%s)" 1 "$@"
 fi
-HERE=$2; shift 2
+HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
-BIN= RW= TW= TD=
+BIN= RW= TW= TD= CAP=300 HOSTS=5
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
@@ -48,6 +53,7 @@ while [ $# -gt 0 ]; do
     --on) ON=$2;;
     --image) IMAGE=$2;;
     --stall) STALL=$2;;
+    --cap) CAP=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
     --pins) PINS=",$2,";;
     --runtime|--runtime-wheel) RW=$2;;
@@ -87,8 +93,6 @@ if [ -n "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
 fi
-# The candidate's own cozy puts the candidate on.
-UP=${TDF:-$CLI}
 [ -z "$RWF" ] || CAND+=(--runtime "$RWF"); [ -z "$TWF" ] || CAND+=(--tensorfs "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
 echo "$BK" > "$OUT/baseline-key"  # release-gate.yml's baseline job publishes under it
@@ -130,24 +134,53 @@ end_it() {
   "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" && { log "ended $RID${M:+ ($M)}, gone"; M= RID=; return; }
   log "WARNING $RID${M:+ ($M)} still listed: $(tail -c 300 end.log)"
 }
-trap end_it EXIT
+# again: a host found too slow (`hold`, `host-slow`) whose rental is gone: its files go to slow-<machine>/ and the gate starts
+# over on another host, at most HOSTS, as an order under the market is ordered again. Under --on the verdict stands.
+again() {
+  [ -s host-slow ] && [ -z "$ON" ] && [ -z "$RID" ] && (( HOST < HOSTS )) || return 0
+  local aside; aside=slow-$(cat machine 2>/dev/null || echo "$HOST")
+  mkdir -p "$aside" && find . -mindepth 1 -maxdepth 1 ! -name 'slow-*' -exec mv -t "$aside" {} +
+  cd "$BEGUN_IN" && exec bash "$0" --copy "$HERE" "$BEGAN" $((HOST + 1)) "${ARGS[@]}" --out "$OUT"
+}
+trap 'end_it; again' EXIT
 trap 'exit 143' TERM INT
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
 run_project "$PWD/project" || { log "cozy project new failed"; exit 1; }
-# one_beat [args...]: H3's call in $BEAT: a text and its length are one beat, which goes to the model as written, and a reference's
-# `kind` is its `asset_type`, or nothing for a clip or a sound, which say what they are by their file.
+# one_beat [args...]: H3's call in $BEAT: without `beats`, a text and its length are one beat, which goes to the model as
+# written, and a reference's `kind` is its `asset_type`, or nothing for a clip or a sound, which say what they are by their
+# file. What is already in H3's form passes through.
 one_beat() {
-  local text='' seconds='' arg
+  local text='' seconds='' arg beats=''
   BEAT=()
+  for arg in "$@"; do [[ $arg != beats:=* ]] || beats=1; done
   for arg in "$@"; do
     case $arg in
-      prompt=*) text=${arg#prompt=} ;;
-      duration_s:=*) seconds=${arg#duration_s:=} ;;
-      references:=*) BEAT+=("references:=$(jq -c 'map(if .kind == "video" or .kind == "audio" then del(.kind) else (.asset_type = .kind | del(.kind)) end)' <<< "${arg#references:=}")") ;;
+      prompt=*) [ -n "$beats" ] && BEAT+=("$arg") || text=${arg#prompt=} ;;
+      duration_s:=*) [ -n "$beats" ] && BEAT+=("$arg") || seconds=${arg#duration_s:=} ;;
+      references:=*) BEAT+=("references:=$(jq -c 'map(if has("kind") | not then . elif .kind == "video" or .kind == "audio" then del(.kind) else (.asset_type = .kind | del(.kind)) end)' <<< "${arg#references:=}")") ;;
       *) BEAT+=("$arg") ;;
     esac
   done
   [ -z "$seconds" ] || BEAT+=("beats:=$(jq -cn --arg d "$text" --argjson s "$seconds" '[{description: $d, duration: $s}]')")
+}
+# ahead <name> <target> [args...]: the function's weights on $M's disk before its first timed call, its on-demand models'
+# too (cl-790), as a user who has used it has them: TensorD admits a call on its up-front models and fetches on-demand ones
+# behind it, so a cold upsampler's download was timed as Klein's execution. `--warm downloaded` ends once they're here, and
+# `--warm off` takes the function out of the warm set, so nothing stays held from eviction. Once per function and the
+# arguments that choose its weights.
+declare -A AHEAD
+ahead() {
+  local name=$1 target=$2 want=() key; shift 2
+  while [ $# -gt 0 ]; do
+    case $1 in model.*=*|--lane=*|--lora=*) want+=("$1") ;; --lane|--lora) want+=("$1" "${2:-}"); shift ;; esac
+    shift
+  done
+  key="$target ${want[*]}"
+  [ -z "${AHEAD[$key]:-}" ] || return 0
+  AHEAD[$key]=1
+  run_cell "$OUT" "$name-weights" "$target" --on "$M" --warm downloaded "${want[@]}" ||
+    expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
+  "$CLI" run "$target" --on "$M" --warm off > "$name-weights-off.log" 2>&1 || log "$name: --warm off: $(tail -c 300 "$name-weights-off.log")"
 }
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages.
@@ -165,6 +198,7 @@ cell() {
     case $p in prompt=*) printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv ;; seed:=*) printf '%s\t%s\n' "$name" "${p#seed:=}" >> seeds.tsv ;; esac
   done
   [[ $target != *minimax-h3*/generate* ]] || { one_beat "$@"; set -- "${BEAT[@]}"; }
+  ahead "$name" "$target" "$@"
   run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
@@ -180,6 +214,7 @@ pkg() {
 output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
+[ "$HOST" = 1 ] || log "host $HOST of $HOSTS: $(cat slow-*/host-slow | paste -sd';')"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
 # acquisition <rental>: the Hub's acquisition attempt while the rental boots, every 5 s into acquisition.jsonl (cl-684).
 # An attempt whose create is still unanswered (obligated, ambiguous) one inventory pass (120 s, plus 30 s for the
@@ -248,10 +283,11 @@ PY
 # rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
-  # Suite tensorfs's `kill` case kills the rental's TensorD (kill-at.sh, put there over SSH), and suite tensord measures the
-  # pod's link over it, with this computer's key, or a new one on a runner. A tensorfs --only without `kill` rents with no SSH.
+  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, and suite
+  # varena's faults run there (faults.sh), with this computer's key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
-  if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; }; then
+  if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
+     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
   # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.
@@ -290,12 +326,35 @@ fi
 [ -n "$M" ] || { log "rent failed: $(cat acquisition.stuck 2>/dev/null) $(tail -c 300 rent.err) $(tail -c 300 rent.out)"; exit 1; }
 echo "$M" > machine
 log "${ON:+on }${ON:-rented} $M"
+# A host this gate already found too slow is ended at once: the Hub may offer it again.
+"$CLI" --json machine show "$M" 2>/dev/null | jq -r '.address // empty' | sed 's/:[0-9]*$//' > address
+if [ -z "$ON" ] && [ -s address ] && grep -qsxF -f address slow-*/address; then
+  echo "host too slow: $M ($(cat address)) was found so earlier in this gate" > host-slow
+  printf 'FAIL %s\nVERDICT FAIL (host too slow)\n' "$(cat host-slow)" | tee verdict.txt
+  exit 1
+fi
 # hold: every 240 s while this gate lives (a killed gate's loop ends at its next look), the runs' own clock decides.
 # A move within --stall minutes restarts the rental's 15-minute idle clock, which the gate's work between runs needs
 # (fetches, uploads, analysis). No move that long with a run open is a hung cell (the longest quiet in 786 real cells was
 # 7.2 min): its runs are canceled, and the gate fails and ends the rental. With none open, nothing renews. So does a
 # listing that hasn't answered for that long, and a run that has said it stands in one place for STALL_STAGE minutes: a run
 # whose every event moves the clock can crawl inside one stage until the job's cap (41904557331, 54 min at decode_video).
+# A download that can't land before the cap at the rate it has kept since hold first saw it (4 to 8 min in) fails the host
+# as too slow (too_slow), so it is ended and another rented (`again`): moving bytes keep the clock above going, and a host far
+# below the link floor waited out a 120-minute cap (th-364: 7 MB/s, half of H3's 48.9 GiB in 1 h 36 min).
+DEADLINE=$(( BEGAN + CAP * 60 ))
+too_slow() {  # into $why; in hold's shell, which keeps `first`
+  local n got all t0 b0 a0 now; now=$(date +%s)
+  while read -r n got all; do
+    read -r t0 b0 a0 <<< "${first[$n]:-}"
+    if [ -z "$t0" ] || [ "$all" != "$a0" ] || (( got < b0 )); then first[$n]="$now $got $all"; continue; fi
+    (( got > b0 )) || continue
+    why=$(awk -v n="$n" -v moved=$((got - b0)) -v s=$((now - t0)) -v left=$((all - got)) -v cap=$((DEADLINE - now)) 'BEGIN {
+      need = left * s / moved; if (need <= cap) exit 1
+      printf "host too slow: %.1f MB/s, %.1f GiB needs %d min, and the cap leaves %d (run %s)", moved / s / 1e6, left / 2^30, need / 60 + 0.5, cap / 60, n }') && return 0
+  done < <(run_downloads "$M" "$CLI")
+  return 1
+}
 # beat: the gate's newest line as a commit status: off the runner, nothing else shows a gate's cells (a running job's log
 # isn't served, and its pod answers only the runner's Calcifer).
 beat() {
@@ -304,7 +363,8 @@ beat() {
     -f description="$(printf '%s | %s' "$(tail -n 1 gate.log | cut -c1-70)" "$(paste -sd';' <<< "$1" | cut -c1-60)")" > /dev/null 2>&1 || true
 }
 hold() {
-  local clock at active seen= moved=$SECONDS stands stood= still=$SECONDS why
+  local clock at active seen= moved=$SECONDS stands stood= still=$SECONDS why verdict
+  local -A first
   while sleep 240 && kill -0 $$ 2> /dev/null; do
     stands=$(run_stands "$M" "$CLI")
     [ -n "$ON" ] || save_machine_logs
@@ -316,6 +376,7 @@ hold() {
       [ "$at" = "$seen" ] || { seen=$at moved=$SECONDS; }
       if (( SECONDS - moved >= STALL * 60 )); then why="no run on $M moved for $(( (SECONDS - moved) / 60 )) min"
       elif [ -n "$stands" ] && (( SECONDS - still >= STALL_STAGE * 60 )); then why="a run on $M stood for $(( (SECONDS - still) / 60 )) min at: $(paste -sd';' <<< "$stands" | cut -c1-120)"
+      elif too_slow; then :
       else
         [ -n "$ON" ] || "$CLI" machine keepalive "$M" > /dev/null 2>&1
         continue
@@ -332,9 +393,12 @@ hold() {
     [ -z "$ON" ] || active=$(find "$OUT" -name '*.number' -exec cat {} + | grep -xF -f <(tr ' ' '\n' <<< "$active") | paste -sd' ')
     [ -n "$active" ] || continue
     why="$why; canceled $active"
-    expect cell-progress FAIL "$why"
+    case $why in
+      'host too slow'*) echo "$why" > host-slow; expect host-speed FAIL "$why"; verdict='host too slow' ;;
+      *) expect cell-progress FAIL "$why"; why="hung: $why" verdict=hung ;;
+    esac
     for at in $active; do "$CLI" run cancel "$at" > /dev/null 2>&1; done
-    printf 'FAIL hung: %s\nVERDICT FAIL (hung)\n' "$why" | tee verdict.txt
+    printf 'FAIL %s\nVERDICT FAIL (%s)\n' "$why" "$verdict" | tee verdict.txt
     kill -TERM $$
     return
   done
@@ -364,7 +428,7 @@ notinstalled() {
 }
 # cozy's `machine update` fails (update_unapplied) unless the machine then runs what it was sent.
 if [ ${#CAND[@]} -gt 0 ]; then
-  "$UP" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
+  "$CLI" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
   log "candidate on $M: exit $code $(jq -c 'select(.machine and .tensord)' update.json 2>/dev/null)"
   [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(jq -r 'select(.error) | "\(.error.code): \(.error.message)"' update.json 2>/dev/null) $(tail -c 300 update.log | tr '\n' ' ')"
 fi

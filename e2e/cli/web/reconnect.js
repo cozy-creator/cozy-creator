@@ -1,14 +1,14 @@
 // One stream across tabs, and across a restart of Calcifer (web-ui.md §3): tabs share one `GET /v1/events`, closing the tab that holds
-// it hands it on, and `kill -9` on Calcifer shows reconnecting and recovers with no reload, the session intact. A reload after the
+// it hands it on, and `kill -9` on Calcifer says it's offline and recovers with no reload, the session intact. A reload after the
 // restart must not hang, which it did in the shelved build.
-//   node reconnect.js <sign-in link from `cozy open --no-open`>
+//   node reconnect.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $RESTART: a shell command that kills this Calcifer with -9 and
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, drop, png, noStall, until } = require('./page');
+const { calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -37,8 +37,7 @@ const row = (folder, name) => {
 };
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1400, height: 800 } });
   context.setDefaultTimeout(STEP_MS);
@@ -48,12 +47,12 @@ const row = (folder, name) => {
   const open = async (url) => {
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(url);
+    await (url ? page.goto(url) : signIn(page));
     return page;
   };
 
   // A project of its own with one element on it.
-  const first = await open(link);
+  const first = await open();
   await first.waitForSelector('.top');
   await first.goto(`${base}/#/projects`);
   await first.fill('input[aria-label="New project\'s name"]', `web-reconnect-${Date.now()}`);
@@ -91,19 +90,19 @@ const row = (folder, name) => {
   check('handover', true);
 
   if (process.env.RESTART) {
-    // kill -9: reconnecting, with its attempt; then back with no reload and the session intact.
+    // kill -9: offline, in the top bar; then back with no reload and the session intact.
     const held = await third.evaluate(() => localStorage.getItem('cozy.session'));
     const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
-    const said = await until('it said reconnecting', () => third.locator('.pill.warn').allTextContents(), (lines) => lines.some((line) => /Reconnecting, attempt \d+/.test(line)));
+    const said = await until('it said offline', () => third.locator('.pill.warn').allTextContents(), (lines) => lines.some((line) => line.startsWith('Calcifer offline')));
     await restarted;
-    await until('back', () => third.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('Reconnecting')));
+    await until('back', () => third.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     seen.said_during_restart = said;
     check('no_sign_in_needed', (await third.locator('.gate').count()) === 0 && (await third.evaluate(() => localStorage.getItem('cozy.session'))) === held);
     check('still_on_canvas', (await third.locator('.nm:text-is("here")').count()) === 1);
     const wasRow = row(folder, 'here');
     await drag(third, 'here', 90, 40);
     await until('a move lands after the restart', () => Promise.resolve(row(folder, 'here')), (now) => now !== wasRow);
-    await until('the other tab still follows', () => second.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('Reconnecting')));
+    await until('the other tab still follows', () => second.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     await third.reload();
     await third.waitForSelector('.nm:text-is("here")');
     check('reload_after_restart', true);

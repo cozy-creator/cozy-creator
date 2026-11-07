@@ -62,7 +62,7 @@ select = ["os:macos", "os:windows"]
 # the packages' questions, and of the crates that install, load and run them; a crate TensorD only depends on
 # (protocol, platform) is not.
 [[cozy-creator.also]]
-paths = ["crates/tensord/**", "crates/executor-protocol/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**"]
+paths = ["crates/tensord/**", "crates/executor-protocol/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**", "crates/varena-ledger/**"]
 select = ["imports", "model"]
 
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on

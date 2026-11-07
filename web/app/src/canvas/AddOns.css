@@ -7,69 +7,45 @@
   pointer-events: none;
 }
 
-/* Inside a box along its foot, one row in its width: its stack at the left, as many as fit and "+N", and its shape at the right while there's
-   room, which wraps out of sight when there isn't. Their words stay near one size at any zoom, and nothing is drawn on another box. */
-.foot {
+/* Under a box at its left, as many as it holds, in the room it keeps clear (shown.ts): one size on screen, down to --hang. The ratio has the right. */
+.add-ons {
   position: absolute;
   left: 0;
-  right: 0;
-  bottom: 0;
-  height: calc(24px * var(--text, 1));
-  padding: 0 calc(3px * var(--text, 1)) calc(3px * var(--text, 1));
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  column-gap: calc(4px * var(--text, 1));
-  overflow: hidden;
-  pointer-events: none;
-}
-.foot > * {
-  pointer-events: auto;
-}
-.add-ons {
-  min-width: 0;
-  max-width: 100%;
+  top: calc(100% + 4px);
+  width: 100%;
   margin: 0;
   padding: 0;
   list-style: none;
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: calc(4px * var(--text, 1));
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(4px * var(--hang, 1));
 }
-.add-on.away {
-  position: absolute;
-  visibility: hidden;
-  pointer-events: none;
+/* The first is short of the ratio at the right, which is at most five letters of the same face (`16:9`, `Auto`): `ch` is one of them. */
+.react-flow__node:has(.card:not(.here) > .ratio-rest) .add-on:first-child {
+  max-width: calc(100% - 5ch - 2px);
 }
-.add-on.more {
-  flex: none;
-  color: var(--mute);
-}
-/* On a box being worked on, it's a row among the rest, all of it. */
+/* On a box being worked on, it's a row among the rest, at the sheet's small step. */
 .here-all .add-ons {
+  position: static;
+  width: auto;
+  flex-direction: row;
   flex-wrap: wrap;
 }
-.here-all .add-on.away {
-  position: static;
-  visibility: visible;
-  pointer-events: auto;
-}
-.here-all .add-on.more {
-  display: none;
+.here-all .add-on {
+  font-size: var(--small);
 }
 .add-on {
-  flex: none;
   max-width: 100%;
   display: flex;
   align-items: center;
-  gap: calc(4px * var(--text, 1));
-  padding: calc(2px * var(--text, 1)) calc(6px * var(--text, 1));
+  gap: calc(4px * var(--hang, 1));
+  padding: calc(2px * var(--hang, 1)) calc(6px * var(--hang, 1));
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--float);
   color: var(--ink);
-  font: calc(13px * var(--text, 1)) / 1.25 var(--mono);
+  font: calc(var(--t-small) * var(--on)) / 1.25 var(--mono);
 }
 .add-on.tool,
 .add-on.fine-tune {
@@ -90,8 +66,8 @@
   color: var(--bad);
 }
 .add-on .icon {
-  width: calc(13px * var(--text, 1));
-  height: calc(13px * var(--text, 1));
+  width: calc(13px * var(--hang, 1));
+  height: calc(13px * var(--hang, 1));
 }
 /* Far out a chip is only a mark. */
 .stage[data-lod="2"] .add-on-word,
@@ -99,8 +75,8 @@
   display: none;
 }
 .stage[data-lod="2"] .add-on {
-  width: calc(10px * var(--text, 1));
-  height: calc(10px * var(--text, 1));
+  width: calc(10px * var(--hang, 1));
+  height: calc(10px * var(--hang, 1));
   padding: 0;
 }
 
@@ -118,8 +94,8 @@
   margin: 8px 0 2px;
   padding: 0 6px;
   color: var(--faint);
-  font-size: 11.5px;
-  font-weight: 400;
+  font-size: var(--heading);
+  font-weight: var(--w-heading);
 }
 .checkpoints ul {
   margin: 0;
@@ -153,11 +129,10 @@
   border-radius: 3px;
   background: #000a;
   color: #fff;
-  font: 10px / 1.3 var(--mono);
+  font: var(--tiny) / 1.3 var(--mono);
   pointer-events: none;
 }
 .here-under .take-no {
   left: 2px;
   top: 2px;
-  font-size: 11px;
 }

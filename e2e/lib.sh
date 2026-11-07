@@ -16,6 +16,8 @@
 #   --max-hourly USD      the release suite rents nothing dearer an hour (default 1.00: a scarce hour may quote only an A40 at $0.99)
 #   --max-usd USD         the release suite stops, ending its rental, once its GPU time would cost more (default 0.80: 48 min at --max-hourly, so a slow host's first package install finishes)
 #   --quote               the release suite stops at the rental's quote: nothing is rented ($0 pre-flight)
+#   --rent-wait SECONDS   the release suite gives up on a rent with no machine ready in this long (default 1200), and ends its order
+#   --rent-lock FILE      the release suite holds this flock only while it orders, until its Hub accepts (by hand, beside other renters)
 #   --installed           this computer's cozy as it is, signed in: no installer (the release suite by hand)
 #   --release DIR         a cozy release's files (cozy-publish.yaml's artifacts, a dry run's too): its own installer
 #                         installs cozy from DIR, served on loopback, in place of tensorhub.com's (the candidate)
@@ -27,7 +29,7 @@
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE=''
+OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE='' RENT_WAIT=1200 RENT_LOCK=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 # Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
@@ -51,6 +53,8 @@ parse() {
       --max-hourly) MAX_HOURLY=$2 ;;
       --max-usd) MAX_USD=$2 ;;
       --quote) QUOTE=1; shift; continue ;;
+      --rent-wait) RENT_WAIT=$2 ;;
+      --rent-lock) RENT_LOCK=$2 ;;
       --installed) INSTALLED=1; shift; continue ;;
       --shard) SHARD=$2 ;;
       --model) MODEL=1; shift; continue ;;
@@ -108,6 +112,12 @@ install_cozy() {
     [ "$found" = "$COZY" ] || fail "a login shell finds '$found', not $COZY"
   fi
   cozy --version
+  # A source candidate's cozy goes in place of the released one.
+  if [ -f "$CAND_COZY" ]; then
+    install_candidate_binary
+    want=$("$CAND_COZY" --version) || fail "the candidate cozy does not start"
+    [ "$(cozy --version)" = "$want" ] || fail "the native candidate install reports the wrong version"
+  fi
   [ -n "$RELEASE" ] || return 0
   serve_release
   cozy --json machine ls > /dev/null || check "the installed cozy's Calcifer did not start"
@@ -228,17 +238,22 @@ candidates() {
   echo "the candidate Runtime: $CAND_RUNTIME (was ${before:-none})"
 }
 
+install_candidate_binary() {
+  local dir
+  dir=$(dirname "$COZY")
+  [ "${RUNNER_OS:-}" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
+  cp "$CAND_COZY" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" || fail "installing the candidate cozy failed"
+}
+
 # Where this OS runs no models itself there is no machine to take candidates: a candidate cozy is this computer's, as
 # `cozy update` puts one in place (an exact release version is that verb itself), a dev build's file swapped in as it
 # swaps (renamed over; a running cozy.exe is set aside), and `cozy doctor` restarts Calcifer on it.
 candidate_cozy() {
-  local want dir
+  local want
   [ -n "$CAND_COZY" ] || return 0
   if [ -f "$CAND_COZY" ]; then
-    want=$("$CAND_COZY" --version) dir=$(dirname "$COZY")
-    cp "$CAND_COZY" "$dir/.cozy-candidate" && chmod +x "$dir/.cozy-candidate" || fail "copying the candidate cozy failed"
-    [ "$RUNNER_OS" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
-    mv -f "$dir/.cozy-candidate" "$COZY" || fail "putting the candidate cozy in place failed"
+    install_candidate_binary
+    want=$("$CAND_COZY" --version) || fail "the candidate cozy does not start"
   else
     want="cozy ${CAND_COZY#v}"
     cozy --json update "${CAND_COZY#v}" > "$OUT/update-candidate.json" || fail "cozy update ${CAND_COZY#v} failed: $(head -c 300 "$OUT/update-candidate.json")"

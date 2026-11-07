@@ -831,6 +831,25 @@ export interface MachineStatus {
   disk_models_bytes?: number
   runs?: LiveRun[]
   gpu_problems?: string[]
+  activity?: Operation[]
+}
+
+/** Weights arriving on a machine, or a package's environment built there, once however many runs wait on it. */
+export interface Operation {
+  id: string
+  kind: "download" | "install"
+  /** The model's repository (or provider source), or the package and its release. */
+  subject: string
+  stage?: string
+  /** Bytes fetched of those it has to fetch, never what was here already. */
+  bytes_done: number
+  bytes_total: number
+  bytes_here: number
+  bytes_per_s?: number
+  eta_s?: number
+  started_at_ms: number
+  /** The runs waiting on it, by number. */
+  runs: number[]
 }
 
 export interface Attempt {
@@ -859,7 +878,8 @@ export interface Machine {
   attempt?: Attempt
   running?: number
   queued?: number
-  recorded?: boolean
+  /** False: a rental another client of this account ordered; reached as this computer's own, never placed on unasked. */
+  ordered?: boolean
   unverified?: boolean
   reach?: string
   ending?: string
@@ -1010,13 +1030,6 @@ export interface AssetPatched {
   warnings?: string[]
 }
 
-export interface Captioned {
-  name: string
-  text: string
-  run: number
-  warnings?: string[]
-}
-
 export interface AssetDeleted {
   name: string
   /** Opaque: what `PUT` takes to put it back. */
@@ -1091,6 +1104,8 @@ export interface Tool {
   description?: string
   /** Local code a project's assets name. */
   local?: boolean
+  /** The package a machine installs, where `package` is local code's path. */
+  installs?: string
   fields: Field[]
   /** The path in its package of a component that draws its box. */
   ui?: string

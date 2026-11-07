@@ -1000,7 +1000,7 @@ impl std::ops::Deref for DeviceArray {
 
 impl Drop for DeviceArray {
     fn drop(&mut self) {
-        // cuMemFree may synchronize pending work. Move its actual final owner to the
+        // Unannotated DLPack consumers require a completion join. Move the final owner to the
         // native cleanup worker, also when a foreign DLPack consumer calls the deleter.
         crate::cleanup::defer(self.0.take());
     }

@@ -136,7 +136,7 @@ impl Machines {
             "" => self.hubs.default_origin(),
             hub => hub.to_owned(),
         };
-        let flagless = asked.is_empty() && ask.gpu_memory_limit.is_none();
+        let flagless = asked.is_empty() && ask.gpu_memory_limit.is_none() && ask.mode.is_none();
         // The cozy `cozy update` installed here and `local` has not moved to yet: it goes with the
         // update, unless another `cozy` is named.
         let mut placed = placed(self, &m).await;
@@ -230,6 +230,10 @@ impl Machines {
             });
             payload.insert("gpu_memory_limit".into(), limit.into());
         }
+        if let Some(mode) = ask.mode {
+            named.push(format!("mode {}", mode.name()));
+            payload.insert("mode".into(), mode.name().into());
+        }
         let mut warnings = vec![];
         // A dev build says the release it was built from, so `--tensord` naming that looks like no
         // change. It replaces the dev build, and says so.
@@ -238,9 +242,9 @@ impl Machines {
         {
             warnings.push(format!("{} runs a dev build of cozy {}: `--tensord {release}` replaces it with the release; without `--tensord` it stays", m.name, status.version));
         }
-        // A new binary or a limit restarts the machine: either way its warm models reload.
+        // Binary, limit and mode changes all use the ordinary drain and restart.
         let warm = m.status.as_ref().is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()));
-        if (restarts || ask.gpu_memory_limit.is_some()) && warm {
+        if (restarts || ask.gpu_memory_limit.is_some() || ask.mode.is_some()) && warm {
             warnings.push(format!("{}'s warm models reload after it restarts", m.name));
         }
         let target = named.join(", ");
@@ -295,7 +299,19 @@ impl Machines {
             return outcome;
         };
         let want = wanted(&row.spec);
-        let Ok(m) = self.show(name).await else { return outcome };
+        let m = match self.show(name).await {
+            Ok(machine) => machine,
+            Err(error) if want.iter().any(|(field, _)| *field == "mode") => {
+                outcome.status = "failed".into();
+                outcome.reason = Some(v1::Reason {
+                    code: "update_unapplied".into(),
+                    message: format!("{name}'s update could not verify the requested mode: {error}"),
+                    origin: "machine".into(), detail: String::new(), next: Vec::new(),
+                });
+                return outcome;
+            }
+            Err(_) => return outcome,
+        };
         let status = m.status.clone().unwrap_or_default();
         if m.unreachable.is_none() && runs(&status, &want) {
             return outcome;
@@ -308,7 +324,10 @@ impl Machines {
             ..status.clone()
         });
         let named: Vec<_> = want.iter().filter(|(field, _)| *field != "dev").cloned().collect();
-        if left.is_some_and(|left| m.unreachable.is_some() && runs(&left, &named)) {
+        // Software `to` does not report mode. A requested mode requires live status.
+        if !want.iter().any(|(field, _)| *field == "mode")
+            && left.is_some_and(|left| m.unreachable.is_some() && runs(&left, &named))
+        {
             return outcome;
         }
         let log = self.logs(name, wire::MachineLog::Tensord, 1000).await.unwrap_or_default();
@@ -461,6 +480,9 @@ fn wanted(spec: &v1::RunSpec) -> Vec<(&'static str, Value)> {
             None => {}
         }
     }
+    if let Some(mode) = payload["mode"].as_str() {
+        want.push(("mode", mode.into()));
+    }
     want
 }
 
@@ -480,8 +502,9 @@ fn unapplied(m: &Machine, s: &MachineStatus, want: &[(&str, Value)], line: Optio
         .collect();
     let build = if s.dev { "dev build" } else { "release" };
     let message = format!(
-        "{}'s update succeeded but it runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {}, not the requested {}",
-        m.name, s.version, s.commit.get(..12).unwrap_or(&s.commit), s.runtime, s.tensorfs, asked.join(", ")
+        "{}'s update succeeded but it runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {}, mode {}, not the requested {}",
+        m.name, s.version, s.commit.get(..12).unwrap_or(&s.commit), s.runtime, s.tensorfs,
+        if s.mode.is_empty() { "unknown" } else { &s.mode }, asked.join(", ")
     );
     match line {
         Some(line) => format!("{message}: {}", line.trim()),

@@ -146,12 +146,13 @@ impl From<format::Error> for Failure {
     }
 }
 
-#[cfg(feature = "store")]
+#[cfg(all(feature = "store", feature = "cuda"))]
 impl From<crate::io::cuda::Error> for Failure {
     fn from(error: crate::io::cuda::Error) -> Failure {
         use crate::io::cuda;
         let kind = match &error {
-            cuda::Error::CudaUnavailable(_) => Kind::Unsupported,
+            cuda::Error::Allocation(varena::Error::OutOfMemory { .. }) => Kind::DeviceMemory,
+            cuda::Error::Allocation(varena::Error::Unsupported(_)) | cuda::Error::CudaUnavailable(_) => Kind::Unsupported,
             cuda::Error::Cuda { code, .. } if *code == cuda::ERROR_OUT_OF_MEMORY => Kind::DeviceMemory,
             _ => Kind::Io,
         };
@@ -168,6 +169,7 @@ impl From<store::Error> for Failure {
                 if let Some(refusal) = source.get_ref().and_then(|cause| cause.downcast_ref::<Refusal>()) {
                     return refusal.clone().into();
                 }
+                #[cfg(feature = "cuda")]
                 if let Some(cuda) = source.get_ref().and_then(|cause| cause.downcast_ref::<crate::io::cuda::Error>()) {
                     return cuda.clone().into();
                 }
@@ -190,7 +192,7 @@ impl From<std::io::Error> for Failure {
         if let Some(failure) = e.get_ref().and_then(|cause| cause.downcast_ref::<Failure>()) {
             return failure.clone();
         }
-        #[cfg(feature = "store")]
+        #[cfg(all(feature = "store", feature = "cuda"))]
         if let Some(cuda) = e.get_ref().and_then(|cause| cause.downcast_ref::<crate::io::cuda::Error>()) {
             return cuda.clone().into();
         }

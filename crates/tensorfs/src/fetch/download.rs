@@ -245,8 +245,10 @@ pub(crate) struct Counters {
     pub retries: AtomicU64,
     /// Back halves taken from ranges in flight by free places.
     pub steals: AtomicU64,
-    /// Bytes received from the origin.
+    /// Bytes received from the origin, and the pacing windows (in ms) any of them arrived in: the
+    /// time the machine was pulling, with no wait in a queue or between pulls in it.
     pub received: AtomicU64,
+    pub receiving_ms: AtomicU64,
     pub volume_written: AtomicU64,
     pub volume_skipped: AtomicU64,
     /// Answers that were not 2xx, by status.
@@ -549,6 +551,9 @@ impl Shared {
             let received = self.stats.received.load(Ordering::Relaxed);
             let mut pace = lock(&self.pace);
             let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
+            if received > pace.seen {
+                self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
+            }
             pace.seen = received;
             if self.busy.load(Ordering::Acquire) == 0 {
                 let gone = pace.level.saturating_sub(START.min(pace.max));

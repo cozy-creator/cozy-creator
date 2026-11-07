@@ -19,7 +19,7 @@ import { endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWo
 function KeepUp({ machine, now }: { machine: Machine; now: number }) {
   const { client } = useConnection()
   const ask = useAsk()
-  if (machine.kind !== "rental" || machine.state !== "ready" || machine.recorded === false) return null
+  if (machine.kind !== "rental" || machine.state !== "ready" || machine.ordered === false) return null
   const line = endsWords(machine, now)
   return (
     <>

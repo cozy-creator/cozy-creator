@@ -2,8 +2,8 @@
 # --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
-# `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), a box from its tool's fields (web/tools.js), an Edit rendered (web/timeline.js),
+# `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
+# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), a box from its tool's fields (web/tools.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and on Windows a save past a file held open (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
@@ -56,18 +56,30 @@ web_proof reconnect "$chrome" "$pw" "$restart"
 step "web-instant: a box in the frame of its drop with its POST held, answers lost, a refusal, kill -9 mid-queue, a render whose answer is lost"
 web_proof instant "$chrome" "$pw" "$restart"
 jq -c '{drop: .seen.drop, reads: .seen.reads_after_a_drop}' "$OUT/web-instant.json" 2> /dev/null || true
+if [ -n "$restart" ]; then
+  step "web-offline: Calcifer stopped: Turbo, a prompt twice, approve, two moves, a rename, a delete and a drop, each shown at once and counted in the top bar; started again, all in project.yaml in its order"
+  STOP=$(web_halt "$lock") START=$(web_start) web_proof offline "$chrome" "$pw" "$restart"
+  jq -c '{said: .seen.said_offline, after: .seen.after}' "$OUT/web-offline.json" 2> /dev/null || true
+fi
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
+step "web-activity: each machine top right, an install and a download listed once under it with their waiters, a box saying it waits"
+web_proof activity "$chrome" "$pw" ''
 step "web-signin: AuthKit's form to a stand-in Hub: a new account, a wrong code, too soon, either email's code, signed out, a deleted account restored"
 if [ -z "${WEB_ALONE:-}" ]; then
   TO_HUB=$(web_restart "$lock" @HUB@) web_proof signin "$chrome" "$pw" "$restart"
   jq -c '.seen | {stated_wait}' "$OUT/web-signin.json" 2> /dev/null || true
 fi
-step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured"
+step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured, the project tabs"
 local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
 jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
+step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, and 300 boxes panned"
+web_proof zoom "$chrome" "$pw" ''
+jq -c '{pan_70: .seen.pan_70, pan_11: .seen.pan_11}' "$OUT/web-zoom.json" 2> /dev/null || true
+step "web-layout: every kind of box in every state, far out to close, at 1280x720, 1600x1000 and 2560x1440 at 2x, and the frame around the canvas: nothing on another, cut off, past its edge, touching or too small to read"
+web_proof layout "$chrome" "$pw" ''
 step "web-nodes: the tools, a box's controls, chips, approve, delete and Undo, and Paul's example where this computer runs models"
 web_proof nodes "$chrome" "$pw" ''
 step "web-localfit: a render this computer would do poorly asks on its box first; Render here kept by Calcifer; Rent a GPU chosen; the CLI warns once"
@@ -76,7 +88,7 @@ jq -c '{line: .seen.line, placed: .seen.placed}' "$OUT/web-localfit.json" 2> /de
 step "web-addons: the checkpoint explorer, a LoRA and a fine-tune dragged onto a box, chips, why one doesn't fit, a hand's file kept"
 web_proof addons "$chrome" "$pw" ''
 jq -c '.seen.skipped // empty' "$OUT/web-addons.json" 2> /dev/null || true
-step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, and a rename during a real render"
+step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, a rename during a real render, takes approved by a double tap, a merge, a box's shape, Render while it makes"
 web_proof versions "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"
 web_proof tools "$chrome" "$pw" ''
@@ -128,30 +140,36 @@ web_engines() {
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
 # reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer. It comes back on the Hub $2, else on this
 # suite's: config.toml's, since a service hears nothing of a caller's environment, and it starts before that verb asks.
-web_restart() {
-  local kill="kill -9 \$(jq -r .pid < '$1')" config=$HOME/.cozy/config.toml hub=${2:-${COZY_HUB_URL:-}} point=''
-  [ "${RUNNER_OS:-}" != Windows ] || kill="taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"
-  [ -z "$hub" ] || point="{ grep -v '^hub_url' '$config'; echo 'hub_url = \"$hub\"'; } > '$config.next'; mv '$config.next' '$config'; "
-  echo "$point$kill; sleep 1; ${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
+# The Hub goes in config.toml before the kill: a service manager starts a Calcifer killed so at once, reading it then.
+web_restart() { echo "$(web_hub "${2:-}")$(web_stop "$1"); sleep 1; $(web_start "${2:-}")"; }
+# config.toml names the Hub $1, else this suite's, for the next Calcifer to start.
+web_hub() {
+  local config=$HOME/.cozy/config.toml hub=${1:-${COZY_HUB_URL:-}}
+  [ -z "$hub" ] || echo "{ grep -v '^hub_url' '$config'; echo 'hub_url = \"$hub\"'; } > '$config.next'; mv '$config.next' '$config'; "
+}
+web_stop() {
+  if [ "${RUNNER_OS:-}" = Windows ]; then echo "taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"; else echo "kill -9 \$(jq -r .pid < '$1')"; fi
+}
+# Stopped until started again, as a service manager stops it: SIGTERM is a clean exit, which neither systemd's on-failure nor launchd's
+# KeepAlive restarts, where a kill -9 is back at once. Windows has no service manager to restart it.
+web_halt() {
+  if [ "${RUNNER_OS:-}" = Windows ]; then web_stop "$1"; else echo "kill -TERM \$(jq -r .pid < '$1')"; fi
+}
+web_start() {
+  local hub=${1:-${COZY_HUB_URL:-}}
+  echo "${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
 }
 
-# A fresh sign-in link in $link, or a failed check.
-web_link() {
-  cozy open --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy open --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return 1; }
-  link=$(grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1)
-  [ -n "$link" ] || { check "web-serves: cozy open --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
-}
-
-# web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by
-# name, which it forgets, folder and all, whatever happened.
+# web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, signed in by its own
+# `cozy open --no-open` once its browser is up (page.js: signIn), on a project of its own by name, which it forgets, folder and all,
+# whatever happened.
 web_proof() {
-  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot link code=0 id folder lock addr token
+  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot code=0 id folder lock addr token
   json=$OUT/web-$pass.json shot=$(web_path "$OUT/web-$pass")
   # A screenshot in WebKit sets off the CSP on any page, with an inline style of Playwright's: its pass keeps its last look, past caring, and no others.
   [ "${ENGINE:-}" != webkit ] || shot=''
-  web_link || return
   HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart ENGINE=${ENGINE:-} LAST_LOOK=$(web_path "$OUT/web-$pass") SHOT=$shot CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
-    node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$pass.err" || code=$?
+    node "$(web_path "$here/web/$name.js")" > "$json" 2> "$OUT/web-$pass.err" || code=$?
   [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
@@ -164,14 +182,12 @@ web_proof() {
 
 # web_serves's own, on its project, which it forgets whatever happens here.
 web_signed_in() {
-local link code=0 wait expires
-web_link || return
-
-CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
-  node "$(web_path "$here/web/serves.js")" "$link" "$id" "$(web_path "$P")" "$(web_path "$pic")" > "$OUT/web.json" 2> "$OUT/web.err" || code=$?
+local code=0 wait expires
+HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
+  node "$(web_path "$here/web/serves.js")" "$id" "$(web_path "$P")" "$(web_path "$pic")" > "$OUT/web.json" 2> "$OUT/web.err" || code=$?
 [ "$code" = 0 ] || check "web-serves: the browser failed: $(tail -c 500 "$OUT/web.err")"
 J '.session.status == 200 and (.session.token | length > 0) and (.session.media | length > 0)' "$OUT/web.json" \
-  || { check "web-serves: the page did not redeem its code: $(jq -c .session "$OUT/web.json")"; return; }
+  || { check "web-serves: the page did not redeem its code: $(jq -c '{session, signed_in}' "$OUT/web.json")"; return; }
 local session media
 session=$(jq -r .session.token "$OUT/web.json") media=$(jq -r .session.media "$OUT/web.json")
 

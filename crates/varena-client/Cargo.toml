@@ -1,0 +1,17 @@
+[package]
+name = "varena-client"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Safe Rust ownership over the Varena v1 C ABI; no embedded allocator"
+
+[lib]
+name = "varena_client"
+
+[dev-dependencies]
+libloading.workspace = true
+
+[lints]
+workspace = true

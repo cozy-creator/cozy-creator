@@ -1,0 +1,11 @@
+[package]
+name = "varena-mixed-client"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+varena-client = { path = "../../../../crates/varena-client" }

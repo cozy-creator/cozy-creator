@@ -47,6 +47,7 @@ class Start(_Wire):
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
     memo: MemoSettings | None
+    shared: bool
 
 class Adapter(_Wire):
     model_id: str
@@ -177,11 +178,6 @@ class Capability(_Wire):
     actor: str
     tensorfs: TensorFSOptions
 
-class Room(_Wire):
-    device: int
-    target: int | None
-    held: int
-
 class ByteGrant(_Wire):
     output_id: str
     kind: str
@@ -218,7 +214,7 @@ class Answer(_Wire):
     stored: bool
     reason: str
 
-Command: TypeAlias = Hello | Shutdown | Start | Load | Activate | PrepareRequest | Invoke | Map | Unload | Probe | Fork | Capability | Cancel | Room
+Command: TypeAlias = Hello | Shutdown | Start | Load | Activate | PrepareRequest | Invoke | Map | Unload | Probe | Fork | Capability | Cancel
 
 def decode_command(data: bytes) -> Command: ...
 def decode_answer(data: bytes) -> Answer: ...

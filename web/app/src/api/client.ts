@@ -27,7 +27,6 @@ import type {
   AssetDeleted,
   AssetMade,
   AssetPatched,
-  Captioned,
   Opened,
   OrgClaim,
   PackageDetail,
@@ -297,13 +296,13 @@ export class Client {
   }
 
   /** What a render of `names` on this computer alone would do poorly, a line a tool. */
-  fit(id: string, names: string[], outdated = false): Promise<Fit> {
-    return this.write("POST", `${project(id)}/fit`, { names, outdated })
+  fit(id: string, names: string[]): Promise<Fit> {
+    return this.write("POST", `${project(id)}/fit`, { names })
   }
 
   /** The same, each tool kept as rendered here, so nothing asks again. */
-  renderHere(id: string, names: string[], outdated = false): Promise<Fit> {
-    return this.write("POST", `${project(id)}/fit/here`, { names, outdated })
+  renderHere(id: string, names: string[]): Promise<Fit> {
+    return this.write("POST", `${project(id)}/fit/here`, { names })
   }
 
   /** A tool dropped on the canvas. */
@@ -320,11 +319,6 @@ export class Client {
 
   deleteAsset(id: string, name: string, once?: AbortSignal): Promise<AssetDeleted> {
     return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {}, undefined, { once })
-  }
-
-  /** Its description as a package would say it, from what it shows: a run on a machine that's up. Nothing is written. */
-  caption(id: string, name: string, on: string | undefined, key: string, once?: AbortSignal): Promise<Captioned> {
-    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/caption`, on ? { on } : {}, key, { once })
   }
 
   /** What deleting it answered, back under its name. */
@@ -392,13 +386,19 @@ export class Client {
     return this.json(`${project(id)}/canvas`, { signal })
   }
 
-  moveCards(id: string, cards: Record<string, Row | null>, once?: AbortSignal): Promise<{ etag: string }> {
-    return this.write("PATCH", `${project(id)}/canvas`, { cards }, undefined, { once })
+  /** Rows set; one named in `was` only if it's still what it began from (null: none), else answered in `kept` as it is. */
+  moveCards(id: string, cards: Record<string, Row | null>, was: Record<string, Row | null>, once?: AbortSignal): Promise<{ etag: string; kept?: Record<string, Row | null> }> {
+    return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(was).length ? { was } : {}) }, undefined, { once })
   }
 
   /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */
   thumb(id: string, sha256: string, w: number, strip?: number): string {
     return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}`
+  }
+
+  /** A video's preview: a few seconds of it, small and silent. */
+  preview(id: string, sha256: string): string {
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?preview=true`
   }
 
   file(id: string, file: string): string {
@@ -422,8 +422,8 @@ export class Client {
     return this.json(`${run(id)}?detail=full`, { signal })
   }
 
-  cancelRun(id: string): Promise<Run> {
-    return this.write("POST", `${run(id)}/cancel`, {})
+  cancelRun(id: string, once?: AbortSignal): Promise<Run> {
+    return this.write("POST", `${run(id)}/cancel`, {}, undefined, { once })
   }
 
   /** A run's log and events after a place in them, opened once: its reader resumes it. */

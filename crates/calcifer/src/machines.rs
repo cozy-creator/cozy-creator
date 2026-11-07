@@ -211,8 +211,9 @@ impl Machines {
         tasks.spawn(task)
     }
 
-    /// Every machine: Calcifer's own, and the live rentals of this account it did not rent.
-    /// `refresh` lists every Hub again first; otherwise the Hubs' last word is answered.
+    /// Every machine: this computer's, those added, and every live rental of this account, ordered
+    /// here or by another of its clients. `refresh` lists every Hub again first; otherwise the
+    /// Hubs' last word is answered.
     pub async fn list(self: &Arc<Self>, refresh: bool) -> Result<MachineList, Error> {
         if refresh {
             self.list_hubs().await;
@@ -227,13 +228,8 @@ impl Machines {
         for row in rows.iter().filter(listed) {
             machines.push(self.picture(row)?);
         }
-        let orders = self.orders()?;
-        let (hubs, unanswered, signed_out, others) = self.hubs.listing(&rows, &orders);
-        machines.extend(others.into_iter().map(|mut other| {
-            other.ssh = self.ssh(&other);
-            other
-        }));
-        machines.extend(orders);
+        let (hubs, unanswered, signed_out) = self.hubs.listing();
+        machines.extend(self.orders()?);
         let live = machines.iter().filter(|m| m.state != MachineState::Ended);
         let rentals = wire::LiveRentals::of(live.filter_map(|m| m.rental.as_ref()));
         Ok(MachineList {
@@ -252,11 +248,7 @@ impl Machines {
             return Ok(self.order(&order));
         }
         let row = match self.named_now(text).await {
-            Ok(Named::Here(row)) => row,
-            Ok(Named::Other(mut machine)) => {
-                machine.ssh = self.ssh(&machine);
-                return Ok(*machine);
-            }
+            Ok(row) => row,
             // To read, a name only ended machines had is the newest of them.
             Err(e) if e.code == "machine_name_ended" => match self.store().machines_named(text).map_err(internal)?.into_iter().next() {
                 Some(row) => row,
@@ -475,52 +467,35 @@ impl Machines {
     }
 
     /// What `text` names. A rental id names its machine whatever its state. A name or former
-    /// name names the live machine that has it: this controller's, or another controller's rental
-    /// of this account in the Hubs' last listing. Several such are refused by rental id, and an
+    /// name names the live machine that has it; several such are refused by rental id, and an
     /// ended machine is named only by its rental id: a Hub gives a name again once its rental ends.
-    pub(crate) fn named(&self, text: &str) -> Result<Option<Named>, Error> {
-        let store = self.store();
-        let rows = store.machines_named(text).map_err(internal)?;
+    pub(crate) fn named(&self, text: &str) -> Result<Option<MachineRow>, Error> {
+        let rows = self.store().machines_named(text).map_err(internal)?;
         if let Some(row) = rows.iter().find(|row| row.rental_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(text))) {
-            return Ok(Some(Named::Here(row.clone())));
+            return Ok(Some(row.clone()));
         }
-        let ours = |id: &str| store.machines_named(id).is_ok_and(|rows| !rows.is_empty());
-        let others = (self.hubs.listed(text).into_iter())
-            .filter(|machine| !machine.rental_id.as_deref().is_some_and(ours));
-        let (ended, live): (Vec<MachineRow>, Vec<MachineRow>) =
+        let (ended, mut live): (Vec<MachineRow>, Vec<MachineRow>) =
             rows.into_iter().partition(|row| row.state == MachineState::Ended);
-        let mut found: Vec<Named> = (live.into_iter().map(Named::Here))
-            .chain(others.map(|machine| Named::Other(Box::new(machine))))
-            .collect();
-        match found.len() {
+        match live.len() {
             0 if ended.is_empty() => Ok(None),
             0 => Err(ended_by_name(text, &ended)),
-            1 => Ok(found.pop()),
-            _ => Err(ambiguous(text, &found)),
+            1 => Ok(live.pop()),
+            _ => Err(ambiguous(text, &live)),
         }
     }
 
-    /// `named`, after the Hubs' word now unless it is one of this controller's machines: another
-    /// controller's rental is never answered from a listing it may have ended since. `local`
-    /// starts for it.
-    async fn named_now(self: &Arc<Self>, text: &str) -> Result<Named, Error> {
+    /// `named`, after the Hubs' word now when nothing here has the name: a rental another client of
+    /// this account ordered since is recorded by that listing. `local` starts for it.
+    async fn named_now(self: &Arc<Self>, text: &str) -> Result<MachineRow, Error> {
         if text.eq_ignore_ascii_case("local") {
             self.local_row()?;
             self.local_up().await?;
         }
-        if let Ok(Some(Named::Here(row))) = self.named(text) {
-            return Ok(Named::Here(row));
+        if let Ok(Some(row)) = self.named(text) {
+            return Ok(row);
         }
         self.list_hubs().await;
         self.named(text)?.ok_or_else(|| not_found(text))
-    }
-
-    /// The machine of this controller's that `text` names (`named`).
-    pub(crate) fn here(&self, text: &str) -> Result<Option<MachineRow>, Error> {
-        Ok(match self.named(text)? {
-            Some(Named::Here(row)) => Some(row),
-            Some(Named::Other(_)) | None => None,
-        })
     }
 
     /// `local`'s TensorD exited (after its idle time, or ended): it is no longer followed, and
@@ -561,10 +536,7 @@ impl Machines {
         if let Some(order) = self.order_named(text)? {
             return self.stop_order(order);
         }
-        let row = match self.named_now(text).await? {
-            Named::Here(row) => row,
-            Named::Other(machine) => return self.end_other(*machine),
-        };
+        let row = self.named_now(text).await?;
         if row.kind == MachineKind::Local {
             return self.release_here().await;
         }
@@ -628,7 +600,7 @@ impl Machines {
                     "machine_ended" | "machine_unreachable" | "machine_unanswered"
                 ) =>
             {
-                let row = self.here(text)?;
+                let row = self.named(text)?;
                 row.and_then(|row| self.kept_log(&row.name, log, lines)).ok_or(error)
             }
             read => read,
@@ -644,7 +616,7 @@ impl Machines {
         lines: u64,
         after: Option<&str>,
     ) -> Result<crate::link::Live<v1::LogLines>, Error> {
-        let (row, link) = self.linked(text).map_err(|error| match self.here(text) {
+        let (row, link) = self.linked(text).map_err(|error| match self.named(text) {
             Ok(Some(row)) if self.kept_log(&row.name, log, 1).is_some() => error
                 .remedy("without --follow, it prints the copy of the log Calcifer kept"),
             _ => error,
@@ -662,7 +634,7 @@ impl Machines {
 
     /// A machine and its connection, which it has only once it has an endpoint.
     pub(crate) fn linked(&self, text: &str) -> Result<(MachineRow, Link), Error> {
-        let row = self.here(text)?.ok_or_else(|| not_found(text))?;
+        let row = self.named(text)?.ok_or_else(|| not_found(text))?;
         if row.state == MachineState::Ended {
             return Err(Error::new(
                 Kind::Conflict,
@@ -692,6 +664,7 @@ impl Machines {
             machine.reach = self.local.reach();
         }
         machine.alias = store.alias(&row.name).map_err(internal)?;
+        machine.ordered = self.ordered(row);
         let load = store.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
         let ending = self.pending_end(&row.name)?;
@@ -704,7 +677,7 @@ impl Machines {
         {
             machine.offline = Some(reason);
         }
-        let mut held = vec![];
+        let (mut held, mut activity) = (vec![], vec![]);
         if let Some(seen) = lock(&self.seen).get(&row.name) {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
@@ -718,6 +691,7 @@ impl Machines {
                 status
             });
             held = seen.frame.as_ref().map(|f| f.runs.clone()).unwrap_or_default();
+            activity = seen.frame.as_ref().map(|f| f.activity.clone()).unwrap_or_default();
             machine.unreachable.clone_from(&seen.unreachable);
             machine.unreachable_since_ms = seen.since;
             machine.boot.clone_from(&seen.boot);
@@ -725,6 +699,7 @@ impl Machines {
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().map(|run| self.held(run)).collect();
+            status.activity = activity.iter().map(|operation| self.operation(operation)).collect();
         }
         let asked = match row.kind {
             MachineKind::Rental => store.rent_ask(&row.name).map_err(internal)?,
@@ -770,6 +745,26 @@ impl Machines {
         }
     }
 
+    /// What a machine does for runs, its waiters by this controller's run numbers: a run it keeps no record of isn't one.
+    fn operation(&self, operation: &v1::Operation) -> wire::Operation {
+        let runs = (operation.runs.iter()).filter_map(|id| Some(self.store().run(id).ok()??.number)).collect();
+        let rate = Some(operation.bytes_per_s).filter(|rate| *rate >= 1.0);
+        let left = operation.bytes_total.saturating_sub(operation.bytes_done);
+        wire::Operation {
+            id: operation.id.clone(),
+            kind: operation.kind.clone(),
+            subject: operation.subject.clone(),
+            stage: operation.stage.clone(),
+            bytes_done: operation.bytes_done,
+            bytes_total: operation.bytes_total,
+            bytes_here: operation.bytes_here,
+            bytes_per_s: rate,
+            eta_s: rate.filter(|_| left > 0).map(|rate| (left as f64 / rate) as i64),
+            started_at_ms: operation.started_at_unix_ms,
+            runs,
+        }
+    }
+
     /// Keeps one `Status` stream open to the machine while it has an endpoint and has not ended.
     pub(crate) fn watch(self: &Arc<Self>, row: &MachineRow) {
         let mut watching = lock(&self.watching);
@@ -785,9 +780,14 @@ impl Machines {
             task.abort();
         }
         if let Some(endpoint) = endpoint {
-            let (status, logs) = (self.clone().follow_status(row.name.clone(), row.kind), self.clone().keep_logs(row.name.clone(), row.kind));
+            let status = self.clone().follow_status(row.name.clone(), row.kind);
+            // Another client's rental is read live: its logs are its client's to keep.
+            let logs = self.ordered(row).then(|| self.clone().keep_logs(row.name.clone(), row.kind));
             let task = self.spawn(async move {
-                tokio::join!(status, logs);
+                match logs {
+                    Some(logs) => drop(tokio::join!(status, logs)),
+                    None => status.await,
+                }
             });
             watching.insert(row.name.clone(), (endpoint, task));
         }
@@ -965,7 +965,7 @@ impl Machines {
         if text.eq_ignore_ascii_case("local") {
             return self.local_row().map(|_| "local".to_owned());
         }
-        let Some(row) = self.here(text)? else {
+        let Some(row) = self.named(text)? else {
             return Ok(text.to_owned());
         };
         self.reachable(&row).await.map(|()| row.name)
@@ -1154,7 +1154,7 @@ impl Machines {
         };
         Ok(rows
             .into_iter()
-            .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended)
+            .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended && self.ordered(row))
             .filter(|row| !ending.contains(&row.name))
             .filter(|row| self.offline_in(row, &seen).is_none())
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
@@ -1163,6 +1163,13 @@ impl Machines {
                 (row.endpoint.is_none(), running + queued, row.name.clone())
             })
             .map(|row| row.name))
+    }
+
+    /// Whether this controller placed `row` (no rental) or ordered it: a rental another client of
+    /// the account ordered speaks with this computer's device key at its Hub, and takes no run
+    /// unless one names it.
+    pub(crate) fn ordered(&self, row: &MachineRow) -> bool {
+        row.kind != MachineKind::Rental || config::Origin::parse(&row.hub).map_or(true, |hub| row.key != hub.device_key(&self.home))
     }
 
     /// This controller's signer for its own and added machines, minted on first use.
@@ -1248,9 +1255,7 @@ pub(crate) async fn models(
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:
 /// one that cannot answer is `machine_unavailable`, never its last picture.
 pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
-    let Named::Here(row) = machines.named_now(text).await? else {
-        return Err(not_found(text));
-    };
+    let row = machines.named_now(text).await?;
     let unavailable = |why: String| {
         let message = format!("{} cannot answer now: {why}", row.name);
         Error::new(Kind::Unavailable, "machine_unavailable", message).next("cozy machine ls")
@@ -1707,6 +1712,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         disk_runtime_bytes: frame.disk.as_ref().map_or(0, |d| d.runtime_bytes),
         disk_runs_bytes: frame.disk.as_ref().map_or(0, |d| d.runs_bytes),
         runs: vec![],
+        activity: vec![],
         models: frame
             .models
             .iter()
@@ -1804,10 +1810,12 @@ pub(crate) fn write_key(path: &Path, key: &SigningKey) -> Result<(), Error> {
         .map_err(|e| internal(e.to_string()))
 }
 
+/// The key a machine's calls are signed with: a PKCS#8 PEM (this controller's owner key, a rental
+/// it ordered), or this computer's device key at a Hub (a rental another client ordered).
 pub(crate) fn signer(path: &Path) -> Result<SigningKey, Error> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|pem| SigningKey::from_pkcs8_pem(&pem).ok())
+    let raw = std::fs::read(path).ok();
+    let pem = raw.as_deref().and_then(|raw| SigningKey::from_pkcs8_pem(std::str::from_utf8(raw).ok()?).ok());
+    pem.or_else(|| Some(hub_client::DeviceKey::read(raw.as_deref()?, "").ok()?.signing_key().clone()))
         .ok_or_else(|| {
             Error::new(
                 Kind::Credential,
@@ -1912,13 +1920,6 @@ fn local_refusal() -> Error {
     .next("cozy machine show local")
 }
 
-/// A machine `Machines::named` found: this controller's, or another controller's live rental of
-/// this account as its Hub lists it.
-pub(crate) enum Named {
-    Here(MachineRow),
-    Other(Box<Machine>),
-}
-
 /// The refusal of a name only ended machines had: a Hub gives a name again once its rental ends,
 /// so an ended machine is named by its rental id.
 fn ended_by_name(text: &str, ended: &[MachineRow]) -> Error {
@@ -1936,12 +1937,9 @@ fn ended_by_name(text: &str, ended: &[MachineRow]) -> Error {
 }
 
 /// The refusal of a name several live machines have, naming each by its rental id.
-fn ambiguous(text: &str, found: &[Named]) -> Error {
+fn ambiguous(text: &str, found: &[MachineRow]) -> Error {
     let named: Vec<String> = (found.iter())
-        .map(|found| match found {
-            Named::Here(row) => row.rental_id.clone().unwrap_or_else(|| format!("{} (this controller's)", row.name)),
-            Named::Other(machine) => machine.rental_id.clone().unwrap_or_else(|| machine.name.clone()),
-        })
+        .map(|row| row.rental_id.clone().unwrap_or_else(|| format!("{} (this controller's)", row.name)))
         .collect();
     let mut error = Error::new(
         Kind::Conflict,

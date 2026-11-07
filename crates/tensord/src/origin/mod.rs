@@ -112,6 +112,14 @@ impl Machine {
         Ok(fetcher)
     }
 
+    /// The bytes every fetcher received from its origin, and the time any of them was arriving.
+    pub fn received(&self) -> (u64, Duration) {
+        self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
+            (0, Duration::ZERO),
+            |(bytes, time), stats| (bytes + stats.received, time + stats.receiving),
+        )
+    }
+
     fn of(&self, remote: &Remote) -> Result<Arc<Fetcher>> {
         self.fetcher(&(remote.trust.clone(), remote.local))
     }

@@ -78,8 +78,22 @@ pub(super) fn state(id: &str, state: &domain::MachineExecutionState) -> v1::RunS
         sequence: state.sequence,
         attempt: state.attempt_ordinal as u32,
         started_at_ms: state.started_at_ms,
+        target: (state.target.iter())
+            .flat_map(|t| [t.package.as_str(), t.entrypoint.as_str()])
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/"),
+        accepted_at_ms: state.accepted_at_ms,
+        finished_at_ms: state.finished_at_ms,
         ..Default::default()
     }
+}
+
+/// The runs `actor` reads, newest first, before the run numbered `before` (0: the newest).
+pub(super) fn list(backend: &impl MachineBackend, actor: VerifiedActor, before: u64, limit: u32) -> Result<v1::RunList, Error> {
+    let query = domain::MachineExecutionListQuery { newest_first: true, before_number: before, limit, ..Default::default() };
+    let runs = backend.list(actor, query)?.executions.iter().map(|run| state(&run.request_id, run)).collect();
+    Ok(v1::RunList { runs })
 }
 
 /// A run's model choices as the preparation path reads them.

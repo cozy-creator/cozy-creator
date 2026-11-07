@@ -1,15 +1,14 @@
 // Runs and Machines, as a person uses them (web-ui.md §1). Where this computer runs models: a real run from the CLI shows live with no reload,
 // to its end; its log and events; a cancel from the page, which the terminal sees; one log stream across tabs. Everywhere: the filters, local
 // code staying the CLI's, machines as the CLI lists them, what's installed, a log, and the page's CSP holding. It rents, ends and updates nothing.
-//   node drawers.js <sign-in link from `cozy open --no-open`>
+//   node drawers.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync, spawn } = require('child_process');
 const { join } = require('path');
-const { STEP_MS, noStall, until } = require('./page');
+const { signIn, STEP_MS, noStall, until } = require('./page');
 
-const link = process.argv[2];
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -113,7 +112,7 @@ async function runs(page, base, id, folder) {
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
   });
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top', { timeout: STEP_MS });
   const base = new URL(page.url()).origin;
 

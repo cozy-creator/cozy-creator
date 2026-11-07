@@ -1368,11 +1368,12 @@ impl Journal {
         serde_json::from_str(&value).map_err(db_error)
     }
 
-    pub fn get_public(&self, actor: &str, request_id: &str) -> io::Result<Execution> {
+    /// The run `actor` sent as `request_id`; with no actor, the one any client sent.
+    pub fn get_public(&self, actor: Option<&str>, request_id: &str) -> io::Result<Execution> {
         let value: Option<String> = self
             .connection
             .query_row(
-                "SELECT record FROM executions WHERE actor=?1 AND request_id=?2",
+                "SELECT record FROM executions WHERE (actor=?1 OR ?1 IS NULL AND actor IS NOT NULL) AND request_id=?2 LIMIT 1",
                 params![actor, request_id],
                 |row| row.get(0),
             )
@@ -1387,10 +1388,11 @@ impl Journal {
         .map_err(db_error)
     }
 
-    /// Closure is a durable acceptance tombstone, never implicit execution cancellation.
+    /// Closure is a durable acceptance tombstone, never implicit execution cancellation. With no
+    /// actor, every client's runs.
     pub fn actor_page(
         &self,
-        actor: &str,
+        actor: Option<&str>,
         after: u64,
         before: u64,
         newest: bool,
@@ -1407,7 +1409,7 @@ impl Journal {
                 }
             })
             .collect();
-        let sql=format!("SELECT record FROM executions WHERE actor=?1 AND id>?2 AND (?3=0 OR id<?3) AND (?4='[]' OR state IN (SELECT value FROM json_each(?4))) ORDER BY id {} LIMIT ?5",if newest{"DESC"}else{"ASC"});
+        let sql=format!("SELECT record FROM executions WHERE (actor=?1 OR ?1 IS NULL AND actor IS NOT NULL) AND id>?2 AND (?3=0 OR id<?3) AND (?4='[]' OR state IN (SELECT value FROM json_each(?4))) ORDER BY id {} LIMIT ?5",if newest{"DESC"}else{"ASC"});
         let mut statement = self.connection.prepare(&sql).map_err(db_error)?;
         let records = statement
             .query_map(
@@ -1426,10 +1428,10 @@ impl Journal {
             .collect::<io::Result<Vec<_>>>()
             .map(readable)
     }
-    pub fn actor_head(&self, actor: &str) -> io::Result<u64> {
+    pub fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
         self.connection
             .query_row(
-                "SELECT COALESCE(MAX(id),0) FROM executions WHERE actor=?1",
+                "SELECT COALESCE(MAX(id),0) FROM executions WHERE actor=?1 OR ?1 IS NULL AND actor IS NOT NULL",
                 [actor],
                 |r| r.get(0),
             )

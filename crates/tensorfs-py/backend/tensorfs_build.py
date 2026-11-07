@@ -34,6 +34,7 @@ def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     _rust()
+    _cli(config_settings)
     return maturin.build_wheel(wheel_directory, config_settings, metadata_directory)
 
 
@@ -43,4 +44,11 @@ prepare_metadata_for_build_editable = prepare_metadata_for_build_wheel
 
 def build_editable(wheel_directory, config_settings=None, metadata_directory=None):
     _rust()
+    _cli(config_settings)
     return maturin.build_editable(wheel_directory, config_settings, metadata_directory)
+
+
+def _cli(config_settings):
+    from stage_cli import stage
+
+    stage(maturin.get_maturin_pep517_args(config_settings))

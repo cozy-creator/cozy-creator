@@ -871,14 +871,14 @@ def exercise(name: str, index: int) -> dict:
     return EXERCISES[name](index)
 
 
-def _off_request(work: Callable[[], dict], index: int) -> dict:
+def _off_request(work: Callable[[], dict]) -> dict:
     """On a thread of its own: a request never compiles or probes, so a kernel opened here is not
     the gate's request-path blocking, and each opens as `kernel_ready`'s background openers do."""
     found: dict = {}
 
     def body() -> None:
         try:
-            with torch.no_grad(), torch.cuda.device(index):
+            with torch.no_grad(), kernel_ready.EXECUTION[0]():
                 found.update(work())
         except Exception as exc:  # noqa: BLE001 - a kernel that raises is that cell's finding
             found.update(passed=False, detail=f"{type(exc).__name__}: {exc}"[:1500])
@@ -908,11 +908,12 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     index = payload.index
     if index >= torch.cuda.device_count():
         raise RuntimeError(f"cuda:{index} of {torch.cuda.device_count()}")
-    kernel_ready.DEVICE[:] = [partial(torch.cuda.device, index)]
+    if index:  # this process's execution stream is on GPU 0
+        kernel_ready.EXECUTION[:] = [partial(torch.cuda.device, index)]
     device = measure_device(torch, index)
     _ENTRIES_SEEN.clear()
     _JITS_SEEN.clear()
-    found = _off_request(partial(exercise, payload.kernel, index), index)
+    found = _off_request(partial(exercise, payload.kernel, index))
     torch.cuda.synchronize(index)
     detail = {
         "kernel": payload.kernel,

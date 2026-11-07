@@ -277,15 +277,21 @@ pub struct Canvas {
     pub cards: BTreeMap<String, Card>,
 }
 
-/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins.
+/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins, but for a name in `was`: its row is set only if it's
+/// still what `was` says it began from (null: none), so a place worked out from an older read can't clobber a newer one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CanvasPatch {
     pub cards: BTreeMap<String, Option<Card>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub was: BTreeMap<String, Option<Card>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CanvasPatched {
     pub etag: String,
+    /// Each of `was` that had moved, left as it is: its row now (null: none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kept: BTreeMap<String, Option<Card>>,
 }
 
 /// An Edit's `fields.timeline`: its tracks, each of clips. One for now, V1; a higher one takes priority, later.

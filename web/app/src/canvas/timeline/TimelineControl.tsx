@@ -6,7 +6,7 @@ import { useSignal } from "../../ui/signal"
 import type { DropTarget } from "../CanvasStore"
 import { useCanvasStore, useElement } from "../context"
 import { Thumb } from "../Media"
-import { widthFor } from "../shown"
+import { valuesOf, widthFor } from "../shown"
 import { frameAt, indexAt, isStill, lay, type Layout, moved, named, type Placed, timecode, trimmedIn, trimmedOut, wire, xOf, clipOf } from "./model"
 import { Preview } from "./Preview"
 import "./timeline.css"
@@ -274,7 +274,8 @@ export function TimelineControl({ name }: { name: string }) {
   useEffect(() => preview.edit(layout, fps), [preview, layout, fps])
   useEffect(() => () => preview.stop(), [preview])
 
-  const ratio = typeof asset?.fields?.aspect_ratio === "string" ? asset.fields.aspect_ratio : ""
+  const held = valuesOf(view).aspect_ratio
+  const ratio = typeof held === "string" ? held : ""
   const first = layout.placed.find((place) => place.clip.width && place.clip.height)?.clip
   const [w, h] = ratio.split(":").map(Number)
   const aspect = w && h ? w / h : first ? first.width! / first.height! : 16 / 9
