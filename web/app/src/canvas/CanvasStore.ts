@@ -1043,8 +1043,6 @@ export class CanvasStore {
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset || view.conflict) return
-    // From an image tool's words, the box looks at the take being made, and its + goes back to them.
-    if (view.here && view.hereWords && paints(view, this.tools.get())) this.watchTake(key)
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
@@ -1052,6 +1050,9 @@ export class CanvasStore {
       this.askMachine()
       return
     }
+    // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
+    // for is said under its words.
+    if (view.here && view.hereWords && paints(view, this.tools.get())) this.watchTake(key)
     this.patch(key, { waiting: undefined, scrub: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
