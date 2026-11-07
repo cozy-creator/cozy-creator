@@ -1575,10 +1575,11 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     });
-    if matches!(result, Err(Error::OutOfMemory { .. })) {
+    if matches!(result, Err(Error::OutOfMemory { .. } | Error::Exhausted { .. })) {
         let mut state = owner.lock()?;
         state.stats.ooms += 1;
         state.escapes.refused(owner.owned().saturating_add(bytes), escape::room_held(owner));
+        split::refused(&mut state, bytes, stream);
     }
     result
 }

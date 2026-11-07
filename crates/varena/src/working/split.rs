@@ -16,6 +16,9 @@ struct Sample {
     successful: u64,
     aborted: u64,
     classes: BTreeMap<usize, usize>,
+    /// The least this level needs: a refused allocation in its leaf, beside what the leaf held
+    /// then. A level is never chosen again under it, so a short estimate fails one call, not each.
+    refused: usize,
 }
 struct Site {
     choices: Vec<Choice>,
@@ -45,6 +48,7 @@ struct Active {
     backing: usize,
     invalid: Option<String>,
     classes: BTreeMap<usize, usize>,
+    refused: usize,
 }
 #[derive(Default)]
 pub(super) struct Splits {
@@ -395,6 +399,9 @@ fn fits(
             }
             let missing = backing(owner, &missing)?;
             let missing = if sample.is_none() { scaled(missing) } else { missing };
+            // A refusal's bound over the estimate is missing too.
+            let short = site.samples.get(&choice.id).map_or(0, |sample| sample.refused.saturating_sub(full));
+            let (full, missing) = (full + short, missing + short);
             let reclaimable: usize = state
                 .segments
                 .iter()
@@ -779,8 +786,39 @@ fn open_leaf(
         backing: 0,
         invalid: None,
         classes: BTreeMap::new(),
+        refused: 0,
     }));
     Ok(id)
+}
+
+/// An allocation of `bytes` on the open leaf's stream was refused with everything reclaimable
+/// gone: its level needs at least that beside what the leaf holds live now.
+pub(super) fn refused(state: &mut State, bytes: usize, stream: u64) {
+    let Some(active) = state.splits.active.as_ref().filter(|active| active.stream == stream) else {
+        return;
+    };
+    let live: usize = active.allocations.iter()
+        .filter_map(|ptr| state.blocks.get(ptr).filter(|block| block.life == Life::Live))
+        .map(|block| block.requested)
+        .sum();
+    let active = state.splits.active.as_mut().expect("open leaf");
+    active.refused = active.refused.max(active.peak.max(live.saturating_add(bytes)));
+}
+
+/// What a leaf's refusal taught its level, at once: it is a bound on need, not a measure, so it
+/// needs no completed pass, and every decision kept for this site goes.
+fn learn(state: &mut State, key: &str, choice: &str, refused: usize) {
+    if refused == 0 {
+        return;
+    }
+    if let Some(site) = state.splits.sites.get_mut(key) {
+        let sample = site.samples.entry(choice.to_owned()).or_default();
+        if refused > sample.refused {
+            sample.refused = refused;
+            site.measures += 1;
+            site.decided = None;
+        }
+    }
 }
 
 pub(super) fn allocated(state: &mut State, ptr: u64) {
@@ -858,6 +896,7 @@ pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<Sp
         .active
         .take()
         .expect("checked split observation");
+    learn(&mut state, &active.key, &active.choice, active.refused);
     let parent = active.owner.filter(|id| {
         state
             .phases
@@ -917,6 +956,7 @@ pub(super) fn phase_finished(
     if open_for(state, parent) {
         refresh(state);
         let active = state.splits.active.take().expect("open split");
+        learn(state, &active.key, &active.choice, active.refused);
         state.splits.pending.push((
             parent,
             SplitObservation {
