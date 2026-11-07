@@ -241,7 +241,8 @@ pub struct File {
 }
 
 /// `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
-/// project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), an absolute path, or an `http(s)` URL.
+/// project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
+/// by its hash or the start of it, or an `http(s)` URL.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Import {
     pub source: String,

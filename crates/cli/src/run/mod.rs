@@ -12,8 +12,12 @@ use protocol::{
     error::{Error, Kind},
     machine::WarmLevel,
 };
+use serde_json::{Map, Value};
 
-use crate::{Context, output};
+use crate::{
+    Context, output,
+    send::{Paths, Sender},
+};
 pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, stalled_words, watched};
 
 mod follow;
@@ -232,15 +236,15 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 async fn run(ctx: &Context, args: RunArgs, within: PathBuf) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let target = args.target.clone().unwrap_or_default();
+    let target = local(ctx, &args.target.clone().unwrap_or_default(), &cwd)?;
     let inputs = !args.inputs.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
-        return describe(ctx, &target, &cwd, args.placement.on.as_deref()).await;
+        return describe(ctx, &target, args.placement.on.as_deref()).await;
     }
-    let ask = request(ctx, &args, target.clone(), &cwd, within)?;
+    let ask = request(ctx, &args, target.clone(), &cwd, within).await?;
     match send(ctx, ask).await {
         // A package's functions, when the run names none and gives it nothing.
-        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, &cwd, args.placement.on.as_deref()).await,
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, args.placement.on.as_deref()).await,
         Err(e) => Err(e),
         Ok(run) => {
             paste(ctx, &run);
@@ -266,21 +270,44 @@ pub(crate) fn paste(ctx: &Context, run: &Run) {
     }
 }
 
-/// The request `args` make of `target`.
-fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: PathBuf) -> Result<RunRequest, Error> {
+/// `raw` as a run names it: local code (`./dir[/fn]`, `x.py`) by its absolute path, as Calcifer reads no client's working folder.
+pub(crate) fn local(ctx: &Context, raw: &str, cwd: &Path) -> Result<String, Error> {
+    let Some(path) = protocol::target::local(raw, cwd, &ctx.user_home) else { return Ok(raw.to_owned()) };
+    let absolute = std::path::absolute(&path).map_err(|e| Error::new(Kind::Usage, "path_unreadable", format!("{raw}: {e}")))?;
+    Ok(absolute.to_string_lossy().into_owned())
+}
+
+/// The request `args` make of `target`, with every file and folder it names here sent first.
+async fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: PathBuf) -> Result<RunRequest, Error> {
+    let sender = Sender::new(ctx).await?;
+    let mut paths = Paths::new(&sender);
+    for term in &args.inputs {
+        term_paths(&mut paths, term, cwd).await?;
+    }
+    let files: Vec<FileTerm> = args.assets.iter().map(|raw| FileTerm::parse(raw)).collect();
+    for file in &files {
+        paths.add(&file.file, cwd, false, "--file").await?;
+    }
+    let input = match &args.input_file {
+        Some(file) => {
+            let (input, dir) = read_input(ctx, file, cwd)?;
+            paths.add_all(&Value::Object(input.clone()), &dir, &format!("--input {}", file.display())).await?;
+            Some(input)
+        }
+        None => None,
+    };
     Ok(RunRequest {
         target,
         // None: Calcifer's to say, by what this OS runs and the machines there are (`default_on`).
         on: args.placement.on.clone().map(On::from),
         hub: ctx.hub().to_string(),
-        input: None,
-        input_file: args.input_file.clone(),
+        input,
         input_text: None,
         terms: args.inputs.clone(),
-        files: args.assets.iter().map(|raw| FileTerm::parse(raw)).collect(),
+        files,
         fidelities: args.fidelities.clone(),
         loras: args.loras.clone(),
-        cwd: Some(cwd.to_owned()),
+        paths: paths.sent(),
         gpus: args.gpus,
         lane: args.lane.clone(),
         attention_kernel: args.attention_kernel.clone(),
@@ -289,6 +316,39 @@ fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: Pa
         recipes: false,
         agreed: None,
     })
+}
+
+/// What a term may name here: itself (a positional file), its value (`key=value`, a folder too), or the strings of its JSON (`key:=<json>`).
+async fn term_paths(paths: &mut Paths<'_, '_>, term: &str, cwd: &Path) -> Result<(), Error> {
+    paths.add(term, cwd, false, "the command line").await?;
+    match (term.find(":="), term.find('=')) {
+        (Some(colon), Some(equals)) if equals == colon + 1 => {
+            if let Ok(value) = serde_json::from_str::<Value>(&term[colon + 2..]) {
+                paths.add_all(&value, cwd, "the command line").await?;
+            }
+        }
+        (_, Some(equals)) if !term[..equals].starts_with("model.") => paths.add(&term[equals + 1..], cwd, true, "the command line").await?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `--input FILE`: JSON, or YAML by its name or when it is not JSON, holding one object; and its folder, where the files it names start.
+fn read_input(ctx: &Context, file: &Path, cwd: &Path) -> Result<(Map<String, Value>, PathBuf), Error> {
+    let path = protocol::target::spelled(&file.to_string_lossy(), cwd, &ctx.user_home);
+    let what = format!("--input {}", file.display());
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        Error::new(Kind::NotFound, "input_unreadable", format!("{what}: {e}")).remedy("--input takes one JSON or YAML file holding the whole payload")
+    })?;
+    let yaml = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
+    let loaded = match serde_json::from_str(&text) {
+        Ok(value) if !yaml => value,
+        _ => protocol::yaml::to_json(&text).map_err(|e| Error::new(Kind::Validation, "input_invalid", format!("{what}: {e}")))?,
+    };
+    let Value::Object(loaded) = loaded else {
+        return Err(Error::new(Kind::Validation, "input_invalid", format!("{what} does not hold one object")));
+    };
+    Ok((loaded, path.parent().map_or_else(|| cwd.to_owned(), Path::to_owned)))
 }
 
 /// Submits `ask` under a key minted for it (its seed derives from it) and follows the run. Local
@@ -310,8 +370,8 @@ async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
 }
 
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.
-async fn describe(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, cwd, on).await?;
+async fn describe(ctx: &Context, raw: &str, on: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, on).await?;
     match (&target.contract, &target.request) {
         (Some(_), Some(request)) if ctx.json => output::json(request),
         (Some(contract), _) => anstream::print!("{contract}"),
@@ -321,14 +381,13 @@ async fn describe(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Res
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
-async fn functions(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
-    print_functions(ctx, &target(ctx, raw, cwd, on).await?);
+async fn functions(ctx: &Context, raw: &str, on: Option<&str>) -> Result<ExitCode, Error> {
+    print_functions(ctx, &target(ctx, raw, on).await?);
     Ok(ExitCode::SUCCESS)
 }
 
-async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<Target, Error> {
-    let cwd = cwd.to_string_lossy();
-    let mut query = vec![("target", raw), ("hub", ctx.hub().as_str()), ("cwd", &cwd)];
+async fn target(ctx: &Context, raw: &str, on: Option<&str>) -> Result<Target, Error> {
+    let mut query = vec![("target", raw), ("hub", ctx.hub().as_str())];
     query.extend(on.map(|on| ("on", on)));
     ctx.calcifer().await?.get_query("/v1/targets", &query).await
 }

@@ -271,7 +271,7 @@ impl Host {
     /// `on`'s machines; else `[org/]package[@release]` as `hub` (empty: the default one) has it.
     pub async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
-        if let Some(found) = local_code::target(with, folder, &home) {
+        if let Some(found) = local_code::target(with, Some(folder), &home) {
             let (path, named) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
             let prepared = self.ready(&path, &on, hub).await?;

@@ -217,6 +217,52 @@ else
 fi
 }
 
+# cl-817: the CLI in a folder Calcifer can't see, a container's own /work (this HOME, the suite's files and the fixtures at their
+# paths; Calcifer out here): each file goes by content, never by path. A clip, a picture and a folder (a Tree), --input naming files
+# beside it, a positional file, project import and --into, a model from a .safetensors file, and a Runtime wheel for the machine.
+unseen() {
+step "the CLI in a folder Calcifer can't see"
+[ -n "$LOCAL" ] && command -v docker > /dev/null || { echo "skipped: no local machine or no docker"; return 0; }
+local src=$OUT/unseen P=$OUT/unseen-project image=debian:12-slim size wheel
+mkdir -p "$src/folder/sub" "$src/sub"
+echo one > "$src/folder/a.txt"; echo two > "$src/folder/sub/b.txt"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=3 -c:v libx264 -pix_fmt yuv420p "$src/clip.mp4"
+for name in still other; do
+  ffmpeg -v error -y -f lavfi -i "color=c=0x$(printf %06x $((RANDOM * RANDOM % 16777216))):size=64x64" -frames:v 1 "$src/$name.png"
+done
+cp "$src/still.png" "$src/sub/beside.png"
+printf 'clip: ../clip.mp4\nstill: beside.png\nfolder: ../folder\nlabel: from-input\n' > "$src/sub/req.yaml"
+tiny "$src/tiny.safetensors"
+size=$(stat -c %s "$src/still.png")
+[ ! -e /work ] || { check "unseen: /work is on this computer too"; return; }
+cozy project new "$P" > /dev/null || { check "unseen: project new"; return; }
+docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; return; }
+# inside <name> <cozy words…>: the CLI in /work, a copy of $src that only its container has.
+inside() {
+  local name=$1; shift
+  docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME="$HOME" -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
+    -v "$HOME:$HOME" -v "$OUT:$OUT" -v "$E2E:$E2E:ro" -v "$src:/src:ro" ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} \
+    --tmpfs "/work:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" -w /work "$image" \
+    sh -c 'cp -r /src/. /work && exec "$@"' sh "$COZY" "$@" > "$OUT/unseen-$name.out" 2> "$OUT/unseen-$name.err" \
+    || { check "unseen $name: cozy $*: $(tail -c 400 "$OUT/unseen-$name.err") $(tail -c 300 "$OUT/unseen-$name.out")"; return 1; }
+}
+said() { grep -qE "$2" "$OUT/unseen-$1.out" || check "unseen $1: not $2: $(grep -oE '"(clip_seconds|still_bytes|folder_files|label)": *[^,}]*' "$OUT/unseen-$1.out" | paste -sd' ')"; }
+if inside files --json run -p "$P" "$here/inspect/inspect" --file clip=./clip.mp4 --file still=./still.png folder=./folder label=files --on local; then
+  said files '"clip_seconds": *(2\.9|3\.0|3\.1)' && said files "\"still_bytes\": *$size" && said files '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]'
+fi
+inside input --json run -p "$P" "$here/inspect/inspect" --input ./sub/req.yaml --on local && said input '"label": *"from-input"' && said input "\"still_bytes\": *$size"
+inside positional --json run -p "$P" "$here/inspect/inspect" ./still.png --file clip=./clip.mp4 folder=./folder label=positional --on local && said positional "\"still_bytes\": *$size"
+inside import project -p "$P" import ./still.png && grep -qx still "$OUT/unseen-import.out" || check "unseen import: not named still: $(cat "$OUT/unseen-import.out")"
+inside into project -p "$P" import ./other.png --into still && grep -qx still.2 "$OUT/unseen-into.out" || check "unseen into: not still.2: $(cat "$OUT/unseen-into.out")"
+[ "$(row "$P" still .versions)" = 2 ] || check "unseen: still has not 2 versions: $(row "$P" still .)"
+inside model --json model download ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
+  && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
+if [ -f "${CAND_RT:-}" ]; then
+  wheel=/wheels/$(basename "$CAND_RT")
+  inside runtime --json machine update local --runtime "$wheel" -y || true
+fi
+}
+
 yaml_requests() {
 step "a YAML request, then inline inputs over it"
 text=yaml-$RANDOM back=''

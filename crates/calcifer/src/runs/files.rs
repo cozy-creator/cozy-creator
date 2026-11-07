@@ -1,7 +1,8 @@
-//! `PUT`/`HEAD /v1/files/sha256:<hex>`: files a client gives Calcifer by content, for a run to name (`sha256:<hex>` at an input) or
-//! a project to import, as a machine takes objects: byte ranges in any order, several side by side, resuming from the ranges held.
-//! Bytes wait in `parts/` and are named only once every one is held and they hash to the name. A client on this computer may name
-//! its files by path instead. Held under Calcifer's home; a file or part unused for a day goes the next time an upload starts.
+//! `PUT`/`HEAD /v1/files/sha256:<hex>`: the one way a client's files reach Calcifer, by content, for a run to name (`sha256:<hex>` at
+//! an input, or under a path in its `paths`), a project to import, a model to upload or a machine to update, as a machine takes
+//! objects: byte ranges in any order, several side by side, resuming from the ranges held. Bytes wait in `parts/` and are named only
+//! once every one is held and they hash to the name. Calcifer reads no client's disk. Held under Calcifer's home; a file or part
+//! unused for a day goes the next time an upload starts, and a `HEAD` that finds one held counts as a use.
 use std::{
     collections::HashMap,
     fs::{self, File as Disk},
@@ -322,6 +323,7 @@ pub(crate) async fn head(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<Str
         let refusal = Refusal(Error::new(Kind::NotFound, "file_not_found", format!("Calcifer holds no file {digest}")));
         return Ok((StatusCode::NOT_FOUND, [held_header(&ranges)], refusal).into_response());
     };
+    touch(&path);
     let held = file(digest, &path)?;
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(held.length));

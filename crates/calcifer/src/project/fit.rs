@@ -221,7 +221,7 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
     let local = On::Machine("local".into());
     // Local code is read here, however long its first reading takes; a release, from a Hub that may be late.
     let described = target::describe(api, hub, target, Some(dir), &local);
-    let found = match crate::local_code::target(target, dir, &api.machines.user_home) {
+    let found = match crate::local_code::target(target, Some(dir), &api.machines.user_home) {
         Some(_) => described.await.ok()?,
         None => tokio::time::timeout(HUB_LATE, described).await.ok()?.ok()?,
     };

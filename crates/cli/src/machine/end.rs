@@ -186,9 +186,9 @@ pub async fn update(
 ) -> Result<ExitCode, Error> {
     protocol::calcifer::local_usable(name)?;
     let ask = MachineUpdate {
-        runtime: runtime.map(|v| component(&v, "cozy_runtime")).transpose()?,
-        tensorfs: tensorfs.map(|v| component(&v, "tensorfs")).transpose()?,
-        tensord: tensord.map(|v| component(&v, "")).transpose()?,
+        runtime: component(ctx, runtime, "cozy_runtime").await?,
+        tensorfs: component(ctx, tensorfs, "tensorfs").await?,
+        tensord: component(ctx, tensord, "").await?,
         gpu_memory_limit,
         mode,
     };
@@ -253,17 +253,27 @@ pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<Option<u64>
 }
 
 /// What `cozy machine update` installs of one component: a release version, or a file here, built
-/// here first when the path is a project to build.
-fn component(value: &str, distribution: &str) -> Result<Component, Error> {
-    let path = Path::new(value);
+/// here first when the path is a project to build, and sent by content. A `cozy` binary says its release.
+async fn component(ctx: &Context, value: Option<String>, distribution: &str) -> Result<Option<Component>, Error> {
+    let Some(value) = value else { return Ok(None) };
+    let path = Path::new(&value);
     let file = match () {
         _ if path.is_file() => path.to_path_buf(),
         _ if path.is_dir() => build(path, distribution)?,
-        _ => return Ok(Component::Version(value.into())),
+        _ => return Ok(Some(Component::Version(value))),
     };
-    let absolute = std::path::absolute(&file)
-        .map_err(|e| Error::new(Kind::Validation, "component_refused", format!("{}: {e}", file.display())))?;
-    Ok(Component::File(absolute))
+    let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let version = distribution.is_empty().then(|| says(&file)).flatten();
+    let sha256 = crate::send::Sender::new(ctx).await?.file(&file).await?;
+    Ok(Some(Component::File(protocol::calcifer::DevBuild { sha256, name, version })))
+}
+
+/// The release a `cozy` binary says it is, when it runs here.
+fn says(binary: &Path) -> Option<String> {
+    let out = std::process::Command::new(binary).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let version = said.trim().strip_prefix("cozy ")?;
+    (out.status.success() && !version.is_empty()).then(|| version.to_owned())
 }
 
 fn mint_key() -> String {

@@ -514,6 +514,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "base64 0.23.1",
+ "bytes",
  "calcifer",
  "clap",
  "clap_complete",

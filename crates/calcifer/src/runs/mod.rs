@@ -84,8 +84,6 @@ pub(crate) struct Asked {
     target: String,
     #[serde(default)]
     hub: Option<String>,
-    #[serde(default)]
-    cwd: Option<PathBuf>,
     /// The machine a run would go to.
     #[serde(default)]
     on: Option<String>,
@@ -99,7 +97,7 @@ pub(crate) async fn describe(
     let Query(asked) = query?;
     let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
     let on = asked.on.map_or_else(|| default_on(&api), On::from);
-    let resolved = target::describe(&api, &hub, &asked.target, asked.cwd.as_deref(), &on).await.map_err(Refusal)?;
+    let resolved = target::describe(&api, &hub, &asked.target, None, &on).await.map_err(Refusal)?;
     Ok(Json(resolved))
 }
 
@@ -123,8 +121,7 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
 
 /// The local code `ask` names, if it names local code.
 fn local(api: &Api, ask: &RunRequest) -> Option<Result<(PathBuf, Option<String>), Error>> {
-    let cwd = ask.cwd.as_deref().unwrap_or(Path::new(""));
-    crate::local_code::target(&ask.target, cwd, &api.machines.user_home)
+    crate::local_code::target(&ask.target, None, &api.machines.user_home)
 }
 
 /// Records `ask` under `key` and starts it; the same key again answers the recorded run without
@@ -228,11 +225,10 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
         project_of(api, ask)?;
     }
     let hub = hub(api, &ask.hub);
-    let cwd = ask.cwd.as_deref();
     let agreed = ask.agreed.clone();
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
-    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
-    let resolved = target::resolve(api, &hub, &ask.target, cwd, &on, ask.warm.is_some(), given, key, agreed).await?;
+    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
+    let resolved = target::resolve(api, &hub, &ask.target, None, &on, ask.warm.is_some(), given, key, agreed).await?;
     let (package, function, mut code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
@@ -366,16 +362,13 @@ async fn call(
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),
-        input_file: ask.input_file.clone(),
         input_text: ask.input_text.clone(),
         assets: ask.files.clone(),
         fidelities: ask.fidelities.clone(),
         loras: ask.loras.clone(),
         key: key.to_owned(),
-        cwd: ask.cwd.clone(),
-        user_home: api.machines.user_home.clone(),
+        paths: ask.paths.clone(),
         digests: Some(home.join("cache").join("digests")),
-        manifests: Some(home.join("cache").join("trees")),
         clips: clip::Clips { dir: home.join("cache").join("clips"), home: api.machines.hubs.home().clone() },
         uploads: files::dir(&api.calcifer),
         project: project.clone().map(|dir| crate::project::Holding::new(api.calcifer.clone(), dir)),
@@ -525,27 +518,6 @@ fn store(e: crate::store::StoreError) -> Error {
 
 fn refused(e: crate::Error) -> Error {
     Refusal::from(e).0
-}
-
-/// `path` as the request spells it: `~` is the user's home, a relative one starts at `cwd`.
-pub(crate) fn place(path: &Path, cwd: Option<&Path>, user_home: &Path) -> Result<PathBuf, Error> {
-    let text = path.to_string_lossy();
-    let path = Path::new(text.trim());
-    if let Ok(rest) = path.strip_prefix("~") {
-        return Ok(user_home.join(rest));
-    }
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    match cwd {
-        Some(cwd) => Ok(cwd.join(path)),
-        None => Err(Error::new(
-            Kind::Usage,
-            "path_relative",
-            format!("{} is relative, and the request names no cwd", path.display()),
-        )
-        .remedy("send an absolute path, or the request's cwd")),
-    }
 }
 
 /// The kind a submission's spec runs.

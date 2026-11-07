@@ -521,8 +521,11 @@ pub struct ModelDownload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
     /// `org/name[@release]`, `org/name@sha256:<commit>`, `hf://…`, `civitai://…`, `https://…`, or
-    /// an absolute path to one `.safetensors` file on this computer.
+    /// a held `.safetensors` file's `sha256:<hex>` (`PUT /v1/files`).
     pub model: String,
+    /// A held file's name where its client has it: the object's name, and its alias's when none is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// `local/<alias>`: the name the machine keeps it under (required for a file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -546,11 +549,14 @@ pub struct ModelDownload {
 pub struct ModelUpload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
-    /// A provider source, `local/<alias>`, a Hub model, an absolute path to a `.safetensors` file
-    /// or a CozyTensors folder, a held file's `sha256:<hex>`, or `run:N[#output]`: a run's weights output, uploaded from the
+    /// A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
+    /// CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
     /// machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and nothing
     /// runs.
     pub source: String,
+    /// A held source's name where its client has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// `org/name`.
     pub destination: String,
     pub lane: String,

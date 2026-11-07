@@ -14,7 +14,7 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{FileTerm, Note, NoteLevel, StagedInput},
+    calcifer::{FileTerm, Note, NoteLevel, Sent, StagedInput, path_key},
     contract as describe,
     error::{Error, Kind},
     ids::Digest,
@@ -36,9 +36,7 @@ pub struct Terms {
     pub input: Option<Map<String, Value>>,
     /// The terms: `key=value`, `key:=json`, `model.<slot>=<ref>`, positionals.
     pub inputs: Vec<String>,
-    /// The whole payload as a JSON or YAML file; the terms override it.
-    pub input_file: Option<PathBuf>,
-    /// The whole payload as JSON or YAML text; the files it names start at `cwd`.
+    /// The whole payload as JSON or YAML text.
     pub input_text: Option<String>,
     /// Attached files: `[field.path|label]` and a file.
     pub assets: Vec<FileTerm>,
@@ -48,13 +46,10 @@ pub struct Terms {
     pub loras: Vec<String>,
     /// The run's idempotency key, which an omitted integer `seed` derives from.
     pub key: String,
-    /// Where relative paths start (none: they are refused), and what `~` means.
-    pub cwd: Option<PathBuf>,
-    pub user_home: PathBuf,
-    /// Where input files' digests are remembered across runs; None reads each file every time.
+    /// The client's files and folders the request names by path, as written there, sent by content.
+    pub paths: BTreeMap<String, Sent>,
+    /// Where the digests of its project's files are remembered; None reads each every time.
     pub digests: Option<PathBuf>,
-    /// Where input trees' manifests are written for the run to send; None: the temp directory.
-    pub manifests: Option<PathBuf>,
     /// Where segments of videos are cut and kept.
     pub clips: Clips,
     /// Where uploaded files are held (`PUT /v1/files`), by their digest's hex.
@@ -64,37 +59,46 @@ pub struct Terms {
 }
 
 impl Terms {
-    /// `path` as the request spells it: `~` is the user's home, a relative one starts at its cwd.
-    pub fn place(&self, path: &Path) -> Result<PathBuf, Error> {
-        super::place(path, self.cwd.as_deref(), &self.user_home)
-    }
-
-    /// The file an uploaded `sha256:<hex>` names, when Calcifer holds it.
-    fn upload(&self, text: &str) -> Option<PathBuf> {
-        let hex = text.strip_prefix("sha256:")?;
-        let valid = hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit());
-        let path = self.uploads.join(hex.to_ascii_lowercase());
-        let held = valid && path.is_file();
+    /// The file Calcifer holds under `digest`.
+    fn held(&self, digest: &Digest) -> Option<PathBuf> {
+        let path = self.uploads.join(hex::encode(digest.bytes()));
+        let held = path.is_file();
         if held {
             super::files::touch(&path);
         }
         held.then_some(path)
     }
 
-    /// Whether `text` names a file by content: held here, or one of its project's by hash.
-    fn by_hash(&self, text: &str) -> bool {
-        self.upload(text).is_some() || self.project.as_ref().is_some_and(|project| project.names(text))
+    /// What the client sent under the path `text`.
+    fn sent(&self, text: &str) -> Option<Sent> {
+        self.paths.get(path_key(text)).copied()
     }
 
-    /// The file `text` names by content, here now; none when it names none.
-    async fn by_content(&self, text: &str) -> Result<Option<PathBuf>, Error> {
-        if let Some(path) = self.upload(text) {
-            return Ok(Some(path));
+    /// The file the client sent under the path `text`, held here.
+    fn sent_file(&self, text: &str) -> Option<PathBuf> {
+        match self.sent(text)? {
+            Sent::File(digest) => self.held(&digest),
+            Sent::Tree(_) => None,
         }
-        match &self.project {
-            Some(project) => project.file(text).await,
-            None => Ok(None),
+    }
+
+    /// The file `text` names by content or as sent, here now, and its digest; none when it names none.
+    async fn file(&self, text: &str) -> Result<Option<(PathBuf, Digest)>, Error> {
+        let held = |digest: Digest| self.held(&digest).map(|path| (path, digest));
+        if let Some(found) = text.parse().ok().and_then(held) {
+            return Ok(Some(found));
         }
+        if let Some(path) = match &self.project {
+            Some(project) => project.file(text).await?,
+            None => None,
+        } {
+            let digest = protocol::digests::of(self.digests.as_deref(), &path)?;
+            return Ok(Some((path, digest)));
+        }
+        Ok(match self.sent(text) {
+            Some(Sent::File(digest)) => held(digest),
+            _ => None,
+        })
     }
 }
 
@@ -117,11 +121,13 @@ pub struct Bound {
     pub cut: Vec<String>,
 }
 
-/// A local file bound to a payload field, whose value is its digest.
+/// A file bound to a payload field, whose value is its digest: `path` holds it here, and `shown` is
+/// how people named it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputFile {
     pub field: String,
     pub path: PathBuf,
+    pub shown: String,
     pub digest: Digest,
     pub length: u64,
     pub media_type: String,
@@ -197,7 +203,6 @@ pub async fn warm_choices(
         || !binder.named_files.is_empty()
         || !terms.assets.is_empty()
         || !terms.fidelities.is_empty()
-        || terms.input_file.is_some()
         || terms.input_text.is_some()
         || terms.input.is_some()
     {
@@ -243,12 +248,11 @@ pub async fn bind(
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
-    match (&terms.input_file, &terms.input_text, &terms.input) {
-        (Some(path), None, None) => binder.load(path)?,
-        (None, Some(text), None) => binder.read(text, false, "input_text", terms.cwd.as_deref())?,
-        (None, None, Some(input)) => binder.take(input.clone(), terms.cwd.as_deref())?,
-        (None, None, None) => {}
-        _ => return Err(usage("input_twice", "a request gives its payload as one of input, input_file or input_text")),
+    match (&terms.input_text, &terms.input) {
+        (Some(text), None) => binder.read(text, "input_text")?,
+        (None, Some(input)) => binder.take(input.clone())?,
+        (None, None) => {}
+        _ => return Err(usage("input_twice", "a request gives its payload as one of input or input_text")),
     }
     let positional = binder.read_terms(&inputs)?;
     binder.primary(positional)?;
@@ -290,8 +294,8 @@ struct Binder<'a> {
     document: Map<String, Value>,
     /// Its model choices; their `dropped` are warned of with the payload's.
     choices: Choices<'a>,
-    /// Positional local files, bound to media inputs by kind.
-    files: Vec<PathBuf>,
+    /// Positional files, as written, bound to media inputs by kind.
+    files: Vec<String>,
     /// `key=value` terms whose field is a file: `--file key=value`.
     named_files: Vec<FileTerm>,
     cuts: Vec<Cut>,
@@ -341,44 +345,23 @@ impl Binder<'_> {
             .transpose()
     }
 
-    /// `--input FILE`: JSON, or YAML by its name or when it is not JSON.
-    fn load(&mut self, path: &Path) -> Result<(), Error> {
-        let path = self.resolve(path)?;
-        let text = std::fs::read_to_string(&path).map_err(|e| {
-            Error::new(
-                Kind::NotFound,
-                "input_unreadable",
-                format!("--input {}: {e}", path.display()),
-            )
-            .remedy("--input takes one JSON or YAML file holding the whole payload")
-        })?;
-        let yaml = path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
-        // A file named inside the file is relative to the file.
-        self.read(&text, yaml, &format!("--input {}", path.display()), path.parent())
-    }
-
-    /// A payload as text: JSON, or YAML when it says so or is not JSON. The files it names are relative to `base`.
-    fn read(&mut self, text: &str, yaml: bool, what: &str, base: Option<&Path>) -> Result<(), Error> {
+    /// A payload as text: JSON, or YAML when it is not JSON.
+    fn read(&mut self, text: &str, what: &str) -> Result<(), Error> {
         let loaded: Value = match serde_json::from_str(text) {
-            Ok(value) if !yaml => value,
+            Ok(value) => value,
             _ => protocol::yaml::to_json(text).map_err(|e| invalid("input_invalid", format!("{what}: {e}")))?,
         };
         let Value::Object(loaded) = loaded else {
             return Err(invalid("input_invalid", format!("{what} does not hold one object")));
         };
-        self.take(loaded, base)
+        self.take(loaded)
     }
 
-    /// The payload's fields and model choices; the files they name are relative to `base`.
-    fn take(&mut self, mut loaded: Map<String, Value>, base: Option<&Path>) -> Result<(), Error> {
+    /// The payload's fields and model choices.
+    fn take(&mut self, mut loaded: Map<String, Value>) -> Result<(), Error> {
         self.choices.take(&mut loaded)?;
-        for (key, mut value) in loaded {
+        for (key, value) in loaded {
             let key = self.fold(&key)?;
-            if let (Some(field), Some(base)) = (self.callable.field(&key), base) {
-                relative_files(&field.ty, &mut value, base, &|source| self.terms.by_hash(source));
-            }
             self.document.insert(key, value);
         }
         Ok(())
@@ -389,7 +372,7 @@ impl Binder<'_> {
         let mut positional = Vec::new();
         for term in inputs {
             if self.positional_file(term)? {
-                self.files.push(self.resolve(Path::new(term))?);
+                self.files.push(path_key(term).to_owned());
                 continue;
             }
             let colon = term.find(":=");
@@ -548,27 +531,18 @@ impl Binder<'_> {
         })
     }
 
-    /// Whether a bare term is a local file for a media input: an explicit path (which must
-    /// exist), or an existing file when the callable takes media. Never a `key=value` term.
+    /// Whether a bare term is a file for a media input: an explicit path (which must have been
+    /// sent), or a file sent under it when the callable takes media. Never a `key=value` term.
     fn positional_file(&self, term: &str) -> Result<bool, Error> {
         let explicit = written_as_path(term) && !term.contains(char::is_whitespace);
         if !explicit && term.contains('=') || !self.takes_media() {
             return Ok(false);
         }
-        let path = match self.resolve(Path::new(term)) {
-            Ok(path) => path,
-            Err(_) if !explicit => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        if path.is_file() {
+        if matches!(self.terms.sent(term), Some(Sent::File(_))) {
             return Ok(true);
         }
         if explicit {
-            return Err(Error::new(
-                Kind::NotFound,
-                "input_file_absent",
-                format!("input file {term} does not exist"),
-            ));
+            return Err(not_sent("input file", term));
         }
         Ok(false)
     }
@@ -581,11 +555,6 @@ impl Binder<'_> {
                 .fields
                 .iter()
                 .any(|f| f.ty.media().is_some())
-    }
-
-    /// An absolute path: `~` is the user's home, a relative path starts at the working directory.
-    fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
-        self.terms.place(path)
     }
 
     /// Binds every file: those named in the payload, `--file` and positional files. Each value
@@ -635,7 +604,7 @@ impl Binder<'_> {
                             format!(
                                 "{} declares no Files input for {}",
                                 self.callable.name,
-                                spec.source.display()
+                                spec.source
                             ),
                         )
                         .remedy("use --file <field-path>=<file> for a named input"));
@@ -678,15 +647,15 @@ impl Binder<'_> {
                 )
                 .remedy(describe::usage_line(self.target, self.callable))
             })?;
-            let source = spec.source.clone();
-            let named = source.to_string_lossy();
-            let path = match self.terms.by_content(&named).await? {
-                Some(path) => path,
-                None if named.starts_with("sha256:") => {
+            let named = path_key(&spec.source).to_owned();
+            let (path, digest) = match (self.terms.file(&named).await?, self.terms.sent(&named)) {
+                (Some(found), _) => found,
+                (None, Some(Sent::Tree(_))) => return Err(invalid("asset_not_a_file", format!("{field}: {named} is a folder, not a file"))),
+                (None, Some(Sent::File(_))) | (None, None) if named.starts_with("sha256:") || self.terms.sent(&named).is_some() => {
                     return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no file {named}"))
-                        .remedy(format!("PUT its bytes to /v1/files/{named} first, or name the file by its path")));
+                        .remedy("PUT its bytes to /v1/files/sha256:<hex> first"));
                 }
-                None => self.resolve(&source)?,
+                (None, _) => return Err(not_sent(&field, &named)),
             };
             let sniffed = sniff(&path)?;
             let (kind_max, kinds) = accepts;
@@ -710,7 +679,7 @@ impl Binder<'_> {
                             "{field} accepts [{}], not {} ({})",
                             accepted.join(", "),
                             sniffed.media_type,
-                            spec.source.display()
+                            spec.source
                         ),
                     )
                 })?;
@@ -723,7 +692,6 @@ impl Binder<'_> {
                     ),
                 ));
             }
-            let digest = protocol::digests::of(self.terms.digests.as_deref(), &path)?;
             set_path(
                 &mut self.document,
                 &parts,
@@ -737,6 +705,7 @@ impl Binder<'_> {
             files.push(InputFile {
                 field,
                 path,
+                shown: spec.source.clone(),
                 digest,
                 length: sniffed.length,
                 media_type: sniffed.media_type,
@@ -748,8 +717,8 @@ impl Binder<'_> {
         Ok(files)
     }
 
-    /// Each local directory at a Tree input becomes a TensorFS manifest naming its files: the field
-    /// names the manifest by its digest, as the machine materializes the tree; the files go too.
+    /// Each folder at a Tree input is its tree document, sent as a file, its files sent too: the field
+    /// names the document by its digest, as the machine materializes the tree.
     fn trees(&mut self, files: &mut Vec<InputFile>) -> Result<Vec<StagedInput>, Error> {
         let mut found = vec![];
         for field in &self.callable.request.fields {
@@ -757,23 +726,25 @@ impl Binder<'_> {
                 tree_dirs(&field.ty, value, &field.name, &mut found);
             }
         }
-        let manifests = (self.terms.manifests.clone())
-            .unwrap_or_else(|| std::env::temp_dir().join("cozy-trees"));
         let mut members = vec![];
         for (field, source) in found {
-            if source.starts_with("sha256:") {
-                return Err(usage("tree_not_held", format!("{field}: a folder goes by its path, and {source} names none")).remedy("name the folder again"));
+            let digest = match (self.terms.sent(&source), source.parse::<Digest>()) {
+                (Some(Sent::Tree(digest)), _) | (None, Ok(digest)) => digest,
+                (Some(Sent::File(_)), _) => return Err(usage("tree_not_a_directory", format!("{field}: {source} is a file, not a folder"))),
+                (None, Err(_)) => return Err(not_sent(&field, &source)),
+            };
+            let not_held = |what: String| {
+                Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no {what}")).remedy("PUT its bytes to /v1/files/sha256:<hex> first")
+            };
+            let path = self.terms.held(&digest).ok_or_else(|| not_held(format!("tree document {digest}")))?;
+            let document = std::fs::read(&path).map_err(|e| Error::new(Kind::Internal, "tree_unreadable", format!("{field}: {e}")))?;
+            let tree = protocol::tree::parse(&document).map_err(|e| usage("tree_invalid", format!("{field}: {source}: {e}")))?;
+            for (name, member) in tree {
+                let digest: Digest = format!("sha256:{}", member.sha256).parse().expect("a tree names sha256 hex");
+                let held = self.terms.held(&digest).ok_or_else(|| not_held(format!("{name} of {source} ({digest})")))?;
+                members.push(StagedInput { path: held, digest, length: member.length });
             }
-            let root = self.resolve(Path::new(&source))?;
-            if !root.is_dir() {
-                return Err(usage(
-                    "tree_not_a_directory",
-                    format!("{field}: {} is not a directory", root.display()),
-                ));
-            }
-            let staged = protocol::stage::stage(&root, self.terms.digests.as_deref(), &manifests)?;
             let parts: Vec<String> = field.split('.').map(str::to_owned).collect();
-            let digest = staged.manifest.digest;
             set_path(
                 &mut self.document,
                 &parts,
@@ -781,13 +752,13 @@ impl Binder<'_> {
             )?;
             files.push(InputFile {
                 field,
-                path: staged.manifest.path,
+                path,
+                shown: source,
                 digest,
-                length: staged.manifest.length,
+                length: document.len() as u64,
                 media_type: protocol::tree::MEDIA.into(),
                 order: 0,
             });
-            members.extend(staged.files);
         }
         files.sort_by(|a, b| a.field.cmp(&b.field));
         Ok(members)
@@ -832,7 +803,7 @@ impl Binder<'_> {
     /// slot); one named `label` labels an Assets occurrence; an unnamed one joins the Assets
     /// collection.
     fn asset_spec(&self, term: &FileTerm, specs: &[Spec]) -> Spec {
-        let source = PathBuf::from(&term.file);
+        let source = term.file.clone();
         let Some(name) = term.name.as_deref() else {
             return Spec { field: None, source, label: None };
         };
@@ -889,7 +860,7 @@ impl Binder<'_> {
     }
 
     /// Each positional file fills the one free media input of its kind.
-    fn bind_positional(&self, files: &[PathBuf], specs: &mut Vec<Spec>) -> Result<(), Error> {
+    fn bind_positional(&self, files: &[String], specs: &mut Vec<Spec>) -> Result<(), Error> {
         struct Input<'a> {
             name: &'a str,
             kind: &'a str,
@@ -950,7 +921,8 @@ impl Binder<'_> {
             }
         }
         for file in files {
-            let media_type = sniff(file)?.media_type;
+            let held = self.terms.sent_file(file).ok_or_else(|| not_sent("input file", file))?;
+            let media_type = sniff(&held)?.media_type;
             let category = media_type.split('/').next().unwrap_or_default();
             // An input of its own kind first. An open one takes its kind's whole set, which reads
             // a GIF as video and a video's sound as audio, as the Runtime does.
@@ -976,7 +948,7 @@ impl Binder<'_> {
                 .filter(|i| (i.list || !taken.contains(i.name)) && best > 0 && rank(i) == best)
                 .collect();
             chosen.dedup_by_key(|i| i.name);
-            let shown = file.display();
+            let shown = file;
             match chosen.as_slice() {
                 [] => {
                     let names: Vec<String> = inputs
@@ -1060,7 +1032,7 @@ impl Binder<'_> {
                 let index = spec.field.as_deref().and_then(|f| f.strip_prefix(&prefix)?.split('.').next());
                 index.and_then(|index| index.parse::<u64>().ok()).is_some_and(|index| index >= max)
             };
-            let left: Vec<String> = specs.iter().filter(|spec| past(spec)).map(|spec| spec.source.display().to_string()).collect();
+            let left: Vec<String> = specs.iter().filter(|spec| past(spec)).map(|spec| spec.source.clone()).collect();
             if !left.is_empty() {
                 specs.retain(|spec| !past(spec));
                 self.cut.push(cut_list(&self.callable.name, &field.name, max, left.join(", ")));
@@ -1116,7 +1088,7 @@ impl Binder<'_> {
             let over_kind = kind.is_some_and(|k| assets.kinds[k].max_count.is_some_and(|max| each[k] >= max));
             if over_kind || most.is_some_and(|max| kept >= max) {
                 gone.insert(at);
-                left.push(file.path.display().to_string());
+                left.push(file.shown.clone());
                 continue;
             }
             kept += 1;
@@ -1210,7 +1182,8 @@ fn cut_list(function: &str, list: &str, max: u64, left: String) -> String {
 
 struct Spec {
     field: Option<String>,
-    source: PathBuf,
+    /// As written: a hash, or a path the client sent.
+    source: String,
     label: Option<String>,
 }
 
@@ -1257,7 +1230,7 @@ fn embedded_files(ty: &Type, value: &Value, path: &str, terms: &Terms, out: &mut
             }
             out.push(Spec {
                 field: Some(path.to_owned()),
-                source: source.into(),
+                source: source.clone(),
                 label: None,
             });
         }
@@ -1311,49 +1284,6 @@ fn tree_dirs(ty: &Type, value: &Value, path: &str, out: &mut Vec<(String, String
             for field in &s.fields {
                 if let Some(value) = object.get(&field.name) {
                     tree_dirs(&field.ty, value, &format!("{path}.{}", field.name), out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Rewrites relative file names at input-file positions against `base`: not what `by_hash` says names a file by its content.
-fn relative_files(ty: &Type, value: &mut Value, base: &Path, by_hash: &dyn Fn(&str) -> bool) {
-    match (ty, value) {
-        (Type::Asset(_) | Type::Tree, Value::String(source))
-            if !source.contains("://")
-                && !source.starts_with("sha256:")
-                && !written_as_path(source)
-                && !source.is_empty()
-                && !by_hash(source) =>
-        {
-            *source = base.join(&*source).to_string_lossy().into_owned();
-        }
-        (Type::Asset(_) | Type::Tree, Value::String(source))
-            if source.starts_with("./") || source.starts_with("../") =>
-        {
-            *source = base.join(&*source).to_string_lossy().into_owned();
-        }
-        // A string is a file only where it is no other scalar, as `embedded_files` reads it.
-        (Type::Union { branches, .. }, value)
-            if !value.as_str().is_some_and(|s| {
-                branches
-                    .iter()
-                    .any(|b| *b == Type::Str || scalar(b, s).is_some())
-            }) =>
-        {
-            for branch in branches {
-                relative_files(branch, value, base, by_hash);
-            }
-        }
-        (Type::List(item), Value::Array(values)) => values
-            .iter_mut()
-            .for_each(|v| relative_files(item, v, base, by_hash)),
-        (Type::Struct(s), Value::Object(object)) => {
-            for field in &s.fields {
-                if let Some(value) = object.get_mut(&field.name) {
-                    relative_files(&field.ty, value, base, by_hash);
                 }
             }
         }
@@ -1837,6 +1767,12 @@ pub(crate) fn sniff(path: &Path) -> Result<Sniffed, Error> {
         length,
         media_type: media_type.to_owned(),
     })
+}
+
+/// `what` names a path the request sent nothing under: Calcifer reads no client's disk.
+fn not_sent(what: &str, path: &str) -> Error {
+    Error::new(Kind::NotFound, "input_file_absent", format!("{what}: no file {path} came with the request"))
+        .remedy("name a file that exists; a client sends each by content (PUT /v1/files) and names it in `paths`")
 }
 
 /// A slot's or callable's name.

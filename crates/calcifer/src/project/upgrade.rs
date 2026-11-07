@@ -202,7 +202,7 @@ fn tool_of(with: &str, kind: &str, inputs: &Map<String, Value>, turbo: Option<bo
     let named = match is_path {
         true => {
             let home = platform::paths::login_home().unwrap_or_default();
-            matches!(crate::local_code::target(with, &folder.dir, &home), Some(Ok((_, Some(_)))))
+            matches!(crate::local_code::target(with, Some(&folder.dir), &home), Some(Ok((_, Some(_)))))
         }
         false => with.split('@').next().unwrap_or(with).trim_start_matches("_/").contains('/'),
     };

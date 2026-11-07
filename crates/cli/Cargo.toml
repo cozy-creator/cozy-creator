@@ -11,6 +11,7 @@ publish.workspace = true
 anstream.workspace = true
 anstyle.workspace = true
 base64.workspace = true
+bytes.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 comfy-table.workspace = true

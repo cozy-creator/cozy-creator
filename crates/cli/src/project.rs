@@ -521,9 +521,16 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     }
     let hash = args.source.strip_prefix("sha256:").unwrap_or(&args.source);
     let by_hash = hash.len() >= 6 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) && !cwd.join(&args.source).exists();
-    let source = match args.source.contains("://") || by_hash {
-        true => args.source,
-        false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
+    let exact = args.name.is_some();
+    // A file here goes by content, named for its stem unless a name was typed.
+    let (source, name) = match args.source.contains("://") || by_hash {
+        true => (args.source, args.name),
+        false => {
+            let file = protocol::target::spelled(&args.source, &cwd, &ctx.user_home);
+            let stem = file.file_stem().map(|stem| stem.to_string_lossy().to_lowercase());
+            let digest = crate::send::Sender::new(ctx).await?.file(&file).await.map_err(|e| Error { code: "import_unreadable".into(), ..e })?;
+            (digest.to_string(), args.name.or(stem))
+        }
     };
     if let Some(box_name) = args.into {
         let joined: VersionMoved = calcifer.post(&crate::calcifer_client::path(&["v1", "projects", &opened.id, "assets", &box_name, "versions"]), &NewVersion { source }, None).await?;
@@ -535,8 +542,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         return Ok(ExitCode::SUCCESS);
     }
     let path = format!("/v1/projects/{}/imports", opened.id);
-    let exact = args.name.is_some();
-    let ask = Import { source, name: args.name, at: None, description: args.description, exact, moves: Default::default(), placed: Default::default() };
+    let ask = Import { source, name, at: None, description: args.description, exact, moves: Default::default(), placed: Default::default() };
     let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&imported);

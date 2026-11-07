@@ -312,12 +312,6 @@ impl Holding {
         Self { calcifer, dir }
     }
 
-    /// Whether `written` starts the hash of a file of this project.
-    pub(crate) fn names(&self, written: &str) -> bool {
-        let Some(hex) = written_hash(written) else { return false };
-        Folder::at(&self.dir).lock().is_ok_and(|lock| !lock.matching(&hex).is_empty())
-    }
-
     /// The file of this project `written` names by its hash, what stays on a machine fetched now that it's named. None: it names
     /// none of them.
     pub(crate) async fn file(&self, written: &str) -> Result<Option<PathBuf>, Error> {
@@ -393,7 +387,7 @@ impl Holding {
             };
             let sniffed = crate::runs::bind::sniff(&path)?;
             let digest = sha256.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
-            files.push(crate::runs::bind::InputFile { order: order_of(&field), field, path, digest, length: sniffed.length, media_type: sniffed.media_type });
+            files.push(crate::runs::bind::InputFile { order: order_of(&field), shown: sha256.clone(), field, path, digest, length: sniffed.length, media_type: sniffed.media_type });
         }
         Ok((payload.as_object().cloned().unwrap_or_default(), files, bound.warnings))
     }
@@ -1103,7 +1097,7 @@ pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, 
     let home = &api.machines.user_home;
     let mut named = BTreeMap::new();
     for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty()) {
-        if let Some(Ok((path, function))) = crate::local_code::target(&with, &folder.dir, home) {
+        if let Some(Ok((path, function))) = crate::local_code::target(&with, Some(&folder.dir), home) {
             let written = match function {
                 Some(function) => with.trim().trim_end_matches(['/', '\\']).strip_suffix(function.as_str()).unwrap_or(&with).trim_end_matches(['/', '\\']).to_owned(),
                 None => with.trim().trim_end_matches(['/', '\\']).to_owned(),
@@ -2027,7 +2021,7 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) ->
 /// `source` kept as a file of the project, in project.lock.
 async fn keep_file(api: &Api, folder: &Folder, source: &str) -> Result<folder::Kept, Refusal> {
     // A file of the project's by the start of its hash, as `status` shows it: what lifting a take out of its asset names.
-    let whole = written_hash(source).filter(|_| !FsPath::new(source).exists()).and_then(|hex| match folder.lock().ok()?.matching(&hex).as_slice() {
+    let whole = written_hash(source).and_then(|hex| match folder.lock().ok()?.matching(&hex).as_slice() {
         [file] => Some(file.sha256.clone()),
         _ => None,
     });
@@ -2053,7 +2047,7 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
     let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
-    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
+    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound: a file, or an http(s) URL"))
 }
 
 fn not_held(source: &str) -> Refusal {

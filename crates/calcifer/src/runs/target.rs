@@ -56,7 +56,7 @@ pub(crate) async fn resolve(
     agreed: Option<protocol::calcifer::Agreed>,
 ) -> Result<Resolved, Error> {
     let user_home = &api.machines.user_home;
-    if let Some(local) = crate::local_code::target(text, cwd.unwrap_or(Path::new("")), user_home) {
+    if let Some(local) = crate::local_code::target(text, cwd, user_home) {
         let (path, function) = local?;
         let prepared = crate::local_code::prepare(api, &path, on, hub, warm, key, agreed).await?;
         let interface = match &prepared.interface {
@@ -78,7 +78,7 @@ pub(crate) async fn resolve(
 /// checked as a run checks it; local code as its machine read it, else from its source, installing and starting nothing.
 pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<&Path>, on: &On) -> Result<Target, Error> {
     let user_home = &api.machines.user_home;
-    if let Some(local) = crate::local_code::target(text, cwd.unwrap_or(Path::new("")), user_home) {
+    if let Some(local) = crate::local_code::target(text, cwd, user_home) {
         let (path, function) = local?;
         let (package, document) = crate::local_code::describe(api, &path, on, hub).await?;
         let interface = parse(&document)?;

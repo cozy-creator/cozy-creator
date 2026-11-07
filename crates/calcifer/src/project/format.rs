@@ -1098,7 +1098,7 @@ pub fn plain_tool(tool: &str, folder: &Folder) -> String {
             name.strip_suffix(".py").map(str::to_owned).unwrap_or(name)
         };
         let home = platform::paths::login_home().unwrap_or_default();
-        return match crate::local_code::target(with, &folder.dir, &home) {
+        return match crate::local_code::target(with, Some(&folder.dir), &home) {
             Some(Ok((path, Some(function)))) => format!("{}/{function}", dir_name(&path.to_string_lossy())),
             _ => dir_name(with),
         };

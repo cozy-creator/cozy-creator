@@ -1293,8 +1293,8 @@ J --arg s "sha256:$hex" '.image == $s' <<< "$input" || check "path-free: request
 asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --argjson i "$input" '{target: $t, project: $p, on: "local", input: $i}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
 [ -n "$n" ] && J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: asking it again: $asked"
-# A hash prefix, in text and in a request file, with a cwd that must not take it for a path.
-asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: ${hex:0:12}" --arg c "$R" '{target: $t, project: $p, on: "local", input_text: $x, cwd: $c}')")
+# A hash prefix, in text and in a request file.
+asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: ${hex:0:12}" '{target: $t, project: $p, on: "local", input_text: $x}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
 [ -n "$n" ] && J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: a hash prefix in input_text: $asked"
 printf 'image: %s\n' "${hex:0:12}" > "$R/req.yaml"

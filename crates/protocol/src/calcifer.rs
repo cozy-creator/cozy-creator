@@ -129,7 +129,7 @@ pub struct StagedInput {
 /// `seed`, when the request omits one, derives from the key.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunRequest {
-    /// `[org/]pkg/fn[@release]`, or local code: `./dir[/fn]`, `./script.py[/fn]`.
+    /// `[org/]pkg/fn[@release]`, or local code by its absolute path: `/dir[/fn]`, `/script.py[/fn]`.
     pub target: String,
     /// `local` (the default), a machine's name, `any`, or `new[:sku]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -137,15 +137,11 @@ pub struct RunRequest {
     /// The Tensorhub origin; empty: Calcifer's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hub: String,
-    /// The payload as an object; `terms` override it. A file field holds a path or an uploaded
-    /// file's `sha256:<hex>`.
+    /// The payload as an object; `terms` override it. A file field holds an uploaded file's
+    /// `sha256:<hex>`, a hash prefix of a file of its project's, or a key of `paths`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<serde_json::Map<String, serde_json::Value>>,
-    /// The payload from a JSON or YAML file on this computer; the files it names are relative to it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_file: Option<PathBuf>,
-    /// The payload as JSON or YAML text, read as that file is; the files it names are `sha256:<hex>`, a hash prefix of a file of
-    /// its project's, or relative to `cwd`.
+    /// The payload as JSON or YAML text, its files named as `input`'s are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_text: Option<String>,
     /// `key=value` (typed as the field is declared), `key:=<json>`, `model.<slot>=<ref>`, one
@@ -162,9 +158,10 @@ pub struct RunRequest {
     /// `[slot=]ref[,strength]`, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loras: Vec<String>,
-    /// Where relative paths start; absent, a relative path is refused.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
+    /// The client's files and folders the request names by a path, each as written there, sent
+    /// first by content (`PUT /v1/files`). Calcifer reads no client's disk: a path not here names no file.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub paths: BTreeMap<String, Sent>,
     /// At most this many GPUs; absent: every GPU its slots support.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpus: Option<u32>,
@@ -189,8 +186,8 @@ pub struct RunRequest {
 }
 
 /// One attached file: `name` is an input's field path (`image`, `frames.0`) or a label, absent for
-/// one of the declared files; `file` is a path on this computer (a video's may end in
-/// `#t=<start>,<end>`) or an uploaded file's `sha256:<hex>`.
+/// one of the declared files; `file` is an uploaded file's `sha256:<hex>`, a hash prefix of a file
+/// of its project's, or a key of the request's `paths`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileTerm {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -210,6 +207,21 @@ impl FileTerm {
             None => bare(),
         }
     }
+}
+
+/// A file or folder a client sent by content (`PUT /v1/files`): a file's digest, or a folder's
+/// tree document's (`protocol::tree`), sent after each file it names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sent {
+    File(Digest),
+    Tree(Digest),
+}
+
+/// What a path is sent under in a request's `paths`: as written, without the `@` a file may be written with.
+pub fn path_key(written: &str) -> &str {
+    let written = written.trim();
+    written.strip_prefix('@').unwrap_or(written).trim()
 }
 
 /// `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
@@ -1558,12 +1570,23 @@ pub struct MachineUpdate {
     pub mode: Option<crate::config::MachineMode>,
 }
 
-/// One component of a `MachineUpdate`: `{"version": "0.33.1"}` or `{"file": "/abs/path"}`.
+/// One component of a `MachineUpdate`: `{"version": "0.33.1"}`, or a dev build sent first
+/// (`PUT /v1/files`): `{"file": {sha256, name, version?}}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Component {
     Version(String),
-    File(PathBuf),
+    File(DevBuild),
+}
+
+/// A dev build by content: a wheel named `<distribution>-<version>-….whl`, or a `cozy` binary and
+/// the release it says it is (`cozy --version`), when it says one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevBuild {
+    pub sha256: Digest,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// The answer to `POST /v1/machines/{name}/update`: `202` with its update run, followed like any

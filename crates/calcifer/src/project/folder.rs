@@ -1416,28 +1416,17 @@ impl Folder {
         })
     }
 
-    /// `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock. Err: why not.
+    /// The `http(s)` URL `source`, fetched into `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock.
+    /// Err: why not. A client's own file comes held (`PUT /v1/files`), never by its path.
     pub async fn import(&self, source: &str) -> Result<Kept, String> {
-        if is_url(source) {
-            let bytes = fetch_url(source).await?;
-            let (kind, field) = media(infer::get(&bytes))?;
-            let sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
-            let path = file_named(&sha256, kind.extension());
-            return self.recorded(path, sha256, field, |part| std::fs::write(part, &bytes));
+        if !is_url(source) {
+            return Err("it is neither a held file's sha256:<hex>, a file of the project's nor an http(s) URL".into());
         }
-        let path = Path::new(source);
-        if !path.is_absolute() {
-            return Err("it is neither an absolute path nor an http(s) URL".into());
-        }
-        // A file can be large: this worker's other tasks move on while it is copied.
-        tokio::task::block_in_place(|| {
-            let mut head = Vec::new();
-            std::fs::File::open(path).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
-            let (kind, field) = media(infer::get(&head))?;
-            let sha256 = hash(path).map_err(|e| e.message)?;
-            let at = file_named(&sha256, kind.extension());
-            self.recorded(at, sha256, field, |part| std::fs::copy(path, part).map(drop))
-        })
+        let bytes = fetch_url(source).await?;
+        let (kind, field) = media(infer::get(&bytes))?;
+        let sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+        let path = file_named(&sha256, kind.extension());
+        self.recorded(path, sha256, field, |part| std::fs::write(part, &bytes))
     }
 
     /// An import's bytes at `path`, written by `write` unless the project has them under any name, named in project.lock.

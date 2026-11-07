@@ -23,7 +23,6 @@ use protocol::{
     machine::{self as v1, InputFile, ModelChoice},
     model_ref::{self as refs, ModelRef, Repo},
 };
-use sha2::{Digest as _, Sha256};
 
 use super::{
     after::{After, display},
@@ -51,79 +50,42 @@ impl From<(ModelChoice, Option<StagedInput>)> for Made {
     }
 }
 
-/// A local path this computer's Calcifer reads: absolute, since a client's working directory is
-/// its own.
-fn local(raw: &str) -> Result<Option<&Path>, Refusal> {
-    match raw {
-        raw if Path::new(raw).is_absolute() => Ok(Some(Path::new(raw))),
-        raw if raw.starts_with('.') => Err(usage("path_not_absolute", format!("{raw}: name a local file by its absolute path"))),
-        _ => Ok(None),
+/// The model a warm run makes present: a reference, or a held `.safetensors` file (`PUT /v1/files`) by its client's `name`.
+fn source(api: &Api, raw: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+    match raw.starts_with("sha256:") {
+        true => safetensors(api, raw, name),
+        false => Ok((ModelRef::parse(raw).map_err(Refusal)?.choice("model"), None)),
     }
 }
 
-/// The model a warm run makes present: a reference, or a local `.safetensors` file, measured.
-async fn source(raw: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
-    let Some(path) = local(raw)? else {
-        return Ok((ModelRef::parse(raw).map_err(Refusal)?.choice("model"), None));
-    };
-    let path = path.to_owned();
-    let staged = tokio::task::spawn_blocking({
-        let path = path.clone();
-        move || measure(&path)
-    })
-    .await
-    .map_err(|e| Refusal(Error::internal("measure", e.to_string())))??;
-    let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-    let choice = ModelChoice {
-        parameter: "model".into(),
-        source: format!("object://{}/{}", staged.digest, escape(&name)),
-        ..Default::default()
-    };
-    Ok((choice, Some(staged)))
-}
-
-/// The file `named` holds (`PUT /v1/files`, `sha256:<hex>`) as the model a warm run makes present: one `.safetensors` file by its
-/// bytes, since a held file has no name to read. Its digest is its name.
-fn held(api: &Api, named: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+/// The file `named` holds (`sha256:<hex>`), if Calcifer holds it.
+fn held_file(api: &Api, named: &str) -> Result<(PathBuf, Digest), Refusal> {
     let digest: Digest = named.parse().map_err(|why: &str| usage("file_name_invalid", format!("{named:?}: {why}")))?;
     let Some(path) = crate::runs::files::held(&api.calcifer, &digest) else {
         let said = format!("Calcifer holds no file {named}");
         return Err(Refusal(Error::new(Kind::NotFound, "file_not_held", said).remedy(format!("PUT its bytes to /v1/files/{named} first"))));
     };
+    crate::runs::files::touch(&path);
+    Ok((path, digest))
+}
+
+/// The held file `named` as the model a warm run makes present: one `.safetensors` file by its bytes, named for the object as its
+/// client named it.
+fn safetensors(api: &Api, named: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+    let (path, digest) = held_file(api, named)?;
+    let shown = name.unwrap_or(named);
     let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
     let mut file = std::fs::File::open(&path).map_err(|e| refused(e.to_string()))?;
     let length = file.metadata().map_err(|e| refused(e.to_string()))?.len();
     let mut head = [0; 9];
-    file.read_exact(&mut head).map_err(|_| refused(format!("{named} is not a .safetensors file")))?;
+    file.read_exact(&mut head).map_err(|_| refused(format!("{shown} is not a .safetensors file")))?;
     let header = u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
     if head[8] != b'{' || header.saturating_add(8) > length {
-        return Err(refused(format!("{named} is not a .safetensors file")));
+        return Err(refused(format!("{shown} is not a .safetensors file")));
     }
-    crate::runs::files::touch(&path);
-    let choice = ModelChoice { parameter: "model".into(), source: format!("object://{digest}/model.safetensors"), ..Default::default() };
+    let object = name.and_then(|name| Path::new(name).file_name()).map_or_else(|| "model.safetensors".into(), |n| n.to_string_lossy().into_owned());
+    let choice = ModelChoice { parameter: "model".into(), source: format!("object://{digest}/{}", escape(&object)), ..Default::default() };
     Ok((choice, Some(StagedInput { path, digest, length })))
-}
-
-/// A local model file, measured once: one regular `.safetensors` file.
-fn measure(path: &Path) -> Result<StagedInput, Refusal> {
-    let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
-    // A link is its file: a Hugging Face snapshot is all links.
-    let regular = std::fs::metadata(path).is_ok_and(|m| m.is_file());
-    if !regular || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("safetensors")) {
-        return Err(refused(format!("{} is not one regular .safetensors file", path.display())));
-    }
-    let mut file = std::fs::File::open(path).map_err(|e| refused(e.to_string()))?;
-    let (mut hash, mut buf, mut length) = (Sha256::new(), vec![0; 1 << 20], 0u64);
-    loop {
-        match file.read(&mut buf).map_err(|e| refused(e.to_string()))? {
-            0 => break,
-            n => {
-                hash.update(&buf[..n]);
-                length += n as u64;
-            }
-        }
-    }
-    Ok(StagedInput { path: path.to_owned(), digest: Digest::from_bytes(hash.finalize().into()), length })
 }
 
 /// A file name as one URI path segment.
@@ -136,31 +98,26 @@ fn escape(name: &str) -> String {
         .collect()
 }
 
-/// A plain CozyTensors folder travels as an ordinary retained input tree. The machine admits its
-/// headers without importing or fetching the tensor objects a thin folder omits.
-async fn folder(api: &Api, path: PathBuf) -> Result<Made, Refusal> {
-    let root = api.machines.hubs.home().root().to_owned();
-    let staged = tokio::task::spawn_blocking(move || {
-        protocol::stage::stage(&path, Some(&root.join("cache/digests")), &root.join("cache/trees"))
-    })
-    .await
-    .map_err(|e| Refusal(Error::internal("stage", e.to_string())))?
-    .map_err(Refusal)?;
-    let input = InputFile {
-        field: "model".into(),
-        digest: staged.manifest.digest.to_string(),
-        length: staged.manifest.length,
-        media_type: protocol::tree::MEDIA.into(),
-        order: 0,
-    };
-    let mut files = staged.files;
-    files.push(staged.manifest);
-    Ok(Made {
+/// The CozyTensors folder a held tree document names (`protocol::tree`), each of its files held: an ordinary retained input
+/// tree. The machine admits its headers without importing or fetching the tensor objects a thin folder omits. None: `path`
+/// holds no tree document.
+fn folder(api: &Api, path: &Path, digest: Digest) -> Result<Option<Made>, Refusal> {
+    let Ok(document) = std::fs::read(path) else { return Ok(None) };
+    let Ok(members) = protocol::tree::parse(&document) else { return Ok(None) };
+    let mut staged = vec![];
+    for (name, member) in members {
+        let (path, digest) = held_file(api, &format!("sha256:{}", member.sha256)).map_err(|Refusal(e)| Refusal(Error { message: format!("{name} of the folder: {}", e.message), ..e }))?;
+        staged.push(StagedInput { path, digest, length: member.length });
+    }
+    let length = document.len() as u64;
+    staged.push(StagedInput { path: path.to_owned(), digest, length });
+    let input = InputFile { field: "model".into(), digest: digest.to_string(), length, media_type: protocol::tree::MEDIA.into(), order: 0 };
+    Ok(Some(Made {
         choice: ModelChoice { parameter: "model".into(), source: "input://model".into(), ..Default::default() },
         base: None,
-        staged: files,
+        staged,
         files: vec![input],
-    })
+    }))
 }
 
 /// `source_format`: the one format `choice`, a provider source or a local file, converts with.
@@ -229,16 +186,19 @@ impl Ask for ModelDownload {
             Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
             None => String::new(),
         };
-        let mut made = source(&self.model).await?;
+        let mut made = source(api, &self.model, self.name.as_deref())?;
         if let Some(format) = &self.source_format {
             match formatted(&mut made.0, format) {
                 Ok(()) => {}
                 Err(_) => said.push("--source-format converts a provider source or a local file: ignored".to_owned()),
             }
         }
-        // A local file is kept under a name: its own, unless it is given one.
+        // A file of its client's is kept under a name: its own, unless it is given one.
         if made.1.is_some() && destination.is_empty() {
-            let stem = Path::new(&self.model).file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            let Some(name) = self.name.as_deref() else {
+                return Err(usage("model_alias_required", "a held file has no name of its own: name the alias, local/<name>"));
+            };
+            let stem = Path::new(name).file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
             let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect();
             destination = Repo::parse(&format!("local/{stem}")).map_err(Refusal)?.to_string();
             said.push(format!("kept as {destination}"));
@@ -251,7 +211,8 @@ impl Ask for ModelDownload {
                 made.0.lane = lane;
             }
         }
-        let mut submit = warm(&hub, self.on, self.agreed, self.model, made.into(), destination, String::new());
+        let target = self.name.clone().unwrap_or(self.model);
+        let mut submit = warm(&hub, self.on, self.agreed, target, made.into(), destination, String::new());
         submit.warnings.extend(said.into_iter().map(|message| Warning { code: "model_download".into(), message }));
         Ok(Prepared { submit, after: None })
     }
@@ -297,8 +258,15 @@ impl Ask for ModelUpload {
         protocol::calcifer::local_usable(&self.on.to_string()).map_err(Refusal)?;
         // The machine publishes under this computer's sign-in; refuse before anything is made.
         signed_in(api, &hub)?;
-        let mut made: Made = match local(&self.source)?.filter(|path| path.is_dir()) {
-            Some(path) => {
+        let tree = match self.source.starts_with("sha256:") {
+            true => {
+                let (path, digest) = held_file(api, &self.source)?;
+                folder(api, &path, digest)?
+            }
+            false => None,
+        };
+        let mut made: Made = match tree {
+            Some(made) => {
                 if self.trained_on.is_some() {
                     return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; a CozyTensors folder already was"));
                 }
@@ -308,18 +276,18 @@ impl Ask for ModelUpload {
                 if self.source_format.is_some() {
                     return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-format"));
                 }
-                folder(api, path.to_owned()).await?
+                made
             }
-            None if self.source.starts_with("sha256:") => held(api, &self.source)?.into(),
-            None => source(&self.source).await?.into(),
+            None => source(api, &self.source, self.name.as_deref())?.into(),
         };
         if let Some(format) = &self.source_format {
             formatted(&mut made.choice, format)?;
         }
         made.base = self.base.as_deref().map(|raw| base(raw, &lane)).transpose()?;
+        let shown = self.name.as_deref().unwrap_or(&self.source);
         let target = match &self.base {
-            None => format!("{} → {destination} ({lane})", self.source),
-            Some(on) => format!("{} on {on} → {destination} ({lane})", self.source),
+            None => format!("{shown} → {destination} ({lane})"),
+            Some(on) => format!("{shown} on {on} → {destination} ({lane})"),
         };
         made.choice.trained_on = self.trained_on.clone().unwrap_or_default();
         // A Hub model by name is copied in that lane, as a download's lane reads it; never the

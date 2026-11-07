@@ -11,7 +11,7 @@ use protocol::hub::{Displayed, Mirrored, ModelDownload, ModelUpload, ModelUpload
 
 use super::{Download, Upload};
 use crate::Context;
-use crate::ask::{absolute, start};
+use crate::ask::start;
 use crate::output::{self, Record, Table};
 
 /// What the machine made (TensorD's `result.models[0]`), after `follow`'s record; `--json`
@@ -55,13 +55,15 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
     let on = args.placement.on()?;
     let mut ask = ModelDownload {
         hub: Some(ctx.hub().to_string()),
-        model: absolute(&args.model)?,
+        model: args.model.clone(),
+        name: None,
         alias: args.alias,
         lane: args.lane,
         source_format: args.format,
         on: on.clone(),
         agreed: None,
     };
+    crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
     let submitted: protocol::calcifer::Submitted =
         start(ctx, "/v1/model-downloads", "/v1/model-download-quotes", &on, &mut ask, |a, agreed| a.agreed = Some(agreed)).await?;
     let run = crate::run::follow(ctx, submitted.run).await?;
@@ -74,7 +76,8 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     let from_run = args.source.starts_with("run:");
     let mut ask = ModelUpload {
         hub: Some(ctx.hub().to_string()),
-        source: absolute(&args.source)?,
+        source: args.source.clone(),
+        name: None,
         destination: args.destination,
         lane: args.lane,
         source_format: args.format,
@@ -86,6 +89,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         on: on.clone(),
         agreed: None,
     };
+    crate::send::held(ctx, &mut ask.source, &mut ask.name, true).await?;
     let uploading: ModelUploading =
         start(ctx, "/v1/model-uploads", "/v1/model-upload-quotes", &on, &mut ask, |a, agreed| a.agreed = Some(agreed)).await?;
     if let Some(mirrored) = &uploading.mirrored {

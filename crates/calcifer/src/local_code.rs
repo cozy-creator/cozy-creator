@@ -92,11 +92,15 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
 
 pub use protocol::target::{local, spelled, written_as_path};
 
-/// Local code `text` names (`./dir[/fn]`, `./script.py[/fn]`, from `cwd`): its package directory or
-/// script and the function it names. None: `text` is not written as a path (a published name).
-pub fn target(text: &str, cwd: &Path, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
+/// Local code `text` names (`./dir[/fn]`, `./script.py[/fn]` from `cwd`, the project's folder; a client's by its absolute path): its
+/// package directory or script and the function it names. None: `text` is not written as a path (a published name).
+pub fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
     let raw = text.trim();
-    let path = local(raw, cwd, home)?;
+    let path = local(raw, cwd.unwrap_or(Path::new("")), home)?;
+    if !path.is_absolute() {
+        let said = format!("{raw} is relative, and Calcifer has no folder of a client's to start it from");
+        return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its absolute path")));
+    }
     let package = |path: &Path| path.is_dir() || (path.is_file() && path.extension().is_some_and(|e| e == "py"));
     if package(&path) {
         return Some(Ok((path, None)));

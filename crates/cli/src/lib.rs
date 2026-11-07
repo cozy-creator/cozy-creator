@@ -23,6 +23,7 @@ pub mod output;
 mod package;
 mod project;
 mod run;
+mod send;
 pub mod tools;
 pub mod tui;
 mod update;

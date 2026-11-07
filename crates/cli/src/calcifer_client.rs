@@ -22,7 +22,8 @@ use platform::{
 use protocol::{
     calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent},
     error::{Envelope, Error, Kind},
-    machine::LogLines,
+    ids::Digest,
+    machine::{HELD, LogLines, Ranges, parse_held},
 };
 use reqwest::{RequestBuilder, Response, StatusCode, header};
 
@@ -243,6 +244,39 @@ impl Client {
     pub async fn put_text(&self, path: &str, body: &str) -> Result<(), Error> {
         let key = write_key();
         self.opened(|c, base| c.put(format!("{base}{path}")).header(reqwest::header::CONTENT_TYPE, "application/yaml").header(KEY, &key).body(body.to_owned())).await.map(drop)
+    }
+
+    /// What Calcifer holds of the file `digest` names: all of it (`None`), else the ranges held.
+    pub async fn held(&self, digest: &Digest) -> Result<Option<Ranges>, Error> {
+        let path = format!("/v1/files/{digest}");
+        let answer = self.send(&|c: &reqwest::Client, base: &str| c.head(format!("{base}{path}"))).await?;
+        let ranges = || answer.headers().get(HELD).and_then(|v| v.to_str().ok()).and_then(parse_held).unwrap_or_default();
+        match answer.status() {
+            status if status.is_success() => Ok(None),
+            StatusCode::NOT_FOUND => Ok(Some(ranges())),
+            status => Err(Error::new(Kind::Internal, "file_unreadable", format!("Calcifer answered HEAD {path} with {status}"))),
+        }
+    }
+
+    /// `part`, the bytes of `digest` from `start`, of a file of `length` bytes. Whether the file is now whole.
+    pub async fn put_part(&self, digest: &Digest, part: bytes::Bytes, start: u64, length: u64) -> Result<bool, Error> {
+        let path = format!("/v1/files/{digest}");
+        let range = match part.is_empty() {
+            true => None,
+            false => Some(format!("bytes {start}-{}/{length}", start + part.len() as u64 - 1)),
+        };
+        let answer = self
+            .send(&|c: &reqwest::Client, base: &str| {
+                let put = c.put(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/octet-stream");
+                // A whole file goes by its Content-Length, which its body carries; a part names its range.
+                match &range {
+                    Some(range) if part.len() as u64 != length => put.header(header::CONTENT_RANGE, range),
+                    _ => put,
+                }
+                .body(part.clone())
+            })
+            .await?;
+        Ok(ok(answer).await?.status() != StatusCode::NO_CONTENT)
     }
 
     /// A plain-text answer, such as a log.

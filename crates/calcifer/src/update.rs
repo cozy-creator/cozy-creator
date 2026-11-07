@@ -15,9 +15,8 @@ use axum::{
     http::StatusCode,
 };
 use protocol::{
-    calcifer::{self as wire, Component, Machine, MachineKind, MachineStatus, MachineUpdate, On, Reason, Run, StagedInput, Status, SubmitRun, Updating, Warning},
+    calcifer::{self as wire, Component, DevBuild, Machine, MachineKind, MachineStatus, MachineUpdate, On, Reason, Run, StagedInput, Status, SubmitRun, Updating, Warning},
     error::{Error, Kind},
-    ids::Digest,
     machine as v1,
 };
 use serde_json::{Value, json};
@@ -192,11 +191,9 @@ impl Machines {
                     }
                     continue;
                 }
-                Component::File(path) => path,
+                Component::File(build) => build,
             };
-            let (file, input, version) = tokio::task::spawn_blocking(move || measured(&path, distribution))
-                .await
-                .map_err(internal)??;
+            let (file, input, version) = measured(&self.calcifer, path, distribution)?;
             named.push(format!("{member} {} (dev)", version.as_deref().unwrap_or(&file)));
             inputs.push(v1::InputFile {
                 field: member.into(),
@@ -386,7 +383,7 @@ async fn placed(machines: &Machines, m: &Machine) -> Option<String> {
     (version != running).then_some(version)
 }
 
-/// The release a `cozy` binary says it is, when it runs here.
+/// The release this computer's installed `cozy` says it is.
 fn says(binary: &Path) -> Option<String> {
     let out = std::process::Command::new(binary).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
     let said = String::from_utf8_lossy(&out.stdout);
@@ -435,26 +432,22 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
     Ok(Some((format!("{base}/{file}"), sha256.to_owned())))
 }
 
-/// A local wheel of `distribution` (or, empty, a `cozy` binary), measured once: its file name, what
-/// the run stages, and for a `cozy` binary the release it says it is when it runs here.
-fn measured(path: &Path, distribution: &str) -> Result<(String, StagedInput, Option<String>), Error> {
+/// A held dev build of `distribution` (or, empty, a `cozy` binary): its file name, what the run stages, and for a `cozy` binary the
+/// release its client says it is.
+fn measured(calcifer: &crate::Calcifer, build: DevBuild, distribution: &str) -> Result<(String, StagedInput, Option<String>), Error> {
     let refused = |why: String| Error::new(Kind::Validation, "wheel_refused", why);
-    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    let regular = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
-    let named = file.starts_with(&format!("{distribution}-")) && file.ends_with(".whl");
-    if !path.is_absolute() || !regular || (!distribution.is_empty() && !named) {
-        return Err(refused(match distribution {
-            "" => format!("{} is not a file named by its absolute path", path.display()),
-            _ => format!("{} is not a {distribution} wheel file named by its absolute path ({distribution}-<version>-….whl)", path.display()),
-        }));
+    let DevBuild { sha256, name, version } = build;
+    let named = name.starts_with(&format!("{distribution}-")) && name.ends_with(".whl") && !name.contains(['/', '\\']);
+    if !distribution.is_empty() && !named {
+        return Err(refused(format!("{name} is not a {distribution} wheel file ({distribution}-<version>-….whl)")));
     }
-    let bytes = std::fs::read(path).map_err(|e| refused(format!("{}: {e}", path.display())))?;
-    let input = StagedInput { path: path.to_path_buf(), digest: Digest::of(&bytes), length: bytes.len() as u64 };
-    let version = match distribution {
-        "" => says(path),
-        _ => None,
+    let Some(path) = crate::runs::files::held(calcifer, &sha256) else {
+        return Err(Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no file {sha256} ({name})")).remedy(format!("PUT its bytes to /v1/files/{sha256} first")));
     };
-    Ok((file.to_owned(), input, version))
+    crate::runs::files::touch(&path);
+    let length = std::fs::metadata(&path).map_err(|e| refused(format!("{name}: {e}")))?.len();
+    let version = version.filter(|_| distribution.is_empty());
+    Ok((name, StagedInput { path, digest: sha256, length }, version))
 }
 
 /// What a machine that carried out update `spec` reports: each wheel's version (a staged one's
