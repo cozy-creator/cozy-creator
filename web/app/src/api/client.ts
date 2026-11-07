@@ -549,8 +549,12 @@ export class Client {
 
   // Models
 
-  models(q: string, limit: number, signal?: AbortSignal): Promise<ModelSearch> {
-    return this.json(`/v1/models?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`, { signal })
+  /** The Hub's models, those of `family` only when it's said. */
+  models(q: string, limit: number, signal?: AbortSignal, family?: string): Promise<ModelSearch> {
+    const asked = new URLSearchParams({ limit: String(limit) })
+    if (q) asked.set("q", q)
+    if (family) asked.set("family", family)
+    return this.json(`/v1/models?${asked}`, { signal })
   }
 
   model(name: string, signal?: AbortSignal): Promise<ModelDetail> {

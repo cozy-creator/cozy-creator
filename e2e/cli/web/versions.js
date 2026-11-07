@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until } = require('./page');
+const { calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -189,7 +189,8 @@ async function died(why) {
   const numbers = await until('its numbers', () => page.locator('.card[data-asset="Ada"] .here-side .take[data-take]').evaluateAll((all) => all.map((one) => one.getAttribute('aria-label'))), (held) => held.length === 3, 5000).catch((why) => String(why));
   check('thumbnails_say_their_number', Array.isArray(numbers) && [...numbers].map((label) => label.match(/\d+$/)?.[0]).sort().join() === '1,2,3' && (await page.locator('.card[data-asset="Ada"] .take-no').count()) === 0, numbers);
   await shot('numbers');
-  // Open, its takes are a column beside the picture, the newest on top.
+  // Open, its takes are a column beside the picture, the newest on top: once the canvas has drawn in on it.
+  await settled(page);
   const big = await page.locator('.card.here[data-asset="Ada"] .media').first().boundingBox();
   const column = await page.locator('.card.here[data-asset="Ada"] .here-side .takes').boundingBox();
   const take = (number) => page.locator(`.card[data-asset="Ada"] .take[data-take="${number}"]`).boundingBox();
@@ -214,6 +215,8 @@ async function died(why) {
   await page.mouse.move(across, sideBox.y + sideBox.height - 12);
   await page.mouse.down();
   for (let step = 1; step <= 8; step++) await page.mouse.move(across, sideBox.y + sideBox.height - 12 - step * 18);
+  // While it scrolls, a slim marker says where it is, and nothing is carried.
+  const scrolling = { marked: await page.locator('.scroll-marker.on').count(), ghosts: await page.locator('.carry-ghost').count() };
   await page.mouse.up();
   const byMouse = await scrolled();
   await page.waitForTimeout(500);
@@ -243,6 +246,10 @@ async function died(why) {
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await cdp.detach();
   check('the_column_drags_with_a_finger', byFinger > beforeFinger + 40 && (await page.locator('.card.here[data-asset="many"]').count()) === 1, { beforeFinger, byFinger });
+  const unmarked = await until('the marker gone', () => page.locator('.scroll-marker.on').count(), (n) => n === 0, 4000).then(() => true, (why) => String(why));
+  check('a_marker_only_while_it_scrolls', scrolling.marked === 1 && unmarked === true, { scrolling, unmarked });
+  check('a_drag_down_the_column_carries_nothing', scrolling.ghosts === 0 && (await asset('many')).versions === 9, { scrolling, versions: (await asset('many')).versions });
+
 
   // A take carried out of its box onto the canvas moves there: a box of its own holds it, it leaves its box, and what named it names that box.
   // One note's Undo puts all of it back. Carried out again, the new box dropped back on the old one merges in as its newest take.
@@ -250,17 +257,24 @@ async function died(why) {
   await joined('moving', 61);
   await joined('moving', 62);
   writeFileSync(yamlAt, `${yaml().trimEnd()}\n  moving_words:\n    text: <moving.2> on top.\n`);
+  // Open on another box, the canvas is drawn in on it: everything's in view at rest, once it's placed beside what it reads.
+  await until('moving_words placed', async () => (await api(`${at}/canvas`)).body?.cards?.moving_words, Boolean);
+  await shut();
+  await page.keyboard.press('f');
   await box('moving_words').waitFor();
   const second = (await asset('moving')).prefixes.find((held) => held.number === 2).main.sha256;
   const carryOut = async () => {
     await open('moving');
     const movingHere = page.locator('.card.here[data-asset="moving"]');
     await movingHere.locator('.here-side .take[data-take="2"]').click();
+    // Open canvas once the canvas has drawn in on the box, not on its way there.
+    await settled(page);
     await movingHere.locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
     return until('moved out', async () => (await state()).assets.find((one) => one.sha256 === second && one.name !== 'moving'), Boolean).catch(() => null);
   };
   const movedOut = await carryOut();
-  const leftBehind = await asset('moving');
+  // The new box is written first, then the take leaves its box.
+  const leftBehind = await until('it left its box', () => asset('moving'), (row) => !row.prefixes.some((held) => held.number === 2)).catch(() => asset('moving'));
   const renamedWords = await until('what named it', () => asset('moving_words'), (row) => row?.fields?.text?.includes('<moving_2>')).catch(() => null);
   check('a_take_carried_out_moves', movedOut?.name === 'moving_2' && !leftBehind.prefixes.some((held) => held.number === 2) && Boolean(renamedWords) && (await toast('Moved version 2 of moving out as moving_2')) === true, { movedOut: movedOut?.name, left: leftBehind.prefixes.map((held) => held.number), words: renamedWords?.fields?.text });
   await undoIn('Moved version 2 of moving').click();
@@ -280,6 +294,36 @@ async function died(why) {
   await page.mouse.up();
   const mergedBack = await until('merged back', async () => [await asset('moving'), await asset(outAgain)], ([row, gone]) => !gone && row.prefixes.at(-1).main?.sha256 === second).catch((why) => String(why));
   check('dropped_back_it_merges_in', Array.isArray(mergedBack), mergedBack);
+
+  // A drag that leaves the column sideways carries the take out instead (Paul, 11-06), a mouse's or a finger's: a box of its own holds it. Undo puts it back.
+  await open('many');
+  await settled(page);
+  const tile = (number) => side.locator(`.take[data-take="${number}"]`);
+  const leaves = (number) => until(`take ${number} carried out`, async () => (await state()).assets.some((one) => one.name === `many_${number}`) && !(await asset('many')).prefixes.some((held) => held.number === number), Boolean).then(() => true, (why) => String(why));
+  const backIn = async (number) => {
+    await undoIn(`Moved version ${number} of many`).click();
+    await until(`take ${number} back`, async () => (await asset('many')).prefixes.some((held) => held.number === number) && !(await state()).assets.some((one) => one.name === `many_${number}`), Boolean);
+    await open('many');
+    await settled(page);
+  };
+  await tile(8).scrollIntoViewIfNeeded();
+  await carryTo(page, tile(8), await openCanvas(page));
+  check('a_take_dragged_sideways_by_a_mouse_leaves', await leaves(8));
+  await backIn(8);
+  await tile(7).scrollIntoViewIfNeeded();
+  const lifted = await tile(7).boundingBox();
+  const lift = { x: lifted.x + lifted.width / 2, y: lifted.y + lifted.height / 2 };
+  const landing = await openCanvas(page);
+  const fingers = await page.context().newCDPSession(page);
+  await fingers.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  await fingers.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [lift] });
+  for (let step = 1; step <= 3; step++) await fingers.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: lift.x + step * 5, y: lift.y }] });
+  for (let step = 1; step <= 8; step++) await fingers.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: lift.x + 15 + ((landing.x - lift.x - 15) * step) / 8, y: lift.y + ((landing.y - lift.y) * step) / 8 }] });
+  await fingers.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  check('a_take_dragged_sideways_by_a_finger_leaves', await leaves(7));
+  await fingers.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await fingers.detach();
+  await backIn(7);
   await open('Ada');
 
   // A double tap approves a take, and again unapproves it; on the big picture too, and Enter, and none opens it large. A click opens a box at once.
@@ -340,13 +384,8 @@ async function died(why) {
   const text = page.locator('.card[data-asset="words"] .mention-text').first();
   await text.waitFor();
   const file = { sha256: (await asset('Ada')).prefixes.find((held) => held.number === 2).main.sha256, field: 'image', name: 'Ada_2', from: 'Ada', number: 2 };
-  const carried = await page.evaluateHandle((held) => {
-    const data = new DataTransfer();
-    data.setData('application/x-cozy-file', JSON.stringify(held));
-    return data;
-  }, file);
-  await text.dispatchEvent('dragover', { dataTransfer: carried });
-  await text.dispatchEvent('drop', { dataTransfer: carried });
+  // Let go on its words, as a carry lets a take go, at no point in them: it goes where the caret last was.
+  await text.evaluate((el, take) => el.dispatchEvent(new CustomEvent('letgo', { bubbles: true, detail: { load: { take }, x: 0, y: 0 } })), file);
   const said = await until('the mention in its text', () => text.locator('[data-mention="Ada.2"]').count(), (n) => n === 1, 2000).catch((why) => String(why));
   check('a_take_into_text_is_its_version', said === 1, await text.innerText());
   await shut();
@@ -390,7 +429,7 @@ async function died(why) {
 
     // On open canvas a picture tool's box opens as it lands, on its words, the caret in them, its shape Auto, and no name asked.
     const namesThen = (await state()).assets.map((held) => held.name);
-    await row.dragTo(page.locator('.stage'), { targetPosition: { x: 1300, y: 860 } });
+    await carryTo(page, row, { x: 1300, y: 860 });
     const dropped = await until('a box of it', async () => (await state()).assets.find((held) => !namesThen.includes(held.name)), Boolean).catch(() => null);
     const droppedOpen = page.locator(`.card.here[data-asset="${dropped?.name}"]`);
     const caretOnIt = await until('the caret in its words', () => droppedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
@@ -415,7 +454,6 @@ async function died(why) {
     await shot('text-again');
 
     // On a picture: its first version, approved, and the prompt starts with it.
-    await box('other').waitFor();
     await carry('other');
     await until('the file', () => Promise.resolve(lines('other')), (text) => text.includes('<self.1>'));
     const other = await asset('other');
@@ -467,6 +505,7 @@ async function died(why) {
     await api(`${at}/assets/picked`, { method: 'PATCH', body: JSON.stringify({ fields: { instructions: 'Warmer <self.1>, as <self.1> was.' } }) });
     await until('its words', () => asset('picked'), (row) => row?.tool === tool.id && row.fields?.instructions === 'Warmer <self.1>, as <self.1> was.');
     // As the page has it: its tool on, and both its takes.
+    await shut();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
     await box('picked').locator('.add-on').first().waitFor();

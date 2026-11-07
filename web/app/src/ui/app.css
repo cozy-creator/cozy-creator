@@ -44,6 +44,44 @@
   animation-timeline: scroll(self), scroll(self);
   animation-range: 0 24px, calc(100% - 24px) 100%;
 }
+/* Where a list is, only while it scrolls: a slim mark over its edge that fades once it stops, and no bar (dragScroll.ts). */
+.scroll-marker {
+  position: fixed;
+  z-index: 1000;
+  width: 3px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--mute);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 300ms ease-out;
+}
+.scroll-marker.on {
+  opacity: 0.7;
+  transition-duration: 80ms;
+}
+/* What's carried, under the pointer as it was held (carry.ts). */
+.carry-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1000;
+  pointer-events: none;
+  opacity: 0.85;
+  border-radius: 6px;
+  background: var(--float);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.35);
+}
+.carry-ghost > * {
+  margin: 0;
+  transform-origin: 0 0;
+  list-style: none;
+}
+html.carrying,
+html.carrying * {
+  cursor: grabbing !important;
+}
+
 /* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
    by --here, and a box's insides scale with the canvas, so each sets --m. Its name, its words and what's said around them read the
    same at any zoom: --on. */
@@ -979,9 +1017,20 @@ video.preview.on {
   z-index: 5;
   animation: fade-in 120ms ease-out;
 }
-/* Dragged to scroll, by a mouse or a finger (dragScroll.ts). */
-.here-side {
+/* A list dragged its own way scrolls, and any other way carries out what was pressed; a mouse, a pen and a finger alike (dragScroll.ts, carry.ts). */
+.here-side,
+.tool-groups,
+.browse,
+.here-under .takes,
+.pictures,
+.take-out,
+.take-name .chip {
   touch-action: none;
+}
+/* A press on a row that may be dragged selects no words. */
+.tool,
+.browsed {
+  user-select: none;
 }
 .here-side:empty {
   display: none;
@@ -2430,6 +2479,46 @@ a.tab:hover {
   grid-row: 1 / 3;
   grid-column: 2;
   align-self: center;
+}
+/* The tools, while an open box's picks take their place: kept as they were, searched and scrolled. */
+.tool-shelf {
+  display: contents;
+}
+.tool-shelf[hidden] {
+  display: none;
+}
+/* What goes on an open box: its name and its tool over its model and its LoRAs. */
+.box-shelf-head {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px;
+  min-width: 0;
+}
+.box-shelf-head b,
+.box-shelf-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.box-shelf-head span {
+  color: var(--faint);
+  font-size: var(--small);
+}
+.browsed.pick {
+  border-radius: 6px;
+  cursor: pointer;
+}
+.browsed.pick:hover {
+  background: var(--tint);
+}
+.browsed.pick.on {
+  background: var(--tint2);
+}
+.picks-on {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 6px 6px;
 }
 .tool-ghost {
   height: 18px;
