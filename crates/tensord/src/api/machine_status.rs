@@ -35,6 +35,7 @@ pub const CAPABILITIES: &[&str] = &[
     "remove/1",
     "live-source/1",
     "live-source/2",
+    "estimate/1",
 ];
 
 const LIVE: [&str; 3] = ["queued", "starting", "running"];

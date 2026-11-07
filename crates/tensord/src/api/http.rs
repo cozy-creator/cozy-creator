@@ -90,6 +90,7 @@ pub(super) fn router<B: MachineBackend>(identity: Arc<MachineIdentity>, backend:
         .route(path::LOG, get(log::<B>))
         .route(path::OBJECT, put(put_object::<B>).head(head_object::<B>).get(follow_object::<B>))
         .route(path::OBJECTS_HELD, post(held_objects::<B>).layer(DefaultBodyLimit::max(16 << 20)))
+        .route(path::ESTIMATE, post(estimate::<B>))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
         .method_not_allowed_fallback(|| async {
@@ -305,6 +306,19 @@ async fn submit<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderM
     };
     let status = if created { StatusCode::CREATED } else { StatusCode::OK };
     Ok(json(status, &state))
+}
+
+/// `POST /v1/estimate`: when each job would run here, packed with the machine's queue by the
+/// model its scheduler gives each run its width by (`estimate`). It reserves nothing.
+async fn estimate<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    let request: v1::EstimateRequest = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("the estimate request is not JSON: {e}")))?;
+    let runs = m.backend.runs().ok_or_else(|| Error::unavailable("machine_runs_unavailable", "this machine runs nothing yet"))?;
+    let actor = crate::machine_api::actor_id(caller.actor);
+    let answer = m.call(move |_| crate::estimate::quote(&runs, &actor, request)).await?;
+    Ok(json(StatusCode::OK, &answer))
 }
 
 #[derive(Deserialize)]

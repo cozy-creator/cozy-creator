@@ -67,17 +67,23 @@ impl Generation {
         self.app(application).is_some_and(|(expected, ..)| expected == package)
     }
 
-    /// The widest GPU group any constructing entrypoint of this environment (its own App's or
-    /// a callee's) runs on `available` GPUs: the width of a workflow's allocation. 0: none.
-    pub fn widest_group(&self, available: usize) -> u32 {
-        std::iter::once(&self.interface)
+    /// The GPU groups the constructing entrypoints of this environment (its own App's and its
+    /// callees') run on `available` GPUs, smallest first: a workflow's allocation widths. None: no GPU.
+    pub fn groups(&self, available: usize) -> Vec<u32> {
+        let mut groups: Vec<u32> = std::iter::once(&self.interface)
             .chain(self.callees.iter().map(|callee| &callee.interface))
             .flat_map(protocol::interface::entrypoints)
             .map(protocol::interface::models)
             .filter(|models| models.iter().any(crate::gpu_service::constructed))
-            .map(|models| crate::gpu_service::group_degree(models, 0, available))
-            .max()
-            .unwrap_or(0)
+            .flat_map(|models| crate::gpu_service::group_degrees(models, 0, available))
+            .collect();
+        groups.sort_unstable();
+        groups.dedup();
+        groups
+    }
+    /// The widest of `groups`. 0: none.
+    pub fn widest_group(&self, available: usize) -> u32 {
+        self.groups(available).last().copied().unwrap_or(0)
     }
     /// The package an application of this environment belongs to (the root's or a callee's),
     /// its release and its interface.

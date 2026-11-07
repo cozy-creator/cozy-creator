@@ -40,6 +40,13 @@ pub struct Invocation {
     /// without GPUs). Stamped once prepared; it schedules and fences restarts.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub degree: u32,
+    /// A root's widths on this machine, smallest first, of which it takes one as it starts
+    /// (cl-816). Stamped once prepared; none: it holds no GPU.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub widths: Vec<u32>,
+    /// It prepares only (warm, remove): it never takes a GPU.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prepares: bool,
     /// A child run's parent (its execution id): children end with it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub parent: String,
@@ -307,6 +314,9 @@ pub struct Execution {
     /// The run's own time running its callable, every ended attempt summed.
     #[serde(default)]
     pub executed_ms: u64,
+    /// The GPUs it took as it started: its plan's degree, or a deviceless root's lane.
+    #[serde(default)]
+    pub width: u32,
     #[serde(default)]
     pub executor: Option<ExecutorFacts>,
     pub result: Option<ResultRecord>,
@@ -360,6 +370,19 @@ impl Execution {
     pub fn observed(&self) -> bool {
         matches!(self.state, State::Running | State::Queued)
     }
+}
+
+/// What one completed root took: its width, its size as its input said, and its time running.
+#[derive(Clone, Debug)]
+pub struct RunTime {
+    pub width: u32,
+    pub size: protocol::machine::JobSize,
+    pub ms: f64,
+}
+
+/// A function's key in `run_times`: `<package>/<entrypoint>`, any release.
+pub fn function_key(package: &str, entrypoint: &str) -> String {
+    format!("{package}/{entrypoint}")
 }
 
 /// One journaled product of an execution's output log (`api::domain::RunProduct` bytes).
@@ -511,6 +534,8 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS run_objects(execution INTEGER NOT NULL REFERENCES executions(id),sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sha256));
             CREATE INDEX IF NOT EXISTS run_objects_digest ON run_objects(sha256);
             CREATE TABLE IF NOT EXISTS run_specs(execution INTEGER PRIMARY KEY REFERENCES executions(id),spec BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS run_times(execution INTEGER PRIMARY KEY REFERENCES executions(id),function TEXT NOT NULL,width INTEGER NOT NULL,size TEXT NOT NULL,ms INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS run_times_function ON run_times(function,execution);
             CREATE TABLE IF NOT EXISTS held_memos(actor TEXT NOT NULL,computation TEXT NOT NULL,record BLOB NOT NULL,used_ms INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(actor,computation));
             CREATE TABLE IF NOT EXISTS held_memo_objects(actor TEXT NOT NULL,computation TEXT NOT NULL,sha256 TEXT NOT NULL,PRIMARY KEY(actor,computation,sha256));
             CREATE INDEX IF NOT EXISTS held_memo_objects_digest ON held_memo_objects(sha256);
@@ -1283,9 +1308,9 @@ fn reference_objects(
 pub const PREPARING: &str = "preparing";
 
 /// The tables holding rows of one execution.
-const EXECUTION_ROWS: [&str; 9] = [
+const EXECUTION_ROWS: [&str; 10] = [
     "public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied",
-    "run_calls", "triage", "run_objects", "run_specs",
+    "run_calls", "triage", "run_objects", "run_specs", "run_times",
 ];
 
 fn insert(
@@ -1339,6 +1364,7 @@ fn insert(
         running_revision: 0,
         started_at_ms: 0,
         executed_ms: 0,
+        width: 0,
         executor: None,
         result: None,
         pending_completion: None,
@@ -1499,6 +1525,39 @@ impl Journal {
         .collect()
     }
 
+    /// What a completed root took here, for the times of later ones (`estimate`): none for a
+    /// child, which its root's time holds, or for one answered without running.
+    fn timed(tx: &rusqlite::Transaction<'_>, record: &Execution) -> io::Result<()> {
+        let invocation = &record.invocation;
+        if !invocation.parent.is_empty() || record.executed_ms == 0 || record.memo.memoized {
+            return Ok(());
+        }
+        let size = encoded(&protocol::machine::JobSize::of(&invocation.input))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO run_times(execution,function,width,size,ms) VALUES(?1,?2,?3,?4,?5)",
+            params![record.id, function_key(&invocation.package, &invocation.entrypoint), record.width, size, record.executed_ms as i64],
+        )
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    /// The newest `limit` times of `function` here (`function_key`), newest first.
+    pub fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<RunTime>> {
+        let mut statement = self.connection
+            .prepare("SELECT width,size,ms FROM run_times WHERE function=?1 ORDER BY execution DESC LIMIT ?2")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map(params![function, limit.min(i64::MAX as usize) as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            })
+            .map_err(db_error)?;
+        rows.map(|row| {
+            let (width, size, ms) = row.map_err(db_error)?;
+            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64 })
+        })
+        .collect()
+    }
+
     fn selected(&self, query: &str, limit: usize) -> io::Result<Vec<Execution>> {
         let mut statement = self.connection.prepare(query).map_err(db_error)?;
         let records = statement
@@ -1596,6 +1655,9 @@ impl Journal {
             .map_err(db_error)?;
             if was_preparing && !preparing(&record) {
                 tx.execute("DELETE FROM run_specs WHERE execution=?1", [id]).map_err(db_error)?;
+            }
+            if !was_terminal && record.state == State::Completed {
+                Self::timed(&tx, &record)?;
             }
             also(&tx, &record)?;
         }
@@ -1832,14 +1894,15 @@ impl Journal {
         rows.collect::<Result<_, _>>().map_err(db_error)
     }
 
-    /// Only one dispatcher can claim a never-started attempt.
-    pub fn claim(&mut self, id: &str) -> io::Result<bool> {
+    /// Only one dispatcher can claim a never-started attempt, on `width` GPUs.
+    pub fn claim(&mut self, id: &str, width: u32) -> io::Result<bool> {
         let mut claimed = false;
         self.update(id, |record| {
             if record.state != State::Queued {
                 return Ok(false);
             }
             record.state = State::Starting;
+            record.width = width;
             record.attempt += 1;
             record.waiting_reason = None;
             claimed = true;
