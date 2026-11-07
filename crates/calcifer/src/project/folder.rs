@@ -939,6 +939,11 @@ impl Folder {
         self.held().ok().and_then(|held| held.as_ref().map(|held| held.stored.seq)).unwrap_or(0)
     }
 
+    /// What moves with each commit, this Calcifer's or another connection's that it read again.
+    pub fn stamp(&self) -> String {
+        self.held().ok().and_then(|held| held.as_ref().map(|held| format!("{}.{}", held.stored.seq, held.seen))).unwrap_or_default()
+    }
+
     /// `change` as one transaction: every write it makes to this project, its history entry and its request's key commit together, or
     /// nothing does. Inside another act of this project, it is part of that one.
     pub fn act<R>(&self, change: impl FnOnce() -> Result<R, Error>) -> Result<R, Error> {

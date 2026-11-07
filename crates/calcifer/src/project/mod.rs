@@ -447,7 +447,7 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
 /// What `project.changed` says of the project in `dir`: its revision in `project.db`, which moves with each commit, and how `files/` stands,
 /// as a pull's files come with no commit of their own.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    format!("{}.{}", Folder::at(dir).seq(), stamp(&dir.join(folder::FILES)))
+    format!("{}.{}", Folder::at(dir).stamp(), stamp(&dir.join(folder::FILES)))
 }
 
 /// What a file's stats say of it: another text whenever it's another file than it was.
