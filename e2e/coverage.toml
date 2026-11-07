@@ -247,6 +247,17 @@ test = "pr: projects: its approved set, an edit just before it surviving"
 ["project unapprove"]
 test = "pr: projects: gives the file back, restoring an input the pin was over"
 
+["project history"]
+test = "pr: web-undo: the history kept across a Calcifer restart, newest first (-n)"
+
+["project undo"]
+test = "pr: web-undo: the page's edit undone from the CLI, a clobbering undo refused"
+"--to" = "pending: every edit back to one; web-undo undoes one at a time"
+
+["project redo"]
+test = "pr: web-undo: what undo took back done again after a restart"
+"--to" = "pending: every undone edit up to one; web-undo redoes one at a time"
+
 ["project rename"]
 test = "pr: projects: old renamed new, its versions kept, its reader out of date"
 

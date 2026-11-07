@@ -7,15 +7,14 @@
 # decision point) and runs BiRefNet again on a fresh input. At the decision point red's make_room offloads BiRefNet;
 # green's does not. If the reuse then truly outgrows the card, green's in-call yield (`running_call`, the backstop) may
 # still offload BiRefNet mid-call: reported, not failed. Green never ends BiRefNet's process for a reuse (same pid). If
-# red's make_room offloads nothing, the pair cannot discriminate: that fails as inconclusive. params:
-#   traffic_gb  GB the provider bills: the image, SDXL and BiRefNet (default 14)
+# red's make_room offloads nothing, the pair cannot discriminate: that fails as inconclusive.
 . "$(dirname "$0")/lib.sh"
 recpid() { jq -r 'first(.measurements.execution.gpus[]?.pid) // empty' "$OUT/$1.json"; }
 store_bytes() { jq -r '[.measurements.memory.stats.varena[]?.stats.moved.store.bytes // 0] | add // 0' "$OUT/$1.json"; }
 show() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 # picture <step>: the file its run made.
 picture() { cozy run show "$(runno "$1")" --once --json --full | jq -r '[.output[]?.path // empty | select(test("[.](webp|png)$"))][0] // empty'; }
-quote "$(param traffic_gb 14)" 2400
+quote 2400
 rent
 IMG=$REF/seed.jpg
 

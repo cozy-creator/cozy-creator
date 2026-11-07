@@ -4,14 +4,13 @@
 # do not co-fit. SDXL runs once first so its need is measured (a process ends only for a known need); then the holder;
 # then SDXL again must end the holder's process to fit; then the holder runs again in a fresh process. params:
 #   hold_mib    MiB the holder keeps (default 2560)
-#   traffic_gb  GB the provider bills: the image, SDXL and the holder's environment (default 12)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 MIB=$(param hold_mib 2560)
 status() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 holder_pid() { jq -r '.result.pid // (.result | fromjson? | .pid) // empty' "$OUT/$1.json"; }
 [ -f "$FIX/gpu-hold/gpu_hold/__init__.py" ] || fail "no fixture checkout"
-quote "$(param traffic_gb 12)" 2400
+quote 2400
 rent
 
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"

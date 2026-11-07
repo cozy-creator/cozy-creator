@@ -5,7 +5,6 @@
 #   sdxl        the SDXL function (sdxl/generate@0.1.4)
 #   lora        a LoRA source (civitai://135931)
 #   whole       a whole SDXL checkpoint source (hf://RunDiffusion/Juggernaut-XL-v9/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors)
-#   traffic_gb  GB the provider bills: the image, SDXL, the LoRA and the checkpoint (25)
 . "$(dirname "$0")/lib.sh"
 TD=$(param tensord image) SDXL=$(param sdxl sdxl/generate@0.1.4) LORA=$(param lora civitai://135931)
 WHOLE=$(param whole hf://RunDiffusion/Juggernaut-XL-v9/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors)
@@ -14,7 +13,7 @@ if [[ $TD =~ ^[0-9]{6,}$ ]]; then
   gh run download "$TD" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/td" >/dev/null 2>&1 || fail "no cozy artifact in run $TD"
   BIN=$(ls "$OUT"/td/cozy-*/cozy-linux-x86_64 | head -1); chmod +x "$BIN"; say "TensorD $("$BIN" --version)"
 elif [ "$TD" != image ]; then BIN=$TD; fi
-quote "$(param traffic_gb 25)" 2400
+quote 2400
 rent
 if [ -n "$BIN" ]; then
   step update machine update "$NAME" --tensord "$BIN" -y || fail "update"

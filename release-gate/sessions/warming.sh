@@ -20,7 +20,7 @@
 #   tensord     a dev-build run id: after the items before "3b", the pod runs its TensorD, and 3b measures its
 #               machine-start parent import with and without the environment's recorded import pages (its legs, from
 #               the next request's record), each after the environment's files are evicted
-#   traffic_gb  GB the provider bills (20); need_s, seconds the guard must buy (3600)
+#   need_s      seconds the guard must buy (3600)
 . "$(dirname "$0")/lib.sh"
 SDXL=$(param sdxl sdxl/generate@0.1.4) H3=$(param h3 minimax-h3@0.1.8) QUEUED=$(param queued birefnet/remove_background@0.1.0)
 TRIALS=$(param trials 3) HOLD=$(param hold_s 180) ITEMS=$(param items "3 4 5") BUILD=$(param tensord)
@@ -279,7 +279,7 @@ EOF
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 python3 -c 'import ast, sys; ast.parse(sys.stdin.read())' <<<"$POD_PY" || fail "the pod script does not parse"
 RENT_ARGS=--ssh
-quote "$(param traffic_gb 20)" "$(param need_s 3600)"
+quote "$(param need_s 3600)"
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done

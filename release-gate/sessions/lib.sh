@@ -1,5 +1,5 @@
 # release-gate/sessions/lib.sh: what every session shares (pod-session.yaml). A session sources it, checks what it
-# will run, calls `quote <traffic GB> <seconds it needs> [pods]` (the $0 pre-flight ends there unless RENT=true), then
+# will run, calls `quote <seconds it needs> [pods]` (the $0 pre-flight ends there unless RENT=true), then
 # `rent` once per pod (or `order` each, then `ready` each, to boot them together), and works on $NAME; the EXIT trap
 # ends every rental by its own rental id and checks each is gone. RENT_ARGS: more `machine rent` flags (`--ssh`).
 # From the workflow: OUT, SKU, DISK, CAP (USD, all in), RENT, PARAMS (a JSON object), PACKAGES (packages/<name>
@@ -96,33 +96,25 @@ billed() {
     '.rentals[] | select(.rental_id == $r) | "\(.spend_usd_micros // 0) micro-USD \(.spend_basis // "?"), the provider \(.provider_cost_usd_micros // "?") \(.provider_cost_basis // ""), \(.ran_s // "?") s"'
 }
 
-# quote <traffic GB> <seconds> [SKU…]: the quote and the guard for one rental of each SKU named ($SKU by default): GPU +
-# disk an hour from each offer, and the traffic at the dearest rate; fails unless CAP buys the seconds. Ends the $0
-# pre-flight unless RENT=true.
+# quote <seconds> [SKU…]: the quote and the guard for one rental of each SKU named ($SKU by default): the Hub's one price
+# an hour, the machine with its disk and traffic, which its order carries as its cap; fails unless CAP buys the seconds.
+# Ends the $0 pre-flight unless RENT=true.
 quote() {
-  local gb=$1 need=$2; shift 2
-  local skus=("${@:-$SKU}") s storage bw gpu disk hourly=0 rate=0 said=''
+  local need=$1; shift
+  local skus=("${@:-$SKU}") s price hourly=0 said=''
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
   ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live (no machine listing answers?)"
-  cozy machine rent --json > "$OUT/skus.json" 2>&1 || fail "no catalog"
   for s in "${skus[@]}"; do
-    read -r storage bw listed < <(jq -r --arg s "$s" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1) |
-      [(.storage_usd_micros_per_hour / .container_disk_gb), (.bandwidth_usd_micros_per_gb // 0), .price_usd_micros_per_hour] | @tsv' "$OUT/skus.json")
-    [ -n "${bw:-}" ] || fail "the catalog offers no single $s"
     cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/quote-$s.json" 2>&1
     grep -q quote_unagreed "$OUT/quote-$s.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote-$s.json")"
-    gpu=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote-$s.json" 2>/dev/null | head -1)
-    [ -n "$gpu" ] || fail "no quote for $s: $(tail -c 300 "$OUT/quote-$s.json")"
-    # A quote is of one disk, and an order of another disk is placed elsewhere (42018791462: $0.12/h quoted, $0.49/h billed): the dearer.
-    [ "${listed:-0}" -le "$gpu" ] || gpu=$listed
-    disk=$(awk -v s="$storage" -v d="$DISK" 'BEGIN{printf "%d", s*d}')
-    hourly=$((hourly + gpu + disk)); rate=$(awk -v a="$rate" -v b="$bw" 'BEGIN{print (b > a ? b : a)}')
-    said="$said $s (GPU $gpu + disk $disk)"
+    price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote-$s.json" 2>/dev/null | head -1)
+    [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$OUT/quote-$s.json")"
+    hourly=$((hourly + price)); said="$said $s $price"
   done
   cp "$OUT/quote-${skus[0]}.json" "$OUT/quote.json"
-  CAP_S=$(awk -v c="$CAP" -v h="$hourly" -v w="$rate" -v gb="$gb" 'BEGIN{printf "%d", (c*1e6 - w*gb) / h * 3600}')
-  [ "$CAP_S" -ge "$need" ] || fail "\$$CAP leaves only ${CAP_S}s for$said micro-USD/h and $rate/GB x $gb GB"
-  say "quote$said micro-USD/h, $DISK GB each, traffic $rate/GB x $gb GB: \$$CAP buys about ${CAP_S}s; the guard ends them by what the Hub bills"
+  CAP_S=$(awk -v c="$CAP" -v h="$hourly" 'BEGIN{printf "%d", c*1e6 / h * 3600}')
+  [ "$CAP_S" -ge "$need" ] || fail "\$$CAP leaves only ${CAP_S}s for$said micro-USD/h"
+  say "quote$said micro-USD/h, $DISK GB each: \$$CAP buys about ${CAP_S}s; the guard ends them by what the Hub bills"
   [ "$RENT" = true ] || { say "pre-flight only: nothing rented"; exit 0; }
 }
 

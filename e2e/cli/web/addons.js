@@ -282,6 +282,8 @@ assets:
   const swapped = fines(mine.model.family).find((model) => !ownOf(model));
   const dropped = async (model) => {
     const before = (await state()).assets.map((asset) => asset.name);
+    // The list shows the Hub's first 50, this cell picks from its first 100: past 50, its More, as a person would.
+    if (!(await row(model).count())) await page.locator('.checkpoints > button:has-text("More")').click();
     await row(model).scrollIntoViewIfNeeded();
     await carryTo(page, row(model), await openCanvas(page));
     const made = await until(`a box of ${model.model}`, async () => (await state()).assets.find((asset) => !before.includes(asset.name)), Boolean, 5000).catch(() => null);
@@ -345,6 +347,8 @@ assets:
 
   // Chips follow.
   const list = (name) => box(name).locator('.add-ons');
+  // The list takes no pointer, only its chips do (ce29dad9b): a hover is on the chip whose × it presses.
+  const chipOf = (name, off) => box(name).locator('.add-on', { has: page.locator(`[aria-label="${off}"]`) });
   const moved = await list('shot').boundingBox();
   const head = await box('shot').locator('.nm').boundingBox();
   await page.mouse.move(head.x + 10, head.y + 8);
@@ -375,7 +379,7 @@ assets:
     if (route.request().method() === 'PATCH') await held2;
     await route.fallback();
   });
-  await list('shot').hover();
+  await chipOf('shot', `Take ${word(loraB)} off shot`).hover();
   await box('shot').locator(`[aria-label="Take ${word(loraB)} off shot"]`).click();
   // Its tool's chip is first in the stack, and no LoRA.
   await until('one LoRA left', () => box('shot').locator('.add-on:not(.fine-tune):not(.tool)').count(), (n) => n === 1, 2000);
@@ -396,13 +400,13 @@ assets:
   check('chip_says_no_strength', !/\d\.\d/.test((await chips('shot').first().innerText()).replace(word(fineB), '')) );
 
   // Hand-written: one off, the rest of it as it was.
-  await list('hand').hover();
+  await chipOf('hand', `Take ${word(loraC)} off hand`).hover();
   await box('hand').locator(`[aria-label="Take ${word(loraC)} off hand"]`).click();
   await until('off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraC.model));
   check('hand_written_rest_stays', yaml().includes(`${mine.model.slot}: {ref: ${fineB.model}}`) || yaml().split('hand:')[1].includes(fineB.model), yaml());
   check('words_outlast_it', kept().length === 0, kept());
 
-  await list('flowed').hover();
+  await chipOf('flowed', 'Take wushu off flowed').hover();
   await box('flowed').locator('[aria-label="Take wushu off flowed"]').click();
   await until('off the one line', () => Promise.resolve(yaml()), (text) => !text.includes('wushu'));
   check('one_line_goes', (await chips('flowed').count()) === 0 && yaml().includes('instructions: One line.'), yaml());

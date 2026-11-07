@@ -3441,7 +3441,7 @@ code=0; cozy project -p "$U" import "$U/note.txt" > "$OUT/import-txt.txt" 2>&1 |
 [ "$code" != 0 ] || check "import: a text file was accepted"
 still "$U/Kyogre Art (1).png" red
 [ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_1 ] || check "import: a stem is not lower-cased and made a name"
-[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero_Sheet_one ] || check "import: a written name does not keep its case, with a dot and a space as _"
+[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero_Sheet_one ] || check "import: a written name does not keep its case, with its dot and space as _ (a dot is a sub-selector, 7a5dd659b)"
 code=0; cozy project -p "$U" import "$U/Kyogre Art (1).png" hero.sheet-one > "$OUT/import-taken.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Hero_Sheet_one is in the project already' "$OUT/import-taken.txt"; } || check "import: a typed name taken in another case, with - for _ (exit $code): $(tail -c 300 "$OUT/import-taken.txt")"
 [ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_2 ] || check "import: a picked name doesn't count up"

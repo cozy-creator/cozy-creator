@@ -89,7 +89,7 @@ pub struct RunQuote {
 }
 
 /// Another machine a run could rent, against the pick: its time as a multiple of the pick's, and
-/// the GPU's price an hour. `label` says which way it trades.
+/// the Hub's one price an hour. `label` says which way it trades.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Alternative {
     pub sku: String,
@@ -1425,37 +1425,32 @@ pub struct HubProblem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rented {
     pub machine: Machine,
-    /// The price the rental was asked at: an acceptance above it is released.
+    /// The Hub's quote the order was placed at.
     pub quote: Quote,
     pub replay: bool,
 }
 
-/// The Hub's price for the exact rental asked (`POST /v1/rental-quotes`): the machine and its disk an
-/// hour, traffic a GB, and what an hour plus its download is expected to cost.
+/// The Hub's price for the exact rental asked (`POST /v1/rental-quotes`): one price an hour, the
+/// machine with its disk and traffic, and what an hour plus its download is expected to cost.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
-    pub gpu_usd_micros_per_hour: i64,
-    pub storage_usd_micros_per_hour: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bandwidth_usd_micros_per_gb: Option<i64>,
+    /// What a person is shown and charged.
+    pub usd_micros_per_hour: i64,
     pub disk_gb: u32,
     pub expected_hours: f64,
     pub expected_download_gb: u32,
     pub expected_total_usd_micros: i64,
-    /// The order's terms the Hub holds it to, which a renter sends back as it came. A user is shown
-    /// only the GPU's price (`gpu_usd_micros_per_hour`): that is what we charge.
+    /// The order's cap, which a renter sends back as it came: the Hub rents nothing dearer.
     pub agreed: Agreed,
     /// What the Hub changed of the ask to quote it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
-/// The most a renter agreed to pay: the machine and its disk an hour, and traffic a GB.
+/// The most a renter agreed to pay an hour: the order's `max_usd_micros_per_hour` at the Hub.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agreed {
     pub usd_micros_per_hour: i64,
-    #[serde(default)]
-    pub usd_micros_per_gb: i64,
 }
 
 /// `DELETE /v1/machines/{name}[?force=true]`: `changed` is false when it had ended already. While
@@ -1665,17 +1660,13 @@ pub struct RentalPythonInterpreter {
     pub abi: String,
 }
 
-/// One GPU count of a product: what we charge for its GPUs an hour, and its disk and traffic.
+/// One GPU count of a product and its one price an hour, the machine with its disk and traffic.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RentalSkuWidth {
     #[serde(default)]
     pub accelerator_count: i64,
     #[serde(default)]
     pub price_usd_micros_per_hour: i64,
-    #[serde(default)]
-    pub storage_usd_micros_per_hour: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bandwidth_usd_micros_per_gb: Option<i64>,
     #[serde(default)]
     pub container_disk_gb: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1692,9 +1683,6 @@ pub struct RentalSkuWidth {
 pub struct RentalPriceEstimate {
     pub hours: f64,
     pub download_gb: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub download_mbps: Option<i64>,
-    pub download_hours: f64,
     pub gpu_usd_micros: i64,
     pub disk_usd_micros: i64,
     pub download_usd_micros: i64,

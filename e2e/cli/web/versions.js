@@ -261,7 +261,8 @@ async function died(why) {
   await joined('moving', 61);
   await joined('moving', 62);
   importYaml(folder, `${yaml().trimEnd()}\n  moving_words:\n    text: <moving.2> on top.\n`);
-  // Open on another box, the canvas is drawn in on it: everything's in view at rest.
+  // Open on another box, the canvas is drawn in on it: everything's in view at rest, once it's placed beside what it reads.
+  await until('moving_words placed', async () => (await api(`${at}/canvas`)).body?.cards?.moving_words, Boolean);
   await shut();
   await page.keyboard.press('f');
   await box('moving_words').waitFor();

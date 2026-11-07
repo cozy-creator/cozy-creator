@@ -946,16 +946,15 @@ export interface RentalSku {
   widths: RentalSkuWidth[]
 }
 
-/** The Hub's price for one exact order. A person is shown `gpu_usd_micros_per_hour`, what we charge; `agreed` goes back with the order as it came. */
+/** The Hub's one price an hour for one exact order, what a person is shown and charged; `agreed`, the order's cap, goes back with it as it came. */
 export interface Quote {
-  gpu_usd_micros_per_hour: number
+  usd_micros_per_hour: number
   agreed?: Agreed
   warnings?: string[]
 }
 
 export interface Agreed {
   usd_micros_per_hour: number
-  usd_micros_per_gb: number
 }
 
 export interface Alternative {

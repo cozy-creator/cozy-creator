@@ -209,7 +209,7 @@ export function Machines() {
           )}
         </p>
       )}
-      {renting && <Rent machines={machines} signedIn={signedIn} />}
+      {renting && <Rent signedIn={signedIn} />}
       {!remote && <AddMachine />}
     </DrawerFrame>
   )

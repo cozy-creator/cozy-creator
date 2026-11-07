@@ -381,8 +381,8 @@ if [ "$REHEARSE" = true ]; then
 fi
 
 case $PART in
-idle) quote 2 3300 ;;
-release) quote 1 480 ;;
+idle) quote 3300 ;;
+release) quote 480 ;;
 esac
 
 # The rental id, the moment there is one.
