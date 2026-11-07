@@ -366,7 +366,8 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   what its header says, read once from the Hub and fetching no weights: `kind` is `lora` (only a LoRA's
   factors) or `weights` (its own), absent if it couldn't be read. Its `family` is its owner's label, else
   what its header verifies as; `family_from` says which (`owner`, or `weights` when its header verifies
-  as it). `family=` filters by that.
+  as it). `family=` lists every model the Hub labels so, page by page (`limit` of them), and the newest
+  100 whose header alone says it.
 - `GET /v1/models/{org}/{name}?release=`: `ModelDetail`, its releases (the one named) and, to its
   org's members, every commit; `family`, `family_from`, `weights_family` (what its header verifies as),
   `kind` and `tags` as above.

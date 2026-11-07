@@ -184,7 +184,8 @@ impl Client {
             .await
     }
 
-    /// Models whose name or tags hold `q`, of `family`, with every one of `tags` and none of `no_tags`.
+    /// Models whose name or tags hold `q`, labelled `family`, with every one of `tags` and none of `no_tags`: `limit` of them
+    /// after the first `offset`.
     pub async fn search_models(
         &self,
         q: Option<&str>,
@@ -192,6 +193,7 @@ impl Client {
         tags: &[String],
         no_tags: &[String],
         limit: u32,
+        offset: u32,
     ) -> Result<ModelSearch, Error> {
         let request = self.at(Method::GET, "/v1/models", &[]);
         let tagged = tags.iter().map(|t| ("tag", t.as_str())).chain(no_tags.iter().map(|t| ("no_tag", t.as_str())));
@@ -199,7 +201,7 @@ impl Client {
             request
                 .query(&[("q", q), ("family", family)])
                 .query(&tagged.collect::<Vec<_>>())
-                .query(&[("limit", limit)]),
+                .query(&[("limit", limit), ("offset", offset)]),
         )
         .await
     }
