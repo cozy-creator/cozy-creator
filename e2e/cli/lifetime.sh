@@ -122,6 +122,41 @@ if launch halted silent seconds:=600; then
 fi
 }
 
+# kept_install: the id of kept-gate's install once its build holds it (`installing local/kept-gate`), said each doubling wait
+# (attempt k/5, about 8 min in all: the machine's PyTorch layer may come first); nothing when it never does.
+kept_install() {
+  local k at=15 start=$SECONDS id
+  for k in 1 2 3 4 5; do
+    while [ $((SECONDS - start)) -lt "$at" ]; do
+      id=$(cozy --json run ls --all --limit 20 2> /dev/null | jq -r 'first(.runs[]? | select(.target == "install local/kept-gate"
+        and ("\(.progress.stage // "") \(.waiting // "")" | contains("installing local/kept-gate"))) | .id) // empty')
+      [ -n "$id" ] && { echo "$id"; return 0; }
+      kill -0 "$(cat "$OUT/kept.pid")" 2> /dev/null || return 1
+      sleep 2
+    done
+    echo "kept: its install does not hold yet after $((SECONDS - start)) s (attempt $k/5)" >&2
+    at=$((at * 2 + 15))
+  done
+  return 1
+}
+
+# kept_called: the call's run number once the CLI sends it after the install, said each doubling wait (attempt k/5,
+# 10 min in all); nothing when it never comes.
+kept_called() {
+  local k at=20 start=$SECONDS n
+  for k in 1 2 3 4 5; do
+    while [ $((SECONDS - start)) -lt "$at" ]; do
+      n=$(run_number "$OUT/kept.ndjson")
+      [ -n "$n" ] && { echo "$n"; return 0; }
+      kill -0 "$(cat "$OUT/kept.pid")" 2> /dev/null || return 1
+      sleep 1
+    done
+    echo "kept: no call sent yet after $((SECONDS - start)) s (attempt $k/5): $(tail -n 1 "$OUT/kept.err")" >&2
+    at=$((at * 2 + 20))
+  done
+  return 1
+}
+
 # kept_restore <gate> <config> <saved config>: the gate open, config.toml as it was, and Calcifer started on it.
 kept_restore() {
   touch "$1"
@@ -135,7 +170,8 @@ said() { [ -n "$2" ] && awk -v id="$2" -v words="$3" 'index($0, id) && index($0,
 # off the machine's disk (a provider token here; a Hub capability alike): the machine keeps the run as needs_access,
 # its sender's reattach sends that access again, and the same run prepares on and completes. Before, the machine
 # forgot such a run and Calcifer sent it again as a new one; any other sender found it gone (run_not_found).
-# Its build backend holds the run in its preparation (installing) until the cell opens its gate.
+# Local code installs first, as its own run (`install local/kept-gate`) the CLI follows before it sends the call: its build
+# backend holds that run in its preparation (installing) until the cell opens its gate, then the call runs.
 kept_preparing() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a run with access survives a machine restart during its preparation"
@@ -183,30 +219,31 @@ backend-path = ["."]
 [tool.hatch.build.targets.wheel]
 only-include = ["kept_gate.py"]
 TOML
-# Every run Calcifer sends carries the token from its next start. config.toml is restored however the cell ends,
-# a `fail` or an error under `set -e` too.
+# Every run Calcifer sends carries the token from its next start: a top-level setting, so it goes before the file's
+# first table. config.toml is restored however the cell ends, a `fail` or an error under `set -e` too.
 [ -f "$config" ] && cp "$config" "$OUT/kept/config.toml"
 trap "kept_restore '$gate' '$config' '$OUT/kept/config.toml'" EXIT
-echo 'huggingface_token = "hf_e2e_kept_preparing"' >> "$config"
+{ echo 'huggingface_token = "hf_e2e_kept_preparing"'; cat "$OUT/kept/config.toml" 2> /dev/null || true; } > "$config"
 systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
-n=$(run_submit "$OUT" kept run "$dir" "text=kept $RANDOM" --on local)
-if [ -z "$n" ]; then
-  check "kept: the run never began: $(tail -c 300 "$OUT/kept.err")"
+"$RUN_CLI" --json run "$dir" "text=kept $RANDOM" --on local -p "$RUN_PROJECT" > "$OUT/kept.ndjson" 2> "$OUT/kept.err" &
+echo $! > "$OUT/kept.pid"
+install=$(kept_install) || install=
+if [ -z "$install" ]; then
+  check "kept: its install never held in its preparation: $(tail -n 3 "$OUT/kept.err" | tr '\n' ' ')"
 else
-  for _ in $(seq 300); do grep -qE '"stage": *"installing kept' "$OUT/kept.ndjson" && break; sleep 1; done
-  grep -qE '"stage": *"installing kept' "$OUT/kept.ndjson" || check "kept: run $n never held in its install"
   machine_stop || check "kept: the local machine did not stop"
   touch "$gate"
   machine_ready
+  n=$(kept_called) || n=
+  echo "${n:-none}" > "$OUT/kept.number"
   run_wait "$OUT" kept || true
-  id=$(run_get "$OUT" kept .id)
-  J '.status == "completed"' "$OUT/kept.json" || check "kept: run $n is $(jq -c '[.status, .reason]' "$OUT/kept.json"), not completed"
-  grep -q '"words": *7\b' "$OUT/kept.ndjson" || check "kept: run $n's reply is not its own code's"
+  J '.status == "completed"' "$OUT/kept.json" || check "kept: run ${n:-none} is $(jq -c '[.status, .reason]' "$OUT/kept.json" 2> /dev/null), not completed"
+  grep -q '"words": *7\b' "$OUT/kept.ndjson" || check "kept: run ${n:-none}'s reply is not its own code's"
   cozy machine logs local --lines 5000 > "$OUT/kept.tensord.log" || check "kept: machine logs local failed"
-  said "$OUT/kept.tensord.log" "$id" needs_access || check "kept: the restarted machine did not keep run $n as needs_access"
+  said "$OUT/kept.tensord.log" "$install" needs_access || check "kept: the restarted machine did not keep install $install as needs_access"
   cozy machine logs local calcifer --lines 5000 > "$OUT/kept.calcifer.log" || check "kept: machine logs local calcifer failed"
-  said "$OUT/kept.calcifer.log" "$id" "its access sent again" || check "kept: Calcifer did not send run $n's access again"
-  echo "kept: run $n ($id) was kept across the restart as needs_access, took its access again and completed"
+  said "$OUT/kept.calcifer.log" "$install" "its access sent again" || check "kept: Calcifer did not send install $install's access again"
+  echo "kept: install $install was kept across the restart as needs_access, took its access again and completed; run ${n:-none} completed"
 fi
 trap - EXIT
 kept_restore "$gate" "$config" "$OUT/kept/config.toml"
