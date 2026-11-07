@@ -13,10 +13,11 @@ use axum::{
 };
 use hub_client::types;
 use protocol::{
+    config::Origin,
     error::{Error, Kind},
     hub::{
-        At, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelFamily, ModelLane,
-        ModelRelease, ModelReleaseAsk, ModelReleased, ModelSearch, Provenance,
+        At, Families, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelEdited, ModelKind,
+        ModelLane, ModelRelease, ModelReleaseAsk, ModelReleased, ModelSearch, Provenance,
     },
     model_ref::{self as refs, Repo},
     names::shown,
@@ -32,8 +33,16 @@ pub(super) struct Search {
     /// Search text, or exactly `org/name`.
     q: Option<String>,
     family: Option<String>,
+    /// Tags every row has, and tags none has, comma-separated.
+    tag: Option<String>,
+    no_tag: Option<String>,
     /// 1–100; 20 when absent.
     limit: Option<u32>,
+}
+
+/// A comma-separated list's items.
+fn listed(text: Option<&str>) -> Vec<String> {
+    text.unwrap_or_default().split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect()
 }
 
 /// `GET /v1/models`: one row per model, its card read for its newest release and lanes, all at once.
@@ -48,8 +57,9 @@ pub(super) async fn search(
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty());
     // One word that is org/name is that model; anything else is search text.
-    let exact = match (family, q) {
-        (None, Some(one)) if one.contains('/') && !one.contains(char::is_whitespace) => Repo::parse(one).ok(),
+    let tagged = ask.tag.as_deref().is_some_and(|t| !t.trim().is_empty()) || ask.no_tag.as_deref().is_some_and(|t| !t.trim().is_empty());
+    let exact = match (family, q, tagged) {
+        (None, Some(one), false) if one.contains('/') && !one.contains(char::is_whitespace) => Repo::parse(one).ok(),
         _ => None,
     };
     let (cards, total) = match exact {
@@ -58,7 +68,8 @@ pub(super) async fn search(
             // A model's family is its header's (`checkpoints::said`), which the Hub's search doesn't know: one is looked for among
             // the most a search finds.
             let asked = if family.is_some() { 100 } else { limit };
-            let answer = (client.search_models(q, None, asked).await).map_err(|e| refusal(&hub, e))?;
+            let (tags, no_tags) = (listed(ask.tag.as_deref()), listed(ask.no_tag.as_deref()));
+            let answer = (client.search_models(q, None, &tags, &no_tags, asked).await).map_err(|e| refusal(&hub, e))?;
             let mut reads = tokio::task::JoinSet::new();
             for (i, model) in answer.models.into_iter().take(asked as usize).enumerate() {
                 let client = client.clone();
@@ -99,11 +110,13 @@ fn found(card: &types::ModelCard) -> FoundModel {
     FoundModel {
         model: shown(&format!("{}/{}", card.model.org, card.model.name)),
         family: card.model.family.clone().filter(|f| !f.is_empty()),
+        family_from: None,
         release: release.map(|r| r.version.clone()),
         lanes,
         private: release.is_none(),
         author: card.model.author.clone().map(author),
         kind: None,
+        tags: card.model.tags.clone(),
     }
 }
 
@@ -127,9 +140,16 @@ pub(super) async fn info(
     let Query(ask) = query?;
     let hub = origin(&api, ask.hub.as_deref())?;
     let repo = Repo::parse(&format!("{org}/{name}")).map_err(Refusal)?;
-    let card = (reader(&api, &hub)?.get_model(&repo.org, &repo.name).await).map_err(|e| refusal(&hub, e))?;
+    Ok(Json(detail(&api, &hub, &repo, ask.release).await?))
+}
+
+/// A model as its card and its header say: its releases (one, when named) and, to its members, its commits.
+async fn detail(api: &Api, hub: &Origin, repo: &Repo, release: Option<String>) -> Result<ModelDetail, Refusal> {
+    let card = (reader(api, hub)?.get_model(&repo.org, &repo.name).await).map_err(|e| refusal(hub, e))?;
+    let facts = checkpoints::of_card(api, hub, &card).await;
+    let (family, family_from) = checkpoints::family(card.model.family.clone(), facts.as_ref().and_then(|f| f.family.as_deref()));
     let releases: Vec<ModelRelease> = (card.releases.into_iter())
-        .filter(|r| ask.release.as_ref().is_none_or(|s| *s == r.version))
+        .filter(|r| release.as_ref().is_none_or(|s| *s == r.version))
         .map(|r| ModelRelease {
             version: r.version,
             created_at: r.created_at,
@@ -146,7 +166,7 @@ pub(super) async fn info(
                 .collect(),
         })
         .collect();
-    if let Some(release) = ask.release.filter(|_| releases.is_empty()) {
+    if let Some(release) = release.filter(|_| releases.is_empty()) {
         return Err(Refusal(
             Error::not_found("model_release_not_found", format!("{repo} has no release {release:?}"))
                 .next(format!("cozy model info {repo}")),
@@ -155,17 +175,21 @@ pub(super) async fn info(
     let commits = (card.commits.into_iter())
         .map(|c| ModelCommit { commit: c.id, lane: c.lane, bytes: c.bytes, releases: c.releases, created_at: c.created_at })
         .collect();
-    Ok(Json(ModelDetail {
+    Ok(ModelDetail {
         model: repo.to_string(),
-        family: card.model.family.filter(|f| !f.is_empty()),
+        family,
+        family_from,
+        weights_family: facts.as_ref().and_then(|f| f.family.clone()),
+        kind: facts.map(|f| if f.lora { ModelKind::Lora } else { ModelKind::Weights }),
         created_at: card.model.created_at,
         source: card.model.source.filter(|s| !s.is_empty()),
         author: card.model.author.map(author),
         trigger: card.model.trigger.filter(|t| !t.is_empty()),
         strength: card.model.strength,
+        tags: card.model.tags,
         releases,
         commits,
-    }))
+    })
 }
 
 fn provenance(p: types::ModelLaneProvenance) -> Provenance {
@@ -179,21 +203,37 @@ fn provenance(p: types::ModelLaneProvenance) -> Provenance {
     }
 }
 
-/// `PATCH /v1/models/{org}/{name}`: its discovery family, set or (empty) cleared.
+/// `PATCH /v1/models/{org}/{name}`: what its owner sets. Its family (empty or `none` clears the label, and its weights' family
+/// shows), its trigger words (empty clears them) and its recommended strength (null clears it); an absent field is kept.
 pub(super) async fn edit(
     State(api): State<Arc<Api>>,
     Path((org, name)): Path<(String, String)>,
     body: Result<Bytes, BytesRejection>,
-) -> Result<Json<ModelFamily>, Refusal> {
-    let ModelEdit { hub, family } = parse(&body?)?;
-    let hub = origin(&api, hub.as_deref())?;
+) -> Result<Json<ModelEdited>, Refusal> {
+    let edit: ModelEdit = parse(&body?)?;
+    let hub = origin(&api, edit.hub.as_deref())?;
     let repo = Repo::hub(&format!("{org}/{name}")).map_err(Refusal)?;
-    let Some(family) = family else {
-        return Err(Refusal(Error::new(Kind::Usage, "model_edit_empty", "name what changes: family")));
-    };
+    if edit.family.is_none() && edit.trigger.is_none() && edit.strength.is_none() && !edit.tags_change() {
+        return Err(Refusal(Error::new(Kind::Usage, "model_edit_empty", "name what changes: family, tags, trigger or strength")));
+    }
     let client = signed_in(&api, &hub)?;
-    let answer = (client.set_model_family(&repo.org, &repo.name, &family).await).map_err(|e| refusal(&hub, e))?;
-    Ok(Json(ModelFamily { model: repo.to_string(), family: answer.model.family.filter(|f| !f.is_empty()) }))
+    let mut warnings = Vec::new();
+    if edit.family.is_some() || edit.tags_change() {
+        let family = edit.family.as_deref().map(str::trim).map(|f| if f.eq_ignore_ascii_case("none") { "" } else { f }.to_owned());
+        let update = types::ModelUpdate { family, tags: edit.tags, add_tags: edit.add_tags, remove_tags: edit.remove_tags };
+        let answer = (client.update_model(&repo.org, &repo.name, &update).await).map_err(|e| refusal(&hub, e))?;
+        warnings = answer.warnings;
+    }
+    if edit.trigger.is_some() || edit.strength.is_some() {
+        let answer = (client.set_model_display(&repo.org, &repo.name, edit.trigger.as_deref(), edit.strength).await).map_err(|e| refusal(&hub, e))?;
+        warnings.extend(answer.warnings);
+    }
+    Ok(Json(ModelEdited { model: detail(&api, &hub, &repo, None).await?, warnings }))
+}
+
+/// `GET /v1/families`: the families TensorFS tells from a header, for an owner to pick from.
+pub(super) async fn families() -> Json<Families> {
+    Json(Families { families: tensorfs::family::families().iter().map(|f| f.name.clone()).collect() })
 }
 
 /// `POST /v1/models/{org}/{name}/releases`.

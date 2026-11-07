@@ -45,6 +45,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/orgs/{org}", patch(orgs::edit))
         .route("/v1/orgs/{org}/claim", post(orgs::claim))
         .route("/v1/models", get(models::search))
+        .route("/v1/families", get(models::families))
         .route("/v1/models/{org}/{name}", get(models::info).patch(models::edit).delete(models::delete))
         .route("/v1/models/{org}/{name}/releases", post(models::release))
         .route("/v1/models/{org}/{name}/releases/{version}", delete(models::delete_release))

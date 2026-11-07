@@ -200,8 +200,10 @@ pub struct ModelSearch {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FoundModel {
     pub model: String,
-    /// What its header verifies as, else the label its publisher gave it.
+    /// The label its owner gave it, else what its header verifies as.
     pub family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_from: Option<FamilyFrom>,
     pub release: Option<String>,
     /// The newest release's lanes; a private model's commits' lanes.
     pub lanes: Vec<String>,
@@ -211,6 +213,22 @@ pub struct FoundModel {
     /// What its header says it is. None: it couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<ModelKind>,
+    /// Its labels, sorted; [`NSFW`] among them marks one that makes sexual or nude images.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+/// The tag of a model that makes sexual or nude images, asked for or not.
+pub const NSFW: &str = "nsfw";
+
+/// Where a model's family comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FamilyFrom {
+    /// Its owner's label, which its weights don't say (or weren't read).
+    Owner,
+    /// Its weights: its header verifies as it.
+    Weights,
 }
 
 /// What a checkpoint is.
@@ -239,7 +257,16 @@ pub struct ModelAuthor {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelDetail {
     pub model: String,
+    /// The label its owner gave it, else what its header verifies as.
     pub family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_from: Option<FamilyFrom>,
+    /// What its header verifies as, whatever its label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weights_family: Option<String>,
+    /// What its header says it is. None: it couldn't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ModelKind>,
     pub created_at: String,
     /// The pinned upstream source.
     pub source: Option<String>,
@@ -247,6 +274,9 @@ pub struct ModelDetail {
     /// Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
     pub trigger: Option<String>,
     pub strength: Option<f64>,
+    /// Its labels, sorted: filled once from its source, then its owner's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     /// Newest first.
     pub releases: Vec<ModelRelease>,
     /// Newest first; empty to anyone but the model's members.
@@ -299,20 +329,51 @@ pub struct ModelCommit {
     pub created_at: String,
 }
 
-/// `PATCH /v1/models/{org}/{name}`: an empty `family` clears it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
+/// clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `tags`
+/// replaces its tags (empty clears them), then `add_tags` are added and `remove_tags` removed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelEdit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub strength: Option<Option<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove_tags: Vec<String>,
 }
 
-/// What `PATCH /v1/models/{org}/{name}` leaves.
+impl ModelEdit {
+    /// Whether it changes a model's tags.
+    pub fn tags_change(&self) -> bool {
+        self.tags.is_some() || !self.add_tags.is_empty() || !self.remove_tags.is_empty()
+    }
+}
+
+/// A field that is there, null or not.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(field: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(field).map(Some)
+}
+
+/// What `PATCH /v1/models/{org}/{name}` leaves: the model as `GET` reads it, and what the Hub clamped.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelEdited {
+    pub model: ModelDetail,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// `GET /v1/families`: the families TensorFS tells from a header.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelFamily {
-    pub model: String,
-    pub family: Option<String>,
+pub struct Families {
+    pub families: Vec<String>,
 }
 
 /// `POST /v1/models/{org}/{name}/releases`: one commit per lane, under a version higher than every

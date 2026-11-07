@@ -184,16 +184,21 @@ impl Client {
             .await
     }
 
+    /// Models whose name or tags hold `q`, of `family`, with every one of `tags` and none of `no_tags`.
     pub async fn search_models(
         &self,
         q: Option<&str>,
         family: Option<&str>,
+        tags: &[String],
+        no_tags: &[String],
         limit: u32,
     ) -> Result<ModelSearch, Error> {
         let request = self.at(Method::GET, "/v1/models", &[]);
+        let tagged = tags.iter().map(|t| ("tag", t.as_str())).chain(no_tags.iter().map(|t| ("no_tag", t.as_str())));
         self.json(
             request
                 .query(&[("q", q), ("family", family)])
+                .query(&tagged.collect::<Vec<_>>())
                 .query(&[("limit", limit)]),
         )
         .await
@@ -204,15 +209,10 @@ impl Client {
             .await
     }
 
-    /// Sets a model's discovery family; empty clears it.
-    pub async fn set_model_family(
-        &self,
-        org: &str,
-        name: &str,
-        family: &str,
-    ) -> Result<ModelAnswer, Error> {
+    /// Its owner's edit of a model: its discovery family (empty clears it) and its tags, each field given set.
+    pub async fn update_model(&self, org: &str, name: &str, edit: &ModelUpdate) -> Result<ModelAnswer, Error> {
         let request = self.at(Method::PATCH, "/v1/models/{org}/{name}", &[org, name]);
-        self.json(request.json(&json!({"family": family}))).await
+        self.json(request.json(edit)).await
     }
 
     /// Sets a model's display metadata: trigger words (empty clears them) and recommended

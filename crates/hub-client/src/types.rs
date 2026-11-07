@@ -188,6 +188,9 @@ pub struct ModelSummary {
     /// Words a LoRA's prompt uses, and its recommended strength (on a card); never applied.
     pub trigger: Option<String>,
     pub strength: Option<f64>,
+    /// Its labels, sorted: filled once from its source, then its owner's. `nsfw` marks one that makes sexual or nude images.
+    #[serde(deserialize_with = "null_is_empty")]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -257,9 +260,25 @@ pub struct OrgProof {
     pub checked: String,
 }
 
+/// `PATCH /v1/models/{org}/{name}`: each field given is set. `tags` replaces them; then `add_tags`, then `remove_tags`.
+#[derive(Debug, Default, Serialize)]
+pub struct ModelUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub add_tags: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub remove_tags: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ModelAnswer {
     pub model: ModelSummary,
+    /// What the Hub clamped or cut (a display edit).
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

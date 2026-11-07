@@ -52,6 +52,11 @@ else
   cozy --json model ls --family e2e-no-such-family > "$OUT/family.json" && J '(.models | length) == 0' "$OUT/family.json" \
     || check "model ls --family: an unknown family listed models"
 fi
+# Tags: a search that leaves a tag out lists none that has it; one that asks for it lists only those.
+cozy --json model ls --no-tag nsfw --limit 100 > "$OUT/no-nsfw.json" && J 'all(.models[]; (.tags // []) | index("nsfw") | not)' "$OUT/no-nsfw.json" \
+  || check "model ls --no-tag nsfw: a model tagged nsfw listed"
+cozy --json model ls --tag nsfw --limit 100 > "$OUT/nsfw.json" && J 'all(.models[]; (.tags // []) | index("nsfw"))' "$OUT/nsfw.json" \
+  || check "model ls --tag nsfw: a model without the tag listed"
 cozy --json model info zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info zhengpeng7/birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
 

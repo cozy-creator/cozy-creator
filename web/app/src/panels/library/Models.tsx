@@ -3,8 +3,9 @@ import { useDeferredValue, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
-import type { ModelCommit, ModelDetail, ModelUploading, Submitted } from "../../types"
+import type { ModelCommit, ModelDetail, ModelEdit, ModelUploading, Submitted } from "../../types"
 import { say } from "../../ui/notes"
+import { NSFW, ShowNsfw, Tags, isNsfw, useShowNsfw } from "../../ui/Tags"
 import { Confirm, Failure, Section, useAsk, useSignedIn } from "../common"
 import { DropZone, FileRow, useFiles } from "../FileDrop"
 import { bytes, shown } from "../format"
@@ -62,26 +63,33 @@ export function Models() {
   const [typed, setTyped] = useState("")
   const q = useDeferredValue(typed.trim())
   const [limit, setLimit] = useState(50)
+  const [showNsfw, setShowNsfw] = useShowNsfw()
   const { data, error } = useQuery({
-    queryKey: ["models", q, limit],
-    queryFn: ({ signal }) => client.models(q, limit, signal),
+    queryKey: ["models", q, limit, showNsfw],
+    queryFn: ({ signal }) => client.models(q, limit, signal, { noTag: showNsfw ? undefined : NSFW }),
     staleTime: 60_000,
   })
   return (
     <LibraryFrame on="models">
-      <input className="field wide" aria-label="Search models" placeholder="Search models, or org/name" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
+      <div className="row center">
+        <input className="field wide" aria-label="Search models" placeholder="Search models, tags, or org/name" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
+        <ShowNsfw shown={showNsfw} onChange={setShowNsfw} />
+      </div>
       <Failure error={error} lead="Couldn't search the models" />
       <ul className="list">
-        {data?.models.map((found) => (
-          <li key={found.model}>
-            <Link to={to(`models/${encodeURIComponent(found.model)}`)}>
-              <b>{shown(found.model)}</b>
-              <small>
-                {[found.private ? "private" : found.release, found.family, found.lanes.join(", "), found.author?.name].filter(Boolean).join(" · ")}
-              </small>
-            </Link>
-          </li>
-        ))}
+        {data?.models
+          .filter((found) => showNsfw || !isNsfw(found.tags))
+          .map((found) => (
+            <li key={found.model}>
+              <Link to={to(`models/${encodeURIComponent(found.model)}`)}>
+                <b>{shown(found.model)}</b>
+                <small>
+                  {[found.private ? "private" : found.release, found.family, found.lanes.join(", "), found.author?.name].filter(Boolean).join(" · ")}{" "}
+                  <Tags tags={found.tags} />
+                </small>
+              </Link>
+            </li>
+          ))}
       </ul>
       {data && !data.models.length && <p className="muted">{q ? `No model matches ${q}.` : "No models you can see."}</p>}
       {Boolean(data?.older) && (
@@ -182,6 +190,74 @@ function DeleteCommit({ name, commit, onDone }: { name: string; commit: ModelCom
   )
 }
 
+/** Where a model's family comes from, as a person reads it. */
+function familyLine(detail: ModelDetail): string | undefined {
+  if (!detail.family) return detail.kind === "lora" ? "no family: a LoRA needs one to run" : undefined
+  if (detail.family_from === "weights") return `${detail.family}, from its weights`
+  return detail.weights_family ? `${detail.family}, set by its owner (its weights say ${detail.weights_family})` : `${detail.family}, set by its owner`
+}
+
+/** Its owner's family and tags. Picking "from its weights" (or none) clears the label; a checkpoint needs no family, a LoRA one to run. */
+function Labels({ name, detail }: { name: string; detail: ModelDetail }) {
+  const { client } = useConnection()
+  const queries = useQueryClient()
+  const ask = useAsk()
+  const [adding, setAdding] = useState("")
+  const { data: known } = useQuery({ queryKey: ["families"], queryFn: ({ signal }) => client.families(signal), staleTime: Infinity })
+  const label = detail.family_from === "owner" ? detail.family : undefined
+  const families = [...new Set([...(known?.families ?? []), ...(label ? [label] : [])])].sort()
+  const tags = detail.tags ?? []
+  const edit = (change: ModelEdit) =>
+    void ask.run(async () => {
+      const edited = await client.editModel(name, change)
+      edited.warnings?.forEach((warning) => say(warning))
+      queries.setQueryData(["model", name], edited.model)
+      void queries.invalidateQueries({ queryKey: ["models"] })
+    })
+  const none = detail.weights_family ? `From its weights: ${detail.weights_family}` : detail.kind === "lora" ? "None (a LoRA needs one to run)" : "None"
+  const add = () => {
+    const tag = adding.trim()
+    if (tag) edit({ add_tags: [tag] })
+    setAdding("")
+  }
+  return (
+    <div className="stack">
+      <label>
+        Family
+        <select className="field" value={label ?? ""} disabled={ask.busy} onChange={(event) => edit({ family: event.target.value || "none" })}>
+          <option value="">{none}</option>
+          {families.map((family) => (
+            <option key={family} value={family}>
+              {family}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="row center">
+        <input type="checkbox" checked={tags.includes(NSFW)} disabled={ask.busy} onChange={(event) => edit(event.target.checked ? { add_tags: [NSFW] } : { remove_tags: [NSFW] })} />
+        NSFW: it can make sexual or nude images, asked for or not
+      </label>
+      <div className="row center">
+        <Tags tags={tags} onRemove={(tag) => edit({ remove_tags: [tag] })} />
+        <input
+          className="field"
+          aria-label="Add a tag"
+          placeholder="Add a tag"
+          spellCheck={false}
+          value={adding}
+          disabled={ask.busy}
+          onChange={(event) => setAdding(event.target.value)}
+          onKeyDown={(event) => event.key === "Enter" && add()}
+        />
+        <button type="button" className="tb" disabled={ask.busy || !adding.trim()} onClick={add}>
+          Add
+        </button>
+      </div>
+      <Failure error={ask.error} lead="Couldn't change it" />
+    </div>
+  )
+}
+
 function Releases({ detail, signedIn, onDone }: { detail: ModelDetail; signedIn: boolean; onDone: () => void }) {
   const { client } = useConnection()
   const ask = useAsk()
@@ -248,10 +324,16 @@ export function ModelDrawer() {
       <Failure error={error} lead={`Couldn't read ${shown(name)}`} />
       {data && (
         <p className="muted">
-          {[data.family, data.author && `by ${data.author.name}${data.author.parked ? " (not claimed)" : ""}`, data.trigger && `trigger: ${data.trigger}`, data.strength !== undefined && data.strength !== null && `strength ${data.strength}`, data.source && `from ${data.source}`]
+          {[familyLine(data), data.author && `by ${data.author.name}${data.author.parked ? " (not claimed)" : ""}`, data.trigger && `trigger: ${data.trigger}`, data.strength !== undefined && data.strength !== null && `strength ${data.strength}`, data.source && `from ${data.source}`]
             .filter(Boolean)
-            .join(" · ")}
+            .join(" · ")}{" "}
+          {!member && <Tags tags={data.tags} />}
         </p>
+      )}
+      {member && data && (
+        <Section title="Family and tags">
+          <Labels name={name} detail={data} />
+        </Section>
       )}
       <Section title="Download">
         <div className="row center">

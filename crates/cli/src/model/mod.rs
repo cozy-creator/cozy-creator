@@ -1,7 +1,7 @@
 //! `cozy model`: the Hub's model catalog, and models on machines.
 use std::process::ExitCode;
 
-use clap::{ArgGroup, Subcommand};
+use clap::Subcommand;
 use protocol::error::Error;
 
 use crate::{Context, output};
@@ -26,8 +26,9 @@ enum Verb {
     Ls(Ls),
     /// A model's releases and their lanes; to its org's members, every commit too.
     Info(Info),
-    /// Set or clear a model's discovery family.
-    Family(Family),
+    /// What its owner says of a model on the Hub: its family, tags, trigger words and recommended strength. A flag left
+    /// out keeps its field.
+    Edit(Edit),
     /// Make a model present in a machine's store. Follows it to its end; Ctrl-C stops following, never the work.
     Download(Download),
     /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a new
@@ -51,6 +52,13 @@ pub(crate) struct Ls {
     /// Only models of this discovery family.
     #[arg(long)]
     family: Option<String>,
+    /// Only models with this tag; repeat it for several.
+    #[arg(long = "tag", value_name = "TAG")]
+    tags: Vec<String>,
+    /// Only models without this tag (`--no-tag nsfw` leaves out models that make sexual or nude images); repeat it for
+    /// several.
+    #[arg(long = "no-tag", value_name = "TAG")]
+    no_tags: Vec<String>,
     /// At most this many models (the Hub lists up to 100 at once).
     #[arg(long, default_value_t = 20)]
     limit: u32,
@@ -66,15 +74,39 @@ pub(crate) struct Info {
 }
 
 #[derive(clap::Args, Debug)]
-#[command(group(ArgGroup::new("change").required(true).args(["family", "clear"])))]
-pub(crate) struct Family {
+pub(crate) struct Edit {
     /// org/name.
     model: String,
-    /// The family to set.
-    family: Option<String>,
-    /// Clear the family.
+    /// What it runs as, which picks the tool that runs it (a LoRA needs one); `none` clears your label, and the
+    /// family its weights verify as shows.
     #[arg(long)]
-    clear: bool,
+    family: Option<String>,
+    /// Add a tag (`nsfw` for one that makes sexual or nude images, asked for or not); repeat it for several.
+    #[arg(long = "tag", value_name = "TAG")]
+    tag: Vec<String>,
+    /// Remove a tag; repeat it for several.
+    #[arg(long = "untag", value_name = "TAG")]
+    untag: Vec<String>,
+    /// Every tag, comma-separated, in place of its tags; empty clears them.
+    #[arg(long, value_name = "A,B,…")]
+    tags: Option<String>,
+    /// The words its prompts use; empty clears them.
+    #[arg(long)]
+    trigger: Option<String>,
+    /// Its recommended strength, or `none` to clear it. Never applied: a run's default stays 1.0.
+    #[arg(long, value_parser = strength)]
+    strength: Option<Strength>,
+}
+
+/// `--strength`: a number, or `none`.
+#[derive(Clone, Debug)]
+pub(crate) struct Strength(Option<f64>);
+
+fn strength(text: &str) -> Result<Strength, String> {
+    match text.trim() {
+        none if none.eq_ignore_ascii_case("none") => Ok(Strength(None)),
+        number => number.parse().map(|n| Strength(Some(n))).map_err(|_| format!("{text:?} is no number; `none` clears it")),
+    }
 }
 
 #[derive(clap::Args, Debug)]
@@ -174,15 +206,15 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Ls(args) => match args.on {
             Some(on) => {
-                if args.family.is_some() {
-                    output::warn("--family searches the Hub; with --on it is ignored");
+                if args.family.is_some() || !args.tags.is_empty() || !args.no_tags.is_empty() {
+                    output::warn("--family, --tag and --no-tag search the Hub; with --on they are ignored");
                 }
                 machine::list(ctx, (on != "all").then_some(on), &args.query).await
             }
             None => catalog::search(ctx, args).await,
         },
         Verb::Info(args) => catalog::info(ctx, args).await,
-        Verb::Family(args) => catalog::family(ctx, args).await,
+        Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args).await,
         Verb::Delete(args) => releases::delete(ctx, args).await,
         Verb::Download(args) => machine::download(ctx, args).await,

@@ -241,8 +241,12 @@ PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capab
 # The rental reads the private commit through its run capability; on Linux it never held it (the upload was local's).
 watched download-private model download "$model@$commit" --on "$M" \
   || check "model download $model@$commit --on $M: the rental did not read the private commit: $(run_get "$OUT" download-private '.reason.message' | head -c 300)"
-cozy --json model family "$model" e2e-family > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
-cozy --json model family --clear "$model" > /dev/null && cozy --json model info "$model" | J '.family == null' || check "model family --clear: not cleared"
+cozy --json model edit "$model" --family e2e-family --tags 'E2E Tag,nsfw' --tag anime --untag nsfw --trigger e2e --strength 0.8 > /dev/null \
+  && cozy --json model info "$model" | J '.family == "e2e-family" and .family_from == "owner" and .tags == ["anime", "e2e-tag"] and .trigger == "e2e" and .strength == 0.8' \
+  || check "model edit: family, tags, trigger or strength not set"
+cozy --json model edit "$model" --family none --tags '' --trigger '' --strength none > /dev/null \
+  && cozy --json model info "$model" | J '.family == null and (.tags // []) == [] and .trigger == null and .strength == null' \
+  || check "model edit --family none --tags '' --trigger '' --strength none: not cleared"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
 cozy --json model info "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \

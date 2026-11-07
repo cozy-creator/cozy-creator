@@ -105,6 +105,8 @@ test = "release: throwaway package, deleted"
 ["model ls"]
 test = "pr: models"
 "--family" = "pr: models"
+"--tag" = "pr: models, only models tagged nsfw"
+"--no-tag" = "pr: models, none tagged nsfw"
 "--limit" = "pr: models"
 "--on" = "pr: models"
 ["model info"]
@@ -114,9 +116,14 @@ test = "pr: models"
 "--lane" = "pr: models"
 "--on" = "pr: models"
 "--source-format" = "pr: models, the local file no format knows kept as-is"
-["model family"]
-test = "release: throwaway model, family set and cleared"
-"--clear" = "release: throwaway model, family set and cleared"
+["model edit"]
+test = "release: throwaway model, family, tags, trigger and strength set and cleared"
+"--family" = "release: throwaway model, family set and cleared (none)"
+"--tag" = "release: throwaway model, a tag added"
+"--untag" = "release: throwaway model, a tag removed"
+"--tags" = "release: throwaway model, tags set and cleared"
+"--trigger" = "release: throwaway model, trigger set and cleared"
+"--strength" = "release: throwaway model, strength set and cleared (none)"
 ["model upload"]
 test = "release: throwaway model, uploaded from a file, from a held file, from a run's output, and a commit recorded"
 "--on" = "release: throwaway model"

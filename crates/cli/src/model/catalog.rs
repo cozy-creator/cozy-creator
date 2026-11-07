@@ -1,14 +1,14 @@
-//! `cozy model ls|info|family`: the Hub's model catalog, through Calcifer (CALCIFER-API.md
+//! `cozy model ls|info|edit`: the Hub's model catalog, through Calcifer (CALCIFER-API.md
 //! "Models"). Signed in, `ls` also lists the user's own unreleased (private) models and `info` lists
 //! the commits of a model of the user's org.
 use std::process::ExitCode;
 
 use protocol::error::{Error, Kind};
-use protocol::hub::{ModelAuthor, ModelDetail, ModelEdit, ModelFamily, ModelSearch};
+use protocol::hub::{FamilyFrom, ModelAuthor, ModelDetail, ModelEdit, ModelEdited, ModelSearch};
 use serde::Serialize;
 
 use protocol::model_ref::{ModelRef, Repo};
-use super::{Family, Info, Ls};
+use super::{Edit, Info, Ls};
 use crate::Context;
 use crate::calcifer_client::path;
 use crate::output::{self, Record, Table};
@@ -28,28 +28,40 @@ struct Searching<'a> {
     q: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     family: Option<&'a str>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    tag: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    no_tag: String,
     limit: u32,
 }
 
 pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
     let query = args.query.join(" ");
-    let ask = Searching { hub: ctx.hub(), q: &query, family: args.family.as_deref(), limit: output::at_most("--limit", args.limit, 100) };
+    let ask = Searching {
+        hub: ctx.hub(),
+        q: &query,
+        family: args.family.as_deref(),
+        tag: args.tags.join(","),
+        no_tag: args.no_tags.join(","),
+        limit: output::at_most("--limit", args.limit, 100),
+    };
     let view: ModelSearch = ctx.calcifer().await?.get_query("/v1/models", &ask).await?;
     let total = view.total;
     if ctx.json {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);
     }
-    let mut table = Table::new(ctx, ["model", "family", "release", "lanes", "by"]);
+    let mut table = Table::new(ctx, ["model", "family", "tags", "release", "lanes", "by"]);
     for row in &view.models {
         let lanes = row.lanes.join(", ");
         let family = row.family.as_deref().unwrap_or("-");
+        let tags = if row.tags.is_empty() { "-".to_owned() } else { row.tags.join(", ") };
         let release = match row.private {
             true => "private",
             false => row.release.as_deref().unwrap_or("-"),
         };
         let author = row.author.as_ref().map_or_else(|| "-".to_owned(), by);
-        table = table.row([row.model.as_str(), family, release, &lanes, &author]);
+        table = table.row([row.model.as_str(), family, &tags, release, &lanes, &author]);
     }
     let shown = view.models.len() as i64;
     if total > shown {
@@ -79,30 +91,7 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     let shown = protocol::names::shown(&repo.to_string());
-    let mut record = Record::new().field("model", &view.model).field("family", view.family.as_deref().unwrap_or("-"));
-    record = record.field("created", &view.created_at);
-    if let Some(author) = &view.author {
-        record = record.field("by", &by(author));
-    }
-    if let Some(source) = &view.source {
-        record = record.field("source", source);
-    }
-    if let Some(trigger) = &view.trigger {
-        record = record.field("trigger", trigger);
-    }
-    if let Some(strength) = view.strength {
-        record = record.field("strength", &format!("{strength} (recommended; --lora uses 1.0 unless given)"));
-    }
-    if let Some(author) = &view.author
-        && let Some(reserved) = &author.reserved
-    {
-        let mirror = repo.org == author.org;
-        record = record.note(match mirror {
-            true => format!("Mirror of {}. {reserved}", view.source.as_deref().unwrap_or("its author's model")),
-            false => format!("{}: {reserved}", author.org),
-        });
-    }
-    record.print(ctx);
+    said(&view, &repo).print(ctx);
     for release in &view.releases {
         let mirror = match (release.mirror, release.by_admin) {
             (true, _) => " (mirror)",
@@ -133,15 +122,74 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub(crate) async fn family(ctx: &Context, args: Family) -> Result<ExitCode, Error> {
-    let repo = Repo::hub(&args.model)?;
-    let family = if args.clear { String::new() } else { args.family.unwrap_or_default() };
-    let ask = ModelEdit { hub: Some(ctx.hub().to_string()), family: Some(family) };
-    let view: ModelFamily = ctx.calcifer().await?.patch(&path(&["v1", "models", &repo.org, &repo.name]), &ask).await?;
-    if ctx.json {
-        output::json(&view);
-    } else {
-        Record::of(&view).print(ctx);
+/// A model's family as a person reads it: where it comes from, and what its weights say when its owner's label differs.
+fn family(view: &ModelDetail) -> String {
+    let Some(family) = &view.family else { return "-".into() };
+    match (view.family_from, &view.weights_family) {
+        (Some(FamilyFrom::Weights), _) => format!("{family} (from its weights)"),
+        (Some(FamilyFrom::Owner), Some(weights)) => format!("{family} (set by its owner; its weights say {weights})"),
+        (Some(FamilyFrom::Owner), None) => format!("{family} (set by its owner)"),
+        (None, _) => family.clone(),
     }
+}
+
+/// What a model's card and header say of it.
+fn said(view: &ModelDetail, repo: &Repo) -> Record {
+    let mut record = Record::new().field("model", &view.model).field("family", &family(view));
+    if let Some(kind) = view.kind {
+        record = record.field("kind", if kind == protocol::hub::ModelKind::Lora { "LoRA" } else { "weights" });
+    }
+    if !view.tags.is_empty() {
+        record = record.field("tags", &view.tags.join(", "));
+    }
+    record = record.field("created", &view.created_at);
+    if let Some(author) = &view.author {
+        record = record.field("by", &by(author));
+    }
+    if let Some(source) = &view.source {
+        record = record.field("source", source);
+    }
+    if let Some(trigger) = &view.trigger {
+        record = record.field("trigger", trigger);
+    }
+    if let Some(strength) = view.strength {
+        record = record.field("strength", &format!("{strength} (recommended; --lora uses 1.0 unless given)"));
+    }
+    if let Some(author) = &view.author
+        && let Some(reserved) = &author.reserved
+    {
+        let mirror = repo.org == author.org;
+        record = record.note(match mirror {
+            true => format!("Mirror of {}. {reserved}", view.source.as_deref().unwrap_or("its author's model")),
+            false => format!("{}: {reserved}", author.org),
+        });
+    }
+    record
+}
+
+pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
+    let repo = Repo::hub(&args.model)?;
+    let tags = args.tags.map(|tags| tags.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect());
+    let ask = ModelEdit {
+        hub: Some(ctx.hub().to_string()),
+        family: args.family,
+        trigger: args.trigger,
+        strength: args.strength.map(|s| s.0),
+        tags,
+        add_tags: args.tag,
+        remove_tags: args.untag,
+    };
+    if ask.family.is_none() && ask.trigger.is_none() && ask.strength.is_none() && !ask.tags_change() {
+        return Err(Error::new(Kind::Usage, "model_edit_empty", "name what changes: --family, --tag, --untag, --tags, --trigger or --strength"));
+    }
+    let edited: ModelEdited = ctx.calcifer().await?.patch(&path(&["v1", "models", &repo.org, &repo.name]), &ask).await?;
+    if ctx.json {
+        output::json(&edited);
+        return Ok(ExitCode::SUCCESS);
+    }
+    for warning in &edited.warnings {
+        output::warn(warning);
+    }
+    said(&edited.model, &repo).print(ctx);
     Ok(ExitCode::SUCCESS)
 }

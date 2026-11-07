@@ -1,0 +1,68 @@
+{
+ "note": "FLUX.3 Image Klein's BFL checkpoint (its module names) and five published LoRAs: SimpleTuner's and a Diffusers-trained one (Diffusers' names under transformer.), two AI-Toolkit LoRAs in BFL names under diffusion_model., and NoiseToNova's PDD Turbo in both its ComfyUI export (BFL names, pdd.heads) and its PEFT export (bare Diffusers names, lora_A.default, per-step proj_out heads); flux3klein.lora maps them",
+ "members": [
+  {
+   "source": "black-forest-labs/flux-3-image-klein@8454017f9ebaada30c998fccd9f67a80c7580f68",
+   "member": "model.safetensors",
+   "header_file": "flux-3-image-klein.safetensors.header",
+   "header_sha256": "4e78a193a06d5071ef973debe6f4f43354a2ca9d3e51e7622054ac2ec51c9ec3",
+   "header_bytes": 40544,
+   "full_length": 11097404512,
+   "declared_source_sha256": "c3e9813cdd049c831c836b2e9db61150e49a93fc1a4c63b256494642fee0bd7c"
+  },
+  {
+   "source": "SimpleTuner/flux-3-klein-image-photo-aesthetics-distilled-assisted-1024-v2-kohaku-fa@ff8d62e1ecaedfef241dbdc9af34180cb3f7549f",
+   "member": "checkpoint-1000/pytorch_lora_weights.safetensors",
+   "header_file": "simpletuner-photo-aesthetics.safetensors.header",
+   "header_sha256": "590fecac1d452bbcd1c7cbc74e6d8bd8a3225751be12190011481b8b17bbb44a",
+   "header_bytes": 48472,
+   "full_length": 67681624,
+   "declared_source_sha256": "0e9653ce9f182a74103321050f62f0c63e45252a5db6b21af8f247f42137c172"
+  },
+  {
+   "source": "akhaliq/flux-3-image-klein-angles-lora@41425f3e32cc0509293e9aa8d04c0c89f9a90190",
+   "member": "pytorch_lora_weights.safetensors",
+   "header_file": "klein-angles.safetensors.header",
+   "header_sha256": "ff309d46c30f71f5abcaaab3662a19aaefaf492448b68e6f3796bdd62377e6e3",
+   "header_bytes": 71824,
+   "full_length": 80386192,
+   "declared_source_sha256": "ef3a69f012413354a68da8c9cd306b48b6b55e35a947ba5aa2f4d1b66047b20c"
+  },
+  {
+   "source": "AIImageStudio/RadianceChromeVoluptuous_Flux3Klein_v1.0@21121a41fccff536cee662818ca757bc0aa7ebc6",
+   "member": "RadianceChromeVoluptuous_Flux3Klein_v1.0.safetensors",
+   "header_file": "RadianceChromeVoluptuous_Flux3Klein_v1.0.safetensors.header",
+   "header_sha256": "96e6d89a1c4ec002b9ebf8447215bfa69f6c466f1e6a031375f0d0bce25ea964",
+   "header_bytes": 67664,
+   "full_length": 160696400,
+   "declared_source_sha256": "e4388d3fa379c1f501b2187073748270a9f996cfed5940539721090865f0823b"
+  },
+  {
+   "source": "Raume/alphajace-klein-lora@4a9e3f312bf9dedc53da54484d557e305c643781",
+   "member": "alphajace_klein_comfy.safetensors",
+   "header_file": "alphajace_klein_comfy.safetensors.header",
+   "header_sha256": "d1c9d6764a9e90cedf0b2170c2aacd1bcccf840b8ac135a6de09d03190a4dcf7",
+   "header_bytes": 67456,
+   "full_length": 160696192,
+   "declared_source_sha256": "a53667b28d1de089a2f20c9b4c0ce29b6bb39badae9b11ff85611104afba2ef2"
+  },
+  {
+   "source": "NoiseToNova/Flux-3-Klein-turbo-pdd-4_8-steps@f5c935d3baf5e1d1f233254f0ccabbd83f0a591c",
+   "member": "Flux-3-Klein-turbo-pdd-4_8-steps-comfy.safetensors",
+   "header_file": "Flux-3-Klein-turbo-pdd-4_8-steps-comfy.safetensors.header",
+   "header_sha256": "0970e6da689375996f26df92aa000809dab1a0469b91b2f9b631819221849c2e",
+   "header_bytes": 76760,
+   "full_length": 703966976,
+   "declared_source_sha256": "430b58fdda438f49976cb66368c56a8cde4f58b45f792f0825f678c5983d85a0"
+  },
+  {
+   "source": "NoiseToNova/Flux-3-Klein-turbo-pdd-4_8-steps@f5c935d3baf5e1d1f233254f0ccabbd83f0a591c",
+   "member": "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128.safetensors",
+   "header_file": "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128.safetensors.header",
+   "header_sha256": "6706e75f2193a0552b9f675be67046ba9554fa7330c61a5225548816cc2b49f5",
+   "header_bytes": 54760,
+   "full_length": 1206506984,
+   "declared_source_sha256": "08b3f6f7be6286bc2b26690db898d37cdacbeb437a1b9b2c0d52c7706b19c279"
+  }
+ ]
+}

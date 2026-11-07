@@ -1,0 +1,41 @@
+{
+ "note": "Four published FIBO 2 LoRAs: two in Diffusers' names under transformer. (an anime style, the Edit Turbo IDM distillation), one in bare names with PEFT's lora_A.default, and the anime LoRA's ComfyUI export, whose fused qkv/kv/w13 and FFN padded to 9728 no row op expresses (fibo2.lora leaves it unclaimed)",
+ "members": [
+  {
+   "source": "axiomofmind/Fibo-2.0-anime-lora@1a1824f77c0ac34e980e52697f64f772ec788f5e",
+   "member": "pytorch_lora_weights.safetensors",
+   "header_file": "fibo-2-anime.safetensors.header",
+   "header_sha256": "1a9d678e4eac12b7fb477f17d11ee03435205eab60d8474d6f848411d631fd7c",
+   "header_bytes": 108496,
+   "full_length": 538814416,
+   "declared_source_sha256": "f35b84efa588e3e0c4ba0151d5bfd560d5186030572544f583494de1665b5929"
+  },
+  {
+   "source": "axiomofmind/Fibo-2.0-anime-lora@1a1824f77c0ac34e980e52697f64f772ec788f5e",
+   "member": "Fibo-2.0-Anime-LoRA-ComfyUI.safetensors",
+   "header_file": "Fibo-2.0-Anime-LoRA-ComfyUI.safetensors.header",
+   "header_sha256": "99edc16965836c80684c5197f78072b5bf559e8c95cd0da5275d591a7f57eb2f",
+   "header_bytes": 100624,
+   "full_length": 796757304,
+   "declared_source_sha256": "c1d55ecec4fed57f26b892bdf1f73b3062e440405d6a1f5918db73a3be8c7cde"
+  },
+  {
+   "source": "akhaliq/Fibo-2.0-edit-IDM-1step@c84922d478b085cf6b8199492accc65dd4ee1f76",
+   "member": "pytorch_lora_weights.safetensors",
+   "header_file": "fibo-2-edit-idm-1step.safetensors.header",
+   "header_sha256": "be0c3cfc4b49b4731912693219c63682ac1c2917efd5d20a5e339f8e427ef2dc",
+   "header_bytes": 108496,
+   "full_length": 538814416,
+   "declared_source_sha256": "f3a0a6a6b4f94d62c5e6235c935451f11533ff40483de03de9a9a3aaa7b28041"
+  },
+  {
+   "source": "prithivMLmods/Natural-Exposure-Fibo-2.0-dev@9d345554d20f598cd5169fdcdf75d2dc7704254e",
+   "member": "Natural-Exposure-Fibo-2.0-dev-4000.safetensors",
+   "header_file": "Natural-Exposure-Fibo-2.0-dev-4000.safetensors.header",
+   "header_sha256": "c62f40ba6de196464ccbc240c4444e4a437483f7ddf5fed26246a466a054ff43",
+   "header_bytes": 88536,
+   "full_length": 112843224,
+   "declared_source_sha256": "309c840508030fb8d0fa03ce64b730518df8e197a5b9088ee911c7763bc3235d"
+  }
+ ]
+}

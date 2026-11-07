@@ -21,6 +21,8 @@ import type {
   MachinePackages,
   MachineUpdate,
   ModelDetail,
+  ModelEdit,
+  ModelEdited,
   ModelReleased,
   ModelSearch,
   ModelUploading,
@@ -544,16 +546,26 @@ export class Client {
 
   // Models
 
-  /** The Hub's models, those of `family` only when it's said. */
-  models(q: string, limit: number, signal?: AbortSignal, family?: string): Promise<ModelSearch> {
+  /** The Hub's models: of `family` only when it's said, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
+  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; noTag?: string } = {}): Promise<ModelSearch> {
     const asked = new URLSearchParams({ limit: String(limit) })
     if (q) asked.set("q", q)
-    if (family) asked.set("family", family)
+    if (only.family) asked.set("family", only.family)
+    if (only.noTag) asked.set("no_tag", only.noTag)
     return this.json(`/v1/models?${asked}`, { signal })
   }
 
   model(name: string, signal?: AbortSignal): Promise<ModelDetail> {
     return this.json(model(name), { signal })
+  }
+
+  /** The families a model's weights can verify as, for its owner to pick from. */
+  families(signal?: AbortSignal): Promise<{ families: string[] }> {
+    return this.json("/v1/families", { signal })
+  }
+
+  editModel(name: string, edit: ModelEdit): Promise<ModelEdited> {
+    return this.write("PATCH", model(name), edit)
   }
 
   modelDownloadQuote<T>(ask: T): Promise<RunQuote> {

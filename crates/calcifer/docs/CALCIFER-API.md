@@ -359,14 +359,24 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   replaces the org's own; an org that does not exist yet is parked.
 
 **Models.** A root model's org is `_`.
-- `GET /v1/models?q=&family=&limit=` (1–100, 20): `ModelSearch {models, total, older}`, each model's
-  newest release and lanes; signed in, also the caller's private ones. `q` that is exactly
-  `org/name` is that model. Each says what its header says, read once from the Hub and fetching no
-  weights: `kind` is `lora` (only a LoRA's factors) or `weights` (its own), absent if it couldn't be
-  read, and `family` what the header verifies as, else the Hub's label. `family=` filters by that label.
+- `GET /v1/models?q=&family=&tag=&no_tag=&limit=` (1–100, 20): `ModelSearch {models, total, older}`, each
+  model's newest release, lanes and `tags`; signed in, also the caller's private ones. `q` matches names
+  and tags, and exactly `org/name` is that model. `tag=` and `no_tag=` (comma-separated) keep models with
+  every one, and with none (`no_tag=nsfw` leaves out models that make sexual or nude images). Each says
+  what its header says, read once from the Hub and fetching no weights: `kind` is `lora` (only a LoRA's
+  factors) or `weights` (its own), absent if it couldn't be read. Its `family` is its owner's label, else
+  what its header verifies as; `family_from` says which (`owner`, or `weights` when its header verifies
+  as it). `family=` filters by that.
 - `GET /v1/models/{org}/{name}?release=`: `ModelDetail`, its releases (the one named) and, to its
-  org's members, every commit.
-- `PATCH /v1/models/{org}/{name}` `{hub, family}`: `ModelFamily`; an empty family clears it.
+  org's members, every commit; `family`, `family_from`, `weights_family` (what its header verifies as),
+  `kind` and `tags` as above.
+- `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, trigger, strength}`:
+  `ModelEdited {model, warnings}`, the model as `GET` reads it. Each field given is set, an absent one
+  kept: `family` empty or `none` clears the label (its weights' family shows then); `tags` replaces them
+  (empty clears them), then `add_tags` are added and `remove_tags` removed; an empty `trigger` and a null
+  `strength` clear. The Hub fills a model's family from its header and its tags from its source's page;
+  what its owner sets here wins.
+- `GET /v1/families`: `Families {families}`, what a header can verify as: the owner's picks.
 - `POST /v1/models/{org}/{name}/releases` `{hub, version, commits}`: `ModelReleased`, one commit per
   lane under a version higher than every earlier one. The Hub never reuses a version, so it takes no
   `Idempotency-Key`.
@@ -553,7 +563,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy model ls [query]` | `GET /v1/models` |
 | `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
 | `cozy model info` | `GET /v1/models/{org}/{name}` |
-| `cozy model family` | `PATCH /v1/models/{org}/{name}` |
+| `cozy model edit` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |
 | `cozy model delete` | `DELETE /v1/models/{org}/{name}[/releases/{v}\|/commits/{c}]` |
 | `cozy model download` | `POST /v1/model-downloads` (`/v1/model-download-quotes` first for `new`); `GET /v1/runs/{id}/events` |

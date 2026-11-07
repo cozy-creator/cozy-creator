@@ -627,9 +627,16 @@ export interface FoundModel {
   lanes: string[]
   private: boolean
   author?: ModelAuthor
+  /** Its owner's label, or (absent) its weights' family. */
+  family_from?: FamilyFrom
   /** What its header says: only a LoRA's factors, or weights of its own. Absent: it couldn't be read. */
   kind?: "lora" | "weights"
+  /** Its labels, sorted; `nsfw` marks one that makes sexual or nude images. */
+  tags?: string[]
 }
+
+/** Where a model's family comes from: its owner's label, or its weights (its header verifies as it). */
+export type FamilyFrom = "owner" | "weights"
 
 export interface ModelSearch {
   models: FoundModel[]
@@ -663,13 +670,31 @@ export interface ModelCommit {
 export interface ModelDetail {
   model: string
   family?: string
+  family_from?: FamilyFrom
+  /** What its header verifies as, whatever its label. */
+  weights_family?: string
+  kind?: "lora" | "weights"
   created_at: string
   source?: string
   author?: ModelAuthor
   trigger?: string
   strength?: number
+  tags?: string[]
   releases: ModelRelease[]
   commits: ModelCommit[]
+}
+
+/** Its owner's edit: each field given is set. `family` "none" clears the label; `tags` replaces them, then `add_tags` and `remove_tags`. */
+export interface ModelEdit {
+  family?: string
+  tags?: string[]
+  add_tags?: string[]
+  remove_tags?: string[]
+}
+
+export interface ModelEdited {
+  model: ModelDetail
+  warnings?: string[]
 }
 
 export interface ModelReleased {

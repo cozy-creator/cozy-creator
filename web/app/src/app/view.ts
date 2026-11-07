@@ -24,6 +24,12 @@ const moreKey = (scope: string, id: string) => `cozy.more:${scope}:${id}`
 
 const machineKey = (scope: string) => `cozy.machine:${scope}`
 const TOOLS_KEY = "cozy.tools-shut"
+const NSFW_KEY = "cozy.show-nsfw"
+
+/** Whether lists show models tagged `nsfw` until a viewer says otherwise: shown, for now. */
+export const SHOW_NSFW = true
+export const loadShowNsfw = () => read<boolean>(NSFW_KEY) ?? SHOW_NSFW
+export const saveShowNsfw = (shown: boolean) => write(NSFW_KEY, shown)
 
 export const loadToolsShut = () => read<boolean>(TOOLS_KEY) === true
 export const saveToolsShut = (shut: boolean) => write(TOOLS_KEY, shut)
