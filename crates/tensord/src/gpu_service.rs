@@ -1206,7 +1206,7 @@ impl Pool {
     #[cfg(target_os = "linux")]
     fn describe(&self, session: &Session, warm: &BTreeMap<String, Level>) {
         let priority = session.loaded.keys().filter_map(|construction| warm.get(construction))
-            .map(|level| if *level == Level::Gpu { 2 } else { 1 }).max().unwrap_or(0);
+            .map(|level| if *level == Level::Gpu { varena_ledger::GPU_PRIORITY } else { 1 }).max().unwrap_or(0);
         let tenant = varena_ledger::Tenant { priority, reload: session.reload };
         let pages = self.devices.get(session.lane()).unwrap_or_default().iter().filter_map(|device| device.ledger.as_deref());
         for page in pages.chain(self.host_ledger.as_deref()) {

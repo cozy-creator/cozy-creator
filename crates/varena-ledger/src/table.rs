@@ -34,6 +34,8 @@ const REFUSED: u64 = u64::MAX;
 const CONTEXT: u64 = 512 << 20;
 /// An idle process's reload counts half once it has sat idle this long, a quarter at twice.
 const STALE_NS: u128 = 300_000_000_000;
+/// The priority of what a caller asked to keep on the GPU (`--warm gpu`).
+pub const GPU_PRIORITY: u8 = 2;
 /// A refused foreign shortage, until anything is released again.
 const FOREIGN_REFUSED: u64 = 1 << 63;
 /// Asking for less just means asking again: every small allocation of a full card would cost a
@@ -319,6 +321,12 @@ impl Table {
         }
     }
 
+    /// Whether a row gives its idle bytes to a room ask: in no request, and not kept on the GPU
+    /// by a warm set (priority 2, `gpu`). Either still gives to an allocation that cannot proceed.
+    fn gives_room(&self, index: usize) -> bool {
+        self.page.rows[index].running.load(Acquire) == 0 && self.tenant(index).priority < GPU_PRIORITY
+    }
+
     fn tenant(&self, index: usize) -> Tenant {
         let word = self.page.tenants[index].load(Acquire);
         if word == 0 || word >> 32 != self.page.rows[index].pid.load(Acquire) {
@@ -372,12 +380,15 @@ impl Table {
     fn share(&self, me: Row) -> u64 {
         let live = || self.page.rows.iter().enumerate().filter(|(_, row)| row.pid.load(Acquire) != 0);
         // Never its own want: its own memory is its allocator's reclaim, in its order.
-        let mut left = live().filter(|(index, _)| *index != me.0).map(|(_, row)| row.want.load(Acquire)).max().unwrap_or(0);
+        let Some((asker, words)) = live().filter(|(index, _)| *index != me.0).max_by_key(|(_, row)| row.want.load(Acquire)) else { return 0 };
+        let mut left = words.want.load(Acquire);
+        let room = self.page.room[asker].load(Acquire) == words.pid.load(Acquire);
         let mut order: Vec<_> = live()
             .map(|(index, row)| (row.running.load(Acquire) != 0, self.tenant(index).priority, row.last_use.load(Acquire), index))
             .collect();
         order.sort_unstable();
         for (.., index) in order {
+            if room && !self.gives_room(index) { return 0; }
             let take = left.min(self.page.rows[index].idle.load(Acquire));
             if index == me.0 { return take; }
             left -= take;
@@ -423,16 +434,17 @@ impl Table {
     /// progress, so a caller may give the next call a fresh deadline.
     pub fn recover(&self, row: Row, bytes: u64, deadline: Instant) -> Recovery {
         self.page.room[row.0].store(0, Release);
-        let result = self.recover_inner(row, bytes, deadline);
+        let result = self.recover_inner(row, bytes, deadline, false);
         self.stop_asking(row);
         result
     }
 
-    /// `recover` for room a request will use, off its allocating thread: idle peers give, and if
-    /// that is not enough the supervisor ends a process without priority.
+    /// `recover` for room a request will use, off its allocating thread: peers in no request give
+    /// (`gives_room`), and if that is not enough the supervisor ends a process without priority. A
+    /// peer in a request keeps what it holds: it may be about to use it.
     pub fn ask_room(&self, row: Row, bytes: u64, deadline: Instant) -> Recovery {
         self.page.room[row.0].store(u64::from(std::process::id()), Release);
-        let result = self.recover_inner(row, bytes, deadline);
+        let result = self.recover_inner(row, bytes, deadline, true);
         self.stop_asking(row);
         self.page.room[row.0].store(0, Release);
         result
@@ -449,7 +461,7 @@ impl Table {
         }
     }
 
-    fn recover_inner(&self, row: Row, bytes: u64, deadline: Instant) -> Recovery {
+    fn recover_inner(&self, row: Row, bytes: u64, deadline: Instant, room: bool) -> Recovery {
         let page = self.page;
         let before = page.released.load(Acquire);
         let bytes = bytes.max(SMALLEST_ASK);
@@ -471,7 +483,7 @@ impl Table {
             } else {
                 let live = || page.rows.iter().enumerate().filter(|(_, words)| words.pid.load(Acquire) != 0);
                 let answered = live().all(|(_, words)| words.answered.load(Acquire) >= generation);
-                let peers = || live().filter(|(index, _)| *index != row.0);
+                let peers = || live().filter(|(index, _)| *index != row.0 && (!room || self.gives_room(*index)));
                 let left = peers().map(|(_, words)| words.idle.load(Acquire)).sum::<u64>();
                 let finishing = peers().any(|(_, words)| words.running.load(Acquire) != 0 && words.idle.load(Acquire) != 0);
                 if answered && now < deadline && left != 0 && (finishing || left != idle) {
