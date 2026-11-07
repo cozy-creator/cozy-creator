@@ -51,6 +51,11 @@ pub(super) fn read() -> HostMemory {
     }
 }
 
+/// No page-cache accounting here: what is available.
+pub(super) fn unfilled() -> i64 {
+    read().available
+}
+
 pub(super) fn resident(_: u32) -> io::Result<super::Resident> {
     Err(io::ErrorKind::Unsupported.into())
 }

@@ -100,12 +100,18 @@ pub fn read() -> HostMemory {
     sys::read()
 }
 
-/// The page cache a read ahead or a store read may still fill: what is available past half the
-/// limit. Past it a store larger than the cache streams by it instead of thrashing it. Negative:
+/// The page cache a read ahead may still fill: what is available past half the limit. Negative:
 /// none (or unreadable).
 pub fn cache_room() -> i64 {
     let half = limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
     read().available.saturating_sub(half)
+}
+
+/// Memory nothing holds, page cache included: the tightest of each limited cgroup's limit less
+/// all it charges, and the host's `MemFree`. What a store read can cache without displacing
+/// anything, its own earlier bytes among them. -1 when unreadable.
+pub fn unfilled() -> i64 {
+    sys::unfilled()
 }
 
 /// One process's resident and proportional set sizes: Linux's PSS counts a shared sealed layout

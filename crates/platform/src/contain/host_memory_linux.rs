@@ -198,6 +198,23 @@ pub(super) fn read() -> HostMemory {
     best
 }
 
+pub(super) fn unfilled() -> i64 {
+    let mut unfilled = meminfo("MemFree");
+    let Some((path, limits, usage)) = cgroups() else {
+        return unfilled;
+    };
+    for cgroup in &path {
+        let Some(bound) = tightest(std::slice::from_ref(cgroup), limits) else {
+            continue;
+        };
+        let room = bound.saturating_sub(number(&cgroup.join(usage)).unwrap_or(0)) as i64;
+        if unfilled < 0 || room < unfilled {
+            unfilled = room;
+        }
+    }
+    unfilled
+}
+
 /// A cgroup of a machine's own containment (`cozy-<namespace>`, `cozy-executor-…`) or below one:
 /// its limits are the machine's, never the computer's.
 fn ours(cgroup: &Path) -> bool {

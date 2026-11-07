@@ -129,6 +129,15 @@ pub fn parse_uuid(name: &str) -> Option<[u8; 16]> {
 impl Table {
     pub fn open(uuid: &[u8; 16]) -> io::Result<Self> {
         let name: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
+        Self::open_named(&name)
+    }
+
+    /// The host's page: every process's pinned host memory, asked for and given back as a GPU's is.
+    pub fn open_host() -> io::Result<Self> {
+        Self::open_named("host")
+    }
+
+    fn open_named(name: &str) -> io::Result<Self> {
         // The layout version is in the name: peers of another layout simply do not meet.
         let path = directory()?.join(format!("v6-{name}"));
         let open = || OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)
@@ -389,6 +398,12 @@ impl Table {
             let limit = if supervisor.is_some() { TICK } else { TICK.min(deadline.saturating_duration_since(now)) };
             wait(&page.answers, seen, limit);
         }
+    }
+
+    /// Another process is in a request.
+    pub fn peers_running(&self, row: Row) -> bool {
+        self.page.rows.iter().enumerate().any(|(index, words)| index != row.0 && words.pid.load(Acquire) != 0
+            && words.running.load(Acquire) != 0)
     }
 
     /// Another process holds idle memory and is in no request: nothing is about to use it.
