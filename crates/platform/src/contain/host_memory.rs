@@ -26,9 +26,10 @@ pub struct HostMemory {
     /// The limit `available` is measured against: the tightest cgroup's, else physical memory.
     pub bound: i64,
     /// Clean active page cache charged where that limit is, left out of `available`: the kernel
-    /// takes it back under pressure once it has aged it. A cache holding the bytes that page cache
-    /// holds (TensorFS's host tier) counts it as room. 0 where `available` is the host's own.
+    /// takes it back under pressure once it has aged it. 0 where `available` is the host's own.
     pub active: i64,
+    /// All that limit charges, page cache included (the host's: `MemTotal − MemFree`).
+    pub charged: i64,
 }
 
 /// Physical memory; -1 when unreadable.
@@ -54,12 +55,9 @@ pub fn available_outside() -> i64 {
     read().available
 }
 
-/// What a person's computer keeps for its own programs beside a shared machine: a quarter of it
-/// ([`computer`]), from 4 to 16 GiB, plus what its free swap is short of a quarter of its swap (a
-/// full swap takes nothing those programs push out). Live: swap moves.
-pub fn reserve() -> u64 {
-    let (swap, free) = sys::swap();
-    (computer().unwrap_or(0) / 4).clamp(4 << 30, 16 << 30) + (swap / 4).saturating_sub(free)
+/// (swap, the part free); 0 where unreadable.
+pub fn swap() -> (u64, u64) {
+    sys::swap()
 }
 
 /// The host stalling on memory now: PSI's `some avg10` above this (a tenth of the last 10 s with a
@@ -100,13 +98,6 @@ pub fn read() -> HostMemory {
     sys::read()
 }
 
-/// The page cache a read ahead or a store read may still fill: what is available past half the
-/// limit. Past it a store larger than the cache streams by it instead of thrashing it. Negative:
-/// none (or unreadable).
-pub fn cache_room() -> i64 {
-    let half = limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
-    read().available.saturating_sub(half)
-}
 
 /// One process's resident and proportional set sizes: Linux's PSS counts a shared sealed layout
 /// once across every process that maps it; macOS gives its physical footprint and Windows its

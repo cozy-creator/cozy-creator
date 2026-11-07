@@ -336,8 +336,8 @@ impl Host {
             while pressure.wait().is_ok() {
                 // A contained machine's limit follows the computer's other programs first: the
                 // budget read below is then the kernel's.
-                let reserve = host_memory::reserve();
-                match platform::contain::follow(reserve) {
+                let reserve = varena_ledger::host::budget().reserve.max(0) as u64;
+                match platform::contain::follow(varena_ledger::host::machine) {
                     Some(Ok(budget)) if limit != Some(budget.max) => {
                         notes.note(serde_json::json!({"event": "host_limit", "budget": budget}));
                         limit = Some(budget.max);

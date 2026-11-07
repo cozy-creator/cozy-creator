@@ -162,7 +162,16 @@ pub fn contain(_: &str) -> std::result::Result<std::path::PathBuf, String> {
     Err("no cgroup v2 on this system".into())
 }
 
-pub fn follow(_: u64) -> Option<std::io::Result<Budget>> {
+/// What the kernel accounts for a contained machine; never read here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineFacts {
+    pub computer: u64,
+    pub outside: u64,
+    pub held: u64,
+    pub own: u64,
+}
+
+pub fn follow(_: impl FnOnce(&MachineFacts) -> (u64, u64)) -> Option<std::io::Result<Budget>> {
     None
 }
 
