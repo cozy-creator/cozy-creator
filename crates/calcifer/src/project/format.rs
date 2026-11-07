@@ -1161,6 +1161,14 @@ fn no_bare_self(said: &str) -> String {
     format!("<{said}> would read its own newest version, which every render changes: write <self.1>, the version to start from")
 }
 
+/// The sha256 a box's `approved` names, as its Doc reads it: none where it names none, or none that reads.
+pub(super) fn approved_file(approved: Option<&Value>, lock: &Lock) -> Option<String> {
+    match approved {
+        None | Some(Value::Null) => None,
+        Some(value) => file_named(&text_of(Some(value)), lock).ok(),
+    }
+}
+
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {

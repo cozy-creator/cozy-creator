@@ -254,14 +254,14 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let folder = &project.folder;
     let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status");
     let gone = folder.act(|| {
-        let doc = Doc::load(folder)?;
-        let i = doc.find(name).ok_or_else(unknown)?;
-        let name = doc.assets[i].name.clone();
+        // Its name and what it holds approved, from its box alone: a Doc of the whole project took a delete of one of 5,000 boxes 287 ms.
+        let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.get("approved").cloned())))?;
+        let (name, approved) = held.ok_or_else(unknown)?;
+        let pin = folder.reading_lock(|lock| format::approved_file(approved.as_ref(), lock))?;
         let at = canvas::row(folder, &name)?;
         let back = folder.edit(|written| written.removed(&name))?;
         // Gone from the project, what lands of it lands nothing.
         cancelled(api, project, std::slice::from_ref(&name), &deleted_why).map_err(|Refusal(why)| why)?;
-        let pin = doc.assets[i].pin.clone();
         // A box that never made anything has no row: nothing to rewrite.
         if pin.is_some() || folder.reading_lock(|lock| lock.asset(&name).is_some())? {
             folder.update_lock(|lock| {
