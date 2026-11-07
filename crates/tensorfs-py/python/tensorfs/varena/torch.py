@@ -128,6 +128,9 @@ def _bind_allocator() -> None:
         else:
             if torch.cuda.is_initialized():
                 raise RuntimeError("install Varena before Torch CUDA lazy initialization")
+            # cuBLAS workspaces cached per handle and stream, as varena accounts them
+            # (`initialize`): Torch latches this at its first cuBLAS use.
+            os.environ["TORCH_CUBLAS_WORKSPACE_CACHE"] = "1"
             if torch.backends.cudnn.benchmark:
                 raise RuntimeError("Varena requires cudnn.benchmark=False")
             directory = Path(__file__).resolve().parents[1]
