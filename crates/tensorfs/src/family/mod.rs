@@ -86,6 +86,10 @@ pub struct Def {
     /// LoRA-only targets, `[path, [out, in]]`: what an adapter may train that no weight is.
     #[serde(default)]
     pub sites: Vec<(String, Vec<u64>)>,
+    /// A variant's own pinned checkpoint (`hf://org/repo@<commit>`): a checkpoint pinned to its
+    /// repository is this variant (Klein's base DiT, FIBO 2's Edit-Turbo).
+    #[serde(default)]
+    pub reference: Option<String>,
 }
 
 /// A stored form: a declared edit of some components' canonical keys. `*` in a key matches any
@@ -245,18 +249,23 @@ fn adapts(c: &Component) -> BTreeSet<String> {
 /// checkpoint is. A class of the pipeline's alone leaves all it has of the family to say. A class several families share
 /// (Qwen3-VL's) is each of theirs to verify, in order.
 fn based(header: &Header, bases: &[&Component]) -> Option<String> {
-    if let Some(record) = Record::read(&header.metadata) {
-        return Some(record.name);
+    match Record::read(&header.metadata) {
+        Some(record) => Some(record.name),
+        None => verified(header, bases).map(|(family, _, _)| family.name.clone()),
     }
+}
+
+/// The family `based` verifies, its form and the components it verified.
+fn verified<'h>(header: &'h Header, bases: &[&'h Component]) -> Option<(&'static Family, String, Vec<&'h str>)> {
     let classes = header.pipeline().map(|p| p.class.name.as_str()).into_iter().chain(header.components().iter().map(|c| c.class.name.as_str()));
-    let verifies = |family: &&Family| {
+    of_classes(classes).into_iter().find_map(|family| {
         let (named, rest): (Vec<&Component>, Vec<&Component>) = bases.iter().copied().filter(|c| family.def(&c.name).is_some()).partition(|c| family.classes.contains(&c.class.name));
         let stored: Vec<Stored> = (if named.is_empty() { rest } else { named }.iter())
             .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
             .collect();
-        !stored.is_empty() && family.form_of(&stored).is_ok()
-    };
-    of_classes(classes).into_iter().find(verifies).map(|family| family.name.clone())
+        let form = family.form_of(&stored).ok().filter(|_| !stored.is_empty())?;
+        Some((family, form, stored.iter().map(|s| s.name).collect()))
+    })
 }
 
 /// One stored component: its name and every tensor's key and logical shape.
@@ -313,6 +322,15 @@ impl Family {
             .filter(|c| self.def(c).is_some_and(|(r, _)| r == root))
             .map(String::as_str)
             .collect()
+    }
+
+    /// The variant of `component` a checkpoint pinned to `sources` is: the one whose own reference
+    /// is in one of their repositories, else `component`.
+    pub fn pinned_variant<'a>(&'a self, component: &'a str, sources: &[&str]) -> &'a str {
+        let repo = |s: &str| s.split('@').next().unwrap_or(s).to_ascii_lowercase();
+        let repos: Vec<String> = sources.iter().map(|s| repo(s)).collect();
+        let own = |v: &&str| self.components.get(*v).and_then(|d| d.reference.as_deref()).is_some_and(|r| repos.contains(&repo(r)));
+        self.variants(component).into_iter().find(own).unwrap_or(component)
     }
 
     /// `component`'s keys under `form`.
@@ -469,6 +487,23 @@ impl Record {
             reference: field(m, "reference")?.to_owned(),
             components: strings(m.get("components")),
         })
+    }
+
+    /// A header's `family`: what its ingest recorded, else what its keys verify as now, each
+    /// component the variant its pinned source is (a checkpoint stored before its family was known).
+    pub fn of(header: &Header) -> Option<Record> {
+        if let Some(record) = Record::read(&header.metadata) {
+            return Some(record);
+        }
+        let bases: Vec<&Component> = header.components().iter().filter(|c| !c.tensors.is_empty() && !holds_factors(c)).collect();
+        let (family, form, stored) = verified(header, &bases)?;
+        let sources: Vec<&str> = match header.metadata.get(crate::import::SOURCE) {
+            Some(Value::List(l)) => l.iter().filter_map(Value::as_str).collect(),
+            Some(v) => v.as_str().into_iter().collect(),
+            None => vec![],
+        };
+        let components = stored.into_iter().map(|c| (c.to_owned(), family.pinned_variant(c, &sources).to_owned())).collect();
+        Some(Record { name: family.name.clone(), form, reference: family.reference.clone(), components })
     }
 
     /// The family component a stored one is: what `components` records, else its own name.
