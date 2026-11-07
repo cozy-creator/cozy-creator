@@ -1,37 +1,42 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
 # ///
-"""The localfit cell's package: a still made on the CPU by a function that, as MiniMax H3's shot does, orchestrates a GPU function of its
-own that loads a model. That is what a computer with no GPU does poorly, so rendering it there asks first. The still never calls it, so
-nothing is fetched."""
+"""The localfit cell's tool: a still made on the CPU by a tool that, as MiniMax H3's shot does, composes a GPU function of its own that
+loads a model. That is what a computer with no GPU does poorly, so rendering it there asks first. The model paints only pictures its
+words mention, and the cell mentions none, so nothing is fetched."""
 
 import os
 
 import msgspec
-from cozy_runtime.author import App, ImageFile, ImageFrame, Outputs, Weights
+from cozy_runtime.author import App, Context, Image, ImageFile, ImageFrame, ImageResult, Outputs, Prompt, Seed, Weights, invocable
 
 app = App()
 SIDE = 16
 
 
-class Words(msgspec.Struct, kw_only=True):
-    prompt: str
-    seed: int | None = None
-
-
-class Picture(msgspec.Struct):
+class Painted(msgspec.Struct):
     image: ImageFile
-    prompt: str
 
 
-@app.entrypoint(accelerator=False)
-def heavy(payload: Words, out: Outputs) -> Picture:
-    """A still of one colour."""
-    return Picture(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"), payload.prompt)
+@invocable(defaults={"weights": "zhengpeng7/birefnet@0.1.0"})
+async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Outputs) -> Painted:
+    """The model on a GPU that makes `heavy` one."""
+    return Painted(image)
 
 
-@app.child_task(defaults={"weights": "zhengpeng7/birefnet@0.1.0"})
-def paint(payload: Words, weights: Weights, out: Outputs) -> Picture:
-    """Never called: the model on a GPU that makes `heavy` one."""
-    return heavy(payload, out)
+app.child_task(paint)
+
+
+class Words(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+    seed: Seed | None = None
+
+
+@app.tool(label="Heavy", named="heavy", accelerator=False)
+async def heavy(ctx: Context, payload: Words, out: Outputs) -> ImageResult:
+    """A still of one colour, and each picture it mentions painted by the model."""
+    for picture in payload.instructions.references.values():
+        await paint(image=picture.file)
+    image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
+    return ImageResult(image, SIDE, SIDE, payload.seed or 0, payload.instructions.text)
