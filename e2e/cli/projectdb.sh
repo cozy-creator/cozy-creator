@@ -47,7 +47,8 @@ cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed
 mkdir -p "$P/sub"
 (cd "$P/sub" && cozy --json project status) > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status from a subfolder failed: $(tail -c 300 "$OUT/project-status.err")"
 local cell
-for cell in cut_of_takes said_once film_is_its_file short_film_heals cut_versions by_asset hard_cut upgrades first_open version_text old_landing; do $cell; done
+# Each on its own: one that stops on its `set -e` is said, and the next goes on.
+for cell in cut_of_takes said_once film_is_its_file short_film_heals cut_versions by_asset hard_cut upgrades first_open version_text old_landing; do ( $cell ) || check "$cell stopped part way (exit $?)"; done
 }
 
 db_existing_web() {
