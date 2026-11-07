@@ -29,6 +29,8 @@ const HOLE = { col: 3, row: 1 };
 const PAN_MS = 3000;
 const REST_MS = 2000;
 const PICTURES = 1000;
+/** How long after its project is forgotten Calcifer's memory is read. */
+const FORGOTTEN_MS = 10_000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
 // What a person would feel, on a runner slower than their computer. A command you'd run without thinking; a project that opens as a page does;
@@ -57,6 +59,9 @@ const BARS = {
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
   asks_status_s: 5,
   calcifer_asks_mb: 2048,
+  // Its project forgotten, what Calcifer kept of it and of working it: a quarter of what the open project may cost. glibc's arenas kept
+  // ~1,500 MB of each run, and the next run's on top (cl-822).
+  calcifer_kept_mb: 256,
   page_heap_mb: 512,
 };
 
@@ -206,6 +211,7 @@ function calciferMb() {
   };
   const seconds = (ms) => +(ms / 1000).toFixed(2);
 
+  const startMb = calciferMb();
   const generating = Date.now();
   generated(folder);
   numbers.generate_s = seconds(Date.now() - generating);
@@ -230,7 +236,7 @@ function calciferMb() {
   const again = await status();
   numbers.status_again_s = seconds(again.ms);
   check('status_again_is_quicker', numbers.status_again_s <= BARS.status_again_s, numbers.status_again_s);
-  const memory = { read: calciferMb() };
+  const memory = { before: startMb, read: calciferMb() };
   numbers.calcifer_memory_mb = memory;
 
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true, args: ['--enable-precise-memory-info'] });
@@ -603,8 +609,15 @@ function calciferMb() {
   // A box deleted is read once more, which is how the page hears it's gone. Nothing else should be.
   check('only_what_was_deleted_reads_as_gone', [...readGone].every((name) => made.includes(name)), [...readGone]);
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
-  console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
+
+  // Forgotten, as web_proof forgets each cell's project: what Calcifer built and dropped for 5,000 assets goes back.
+  const forgot = await fetch(`${base}/v1/projects/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+  check('it_is_forgotten', forgot.status === 204, forgot.status);
+  await new Promise((done) => setTimeout(done, FORGOTTEN_MS));
+  memory.forgotten = calciferMb();
+  check('calcifer_gives_back_a_forgotten_project', memory.forgotten <= memory.before + BARS.calcifer_kept_mb, memory);
+  console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);
 })().catch(died);
 
