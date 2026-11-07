@@ -17,6 +17,7 @@ pub(crate) mod graph;
 mod history;
 pub(crate) mod host;
 mod jobs;
+mod keyed;
 pub(crate) mod model;
 mod remote;
 mod thumbs;
@@ -149,7 +150,7 @@ struct Project {
     unsent: Mutex<Vec<Error>>,
 }
 
-pub fn routes() -> Router<Arc<Api>> {
+pub fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
         .route("/v1/projects/{id}", get(state).delete(forget))
@@ -180,6 +181,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/history/undo", post(history::undo))
         .route("/v1/projects/{id}/history/redo", post(history::redo))
         .route_layer(axum::middleware::from_fn(history::record))
+        // Outside the history's: a write answered again is no edit of its own.
+        .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
 }
 
 impl Projects {

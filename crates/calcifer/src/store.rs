@@ -127,6 +127,20 @@ fn stays_column(writer: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// What each project write's `Idempotency-Key` answered (cl-812), kept a day: a store made before it gains the table, at the same
+/// version, which a Calcifer that predates it never reads.
+const ANSWERS: &str = "
+    CREATE TABLE IF NOT EXISTS answers (
+        key TEXT PRIMARY KEY,
+        digest TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        body BLOB NOT NULL,
+        at_ms INTEGER NOT NULL
+    ) STRICT;";
+/// How long an answer is kept for its write's retries.
+const ANSWER_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// A store made before outputs were measured gains their columns. Its version stands: every statement names its columns, so a
 /// Calcifer that predates them goes on reading it.
 fn measured_columns(writer: &mut Connection) -> Result<()> {
@@ -364,6 +378,7 @@ impl Store {
             }
             other => return Err(StoreError::Version(other)),
         }
+        writer.execute_batch(ANSWERS)?;
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;
         Ok(Self {
@@ -390,6 +405,29 @@ impl Store {
             Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(commit),
             _ => commit(),
         }
+    }
+
+    /// What the write under `key` answered, if it was kept.
+    pub fn answer(&self, key: &str) -> Result<Option<Answer>> {
+        self.read(|conn| {
+            let row = conn.query_row("SELECT digest, status, content_type, body FROM answers WHERE key = ?1", [key], |r| {
+                Ok(Answer { digest: r.get(0)?, status: r.get(1)?, content_type: r.get(2)?, body: r.get(3)? })
+            });
+            Ok(row.optional()?)
+        })
+    }
+
+    /// Keeps what the write under `key` answered; answers older than a day go.
+    pub fn keep_answer(&self, key: &str, answer: &Answer) -> Result<()> {
+        let now = now_ms();
+        self.write(|tx| {
+            tx.execute("DELETE FROM answers WHERE at_ms < ?1", [now - ANSWER_KEPT_MS])?;
+            tx.execute(
+                "INSERT OR REPLACE INTO answers (key, digest, status, content_type, body, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![key, answer.digest, answer.status, answer.content_type, answer.body, now],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn put_machine(&self, machine: &MachineRow) -> Result<()> {
@@ -1643,6 +1681,15 @@ pub enum AskState {
     Pending,
     Done,
     Failed,
+}
+
+/// What a project write answered under its `Idempotency-Key`, and the digest of the ask (method, path and body).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answer {
+    pub digest: String,
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
 }
 
 /// One ask of a Hub: its key is the idempotency key the Hub gets, and `body` the exact bytes.
