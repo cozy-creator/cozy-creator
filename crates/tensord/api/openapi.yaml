@@ -197,6 +197,53 @@ paths:
         '503':
           description: '`machine_updating` or `machine_released`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+    get:
+      summary: >-
+        The runs this key reads, newest first, before the run numbered `before` (0, absent: the newest).
+      operationId: runs
+      parameters:
+        - {name: before, in: query, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, format: int32, minimum: 0}}
+      responses:
+        '200':
+          description: Its runs; on a rental its owner reads every one
+          content: {application/json: {schema: {$ref: '#/components/schemas/RunList'}}}
+  /v1/runs/batch:
+    post:
+      summary: >-
+        `run-batch/1` (cl-816): runs admitted as one. Each new one is accepted with the others before any
+        prepares, so the machine packs them together as `POST /v1/estimate` quoted them. Each is answered as
+        `POST /v1/runs` would answer it alone. `POST /v1/runs` is a batch of one. An update goes alone.
+      operationId: submit_batch
+      requestBody:
+        content: {application/json: {schema: {$ref: '#/components/schemas/RunBatch'}}}
+        required: true
+      responses:
+        '200':
+          description: Each run's state or refusal, in the order sent
+          content: {application/json: {schema: {$ref: '#/components/schemas/RunBatchAnswer'}}}
+        '400':
+          description: An invalid run id, or an update with other runs
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '503':
+          description: '`machine_updating` or `machine_released`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/estimate:
+    post:
+      summary: >-
+        `estimate/1` (cl-816): when each job would run here were the caller to send them all now, packed with the
+        machine's queue by the model its scheduler gives each root its width by. A quote: nothing is reserved.
+      operationId: estimate
+      requestBody:
+        content: {application/json: {schema: {$ref: '#/components/schemas/EstimateRequest'}}}
+        required: true
+      responses:
+        '200':
+          description: One quote per job, in its order
+          content: {application/json: {schema: {$ref: '#/components/schemas/EstimateAnswer'}}}
+        '400':
+          description: '`invalid_function`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/runs/{id}/cancel:
     post:
       summary: >-
@@ -802,6 +849,80 @@ components:
           description: >-
             0: a frame that is not in the log (the snapshot, progress before acceptance, live state).
           minimum: 0
+    Admitted:
+      type: object
+      description: One run of a batch, as `POST /v1/runs` would answer it alone.
+      properties:
+        created: {type: boolean, description: 'Accepted now; false: its id and spec already named it.'}
+        state: {$ref: '#/components/schemas/RunState'}
+        refusal: {$ref: '#/components/schemas/Error'}
+    Basis:
+      type: string
+      enum: [measured, prior, none]
+      description: 'What a quote''s time stands on: runs here, the caller''s `prior_ms`, or nothing (a minute).'
+    EstimateAnswer:
+      type: object
+      properties:
+        jobs: {type: array, items: {$ref: '#/components/schemas/Quote'}, description: One per job asked, in its order.}
+    EstimateJob:
+      type: object
+      properties:
+        key: {type: string, description: 'The caller''s name for it, answered back.'}
+        function:
+          type: string
+          description: >-
+            `org/package/function[@release]` (no release: any held here), or `sha256:<hex>/function`: local code
+            by its manifest's digest, which names the signer's installation of it here.
+        models: {type: array, items: {$ref: '#/components/schemas/ModelRef'}}
+        size: {$ref: '#/components/schemas/JobSize'}
+        gpus: {type: integer, format: int32, minimum: 0, description: 'The user''s GPU count; 0: the machine chooses.'}
+        prior_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 'The caller''s time for it on one GPU of this kind; 0: none. Used when no run of it here is timed.'
+    EstimateRequest:
+      type: object
+      properties:
+        jobs: {type: array, items: {$ref: '#/components/schemas/EstimateJob'}, description: In the order they would be sent.}
+    JobSize:
+      type: object
+      description: What a job makes, in the units its time scales with; each unknown one absent.
+      properties:
+        megapixels: {type: number}
+        frames: {type: integer, format: int64, minimum: 0}
+        steps: {type: integer, format: int64, minimum: 0}
+        tokens: {type: integer, format: int64, minimum: 0}
+    ModelRef:
+      type: object
+      properties:
+        commit: {type: string, description: '`sha256:<hex>`: a commit or header.'}
+        bytes: {type: integer, format: int64, minimum: 0, description: Its weights' bytes as the catalog lists them.}
+    Quote:
+      type: object
+      description: When one job would run here, in ms from the answer.
+      properties:
+        key: {type: string}
+        fits: {type: boolean}
+        refusal: {$ref: '#/components/schemas/Reason'}
+        width: {type: integer, format: int32, minimum: 0, description: 'The GPUs it would run on; 0: none.'}
+        start_ms: {type: integer, format: int64, minimum: 0}
+        finish_ms: {type: integer, format: int64, minimum: 0}
+        prepare_ms: {type: integer, format: int64, minimum: 0, description: 'Its install and weights'' fetch, part of `start_ms`.'}
+        queue_position: {type: integer, format: int32, minimum: 0}
+        basis: {$ref: '#/components/schemas/Basis'}
+    RunBatch:
+      type: object
+      properties:
+        runs: {type: array, items: {$ref: '#/components/schemas/RunRequest'}}
+    RunBatchAnswer:
+      type: object
+      properties:
+        runs: {type: array, items: {$ref: '#/components/schemas/Admitted'}, description: One per run sent, in its order.}
+    RunList:
+      type: object
+      properties:
+        runs: {type: array, items: {$ref: '#/components/schemas/RunState'}}
     RunKind: {type: string, enum: [call, warm, update, remove]}
     RunRequest:
       type: object
