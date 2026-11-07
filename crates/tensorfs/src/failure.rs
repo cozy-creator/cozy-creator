@@ -116,6 +116,7 @@ impl From<Refusal> for Failure {
             | AMBIGUOUS_CLASSIFICATION
             | UNREGISTERED_FINGERPRINT
             | CONVERTS_NOTHING
+            | UNPLACED_KEYS
             | MISSING_COMPANION_ROLE
             | ADAPTER_TARGET_UNSUPPORTED
             | CARRIER_HEADER_CAP
