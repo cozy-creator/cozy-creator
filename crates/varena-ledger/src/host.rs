@@ -14,12 +14,14 @@ pub const MACHINE_ROOM: u64 = GIB;
 /// The least a contained machine's processes keep free for growth between looks.
 const LEAST_HEADROOM: u64 = 512 << 20;
 
-/// What the computer keeps for programs outside cozy: a quarter of it, from 4 to 16 GiB, plus what
-/// its free swap is short of a quarter of its swap (a full swap takes nothing those programs push
-/// out). Live: swap moves.
-pub fn reserve() -> u64 {
+/// What stays free for programs outside cozy to grow into: a quarter of the memory in play for
+/// cozy (what it holds plus what is available), from 4 to 16 GiB, plus what free swap is short of a
+/// quarter of the swap (a full swap takes nothing those programs push out). What they hold now is
+/// theirs already and is never counted again: a desktop holding half of a 62 GiB laptop leaves the
+/// margin of a 31 GiB one. Live: both move.
+pub fn reserve(in_play: u64) -> u64 {
     let (swap, free) = host_memory::swap();
-    (host_memory::computer().unwrap_or(0) / 4).clamp(4 * GIB, 16 * GIB) + (swap / 4).saturating_sub(free)
+    (in_play / 4).clamp(4 * GIB, 16 * GIB) + (swap / 4).saturating_sub(free)
 }
 
 /// A contained machine's number and the reserve kept outside it: what it holds that the kernel
@@ -29,9 +31,22 @@ pub fn reserve() -> u64 {
 /// their tiers give pages back as they look, then the kernel takes page cache, then kills inside
 /// the machine. A run may fail; the computer stays up.
 pub fn machine(facts: &MachineFacts) -> (u64, u64) {
-    let reserve = reserve();
-    let max = (facts.held + facts.outside).saturating_sub(reserve).min(facts.computer.saturating_sub(reserve));
+    let in_play = facts.held + facts.outside;
+    let reserve = reserve(in_play);
+    let max = in_play.saturating_sub(reserve).min(facts.computer.saturating_sub(reserve));
     (max.max(facts.own + MACHINE_ROOM), reserve)
+}
+
+/// What cozy's executors hold that the kernel cannot take back, as each publishes it in the host's
+/// ledger page; 0 with no page.
+fn cozy_held() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        static TABLE: std::sync::OnceLock<Option<crate::Table>> = std::sync::OnceLock::new();
+        TABLE.get_or_init(|| crate::Table::open_host().ok()).as_ref().map_or(0, crate::Table::held)
+    }
+    #[cfg(not(target_os = "linux"))]
+    0
 }
 
 /// The number as one process sees it, from the tightest limit on its path.
@@ -64,13 +79,15 @@ impl Budget {
     }
 }
 
-/// The number now, for this process. Unreadable: no room at all.
+/// The number now, for this process. Unreadable: no room at all. Uncontained, the memory in play is
+/// what the host has available plus what cozy's executors hold (the host's ledger page).
 pub fn budget() -> Budget {
     let memory = host_memory::read();
-    let reserve = i64::try_from(reserve()).unwrap_or(i64::MAX);
     if memory.available < 0 || memory.bound <= 0 {
-        return Budget { total: 0, held: 0, charged: 0, headroom: 0, reserve };
+        return Budget::default();
     }
+    let in_play = u64::try_from(memory.available + memory.active).unwrap_or(0) + cozy_held();
+    let reserve = i64::try_from(reserve(in_play)).unwrap_or(i64::MAX);
     let held = (memory.bound - memory.available - memory.active).max(0);
     let computer = host_memory::computer().and_then(|computer| i64::try_from(computer).ok()).unwrap_or(memory.bound);
     let (total, headroom) = if memory.bound < computer {
