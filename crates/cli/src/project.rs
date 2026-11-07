@@ -536,7 +536,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     }
     let path = format!("/v1/projects/{}/imports", opened.id);
     let exact = args.name.is_some();
-    let ask = Import { source, name: args.name, at: None, description: args.description, exact, moves: Default::default(), seq: None };
+    let ask = Import { source, name: args.name, at: None, description: args.description, exact, moves: Default::default(), placed: Default::default() };
     let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&imported);

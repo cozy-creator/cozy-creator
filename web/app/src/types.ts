@@ -338,9 +338,9 @@ export interface Import {
   source: string
   name?: string
   at?: Row
-  /** What its drop pushed aside, written with it unless another wrote a row since `seq`. */
+  /** What its drop pushed aside, written with it unless another wrote a row since the revision `placed` gives it. */
   moves?: Record<string, Row>
-  seq?: number
+  placed?: Record<string, number>
   description?: string
   remove_background?: boolean
   on?: string

@@ -329,7 +329,7 @@ export class Client {
   }
 
   /** A tool dropped on the canvas. */
-  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown>; kind?: string; moves?: Record<string, Row>; seq?: number }, write: Write = {}): Promise<AssetMade> {
+  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown>; kind?: string; moves?: Record<string, Row>; placed?: Record<string, number> }, write: Write = {}): Promise<AssetMade> {
     return this.write("POST", `${project(id)}/assets`, body, key, write)
   }
 
@@ -418,9 +418,9 @@ export class Client {
     return this.json(`${project(id)}/canvas`, { signal })
   }
 
-  /** Rows set; one in `placed`, this page's own working, only if no other client wrote it after `seq`, else answered in `kept` as it is. */
-  moveCards(id: string, cards: Record<string, Row | null>, placed: string[], seq: number, write: Write = {}): Promise<{ seq: number; kept?: Record<string, Row | null> }> {
-    return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(placed.length ? { placed, seq } : {}) }, undefined, write)
+  /** Rows set; one in `placed`, this page's own working, only if no other client wrote it after the revision it was worked out from, else answered in `kept` as it is. */
+  moveCards(id: string, cards: Record<string, Row | null>, placed: Record<string, number>, write: Write = {}): Promise<{ seq: number; kept?: Record<string, Row | null> }> {
+    return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(placed).length ? { placed } : {}) }, undefined, write)
   }
 
   /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */

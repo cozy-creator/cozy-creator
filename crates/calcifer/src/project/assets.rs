@@ -90,7 +90,7 @@ pub(super) async fn create(
         if let Some(card) = asked.at {
             canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))]))?;
         }
-        let kept = canvas::pushed(folder, &id, asked.moves.clone(), asked.seq)?;
+        let kept = canvas::pushed(folder, &id, asked.moves.clone(), &asked.placed)?;
         folder.edit(|written| written.added(&name, &asked.tool, &asked.fields).map(drop))?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))?;
         Ok(AssetMade { name, etag, kept })

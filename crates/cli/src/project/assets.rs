@@ -132,7 +132,7 @@ pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Resul
     let tool = if args.tool == "text" { String::new() } else { args.tool };
     let calcifer = ctx.calcifer().await?;
     as_declared(&calcifer, &opened.id, &tool, &mut fields).await;
-    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None, moves: Default::default(), seq: None };
+    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None, moves: Default::default(), placed: Default::default() };
     let made: AssetMade = calcifer.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&made);

@@ -1,10 +1,7 @@
 //! Where a project's boxes sit: `project.db`'s `canvas` rows. Only the page reads them, and nothing in them is an input. A row says the
 //! revision and the client that last wrote it, so a place the page worked out from an older read can't clobber another's newer one (cl-800),
 //! checked inside the write's own transaction. Losing them loses only the arrangement.
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{
     Json,
@@ -40,14 +37,14 @@ pub(super) fn legacy_rows(text: &str) -> BTreeMap<String, Card> {
 
 /// These rows set, a none gone, and told to every stream once written. A name is one row in any case, with `_` and `-` alike.
 pub(super) fn set(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>) -> Result<(), Error> {
-    set_from(folder, id, changed, &BTreeSet::new(), None).map(drop)
+    set_from(folder, id, changed, &BTreeMap::new()).map(drop)
 }
 
-/// As `set`, but a row in `placed`, the page's own working, is set only if no other client wrote it after `since`: one that was is left as it
-/// is, and answered with what it is.
-fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, placed: &BTreeSet<String>, since: Option<u64>) -> Result<BTreeMap<String, Option<Card>>, Error> {
+/// As `set`, but a row in `placed`, a client's own working, is set only if no other client wrote it after the revision `placed` gives it,
+/// what it was worked out from: one that was is left as it is, and answered with what it is.
+fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, placed: &BTreeMap<String, u64>) -> Result<BTreeMap<String, Option<Card>>, Error> {
     let by = super::history::by_now();
-    let placed: BTreeSet<String> = placed.iter().map(|name| name_key(name)).collect();
+    let placed: BTreeMap<String, u64> = placed.iter().map(|(name, since)| (name_key(name), *since)).collect();
     folder.act(|| {
         let (applied, kept, was_there) = folder.edit_canvas(|rows| {
             let mut kept = BTreeMap::new();
@@ -56,7 +53,7 @@ fn set_from(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>, 
             for (name, card) in changed {
                 let key = name_key(&name);
                 let now = rows.get(&key);
-                let stands = placed.contains(&key) && now.is_some_and(|row| row.by != by && since.is_none_or(|since| row.seq > since));
+                let stands = placed.get(&key).is_some_and(|since| now.is_some_and(|row| row.by != by && row.seq > *since));
                 if stands {
                     kept.insert(name, now.map(|row| row.card));
                     continue;
@@ -125,19 +122,19 @@ pub(super) async fn patch(
 ) -> Result<Json<CanvasPatched>, Refusal> {
     let asked: CanvasPatch = parse(&body?)?;
     // Only rows it placed itself: the page arranging its own, which no one undoes.
-    if asked.cards.keys().all(|name| asked.placed.iter().any(|placed| name_key(placed) == name_key(name))) {
+    if asked.cards.keys().all(|name| asked.placed.keys().any(|placed| name_key(placed) == name_key(name))) {
         super::history::quiet();
     }
     let project = api.projects.get(&api, &id)?;
-    let kept = set_from(&project.folder, &id, asked.cards, &asked.placed.into_iter().collect(), asked.seq).map_err(Refusal)?;
+    let kept = set_from(&project.folder, &id, asked.cards, &asked.placed).map_err(Refusal)?;
     Ok(Json(CanvasPatched { seq: project.folder.seq(), kept }))
 }
 
-/// Rows a request makes beside its box, as one transaction with it: the push-aside of a drop (`moves`, worked out from revision `seq`).
-pub(super) fn pushed(folder: &Folder, id: &str, moves: BTreeMap<String, Card>, seq: Option<u64>) -> Result<BTreeMap<String, Option<Card>>, Error> {
+/// Rows a request makes beside its box, as one transaction with it: the push-aside of a drop (`moves`, each worked out from its revision in
+/// `placed`; one it doesn't give is the client's to set).
+pub(super) fn pushed(folder: &Folder, id: &str, moves: BTreeMap<String, Card>, placed: &BTreeMap<String, u64>) -> Result<BTreeMap<String, Option<Card>>, Error> {
     if moves.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let placed = moves.keys().cloned().collect();
-    set_from(folder, id, moves.into_iter().map(|(name, card)| (name, Some(card))).collect(), &placed, seq)
+    set_from(folder, id, moves.into_iter().map(|(name, card)| (name, Some(card))).collect(), placed)
 }

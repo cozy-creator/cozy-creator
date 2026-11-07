@@ -2073,7 +2073,7 @@ fn element_name(name: Option<&str>, source: &str) -> String {
 
 /// The element a kept file makes, in one transaction: one constant box more, under a name nothing has, with `at` its row, and what its drop pushed aside.
 #[allow(clippy::too_many_arguments)]
-fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, description: Option<&str>, file: folder::Kept, exact: bool, moves: BTreeMap<String, protocol::project::Card>, seq: Option<u64>) -> Result<Imported, Refusal> {
+fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, description: Option<&str>, file: folder::Kept, exact: bool, moves: BTreeMap<String, protocol::project::Card>, placed: &BTreeMap<String, u64>) -> Result<Imported, Refusal> {
     let folder = &project.folder;
     let made = folder.act(|| {
         let lock = folder.lock()?;
@@ -2086,7 +2086,7 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::proje
         if let Some(card) = at {
             canvas::set(folder, id, BTreeMap::from([(name.clone(), Some(card))]))?;
         }
-        let kept = canvas::pushed(folder, id, moves, seq)?;
+        let kept = canvas::pushed(folder, id, moves, placed)?;
         folder.edit(|written| {
             written.constant(&name, &file.file.sha256)?;
             if let Some(words) = description {
@@ -2149,7 +2149,7 @@ async fn import(
         }
     }
     let kept = keep_file(&api, folder, &asked.source).await?;
-    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, asked.seq)?;
+    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed)?;
     measure_soon(&api, &project);
     Ok(Json(answer))
 }

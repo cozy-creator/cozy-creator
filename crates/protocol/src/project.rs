@@ -256,11 +256,11 @@ pub struct Import {
     /// A person typed `name`: refused if the project has it, not numbered.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exact: bool,
-    /// What its drop pushed aside, written with it, each only if no other client wrote it after `seq` (`CanvasPatch::placed`).
+    /// What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub moves: BTreeMap<String, Card>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub placed: BTreeMap<String, u64>,
 }
 
 /// What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
@@ -286,15 +286,13 @@ pub struct Canvas {
     pub cards: BTreeMap<String, Card>,
 }
 
-/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins, but for a name in `placed`, the page's own working:
-/// its row is set only if no other client wrote it after `seq`, the revision it was worked out from, so it can't clobber a newer one (cl-800).
+/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins, but for a name in `placed`, the client's own working:
+/// its row is set only if no other client wrote it after the revision it was worked out from, so it can't clobber a newer one (cl-800).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CanvasPatch {
     pub cards: BTreeMap<String, Option<Card>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub placed: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub placed: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -613,11 +611,11 @@ pub struct NewAsset {
     /// What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    /// What its drop pushed aside, written with it, each only if no other client wrote it after `seq` (`CanvasPatch::placed`).
+    /// What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub moves: BTreeMap<String, Card>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub placed: BTreeMap<String, u64>,
 }
 
 /// What a write of an asset answers: its name, and what `If-Match` names from here on.

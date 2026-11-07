@@ -93,11 +93,11 @@ asks on a snapshot: the export of the boxes, kept in `asked` by its digest until
 
 ## Canvas: a precondition, not `was`
 
-`PATCH /canvas {cards, placed?, seq?}`. A person's row is set. A row in `placed` is the page's own working (a new box's place, a box
-pushed aside): it's set only if no other client wrote that row after `seq`, the revision the page worked from; else it stands, and is
-answered in `kept` as it is. This is checked in the transaction, so cl-800 holds with no value compare. A patch of only `placed` rows
-is the page arranging its own boxes: no entry. A push-aside drop sends its pushes with the box it makes (`moves` and `seq` on `POST
-/assets` and `/imports`): one request, one transaction, one entry. Reads and `canvas` events carry `seq`.
+`PATCH /canvas {cards, placed?: {name: seq}}`. A person's row is set. A row in `placed` is the page's own working (a new box's place, a
+box pushed aside), with the revision of what it was worked out from: it's set only if no other client wrote that row after that; else it
+stands, and is answered in `kept` as it is. This is checked in the transaction, so cl-800 holds with no value compare. A patch of only
+`placed` rows is the page arranging its own boxes: no entry. A push-aside drop sends its pushes with the box it makes (`moves` and
+`placed` on `POST /assets` and `/imports`): one request, one transaction, one entry. Reads and `canvas` events carry `seq`.
 
 ## Export and import
 

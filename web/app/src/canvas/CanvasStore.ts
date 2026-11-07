@@ -143,11 +143,11 @@ export interface CarriedFile {
   number?: number
 }
 
-/** Rows an edit pushed aside, sent with the box it makes: by name, the rows by node id, and the revision they were worked out from. */
+/** Rows an edit pushed aside, sent with the box it makes: by name, the rows by node id, and by name the revision each was worked out from. */
 export interface Pushes {
   moves: Record<string, Row>
   ids: Map<string, Row>
-  seq: number
+  placed: Record<string, number>
 }
 
 /** A deleted box: what it was, and where, to show again. */
@@ -333,6 +333,8 @@ export class CanvasStore {
   private movingEdits = new Map<string, Set<string>>()
   /** The newest revision of the canvas this page has heard, by a read or the stream: what its own placing is worked out from. */
   private canvasSeq = 0
+  /** For each row this page worked out itself, the revision of what it was worked out from: another's row written since stands. */
+  private movingSince = new Map<string, number>()
   private movesSoon = false
   private movesOwed = false
   private renames = new Map<string, string>()
@@ -775,9 +777,11 @@ export class CanvasStore {
   private async findHomes(elements: Placed[]) {
     if (!this.projectId) return
     let cards: Record<string, Row> = {}
+    let readSeq = this.canvasSeq
     try {
       const read = await this.client.canvas(this.projectId)
       this.heard(read.seq)
+      readSeq = read.seq
       cards = read.cards
     } catch (error) {
       if (!lost(error)) say("Couldn't read where things sit", error)
@@ -797,7 +801,7 @@ export class CanvasStore {
     for (const [name, row] of homes) rows.set(name, row)
     this.addNodes(left.map((element) => ({ element, row: homes.get(element.name)! })))
     // Each where there's room, if it's still without a row: one another writer gave it meanwhile stands.
-    for (const [name, row] of homes) this.move(name, row, null)
+    for (const [name, row] of homes) this.move(name, row, null, this.gesture, readSeq)
     if (nothingYet) this.onPlaced?.()
   }
 
@@ -1494,6 +1498,7 @@ export class CanvasStore {
       this.namesById.delete(id)
       this.moving.delete(id)
       this.movingFrom.delete(id)
+      this.movingSince.delete(id)
       this.movingEdits.delete(id)
     }
     this.masks.delete(name)
@@ -2467,7 +2472,7 @@ export class CanvasStore {
 
   /** Its row, written in its turn, with whatever else this turn moves. `from`: the page's own doing, worked out from that row (null: none), which
    * it's written over only if Calcifer still has it. A person's move, with none, is written whatever, and one pending makes what follows it so too. */
-  private move(name: string, row: Row, from?: Row | null, edit = this.gesture) {
+  private move(name: string, row: Row, from?: Row | null, edit = this.gesture, since?: number) {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
     if (!id) return
@@ -2476,8 +2481,14 @@ export class CanvasStore {
       this.joinStep(edit, [key])
       this.movingEdits.set(id, (this.movingEdits.get(id) ?? new Set()).add(edit))
     }
-    if (from === undefined) this.movingFrom.delete(id)
-    else if (!this.moving.has(id)) this.movingFrom.set(id, from)
+    if (from === undefined) {
+      this.movingFrom.delete(id)
+      this.movingSince.delete(id)
+      this.movingSince.delete(id)
+    } else if (!this.moving.has(id)) {
+      this.movingFrom.set(id, from)
+      this.movingSince.set(id, since ?? this.canvasSeq)
+    }
     this.masks.set(key, row)
     this.rows?.set(key, row)
     this.moving.set(id, row)
@@ -2512,7 +2523,8 @@ export class CanvasStore {
   /** What `edit` pushed aside and hasn't written, each by the name Calcifer has it under: sent with the box the edit makes, one request. */
   pushesFor(edit: string): Pushes {
     const ids = new Map([...this.moving].filter(([id]) => this.movingEdits.get(id)?.has(edit) && this.movingFrom.get(id) !== undefined && this.served.has(id)))
-    return { moves: Object.fromEntries([...ids].map(([id, row]) => [this.served.get(id)!, row])), ids, seq: this.canvasSeq }
+    const placed = Object.fromEntries([...ids.keys()].map((id) => [this.served.get(id)!, this.movingSince.get(id) ?? this.canvasSeq]))
+    return { moves: Object.fromEntries([...ids].map(([id, row]) => [this.served.get(id)!, row])), ids, placed }
   }
 
   /** Those went with their box: what's still that row is written, and what another wrote first stands. */
@@ -2523,6 +2535,7 @@ export class CanvasStore {
       const name = this.namesById.get(id) ?? ""
       this.moving.delete(id)
       this.movingFrom.delete(id)
+      this.movingSince.delete(id)
       this.movingEdits.delete(id)
       if (!((this.served.get(id) ?? name) in kept)) this.movedAt.set(name, at)
     }
@@ -2547,6 +2560,7 @@ export class CanvasStore {
       if (!from || !name || edits.size !== 1 || !edits.has(edit)) continue
       this.moving.delete(id)
       this.movingFrom.delete(id)
+      this.movingSince.delete(id)
       this.movingEdits.delete(id)
       this.masks.delete(name)
       this.movedAt.delete(name)
@@ -2568,13 +2582,14 @@ export class CanvasStore {
         sent = new Map([...this.moving].filter(([id]) => ready(id)))
         edits = new Map([...sent.keys()].map((id) => [id, new Set(this.movingEdits.get(id))]))
         const edit = [...new Set([...edits.values()].flatMap((held) => [...held]))].join(",") || undefined
-        const cards = [...sent].flatMap(([id, row]): [string, Row, Row | null | undefined][] => {
+        const cards = [...sent].flatMap(([id, row]): [string, Row, Row | null | undefined, string][] => {
           const name = this.served.get(id)
-          return name && this.namesById.has(id) ? [[name, row, this.movingFrom.get(id)]] : []
+          return name && this.namesById.has(id) ? [[name, row, this.movingFrom.get(id), id]] : []
         })
-        // What this page worked out itself stands aside for another's newer row (cl-800), checked in Calcifer's own transaction.
-        const placed = cards.flatMap(([name, , from]) => (from === undefined ? [] : [name]))
-        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards.map(([name, row]) => [name, row])), placed, this.canvasSeq, { once, edit, action }) : Promise.resolve(null)
+        // What this page worked out itself stands aside for another's newer row (cl-800), checked in Calcifer's own transaction: each
+        // by the revision it was worked out from.
+        const placed = Object.fromEntries(cards.flatMap(([name, , from, id]) => (from === undefined ? [] : [[name, this.movingSince.get(id) ?? this.canvasSeq]])))
+        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards.map(([name, row]) => [name, row])), placed, { once, edit, action }) : Promise.resolve(null)
       },
       done: (answer) => {
         this.movesOwed = false
@@ -2585,6 +2600,9 @@ export class CanvasStore {
           if (this.moving.get(id) === row) {
             this.moving.delete(id)
             this.movingFrom.delete(id)
+          this.movingSince.delete(id)
+            this.movingSince.delete(id)
+      this.movingSince.delete(id)
             this.movingEdits.delete(id)
             if (!((this.served.get(id) ?? name) in kept)) this.movedAt.set(name, at)
           } else for (const edit of edits.get(id) ?? []) this.movingEdits.get(id)?.delete(edit)
@@ -2604,6 +2622,8 @@ export class CanvasStore {
         for (const id of sent.keys()) {
           this.moving.delete(id)
           this.movingFrom.delete(id)
+          this.movingSince.delete(id)
+      this.movingSince.delete(id)
           this.movingEdits.delete(id)
           this.masks.delete(this.namesById.get(id) ?? "")
           this.movedAt.delete(this.namesById.get(id) ?? "")

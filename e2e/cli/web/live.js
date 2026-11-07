@@ -361,7 +361,7 @@ function linesOf(text, name) {
   await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => importYaml(folder, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
   const whole = yaml();
   let broken = '';
-  try { importYaml(folder, `${whole}\n  : [ this doesn't read\n`); } catch (error) { broken = String(error.stderr ?? error.message); }
+  try { importYaml(folder, `${whole}\n  : [ this doesn't read\n`); } catch (error) { broken = `${error.stdout ?? ''}${error.stderr ?? ''}${error.message}`; }
   check('broken_file_says_why', broken.includes('project_yaml'), broken);
   check('broken_file_keeps_the_canvas', (await box('live_b').count()) === 1 && yaml() === whole);
   await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => importYaml(folder, whole.replace('Hand words two', 'Mended'))));
