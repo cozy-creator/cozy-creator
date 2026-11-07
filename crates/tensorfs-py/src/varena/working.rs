@@ -45,6 +45,20 @@ pub(super) fn installed() -> bool {
     OWNER.load(Ordering::Acquire) != 0
 }
 
+/// What the card has now, as the split chooses by: capacity (the card or its cap, less what is
+/// outside our bytes), live working bytes, pinned and resident region bytes, and what maps free.
+#[pyfunction]
+fn _varena_room(py: Python<'_>, device: i32) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
+    let room = py.detach(|| { check()?; varena::working::room(device) }).map_err(|e| super::raise(py, e))?;
+    Ok([
+        ("capacity", room.capacity as u64),
+        ("working_live", room.working_live as u64),
+        ("pinned", room.pinned as u64),
+        ("weights_resident", room.weights_resident as u64),
+        ("free", room.free as u64),
+    ].into_iter().collect())
+}
+
 #[pyfunction]
 fn _varena_process_guard_status() -> String {
     let status = varena::process_guard_status();
@@ -833,6 +847,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = GIL_CHECK.set(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn() -> std::ffi::c_int>(address) });
     varena::set_host_lock_probe(|| GIL_CHECK.get().is_some_and(|check| unsafe { check() } != 0));
     module.add_function(wrap_pyfunction!(_varena_process_guard_status, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_room, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;

@@ -511,7 +511,9 @@ impl Recovery {
             cause: cache_owner::Cause::Allocation, generation: cache_owner::next_generation()?,
         }, bytes)?;
         let Some(request) = self.cache_request.as_ref() else { return Ok(false) };
-        if HOST_LOCK.get().is_some_and(|holds| holds()) {
+        // Owners whose callbacks take the host lock cannot run while this thread holds it; native
+        // ones can, so with only those this waits.
+        if HOST_LOCK.get().is_some_and(|holds| holds()) && cache_owner::hosted(device)? != 0 {
             return Ok(crate::released_bytes(device)? > before);
         }
         working::invalidate_current_phase(device, "cache_recovery")?;

@@ -82,14 +82,14 @@ fn device(error: io::cuda::Error) -> varena::Error {
 }
 
 /// Nothing went through this fill, or its read joined what did: no writer is left.
-fn decline(fill: varena::Fill) {
+pub(super) fn decline(fill: varena::Fill) {
     // SAFETY: as above; nothing was published.
     let region = unsafe { fill.abort_completed() };
     let _ = region.release_unready(); // Refused under a capture; reclaim takes them then.
 }
 
 /// A failed read: only a drain proves its writers done, and nothing unproven is released.
-fn abort(fill: varena::Fill, error: varena::Error) -> varena::Error {
+pub(super) fn abort(fill: varena::Fill, error: varena::Error) -> varena::Error {
     if let Err(drain) = io::drain(fill.device()) {
         let detail = format!("fill completion is unproven: {drain}");
         fill.target().poison(detail.clone());
@@ -100,7 +100,7 @@ fn abort(fill: varena::Fill, error: varena::Error) -> varena::Error {
     error
 }
 
-fn publish(fill: varena::Fill, consumer: Option<u64>) -> varena::Result<Option<varena::Pin>> {
+pub(super) fn publish(fill: varena::Fill, consumer: Option<u64>) -> varena::Result<Option<varena::Pin>> {
     // SAFETY: the read returned, which proves every byte landed, padding included.
     let pin = unsafe { fill.commit_completed() }?;
     Ok(match consumer {
