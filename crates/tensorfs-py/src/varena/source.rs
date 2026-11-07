@@ -273,11 +273,11 @@ impl Inner {
         Ok(())
     }
 
-    /// Where `other`'s stored bytes are now: its Region on this GPU, pinned while ready, else its
-    /// kept page.
+    /// Where `other`'s stored bytes are now: its Region on this GPU, pinned while ready (no use of
+    /// it: a copied page keeps its reclaim order), else its kept page.
     fn bytes_of(&self, other: &Arc<Inner>, device: i32) -> Option<Bytes> {
         if let Some(region) = other.region().upgrade() {
-            let pin = region.try_pin().ok().flatten().filter(|pin| pin.device() == device);
+            let pin = region.try_pin_unused().ok().flatten().filter(|pin| pin.device() == device);
             super::release_region(region);
             if let Some(pin) = pin {
                 return Some(Bytes::Card(pin));
