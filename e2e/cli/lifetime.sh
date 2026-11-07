@@ -122,14 +122,14 @@ if launch halted silent seconds:=600; then
 fi
 }
 
-# kept_install: the id of kept-gate's install once its build holds it (`installing kept-gate`), said each doubling wait
+# kept_install: the id of kept-gate's install once its build holds it (`installing local/kept-gate`), said each doubling wait
 # (attempt k/5, about 8 min in all: the machine's PyTorch layer may come first); nothing when it never does.
 kept_install() {
   local k at=15 start=$SECONDS id
   for k in 1 2 3 4 5; do
     while [ $((SECONDS - start)) -lt "$at" ]; do
-      id=$(cozy --json run ls --all --limit 20 2> /dev/null | jq -r 'first(.runs[]? | select(.target == "install kept-gate"
-        and .status == "in_progress" and ((.progress.stage // "") | startswith("installing kept-gate"))) | .id) // empty')
+      id=$(cozy --json run ls --all --limit 20 2> /dev/null | jq -r 'first(.runs[]? | select(.target == "install local/kept-gate"
+        and ("\(.progress.stage // "") \(.waiting // "")" | contains("installing local/kept-gate"))) | .id) // empty')
       [ -n "$id" ] && { echo "$id"; return 0; }
       kill -0 "$(cat "$OUT/kept.pid")" 2> /dev/null || return 1
       sleep 2
@@ -170,7 +170,7 @@ said() { [ -n "$2" ] && awk -v id="$2" -v words="$3" 'index($0, id) && index($0,
 # off the machine's disk (a provider token here; a Hub capability alike): the machine keeps the run as needs_access,
 # its sender's reattach sends that access again, and the same run prepares on and completes. Before, the machine
 # forgot such a run and Calcifer sent it again as a new one; any other sender found it gone (run_not_found).
-# Local code installs first, as its own run (`install kept-gate`) the CLI follows before it sends the call: its build
+# Local code installs first, as its own run (`install local/kept-gate`) the CLI follows before it sends the call: its build
 # backend holds that run in its preparation (installing) until the cell opens its gate, then the call runs.
 kept_preparing() {
 [ "$RUNNER_OS" = Linux ] || return 0
