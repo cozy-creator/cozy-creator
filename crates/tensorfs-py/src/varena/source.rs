@@ -53,6 +53,8 @@ pub(super) struct Inner {
     derive: Option<Py<PyAny>>,
     /// Its derive wrote nothing: the stored bytes are the page.
     plain: AtomicBool,
+    /// Its set's stored bytes were read ahead (`read_ahead`).
+    warmed: AtomicBool,
     reading: Mutex<Option<Arc<ReadControl>>>,
     region: Mutex<Weak<varena::Region>>,
 }
@@ -278,6 +280,31 @@ impl Inner {
         Ok(())
     }
 
+    /// Its set read ahead, once, at the first fill of one of its derives: every derive's stored
+    /// bytes no other set holds on the card or in a kept page (a LoRA view's factors beside its
+    /// resident base) are advised into the page cache at once, so the fills after this one, which
+    /// only their callers run, find them there instead of each waiting on the disk. The worker
+    /// never runs a derive's fill, so nothing else reads them ahead. The bytes advised.
+    fn read_ahead(self: &Arc<Self>) -> u64 {
+        let mut advised = 0;
+        for member in self.tier.members(&self.set) {
+            let pending = member.derive.is_some() && !member.plain.load(Ordering::Acquire);
+            if !pending || member.warmed.swap(true, Ordering::AcqRel) || Arc::ptr_eq(&member, self) {
+                continue;
+            }
+            let Some(stored) = &member.stored else { continue };
+            let held = self.tier.held(&member, &stored.items);
+            let cold: Vec<Item> = stored.items.iter().zip(held).filter(|(_, holders)| {
+                !holders.iter().any(|Held { source, .. }| {
+                    source.region().upgrade().is_some_and(|region| region.holds_contents())
+                        || source.page.as_ref().is_some_and(|key| self.tier.holds(key))
+                })
+            }).map(|(item, _)| item.clone()).collect();
+            advised += stored.local.will_need(&cold).unwrap_or(0);
+        }
+        advised
+    }
+
     /// Where `other`'s stored bytes are now: its Region on this GPU, pinned while ready (no use of
     /// it: a copied page keeps its reclaim order), else its kept page.
     fn bytes_of(&self, other: &Arc<Inner>, device: i32) -> Option<Bytes> {
@@ -407,27 +434,6 @@ impl varena::Source for PageSource {
         }
     }
 
-    /// A derive's Region, which only its caller fills: the stored bytes no other set holds on the
-    /// card or in a kept page (a LoRA's factors beside its resident base) are read into the page
-    /// cache while the use before it computes, so its fill finds them there.
-    fn warm(&self) {
-        let this = &self.0;
-        let Some(stored) = &this.stored else { return };
-        let began = Instant::now();
-        let held = this.tier.held(this, &stored.items);
-        let cold: Vec<Item> = stored.items.iter().zip(held).filter(|(_, holders)| {
-            !holders.iter().any(|Held { source, .. }| {
-                source.region().upgrade().is_some_and(|region| region.holds_contents())
-                    || source.page.as_ref().is_some_and(|key| this.tier.holds(key))
-            })
-        }).map(|(item, _)| item.clone()).collect();
-        if let Ok(advised) = stored.local.will_need(&cold) {
-            if advised != 0 {
-                this.row(advised, "warm", true, began);
-            }
-        }
-    }
-
     fn fill(&self, fill: varena::Fill, consumer: Option<u64>) -> varena::Result<Option<varena::Pin>> {
         let this = &self.0;
         let began = Instant::now();
@@ -451,6 +457,13 @@ impl varena::Source for PageSource {
         }
         if let (Some(key), Some(_)) = (&this.page, derive) {
             this.tier.expect(key.clone(), this);
+        }
+        if derive.is_some() && !this.warmed.swap(true, Ordering::AcqRel) {
+            let began = Instant::now();
+            let advised = this.read_ahead();
+            if advised != 0 {
+                this.row(advised, "warm", false, began);
+            }
         }
         if let Some(stored) = &this.stored {
             match this.read(stored, &fill, ahead) {
@@ -542,7 +555,8 @@ impl PySource {
         };
         let inner = Arc::new(Inner {
             tier: pages.tier.clone(), page, set, block, bytes, stored, derive,
-            plain: AtomicBool::new(false), reading: Mutex::new(None), region: Mutex::new(Weak::new()),
+            plain: AtomicBool::new(false), warmed: AtomicBool::new(false), reading: Mutex::new(None),
+            region: Mutex::new(Weak::new()),
         });
         if let Some(stored) = &inner.stored {
             pages.tier.place(&inner, &stored.items);
