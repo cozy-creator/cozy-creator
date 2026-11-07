@@ -1,6 +1,6 @@
 # e2e/cli/statedb.sh: Calcifer's own state is in state.db (cl-818), each cell through the CLI and Calcifer's HTTP, no machine or model.
 #   state_crash    Calcifer killed (kill -9) amid project opens, tool-list edits and sign-ins: each whole or absent, each one answered kept
-#   state_files    nothing in ~/.cozy/calcifer is a JSON store, and state.db is its owner's alone
+#   state_files    nothing in ~/.cozy/calcifer is a JSON store (blobs by hash stay files), and state.db is its owner's alone
 #   state_import   OLD=<dir>, an earlier Calcifer's files as its build wrote them: imported at the next start, then gone
 # Uses project.sh's `api` and projectdb.sh's `kill9` and `db_calcifer`.
 
@@ -25,7 +25,7 @@ state_files
 
 state_crash() {
 step "state.db: Calcifer killed amid project opens, tool-list edits and sign-ins: each whole or absent, each one answered kept"
-local S=$OUT/state-crash n=60 i w1 w2 w3 opened edited signed id path token
+local S=$OUT/state-crash n=60 many=3000 i w1 w2 w3 opened edited signed id path token
 mkdir -p "$S"
 db_calcifer
 # Each its own transaction: a project made and known; a tool off your list; a session from a code.
@@ -38,16 +38,16 @@ sign_one() {
 }
 : > "$S/opened" && : > "$S/edited" && : > "$S/signed"
 (for ((i = 1; i <= n; i++)); do open_one "$i" 2> /dev/null | jq -ce 'select(.id) | {id, path}' >> "$S/opened" || true; done) & w1=$!
-(for ((i = 1; i <= n; i++)); do edit_one "$i" 2> /dev/null | jq -ce --arg t "qwen-image-2/crash_$i" 'select(.without | index($t)) | $t' >> "$S/edited" || true; done) & w2=$!
-(for ((i = 1; i <= n; i++)); do sign_one "$i" 2> /dev/null | jq -ce 'select(.token)' >> "$S/signed" || true; done) & w3=$!
+(for ((i = 1; i <= many; i++)); do edit_one "$i" 2> /dev/null | jq -ce --arg t "qwen-image-2/crash_$i" 'select(.without | index($t)) | $t' >> "$S/edited" || true; done) & w2=$!
+(for ((i = 1; i <= many; i++)); do sign_one "$i" 2> /dev/null | jq -ce 'select(.token)' >> "$S/signed" || true; done) & w3=$!
 until { [ "$(wc -l < "$S/opened")" -ge 15 ] && [ "$(wc -l < "$S/edited")" -ge 15 ] && [ "$(wc -l < "$S/signed")" -ge 15 ]; } \
   || ! kill -0 "$w1" 2> /dev/null || ! kill -0 "$w2" 2> /dev/null || ! kill -0 "$w3" 2> /dev/null; do sleep 0.05; done
 kill9
 kill "$w1" "$w2" "$w3" 2> /dev/null || true
 wait "$w1" "$w2" "$w3" 2> /dev/null || true
 opened=$(wc -l < "$S/opened") edited=$(wc -l < "$S/edited") signed=$(wc -l < "$S/signed")
-echo "state crash: killed with $opened opens, $edited tool edits and $signed sign-ins answered, of $n each"
-{ [ "$opened" -lt "$n" ] || [ "$edited" -lt "$n" ] || [ "$signed" -lt "$n" ]; } || check "state crash: Calcifer was killed only after all were answered: nothing was mid-way"
+echo "state crash: killed with $opened of $n opens, $edited of $many tool edits and $signed of $many sign-ins answered"
+{ [ "$opened" -lt "$n" ] && [ "$edited" -lt "$many" ] && [ "$signed" -lt "$many" ]; } || check "state crash: Calcifer was killed after one kind was all answered: not amid all three"
 # As the kill left it, before any Calcifer opens it again.
 [ "$(state1 'PRAGMA integrity_check')" = ok ] || check "state crash: integrity: $(state 'PRAGMA integrity_check')"
 local torn=() lost=() rows
@@ -93,7 +93,8 @@ for id in $(jq -r --arg s "$S/" '.projects[] | select(.path | startswith($s)) | 
 state_files() {
 step "state.db: no JSON store in ~/.cozy/calcifer, and state.db its owner's alone"
 local dir=$HOME/.cozy/calcifer stores table
-stores=$(cd "$dir" && find . -name '*.json' ! -name refused.json | sort | paste -sd' ')
+# Blobs stay files, each named by its sha256 (`files/`, `local/`'s manifests): a store is a file of what changes.
+stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | sort | paste -sd' ')
 [ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
 [ ! -e "$dir/after" ] || check "state: $dir/after is still there: $(ls -A "$dir/after" | head -5 | paste -sd' ')"
 [ "$(stat -c %a "$dir/state.db")" = 600 ] || check "state: state.db is $(stat -c %a "$dir/state.db"), not 600"
@@ -109,9 +110,12 @@ state_import() {
 step "state.db: an earlier Calcifer's files imported at the first start, then gone"
 local dir=$HOME/.cozy/calcifer lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid name
 [ -d "${OLD:-}" ] || { check "state import: OLD names no folder of an earlier Calcifer's files"; return; }
-pid=$(jq -r .pid < "$lock")
-kill -TERM "$pid" 2> /dev/null || true
-while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
+# Stopped, if it runs: SIGTERM, as a service manager stops it.
+if curl -fsS -o /dev/null -H "Authorization: Bearer $(jq -r .token "$lock" 2> /dev/null)" "http://$(jq -r .address "$lock" 2> /dev/null)/v1/status" 2> /dev/null; then
+  pid=$(jq -r .pid < "$lock")
+  kill -TERM "$pid"
+  while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
+fi
 for name in projects.json sessions.json tools.json here.json checkpoints.json after; do
   [ ! -e "$OLD/$name" ] || cp -a "$OLD/$name" "$dir/"
 done
