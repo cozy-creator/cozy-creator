@@ -28,11 +28,10 @@ use crate::{
     store::RunRow,
 };
 
-/// Whether a machine older than this Calcifer failed for its age, which a newer TensorD doesn't: before 0.18.5, a package's floor on
-/// the Runtime, since then met in that package's own environment. uv says the same of a package with no lock.
-fn for_its_age(reason: &Reason) -> bool {
-    reason.code == "runtime_floor_unmet"
-        || (reason.code == "package_installation_uv_failed" && reason.message.contains("No solution found") && reason.message.contains("cozy-runtime"))
+/// Whether its TensorD says it meets a package's Runtime floor in that package's own environment (`ENV_RUNTIME`): one that does
+/// refuses a floor for the package's sake, never its own age.
+fn meets_floors(status: Option<&MachineStatus>) -> bool {
+    status.is_some_and(|status| status.capabilities.iter().any(|c| c == v1::ENV_RUNTIME))
 }
 
 /// The warning on the update run that brings a machine up, which is also said to whoever waits on it.
@@ -59,7 +58,8 @@ impl Machines {
     /// this cozy, going or done, the same one for everything that asks, said in one line. None: it isn't that, and the failure stands.
     /// A machine this computer's user doesn't own, a dev build, or one with work here isn't updated unasked: the refusal is the command.
     pub(crate) async fn brought_up(self: &Arc<Self>, name: &str, reason: &Reason) -> Result<Option<BroughtUp>, Error> {
-        if !for_its_age(reason) {
+        // A floor refused typed, by a machine that says it can't meet floors itself: its failure's words are never read.
+        if reason.code != "runtime_floor_unmet" {
             return Ok(None);
         }
         let m = self.show(name).await?;
@@ -68,7 +68,7 @@ impl Machines {
         // Once it has been asked, what it came to is the answer, though the machine is no longer older.
         let fresh = self.store().keyed(&key).map_err(internal)?.is_none();
         let running = m.status.as_ref().map_or("", |status| status.version.as_str());
-        if fresh && !newer(own, running) {
+        if fresh && (meets_floors(m.status.as_ref()) || !newer(own, running)) {
             return Ok(None);
         }
         // Its outcome's words already say the command; `next` does here.
@@ -279,9 +279,12 @@ impl Machines {
             if reason.next.is_empty() {
                 reason.next = commands(&reason.message);
             }
-            if for_its_age(reason)
+            if reason.code == "does_not_fit" && reason.next.is_empty() {
+                reason.next.push(format!("cozy run {} … --on new", row.target));
+            }
+            if reason.code == "runtime_floor_unmet"
                 && let Ok(m) = self.show(name).await
-                && let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version))
+                && let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version) && !meets_floors(Some(*status)))
             {
                 reason.message += &format!("; {name} runs cozy {}: `{}` brings it up", status.version, bring_up_command(name));
                 reason.next.insert(0, bring_up_command(name));
@@ -341,11 +344,12 @@ impl Machines {
     }
 }
 
-/// A release's first run on a machine older than this Calcifer, which may refuse what a newer one wouldn't: the install goes first, as
-/// local code's does, so a refusal stops short of the run and the machine can be brought up. The run or update going, if any.
+/// A release's first run on a machine older than this Calcifer that doesn't meet floors itself (`ENV_RUNTIME`), which may refuse what a
+/// newer one wouldn't: the install goes first, as local code's does, so a refusal stops short of the run and the machine can be brought
+/// up. The run or update going, if any.
 pub(crate) async fn release_first(api: &Arc<crate::api::Api>, key: &str, name: &str, hub: &str, package: &str, release: &str) -> Result<Option<Run>, Error> {
     let Ok(m) = api.machines.show(name).await else { return Ok(None) };
-    let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version)) else { return Ok(None) };
+    let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version) && !meets_floors(Some(*status))) else { return Ok(None) };
     if status.environments.iter().any(|env| env.package == package && env.release == release) {
         return Ok(None);
     }

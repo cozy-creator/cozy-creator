@@ -1,0 +1,1 @@
+A package release whose lock names another Runtime minor than the machine's now runs that minor's newest released patch (a lock on Runtime 0.41.0 runs 0.41.1, and TensorFS likewise), so it gets the fixes shipped since it was locked.

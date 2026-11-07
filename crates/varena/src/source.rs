@@ -19,6 +19,12 @@ pub trait Source: Send + Sync + 'static {
         false
     }
 
+    /// Whether a demand `fill` now reads, so what runs ahead stops first. One that only copies
+    /// on the card leaves it running: stopped, the next block's weights were read on demand.
+    fn reads(&self) -> bool {
+        true
+    }
+
     /// Stop a fill the worker is running, soon, from any thread. Never waits.
     fn stop(&self) {}
 }

@@ -168,35 +168,3 @@ class Source:
     @property
     def nbytes(self) -> int:
         return len(self.data)
-
-    def derive(self, dtype: str | torch.dtype) -> Source:
-        """Convert the entire typed CPU storage into a new immutable version.
-
-        Element strides and offsets survive dtype conversion. Existing Regions
-        and escaped aliases retain their original snapshot and native Pin.
-        """
-        import torch
-
-        target = normalize_dtype(dtype)
-        if target == self.dtype:
-            return self
-        old_size = dtype_descriptor(self.dtype)[1] // 8
-        new_size = dtype_descriptor(target)[1] // 8
-        if self.data:
-            # A private writable buffer avoids presenting immutable bytes as a
-            # mutable Torch tensor. Only the resulting immutable copy escapes.
-            values = torch.frombuffer(
-                bytearray(self.data), dtype=getattr(torch, self.dtype)
-            )
-            converted = values.to(dtype=getattr(torch, target))
-            storage = converted.untyped_storage()
-            data = ctypes.string_at(storage.data_ptr(), storage.nbytes())
-        else:
-            data = b""
-        return type(self).from_buffer(
-            data,
-            dtype=target,
-            shape=self.shape,
-            strides=self.strides,
-            byte_offset=self.byte_offset // old_size * new_size,
-        )

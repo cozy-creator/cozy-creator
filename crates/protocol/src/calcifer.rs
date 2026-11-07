@@ -1081,6 +1081,9 @@ pub struct MachineStatus {
     /// What it does for this controller's runs besides their own work, each once however many wait on it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<Operation>,
+    /// The protocol features its TensorD advertises (`machine::StatusFrame::capabilities`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 /// Weights arriving or a package's environment built on a machine (`machine::Operation`), and the runs waiting on it.

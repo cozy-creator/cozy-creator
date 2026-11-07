@@ -80,29 +80,6 @@ fn native_error(failure: Failure) -> Error {
     }
 }
 
-/// Same-cohort read-only event observations, including during a blocked reclaim.
-/// These are the existing Driver atomics, not completion or released-byte proof.
-/// Do not acquire capture exclusion or the device table: a waiter can hold both.
-#[doc(hidden)]
-pub fn gpu_event_counts(id: u64) -> crate::Result<(u64, u64, u64)> {
-    process().map_err(native_error)?;
-    let gpu = {
-        let handles = registry_unchecked().map_err(native_error)?;
-        let entry = handles
-            .get(&id)
-            .ok_or(Error::Invalid("invalid public Gpu handle"))?;
-        if entry.disposition != Disposition::Owned {
-            return Err(Error::Invalid("Gpu ownership has transferred"));
-        }
-        match &entry.value {
-            Handle::Gpu(gpu) => gpu.clone(),
-            _ => return Err(Error::Invalid("expected a public Gpu handle")),
-        }
-    };
-    let (_, queries, records, waits) = gpu.core.driver().calls();
-    Ok((queries, records, waits))
-}
-
 /// Clone a public Use's physical Pin and order its actual Source producer before
 /// exposing storage on the named explicit consumer stream. No new fill or Source
 /// callback is admitted here; the Use already owns a published or completed fill.

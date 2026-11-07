@@ -4039,6 +4039,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "varena",
+ "varena-ledger",
  "webpki-roots",
 ]
 
@@ -4058,6 +4059,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "varena",
+ "varena-ledger",
 ]
 
 [[package]]
@@ -4503,6 +4505,7 @@ name = "varena-ledger"
 version = "0.22.0"
 dependencies = [
  "libc",
+ "platform",
 ]
 
 [[package]]

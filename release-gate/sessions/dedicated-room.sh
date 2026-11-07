@@ -37,7 +37,7 @@ pause, rooms = [], 0
 for line in open(sys.argv[2]):
     t, _, body = line.partition(" ")
     rooms += '"event":"room"' in body
-    if a <= float(t) <= b and any(f'"event":"{e}"' in body for e in ("ended_for_room", "offload", "room", "end_idle")):
+    if a <= float(t) <= b and any(f'"event":"{e}"' in body for e in ("offload", "room", "end_idle")):
         pause.append(json.loads(body)["event"])
 loops = [l for l in second["measurements"]["execution"].get("loops", [])]
 print(json.dumps({"pause_s": round(b - a, 1), "pause_events": pause, "room_records": rooms,

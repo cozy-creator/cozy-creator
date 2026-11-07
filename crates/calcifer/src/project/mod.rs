@@ -2283,30 +2283,28 @@ async fn events(
     let told = going.into_iter().map(|event| Ok(sse::Event::default().json_data(&event).expect("an event serializes")));
     let stop = api.stop_signal();
     let stream = futures_util::stream::iter(told).chain(futures_util::stream::unfold((tail, boards, stop), |(mut tail, mut boards, mut stop)| async move {
-        loop {
-            // The board first: what the walk says last, it has already shown.
-            let event = tokio::select! {
-                biased;
-                changed = boards.changed() => match changed {
-                    Ok(()) => Ok(Event::Board { board: boards.borrow_and_update().clone() }),
-                    Err(_) => return None,
-                },
-                event = tail.recv() => event,
-                _ = stop.wait_for(|stopping| *stopping) => return None,
-            };
-            match event {
-                Ok(event) => {
-                    let sent = sse::Event::default().json_data(&event).expect("an event serializes");
-                    return Some((Ok(sent), (tail, boards, stop)));
-                }
-                // It fell behind: what it missed is in the board.
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let event = Event::Board { board: boards.borrow().clone() };
-                    let sent = sse::Event::default().json_data(&event).expect("an event serializes");
-                    return Some((Ok(sent), (tail, boards, stop)));
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
+        // The board first: what the walk says last, it has already shown.
+        let event = tokio::select! {
+            biased;
+            changed = boards.changed() => match changed {
+                Ok(()) => Ok(Event::Board { board: boards.borrow_and_update().clone() }),
+                Err(_) => return None,
+            },
+            event = tail.recv() => event,
+            _ = stop.wait_for(|stopping| *stopping) => return None,
+        };
+        match event {
+            Ok(event) => {
+                let sent = sse::Event::default().json_data(&event).expect("an event serializes");
+                return Some((Ok(sent), (tail, boards, stop)));
             }
+            // It fell behind: what it missed is in the board.
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                let event = Event::Board { board: boards.borrow().clone() };
+                let sent = sse::Event::default().json_data(&event).expect("an event serializes");
+                return Some((Ok(sent), (tail, boards, stop)));
+            }
+            Err(broadcast::error::RecvError::Closed) => return None,
         }
     }));
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
