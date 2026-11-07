@@ -104,6 +104,12 @@ pub(super) fn kill(handle: &Handle, _: &Birth) -> io::Result<()> {
 
 pub(super) fn background_thread() {}
 
+pub(super) fn background_process() {
+    use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass};
+    // SAFETY: the pseudo-handle of this process, always valid. Processes it starts inherit the class.
+    unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) };
+}
+
 pub(super) fn set_name(_: &str) -> crate::Result<()> {
     Err(crate::Error::unsupported(crate::Seam::Process))
 }

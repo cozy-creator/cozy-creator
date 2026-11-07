@@ -147,7 +147,12 @@ pub fn version() -> io::Result<()> {
 /// Runs the machine from its grant: identity and readiness under the machine root, the engine
 /// under `var/lib/cozy/tensord`, the API on the granted port.
 fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Ready) -> io::Result<()> {
-    let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, endpoint, logs, .. } = config;
+    let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, .. } = config;
+    // A shared computer's own programs come first: from this thread, before the runtime's, the
+    // background priority reaches every thread and process the machine starts (executors too).
+    if mode == protocol::config::MachineMode::Shared {
+        platform::process::background_process();
+    }
     let runtime = machine_runtime()?;
     use crate::machine::{identity, receipt};
     let layout = grant.layout.clone();
@@ -277,6 +282,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             "problems": gpu_problems,
             "authorized_device_limit_bytes": null,
             "gpu_memory_limit": gpu_memory_limit,
+            "display_pace": display_pace,
             "environment": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": home, "COZY_HOME": home},
             // `machine.mode`, else a rented pod is the machine's alone and anywhere else it is a guest.
             "host": {"mode": mode.name()},
