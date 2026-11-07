@@ -911,6 +911,8 @@ struct Device {
     /// What its executors hold and ask for. They and it meet here without any wire.
     #[cfg(target_os = "linux")]
     ledger: Option<Arc<varena_ledger::Table>>,
+    /// Open while it drove a display at the pool's start: its use is read for each request.
+    display: Option<platform::gpu::Device>,
 }
 
 impl Device {
@@ -988,6 +990,10 @@ impl Pool {
                 .and_then(|uuid| varena_ledger::Table::open(&uuid)
                     .map_err(|error| tracing::warn!("GPU {entry} has no ledger: {error}")).ok())
                 .map(Arc::new),
+            display: memory::row(entry, &config.inventory)
+                .and_then(|row| platform::gpu::Device::open(&row.device_uuid).ok())
+                .filter(|device| device.display_active().unwrap_or(false))
+                .inspect(|_| tracing::info!("GPU {entry} drives a display: each run keeps free what it uses plus {} MiB", DISPLAY_MARGIN >> 20)),
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
         let running = memory::Running::default();
@@ -1359,14 +1365,15 @@ impl Pool {
             self.end_idle_parents(|key| !members.contains(key));
         }
     }
-    /// The limit of each GPU of `lane` that drives a display now, in its order: its total less
-    /// what the display keeps free ([`DISPLAY_MARGIN`]); empty when none does (a pod). Read at
-    /// Start and again for each request.
+    /// The limit of each GPU of `lane` that drove a display at the pool's start, in its order:
+    /// its total less what the display keeps free ([`DISPLAY_MARGIN`]); empty when none does (a
+    /// pod, which reads nothing). Read at Start and again for each request.
     fn display_limit(&self, lane: &str) -> Vec<u64> {
         let limits: Vec<u64> = lane.split(',').map(|entry| {
-            let Some(gpu) = memory::row(entry.trim(), &self.config.inventory) else { return 0 };
-            let display = platform::gpu::Device::open(&gpu.device_uuid).and_then(|device| device.display_use());
-            let Ok(Some(used)) = display else { return 0 };
+            let entry = entry.trim();
+            let Some(device) = self.devices.iter().find(|d| d.entry == entry).and_then(|d| d.display.as_ref()) else { return 0 };
+            let Some(gpu) = memory::row(entry, &self.config.inventory) else { return 0 };
+            let Ok(Some(used)) = device.display_use() else { return 0 };
             let reserve = (used + DISPLAY_MARGIN).max(DISPLAY_FLOOR);
             let limit = gpu.memory_bytes.saturating_sub(reserve);
             tracing::debug!("GPU {entry} drives a display using {} MiB: a run uses at most {} of its {} MiB", used >> 20, limit >> 20, gpu.memory_bytes >> 20);
