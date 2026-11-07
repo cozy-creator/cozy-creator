@@ -175,7 +175,7 @@ pub fn router(api: Arc<Api>) -> Router {
         )
         .route("/v1/session-codes", post(crate::sessions::code))
         .route("/v1/session", delete(crate::sessions::end))
-        .merge(crate::project::routes())
+        .merge(crate::project::routes(&api))
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
