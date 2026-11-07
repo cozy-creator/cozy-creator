@@ -1578,7 +1578,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     if matches!(result, Err(Error::OutOfMemory { .. })) {
         let mut state = owner.lock()?;
         state.stats.ooms += 1;
-        state.escapes.refused(owner.owned().saturating_add(bytes));
+        state.escapes.refused(owner.owned().saturating_add(bytes), escape::room_held(owner));
     }
     result
 }
