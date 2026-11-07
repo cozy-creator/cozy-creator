@@ -28,6 +28,8 @@ use reqwest::{RequestBuilder, Response, StatusCode, header};
 
 /// `calcifer::api::IGNORED_FIELDS`: the request fields Calcifer did not read.
 const IGNORED_FIELDS: &str = "cozy-ignored-fields";
+/// What a write is asked under: every send of one call is the same ask, done once (cl-812).
+const KEY: &str = "Idempotency-Key";
 /// A machine that answers no connect, and the seconds before each further attempt at it.
 const UNREACHABLE: &str = "machine_unreachable";
 const UNREACHABLE_WAITS: [u64; 4] = [3, 6, 12, 24];
@@ -146,7 +148,7 @@ impl Client {
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        self.asked_again(Error::hub_transient, || self.exchange(|c, base| c.get(format!("{base}{path}")))).await
+        self.asked_again(Error::hub_transient, || self.exchange(false, |c, base| c.get(format!("{base}{path}")))).await
     }
 
     pub async fn get_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
@@ -154,7 +156,7 @@ impl Client {
         Q: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        self.asked_again(Error::hub_transient, || self.exchange(|c, base| c.get(format!("{base}{path}")).query(query))).await
+        self.asked_again(Error::hub_transient, || self.exchange(false, |c, base| c.get(format!("{base}{path}")).query(query))).await
     }
 
     /// A POST; `key` is its `Idempotency-Key`, so a retry is the same ask, as a quote is one that buys
@@ -166,7 +168,11 @@ impl Client {
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        match key.is_some() || path.ends_with("-quotes") {
+        let again = key.is_some() || path.ends_with("-quotes");
+        // Unnamed, the call's own: what it sends again of itself (a dropped answer, a restarted Calcifer) is the same ask.
+        let minted = write_key();
+        let key = key.unwrap_or(&minted);
+        match again {
             true => self.asked_again(|e| e.code == UNREACHABLE || e.hub_transient(), || self.posted(path, body, key)).await,
             false => self.posted(path, body, key).await,
         }
@@ -191,32 +197,27 @@ impl Client {
         })
     }
 
-    async fn posted<B, T>(&self, path: &str, body: &B, key: Option<&str>) -> Result<T, Error>
+    async fn posted<B, T>(&self, path: &str, body: &B, key: &str) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        self.exchange(|c, base| {
-            let request = c.post(format!("{base}{path}")).json(body);
-            match key {
-                Some(key) => request.header("Idempotency-Key", key),
-                None => request,
-            }
-        })
-        .await
+        self.exchange(true, |c, base| c.post(format!("{base}{path}")).json(body).header(KEY, key)).await
     }
 
-    /// A PUT: idempotent by its path.
+    /// A PUT: idempotent by its path, and under its call's key too.
     pub async fn put<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        self.exchange(|c, base| c.put(format!("{base}{path}")).json(body)).await
+        let key = write_key();
+        self.exchange(true, |c, base| c.put(format!("{base}{path}")).json(body).header(KEY, &key)).await
     }
 
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        self.exchange(|c, base| c.delete(format!("{base}{path}"))).await
+        let key = write_key();
+        self.exchange(true, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key)).await
     }
 
     pub async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
@@ -224,16 +225,18 @@ impl Client {
         Q: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        self.exchange(|c, base| c.delete(format!("{base}{path}")).query(query)).await
+        let key = write_key();
+        self.exchange(true, |c, base| c.delete(format!("{base}{path}")).query(query).header(KEY, &key)).await
     }
 
-    /// A PATCH: the fields `body` names, changed.
+    /// A PATCH: the fields `body` names, changed, under its call's key.
     pub async fn patch<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        self.exchange(|c, base| c.patch(format!("{base}{path}")).json(body)).await
+        let key = write_key();
+        self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key)).await
     }
 
     /// A plain-text answer, such as a log.
@@ -243,13 +246,14 @@ impl Client {
     }
 
     /// One request whose answer is read as `T`. An answer showing this Calcifer is older than this
-    /// cozy (a route it does not serve, or an answer without fields this cozy reads) restarts it
-    /// once, the normal way, and asks again: every request is safe to send again (reads, keyed
-    /// asks, cancels). One that still lacks it is refused as outdated, never as a bare 404. Request
-    /// fields it did not read (`Cozy-Ignored-Fields`) were an ask it carried out without them: said,
-    /// and Calcifer restarted for the next command, never sent again.
+    /// cozy (a route it does not serve, a body it can't read, or a read's answer without fields this
+    /// cozy reads) restarts it once, the normal way, and asks again: none of those carried anything
+    /// out. A `write` that succeeded is never sent again: an answer it can't read, or request fields
+    /// it did not read (`Cozy-Ignored-Fields`), is said, and Calcifer restarted for the next command.
+    /// One that still lacks it is refused as outdated, never as a bare 404.
     async fn exchange<T: DeserializeOwned>(
         &self,
+        write: bool,
         build: impl Fn(&reqwest::Client, &str) -> RequestBuilder,
     ) -> Result<T, Error> {
         let mut restarted = false;
@@ -265,6 +269,13 @@ impl Client {
                             self.restart(&lacks).await?;
                         }
                         return Ok(value);
+                    }
+                    Err(e) if self.other_version() && write => {
+                        let lacks = format!("answers without what this cozy reads ({e})");
+                        self.say(&format!("{}; it carried out the ask, which isn't sent again", self.lacking(&lacks)));
+                        self.restart(&lacks).await?;
+                        let said = format!("Calcifer carried this out and answered in a shape this cozy doesn't read: {e}");
+                        return Err(Error::new(Kind::Internal, "answer_unreadable", said));
                     }
                     Err(e) if self.other_version() => format!("answers without what this cozy reads ({e})"),
                     Err(e) => {
@@ -1147,4 +1158,11 @@ impl Steps {
         }
         self.since = Instant::now();
     }
+}
+
+/// A write's own `Idempotency-Key`, made once per call.
+fn write_key() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the OS has randomness");
+    format!("cli-{}", hex::encode(bytes))
 }

@@ -15,13 +15,15 @@ answers, and restarts it when it runs another cozy than the installed one.
 Calcifer and the CLI are one binary, but a running Calcifer can be older than a freshly updated CLI. The CLI
 reads an answer that shows this as a version skew and never shows it as a bare 404 (`calcifer_client.rs`,
 `Client::exchange` and `Client::opened`, behind every `get`, `post`, `delete`, `text` and `watch`):
-- from a Calcifer of another version, a route it does not serve (`404 unknown_route`), an answer without fields
-  the CLI reads, or a request body it cannot read (`400 body_invalid`, the CLI's newer shape): the CLI says so,
-  restarts Calcifer on the installed cozy and asks once more. From a Calcifer of the CLI's own version these are
+- from a Calcifer of another version, a route it does not serve (`404 unknown_route`), a request body it cannot
+  read (`400 body_invalid`, the CLI's newer shape), or a read's answer without fields the CLI reads: the CLI says
+  so, restarts Calcifer on the installed cozy and asks once more. From a Calcifer of the CLI's own version these are
   refused as they are: a restart could not help. If the restarted Calcifer is the same version,
   it refuses with `calcifer_outdated` and the remedy (`cozy update`).
 - request fields Calcifer did not read: Calcifer names them in `Cozy-Ignored-Fields`. The ask was carried out
   without them, so it is never sent again; the CLI says so and restarts Calcifer for the next command.
+- a write's `2xx` whose answer the CLI can't read: it was carried out, so it is never sent again either
+  (`answer_unreadable`); the CLI restarts Calcifer for the next command.
 
 ## Security
 
@@ -59,6 +61,12 @@ one key is one ask, however often it is sent (`409 idempotency_conflict` when a 
 It answers `202` with the resource as it stands, or `200` when the key had already made it. Work that goes on
 after the answer is followed on the resource's events stream; a POST never answers with a stream. Content that
 names itself (files by `sha256:`) is written with an idempotent PUT instead.
+
+**Every project write can be sent again.** A POST, PATCH, PUT or DELETE under `/v1/projects/` that carries an
+`Idempotency-Key` is done once: the same key and the same ask (method, path and body) again is answered what it was
+the first time, with `Idempotent-Replayed: true`, across a restart too (kept a day in `state.db`), and one still going
+is waited for. The same key for another ask is `409 idempotency_conflict`. The CLI makes one key per call and the
+page one per outbox action and ask, so a resent undo steps once and a resent discard is no `404`.
 
 **Lists.** A list answers an object holding the plural field (`{"runs": [...]}`), newest first, with `limit`
 (default 50, at most 1000) and `before` (the last id or number seen) for the next page, and how many more match
