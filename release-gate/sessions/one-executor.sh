@@ -11,7 +11,6 @@
 #   gpus        GPUs rented, and the H3 cells' group (1)
 #   only        the cells, comma-separated (default: every cell)
 #   models      downloaded first, so no arm's call waits on its weights
-#   traffic_gb  GB the provider bills (75)
 #   need_s      seconds the guard must buy (4500)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -64,7 +63,7 @@ EOF
 )
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh; [ "$GPUS" = 1 ] || RENT_ARGS="--ssh --gpus $GPUS"
-quote "$(param traffic_gb 75)" "$(param need_s 4500)"
+quote "$(param need_s 4500)"
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done

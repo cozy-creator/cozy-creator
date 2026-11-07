@@ -81,7 +81,7 @@ export function OnMachine<Body extends object, Answer>({
 
   const needsPrice = isNew(on) && !current
   const stated = current?.answer
-  const priced = stated && `${stated.gpus ?? 1}× ${stated.sku.toUpperCase()} at ${usd(stated.quote.gpu_usd_micros_per_hour)}/h`
+  const priced = stated && `${stated.gpus ?? 1}× ${stated.sku.toUpperCase()} at ${usd(stated.quote.usd_micros_per_hour)}/h`
   const busy = pricing.busy || sending.busy
   const blocked = disabled || busy || !on || (isNew(on) && Boolean(stated) && !stated?.quote.agreed)
 

@@ -7,7 +7,6 @@
 #   4. every run completes; the pod's clock against the Hub's, and its redemptions, from its log.
 # The throwaway models are deleted after. params:
 #   download_mb  the downloaded commit's size (2048): long enough for the upload to land while it downloads
-#   traffic_gb   GB the provider bills: the image, the session's cozy and the download (14)
 . "$(dirname "$0")/lib.sh"
 MB=$(param download_mb 2048)
 TS=$(date -u +%m%d%H%M) A=$(cozy --json whoami | jq -r .account)
@@ -26,7 +25,7 @@ records() { grep '^{' "$OUT/$1"; }
 commit() { records "$1.txt" | jq -r 'select(.type? == "run.completed") | .run.result.models[0].published.commit // empty' | tail -1; }
 settled() { records "$1" | jq -r 'select(.run.settled_at_ms?) | .run.settled_at_ms' | tail -1; }
 cleanup() { rm -rf "$W"; for m in $MD $MU; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
-quote "$(param traffic_gb 14)" 1800
+quote 1800
 rent
 trap 'cleanup; finish' EXIT
 
