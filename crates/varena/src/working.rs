@@ -1858,6 +1858,20 @@ fn record_stream_any_inner(ptr: u64, stream: u64) -> Result<()> {
 
 /// Forget a stream only after its owner stopped submissions and synchronized it, before
 /// destroying its handle. Live tensors may outlive the stream; new uses need record_stream.
+/// Seals what a public client just stamped on its own stream (`Fences::seal`), on its thread: no
+/// later poll records on a stream it may destroy next (public-priority's take, SIGSEGV in the donor's
+/// cuEventRecord after its owner destroyed the stream it freed on, 1 exit in 5 on a 5090).
+pub fn seal_stream(device: i32, stream: u64) -> Result<()> {
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
+    let _state = owner.lock()?;
+    let _context = owner.driver().enter()?;
+    owner.fences().seal(owner.driver(), stream)
+}
+
 pub fn retire_stream(device: i32, stream: u64) -> Result<()> {
     valid_stream(stream)?;
     if stream == 0 || stream == 1 {
