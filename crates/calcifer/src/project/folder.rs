@@ -766,6 +766,8 @@ struct Shared {
     collecting: Mutex<()>,
     /// `project.db` and what it holds, read once and kept as each commit leaves it.
     held: Mutex<Option<Held>>,
+    /// A checkpoint is going.
+    checkpointing: std::sync::atomic::AtomicBool,
 }
 
 struct Held {
@@ -775,6 +777,8 @@ struct Held {
     stored: Stored,
     /// How `files/` stood when the lock's table was filled from it.
     files: String,
+    /// Commits since the last checkpoint began.
+    commits: u32,
 }
 
 static SHARED: LazyLock<Mutex<HashMap<PathBuf, Arc<Shared>>>> = LazyLock::new(Mutex::default);
@@ -786,6 +790,8 @@ fn shared(dir: &Path) -> Arc<Shared> {
 
 /// A write that took this long, waiting and held, is said, with how long each took.
 const SLOW_MS: f64 = 5.0;
+/// How many commits go to the WAL before a checkpoint moves them into the database, beside the writes.
+const CHECKPOINT_EVERY: u32 = 200;
 
 fn ms(since: Instant) -> f64 {
     since.elapsed().as_secs_f64() * 1000.0
@@ -917,7 +923,7 @@ impl Folder {
             let mut stored = db::load(&conn, &self.db())?;
             let files = super::stamp(&self.dir.join(FILES));
             self.fill(Arc::make_mut(&mut stored.lock), &stored.measured);
-            *held = Some(Held { seen: db::data_version(&conn), conn, stored, files });
+            *held = Some(Held { seen: db::data_version(&conn), conn, stored, files, commits: 0 });
         }
         let now = super::stamp(&self.dir.join(FILES));
         if let Some(held) = held.as_mut().filter(|held| held.files != now) {
@@ -1001,6 +1007,15 @@ impl Folder {
             held.stored = after;
             held.files = files;
             held.seen = db::data_version(&held.conn);
+            held.commits += u32::from(seq.is_some());
+            if held.commits >= CHECKPOINT_EVERY && !self.shared.checkpointing.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                held.commits = 0;
+                let (shared, path) = (self.shared.clone(), self.db());
+                std::thread::spawn(move || {
+                    db::checkpoint(&path);
+                    shared.checkpointing.store(false, std::sync::atomic::Ordering::Release);
+                });
+            }
             seq
         };
         super::history::committed(self, entry);

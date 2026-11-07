@@ -128,6 +128,8 @@ pub fn open(path: &Path) -> Result<Connection, Error> {
     conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(e)?;
     conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
     conn.pragma_update(None, "synchronous", "NORMAL").map_err(e)?;
+    // Checkpoints run beside the writes (`checkpoint`), never in a commit: on a busy disk one's fsync takes a second.
+    conn.pragma_update(None, "wal_autocheckpoint", 0).map_err(e)?;
     match conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).map_err(e)? {
         0 => {
             conn.execute_batch(&format!("BEGIN IMMEDIATE; {SCHEMA}; PRAGMA user_version = {VERSION}; INSERT INTO meta VALUES ('seq', '0'); COMMIT;")).map_err(e)?;
@@ -426,6 +428,14 @@ pub fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, Str
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| err(path, e))?;
     drop(conn);
     Ok(())
+}
+
+/// What the WAL holds moved into the database, from a connection of its own, as far as readers let it: writes go on meanwhile.
+pub fn checkpoint(path: &Path) {
+    let done = Connection::open(path).and_then(|conn| conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(())));
+    if let Err(error) = done {
+        tracing::warn!("{}: checkpoint: {error}", path.display());
+    }
 }
 
 /// A copy of the database as it stands, whole in one file: what an archive carries.

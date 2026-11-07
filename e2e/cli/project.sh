@@ -43,7 +43,7 @@ yaml_in() {
   fi
 }
 # hand <project> <perl s///>: its export edited and read back, as a hand edits a project now.
-hand() { cozy project -p "$1" export > "$1.hand.yaml" && edited "$1.hand.yaml" "$2" && yaml_in "$1" < "$1.hand.yaml"; }
+hand() { { cozy project -p "$1" export > "$1.hand.yaml" && edited "$1.hand.yaml" "$2" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's edit of $1 failed"; }
 # db_replace <project> <from> <to>: each row of its versions with `from` in it says `to`, written past Calcifer, as a damaged file was.
 db_replace() {
   python3 - "$1/project.db" "$2" "$3" <<'PY'

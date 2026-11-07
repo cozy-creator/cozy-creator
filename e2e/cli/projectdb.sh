@@ -116,7 +116,7 @@ cat > "$F/.history.json" <<'JSON'
 JSON
 printf '{}' > "$F/.measured.json"; printf '{}' > "$F/.keys.json"
 cozy project -p "$F" status > "$OUT/db-legacy.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/db-legacy.txt")"
-local left; left=$(cd "$F" && ls -A | grep -vxE 'files|project\.db(-wal|-shm)?' | tr '\n' ' ')
+local left; left=$(cd "$F" && ls -A | grep -vxE 'files|project\.db(-wal|-shm)?' | tr '\n' ' ' || true)
 echo "first open: the folder now holds $(cd "$F" && ls -A | tr '\n' ' ')"
 [ -f "$F/project.db" ] && [ -z "$left" ] || check "first open: project.db made and the files gone, but it holds: ${left:-no project.db}"
 J '[.versions[].number] == [1, 2] and .discarded == [3]' <<< "$(held "$F" shot)" || check "first open: shot's takes: $(held "$F" shot | jq -c '{v: [.versions[].number], d: .discarded}')"
@@ -269,7 +269,7 @@ cozy project -p "$R" export | cmp -s - "$OUT/db-roundtrip-1.yaml" || check "roun
 perl -pe 's/aspect_ratio: "16:9"/aspect_ratio: "4:3"/ if $. < 12; s/^  art:/  painting:/; s/<art>/<painting>/g' "$OUT/db-roundtrip-1.yaml" | perl -0pe 's/\n  coast:\n(    .*\n)+//' > "$OUT/db-roundtrip-2.yaml"
 printf '\n  added:\n    text: New words.\n' >> "$OUT/db-roundtrip-2.yaml"
 (cd "$R" && cozy project import "$OUT/db-roundtrip-2.yaml" > "$OUT/db-roundtrip-import.txt" 2>&1) || check "roundtrip: import of the edit: $(tail -c 300 "$OUT/db-roundtrip-import.txt")"
-after=$(status "$R")
+after=$(status "$R" || true)
 J '.assets | map(.name) | (index("painting") != null) and (index("art") == null) and (index("coast") == null) and (index("added") != null)' <<< "$after" || check "roundtrip: after the edit: $(jq -c '[.assets[].name]' <<< "$after")"
 J '.versions | length == 2' <<< "$(held "$R" painting)" || check "roundtrip: the renamed box's versions: $(held "$R" painting | jq -c '[.versions[]?.number]')"
 [ "$(cozy --json project -p "$R" history | jq '.entries | length')" = $((before + 1)) ] || check "roundtrip: the import is not one entry: $(cozy --json project -p "$R" history | jq -c '[.entries[].words]')"
