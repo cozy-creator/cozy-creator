@@ -111,6 +111,29 @@ function linesOf(text, name) {
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
   // The page reads its list again as that install ends, with no reload.
   await until('the page lists it', () => page.evaluate(() => Boolean(document.querySelector('.tools li.tool[data-tool$="/boxes.py/shot"]'))), Boolean);
+  // The list is by package (Paul, 11-06): each one a heading in its own words, once, and under it what each of its tools does there.
+  const listed = () => page.evaluate(() => [...document.querySelectorAll('.tools .tool-groups section')].map((section) => ({
+    package: section.dataset.package,
+    title: section.querySelector('h4').textContent,
+    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ id: row.dataset.tool, label: row.querySelector('b').textContent })),
+  })));
+  const ours = (list) => list.filter((one) => one.tools.some((row) => row.id.startsWith(fixture)));
+  const atRest = await listed();
+  seen.listed = atRest.map((one) => `${one.title}: ${one.tools.map((row) => row.label).join(', ')}`);
+  check('a_package_heads_its_tools', ours(atRest).length === 1 && ours(atRest)[0].title === 'Boxes' && tool.package_title === 'Boxes' && ['Every field', 'A still'].every((label) => ours(atRest)[0].tools.some((row) => row.label === label)), atRest);
+  check('each_package_once', new Set(atRest.map((one) => one.package)).size === atRest.length && atRest.every((one) => one.tools.length > 0), seen.listed);
+  const search = page.locator('.tools input[aria-label="Search the tools"]');
+  // Searched, once the list is the search's: Text and the Edit are Cozy's, which neither search names.
+  const found = async (q, wanted) => {
+    await search.fill(q);
+    return until(`"${q}" searched`, listed, wanted).catch(() => listed());
+  };
+  const cozyListed = (list) => list.some((one) => one.package === 'cozy');
+  const byPackage = await found('boxes', (list) => ours(list)[0]?.tools.length === 2 && !cozyListed(list));
+  check('search_finds_the_package', ours(byPackage)[0]?.title === 'Boxes' && !cozyListed(byPackage) && byPackage.every((one) => `${one.package} ${one.title}`.toLowerCase().includes('boxes') || one.tools.every((row) => row.label.toLowerCase().includes('boxes'))), byPackage);
+  const byLabel = await found('every field', (list) => ours(list)[0]?.tools.length === 1 && !cozyListed(list));
+  check('search_finds_the_label', ours(byLabel)[0]?.tools[0].id === `${fixture}/shot` && ours(byLabel)[0].title === 'Boxes' && !cozyListed(byLabel), byLabel);
+  await found('', (list) => ours(list)[0]?.tools.length === 2 && cozyListed(list));
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;

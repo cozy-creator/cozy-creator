@@ -11,7 +11,7 @@ import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { baseOf } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, type Shown, shownOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -1384,7 +1384,7 @@ export class CanvasStore {
     if (!view?.asset || view.asset.tool === tool.id) return
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
-    this.retool(key, step, step.lost.length ? `${name} runs ${tool.label} now, which can't take ${step.lost.join(" or ")}` : undefined)
+    this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
     // On pictures, an image tool opens on its next take's words; anything else opens as it is.
     if (tool.makes !== "image" || !holdsPictures(view.asset)) return this.openHere(key)
     if (this.inPlace?.name === key) return this.writeNext(key, true)
@@ -1398,7 +1398,8 @@ export class CanvasStore {
     const view = this.views.get(key)
     if (!view?.asset) return
     void this.save(key)
-    const word = this.tools.get().get(view.asset.tool ?? "")?.label ?? "Its tool"
+    const known = this.tools.get().get(view.asset.tool ?? "")
+    const word = known ? toolName(known) : "Its tool"
     const words = holdsPictures(view.asset) ? `Its pictures stay.` : `It's a text box now.`
     this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
   }
@@ -1659,7 +1660,8 @@ export class CanvasStore {
   setTool(name: string, tool: string) {
     const key = this.resolveName(name)
     if (this.views.get(key)?.asset?.tool === tool) return
-    const label = this.tools.get().get(tool)?.label ?? tool.split(/[/\\]/).at(-1)
+    const known = this.tools.get().get(tool)
+    const label = known ? toolName(known) : tool.split(/[/\\]/).at(-1)
     const edit = this.step(`Switched ${key} to ${label}`, [key])
     this.over(key, { tool }, (served, write) => this.client.patchAsset(this.projectId!, served, { tool }, undefined, write), "change what makes", edit, { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
     this.reshape(key)

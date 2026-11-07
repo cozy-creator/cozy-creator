@@ -1,7 +1,7 @@
 import type { Asset, Tool } from "../types"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
 import { OWN } from "./controls"
-import { madeHere } from "./shown"
+import { madeHere, toolName } from "./shown"
 
 // What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Calcifer does the same to the file (`with_tool`). A tool coming
 // off takes its fields and what they held with it (Paul, 11-06), and Undo puts them back; its pictures, takes, approval and description stay. This holds no state.
@@ -101,9 +101,9 @@ export function comingOff(asset: Asset, fields: Fields): ToolStep {
 export const carryingTool = (tool: Tool): Carried => ({
   canvas: true,
   whyNot(name, view) {
-    if (!view?.asset || view.placing) return `${tool.label} can't go on ${name}`
-    if (madeHere(view.asset.tool)) return `${name} is made here, so ${tool.label} can't go on it`
-    return view.asset.tool === tool.id ? `${tool.label} is on ${name} already` : null
+    if (!view?.asset || view.placing) return `${toolName(tool)} can't go on ${name}`
+    if (madeHere(view.asset.tool)) return `${name} is made here, so ${toolName(tool)} can't go on it`
+    return view.asset.tool === tool.id ? `${toolName(tool)} is on ${name} already` : null
   },
   put: (store, name) => store.putTool(name, tool),
 })

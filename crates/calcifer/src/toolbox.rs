@@ -221,9 +221,9 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
     tools
 }
 
-/// Whether every word of `q` is in what `tool` is called or says it does.
+/// Whether every word of `q` is in `tool`'s package's name or its label.
 fn says(tool: &Tool, q: &str) -> bool {
-    let text = format!("{} {} {}", tool.id, tool.label, tool.description).to_lowercase();
+    let text = format!("{} {} {}", tool.package, tool.package_title, tool.label).to_lowercase();
     q.to_lowercase().split_whitespace().all(|word| text.contains(word))
 }
 

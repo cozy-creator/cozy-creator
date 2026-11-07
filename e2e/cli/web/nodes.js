@@ -192,7 +192,7 @@ function linesOf(text, name) {
   check('list_keeps_comments', yaml().startsWith(head), yaml());
 
   // Local code is listed, and says so: the box Paul's example uses comes from here, dragged like any tool, and called what a person calls it.
-  const fromTheList = page.locator('.tools section:has(h4:has-text("Editable")) .tool').first();
+  const fromTheList = page.locator('.tools section[data-local] .tool').first();
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
@@ -211,7 +211,7 @@ function linesOf(text, name) {
     const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local);
     tool = wire.id;
     check('local_tool_says_so', wire.local && !wire.label.includes('(local)') && wire.id.startsWith(drawer), wire);
-    check('local_tools_are_editable', (await page.locator('.tools section:has(h4:has-text("Editable")) .tool').count()) > 0);
+    check('local_tools_are_editable', (await page.locator(`.tools section[data-local][data-package="${wire.package}"] .tool`).count()) > 0);
     // A retry of a new asset makes no `_2`, on the wire.
     const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
     const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });

@@ -138,10 +138,10 @@ assets:
   await page.click('.tools button:has-text("Checkpoints")');
   const row = (model) => page.locator(`[data-checkpoint="${model.model}"]`);
   await row(loraA).waitFor();
-  // Grouped by the model each is for, called what its tool is (Paul, 11-06), each row its own name less its family's, and what it is under it.
+  // Grouped by the model each is for, called what its tool's package is (Paul, 11-06), each row its own name less its family's, and what it is under it.
   const groups = await page.locator('.checkpoints section').evaluateAll((all) => all.map((one) => ({ family: one.dataset.family, words: one.querySelector('h4').textContent, rows: [...one.querySelectorAll('[data-checkpoint]')].map((row) => row.dataset.checkpoint) })));
   const ofMine = groups.find((group) => group.family === mine.model.family);
-  const mineIs = tools.filter((tool) => tool.model.family === mine.model.family).map((tool) => tool.label).sort((a, b) => a.length - b.length)[0];
+  const mineIs = tools.filter((tool) => tool.model.family === mine.model.family).map((tool) => tool.package_title || tool.label).sort((a, b) => a.length - b.length)[0];
   const familyOf = (ref) => models.find((model) => model.model === ref)?.family;
   check('explorer_groups_by_family', ofMine?.words === mineIs && ofMine.rows.includes(loraA.model) && ofMine.rows.includes(fineA.model) && groups.every((group) => !group.family || group.rows.every((ref) => familyOf(ref) === group.family)), groups);
   const said = { name: await row(loraA).locator('b').innerText(), what: await row(loraA).locator('span').innerText(), fine: await row(fineA).locator('span').innerText() };

@@ -4,7 +4,7 @@ import { useSignal } from "../ui/signal"
 import "./AddOns.css"
 import { type AddOn, addOnsOf, atStrength, carried, takenOff, wordOf } from "./checkpoints"
 import { useCanvasStore, useElement } from "./context"
-import { madeHere } from "./shown"
+import { madeHere, toolName } from "./shown"
 
 const said = (addOn: AddOn) => `${addOn.lora ? "LoRA" : "Fine-tune"} ${addOn.ref}`
 
@@ -38,7 +38,8 @@ export function Stack({ name }: { name: string }) {
   const tools = useSignal(store.tools)
   const mark = useSignal(store.far) && !view?.here
   const tool = view?.asset?.tool
-  const made = tool && !madeHere(tool) ? (tools.get(tool)?.label ?? tool.split("/").at(-2) ?? tool) : null
+  const known = tool ? tools.get(tool) : undefined
+  const made = tool && !madeHere(tool) ? (known ? toolName(known) : (tool.split("/").at(-2) ?? tool)) : null
   if (!made && !held.length) return null
   return (
     <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>

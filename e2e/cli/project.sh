@@ -2522,6 +2522,7 @@ J '.type == "toggle" and .default == true' <<< "$(field told bright)" || check "
 J '.type == "group" and .list and .min_items == 1 and .max_items == 4 and (.members[] | select(.field == "duration") | .max == 15 and .total and .unit == "s")' <<< "$(field told beats)" || check "tools: a list group: $(field told beats)"
 J '.type == "slot" and .accept == "video"' <<< "$(field told video)" || check "tools: a file by its type: $(field told video)"
 J '.label == "Told"' <<< "$(one told)" || check "tools: a tool's label: $(one told)"
+J '.package_title == "Tool"' <<< "$(one told)" || check "tools: its package in words, heading it in the list: $(one told)"
 
 step "a tool is a function: a box from a tool takes its kind from what it makes, and what's missing fails it before anything runs"
 one=$(api -X POST -H "Idempotency-Key: tool-$RANDOM$RANDOM" -d "$(jq -n --arg t "$tool/need" '{tool: $t, name: "kept_video"}')" "http://$ADDR/v1/projects/$id/assets")

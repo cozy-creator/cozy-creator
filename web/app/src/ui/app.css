@@ -2478,6 +2478,12 @@ a.tab:hover {
 .tool-groups section:first-of-type h4 {
   margin-top: 2px;
 }
+.tool-groups h4 span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tool-groups h4 .icon {
   width: 12px;
   height: 12px;

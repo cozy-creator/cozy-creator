@@ -236,7 +236,7 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
     }
     let (bytes, pick) = weights.weighed(hub, &found.package, &found.release, &function, local_code);
     let interface = Interface::parse(&found.interface).ok()?;
-    let label = tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|tool| tool.function == function).map_or_else(|| function.clone(), |tool| tool.label);
+    let label = tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|tool| tool.function == function).map_or_else(|| function.clone(), |tool| tool.package_title);
     let measured = match local_code {
         true => format!("{}/{function}", found.package),
         false => format!("{}/{function}@", found.package),

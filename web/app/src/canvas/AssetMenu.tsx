@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import type { Tool } from "../types"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
-import { makes } from "./shown"
+import { makes, toolName } from "./shown"
 import { retimed } from "./timeline/model"
 
 type Open = "menu" | "tool"
@@ -134,7 +134,7 @@ function Menu({ name, x, y }: { name: string; x: number; y: number }) {
                   close()
                 }}
               >
-                {other.label}
+                {toolName(other)}
               </button>
             </li>
           ))}

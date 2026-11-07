@@ -1165,7 +1165,10 @@ export interface Tool {
   release: string
   /** What a new box of it is called, `shot_1`. A Calcifer that doesn't say goes by `label`. */
   name?: string
+  /** What it does within its package: `Image`, `Edit`, `Upscale`. */
   label: string
+  /** Its package in words, heading its tools in the list: `Qwen Image 2`. */
+  package_title: string
   /** What a box of it is. */
   makes: Media | "text"
   description?: string

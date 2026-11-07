@@ -9,6 +9,7 @@ import { addOnsOf, carrying, listed, takenOff } from "./checkpoints"
 import { useCanvasStore, useOfElement } from "./context"
 import { useDragScroll } from "./dragScroll"
 import { loadOf, shortName } from "./ModelBrowse"
+import { toolName } from "./shown"
 
 /** As many as one search of the Hub reads. */
 const MOST = 100
@@ -72,9 +73,9 @@ export function BoxShelf({ name }: { name: string }) {
   const add = (one: FoundModel) => carrying(one, tools).put(store, name)
   return (
     <>
-      <div className="box-shelf-head" title={`${name}: ${tool.label}`}>
+      <div className="box-shelf-head" title={`${name}: ${toolName(tool)}`}>
         <b>{name}</b>
-        <span>{tool.label}</span>
+        <span>{toolName(tool)}</span>
       </div>
       <input className="field wide" aria-label={`Search what goes on ${name}`} placeholder="Search" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
       <div ref={list} className="browse picks" aria-label={`What goes on ${name}`}>
@@ -84,13 +85,13 @@ export function BoxShelf({ name }: { name: string }) {
           <h4>Model</h4>
           <ul>
             {shownBase && (
-              <li className={`browsed pick ${current === base ? "on" : ""}`} data-pick={base} title={`${base}: ${tool.label}'s own`} onClick={() => swap(base)}>
+              <li className={`browsed pick ${current === base ? "on" : ""}`} data-pick={base} title={`${base}: ${tool.package_title}'s own`} onClick={() => swap(base)}>
                 <b>{words(base)}</b>
                 <span>Default</span>
               </li>
             )}
             {checkpoints.map((one) => (
-              <li key={one.model} className={`browsed pick ${current === one.model ? "on" : ""}`} data-pick={one.model} title={`${one.model}: a fine-tune of ${tool.label}`} onClick={() => swap(one.model)}>
+              <li key={one.model} className={`browsed pick ${current === one.model ? "on" : ""}`} data-pick={one.model} title={`${one.model}: a fine-tune of ${tool.package_title}`} onClick={() => swap(one.model)}>
                 <b>{words(one.model)}</b>
                 <span>Fine-tune</span>
               </li>
@@ -106,7 +107,7 @@ export function BoxShelf({ name }: { name: string }) {
           )}
           <ul>
             {loras.map((one) => (
-              <li key={one.model} className="browsed pick" data-pick={one.model} title={`${one.model}: a LoRA for ${tool.label}. A click puts it on ${name}`} onClick={() => add(one)}>
+              <li key={one.model} className="browsed pick" data-pick={one.model} title={`${one.model}: a LoRA for ${tool.package_title}. A click puts it on ${name}`} onClick={() => add(one)}>
                 <b>{words(one.model)}</b>
                 <span>LoRA</span>
               </li>

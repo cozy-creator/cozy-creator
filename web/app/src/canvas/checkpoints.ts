@@ -127,9 +127,9 @@ export function letGo(store: CanvasStore, x: number, y: number) {
  *  tagged NSFW only while the viewer's Show NSFW switch is on. */
 export const listed = (found: FoundModel, nsfwShown: boolean) => found.kind !== "component" && (nsfwShown || !isNsfw(found.tags))
 
-/** What a model family is called: what the tool of it on your list says, else its own words, `sdxl` being SDXL and `krea-2` Krea 2. */
+/** What a model family is called: the package of a tool of it on your list, else its own words, `sdxl` being SDXL and `krea-2` Krea 2. */
 export function familyName(family: string, tools: Map<string, Tool>): string {
-  const labels = [...tools.values()].flatMap((tool) => (tool.model?.family === family ? [tool.label] : []))
+  const labels = [...tools.values()].flatMap((tool) => (tool.model?.family === family ? [tool.package_title || tool.label] : []))
   if (labels.length) return labels.reduce((short, label) => (label.length < short.length ? label : short))
   return family
     .split(/[-_]+/)

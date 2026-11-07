@@ -63,6 +63,9 @@ export const SUB_ROW = 136
 /** What a tool makes, once it's run, as anything on the canvas is. */
 export const makes = (view: ElementView | undefined) => Boolean(view?.asset?.tool) && (!madeHere(view?.asset?.tool) || Boolean(view?.asset?.timeline))
 
+/** A tool named away from its package's heading: `Qwen Image 2 · Image`. */
+export const toolName = (tool: Tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label)
+
 /** What Calcifer makes itself, free, with no machine. */
 export const madeHere = (tool: string | undefined) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
 
@@ -105,7 +108,7 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   const kind = view?.asset?.kind ?? view?.landed?.field
   const takes = takenBy(tool)
   if (!view || !kind || !takes.length || kind === "text" || takes.includes(kind as Media)) return null
-  return `${tool!.label} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
+  return `${toolName(tool!)} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
 /** The take being made that it looks at: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made, and its number once it's landed. */

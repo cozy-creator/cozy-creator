@@ -3,7 +3,7 @@ import { useEffect, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Tool, Tools } from "../types"
-import { Icon, type IconName } from "../ui/Icon"
+import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import type { Load } from "./carry"
@@ -12,21 +12,33 @@ import { useCanvasStore, useOfElement } from "./context"
 import { TEXT_TOOL } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { ModelBrowse } from "./ModelBrowse"
-import { madeHere } from "./shown"
+import { madeHere, toolName } from "./shown"
 import { carryingTool } from "./toolchange"
 import { ToolBrowse } from "./ToolBrowse"
 
-const GROUPS: { id: string; words: string; icon: IconName }[] = [
-  { id: "image", words: "Pictures", icon: "picture" },
-  { id: "video", words: "Videos", icon: "video" },
-  { id: "audio", words: "Sounds", icon: "sound" },
-  { id: "touch", words: "Touch up", icon: "touch" },
-  { id: "local", words: "Editable", icon: "edit" },
-]
+/** A package of the list: its title heading what each of its tools does, in the order Calcifer lists them. One with no tools for a canvas isn't one. */
+interface Package {
+  package: string
+  title: string
+  local: boolean
+  tools: Tool[]
+}
 
-/** What you're after. One that asks for a file and for no words changes what it's given; anything else makes something of its kind. */
-const groupOf = (tool: Tool) =>
-  tool.local ? "local" : tool.fields.some((field) => field.type === "slot" && field.required) && !tool.fields.some((field) => field.type === "prompt" || field.type === "words" || field.type === "group") ? "touch" : tool.makes
+function packagesOf(tools: Tool[]): Package[] {
+  const packages = new Map<string, Package>()
+  for (const tool of tools) {
+    const held = packages.get(tool.package) ?? { package: tool.package, title: tool.package_title || tool.package, local: Boolean(tool.local), tools: [] }
+    held.tools.push(tool)
+    packages.set(tool.package, held)
+  }
+  return [...packages.values()]
+}
+
+/** Whether every word of `q` is in the tool's package's name or its label, as Calcifer's search reads them. */
+const says = (tool: Tool, q: string) => {
+  const text = `${tool.package} ${tool.package_title} ${tool.label}`.toLowerCase()
+  return q.toLowerCase().split(/\s+/).every((word) => text.includes(word))
+}
 
 /** A tool carried out of the list: a box of it where it's let go, or on a box, that box's tool. Words and what's made here are boxes of their own: nothing takes them. */
 const toolLoad = (tool: Tool): Load => ({ tool, box: tool === TEXT_TOOL || madeHere(tool.id) ? undefined : carryingTool(tool) })
@@ -56,7 +68,7 @@ function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => vo
         <button
           type="button"
           className="tool-off"
-          aria-label={`Take ${tool.label} off your list`}
+          aria-label={`Take ${toolName(tool)} off your list`}
           title="Take off your list"
           onClick={(event) => {
             event.stopPropagation()
@@ -70,8 +82,9 @@ function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => vo
   )
 }
 
-/** What can be dropped on the canvas, by what it makes, and it folds away. The canvas stays where it is under it. While a box whose tool runs a model is
- *  open, it's what goes on that box instead (Paul, 11-06); leaving the box, the tools are back as they were, searched and scrolled as they were. */
+/** What can be dropped on the canvas, by package (Paul, 11-06: "the key point is the package, not the model"), and it folds away. The canvas stays
+ *  where it is under it. While a box whose tool runs a model is open, it's what goes on that box instead (Paul, 11-06); leaving the box, the tools
+ *  are back as they were, searched and scrolled as they were. */
 export function ToolPanel({ project, machine, waiting, shut, setShut, place, choose, box }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; choose: () => void; box?: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
@@ -92,6 +105,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
     store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools] : [TEXT_TOOL])
   }, [store, data, isPlaceholderData])
   const tools = data?.tools ?? []
+  const packages = packagesOf([...(says(TEXT_TOOL, q) ? [TEXT_TOOL] : []), ...tools])
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("li.tool")
@@ -133,11 +147,6 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
         {browsing && <ToolBrowse q={q} listed={tools} />}
         {exploring && <ModelBrowse q={q} />}
         <div ref={list} className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={shelf !== "tools"}>
-          {"text".includes(q.toLowerCase()) && (
-            <ul>
-              <ToolRow tool={TEXT_TOOL} place={place} yours={false} />
-            </ul>
-          )}
           {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
           {isPending && !error && (
             <ul aria-hidden="true">
@@ -146,23 +155,19 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
               ))}
             </ul>
           )}
-          {GROUPS.map((group) => {
-            const rows = tools.filter((tool) => groupOf(tool) === group.id)
-            if (!rows.length) return null
-            return (
-              <section key={group.id}>
-                <h4>
-                  <Icon name={group.icon} />
-                  {group.words}
-                </h4>
-                <ul>
-                  {rows.map((tool) => (
-                    <ToolRow key={tool.id} tool={tool} place={place} yours={!q} />
-                  ))}
-                </ul>
-              </section>
-            )
-          })}
+          {packages.map((held) => (
+            <section key={held.package} data-package={held.package} data-local={held.local || undefined}>
+              <h4 title={held.local ? `Your own code: ${held.package}` : held.package}>
+                {held.local && <Icon name="edit" />}
+                <span>{held.title}</span>
+              </h4>
+              <ul>
+                {held.tools.map((tool) => (
+                  <ToolRow key={tool.id} tool={tool} place={place} yours={!q && tool !== TEXT_TOOL} />
+                ))}
+              </ul>
+            </section>
+          ))}
           {data && !tools.length && !isPlaceholderData && <p className="muted">Nothing for "{q}"</p>}
           {data?.note && <p className="muted">{data.note}</p>}
         </div>

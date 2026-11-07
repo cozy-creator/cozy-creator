@@ -1,6 +1,5 @@
 //! A tool: a public function declared `@app.tool`, as `GET /v1/tools` lists it. What it makes comes from its result, and its box from its
 //! struct's typed fields. Nothing here knows a model.
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -74,7 +73,11 @@ pub struct Tool {
     /// What a new box of it is called: `shot_1`, counting up as it's taken.
     #[serde(default)]
     pub name: String,
+    /// What it does within its package: `Image`, `Edit`, `Upscale`.
     pub label: String,
+    /// Its package in words, as the tool list heads its tools: `Qwen Image 2`, `SDXL`.
+    #[serde(default)]
+    pub package_title: String,
     /// What a box of it is: `image`, `video`, `audio` or `text`, by its result's first such field.
     pub makes: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -222,6 +225,7 @@ pub fn edit() -> Tool {
         release: String::new(),
         name: "Edit".to_owned(),
         label: "Edit".to_owned(),
+        package_title: "Cozy".to_owned(),
         makes: "video".to_owned(),
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
         local: false,
@@ -279,7 +283,8 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
     Some(Tool {
         id: format!("{package}/{}", callable.name),
         name: box_name(&package, callable),
-        label: if declared.label.is_empty() { label(&package, &callable.name) } else { declared.label.clone() },
+        label: if declared.label.is_empty() { capitalized(&words(&callable.name)) } else { declared.label.clone() },
+        package_title: title(&package),
         package,
         function: callable.name.clone(),
         release: release.to_owned(),
@@ -321,15 +326,14 @@ pub fn first_of(word: &str) -> String {
     format!("{word}_1")
 }
 
-/// `Qwen Image 2 Turbo`, `Minimax H3 Upscale`: a package's words and what the function adds to `generate`.
-fn label(package: &str, function: &str) -> String {
-    let mut out = String::new();
-    for word in package.rsplit('/').next().unwrap_or(package).split(['-', '_']).filter(|word| !word.is_empty()) {
-        let _ = write!(out, "{} ", capitalized(word));
-    }
-    let added = function.strip_prefix("generate").map_or(function, |rest| rest.trim_start_matches('_'));
-    out.push_str(&capitalized(&added.replace('_', " ")));
-    out.trim_end().to_owned()
+/// A package in words, its last part's: `qwen-image-2` is `Qwen Image 2`, and a word with no vowel is upper case, `sdxl` SDXL and `h3` H3.
+pub fn title(package: &str) -> String {
+    let words = package_word(package).split(['-', '_']).filter(|word| !word.is_empty());
+    let word = |word: &str| match word.chars().any(|c| "aeiouAEIOU".contains(c)) {
+        true => capitalized(word),
+        false => word.to_uppercase(),
+    };
+    words.map(word).collect::<Vec<_>>().join(" ")
 }
 
 fn capitalized(text: &str) -> String {
