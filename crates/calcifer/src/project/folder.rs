@@ -1640,7 +1640,16 @@ impl Folder {
             let _ = std::fs::remove_file(&at);
         }
         let unused: Vec<&String> = sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())).collect();
-        self.update_lock(|lock| lock.files.retain(|sha256, _| !unused.contains(&sha256)))
+        // What was measured of an earlier revision goes with it.
+        self.act(|| {
+            if self.reading_measured(|held| unused.iter().any(|sha256| held.contains_key(*sha256)))? {
+                self.writing_measured(|held| {
+                    held.retain(|sha256, _| !unused.contains(&sha256));
+                    Ok(())
+                })?;
+            }
+            self.update_lock(|lock| lock.files.retain(|sha256, _| !unused.contains(&sha256)))
+        })
     }
 }
 
