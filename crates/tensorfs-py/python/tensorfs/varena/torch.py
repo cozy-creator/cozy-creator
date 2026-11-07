@@ -196,6 +196,12 @@ def stats(device: DeviceLike = 0) -> dict[str, int]:
     return _ext._varena_working_stats(_device(device))
 
 
+def ooms(device: DeviceLike = 0) -> int:
+    """`stats(device)["ooms"]` alone: the allocations varena refused on `device`, one integer read."""
+    _installed()
+    return _ext._varena_working_ooms(_device(device))
+
+
 def room(device: DeviceLike = 0) -> dict[str, int]:
     """What the card has now, as a split chooses by: `capacity` (the card or its cap, less what is
     outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes."""

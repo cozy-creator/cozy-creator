@@ -356,6 +356,15 @@ fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool) {
 }
 
 #[pyfunction]
+fn _varena_working_ooms(py: Python<'_>, device: i32) -> PyResult<u64> {
+    py.detach(|| {
+        check()?;
+        varena::working::ooms(device)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 fn _varena_working_stats(
     py: Python<'_>,
     device: i32,
@@ -906,6 +915,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_ooms, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_site_id, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_set_site, module)?)?;
