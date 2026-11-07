@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
+const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -388,6 +388,15 @@ function linesOf(text, name) {
   check('its_shape_by_its_corner', (await knobs.locator('.ratio-rest').innerText()) === '3:2', await knobs.locator('.ratio-rest').innerText());
   const widthBefore = (await rows()).knobs.w;
   const pull = async (dx, dy) => {
+    // Firefox's driver drops a release past the window's edge, and fitted, knobs can be the box at it: the canvas pans first, so the pull ends inside.
+    const { width, height } = page.viewportSize();
+    const at = await knobs.locator('.corner').boundingBox();
+    const [overX, overY] = [Math.max(0, at.x + 6 + dx - (width - 40)), Math.max(0, at.y + 6 + dy - (height - 40))];
+    if (overX || overY) {
+      await page.locator('.react-flow__pane').dispatchEvent('wheel', { deltaX: overX, deltaY: overY });
+      await settled(page);
+      await knobs.locator('.nm').hover();
+    }
     const corner = await knobs.locator('.corner').boundingBox();
     await page.mouse.move(corner.x + 6, corner.y + 6);
     await page.mouse.down();
