@@ -1,9 +1,9 @@
 //! Package environments, built one way for a release (`published`) and for local code
 //! (`local_source`): uv's Python, the locked (or resolved) dependencies with the Runtime/TensorFS
-//! pair the lock names (this machine's where it is a later patch of it, `stands_in`), wheels from
-//! files, the project, then this machine's PyTorch layer (`layer`), then the environment's
-//! description by its own Runtime and its record; its bytecode compiles once it is installed. uv
-//! runs under one environment.
+//! pair the lock names at its newest released patch (this machine's where it is a later patch of
+//! it, `stands_in`), wheels from files, the project, then this machine's PyTorch layer (`layer`),
+//! then the environment's description by its own Runtime and its record; its bytecode compiles
+//! once it is installed. uv runs under one environment.
 use super::{canceled, io_failure, layer::Layer, Failure, Job, Locked, Publisher, SDK};
 use crate::{catalog::normalized, machine::{pypi, update}, process::Supervised};
 use pep440_rs::{Version, VersionSpecifiers};
@@ -110,7 +110,7 @@ impl Publisher {
         let _cache = self.uv_cache_hold().map_err(io_failure)?;
         let over = project.locked.is_some_and(|locked| self.stands_in(locked));
         let editable_after = project.editable && project.locked.is_some();
-        let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, over];
+        let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, project.locked.is_some()];
         let total = steps.iter().filter(|s| **s).count() + 1 + usize::from(project.fetch.is_some());
         let step = std::cell::Cell::new(0);
         let next = || {
@@ -224,9 +224,9 @@ impl Publisher {
         }
         if let Some(locked) = project.locked {
             let build = &self.sdk.runtime_build;
+            next();
             if over {
-                next();
-                match self.pair(env, &py, job)? {
+                match self.pair(env, &py, &self.sdk.requirements, job)? {
                     Ok(found) => fallback.extend(found),
                     Err(conflict) => {
                         sync(locked, false)?;
@@ -235,9 +235,23 @@ impl Publisher {
                             shown(&self.machine_pair()), shown(&pair_of(&locked.packages))));
                     }
                 }
-            } else if !build.is_empty() {
-                fallback.push(format!("this machine's development Runtime {build} (`--runtime <path>`) is no later patch of its lock's {}: it runs on that",
-                    shown(&pair_of(&locked.packages))));
+            } else {
+                // The lock's own series at its newest released patch: a patch is fixes, never a
+                // change in what a package calls. One that doesn't install here leaves the lock's.
+                let newest: Vec<String> = SDK.iter()
+                    .filter_map(|name| Some(newest_patch(name, locked.packages.get(*name)?))).collect();
+                match self.pair(env, &py, &newest, job) {
+                    Ok(Ok(found)) => fallback.extend(found),
+                    Ok(Err(why)) | Err((super::UNREACHABLE, why)) => {
+                        sync(locked, false)?;
+                        fallback.push(format!("no newer patch of its lock's {} installs here ({why}): it runs on that", shown(&pair_of(&locked.packages))));
+                    }
+                    Err(failure) => return Err(failure),
+                }
+                if !build.is_empty() {
+                    fallback.push(format!("this machine's development Runtime {build} (`--runtime <path>`) is no later patch of its lock's {}: it runs on that series",
+                        shown(&pair_of(&locked.packages))));
+                }
             }
         }
         let fallback = fallback.join("; ");
@@ -279,10 +293,11 @@ impl Publisher {
         pair_of(&named.collect())
     }
 
-    /// This machine's pair over a locked environment, every other installed version held exact.
-    /// One the lock's pins refuse leaves the lock's (`Err`: why); what uv's check finds that it
-    /// adds (a ceiling of the package's) is the run's warning.
-    fn pair(&self, env: &Path, py: &str, job: &Job) -> Result<Result<Option<String>, String>, Failure> {
+    /// `requirements` of the pair (this machine's, or the lock's newest patch) over a locked
+    /// environment, every other installed version held exact. One the lock's pins refuse leaves
+    /// the lock's (`Err`: why); what uv's check finds that it adds (a ceiling of the package's) is
+    /// the run's warning.
+    fn pair(&self, env: &Path, py: &str, requirements: &[String], job: &Job) -> Result<Result<Option<String>, String>, Failure> {
         let constraints = env.join("cozy-constraints.txt");
         let pins: String = installed(env).iter().filter(|(name, _)| !SDK.contains(&name.as_str()))
             .map(|(name, version)| format!("{name}=={version}\n")).collect();
@@ -293,7 +308,10 @@ impl Publisher {
         if let Some(links) = &links {
             args.extend(["--find-links", links]);
         }
-        args.extend(self.sdk.requirements.iter().map(String::as_str));
+        for name in SDK {
+            args.extend(["--upgrade-package", name]);
+        }
+        args.extend(requirements.iter().map(String::as_str));
         // What the package's own closure reports already stands (NVIDIA's aarch64 cusparseLt
         // wheel is tagged `sbsa`, so uv flags it on every Linux arm64 machine).
         let before = self.check(py, job)?;
@@ -659,18 +677,30 @@ fn torch_miss(line: &str, layer: &Layer) -> Option<String> {
     (layer.holds(&required) || layer.holds(&requirer)).then(|| requirement.to_string())
 }
 
-/// Whether release `ours` is `locked` or a later patch of it: the same major (minor, before 1.0)
-/// and not older.
+/// A release's series: its major, or before 1.0 its minor, within which a release only fixes.
+fn series(version: &Version) -> Vec<u64> {
+    let release = version.release();
+    let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
+    (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect()
+}
+
+/// Whether release `ours` is `locked` or a later patch of it: the same series and not older.
 fn patch_of(ours: &str, locked: &str) -> bool {
     let (Ok(ours), Ok(locked)) = (Version::from_str(ours), Version::from_str(locked)) else {
         return false;
     };
-    let series = |version: &Version| {
-        let release = version.release();
-        let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
-        (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect::<Vec<u64>>()
-    };
     series(&ours) == series(&locked) && ours >= locked
+}
+
+/// `name` at the newest release of `locked`'s series: `cozy-runtime>=0.41.0,==0.41.*`.
+fn newest_patch(name: &str, locked: &str) -> String {
+    match Version::from_str(locked) {
+        Ok(version) => {
+            let series: Vec<String> = series(&version).iter().map(u64::to_string).collect();
+            format!("{name}>={locked},=={}.*", series.join("."))
+        }
+        Err(_) => format!("{name}=={locked}"),
+    }
 }
 
 /// The Runtime and TensorFS of `versions`, by name.
