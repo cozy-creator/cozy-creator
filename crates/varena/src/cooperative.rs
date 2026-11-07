@@ -83,19 +83,25 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
         }
         last = recover(device, BRING_UP_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
     }?;
-    let display = Nvml::init().ok().and_then(|nvml| nvml_device(&nvml, &uuid)?.is_display_active().ok());
-    if display == Some(true) {
-        crate::gpu(device)?.drives_display(true);
-        eprintln!("varena: GPU {device} drives a display: a sixteenth of it, at least 512 MiB, stays free past every program's use");
-    }
-    if let Some(serving) = serving {
-        let mut donor = Native::new(device, shared, uuid)?;
-        std::thread::Builder::new().name(format!("varena-owner-{device}")).spawn(move || {
-            let Serving(_, service) = &serving;
-            let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.table.serve(service.row, &mut donor)));
-            eprintln!("varena: GPU {device}'s donor ended: {served:?}");
-        }).map_err(|error| Error::Unsupported(format!("donor thread: {error}")))?;
-    }
+    // Off the cold start where a donor runs: NVML's start costs one, and fills come later.
+    let gpu = crate::gpu(device)?;
+    let floor_display = move || {
+        if Nvml::init().ok().and_then(|nvml| nvml_device(&nvml, &uuid)?.is_display_active().ok()) == Some(true) {
+            gpu.drives_display(true);
+            eprintln!("varena: GPU {device} drives a display: a sixteenth of it, at least 512 MiB, stays free past every program's use");
+        }
+    };
+    let Some(serving) = serving else {
+        floor_display();
+        return Ok(());
+    };
+    let mut donor = Native::new(device, shared, uuid)?;
+    std::thread::Builder::new().name(format!("varena-owner-{device}")).spawn(move || {
+        floor_display();
+        let Serving(_, service) = &serving;
+        let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.table.serve(service.row, &mut donor)));
+        eprintln!("varena: GPU {device}'s donor ended: {served:?}");
+    }).map_err(|error| Error::Unsupported(format!("donor thread: {error}")))?;
     Ok(())
 }
 
