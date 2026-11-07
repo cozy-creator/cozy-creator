@@ -565,6 +565,15 @@ fn _varena_working_pool_cancel_preparation(
 }
 
 #[pyfunction]
+fn _varena_working_pool_close(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_close(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 fn _varena_working_pool_short(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<usize> {
     py.detach(|| varena::working::pool_short(device, pool)).map_err(|e| super::raise(py, e))
 }
@@ -881,6 +890,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_arm, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_short, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_pool_close, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_scratch, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_library_workspaces, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_retain, module)?)?;

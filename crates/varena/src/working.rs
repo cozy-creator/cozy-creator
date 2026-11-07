@@ -2410,6 +2410,35 @@ pub fn pool_cancel_preparation(device: i32, pool: PoolId) -> Result<()> {
     }
     Ok(())
 }
+
+/// The owner reset every graph it captured here and allocates here no more: its references and
+/// preparation go, so its pages and its entry go at the next trim, once its blocks are free and
+/// complete. A capture whose end failed is never reset by Torch, and its reference would hold
+/// the pool mapped for the process's life. Refused while a capture on it is open.
+pub fn pool_close(device: i32, id: PoolId) -> Result<()> {
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let mut state = owner.lock()?;
+    let Some(pool) = state.pools.get_mut(&id) else {
+        return Ok(());
+    };
+    if pool.capture.is_some() || pool.routing {
+        return Err(Error::Invalid("close a graph pool after its capture ends"));
+    }
+    pool.references = 0;
+    pool.prepared = false;
+    pool.armed = false;
+    pool.in_use = false;
+    let streams: Vec<u64> = pool.streams.iter().copied().collect();
+    for stream in streams {
+        if !state.pools.values().any(|pool| pool.names_stream(stream)) {
+            owner.release_parked(&mut state, stream);
+        }
+    }
+    Ok(())
+}
+
 pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     if bytes != 0 {  // Zero is a use of a recorded pool: an LM's token, inside its eager phase.
         invalidate_eager_phase(device, "capture_preparation")?;

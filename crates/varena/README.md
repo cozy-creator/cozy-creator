@@ -88,6 +88,8 @@ did not prepare. Torch's cached library workspaces live in no pool. An owner tha
 a pool between replays declares that with `vt.pool_scratch(pool, held)`, which refuses an escaped
 alias, and brackets each use with `vt.prepare_pool(pool, 0)` .. `vt.record_pool_stream(pool, stream)`.
 Idle declared pools are then unmapped, keeping their addresses and graphs. Undeclared pools stay.
+An owner done with a pool, every graph of it reset, says so with `vt.pool_close(pool)`: its pages go
+at the next trim once its blocks are free, even after a capture whose end failed.
 
 ## Prefetch
 
