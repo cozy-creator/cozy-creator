@@ -838,7 +838,7 @@ async fn put(api: &Arc<Api>, project: &Arc<Project>, id: &str, change: &Change, 
         }
         Change::Renamed { from, to } => {
             let (from, to) = if way == Way::Back { (to, from) } else { (from, to) };
-            super::rename_now(api, project, id, Rename { from: from.clone(), to: to.clone() }).await.map(drop)
+            super::rename_now(project, id, Rename { from: from.clone(), to: to.clone() }).await.map(drop)
         }
     }
 }
