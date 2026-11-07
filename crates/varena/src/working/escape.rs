@@ -61,8 +61,10 @@ pub(super) struct Escapes {
     last_head: Option<u32>,
     loops: BTreeMap<u32, Loop>,
     learned: BTreeMap<(u32, u64), Learned>,
-    /// What this process held with the bytes it was last refused (`refused`), and the refusals so far.
+    /// What this process held with the bytes it was last refused (`refused`) and the room it was
+    /// refused in, and the refusals so far.
     refusal: usize,
+    refusal_room: usize,
     refusals: u64,
 }
 
@@ -96,8 +98,10 @@ struct Loop {
 struct Learned {
     escaped: usize,
     transient: usize,
-    /// A failed pass: what it held when refused, above what was held as it began.
+    /// A failed pass: what it held when refused, above what was held as it began, and the room it
+    /// had above that.
     failed: usize,
+    failed_room: Option<usize>,
 }
 
 /// Why a pass cannot fit with every evictable byte gone.
@@ -178,8 +182,9 @@ impl Escapes {
     }
 
     /// An allocation was refused with `owned` (this process's bytes and the request) not fitting.
-    pub(super) fn refused(&mut self, owned: usize) {
+    pub(super) fn refused(&mut self, owned: usize, room: usize) {
         self.refusal = owned;
+        self.refusal_room = room;
         self.refusals += 1;
     }
 
@@ -187,10 +192,11 @@ impl Escapes {
     /// (`failed`) needed more than this process held then, above what it held as that pass began:
     /// a first call whose cache outgrew the card in step 0 has the next refused at its first forward.
     fn learn(&mut self, head: u32, held: &Loop, failed: bool) {
+        let failed_room = failed.then(|| self.refusal_room.saturating_sub(held.held));
         let failed = if failed { self.refusal.saturating_sub(held.held) } else { 0 };
-        if held.passes > 1 || failed != 0 {
+        if held.passes > 1 || failed_room.is_some() {
             let transient = held.transient.unwrap_or(0);
-            self.learned.insert((head, held.shape), Learned { escaped: held.peak, transient, failed });
+            self.learned.insert((head, held.shape), Learned { escaped: held.peak, transient, failed, failed_room });
         }
     }
 
@@ -222,7 +228,7 @@ fn room_now(owner: &Device) -> usize {
 }
 
 /// The room an allocation was refused against: the cap, else the card, less what others held then.
-fn room_held(owner: &Device) -> usize {
+pub(super) fn room_held(owner: &Device) -> usize {
     let cap = owner.capacity();
     if cap != usize::MAX {
         return cap;
@@ -257,8 +263,10 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
         let verdict = learned.and_then(|learned| {
             let planned = learned.escaped.saturating_add(learned.transient).saturating_add(floor);
             let need = held.saturating_add(planned.max(learned.failed));
-            // A failed pass was refused with what others held then not given back: judged by that room.
-            let room = if held.saturating_add(learned.failed) > strict { strict } else { room };
+            // A loop of this shape was refused memory with this much room above what it held: with no
+            // more now, it is refused again, judged by the room it ran out in.
+            let again = learned.failed_room.is_some_and(|had| strict.saturating_sub(held) <= had);
+            let (need, room) = if again { (need.max(strict.saturating_add(1)), strict) } else { (need, room) };
             // What the last run held when refused counts as its working memory.
             let transient = learned.transient.max(learned.failed.saturating_sub(learned.escaped).saturating_sub(floor));
             (need > room).then(|| Verdict {
