@@ -74,8 +74,8 @@ struct Page {
     // Past the rows, so a peer that predates these words meets this page as ever and reads zeros.
     /// Each row's supervisor word on it ([`Table::describe`]): its pid, priority and reload.
     tenants: [AtomicU64; ROWS],
-    /// Nonzero while a row's `short` is an ask for room a request would use, which never ends a
-    /// process with priority; zero for an allocation that cannot proceed.
+    /// Its owner's pid while a row's `short` is an ask for room a request would use, which never
+    /// ends a process with priority; anything else for an allocation that cannot proceed.
     room: [AtomicU64; ROWS],
     /// `released + 1` while a program outside the ledger stays short after every give.
     foreign: AtomicU64,
@@ -431,7 +431,7 @@ impl Table {
     /// `recover` for room a request will use, off its allocating thread: idle peers give, and if
     /// that is not enough the supervisor ends a process without priority.
     pub fn ask_room(&self, row: Row, bytes: u64, deadline: Instant) -> Recovery {
-        self.page.room[row.0].store(1, Release);
+        self.page.room[row.0].store(u64::from(std::process::id()), Release);
         let result = self.recover_inner(row, bytes, deadline);
         self.stop_asking(row);
         self.page.room[row.0].store(0, Release);
@@ -567,7 +567,7 @@ impl Table {
             let foreign = self.page.foreign.load(Acquire) == released + 1;
             if !short.is_empty() || foreign {
                 let askers: Vec<u32> = short.iter().map(|&index| self.page.rows[index].pid.load(Acquire) as u32).collect();
-                let room = short.iter().all(|&index| self.page.room[index].load(Acquire) != 0);
+                let room = short.iter().all(|&index| self.page.room[index].load(Acquire) == self.page.rows[index].pid.load(Acquire));
                 match end(&askers, &self.victims(&askers, room)) {
                     Some(true) => {
                         self.reap();

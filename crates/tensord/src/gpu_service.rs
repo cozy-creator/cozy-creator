@@ -1165,13 +1165,15 @@ impl Pool {
             .filter(|(_, s)| !s.ledger && s.degree != 0 && s.lane().contains(&index))
             .filter(|(_, s)| !s.loaded.keys().any(|construction| warm.contains_key(construction)))
             .filter(|(_, s)| !executor_births(&s.executor.birth, &s.followers).iter().any(|birth| askers.contains(&birth.pid)))
-            .min_by_key(|(_, s)| s.used).map(|(key, _)| key.clone());
+            .min_by_key(|(_, s)| s.used).map(|(key, s)| (key.clone(), s.executor.birth.pid));
         let ended = match outside {
-            Some(key) if self.end_session(&key) => Some(0),
+            Some((key, pid)) if self.end_session(&key) => Some(pid),
             _ => victims.iter().find(|&&pid| self.end_idle_pid(pid)).copied(),
         };
-        self.notes.note(serde_json::json!({"event": "victim", "gpu": index, "askers": askers,
-            "victims": victims, "ended": ended}));
+        if ended.is_some() || !victims.is_empty() {
+            self.notes.note(serde_json::json!({"event": "victim", "gpu": index, "askers": askers,
+                "victims": victims, "ended": ended}));
+        }
         ended.is_some()
     }
     /// A call stays short of host memory after every idle tier gave its pages back (the host's
