@@ -131,9 +131,9 @@ struct Machine {
 
 /// How often a wait for a machine's answer says again how long it has lasted.
 const RESAID: Duration = Duration::from_secs(5);
-/// How long a machine answering an internal failure about a run is asked again before the run ends saying so.
-const BROKEN_FOR: Duration = Duration::from_secs(120);
-const BROKEN_ASKED_EVERY: Duration = Duration::from_secs(5);
+/// How soon a machine answering an internal failure about a run is asked again, at first and at most. Only its journal settles the run.
+const BROKEN_ASKED_FIRST: Duration = Duration::from_secs(5);
+const BROKEN_ASKED_MOST: Duration = Duration::from_secs(60);
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
 
@@ -739,8 +739,8 @@ impl Calcifer {
 
     async fn follow_to_end(self: &Arc<Self>, id: &RunId, wake: &Notify) {
         let mut pause = Pause::default();
-        // When its machine began failing it, which an attach that answers doesn't reset.
-        let mut broken: Option<Instant> = None;
+        // When its machine began failing it, and how often it has been asked since; an attach that answers doesn't reset it.
+        let mut broken: Option<(Instant, u32)> = None;
         loop {
             let run = match self.store.run(id.as_str()) {
                 Ok(Some(run)) => run,
@@ -866,25 +866,28 @@ impl Calcifer {
                         pause.wait(wake, Some(&mut changed)).await;
                     }
                 }
-                // Its own bug, not its being busy: said in its words, logged, asked again for a while, and then the run
-                // ends saying so. A cancel doesn't wait for it. Nothing runs again either way.
+                // Its own bug, not its being busy: said in its words, logged, and asked again, paced, for as long as it lasts. It may
+                // still be running there, so only its outcome settles it; a cancel doesn't wait for it. Nothing runs again either way.
                 Err(Stop::Broken(code, message)) => {
-                    let since = *broken.get_or_insert_with(|| {
-                        warn!(run = %id, machine = %name, "{code}: {message}");
-                        Instant::now()
-                    });
-                    if run.cancel_requested || since.elapsed() >= BROKEN_FOR {
-                        match self.store.gave_up(id.as_str(), &name, &code, &message) {
+                    if run.cancel_requested {
+                        match self.store.cancel_unanswered(id.as_str(), &name, &code, &message) {
                             Ok(events) => self.publish(id, events),
                             Err(e) => warn!(run = %id, "{e}"),
                         }
-                    } else {
-                        self.waiting(id, format!("{name} fails when asked about this run, and is asked again for {}: {code}: {message}", protocol::calcifer::clock(BROKEN_FOR.as_millis() as i64)));
-                        tokio::select! {
-                            () = tokio::time::sleep(BROKEN_ASKED_EVERY) => {}
-                            () = wake.notified() => {}
-                            _ = changed.changed() => {}
-                        }
+                        continue;
+                    }
+                    let (since, asked) = broken.get_or_insert_with(|| {
+                        warn!(run = %id, machine = %name, "{code}: {message}");
+                        (Instant::now(), 0)
+                    });
+                    *asked = asked.saturating_add(1);
+                    let wait = BROKEN_ASKED_FIRST.saturating_mul(1u32 << (*asked - 1).min(5)).min(BROKEN_ASKED_MOST);
+                    let age = protocol::calcifer::clock(since.elapsed().as_millis() as i64);
+                    self.waiting(id, format!("{name} fails when asked about this run ({age}), asked again in {} s: {code}: {message}", wait.as_secs()));
+                    tokio::select! {
+                        () = tokio::time::sleep(wait) => {}
+                        () = wake.notified() => {}
+                        _ = changed.changed() => {}
                     }
                 }
                 Err(Stop::Waiting(message)) => {
