@@ -9,11 +9,10 @@
 # and no `room` record in any phase.
 # params:
 #   runtime, tensorfs  the candidate's, for the last phase (default: that phase is skipped)
-#   traffic_gb         GB the provider bills: Klein, Qwen, SDXL and the fixture's environment (default 60)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 [ -f "$FIX/pause-twice/package.toml" ] || fail "no fixture checkout"
-quote "$(param traffic_gb 60)" 3600
+quote 3600
 rent
 
 value() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; }

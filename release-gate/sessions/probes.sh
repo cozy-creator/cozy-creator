@@ -89,7 +89,7 @@ for try in $(seq 120); do
   sleep 30
 done
 # A boot, the update, a Runtime's first run, three browsers: under half an hour. Some 900 MB each way for a browser, and the runs' landing.
-quote 4 1800
+quote 1800
 
 ( until [ -s "$OUT/rental" ]; do sleep 1; done; echo "::notice::rental $(head -1 "$OUT/rental")" ) & BG="$BG $!"
 rent

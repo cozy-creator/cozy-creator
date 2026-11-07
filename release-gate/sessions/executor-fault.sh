@@ -3,13 +3,12 @@
 # One rental, driven from a runner; the session's cozy carries the candidate TensorD onto the pod. The weightless
 # fixture (fixtures/cuda-fault) prints a marker to its stderr, then trips a device-side assert. A real driver reports
 # that as Xid 43 and TensorD ends the executor: the executor-died path. A dead group follower shares the same fault
-# section and log line (every rank writes the leader's stderr). Then a successor completes in a fresh process. params:
-#   traffic_gb  GB the provider bills: the image and the fixture's environment (default 8)
+# section and log line (every rank writes the leader's stderr). Then a successor completes in a fresh process.
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 MARK=fault-$(date +%s)-$RANDOM
 [ -f "$FIX/cuda-fault/cuda_fault/__init__.py" ] || fail "no fixture checkout"
-quote "$(param traffic_gb 8)" 1500
+quote 1500
 rent
 
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"

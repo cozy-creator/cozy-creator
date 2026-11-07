@@ -11,7 +11,6 @@
 # The throwaway models are deleted after. params:
 #   probe_s    seconds the probe waits before it reads: past a token's 15 min (960)
 #   off_s      seconds the runner's Calcifer stays stopped (1020)
-#   traffic_gb GB the provider bills: the image and the session's cozy (12)
 . "$(dirname "$0")/lib.sh"
 PROBE_S=$(param probe_s 960) OFF_S=$(param off_s 1020)
 CELL=$GITHUB_WORKSPACE/creator/e2e/capabilities
@@ -24,7 +23,7 @@ MA=$A/cl675-a-$TS MB=$A/cl675-b-$TS MC=$A/cl675-c-$TS
 tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$1"; }
 made() { awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
 cleanup() { for m in $MA $MB $MC; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
-quote "$(param traffic_gb 12)" $((OFF_S + 2400))
+quote $((OFF_S + 2400))
 rent
 trap 'cleanup; finish' EXIT
 

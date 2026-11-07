@@ -3,12 +3,11 @@
 # holds is a model `model ls` names, and a render that fits only by evicting runs and says what went (cl-774). The
 # suite's install cells (disk-envs, torch-layer) are left out unless `installs` is yes. params:
 #   installs    yes runs every cell (default no)
-#   traffic_gb  GB the provider bills (default 200)
 #   need_s      seconds the guard must buy (default 1800)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 [ -f "$HERE/suites/disk/cells.sh" ] && [ -f "$HERE/../e2e/run.sh" ] || fail "no disk suite or e2e/run.sh"
-quote "$(param traffic_gb 200)" "$(param need_s 1800)"
+quote "$(param need_s 1800)"
 rent
 
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"

@@ -98,7 +98,7 @@ function Order() {
           {!now.quote.agreed && <p className="warn">This Calcifer didn't say what's agreed at this price, so it can't be ordered from here.</p>}
           <div className="row">
             <button type="button" className="tb primary" disabled={!now.quote.agreed} onClick={() => void go()}>
-              Rent {line(now.order, now.quote.gpu_usd_micros_per_hour)}
+              Rent {line(now.order, now.quote.usd_micros_per_hour)}
             </button>
             <button type="button" className="tb" onClick={dismiss}>
               Not now
@@ -106,7 +106,7 @@ function Order() {
           </div>
         </>
       )}
-      {now.state === "placing" && <p>Ordering {line(now.order, now.quote.gpu_usd_micros_per_hour)}…</p>}
+      {now.state === "placing" && <p>Ordering {line(now.order, now.quote.usd_micros_per_hour)}…</p>}
       {now.state === "uncertain" && (
         <>
           <Failure error={now.error} lead="The order may stand, since no answer came" />

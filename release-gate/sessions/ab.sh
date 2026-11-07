@@ -18,7 +18,6 @@
 #              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
-#   traffic_gb GB the provider bills: the image, the models, the outputs (100)
 #   need_s     seconds the cap must buy (3600)
 . "$(dirname "$0")/lib.sh"
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]')
@@ -60,7 +59,7 @@ done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
-quote "$(param traffic_gb 100)" "$(param need_s 3600)"
+quote "$(param need_s 3600)"
 rent
 
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"

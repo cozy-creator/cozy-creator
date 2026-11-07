@@ -52,7 +52,7 @@ export async function place(client: Client): Promise<Rented | undefined> {
     return rented
   } catch (error) {
     if (lost(error)) order.set({ state: "uncertain", order: asked, quote: stated, key, error })
-    else order.set({ state: "refused", order: asked, error, rose: error instanceof ApiError && error.body.code === "rental_price_rose" })
+    else order.set({ state: "refused", order: asked, error, rose: error instanceof ApiError && error.body.code === "rental.price_rose" })
     return undefined
   }
 }

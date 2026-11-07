@@ -56,7 +56,7 @@ browser quote "$(link)" || fail "the page's quote: $(jq -c .failures "$OUT/quote
 mark "the page states: $(jq -r .seen.stated "$OUT/quote.json"), and ordered nothing"
 [ -z "$(own)" ] || fail "a quote left a rental: $(own | paste -sd' ')"
 # A Hub gives a boot 15 minutes, and the use and End take some 10 more: a cap that can't buy that much could end the pod before End is tried.
-quote 5 1500
+quote 1500
 
 # The guard, before the click: what's in $OUT/rental, and what this runner's Calcifer ordered, by what the Hub bills for them.
 GUARD_ALSO=own guard
