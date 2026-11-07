@@ -42,6 +42,30 @@ class _Failure(ctypes.Structure):
     ]
 
 
+@functools.cache
+def _exhausted() -> type:
+    import torch
+
+    from .api import Exhausted
+
+    class Refused(Exhausted, torch.OutOfMemoryError):
+        """varena's `Exhausted` from a Torch-side call (`split_select`, `split_begin`,
+        `prepare_pool`, a region's use): nothing more could be reclaimed for it, and the work it was
+        asked for has not run. Catch it as `tensorfs.varena.Exhausted`; it is still torch's OOM."""
+
+        def __init__(self, message: str, requested_bytes: int = 0, available_bytes: int = 0) -> None:
+            super().__init__(message, requested_bytes)
+            self.available_bytes = available_bytes
+
+    Refused.__name__ = Refused.__qualname__ = "Exhausted"
+    return Refused
+
+
+def _refused(message: str, requested_bytes: int, available_bytes: int) -> BaseException:
+    """The exception `_ext` raises for varena's `Exhausted` and `OutOfMemory`."""
+    return cast(BaseException, _exhausted()(message, requested_bytes, available_bytes))
+
+
 def _installed() -> None:
     if _owner != os.getpid():
         raise RuntimeError("install tensorfs.varena.torch in this child before using its allocator")

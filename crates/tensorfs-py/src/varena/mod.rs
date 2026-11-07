@@ -148,9 +148,13 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
         varena::Error::Callback(_) => return PyRuntimeError::new_err(message),
-        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } | varena::Error::CaptureMap { .. } => {
-            "OutOfMemoryError"
+        // Nothing more could be reclaimed, before the work ran: a typed refusal that is still
+        // torch's OOM (`tensorfs.varena.torch._refused`).
+        varena::Error::Exhausted { requested_bytes, available_bytes } => {
+            return refused(py, &message, requested_bytes, available_bytes);
         }
+        varena::Error::OutOfMemory { requested_bytes } => return refused(py, &message, requested_bytes, 0),
+        varena::Error::CaptureMap { .. } => "OutOfMemoryError",
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::PhaseOverlap => return PhaseOverlapError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
@@ -167,6 +171,14 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
         Ok(PyErr::from_value(exception))
     })();
     result.unwrap_or_else(|_| PyRuntimeError::new_err(message))
+}
+
+fn refused(py: Python<'_>, message: &str, requested: usize, available: usize) -> PyErr {
+    let built = (|| -> PyResult<PyErr> {
+        let make = py.import("tensorfs.varena.torch")?.getattr("_refused")?;
+        Ok(PyErr::from_value(make.call1((message, requested, available))?))
+    })();
+    built.unwrap_or_else(|_| PyRuntimeError::new_err(message.to_owned()))
 }
 
 #[pyclass(name = "_VarenaDevice", module = "tensorfs._ext", frozen)]
