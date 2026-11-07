@@ -1,10 +1,11 @@
 //! Caller LoRA adapters as one view over a base checkpoint (the Python worker's
 //! `lora_composition.prepare`), on linear and 2-D convolution layers: base `<path>.weight/.bias`
-//! become `<path>.base_layer.*`, factors graft in as `<path>.lora_{A,B}.adapter_<i>.weight`, and
-//! each adapted component's asset `model_adapters.json` holds the ordered graph the executor binds
-//! with PEFT. Nothing is computed, and large parts keep their objects. Factors must already be
-//! canonical PEFT keys (`<path>.lora_A.weight`, `<path>.lora_B.weight`, optional scalar
-//! `<path>.alpha`): foreign layouts are normalized when a model is imported, never here. A view is
+//! become `<path>.base_layer.*`, factors graft in as `<path>.lora_{A,B}.adapter_<i>.weight` (a DoRA's
+//! magnitude as `<path>.lora_magnitude_vector.adapter_<i>.weight`), and each adapted component's asset
+//! `model_adapters.json` holds the ordered graph the executor binds with PEFT. Nothing is computed, and
+//! large parts keep their objects. Factors must already be canonical PEFT keys (`<path>.lora_A.weight`,
+//! `<path>.lora_B.weight`, optional scalar `<path>.alpha` and DoRA `<path>.lora_magnitude_vector` `[out]`):
+//! foreign layouts are normalized when a model is imported, never here. A view is
 //! composed by reference and never written: a header in memory whose tensors point at the base's
 //! and the factors' own chunks (`storage::view`), and its graph, the only bytes it adds.
 use std::{
@@ -19,6 +20,8 @@ use tensorfs::store::{Checkpoint, Store};
 use crate::storage;
 
 pub const FORMAT: &str = "cozy.model.lora/1";
+/// A graph with a DoRA layer: a Runtime that reads only [`FORMAT`] refuses it, never applies it as a LoRA.
+pub const DORA_FORMAT: &str = "cozy.model.lora/2";
 /// The graph's asset in each adapted component of the view.
 pub const GRAPH_FILE: &str = "model_adapters.json";
 
@@ -100,6 +103,9 @@ struct Layer {
     alpha: f64,
     strength: f64,
     dtype: String,
+    /// The layer is a DoRA: its magnitude is grafted beside its factors.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    dora: bool,
 }
 
 #[derive(Serialize)]
@@ -162,7 +168,7 @@ type Pairs<'h> = BTreeMap<String, BTreeMap<&'static str, (String, &'h Tensor)>>;
 fn pairs(factors: &BTreeMap<String, Tensor>) -> (Pairs<'_>, Vec<String>) {
     let (mut pairs, mut stray): (Pairs, _) = (BTreeMap::new(), vec![]);
     for (key, tensor) in factors {
-        let found = [(".lora_A.weight", "a"), (".lora_B.weight", "b"), (".alpha", "alpha")]
+        let found = [(".lora_A.weight", "a"), (".lora_B.weight", "b"), (".alpha", "alpha"), (".lora_magnitude_vector", "magnitude")]
             .into_iter()
             .find_map(|(suffix, role)| key.strip_suffix(suffix).map(|path| (path, role)))
             .filter(|(path, _)| !path.is_empty());
@@ -189,7 +195,15 @@ fn unfit(pair: &BTreeMap<&'static str, (String, &Tensor)>, base: &BTreeMap<Strin
         return Some("not plain f16, bf16 or f32 factors");
     }
     let fit = matches!(weight.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) && a.dtype == b.dtype && fits(a, b, weight);
-    (!fit).then_some("its factors do not fit the base projection")
+    if !fit {
+        return Some("its factors do not fit the base projection");
+    }
+    match pair.get("magnitude") {
+        Some((_, m)) if !(plain(m) && weight.shape.len() == 2 && m.shape == weight.shape[..1]) => {
+            Some("its DoRA magnitude is not a linear's plain [out]")
+        }
+        _ => None,
+    }
 }
 
 /// Whether factors `a` and `b` adapt base `weight`: a linear's `[out, in]` as A `[r, in]` and B
@@ -335,6 +349,10 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                 let ((a_key, a), (b_key, b)) = (&pair["a"], &pair["b"]);
                 validate(adapter, source_component, a_key, a)?;
                 validate(adapter, source_component, b_key, b)?;
+                let magnitude = pair.get("magnitude");
+                if let Some((key, tensor)) = magnitude {
+                    validate(adapter, source_component, key, tensor)?;
+                }
                 // A stated α must be one finite value; one that is not reads as no α.
                 let stated = match pair.get("alpha") {
                     Some((key, tensor)) if plain(tensor) => validate(adapter, source_component, key, tensor)?,
@@ -356,8 +374,9 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                         renamed.entry((component.clone(), key)).or_insert(format!("{path}.base_layer.{suffix}"));
                     }
                 }
-                for (role, key) in [("A", a_key), ("B", b_key)] {
-                    let grafted = format!("{path}.lora_{role}.{alias}.weight");
+                let grafted = [("lora_A", Some(a_key)), ("lora_B", Some(b_key)), ("lora_magnitude_vector", magnitude.map(|(k, _)| k))];
+                for (role, key) in grafted.into_iter().filter_map(|(role, key)| Some((role, key?))) {
+                    let grafted = format!("{path}.{role}.{alias}.weight");
                     let take = (component.clone(), grafted, index + 1, source_component.clone(), key.clone());
                     grafts.entry(component.clone()).or_default().push(take);
                 }
@@ -369,6 +388,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                     alpha,
                     strength: selection.strength,
                     dtype: a.dtype.name().into(),
+                    dora: magnitude.is_some(),
                 });
             }
             if taken > 0 {
@@ -415,7 +435,7 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
     let base_ref = base;
     let base = checkpoint(base)?;
     let adapters = selections.iter().map(|s| Ok((s.clone(), checkpoint(&s.checkpoint)?))).collect::<io::Result<Vec<_>>>()?;
-    let (takes, graph, warnings) = plan(&base, &adapters)?;
+    let (takes, mut graph, warnings) = plan(&base, &adapters)?;
     let each = (selections.iter())
         .map(|s| {
             let id = s.checkpoint.id();
@@ -431,6 +451,9 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
     );
     let id = format!("view-{}", &identity[..40]);
     let adapted: BTreeSet<&str> = graph.adapters.iter().map(|a| a.component.as_str()).collect();
+    if graph.layers.iter().any(|l| l.dora) {
+        graph.format = DORA_FORMAT;
+    }
     let graph = serde_json_canonicalizer::to_vec(&graph).map_err(io::Error::other)?;
     let sources: Vec<&Header> = std::iter::once(base.header()).chain(adapters.iter().map(|(_, a)| a.header())).collect();
     let header = by_reference(&sources, &takes, &adapted, ObjectRef::of(&graph))?.to_cbor().map_err(io::Error::other)?;
