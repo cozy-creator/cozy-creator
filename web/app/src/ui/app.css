@@ -2480,6 +2480,46 @@ a.tab:hover {
   grid-column: 2;
   align-self: center;
 }
+/* The tools, while an open box's picks take their place: kept as they were, searched and scrolled. */
+.tool-shelf {
+  display: contents;
+}
+.tool-shelf[hidden] {
+  display: none;
+}
+/* What goes on an open box: its name and its tool over its model and its LoRAs. */
+.box-shelf-head {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px;
+  min-width: 0;
+}
+.box-shelf-head b,
+.box-shelf-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.box-shelf-head span {
+  color: var(--faint);
+  font-size: var(--small);
+}
+.browsed.pick {
+  border-radius: 6px;
+  cursor: pointer;
+}
+.browsed.pick:hover {
+  background: var(--tint);
+}
+.browsed.pick.on {
+  background: var(--tint2);
+}
+.picks-on {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 6px 6px;
+}
 .tool-ghost {
   height: 18px;
   margin: 6px;
