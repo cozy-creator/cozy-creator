@@ -1723,8 +1723,11 @@ export class CanvasStore {
     return names.filter((name) => nameKey(name).startsWith(key)).sort()
   }
 
-  /** The name a mention is, in any case, with `_` and `-` alike. */
+  /** The name a mention is, in any case, with `_` and `-` alike. Names differ by more than that, so one written as it's named is that box, found
+   *  without reading every box's name: each box's shape asks of each mention at once. */
   nameOf(mention: string): string | null {
+    const exact = this.views.get(mention)
+    if (exact && !exact.placing) return mention
     const key = nameKey(mention)
     for (const [name, view] of this.views) if (!view.placing && nameKey(name) === key) return name
     return null
