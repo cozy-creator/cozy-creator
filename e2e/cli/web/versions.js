@@ -882,6 +882,8 @@ async function died(why) {
     await until('16:9 asked', () => asset('shapes'), (row) => row?.fields?.aspect_ratio === '16:9' && row.pinned);
     await open('shapes');
     const shapesHere = page.locator('.card.here[data-asset="shapes"]');
+    // Once the page has read its approval: an open made before that shows what it last read.
+    await page.locator('.card.here.showing-approved[data-asset="shapes"]').waitFor();
     const frameShape = async () => {
       const { width, height } = await shapesHere.locator('.media').first().boundingBox();
       return width / height;

@@ -3200,15 +3200,29 @@ input[type="checkbox"] {
 .glimpse.failed {
   opacity: 0.4;
 }
+/* Its words, one line top left, as how far it's got is bottom left: open, as the box's other words are; at rest one size on screen down to
+   --hang. */
 .glimpse-label {
   position: absolute;
-  left: 6px;
-  top: 6px;
-  padding: 0 4px;
-  border-radius: 3px;
+  left: var(--s3);
+  top: var(--s3);
+  max-width: calc(100% - 2 * var(--s3));
+  padding: 1px var(--s3);
+  overflow: hidden;
+  border-radius: 5px;
   background: color-mix(in srgb, var(--bg) 70%, transparent);
-  font-size: 10px;
+  font: calc(var(--t-small) * var(--on)) / 1.4 var(--sans);
   color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card:not(.here) .glimpse-label {
+  left: calc(var(--s3) * var(--hang, 1));
+  top: calc(var(--s3) * var(--hang, 1));
+  max-width: calc(100% / var(--hang, 1) - 2 * var(--s3));
+  font-size: calc(var(--t-small) * var(--ui));
+  transform: scale(var(--hang, 1));
+  transform-origin: top left;
 }
 .beats-from input {
   width: 72px;

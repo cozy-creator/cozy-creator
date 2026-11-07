@@ -154,8 +154,8 @@ function audit({ floor, hangZoom, fitted = true }) {
         if (!scrolls && !scrolled(el, panel)) say('outside', el, `${round(r)} past its panel ${round(box)}`);
         continue;
       }
-      // Clear of a drawn or ruled edge: a control's own outline mustn't sit on it.
-      if (framed && !el.closest('.takes') && (r.left - box.left < pad || box.right - r.right < pad || (!scrolls && (r.top - box.top < pad || box.bottom - r.bottom < pad))) && !panel.matches('.top, .here-side, .zoom, .ptabs')) {
+      // Clear of a drawn or ruled edge: a control's own outline mustn't sit on it. Scrolled within the panel, it meets the top or bottom where it fades.
+      if (framed && !el.closest('.takes') && (r.left - box.left < pad || box.right - r.right < pad || (!scrolls && !scrolled(el, panel) && (r.top - box.top < pad || box.bottom - r.bottom < pad))) && !panel.matches('.top, .here-side, .zoom, .ptabs')) {
         say('edge', el, `${Math.round(Math.min(r.left - box.left, box.right - r.right, r.top - box.top, box.bottom - r.bottom) / scale)} px from its panel's edge`);
       }
     }
