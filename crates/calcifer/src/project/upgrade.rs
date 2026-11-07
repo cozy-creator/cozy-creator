@@ -20,9 +20,9 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::{
-    assetfile::mentions_renamed,
-    canvas,
-    folder::{self, Folder, Lock, MEASURED},
+    folder::{self, Folder, Lock},
+    legacy::{self, MEASURED},
+    written::mentions_renamed,
     format::{Doc, FORMAT, State, TEXT, canonical, invalid, made_here, names_a_file, plain_tool, yaml_key},
     format2,
     graph::{mentions, mentions_in, name_key},
@@ -717,10 +717,10 @@ pub(super) fn on_touch(dir: &Path) -> Result<Vec<String>, Error> {
 }
 
 /// `dir`'s project, format 2, as format 3. `status`: what `cozy project status --json` said.
-pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
+pub(super) fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     let dir = holding(dir)?;
     let folder = Folder::at(&dir);
-    let text = folder.text()?;
+    let text = std::fs::read_to_string(dir.join(folder::PROJECT)).map_err(|e| io(&dir, e))?;
     let names_a_file_then = |path: &[&str]| matches!(path, ["entities", ..]) || matches!(path, ["assets", .., "image" | "video" | "audio"]);
     let top = to_json_keeping(&text, names_a_file_then).map_err(|why| refused("project_yaml", format!("{}: {why}", folder::PROJECT)))?;
     let Some(top) = top.as_object() else { return Err(refused("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))) };
@@ -888,7 +888,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         held.name = shown.clone();
         lock.assets.insert(name_key(&shown), held);
     }
-    folder.fill(&mut lock);
+    folder.fill(&mut lock, &BTreeMap::new());
     // What each is, while this reads with nothing here to say.
     for (sha256, path) in &paths {
         if let Some(file) = lock.files.get_mut(sha256) {
@@ -929,7 +929,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     }
     platform::durable::replace(&dir.join(MEASURED), json!(measured).to_string().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
     platform::durable::replace(&dir.join(folder::LOCK), lock.written().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
-    canvas::all_renamed(&folder, &renamed)?;
+    legacy::canvas_renamed(&dir, &renamed)?;
     platform::durable::replace(&yaml_at, new_text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
 
     said.extend(notes);
@@ -982,8 +982,7 @@ pub fn tools(dir: &Path) -> Result<Upgraded, Error> {
 fn four(dir: &Path, told: &BTreeMap<String, BTreeSet<String>>) -> Result<Upgraded, Error> {
     let dir = holding(dir)?;
     let folder = Folder::at(&dir);
-    let text = folder.text()?;
-    let mut lock = folder.lock()?;
+    let (text, mut lock) = legacy::files_of(&folder)?;
     if !lock.pending.is_empty() || !lock.walk.asks.is_empty() {
         return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy project status"));
     }
@@ -1041,7 +1040,7 @@ fn four(dir: &Path, told: &BTreeMap<String, BTreeSet<String>>) -> Result<Upgrade
         let shown = lock.asset(from).map_or_else(|| from.clone(), |held| held.name.clone());
         super::renamed(&mut lock, &shown, to);
     }
-    let doc = Doc::of(&folder, &new_text, &lock)?;
+    let doc = Doc::of_text(&folder, &new_text, &lock)?;
     let was_of = |name: &str| renames.iter().find(|(_, new)| name_key(new) == name_key(name)).map_or_else(|| name_key(name), |(old, _)| old.clone());
     let current: BTreeMap<String, u32> = (doc.assets.iter())
         .filter_map(|asset| match then.get(&was_of(&asset.name))? {
@@ -1058,10 +1057,11 @@ fn four(dir: &Path, told: &BTreeMap<String, BTreeSet<String>>) -> Result<Upgrade
         platform::durable::replace(&dir.join(WAS_THREE_LOCK), &held, 0o644).map_err(|e| io(&dir, e))?;
     }
     platform::durable::replace(&dir.join(folder::LOCK), lock.written().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
-    canvas::all_renamed(&folder, |name| renamed(name))?;
+    legacy::canvas_renamed(&dir, &|name: &str| renamed(name))?;
     platform::durable::replace(&dir.join(folder::PROJECT), new_text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
 
-    let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
+    let (text, lock) = legacy::files_of(&folder)?;
+    let doc = Doc::of_text(&folder, &text, &lock)?;
     let now = doc.stand(&lock);
     for i in 0..doc.assets.len() {
         let told = told.get(&was_of(&doc.assets[i].name));

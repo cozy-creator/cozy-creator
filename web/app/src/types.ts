@@ -329,7 +329,8 @@ export interface Row {
 }
 
 export interface Canvas {
-  etag: string
+  /** The project's revision these rows are of. */
+  seq: number
   cards: Record<string, Row>
 }
 
@@ -337,6 +338,9 @@ export interface Import {
   source: string
   name?: string
   at?: Row
+  /** What its drop pushed aside, written with it unless another wrote a row since `seq`. */
+  moves?: Record<string, Row>
+  seq?: number
   description?: string
   remove_background?: boolean
   on?: string
@@ -350,6 +354,8 @@ export interface Imported {
   already?: boolean
   run?: Run
   note?: string
+  /** Each of its `moves` another wrote since, as it is. */
+  kept?: Record<string, Row | null>
 }
 
 export interface Held {
@@ -1049,7 +1055,7 @@ export type ServerEvent =
   | { type: "machine.updated"; machine: Machine }
   | { type: "machine.removed"; name: string }
   | { type: "project.changed"; id: string; rev: string; assets?: string[]; gone?: string[]; head?: boolean }
-  | { type: "canvas"; id: string; etag: string; cards: Record<string, Row | null> }
+  | { type: "canvas"; id: string; seq: number; cards: Record<string, Row | null> }
   | { type: "history"; id: string; undo?: HistoryEntry; redo?: HistoryEntry }
   | { type: "resync" }
 
@@ -1088,6 +1094,8 @@ export interface HistoryStepped {
 export interface AssetMade {
   name: string
   etag: string
+  /** Each of its `moves` another wrote since, as it is. */
+  kept?: Record<string, Row | null>
 }
 
 export interface AssetPatched {

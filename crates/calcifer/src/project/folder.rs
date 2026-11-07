@@ -1,13 +1,12 @@
-//! A project folder: `project.yaml` (what a person or the page says, which Calcifer writes whole, `assetfile`),
-//! `project.lock` (cozy's: each file, each asset's versions, what made each, the runs still making one, and what
-//! its walk still owes), `files/`, and the cuts at its root. Every file the project uses is a real file in
-//! `files/<sha256>.<ext>`, flat. project.yaml names one only by a hex prefix of its hash (`Lock::matching`),
-//! so the lock names nothing of this computer and travels with project.yaml.
+//! A project folder (cl-803): `project.db`, which holds everything a project says and has made (`db`, `docs/PROJECT-DB.md`), `files/`,
+//! where every file it uses is kept by its hash (`files/<sha256>.<ext>`, flat), its cuts at its root, and `.runs/`, where a run's outputs
+//! land on their way in. Its boxes name a file only by a hex prefix of its hash (`Lock::matching`), so nothing in it names this computer.
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
     io::Read,
     path::{Path, PathBuf},
-    cell::Cell,
+    rc::Rc,
     sync::{Arc, LazyLock, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
@@ -24,32 +23,22 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use tensorfs::err::{Code, Refusal};
 
+use super::{
+    db::{self, CardRow, Extra, Stored},
+    graph::name_key,
+    written::Written,
+};
 
-use super::graph::name_key;
-
+/// What a project was before `project.db`, imported once on its first open and deleted (`legacy`).
 pub const PROJECT: &str = "project.yaml";
 pub const LOCK: &str = "project.lock";
-/// Where the elements sit: only the page reads it, and nothing in it is an input.
-pub const CANVAS: &str = "project.canvas.yaml";
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
 pub const FILES: &str = "files";
 /// Where a run's outputs land before they are kept in `files/`.
 pub const RUNS: &str = ".runs";
-/// What a walk owes, in `.runs`: no one commits it, and it moves without touching what the project is.
-pub const WALK: &str = ".runs/walk.json";
-/// What `Idempotency-Key`s answered, for their retries. Not in project.lock, which a key would rewrite whole and which goes with the project, and
-/// not in `.runs`, which `reclaim` empties.
-const KEYS: &str = ".keys.json";
-/// How long a key is kept: as long as a held file waits.
-const KEY_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
-/// A cache of what is measured of each file, which a read of the file can always make again.
-pub(super) const MEASURED: &str = ".measured.json";
-/// Where a project.lock that can't be read goes.
-const BROKEN: &str = "project.lock.broken";
-const UNREADABLE: &str = "lock_unreadable";
 /// What marks a row whose name the file has lost: no name can hold it.
 pub(super) const TOMBSTONE: char = '#';
-/// The lock's format.
+/// The lock's format, as `project.lock` wrote it.
 pub(super) const FORMAT: u32 = 3;
 
 /// The most a URL may give: far past any picture, and a shared project can't fill a disk with it.
@@ -156,9 +145,9 @@ pub struct File {
     pub duration_ms: u64,
 }
 
-/// What is measured of a file, kept apart from project.lock, as ffprobe can always say it again.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(super) struct Measured {
+/// What is measured of a file, kept apart from its row, as ffprobe can always say it again.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Measured {
     #[serde(default, skip_serializing_if = "is_zero")]
     width: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -215,7 +204,7 @@ impl File {
 pub type Files = BTreeMap<String, String>;
 
 /// One result of a tool: its number, its files and the key it was made under.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Version {
     /// 1 first, never reused.
     #[serde(default)]
@@ -319,7 +308,7 @@ pub struct Pending {
 
 /// An asset's versions by number, the last number given (numbers are never given again), and the seed of a run that failed,
 /// kept for the next try on those inputs.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Asset {
     /// Its name as the file wrote it when it was made.
     #[serde(default)]
@@ -454,19 +443,6 @@ pub struct Lock {
     /// As `pending`.
     #[serde(skip)]
     pub walk: Owed,
-}
-
-/// What an `Idempotency-Key` answered, and the digest of what asked it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Keyed {
-    pub digest: String,
-    pub at_ms: i64,
-    /// What a new asset was called.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-    /// An import's answer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub answer: Option<protocol::project::Imported>,
 }
 
 /// One file a `cozy run` left in the project.
@@ -784,13 +760,21 @@ impl Lock {
 /// What this Calcifer holds of one project folder, whichever `Folder` names it.
 #[derive(Default)]
 struct Shared {
-    /// Held across each write's read and swap, so no two of this Calcifer's writes to it lose one. Nothing under it waits on the
-    /// disk's write-back, and nothing that reads takes it.
+    /// One writer at a time: an act, or a write of no act's, holds it from what it changes to its commit.
     writing: Mutex<()>,
     /// Held while a file is kept and while files are deleted, so one isn't deleted between.
     collecting: Mutex<()>,
-    /// project.lock as last read, and how what it was read from stood then, so it is read again only when that changes.
-    held: Mutex<Option<(Stamp, Lock)>>,
+    /// `project.db` and what it holds, read once and kept as each commit leaves it.
+    held: Mutex<Option<Held>>,
+}
+
+struct Held {
+    conn: rusqlite::Connection,
+    /// `PRAGMA data_version` as `stored` was read: another connection's commit moves it, and it's read again.
+    seen: i64,
+    stored: Stored,
+    /// How `files/` stood when the lock's table was filled from it.
+    files: String,
 }
 
 static SHARED: LazyLock<Mutex<HashMap<PathBuf, Arc<Shared>>>> = LazyLock::new(Mutex::default);
@@ -803,51 +787,87 @@ fn shared(dir: &Path) -> Arc<Shared> {
 /// A write that took this long, waiting and held, is said, with how long each took.
 const SLOW_MS: f64 = 5.0;
 
-thread_local! {
-    /// What this thread's writes spent replacing their files, since its turn began.
-    static REPLACE_MS: Cell<f64> = const { Cell::new(0.0) };
-}
-
-/// One write's turn at its project's `writing`.
-struct Turn<'a> {
-    _held: MutexGuard<'a, ()>,
-    file: &'static str,
-    began: Instant,
-    wait_ms: f64,
-}
-
-impl Drop for Turn<'_> {
-    fn drop(&mut self) {
-        let (wait_ms, held_ms, replace_ms) = (self.wait_ms, ms(self.began), REPLACE_MS.get());
-        if wait_ms + held_ms >= SLOW_MS {
-            info!(file = self.file, phase = "project_write", wait_ms, held_ms, replace_ms);
-        }
-    }
-}
-
 fn ms(since: Instant) -> f64 {
     since.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Replaced at once, and durable soon after: no write of a project waits on anyone else's bytes reaching the disk. A crash of the
-/// machine in between keeps the file before, whole, and the order of these: what it can lose is the last moment of edits.
-fn replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let began = Instant::now();
-    let done = durable::replace_soon(path, bytes, 0o644).map_err(io);
-    REPLACE_MS.set(REPLACE_MS.get() + ms(began));
-    done
+/// One act: what it has changed so far of each part, over what was committed when it began. A part it hasn't touched is read from `base`.
+struct Acting {
+    id: usize,
+    base: Stored,
+    written: RefCell<Option<Written>>,
+    canvas: RefCell<Option<BTreeMap<String, CardRow>>>,
+    lock: RefCell<Option<Lock>>,
+    walk: RefCell<Option<WalkFile>>,
+    measured: RefCell<Option<BTreeMap<String, Measured>>>,
+    extra: RefCell<Extra>,
+    made: RefCell<Vec<Made>>,
+    after: RefCell<Vec<Box<dyn FnOnce(u64)>>>,
 }
+
+thread_local! {
+    /// The acts this thread is in, innermost last.
+    static ACTING: RefCell<Vec<Rc<Acting>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// This thread in an act until it's dropped, however the act ends.
+struct In(Rc<Acting>);
+
+impl In {
+    fn enter(act: Rc<Acting>) -> Self {
+        ACTING.with(|acting| acting.borrow_mut().push(act.clone()));
+        Self(act)
+    }
+}
+
+impl Drop for In {
+    fn drop(&mut self) {
+        ACTING.with(|acting| acting.borrow_mut().retain(|held| !Rc::ptr_eq(held, &self.0)));
+    }
+}
+
+/// The act on `id` this thread is in, if one.
+fn acting(id: usize) -> Option<Rc<Acting>> {
+    ACTING.with(|acting| acting.borrow().iter().rev().find(|held| held.id == id).cloned())
+}
+
+/// One of a project's parts, as an act reads and writes it.
+macro_rules! part {
+    ($read:ident, $write:ident, $field:ident, $ty:ty) => {
+        #[allow(dead_code)]
+        fn $read<R>(&self, f: impl FnOnce(&$ty) -> R) -> Result<R, Error> {
+            if let Some(act) = acting(self.id()) {
+                let held = act.$field.borrow();
+                return Ok(f(held.as_ref().unwrap_or(&act.base.$field)));
+            }
+            let held = self.held()?;
+            Ok(f(&held.as_ref().expect("held").stored.$field))
+        }
+
+        fn $write<R>(&self, f: impl FnOnce(&mut $ty) -> Result<R, Error>) -> Result<R, Error> {
+            self.act(|| {
+                let act = acting(self.id()).expect("in its act");
+                let mut held = act.$field.borrow_mut();
+                f(held.get_or_insert_with(|| act.base.$field.clone()))
+            })
+        }
+    };
+}
+
+/// A history change a write made, in the order made.
+pub(super) enum Made {
+    Written(Written, Written),
+    Change(super::history::Change),
+}
+
 pub struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
     shared: Arc<Shared>,
-    /// Why what's landing can't go in just now. It's owed in the walk's file, and said as a warning until it has.
+    /// Why what's landing can't go in just now. It's owed in the walk, and said as a warning until it has.
     unsaved: Mutex<Option<String>>,
 }
-
-/// How each of project.lock, the measurements and `files/` stood.
-type Stamp = [String; 3];
 
 impl Folder {
     /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
@@ -855,83 +875,362 @@ impl Folder {
         Self { dir: dir.to_owned(), tools: PathBuf::new(), shared: shared(dir), unsaved: Mutex::default() }
     }
 
-    /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
+    /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's). A folder of the files before
+    /// `project.db` is imported now, once, and they're deleted (cl-803).
     pub fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
-        if !dir.join(PROJECT).is_file() {
-            return Err(Error::new(
-                Kind::NotFound,
-                "project_not_found",
-                format!("{} holds no {PROJECT}", dir.display()),
-            )
-            .next("cozy project new <path>"));
+        let folder = Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() };
+        if !folder.db().is_file() {
+            if !Self::is_project(dir) {
+                return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)).next("cozy project new <path>"));
+            }
+            let _turn = folder.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+            if !folder.db().is_file() {
+                super::legacy::import(&folder)?;
+            }
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() })
+        super::legacy::leftovers(dir);
+        folder.unbind_elsewhere()?;
+        Ok(folder)
     }
 
-    pub fn project(&self) -> PathBuf {
-        self.dir.join(PROJECT)
+    /// The project folder `dir` is, if it is one: `project.db`, or the files a first open imports.
+    pub fn is_project(dir: &Path) -> bool {
+        dir.join(db::DB).is_file() || dir.join(PROJECT).is_file() || super::legacy::pending(dir)
     }
 
-    pub fn text(&self) -> Result<String, Error> {
-        read(&self.project())
+    fn id(&self) -> usize {
+        Arc::as_ptr(&self.shared) as usize
     }
 
-    /// The history: this and `update_lock` are the one way to it, whatever holds it.
-    pub fn lock(&self) -> Result<Lock, Error> {
-        let mut lock = self.lock_file()?;
-        // What the walk owes is never held: the walk's file says it, every time, as it does after a crash.
-        if let Some(walk) = self.walk_kept()? {
-            (lock.pending, lock.walk) = (walk.pending, walk.walk);
-        }
-        Ok(lock)
+    pub fn db(&self) -> PathBuf {
+        self.dir.join(db::DB)
     }
 
-    /// project.lock as the file says, held while it is the same file.
-    fn lock_file(&self) -> Result<Lock, Error> {
-        self.reading_lock(Lock::clone)
-    }
-
-    /// `seen` of project.lock as the file says, with no copy of it made. What the walk owes isn't in it.
-    pub fn reading_lock<R>(&self, seen: impl FnOnce(&Lock) -> R) -> Result<R, Error> {
-        let stamp = self.stamp();
+    /// What's held of `project.db`, read now if it wasn't or another connection wrote it, `files/` filled in again if it moved.
+    fn held(&self) -> Result<MutexGuard<'_, Option<Held>>, Error> {
         let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, lock)) = held.as_ref().filter(|(at, _)| *at == stamp) {
-            return Ok(seen(lock));
+        if held.as_ref().is_none_or(|held| db::data_version(&held.conn) != held.seen) {
+            let conn = match held.take() {
+                Some(was) => was.conn,
+                None if !self.db().is_file() => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy project new <path>")),
+                None => db::open(&self.db())?,
+            };
+            let mut stored = db::load(&conn, &self.db())?;
+            let files = super::stamp(&self.dir.join(FILES));
+            self.fill(&mut stored.lock, &stored.measured);
+            *held = Some(Held { seen: db::data_version(&conn), conn, stored, files });
         }
-        let path = self.dir.join(LOCK);
-        let mut lock = match path.exists() {
-            true => match parse_lock(&read(&path)?) {
-                Err(error) if error.code == UNREADABLE => self.set_aside(&error)?,
-                parsed => parsed?,
-            },
-            false => Lock::default(),
+        let now = super::stamp(&self.dir.join(FILES));
+        if let Some(held) = held.as_mut().filter(|held| held.files != now) {
+            self.fill(&mut held.stored.lock, &held.stored.measured);
+            held.files = now;
+        }
+        Ok(held)
+    }
+
+    /// The revision: one more with each commit.
+    pub fn seq(&self) -> u64 {
+        self.held().ok().and_then(|held| held.as_ref().map(|held| held.stored.seq)).unwrap_or(0)
+    }
+
+    /// `change` as one transaction: every write it makes to this project, its history entry and its request's key commit together, or
+    /// nothing does. Inside another act of this project, it is part of that one.
+    pub fn act<R>(&self, change: impl FnOnce() -> Result<R, Error>) -> Result<R, Error> {
+        let id = self.id();
+        if acting(id).is_some() {
+            return change();
+        }
+        let asked = Instant::now();
+        let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let (began, wait_ms) = (Instant::now(), ms(asked));
+        let (base, files) = {
+            let held = self.held()?;
+            let held = held.as_ref().expect("held");
+            (held.stored.clone(), held.files.clone())
         };
-        self.fill(&mut lock);
-        let answer = seen(&lock);
-        *held = Some((stamp, lock));
+        let act = Rc::new(Acting {
+            id,
+            base,
+            written: RefCell::default(),
+            canvas: RefCell::default(),
+            lock: RefCell::default(),
+            walk: RefCell::default(),
+            measured: RefCell::default(),
+            extra: RefCell::default(),
+            made: RefCell::default(),
+            after: RefCell::default(),
+        });
+        let done = {
+            let _in = In::enter(act.clone());
+            change()
+        };
+        let answer = done?;
+        let act = Rc::try_unwrap(act).unwrap_or_else(|_| panic!("an act outlives its turn"));
+        let mut after = act.base.clone();
+        let changed = [act.written.borrow().is_some(), act.canvas.borrow().is_some(), act.lock.borrow().is_some(), act.walk.borrow().is_some(), act.measured.borrow().is_some()];
+        if let Some(written) = act.written.into_inner() {
+            after.written = written;
+        }
+        if let Some(mut canvas) = act.canvas.into_inner() {
+            let seq = act.base.seq + 1;
+            canvas.iter_mut().filter(|(key, row)| act.base.canvas.get(*key) != Some(row)).for_each(|(_, row)| row.seq = seq);
+            after.canvas = canvas;
+        }
+        if let Some(lock) = act.lock.into_inner() {
+            after.lock = lock;
+        }
+        if let Some(walk) = act.walk.into_inner() {
+            after.walk = walk;
+        }
+        if let Some(measured) = act.measured.into_inner() {
+            after.measured = measured;
+        }
+        let mut extra = act.extra.into_inner();
+        let entry = super::history::composed(self, act.made.into_inner(), &mut extra);
+        if let Some(key) = super::keyed::claimed() {
+            extra.key = Some(key);
+        }
+        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() {
+            return Ok(answer);
+        }
+        let seq = {
+            let mut held = self.held()?;
+            let held = held.as_mut().expect("held");
+            let seq = db::commit(&mut held.conn, &self.db(), &act.base, &after, &extra)?;
+            after.seq = seq.unwrap_or(act.base.seq);
+            held.stored = after;
+            held.files = files;
+            held.seen = db::data_version(&held.conn);
+            seq
+        };
+        super::history::committed(self, entry);
+        let now = seq.unwrap_or(act.base.seq);
+        for told in act.after.into_inner() {
+            told(now);
+        }
+        if seq.is_some() && changed.contains(&true) {
+            crate::events::project_changed(&self.dir);
+        }
+        let held_ms = ms(began);
+        if wait_ms + held_ms >= SLOW_MS {
+            info!(phase = "project_write", seq = seq.unwrap_or_default(), wait_ms, held_ms);
+        }
         Ok(answer)
     }
 
-    fn turn(&self, file: &'static str) -> Turn<'_> {
-        let asked = Instant::now();
-        let held = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
-        REPLACE_MS.set(0.0);
-        Turn { _held: held, file, began: Instant::now(), wait_ms: ms(asked) }
+    part!(reading_written, writing_written, written, Written);
+    part!(reading_canvas, writing_canvas, canvas, BTreeMap<String, CardRow>);
+    part!(reading_bare_lock, writing_bare_lock, lock, Lock);
+    part!(reading_walk, writing_walk, walk, WalkFile);
+    part!(reading_measured, writing_measured, measured, BTreeMap<String, Measured>);
+
+    /// What a write of this act says in its history, kept for the act's end.
+    pub(super) fn made(&self, made: impl FnOnce() -> Made) {
+        if let Some(act) = acting(self.id()) {
+            act.made.borrow_mut().push(made());
+        }
     }
 
-    fn stamp(&self) -> Stamp {
-        [LOCK, MEASURED, FILES].map(|name| super::stamp(&self.dir.join(name)))
+    /// Done once the act this is in commits, given the revision it made: what a stream is told.
+    pub(super) fn then(&self, told: impl FnOnce(u64) + 'static) {
+        match acting(self.id()) {
+            Some(act) => act.after.borrow_mut().push(Box::new(told)),
+            None => told(self.seq()),
+        }
     }
 
-    /// A project.lock that can't be read is kept, never written over: moved aside, and said by `Doc::read` for as long as it's there.
-    fn set_aside(&self, why: &Error) -> Result<Lock, Error> {
-        let aside = (1..).map(|n| self.dir.join(if n == 1 { BROKEN.to_owned() } else { format!("{BROKEN}-{n}") })).find(|path| !path.exists()).expect("a free name");
-        std::fs::rename(self.dir.join(LOCK), &aside).map_err(|e| io_at(&aside, e))?;
-        warn!("{}: {}: moved to {}", self.dir.display(), why.message, aside.display());
-        Ok(Lock::default())
+    /// History rows this act writes, and those it deletes.
+    pub(super) fn write_ops(&self, ops: Vec<db::OpRow>, gone: Vec<u64>) -> Result<(), Error> {
+        self.act(|| {
+            let act = acting(self.id()).expect("in its act");
+            let mut extra = act.extra.borrow_mut();
+            extra.ops.extend(ops);
+            extra.ops_gone.extend(gone);
+            Ok(())
+        })
     }
 
-    /// What says project.lock was set aside, if one was: its versions aren't read.
+    /// Every history row, oldest first.
+    pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
+        let held = self.held()?;
+        db::ops(&held.as_ref().expect("held").conn, &self.db())
+    }
+
+    /// What the request under `key` asked and answered here, if it was kept.
+    pub(super) fn keyed(&self, key: &str) -> Option<db::Keyed> {
+        let held = self.held().ok()?;
+        db::keyed(&held.as_ref()?.conn, key)
+    }
+
+    /// The answer the request under `key` gave, kept on its row.
+    pub(super) fn keep_answer(&self, key: &str, digest: &str, status: u16, content_type: &str, body: &[u8]) -> Result<(), Error> {
+        let held = self.held()?;
+        db::keep_answer(&held.as_ref().expect("held").conn, key, digest, status, content_type, body).map_err(|e| Error::new(Kind::Unavailable, "project_db", e.to_string()))
+    }
+
+    /// A copy of `project.db` whole, for an archive.
+    pub fn snapshot(&self, to: &Path) -> Result<(), Error> {
+        let held = self.held()?;
+        db::snapshot(&held.as_ref().expect("held").conn, to, &self.db())
+    }
+
+    /// What the project says: its boxes, as rows.
+    pub fn written(&self) -> Result<Written, Error> {
+        self.reading_written(Written::clone)
+    }
+
+    /// `seen` of its boxes, with no copy made.
+    pub fn reading_boxes<R>(&self, seen: impl FnOnce(&Written) -> R) -> Result<R, Error> {
+        self.reading_written(seen)
+    }
+
+    /// The project as YAML, format 4: its export, and what a render keeps of what it was asked.
+    pub fn text(&self) -> Result<String, Error> {
+        self.reading_written(Written::to_yaml)
+    }
+
+    /// One change to its boxes. The history hears what it was and is.
+    pub fn edit<R>(&self, change: impl FnOnce(&mut Written) -> Result<R, Error>) -> Result<R, Error> {
+        self.act(|| {
+            let before = self.written()?;
+            let answer = self.writing_written(change)?;
+            let after = self.written()?;
+            if before != after {
+                self.made(|| Made::Written(before, after));
+            }
+            Ok(answer)
+        })
+    }
+
+    /// Its canvas rows, by name key.
+    pub fn canvas(&self) -> Result<BTreeMap<String, CardRow>, Error> {
+        self.reading_canvas(BTreeMap::clone)
+    }
+
+    /// Its canvas rows and the revision they're of, read at once.
+    pub fn canvas_at(&self) -> Result<(u64, BTreeMap<String, CardRow>), Error> {
+        let held = self.held()?;
+        let stored = &held.as_ref().expect("held").stored;
+        Ok((stored.seq, stored.canvas.clone()))
+    }
+
+    pub fn edit_canvas<R>(&self, change: impl FnOnce(&mut BTreeMap<String, CardRow>) -> Result<R, Error>) -> Result<R, Error> {
+        self.writing_canvas(change)
+    }
+
+    /// The history: this and `update_lock` are the one way to it, whatever holds it. What the walk owes is in it.
+    pub fn lock(&self) -> Result<Lock, Error> {
+        let mut lock = self.reading_bare_lock(Lock::clone)?;
+        let walk = self.reading_walk(WalkFile::clone)?;
+        (lock.pending, lock.walk) = (walk.pending, walk.walk);
+        Ok(lock)
+    }
+
+    /// `seen` of the lock, with no copy made. What the walk owes isn't in it.
+    pub fn reading_lock<R>(&self, seen: impl FnOnce(&Lock) -> R) -> Result<R, Error> {
+        self.reading_bare_lock(seen)
+    }
+
+    /// Applies `change` to the lock as it is now, what the walk owes among it.
+    pub fn update_lock(&self, change: impl FnOnce(&mut Lock)) -> Result<(), Error> {
+        self.act(|| {
+            let walk = self.reading_walk(WalkFile::clone)?;
+            let moved = self.writing_bare_lock(|lock| {
+                (lock.pending, lock.walk) = (walk.pending.clone(), walk.walk.clone());
+                change(lock);
+                let owed = (std::mem::take(&mut lock.pending), std::mem::take(&mut lock.walk));
+                Ok(owed)
+            })?;
+            let (pending, owed) = moved;
+            if serde_json::to_string(&pending).ok() != serde_json::to_string(&walk.pending).ok() || serde_json::to_string(&owed).ok() != serde_json::to_string(&walk.walk).ok() {
+                let bound = self.bound();
+                self.writing_walk(|walk| {
+                    (walk.pending, walk.walk) = (pending, owed);
+                    walk.bound = (!walk.is_empty()).then_some(bound).flatten();
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })
+    }
+
+    /// What the walk owes, with no need to read the rest.
+    pub fn walk_now(&self) -> Result<WalkFile, Error> {
+        self.reading_walk(WalkFile::clone)
+    }
+
+    /// Applies `change` to what the walk owes, touching nothing of what the project is.
+    pub fn update_walk(&self, change: impl FnOnce(&mut WalkFile)) -> Result<(), Error> {
+        let bound = self.bound();
+        self.writing_walk(|walk| {
+            change(walk);
+            walk.bound = (!walk.is_empty()).then_some(bound).flatten();
+            Ok(())
+        })
+    }
+
+    /// Who may go on with this folder's walk: this path, under this Calcifer. None where no Calcifer runs, which judges nothing.
+    fn bound(&self) -> Option<Bound> {
+        let path = durable::canonical(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        CALCIFER.get().map(|calcifer| Bound { path, calcifer: calcifer.clone() })
+    }
+
+    /// A walk of another folder (this is a copy) or another Calcifer's doesn't go on here: what it owes is dropped.
+    fn unbind_elsewhere(&self) -> Result<(), Error> {
+        let Some(here) = self.bound() else { return Ok(()) };
+        let elsewhere = self.reading_walk(|walk| walk.bound.as_ref().is_some_and(|bound| *bound != here))?;
+        if !elsewhere {
+            return Ok(());
+        }
+        warn!("{}: its walk is of another folder or Calcifer, so it doesn't go on here", here.path.display());
+        self.act(|| {
+            self.writing_walk(|walk| {
+                *walk = WalkFile::default();
+                Ok(())
+            })?;
+            self.drop_texts();
+            Ok(())
+        })
+    }
+
+    /// The text render `ask` was asked with: kept apart, so what the walk owes stays small.
+    pub fn text_of(&self, ask: &Ask) -> Result<String, Error> {
+        if !ask.text.is_empty() {
+            return Ok(ask.text.clone());
+        }
+        if let Some(act) = acting(self.id())
+            && let Some((_, Some(text))) = act.extra.borrow().asked.iter().rev().find(|(digest, _)| *digest == ask.digest)
+        {
+            return Ok(text.clone());
+        }
+        let held = self.held()?;
+        db::asked(&held.as_ref().expect("held").conn, &ask.digest).ok_or_else(|| Error::new(Kind::NotFound, "ask_text_missing", format!("the text render {} was asked with is gone", ask.id)))
+    }
+
+    pub fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
+        self.extra(|extra| extra.asked.push((digest.to_owned(), Some(text.to_owned()))))
+    }
+
+    pub fn drop_text(&self, digest: &str) {
+        let _ = self.extra(|extra| extra.asked.push((digest.to_owned(), None)));
+    }
+
+    /// No render holds any.
+    pub fn drop_texts(&self) {
+        let _ = self.extra(|extra| {
+            extra.asked.clear();
+            extra.asked_cleared = true;
+        });
+    }
+
+    fn extra(&self, change: impl FnOnce(&mut Extra)) -> Result<(), Error> {
+        self.act(|| {
+            change(&mut acting(self.id()).expect("in its act").extra.borrow_mut());
+            Ok(())
+        })
+    }
+
+    /// What says a landing couldn't be listed yet.
     pub fn unsaved(&self) -> Option<String> {
         self.unsaved.lock().expect("unsaved lock").clone()
     }
@@ -940,47 +1239,23 @@ impl Folder {
         *self.unsaved.lock().expect("unsaved lock") = why;
     }
 
-    pub fn lock_set_aside(&self) -> bool {
-        self.dir.join(BROKEN).exists()
-    }
-
-    /// A lock for a project about to hold a file: `files/` with none reads as a project that lost its own.
-    pub fn start_lock(&self) -> Result<(), Error> {
-        match self.dir.join(LOCK).exists() {
-            true => Ok(()),
-            false => self.update_lock(|_| {}),
-        }
-    }
-
-    /// Whether project.lock is gone from a project that has files.
-    pub fn lock_gone(&self) -> bool {
-        !self.dir.join(LOCK).exists() && std::fs::read_dir(self.dir.join(FILES)).is_ok_and(|mut files| files.next().is_some())
-    }
-
-    /// Why the files `named` leaves out may be all that's left of this project's takes, not what's done with: project.lock was lost, can't be
-    /// read or lists nothing, so nothing here says what they were. `reclaim --yes` deletes none of them.
+    /// Why the files `named` leaves out may be all that's left of this project's takes, not what's done with: the lock lists no version or
+    /// run while `files/` holds what nothing names. `reclaim --yes` deletes none of them.
     pub fn history_lost(&self, lock: &Lock, named: &BTreeSet<String>) -> Option<String> {
         let unnamed = lock.files.values().filter(|file| !named.contains(&file.sha256) && self.path(&file.path).is_file()).count();
-        let said = if unnamed == 0 {
+        if unnamed == 0 || !lock.runs.is_empty() || lock.assets.values().any(|held| held.on_record().next().is_some()) {
             return None;
-        } else if self.lock_set_aside() {
-            format!("{LOCK} can't be read and is kept as {BROKEN}")
-        } else if !self.dir.join(LOCK).exists() {
-            format!("{LOCK} is gone")
-        } else if lock.runs.is_empty() && lock.assets.values().all(|held| held.on_record().next().is_none()) {
-            format!("{LOCK} lists no versions")
-        } else {
-            return None;
-        };
-        Some(format!("{said}, so the {unnamed} files nothing names in {FILES}/ may be all that's left of this project's takes"))
+        }
+        Some(format!("the project lists no versions, so the {unnamed} files nothing names in {FILES}/ may be all that's left of its takes"))
     }
 
     /// `lock`'s file table whole, from what needs no record: each file in `files/` names itself, what a version or run names and isn't here has
-    /// its hash, and what is measured comes from a cache a read of the file can always make again.
-    pub(super) fn fill(&self, lock: &mut Lock) {
+    /// its hash, and what is measured comes from `measured`, which a read of the file can always make again.
+    pub(super) fn fill(&self, lock: &mut Lock, measured: &BTreeMap<String, Measured>) {
         for (sha256, file) in &mut lock.files {
             file.sha256.clone_from(sha256);
             file.path = format!("{FILES}/{}{}", hex_of(sha256), file.ext);
+            file.here = false;
         }
         for sha256 in lock.recorded() {
             let file = lock.files.entry(sha256.clone()).or_default();
@@ -1000,158 +1275,12 @@ impl Folder {
                 (file.ext, file.machine, file.length) = Default::default();
             }
         }
-        let measured: BTreeMap<String, Measured> = std::fs::read(self.dir.join(MEASURED)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         for (sha256, held) in measured {
-            if let Some(file) = lock.files.get_mut(&sha256) {
+            if let Some(file) = lock.files.get_mut(sha256) {
                 (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms) = (held.width, held.height, held.fps, held.frames, held.alpha, held.duration_ms);
             }
         }
     }
-
-    /// What the walk owes, with no need to read the rest. A lock from before holds its own until its next write.
-    pub fn walk_now(&self) -> Result<WalkFile, Error> {
-        Ok(self.walk_kept()?.unwrap_or_default())
-    }
-
-    /// Who may go on with this folder's walk: this path, under this Calcifer. None where no Calcifer runs, which judges nothing.
-    fn bound(&self) -> Option<Bound> {
-        let path = durable::canonical(&self.dir).unwrap_or_else(|_| self.dir.clone());
-        CALCIFER.get().map(|calcifer| Bound { path, calcifer: calcifer.clone() })
-    }
-
-    fn walk_kept(&self) -> Result<Option<WalkFile>, Error> {
-        let path = self.dir.join(WALK);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let walk: WalkFile = serde_json::from_str(&read(&path)?).map_err(|e| Error::new(Kind::Validation, "walk_unreadable", format!("{WALK}: {e}")))?;
-        if let Some(here) = self.bound().filter(|here| walk.bound.as_ref() != Some(here)) {
-            warn!("{}: its walk is of {:?}, so it doesn't go on here", here.path.display(), walk.bound);
-            let _ = std::fs::remove_file(&path);
-            self.drop_texts();
-            return Ok(None);
-        }
-        Ok(Some(walk))
-    }
-
-    fn keep_walk(&self, walk: &mut WalkFile) -> Result<(), Error> {
-        let path = self.dir.join(WALK);
-        if walk.is_empty() {
-            return match std::fs::remove_file(&path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_at(&path, e)),
-                _ => Ok(()),
-            };
-        }
-        walk.bound = self.bound();
-        std::fs::create_dir_all(self.dir.join(RUNS)).map_err(|e| io_at(&path, e))?;
-        replace(&path, serde_json::to_string(walk).expect("a walk serializes").as_bytes())
-    }
-
-    /// The text render `ask` was asked with: kept apart, so what the walk owes stays small.
-    pub fn text_of(&self, ask: &Ask) -> Result<String, Error> {
-        match ask.text.is_empty() {
-            true => read(&self.dir.join(RUNS).join("asked").join(&ask.digest)),
-            false => Ok(ask.text.clone()),
-        }
-    }
-
-    pub fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
-        let dir = self.dir.join(RUNS).join("asked");
-        std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
-        replace(&dir.join(digest), text.as_bytes())
-    }
-
-    pub fn drop_text(&self, digest: &str) {
-        let _ = std::fs::remove_file(self.dir.join(RUNS).join("asked").join(digest));
-    }
-
-    /// No render holds any.
-    pub fn drop_texts(&self) {
-        let _ = std::fs::remove_dir_all(self.dir.join(RUNS).join("asked"));
-    }
-
-    /// What `Idempotency-Key` `key` answered here.
-    pub fn keyed(&self, key: &str) -> Option<Keyed> {
-        self.keys().remove(key)
-    }
-
-    fn keys(&self) -> BTreeMap<String, Keyed> {
-        std::fs::read(self.dir.join(KEYS)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
-    }
-
-    /// Keeps what `key` answered.
-    pub fn keep_key(&self, key: &str, digest: &str, name: &str, answer: Option<protocol::project::Imported>) -> Result<(), Error> {
-        let _turn = self.turn(KEYS);
-        let mut keys = self.keys();
-        let at_ms = super::now_ms();
-        keys.retain(|_, row| at_ms - row.at_ms < KEY_KEPT_MS);
-        keys.insert(key.to_owned(), Keyed { digest: digest.to_owned(), at_ms, name: name.to_owned(), answer });
-        replace(&self.dir.join(KEYS), serde_json::to_string(&keys).expect("keys serialize").as_bytes())
-    }
-
-    /// Applies `change` to what the walk owes, touching nothing of what the project is.
-    pub fn update_walk(&self, change: impl Fn(&mut WalkFile)) -> Result<(), Error> {
-        let _turn = self.turn(WALK);
-        let mut walk = self.walk_kept()?.unwrap_or_default();
-        change(&mut walk);
-        self.keep_walk(&mut walk)
-    }
-
-    /// Applies `change` to project.lock as it is now, what the walk owes among it.
-    pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
-        let _turn = self.turn(LOCK);
-        let moved = std::cell::RefCell::new(None);
-        let wrote = std::cell::RefCell::new(None);
-        // What this wrote it needn't read back.
-        let held = || {
-            if let Some(mut lock) = wrote.take() {
-                self.fill(&mut lock);
-                *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.stamp(), lock));
-            }
-        };
-        self.rewrite_held(&self.dir.join(LOCK), |_| {
-            let mut lock = self.lock_file()?;
-            let kept = self.walk_kept()?;
-            let before = kept.as_ref().map(|walk| (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes")));
-            if let Some(walk) = kept {
-                (lock.pending, lock.walk) = (walk.pending, walk.walk);
-            }
-            change(&mut lock);
-            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
-            let after = (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes"));
-            // Unchanged, it isn't written.
-            *moved.borrow_mut() = (before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty())).then_some(walk);
-            let text = lock.written();
-            *wrote.borrow_mut() = Some(lock);
-            Ok(text)
-        }, |_, _| held())?;
-        // The project first. Killed between, a version is listed and the run that made it is still owed, so it lands again, the same. The
-        // other way round, its take would be listed nowhere and its run owed by no one.
-        match moved.into_inner() {
-            Some(mut walk) => self.keep_walk(&mut walk),
-            None => Ok(()),
-        }
-    }
-
-    /// Writes one change to project.yaml: `change` is given what it holds this moment, and a save that lands first is read again,
-    /// so that edit stands. The only write of it but `cozy project new` and `cozy project upgrade`.
-    pub fn edit_project(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
-        self.rewrite(&self.project(), change)
-    }
-
-    /// What project.canvas.yaml holds, nothing if it isn't there.
-    pub fn canvas_text(&self) -> Result<String, Error> {
-        match self.dir.join(CANVAS).exists() {
-            true => read(&self.dir.join(CANVAS)),
-            false => Ok(String::new()),
-        }
-    }
-
-    /// Writes one change to project.canvas.yaml, as `edit_project` does to project.yaml.
-    pub fn edit_canvas(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
-        self.rewrite(&self.dir.join(CANVAS), change).map(drop)
-    }
-
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
     pub fn keep(&self, source: &Path) -> Result<String, Error> {
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
@@ -1217,8 +1346,8 @@ impl Folder {
                 }
             };
             // A walk's run lands on its version: nothing of the project moves until then.
-            let listed = match self.walk_kept() {
-                Ok(walk) if walk.as_ref().is_some_and(|walk| walk.walk.runs.contains_key(&made.run)) => self.update_walk(|walk| listed(&mut walk.walk.landing)),
+            let listed = match self.walk_now() {
+                Ok(walk) if walk.walk.runs.contains_key(&made.run) => self.update_walk(|walk| listed(&mut walk.walk.landing)),
                 Ok(_) => self.update_lock(|lock| listed(&mut lock.runs)),
                 Err(error) => Err(error),
             };
@@ -1364,14 +1493,19 @@ impl Folder {
                 }
             }
         }
-        self.rewrite(&self.dir.join(MEASURED), |text| {
-            let mut held: BTreeMap<String, Measured> = serde_json::from_str(text).unwrap_or_default();
+        self.writing_measured(|held| {
             for (sha256, file) in &measured {
                 held.insert(sha256.clone(), Measured { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms });
             }
-            Ok(serde_json::to_string(&held).expect("what is measured serializes"))
+            Ok(())
+        })?;
+        self.update_lock(|held| {
+            for (sha256, file) in &measured {
+                if let Some(row) = held.files.get_mut(sha256) {
+                    (row.width, row.height, row.fps, row.frames, row.alpha, row.duration_ms) = (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms);
+                }
+            }
         })
-        .map(drop)
     }
 
     /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, their bytes, and how many
@@ -1433,9 +1567,9 @@ impl Folder {
     }
 }
 
-/// `text` as a lock of this format. A lock of another isn't read, so nothing writes over it.
-fn parse_lock(text: &str) -> Result<Lock, Error> {
-    let unreadable = |why: String| Error::new(Kind::Validation, UNREADABLE, format!("{LOCK}: {why}"));
+/// `text` as a `project.lock` of format 3, for the first open's import. A lock of another isn't read.
+pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
+    let unreadable = |why: String| Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {why}"));
     let value = protocol::yaml::to_json(text).map_err(unreadable)?;
     match value["format"].as_u64() {
         Some(format) if format == u64::from(FORMAT) => serde_json::from_value(value).map_err(|e| unreadable(e.to_string())),
@@ -1514,62 +1648,6 @@ fn file_of(sha256: &str, source: &Path) -> String {
     format!("{FILES}/{}{ext}", hex_of(sha256))
 }
 
-impl Folder {
-    /// Writes `change(what path holds)` over it: compare and swap on its bytes. A write that lands
-    /// between the read and the swap (a person saving) is read again and the change applied to it,
-    /// so that edit stands.
-    fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
-        let file = match path.file_name().and_then(|name| name.to_str()) {
-            Some(PROJECT) => PROJECT,
-            Some(CANVAS) => CANVAS,
-            _ => MEASURED,
-        };
-        let _turn = self.turn(file);
-        self.rewrite_held(path, change, |before, after| {
-            if file == PROJECT {
-                super::history::wrote(&self.dir, before, after, super::stamp(path));
-            }
-        })
-    }
-
-    /// project.yaml as a hand left it, if it moved since Calcifer last wrote or saw it: its history says so.
-    pub fn look_by_hand(&self) {
-        let path = self.project();
-        let stamp = super::stamp(&path);
-        if !super::history::moved_since(&self.dir, &stamp) {
-            return;
-        }
-        let _turn = self.turn(PROJECT);
-        if let Ok(text) = read(&path) {
-            super::history::seen(&self.dir, &text, stamp);
-        }
-    }
-
-    /// As `rewrite`, its turn taken. `wrote` hears what the file held and holds now.
-    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce(&str, &str)) -> Result<String, Error> {
-        loop {
-            let before = match path.exists() {
-                true => read(path)?,
-                false => String::new(),
-            };
-            let after = change(&before)?;
-            if after == before {
-                return Ok(after);
-            }
-            let now = match path.exists() {
-                true => read(path)?,
-                false => String::new(),
-            };
-            if now == before {
-                replace(path, after.as_bytes())?;
-                wrote(&before, &after);
-                crate::events::project_changed(&self.dir);
-                return Ok(after);
-            }
-        }
-    }
-}
-
 /// How many files are under `dir`, and their bytes.
 fn walked(dir: &Path) -> (u64, u64) {
     let (mut files, mut bytes) = (0, 0);
@@ -1588,10 +1666,6 @@ fn walked(dir: &Path) -> (u64, u64) {
         }
     }
     (files, bytes)
-}
-
-fn read(path: &Path) -> Result<String, Error> {
-    std::fs::read_to_string(path).map_err(|e| io_at(path, e))
 }
 
 /// What ffprobe last said of each film at a project's root, by its size and time.

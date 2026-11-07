@@ -239,6 +239,12 @@ impl Client {
         self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key)).await
     }
 
+    /// A text body PUT, as an export read back, under its call's key; its answer's body isn't read.
+    pub async fn put_text(&self, path: &str, body: &str) -> Result<(), Error> {
+        let key = write_key();
+        self.opened(|c, base| c.put(format!("{base}{path}")).header(reqwest::header::CONTENT_TYPE, "application/yaml").header(KEY, &key).body(body.to_owned())).await.map(drop)
+    }
+
     /// A plain-text answer, such as a log.
     pub async fn text(&self, path: &str) -> Result<String, Error> {
         let answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;

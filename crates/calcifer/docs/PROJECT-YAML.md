@@ -1,6 +1,6 @@
-# How `project.yaml` works (format 4)
+# A project as YAML (format 4)
 
-The page is the way in, and this file is what it writes. A file of format 2 or 3 is moved to format 4 on its first touch, as `cozy project upgrade` does; format 1 is left as it is. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
+A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `cozy project export` writes it, for reading, a diff or git, and `cozy project import <file>.yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. A folder of the files from before `project.db` (format 2, 3 or 4) is imported on its first open. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
 
 ## The idea
 
@@ -9,24 +9,20 @@ A project is a folder of files plus a graph that says how each file was made.
 - **Asset:** a stable name holding one main file: a name, what it is, how it's made, the file you approved, and words for whatever mentions it.
 - **Edge:** you don't write edges: `<name>` in any input reads that asset. The only rule is no cycles. `<name.2>` reads that one version, and is no edge; `<name.word>` an extra output of its version, and `<name:48-120>` frames 48 up to 120 of a video.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
-- **Version**, or **take** if it has a video: one result of an asset's tool, recorded in `project.lock`, with the words that made it where they changed from the version before.
+- **Version**, or **take** if it has a video: one result of an asset's tool, recorded in `project.db`, with the words that made it where they changed from the version before.
 
 Calcifer owns all of this. It knows no inputs and no packages by name.
 
 ## The folder
 
-| Path | Written by | Holds |
-|---|---|---|
-| `project.yaml` | The page and the CLI, line by line; or a hand or an LLM | What should exist |
-| `project.lock` | Cozy only | YAML: each asset's versions, and a row for a file only when its file can't say it: where it stays, its parts. Replaced whole, and read again only when it changed. One that can't be read is kept as `project.lock.broken` and said, never written over: what's approved stands |
-| `project.canvas.yaml` | Cozy, for the page | Where each box sits. Nothing else reads it, and nothing in it is an input |
-| `files/` | Cozy only | Every file, by hash |
-| `<edit_name>.mp4`, `.otio` | Cozy | Each edit |
-| `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, and while a render goes what its walk owes (`walk.json`, `asked/`), of this folder and this Calcifer only: a copy goes on with none of it, and `push` and `pull` don't carry it |
-| `.measured.json` | Cozy only | What was measured of each file. Disposable: it's measured again |
-| `.keys.json` | Cozy only | What each `Idempotency-Key` answered, for a day. Disposable |
+| Path | Holds |
+|---|---|
+| `project.db` | Everything the project says and has made: its boxes and fields, where each sits, versions and takes, what was measured of each file, what a render owes, its history and request keys. Calcifer alone writes it, one transaction per action |
+| `files/` | Every file, by hash |
+| `<edit_name>.mp4`, `.otio` | Each edit |
+| `.runs/` | Where a run's outputs land on their way into `files/` |
 
-**A machine write changes only its own lines.** Comments, `|` blocks and everything else in the file stay as a hand left them. An unknown key warns when the file is read.
+An export holds what the project says, so it travels, and `files/` with `cozy project push` and `pull`. An unknown key warns when it's imported.
 
 ## The file
 
@@ -133,7 +129,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 
 Putting a tool on a text asset moves its `text` to `instructions`. On a picture, the tool starts from the version shown, approved else newest: `<self.N>` in its first required picture slot, else at the start of its first prompt. A tool approves nothing.
 
-**The key** is blind to names: eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its fields after defaults, each box they mention replaced by its number in order of first mention (`<Amy.2>` is `<#0.2>`), then twelve for each of those boxes: its `description` and the files of each version read, or a text box's words. So a rename, on the page or by hand, puts nothing out of date, and a box renamed by hand keeps its versions and approval when exactly one vanished row matches it. Editing a box's description puts its readers out of date, `<Abr.2>`'s too. Inputs plus the seed never run twice: a seed in its fields, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
+**The key** is blind to names: eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its fields after defaults, each box they mention replaced by its number in order of first mention (`<Amy.2>` is `<#0.2>`), then twelve for each of those boxes: its `description` and the files of each version read, or a text box's words. So a rename, on the page or in an imported YAML, puts nothing out of date, and a box renamed in an import keeps its versions and approval when exactly one vanished row matches it. Editing a box's description puts its readers out of date, `<Abr.2>`'s too. Inputs plus the seed never run twice: a seed in its fields, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
 **Not in the key:** its own `description`; a pickup; package and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
@@ -150,30 +146,29 @@ Putting a tool on a text asset moves its `text` to `instructions`. On a picture,
 | `render <names\|all> --queue` | Asks and returns at once, printing what it queued and what's ahead of each |
 | `cancel <names\|all>` | Drops their queued work and cancels their runs |
 | `render clash pickup.take='<clash.2>' pickup.out_frame=240` | Pick up from here: take 2 up to frame 240, on the tool's frames, and the rest new; never written to the file, and the take records it |
-| `approve <name> <version>` | Writes that version's hash as its `approved` |
+| `approve <name> <version>` | Sets that version's hash as its `approved` |
 | `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
 | `unapprove <name>` | Takes `approved` away. A dropped file keeps it: it's all it is |
 | `delete <name> --version <n>` | Discards that take, repeatable, and prints the `restore` line for each: see [Discarded takes](#discarded-takes) |
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
 | `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
-| `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, `<old.2>` too, and keeps its versions. If you renamed it there already, this only moves its versions. A name is no input: nothing that reads it goes out of date |
-| `reclaim [--yes]` | Lists orphans and the bytes they'd free, and discarded takes, or with `--yes` deletes them and any file a version or run has on record and nothing names now. A file with no record is listed and stays: it may be all that's left of a take. With `project.lock` gone, unreadable or listing nothing, `--yes` is refused |
-| `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
+| `rename <old> <new>` | Renames an asset and every `<mention>` of it, `<old.2>` too, and keeps its versions. A box renamed in an imported YAML keeps its versions too. A name is no input: nothing that reads it goes out of date |
+| `reclaim [--yes]` | Lists orphans and the bytes they'd free, and discarded takes, or with `--yes` deletes them and any file a version or run has on record and nothing names now. A file with no record is listed and stays: it may be all that's left of a take. With the project listing no version while `files/` holds files, `--yes` is refused |
+| `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here |
+| `export [-o <file>]`, `import <file>.yaml` | The project as this YAML, and back: see the top |
 | `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |
 | `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it and `tool=` with nothing takes it off, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |
 | `status <name>` | One asset: its fields and each take or version |
 | `delete <name>…` | As the X on its box: its work stops and it goes, and this prints the `restore` line that brings it back |
 | `restore <name> <kept>` | That line: back as it was, where it was, with what it made |
-| `upgrade [--status <file>]` | A format 2 or 3 folder to format 4, here, with no Calcifer. See below |
 
-Everything the page does has a command, each the same route with the same fields, and what either does shows on the other within a second: a hand's save of `project.yaml` too. Caption is `cozy run` of a function that reads a picture, then `set <name> description=…`.
+Everything the page does has a command, each the same route with the same fields, and what either does shows on the other within a second. Caption is `cozy run` of a function that reads a picture, then `set <name> description=…`.
 
 ## Queueing
 
 A project has one walker, and each render adds to it. Without `--queue` a render follows until it ends; Ctrl-C only stops following.
 
-- **A render uses the file as it was when you asked, so keep editing.** Each ask keeps that text in `.runs/` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and when you delete an asset, what a render still owes of it stops: queued, it isn't made and its row says so; running, it's canceled so billing stops, and lands nothing. Putting it back brings back the asset, not a canceled render.
-- **A save that can't be read** refuses a new `render`, and does nothing else. `status` says what's wrong, and `cancel` works.
+- **A render uses the project as it was when you asked, so keep editing.** Each ask keeps its export in `project.db` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and when you delete an asset, what a render still owes of it stops: queued, it isn't made and its row says so; running, it's canceled so billing stops, and lands nothing. Putting it back brings back the asset, not a canceled render.
 - **`--on`:** each render's work goes where it said. With several machines, a job goes to the one where the plan has it ending soonest, once that has its GPUs free.
 - **Everything at once, up to 32 jobs per render going:** what doesn't read each other goes side by side, each sent, installed and made on its own. What fails stops what reads it, there and then, and nothing else. How wide a job goes, how many GPUs of its machine, comes from how long things took there: it never changes once a job has started.
 - **Ahead of its turn,** a machine fetches the code and weights of what's queued for it, behind whatever a run is waiting on: its `tool`'s function, and for one that loads nothing itself, only what all its package's internal functions load. It's a guess, so a wrong one costs bytes, and it stops when its last job's run begins. It holds no GPU, doesn't show in `cozy run ls`, and a machine with no room for it stays as it is, saying so in one line. `status` and the render's view show it; `cancel all` stops it.
@@ -181,23 +176,23 @@ A project has one walker, and each render adds to it. Without `--queue` a render
 
 ## An asset's files
 
-An asset has one main file; any other files are what the same run left, such as a video's latents, or `image-2` from a function that returned several. **What a result declares `Latents` stays on the machine that made it**: `project.lock` records the hash and that machine, and a pickup or an upscale reads it there by hash, or fetches it while it lives; once that machine is gone, the box warns before Render and the call goes without it. Any other file comes here.
+An asset has one main file; any other files are what the same run left, such as a video's latents, or `image-2` from a function that returned several. **What a result declares `Latents` stays on the machine that made it**: the project records the hash and that machine, and a pickup or an upscale reads it there by hash, or fetches it while it lives; once that machine is gone, the box warns before Render and the call goes without it. Any other file comes here.
 
 `approved` freezes files, not text: editing an approved asset's inputs shows it out of date, and `description` changes what reads it.
 
 ## Import
 
-`cozy project import ./kyogre.png [name]` is one act: the file in `files/`, its name in `project.yaml`, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name cozy picks gets `_2` if the project has it. One you typed that the project has is refused, naming what has it. The same file twice is two assets and one file.
+`cozy project import ./kyogre.png [name]` is one act: the file in `files/`, a box under its name, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name cozy picks gets `_2` if the project has it. One you typed that the project has is refused, naming what has it. The same file twice is two assets and one file.
 
 **A take lifted out** is the normal way to keep one: `cozy project import 2aee8c40753d amy.smiling --description "Amy, smiling."` is a plain asset, a file and its words, with no `tool` and no link to what made it.
 
 ## Orphans
 
-An asset no longer named in the file keeps its versions and files until `reclaim`. Deleted from the page or the CLI, or gone from the file once a render has seen that, its name is free: a later asset of that name starts with no versions, and `cozy project rename` or Undo still finds the old ones. What it made stands.
+An asset no longer named in the project keeps its versions and files until `reclaim`. Deleted from the page or the CLI, or gone from an imported YAML once a render has seen that, its name is free: a later asset of that name starts with no versions, and `cozy project rename` or Undo still finds the old ones. What it made stands.
 
 ## Discarded takes
 
-Discarding a take takes it off its asset at once. Nothing runs and no bytes go: it stays in `project.lock` under `discarded` until `reclaim`, and `cozy project restore <name> --version <n>` or Undo brings it back. Its number is never given again, so a list can have gaps.
+Discarding a take takes it off its asset at once. Nothing runs and no bytes go: it stays on record, discarded, until `reclaim`, and `cozy project restore <name> --version <n>` or Undo brings it back. Its number is never given again, so a list can have gaps.
 
 - **The approved take:** its `approved:` goes with it, and the asset stands on its newest take left. Undo brings both back, unless another take has been approved since.
 - **The last take:** the asset stays, with no take, and a render makes it again like anything with no state.
@@ -239,15 +234,15 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Runs
 
-`cozy run` belongs to a project, as a commit does to a repository: the folder you're in or the nearest above it with a `project.yaml`, or `-p <path>`. Elsewhere it refuses.
+`cozy run` belongs to a project, as a commit does to a repository: the folder you're in or the nearest above it with a `project.db`, or `-p <path>`. Elsewhere it refuses.
 
-- **Outputs** land in `files/` by hash, listed in `project.lock` under `runs`, and the run prints one line per file: `image: 65b436d4f9a3`. There's no memo.
+- **Outputs** land in `files/` by hash, listed as the run's, and the run prints one line per file: `image: 65b436d4f9a3`. There's no memo.
 - **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and `cozy project approve kyogre 65b436d4f9a3` makes it what `kyogre` holds.
 - **`reclaim`** lists a run's files once nothing names them.
 
 ## Upgrading from format 2
 
-A project of format 2 upgrades itself the first time anything opens it, or a run lands in it, and says so once. The old files stay beside the new as `project.yaml.v2` and `project.lock.v2`. Each asset's state is worked out from the old files as the cozy that reads format 2 did, so what was current stays current and what was out of date stays so. `cozy project upgrade` does the same here, with no Calcifer; `--status <file>`, what `cozy project status --json` said under that cozy, is taken over that. What can't convert is refused, says why and stays as it is: runs on their way, or two names that fold to one. Format 1 isn't moved.
+A folder of format 2 upgrades itself the first time Calcifer opens it, and says so once, before its files are imported into `project.db`. The old files stay beside as `project.yaml.v2` and `project.lock.v2`. Each asset's state is worked out from the old files as the cozy that reads format 2 did, so what was current stays current and what was out of date stays so. What can't convert is refused, says why and stays as it is: runs on their way, or two names that fold to one. Format 1 isn't moved.
 
 - Each asset's `render` goes flat, `prompt` as `instructions`, and `with` as `tool`, always a function: H3 is `generate`, with `turbo: false` only where a file said so or where it set `steps`; any other package's `turbo: true` is `generate_turbo`, `turbo: false` `generate`, and with neither what made its newest version. A video with only `video` and `resolution` is `upscale`. `with: cozy` is `cozy/edit`, or `cozy/frame` for a picture. `pieces` become `tracks`, `start` `in` and `end` `out`. A hash in `image`, `video` or `audio` is `approved`, and an input under `# was` is back. `kind` lines go. Comments stay.
 - Each entity folds into its sheet, which takes its name, `description` and `asset_type`. Each form becomes an asset, `<entity>.<form>`, and mentions are rewritten.

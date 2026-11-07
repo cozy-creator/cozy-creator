@@ -1,4 +1,4 @@
-//! A project as its files say, worked out once per revision of them, so a read of it or of one asset costs what the answer costs, and what
+//! A project as `project.db` says, worked out once per revision of it, so a read of it or of one asset costs what the answer costs, and what
 //! changed since streams were last told, by asset, so a client reads only that.
 use std::{
     collections::{BTreeMap, HashMap},
@@ -14,7 +14,7 @@ use protocol::{
 };
 
 use super::{
-    Project, Reading, Stale, assetfile, board_of, cut_row,
+    Project, Reading, Stale, board_of, cut_row,
     folder::{Folder, Lock},
     format::{Doc, Standing, State as Stand, Tool},
     graph::name_key,
@@ -81,19 +81,11 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
 
 fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Result<Model, Error> {
     let folder = &project.folder;
-    // The text first: a rename moves the lock and then the text, and an old name finds its row in the new lock, where a new name wouldn't in the old.
-    let text = folder.text()?;
     let lock = folder.lock()?;
-    let doc = Doc::of(folder, &text, &lock)?;
-    // A box renamed by hand keeps what it had: then read again.
-    let (lock, doc) = match super::adopt_renames(folder, &doc)? {
-        true => {
-            let lock = folder.lock()?;
-            let doc = Doc::of(folder, &text, &lock)?;
-            (lock, doc)
-        }
-        false => (lock, doc),
-    };
+    let (doc, etags) = folder.reading_boxes(|written| {
+        let etags: HashMap<String, String> = written.boxes.iter().map(|held| (name_key(&held.name), held.etag())).collect();
+        Doc::of(folder, written, &lock).map(|doc| (doc, etags))
+    })??;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
     warnings.extend(doc.said_of_known(&lock));
@@ -106,7 +98,6 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     }
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
-    let etags = assetfile::etags(&text);
     let reading = Reading { doc: &doc, folder, lock: &lock, stand: &stand, known: &known };
     let rows: Vec<Row> = (0..doc.assets.len())
         .map(|i| {

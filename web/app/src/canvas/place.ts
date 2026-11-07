@@ -3,7 +3,7 @@ import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Row, Tool } from "../types"
-import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Stage, UNDO_MS } from "./CanvasStore"
+import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
@@ -80,7 +80,7 @@ export class Placer {
     const text = !tool
     const body = text ? { tool: "", name: wanted, fields } : { tool, name: wanted, fields, kind }
     const row: Asset = { name: "", standing: text ? "current" : "missing", kind, noun: kind === "video" ? "take" : "version", tool, versions: 0, status: "", fields, timeline }
-    return this.store.place(wanted, { asset: row }, at, async (clear, write) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, write), (error) => say(failed, error), undefined, edit)
+    return this.store.place(wanted, { asset: row }, at, async (clear, write, pushes) => this.client.newAsset(await this.project(), key, { ...body, at: clear, moves: pushes.moves, seq: pushes.seq }, write), (error) => say(failed, error), undefined, edit)
   }
 
   /** Boxes copied, laid out as they were and together clear of what's there, around a point. All of them are there at once, in the queue like anything else, and a note offers Undo. */
@@ -150,7 +150,7 @@ export class Placer {
       asName(file.name),
       { landed: { sha256: file.sha256, field: file.field } },
       at,
-      async (clear, write) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description }, write),
+      async (clear, write, pushes) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description, moves: pushes.moves, seq: pushes.seq }, write),
       (error) => say(`Couldn't take out ${file.name}`, error),
       (name, _, made) => from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
       edit,
@@ -194,7 +194,14 @@ export class Placer {
     this.store.beginAdding()
     try {
       const once = `import-${crypto.randomUUID()}`
-      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: async (signal) => this.client.import(await this.project(), once, { source: digest, name, at }, { once: signal, edit }), done, refused }))
+      // What its drop pushed aside goes with it, the same on every try: one request, one transaction, one entry.
+      let pushes: Pushes | undefined
+      const send = async (signal: AbortSignal) => {
+        pushes ??= this.store.pushesFor(edit)
+        return this.client.import(await this.project(), once, { source: digest, name, at, moves: pushes.moves, seq: pushes.seq }, { once: signal, edit })
+      }
+      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send, done, refused }))
+      if (pushes) this.store.pushesSent(pushes, answer.kept)
       this.store.land(key, answer, at, edit)
       if (answer.note) say(answer.note)
       return answer.name

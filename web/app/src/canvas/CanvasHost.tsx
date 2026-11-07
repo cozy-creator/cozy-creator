@@ -154,7 +154,7 @@ function ProjectSync({ id }: { id: string }) {
     }
   }, [store, client, id, queries, state, tools])
   useEffect(() => {
-    if (canvas) store.applyCanvas(canvas.cards, canvas.began)
+    if (canvas) store.applyCanvas(canvas.cards, canvas.began, canvas.seq)
   }, [store, canvas])
   // Gone: there's nothing to show. Anything else that stops it being read is said on the canvas (`Unread`), for as long as it holds.
   useEffect(() => {
@@ -169,7 +169,7 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     store.history.read()
     return stream.subscribe((event) => {
-      if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
+      if (event.type === "canvas" && event.id === id) store.applyRows(event.cards, event.seq)
       if (event.type === "history" && event.id === id) store.history.read()
       if (event.type === "resync" || event.type === "hello") {
         store.fellBehind()

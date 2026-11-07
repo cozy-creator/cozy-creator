@@ -1,14 +1,14 @@
 //! Projects (xs-151, cl-758): a folder of assets, each a stable name holding a set of files. Calcifer opens a project by its path
 //! (and keeps every folder it opened in its index) and walks it: an operation makes an asset only when it has no state, and is an
 //! ordinary run, sent as soon as what it reads has settled, so independent ones run at once and the machines' schedulers place
-//! them. Its function is called with them, and what it makes lands as one version of the asset, in `files/` and
-//! project.lock (a person or the page writes project.yaml, and Calcifer writes it whole, `assetfile`). The reserved package `cozy` runs
-//! here, free. One walker per project takes every render asked of it, and what it owes is kept in
-//! `.runs/walk.json`, so a restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
+//! them. Its function is called with them, and what it makes lands as one version of the asset, its file in `files/` and its row in
+//! `project.db` (cl-803), which holds all a project says and has made, one transaction per action. The reserved package `cozy` runs
+//! here, free. One walker per project takes every render asked of it, and what it owes is kept in `project.db` too, so a restarted
+//! Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod archive;
-mod assetfile;
 mod assets;
 mod canvas;
+mod db;
 mod fit;
 mod folder;
 mod format;
@@ -27,6 +27,8 @@ mod tools;
 mod sim;
 mod upgrade;
 mod walker;
+mod written;
+mod legacy;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -78,7 +80,7 @@ use host::{Host, Package, Renderer};
 use jobs::{Going, Jobs};
 use walker::{End, Frozen, Graph, Kind as JobKind, Named, Node, Turn};
 use tools::Canvas;
-pub use upgrade::{Upgraded, upgrade};
+
 pub(crate) use thumbs::previews;
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
@@ -140,10 +142,6 @@ struct Project {
     rendering: Arc<Mutex<BTreeMap<String, f64>>>,
     /// Held while its files move to or from its Hub.
     moving: tokio::sync::Mutex<()>,
-    /// Held while an import chooses a name and writes it.
-    importing: Mutex<()>,
-    /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
-    keys: Mutex<HashMap<String, String>>,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
     /// What kept its last render from reaching a machine (`State::unsent`).
@@ -202,8 +200,12 @@ impl Projects {
 
     /// The project in `dir` (canonical), opened once; its walk goes on when one is owed.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
-        let said = tokio::task::block_in_place(|| upgrade::on_touch(dir))?;
-        let folder = Folder::open(dir, api.machines.hubs.home())?;
+        // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
+        let said = match dir.join(db::DB).is_file() {
+            true => vec![],
+            false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
+        };
+        let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
         crate::events::project_opened(dir);
         let id = project_id(dir);
         let project = (self.open.lock().expect("projects lock").entry(id.clone()))
@@ -221,8 +223,6 @@ impl Projects {
                     cutting: Arc::default(),
                     rendering: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
-                    importing: Mutex::default(),
-                    keys: Mutex::default(),
                     said: Mutex::default(),
                     unsent: Mutex::default(),
                 })
@@ -235,17 +235,6 @@ impl Projects {
         Ok(id)
     }
 
-    /// Finds edits made outside Calcifer to the projects open here.
-    pub(crate) fn look(&self) {
-        let open = self.open.lock().expect("projects lock");
-        let dirs: Vec<PathBuf> = open.values().map(|project| project.folder.dir.clone()).collect();
-        drop(open);
-        for dir in dirs {
-            Folder::at(&dir).look_by_hand();
-            crate::events::project_changed(&dir);
-            canvas::look(&dir);
-        }
-    }
 }
 
 /// A run that a person canceled: no version, and no failure of its asset.
@@ -427,18 +416,14 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         n => format!("{}-{n}", made.output),
     };
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
-    let (upgraded, refused) = match upgrade::on_touch(project) {
-        Ok(said) => (said, None),
-        Err(why) => (vec![], Some(why)),
-    };
     let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
-    let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
+    let said = unlisted.map(|why| match why.next.first() {
         Some(next) => format!("{} is in files/, and its project can't list it: {}: {next}", made.output, why.message),
         None => format!("{} is in files/, and its project can't list it: {}", made.output, why.message),
     });
-    Ok((kept, said.or_else(|| (!upgraded.is_empty()).then(|| upgraded.join("\n")))))
+    Ok((kept, said))
 }
 
 /// An output its machine keeps, in its project's lock.
@@ -451,11 +436,10 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
     format!("project-{}", &hex::encode(Sha256::digest(dir.to_string_lossy().as_bytes()))[..16])
 }
 
-/// What `project.changed` says of the project in `dir`: another text whenever project.yaml or project.lock is another file
-/// than it was, or a file comes to or goes from `files/`, as a pull's do with no write to either. Read from their stats alone, so a look at it
-/// costs nothing: every write replaces the file, so its inode tells two writes in one clock tick apart.
+/// What `project.changed` says of the project in `dir`: its revision in `project.db`, which moves with each commit, and how `files/` stands,
+/// as a pull's files come with no commit of their own.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    format!("{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
+    format!("{}.{}", Folder::at(dir).seq(), stamp(&dir.join(folder::FILES)))
 }
 
 /// What a file's stats say of it: another text whenever it's another file than it was.
@@ -799,7 +783,11 @@ impl Project {
                 continue;
             }
             // Asked before the file named it, or with another of the new name since gone: what it plans on goes on finding the row under its old name.
-            let said = self.folder.text_of(ask).and_then(|text| assetfile::renamed(&text, from, to));
+            let said = self.folder.text_of(ask).and_then(|text| {
+                let mut written = written::Written::from_yaml(&text)?;
+                written.renamed(from, to)?;
+                Ok(written.to_yaml())
+            });
             let Ok((said, doc)) = said.and_then(|said| Ok((Doc::read(&self.folder, &said)?, said))).map(|(doc, said)| (said, doc)) else { continue };
             let digest = hex::encode(Sha256::digest(said.as_bytes()));
             self.folder.keep_text(&digest, &said)?;
@@ -911,16 +899,13 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is opened by its absolute path")));
         }
         (None, Some(path)) if open.create => {
-            let project = path.join(folder::PROJECT);
-            if project.exists() {
+            if Folder::is_project(path) {
                 let said = format!("{} is a project already", path.display());
                 return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
             }
             std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
-            platform::durable::replace(&project, format::starter().as_bytes(), 0o644).map_err(|e| io(path, std::io::Error::other(e)))?;
-            let dir = platform::durable::canonical(path).map_err(|e| io(path, std::io::Error::other(e)))?;
-            crate::events::project_changed(&dir);
-            dir
+            let written = written::Written::from_yaml(&format::starter()).map_err(Refusal)?;
+            made_new(path, written).map_err(Refusal)?
         }
         (None, Some(path)) => holding(path).map_err(Refusal)?,
         (None, None) => {
@@ -956,10 +941,7 @@ fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Err
         let dir = home.join(&name);
         match std::fs::create_dir(&dir) {
             Ok(()) => {
-                let project = dir.join(folder::PROJECT);
-                platform::durable::replace(&project, format::blank().as_bytes(), 0o644).map_err(|e| io(std::io::Error::other(e)))?;
-                let dir = platform::durable::canonical(&dir).map_err(|e| io(std::io::Error::other(e)))?;
-                crate::events::project_changed(&dir);
+                let dir = made_new(&dir, written::Written::blank())?;
                 let why = (name != wanted).then(|| format!("{} is taken, so this is {name}", home.join(&wanted).display()));
                 return Ok((dir, why));
             }
@@ -970,16 +952,27 @@ fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Err
     unreachable!("names go on")
 }
 
-/// The project folder holding `path`: the nearest, up from it, with a project.yaml.
+/// A new project in `dir`, holding `written`: its `project.db`, made whole and then named. Its canonical folder.
+fn made_new(dir: &FsPath, written: written::Written) -> Result<PathBuf, Error> {
+    let io = |e: platform::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display()));
+    let part = dir.join(format!("{}.new", db::DB));
+    db::create(&part, &db::Stored { written, ..Default::default() }, &[], &[])?;
+    std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
+    let dir = platform::durable::canonical(dir).map_err(io)?;
+    crate::events::project_changed(&dir);
+    Ok(dir)
+}
+
+/// The project folder holding `path`: the nearest, up from it, that is one.
 fn holding(path: &FsPath) -> Result<PathBuf, Error> {
     let not_found = || {
-        let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), folder::PROJECT);
+        let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
         Error::new(Kind::NotFound, "project_not_found", said)
             .remedy("run it inside a project's folder, or name one with -p <path>")
             .next("cozy project new <path>")
     };
     let start = platform::durable::canonical(path).map_err(|_| not_found())?;
-    (start.ancestors()).find(|dir| dir.join(folder::PROJECT).is_file()).map(FsPath::to_owned).ok_or_else(not_found)
+    (start.ancestors()).find(|dir| Folder::is_project(dir)).map(FsPath::to_owned).ok_or_else(not_found)
 }
 
 fn now_ms() -> i64 {
@@ -1009,7 +1002,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let projects = (known.into_iter().take(limit))
         .map(|(id, entry)| Known {
             name: entry.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
-            missing: !entry.path.join(folder::PROJECT).is_file(),
+            missing: !Folder::is_project(&entry.path),
             busy: open.get(&id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
             path: entry.path,
             used_at_ms: entry.used_at_ms,
@@ -1543,77 +1536,79 @@ async fn rename(
     rename_now(&project, &id, asked).map(Json)
 }
 
-/// Asset `from` called `to`, as `POST rename` has it.
+/// Asset `from` called `to`, as `POST rename` has it, in one transaction.
 fn rename_now(project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
     format::named(&asked.to).map_err(Refusal)?;
     let folder = &project.folder;
-    let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
-    let text = folder.text().map_err(Refusal)?;
-    let lock = folder.lock().map_err(Refusal)?;
-    let was = Doc::of(folder, &text, &lock).map_err(Refusal)?;
-    let same = name_key(&asked.to) == name_key(&asked.from);
-    if was.find(&asked.to).is_none() && !same {
-        format::new_name(&asked.to).map_err(Refusal)?;
-    }
-    if was.find(&asked.from).is_some_and(|i| was.assets[i].text.is_some()) {
-        format::refuse_tag(&lock, &asked.to).map_err(Refusal)?;
-    }
-    let free = was.find(&asked.to).is_none() || same;
-    let writes = was.find(&asked.from).is_some() && free;
-    let said = match writes {
-        true => assetfile::renamed(&text, &asked.from, &asked.to).map_err(Refusal)?,
-        false => text,
-    };
-    let doc = if writes { Doc::of(folder, &said, &lock).map_err(Refusal)? } else { was };
-    let Some(i) = doc.find(&asked.to) else {
-        let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
-        return Err(refuse(Kind::NotFound, "asset_unknown", said));
-    };
-    let mut back = lock.clone();
-    back.untombstone(&asked.from);
-    let old = back.asset(&asked.from).filter(|held| held.on_record().next().is_some());
-    if old.is_none() && !free && doc.find(&asked.from).is_some() {
-        return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
-    }
-    if old.is_none() && !free && canvas::row(folder, &asked.from).map_err(Refusal)?.is_none() {
-        let said = format!("project.lock keeps no version of {}", asked.from);
-        return Err(Refusal(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status")));
-    }
-    let to = doc.assets[i].name.clone();
-    if old.is_some() && !same && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
-        return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
-    }
-    let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
-    let stamps = restamps(folder, &doc, &back, &from, &to, &said);
-    // Its row first: a page that reads the new name knows it's the same box, where it was.
-    canvas::moved(folder, id, &from, &to).map_err(Refusal)?;
     // Under `walking`, as a walk's end is: it is over, or it follows this.
     let walking = project.walking.lock().expect("walking lock");
     let follows = *walking;
-    if follows || old.is_some() || !stamps.is_empty() {
-        folder
-            .update_lock(|lock| {
+    let done = folder.act(|| {
+        let refuse = |kind, code, said: String| Error::new(kind, code, said);
+        let written = folder.written()?;
+        let lock = folder.lock()?;
+        let was = Doc::of(folder, &written, &lock)?;
+        let same = name_key(&asked.to) == name_key(&asked.from);
+        if was.find(&asked.to).is_none() && !same {
+            format::new_name(&asked.to)?;
+        }
+        if was.find(&asked.from).is_some_and(|i| was.assets[i].text.is_some()) {
+            format::refuse_tag(&lock, &asked.to)?;
+        }
+        let free = was.find(&asked.to).is_none() || same;
+        let writes = was.find(&asked.from).is_some() && free;
+        let said = match writes {
+            true => {
+                let mut said = written.clone();
+                said.renamed(&asked.from, &asked.to)?;
+                said
+            }
+            false => written,
+        };
+        let doc = if writes { Doc::of(folder, &said, &lock)? } else { was };
+        let Some(i) = doc.find(&asked.to) else {
+            return Err(refuse(Kind::NotFound, "asset_unknown", format!("the project names no {}", asked.to)));
+        };
+        let mut back = lock.clone();
+        back.untombstone(&asked.from);
+        let old = back.asset(&asked.from).filter(|held| held.on_record().next().is_some());
+        if old.is_none() && !free && doc.find(&asked.from).is_some() {
+            return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
+        }
+        if old.is_none() && !free && canvas::row(folder, &asked.from)?.is_none() {
+            let said = format!("the project keeps no version of {}", asked.from);
+            return Err(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status"));
+        }
+        let to = doc.assets[i].name.clone();
+        if old.is_some() && !same && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
+            return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
+        }
+        let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
+        let stamps = restamps(folder, &doc, &back, &from, &to, &said);
+        canvas::moved(folder, id, &from, &to)?;
+        if follows || old.is_some() || !stamps.is_empty() {
+            folder.update_lock(|lock| {
                 renamed(lock, &from, &to);
                 lock.called(&from, &to);
                 stamps.iter().for_each(|stamp| stamp.written(lock));
-            })
-            .map_err(Refusal)?;
-    }
-    if writes && let Err(error) = folder.edit_project(|text| assetfile::renamed(text, &from, &to)) {
-        folder.update_lock(|lock| renamed(lock, &to, &from)).map_err(Refusal)?;
-        canvas::moved(folder, id, &to, &from).map_err(Refusal)?;
-        return Err(Refusal(error));
-    }
-    match follows {
-        true => project.rename_walk(&from, &to).map_err(Refusal)?,
-        false => folder.update_lock(|lock| lock.walk.renames.retain(|(was, _)| name_key(was) != name_key(&from))).map_err(Refusal)?,
-    }
+            })?;
+        }
+        if writes {
+            folder.edit(|written| written.renamed(&from, &to))?;
+        }
+        match follows {
+            true => project.rename_walk(&from, &to)?,
+            false => folder.update_lock(|lock| lock.walk.renames.retain(|(was, _)| name_key(was) != name_key(&from)))?,
+        }
+        if doc.tool(i) == Some(Tool::Cut) {
+            let (dir, from, to) = (folder.dir.clone(), from.clone(), to.clone());
+            folder.then(move |_| film_renamed(&Folder::at(&dir), &from, &to));
+        }
+        history::renamed(folder, &from, &to);
+        Ok(Renamed { from, to, versions })
+    });
     drop(walking);
-    if doc.tool(i) == Some(Tool::Cut) {
-        film_renamed(folder, &from, &to);
-    }
-    history::renamed(&folder.dir, &from, &to);
-    Ok(Renamed { from, to, versions })
+    done.map_err(Refusal)
 }
 
 /// One asset's key moved by a rename, its inputs the same: what stood on `was` stands on `is`.
@@ -1636,10 +1631,11 @@ impl Restamp {
     }
 }
 
-/// What renaming `from` to `to` moves of each key, `doc` being `text`, which says `to`, and `lock` what stands of `from`. It's read from that text said
-/// back, the same whether this call changes the file or a hand did. What was out of date stays so.
-fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str, text: &str) -> Vec<Restamp> {
-    let then = assetfile::renamed(text, to, from).and_then(|text| Doc::of(folder, &text, lock));
+/// What renaming `from` to `to` moves of each key, `doc` being `written`, which says `to`, and `lock` what stands of `from`. It's read from that
+/// said back, the same whether this call renames it or an import did. What was out of date stays so.
+fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str, written: &written::Written) -> Vec<Restamp> {
+    let mut back = written.clone();
+    let then = back.renamed(to, from).and_then(|()| Doc::of(folder, &back, lock));
     let Ok(then) = then else { return vec![] };
     let mut after = lock.clone();
     renamed(&mut after, from, to);
@@ -1668,7 +1664,7 @@ fn film_renamed(folder: &Folder, from: &str, to: &str) {
 }
 
 /// project.lock with asset `from` called `to`: its row, what is pending or owed of it, and what a cut's versions say of it.
-/// Boxes renamed by hand in project.yaml (decision 6): a name with no versions takes the row of a name gone from the file when exactly that
+/// Boxes renamed in an imported project.yaml (decision 6): a name with no versions takes the row of a name gone from the file when exactly that
 /// row holds a version of the same content, by its name-blind key or the file it approves, and no other new name claims that row. Its
 /// versions, approval and canvas row move with it. Whether any moved.
 pub(super) fn adopt_renames(folder: &Folder, doc: &Doc) -> Result<bool, Error> {
@@ -1696,7 +1692,7 @@ pub(super) fn adopt_renames(folder: &Folder, doc: &Doc) -> Result<bool, Error> {
         return Ok(false);
     }
     folder.update_lock(|lock| moves.iter().for_each(|(from, to)| renamed(lock, from, to)))?;
-    canvas::all_renamed(folder, |name| moves.iter().find(|(from, _)| name_key(from) == name_key(name)).map(|(_, to)| to.clone()))?;
+    canvas::all_renamed(folder, &project_id(&folder.dir), |name| moves.iter().find(|(from, _)| name_key(from) == name_key(name)).map(|(_, to)| to.clone()))?;
     Ok(true)
 }
 
@@ -1737,7 +1733,6 @@ pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
 async fn runs(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
-    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
@@ -1756,29 +1751,10 @@ async fn runs(
     };
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
-    let idempotency = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
     project.unsent.lock().expect("unsent lock").clear();
-    if let Some((key, digest)) = &idempotency {
-        // Kept in the walk's file too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
-        let held = project.folder.walk_now().map_err(Refusal)?;
-        let kept = held.walk.asked.get(key).cloned().or_else(|| project.folder.keyed(key).map(|row| row.digest));
-        let mut keys = project.keys.lock().expect("keys lock");
-        match keys.get(key).or(kept.as_ref()) {
-            Some(seen) if seen == digest => {
-                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0, skipped: vec![], queued: vec![], next: status_next(&project.folder), board: project.jobs.board() })));
-            }
-            Some(_) => {
-                let said = format!("Idempotency-Key {key} asked another render already");
-                return Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", said)));
-            }
-            None => drop(keys.insert(key.clone(), digest.clone())),
-        }
-    }
-    // What this render uses: the file as it is now. One that doesn't read refuses it, and only it.
+    // What this render uses: the project as it is now, its export kept by digest until the render ends.
     let text = project.folder.text().map_err(Refusal)?;
     let doc = Doc::read(&project.folder, &text).map_err(Refusal)?;
-    // A box renamed by hand keeps its versions, before what the file lost is set aside.
-    adopt_renames(&project.folder, &doc).map_err(Refusal)?;
     let digest = hex::encode(Sha256::digest(text.as_bytes()));
     let target = Target { on: asked.on, hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
@@ -1891,30 +1867,27 @@ async fn runs(
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
     let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
     let added = takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated);
-    project.folder.keep_text(&digest, &text).map_err(Refusal)?;
-    let ask = Ask { id: new_key(), text: String::new(), digest, target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
-    (project.folder.update_walk(|walk| {
-        if !joined || added > 0 {
-            walk.walk.asks.push(ask.clone());
-        }
-        walk.walk.asked.extend(idempotency.iter().cloned());
+    let ask = Ask { id: new_key(), text: String::new(), digest: digest.clone(), target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
+    // One transaction: its text, the ask, and its key, so a retry however late runs nothing twice. What the project has lost is set aside,
+    // and what's asked again fails no more.
+    (project.folder.act(|| {
+        project.folder.keep_text(&digest, &text)?;
+        project.folder.update_walk(|walk| {
+            if !joined || added > 0 {
+                walk.walk.asks.push(ask.clone());
+            }
+        })?;
+        project.folder.update_lock(|lock| {
+            lock.tombstone(|key| doc.find(key).is_some());
+            for take in &ask.takes {
+                if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
+                    held.failed = None;
+                }
+            }
+        })
     }))
     .map_err(Refusal)?;
     drop(walking);
-    // One write of the project per ask: what the file has lost is set aside, and what's asked again fails no more.
-    (project.folder.update_lock(|lock| {
-        lock.tombstone(|key| doc.find(key).is_some());
-        for take in &ask.takes {
-            if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
-                held.failed = None;
-            }
-        }
-    }))
-    .map_err(Refusal)?;
-    // The walk's own record goes as it ends: this one outlives it, so a retry however late runs nothing twice.
-    if let Some((key, digest)) = &idempotency {
-        project.folder.keep_key(key, digest, "", None).map_err(Refusal)?;
-    }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
     walk(&api, &project);
@@ -2085,52 +2058,37 @@ fn element_name(name: Option<&str>, source: &str) -> String {
     name.and_then(format::plain_name).or_else(stem).unwrap_or_else(|| "file".to_owned())
 }
 
-/// The element a kept file makes: one constant more in project.yaml, under a name nothing has, and with `at`, its row on the canvas.
-/// Its answer is kept for its key.
+/// The element a kept file makes, in one transaction: one constant box more, under a name nothing has, with `at` its row, and what its drop pushed aside.
 #[allow(clippy::too_many_arguments)]
-fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, description: Option<&str>, kept: folder::Kept, key: Option<&(String, String)>) -> Result<Imported, Refusal> {
+fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, description: Option<&str>, file: folder::Kept, exact: bool, moves: BTreeMap<String, protocol::project::Card>, seq: Option<u64>) -> Result<Imported, Refusal> {
     let folder = &project.folder;
-    let _one = project.importing.lock().expect("importing lock");
-    if let Some(done) = replayed(folder, key)? {
-        return Ok(done);
-    }
-    let lock = folder.lock().map_err(Refusal)?;
-    // Its row before its lines: a page that reads the name has somewhere to put it, and places nothing of its own.
-    let first = format::free_name(&Doc::load(folder).map_err(Refusal)?, &lock, wanted);
-    if let Some(card) = at {
-        canvas::set(folder, id, BTreeMap::from([(first.clone(), Some(card))])).map_err(Refusal)?;
-    }
-    let name = std::cell::RefCell::new(String::new());
-    (folder.edit_project(|text| {
-        let free = format::free_name(&Doc::read(folder, text)?, &lock, wanted);
-        let edited = assetfile::constant(text, &free, &kept.file.sha256)?;
-        let edited = match description {
-            Some(words) => assetfile::set(&edited, &free, &Map::from_iter([("description".to_owned(), json!(words))]))?.0,
-            None => edited,
-        };
-        *name.borrow_mut() = free;
-        Ok(edited)
-    }))
-    .map_err(Refusal)?;
-    let name = name.into_inner();
-    if at.is_some() && name != first {
-        canvas::moved(folder, id, &first, &name).map_err(Refusal)?;
-    }
-    let answer = Imported { name: name.clone(), sha256: kept.file.sha256, field: kept.field.to_owned(), path: kept.file.path, already: kept.already };
-    if let Some((key, digest)) = key {
-        folder.keep_key(&key, &digest, "", Some(answer.clone())).map_err(Refusal)?;
-    }
-    Ok(answer)
-}
-
-/// What an import under this key answered, if one did: it answers the same. Another import under it is refused.
-fn replayed(folder: &Folder, key: Option<&(String, String)>) -> Result<Option<Imported>, Refusal> {
-    let Some((key, digest)) = key else { return Ok(None) };
-    match folder.keyed(key) {
-        Some(row) if row.digest == *digest => Ok(row.answer),
-        Some(_) => Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} asked another import already")))),
-        None => Ok(None),
-    }
+    let made = folder.act(|| {
+        let lock = folder.lock()?;
+        let doc = Doc::load(folder)?;
+        let name = format::free_name(&doc, &lock, wanted);
+        if exact && name != wanted {
+            return Err(format::name_taken(&doc, wanted));
+        }
+        // Its row with its box: a page that reads the name has somewhere to put it, and places nothing of its own.
+        if let Some(card) = at {
+            canvas::set(folder, id, BTreeMap::from([(name.clone(), Some(card))]))?;
+        }
+        let kept = canvas::pushed(folder, id, moves, seq)?;
+        folder.edit(|written| {
+            written.constant(&name, &file.file.sha256)?;
+            if let Some(words) = description {
+                written.set(&name, &Map::from_iter([("description".to_owned(), json!(words))]))?;
+            }
+            Ok(())
+        })?;
+        // Its file has a row, so its whole hash is known wherever its box names only the start of it.
+        folder.update_lock(|lock| {
+            lock.files.entry(file.file.sha256.clone()).or_default();
+        })?;
+        Ok((name, kept))
+    });
+    let (name, kept) = made.map_err(Refusal)?;
+    Ok(Imported { name, sha256: file.file.sha256, field: file.field.to_owned(), path: file.file.path, already: file.already, kept })
 }
 
 /// What a project's files are measured as, once its ffprobe is here, from a task of its own: a read waits for neither.
@@ -2161,17 +2119,11 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
 async fn import(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
-    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Imported>, Refusal> {
-    let body = body?;
-    let asked: Import = parse(&body)?;
+    let asked: Import = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
-    if let Some(done) = replayed(folder, key.as_ref())? {
-        return Ok(Json(done));
-    }
     let wanted = element_name(asked.name.as_deref(), &asked.source);
     if asked.exact {
         // As it's written, a space an `_`: what a name can't be is a version's or `self`, which is said, not changed.
@@ -2184,15 +2136,9 @@ async fn import(
         }
     }
     let kept = keep_file(&api, folder, &asked.source).await?;
-    folder.start_lock().map_err(Refusal)?;
-    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, key.as_ref())?;
+    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, asked.seq)?;
     measure_soon(&api, &project);
     Ok(Json(answer))
-}
-
-/// `name` holding a file in project.yaml, written over what the file holds this moment.
-fn pin_in_file(folder: &Folder, name: &str, sha256: &str) -> Result<String, Error> {
-    folder.edit_project(|text| assetfile::approved(text, name, sha256))
 }
 
 /// `POST /v1/projects/{id}/approve`: the version's main file, by hash, as the asset's `approved`: its whole file set is its state until `unpin`.
@@ -2239,13 +2185,13 @@ async fn approve(
     let version = versions.iter().find(|version| version.main() == Some(&chosen));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    let text = pin_in_file(folder, &name, &chosen).map_err(Refusal)?;
+    folder.edit(|written| written.approved(&name, &chosen)).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    let etag = assetfile::etag(&text, &name);
+    let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
     Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings, etag }))
 }
 
@@ -2266,20 +2212,18 @@ async fn unpin(
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
-    let text = if asset.pin.is_some() {
+    if asset.pin.is_some() {
         if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
-            let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it from {}", folder::PROJECT);
-            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said)));
+            let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
+            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next(format!("cozy project delete {name}"))));
         }
-        folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?
-    } else {
-        folder.text().map_err(Refusal)?
-    };
+        folder.edit(|written| written.unapproved(&name)).map_err(Refusal)?;
+    }
     for message in settle(&api, &project).await {
         let _ = project.events.send(Event::Warning { message, name: None });
     }
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    let etag = assetfile::etag(&text, &name);
+    let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
     Ok(Json(Unpinned { name, version, stale, etag }))
 }
 
@@ -2383,42 +2327,56 @@ fn going(api: &Api, folder: &Folder) -> Result<Vec<Event>, Error> {
     Ok(running.collect())
 }
 
-/// project.yaml's ETag, as `text` holds it.
+/// The export's ETag, as `text` holds it.
 fn yaml_etag(text: &str) -> String {
     format!("\"{}\"", hex::encode(Sha256::digest(text)))
 }
 
-/// `GET /v1/projects/{id}/yaml`: project.yaml as it is this moment, and the ETag a `PUT` names.
+/// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (`cozy project export`), and the ETag a `PUT` may name.
 async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
-    let etag = yaml_etag(&project.folder.text().map_err(Refusal)?);
-    send(&project.folder.project(), &etag, &headers)
+    let text = project.folder.text().map_err(Refusal)?;
+    let etag = yaml_etag(&text);
+    if headers.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()) == Some(etag.as_str()) {
+        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
+    }
+    Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], text).into_response())
 }
 
-/// `PUT /v1/projects/{id}/yaml`: these bytes are project.yaml, if it still holds what `If-Match` read, so a save made since stands.
-/// A text that doesn't read as a project is refused, and the file left as it is. Nothing is rendered, and a render going keeps the
-/// text it was asked with: what a save puts out of date waits for the next.
+/// `PUT /v1/projects/{id}/yaml` (`cozy project import <file>.yaml`): these bytes are the project, each box, field and section that differs
+/// written in one transaction and one entry, and a box renamed in them keeps its versions. With `If-Match`, only if the export still is
+/// what that read. What doesn't read is refused with its line, and nothing changes. Nothing is rendered, and a render going keeps the text
+/// it was asked with.
 async fn save(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Refusal> {
-    let Some(read) = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok()) else {
-        let said = "a save names what it read: `If-Match` with the ETag of `GET /v1/projects/{id}/yaml`";
-        return Err(Refusal(Error::new(Kind::Usage, "if_match_required", said)));
-    };
+    let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok()).map(str::to_owned);
     let body = body?;
     let text = std::str::from_utf8(&body).map_err(|e| Refusal(Error::new(Kind::Validation, "project_yaml", format!("{}: {e}", folder::PROJECT))))?;
     let project = api.projects.get(&api, &id)?;
-    Doc::read(&project.folder, text).map_err(Refusal)?;
-    (project.folder.edit_project(|now| match yaml_etag(now) == read {
-        true => Ok(text.to_owned()),
-        false => Err(Error::new(Kind::Conflict, "project_changed", format!("{} changed since it was read", folder::PROJECT))
-            .remedy("read it again and make the edit on what it holds")),
-    }))
-    .map_err(Refusal)?;
-    Ok((StatusCode::NO_CONTENT, [(header::ETAG, yaml_etag(text))]).into_response())
+    let folder = &project.folder;
+    let given = written::Written::from_yaml(text).map_err(Refusal)?;
+    let doc = Doc::of(folder, &given, &folder.lock().map_err(Refusal)?).map_err(Refusal)?;
+    let text = folder
+        .act(|| {
+            if let Some(read) = &read
+                && yaml_etag(&folder.text()?) != *read
+            {
+                return Err(Error::new(Kind::Conflict, "project_changed", "the project changed since it was read").remedy("export it again and make the edit on what it holds"));
+            }
+            folder.edit(|written| {
+                *written = given;
+                Ok(())
+            })?;
+            // A box renamed in the file keeps its versions, before what it lost is set aside.
+            adopt_renames(folder, &doc)?;
+            folder.text()
+        })
+        .map_err(Refusal)?;
+    Ok((StatusCode::NO_CONTENT, [(header::ETAG, yaml_etag(&text))]).into_response())
 }
 
 /// One of the project's files by its name in files/ (`<sha256>.<ext>`): content-addressed, so its sha256 is its ETag.
@@ -3186,11 +3144,10 @@ impl Walk {
 
     /// The asset names project.yaml holds now, read again only when it changed. None: it doesn't read, so nothing is known gone.
     fn names_now(&self, held: &mut Option<(String, Arc<HashSet<String>>)>) -> Option<Arc<HashSet<String>>> {
-        let meta = std::fs::metadata(self.folder().project()).ok()?;
-        let stamp = format!("{:?}-{}", meta.modified().ok(), meta.len());
+        let stamp = self.folder().seq().to_string();
         if held.as_ref().is_none_or(|(was, _)| *was != stamp) {
-            let keys = protocol::yaml::keys_at(&self.folder().text().ok()?, &["assets"])?;
-            *held = Some((stamp, Arc::new(keys.iter().map(|name| name_key(name)).collect())));
+            let names = self.folder().reading_boxes(written::Written::names).ok()?;
+            *held = Some((stamp, Arc::new(names)));
         }
         held.as_ref().map(|(_, names)| names.clone())
     }
@@ -4243,7 +4200,7 @@ impl Walk {
 
     /// `name`'s re-run landed, so what it approved goes: from project.yaml, and from the text its render plans on, so what reads it reads this.
     fn unpin_landed(&self, ask: &str, name: &str) {
-        if let Err(error) = self.folder().edit_project(|text| assetfile::unapproved(text, name)) {
+        if let Err(error) = self.folder().edit(|written| written.unapproved(name)) {
             self.say(Event::Warning { message: error.message, name: None });
         }
         if let Err(error) = self.unpin_asked(ask, name) {
@@ -4255,7 +4212,9 @@ impl Walk {
     fn unpin_asked(&self, ask: &str, name: &str) -> Result<(), Error> {
         let walk = self.folder().walk_now()?;
         let Some(mine) = walk.walk.asks.iter().find(|mine| mine.id == ask) else { return Ok(()) };
-        let text = assetfile::unapproved(&self.folder().text_of(mine)?, name)?;
+        let mut written = written::Written::from_yaml(&self.folder().text_of(mine)?)?;
+        written.unapproved(name)?;
+        let text = written.to_yaml();
         let digest = hex::encode(Sha256::digest(text.as_bytes()));
         self.folder().keep_text(&digest, &text)?;
         let doc = Doc::read(self.folder(), &text)?;
@@ -4586,7 +4545,7 @@ impl Walk {
         version.number = number.get();
         if approve
             && let Some(sha256) = version.main()
-            && let Err(error) = pin_in_file(self.folder(), name, sha256)
+            && let Err(error) = self.folder().edit(|written| written.approved(name, sha256))
         {
             self.say(Event::Warning { message: error.message, name: None });
         }

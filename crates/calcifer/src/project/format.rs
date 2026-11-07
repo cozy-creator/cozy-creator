@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{
+    written::Written,
     folder::{self, Files, Folder, Lock, Version},
     graph::{self, Graph, SELF, as_name, can_take, edits, is_name, mentions, mentions_in, mentions_replaced, name_key, version_of},
 };
@@ -180,6 +181,18 @@ pub struct Reading {
     pub said: String,
 }
 
+/// A project.yaml read as one mapping, and its boxes' names in order. What doesn't read is refused with its line.
+fn parsed(text: &str) -> Result<(Value, Vec<String>), Error> {
+    protocol::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
+        let (line, written) = at_line(text, &why);
+        let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
+        match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
+            true => refused.remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`"),
+            false => refused,
+        }
+    })
+}
+
 /// A function Calcifer runs itself, free, with no machine.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tool {
@@ -272,35 +285,36 @@ pub struct ReadNow {
 }
 
 impl Doc {
-    /// The project as project.yaml says now.
+    /// The project as its rows say now.
     pub fn load(folder: &Folder) -> Result<Self, Error> {
-        Self::read(folder, &folder.text()?)
+        let lock = folder.lock()?;
+        folder.reading_boxes(|written| Self::of(folder, written, &lock))?
     }
 
-    /// The project `text` says. Only a file of no format, or another, is refused.
+    /// The project `text` says, a YAML export: what a render was asked with. Only a file of no format, or another, is refused.
     pub fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
-        Self::of(folder, text, &folder.lock()?)
+        Self::of_text(folder, text, &folder.lock()?)
     }
 
-    /// The project `text` says, of the files and tags `lock` holds.
-    pub(super) fn of(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
-        Self::of_format(folder, text, lock, FORMAT)
+    /// The project `written` says, of the files and tags `lock` holds.
+    pub(super) fn of(folder: &Folder, written: &Written, lock: &Lock) -> Result<Self, Error> {
+        let (value, listed) = written.reading();
+        Self::of_format(folder, value, listed, "", lock, FORMAT)
+    }
+
+    /// The project `text` says, as YAML, of the files and tags `lock` holds.
+    pub(super) fn of_text(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
+        let (value, listed) = parsed(text)?;
+        Self::of_format(folder, value, listed, text, lock, FORMAT)
     }
 
     /// A format 3 file as format 3 read it, with its keys: what was current then, so the upgrade carries that over and nothing else.
     pub(super) fn of_three(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
-        Self::of_format(folder, text, lock, 3)
+        let (value, listed) = parsed(text)?;
+        Self::of_format(folder, value, listed, text, lock, 3)
     }
 
-    fn of_format(folder: &Folder, text: &str, lock: &Lock, format: u64) -> Result<Self, Error> {
-        let (value, listed) = protocol::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
-            let (line, written) = at_line(text, &why);
-            let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
-            match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
-                true => refused.remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`"),
-                false => refused,
-            }
-        })?;
+    fn of_format(folder: &Folder, value: Value, listed: Vec<String>, text: &str, lock: &Lock, format: u64) -> Result<Self, Error> {
         let top = match value {
             Value::Object(top) => top,
             Value::Null => Map::new(),
@@ -309,17 +323,11 @@ impl Doc {
         let version = top.get("version").and_then(Value::as_u64);
         if version.is_some_and(|version| version != format) || (version.is_none() && top.contains_key("entities")) {
             let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
-            return Err(invalid("project_format", said).next(if version.is_none_or(|version| version < FORMAT) { "cozy project upgrade" } else { "cozy project new" }));
+            return Err(invalid("project_format", said).next("cozy update"));
         }
         let mut warnings = vec![];
         if let Some(why) = folder.unsaved() {
             warnings.push(Warning::of_file(format!("Not saved yet: {why}, and what landed goes in as soon as it can")));
-        }
-        if folder.lock_gone() {
-            warnings.push(Warning::of_file(format!("{0} is gone and files/ holds files: their versions aren't read, so only what is approved stands. Put {0} back from git or a backup", folder::LOCK)));
-        }
-        if folder.lock_set_aside() {
-            warnings.push(Warning::of_file(format!("{0} could not be read and is kept as {0}.broken: its versions, seeds and takes aren't read here, so only what is approved stands. Fix it and put it back, or delete it", folder::LOCK)));
         }
         if version.is_none() {
             warnings.push(Warning::of_file(format!("{} has no `version: {FORMAT}`, so it reads as version {FORMAT}: add it", folder::PROJECT)));
@@ -1176,11 +1184,6 @@ fn quoted(text: &str) -> String {
 /// input it writes. `12345678e012` isn't 1.2345678e19, and `012345678901` isn't 12345678901, which is another file's prefix.
 pub(super) fn names_a_file(path: &[&str]) -> bool {
     matches!(path, ["assets", .., "approved" | "image" | "video" | "audio"])
-}
-
-/// A new empty project's project.yaml.
-pub fn blank() -> String {
-    format!("version: {FORMAT}\n")
 }
 
 /// `text` as it calls something new, if it can: through `as_name`, so a `.` is `_`.

@@ -143,6 +143,13 @@ export interface CarriedFile {
   number?: number
 }
 
+/** Rows an edit pushed aside, sent with the box it makes: by name, the rows by node id, and the revision they were worked out from. */
+export interface Pushes {
+  moves: Record<string, Row>
+  ids: Map<string, Row>
+  seq: number
+}
+
 /** A deleted box: what it was, and where, to show again. */
 interface Gone {
   name: string
@@ -324,6 +331,8 @@ export class CanvasStore {
   private movingFrom = new Map<string, Row | null>()
   /** Of those, the edits each is part of: a request names the edits of what it writes. */
   private movingEdits = new Map<string, Set<string>>()
+  /** The newest revision of the canvas this page has heard, by a read or the stream: what its own placing is worked out from. */
+  private canvasSeq = 0
   private movesSoon = false
   private movesOwed = false
   private renames = new Map<string, string>()
@@ -549,7 +558,8 @@ export class CanvasStore {
   }
 
   /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
-  applyCanvas(cards: Record<string, Row>, began = 0) {
+  applyCanvas(cards: Record<string, Row>, began = 0, seq?: number) {
+    this.heard(seq)
     if (cards === this.cardsRead) return
     this.cardsRead = cards
     const first = !this.rows
@@ -567,8 +577,14 @@ export class CanvasStore {
     for (const [name, row] of this.rows) this.applyRow(name, row)
   }
 
+  /** Heard the canvas at revision `seq`. */
+  heard(seq?: number) {
+    if (seq !== undefined && seq > this.canvasSeq) this.canvasSeq = seq
+  }
+
   /** A `canvas` event: the rows that changed. Stream order is the truth. */
-  applyRows(cards: Record<string, Row | null>) {
+  applyRows(cards: Record<string, Row | null>, seq?: number) {
+    this.heard(seq)
     if (!this.rows) return
     for (const [name, row] of Object.entries(cards)) {
       if (row) {
@@ -760,7 +776,9 @@ export class CanvasStore {
     if (!this.projectId) return
     let cards: Record<string, Row> = {}
     try {
-      cards = (await this.client.canvas(this.projectId)).cards
+      const read = await this.client.canvas(this.projectId)
+      this.heard(read.seq)
+      cards = read.cards
     } catch (error) {
       if (!lost(error)) say("Couldn't read where things sit", error)
     }
@@ -2108,7 +2126,7 @@ export class CanvasStore {
         for (const name of hidden) this.deleting.delete(name)
         for (const name of moved) this.masks.delete(name)
         this.readAgain(names)
-        if (this.projectId) void this.client.canvas(this.projectId).then(({ cards }) => this.applyCanvas(cards), () => {})
+        if (this.projectId) void this.client.canvas(this.projectId).then(({ cards, seq }) => this.applyCanvas(cards, 0, seq), () => {})
       },
     }
   }
@@ -2383,11 +2401,11 @@ export class CanvasStore {
    * the answer: another writer may have taken it, and then the box takes the one it got. Refused, it goes and `refused` says why. `edit`: what it's part of,
    * else a step of its own.
    */
-  place<T extends { name: string; etag?: string }>(
+  place<T extends { name: string; etag?: string; kept?: Record<string, Row | null> }>(
     wanted: string,
     view: Omit<ElementView, "name">,
     dropped: Row,
-    ask: (at: Row, write: Write) => Promise<T>,
+    ask: (at: Row, write: Write, pushes: Pushes) => Promise<T>,
     refused: (error: unknown) => void,
     done?: (name: string, answer: T, edit: string) => void,
     edit?: string,
@@ -2407,9 +2425,15 @@ export class CanvasStore {
       this.adding -= 1
       if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
     }
+    // What its drop pushed aside goes with it, the same on every try: one request, one transaction, one entry.
+    let pushes: Pushes | undefined
     this.outbox.add<T>({
-      send: (once, action) => ask(at, { once, edit: by, action }),
+      send: (once, action) => {
+        pushes ??= this.pushesFor(by)
+        return ask(at, { once, edit: by, action }, pushes)
+      },
       done: (answer) => {
+        if (pushes) this.pushesSent(pushes, answer.kept)
         this.served.set(node.id, answer.name)
         // Another writer took the name, unless a rename has moved it on since.
         if (answer.name !== name && this.namesById.get(node.id) === name) this.moveName(name, answer.name)
@@ -2485,6 +2509,31 @@ export class CanvasStore {
     return before.flatMap((held) => (!held.view && held.node ? [held.node] : []))
   }
 
+  /** What `edit` pushed aside and hasn't written, each by the name Calcifer has it under: sent with the box the edit makes, one request. */
+  pushesFor(edit: string): Pushes {
+    const ids = new Map([...this.moving].filter(([id]) => this.movingEdits.get(id)?.has(edit) && this.movingFrom.get(id) !== undefined && this.served.has(id)))
+    return { moves: Object.fromEntries([...ids].map(([id, row]) => [this.served.get(id)!, row])), ids, seq: this.canvasSeq }
+  }
+
+  /** Those went with their box: what's still that row is written, and what another wrote first stands. */
+  pushesSent(pushes: Pushes, kept: Record<string, Row | null> = {}) {
+    const at = performance.now()
+    for (const [id, row] of pushes.ids) {
+      if (this.moving.get(id) !== row) continue
+      const name = this.namesById.get(id) ?? ""
+      this.moving.delete(id)
+      this.movingFrom.delete(id)
+      this.movingEdits.delete(id)
+      if (!((this.served.get(id) ?? name) in kept)) this.movedAt.set(name, at)
+    }
+    for (const [served, row] of Object.entries(kept)) {
+      const name = this.resolveName(served)
+      this.masks.delete(name)
+      this.movedAt.delete(name)
+      if (row) this.applyRows({ [name]: row })
+    }
+  }
+
   /** A row `edit` moved is still to be written. */
   private pushedFor(edit?: string): boolean {
     return edit !== undefined && [...this.movingEdits.values()].some((edits) => edits.has(edit))
@@ -2523,8 +2572,9 @@ export class CanvasStore {
           const name = this.served.get(id)
           return name && this.namesById.has(id) ? [[name, row, this.movingFrom.get(id)]] : []
         })
-        const was = Object.fromEntries(cards.flatMap(([name, , from]) => (from === undefined ? [] : [[name, from]])))
-        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards.map(([name, row]) => [name, row])), was, { once, edit, action }) : Promise.resolve(null)
+        // What this page worked out itself stands aside for another's newer row (cl-800), checked in Calcifer's own transaction.
+        const placed = cards.flatMap(([name, , from]) => (from === undefined ? [] : [name]))
+        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards.map(([name, row]) => [name, row])), placed, this.canvasSeq, { once, edit, action }) : Promise.resolve(null)
       },
       done: (answer) => {
         this.movesOwed = false
@@ -2558,7 +2608,7 @@ export class CanvasStore {
           this.masks.delete(this.namesById.get(id) ?? "")
           this.movedAt.delete(this.namesById.get(id) ?? "")
         }
-        if (this.projectId) void this.client.canvas(this.projectId).then(({ cards }) => this.applyCanvas(cards), () => {})
+        if (this.projectId) void this.client.canvas(this.projectId).then(({ cards, seq }) => this.applyCanvas(cards, 0, seq), () => {})
       },
     })
   }

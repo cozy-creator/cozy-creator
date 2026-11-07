@@ -1,6 +1,7 @@
 //! `GET /v1/projects/{id}/archive`: every file of a project on this machine as one tar, streamed
-//! with backpressure as it is read, so a pod's files can be carried off before it goes. What the
-//! lock names and isn't here is named first in `elsewhere.json`, so a tar cut short still says.
+//! with backpressure as it is read, so a pod's files can be carried off before it goes. Its
+//! `project.db` goes as one copy of it whole, made as the tar begins. What the project names and
+//! isn't here is named first in `elsewhere.json`, so a tar cut short still says.
 use std::{
     fs,
     io::{self, Write},
@@ -48,12 +49,16 @@ pub(super) async fn archive(State(api): State<Arc<Api>>, Path(id): Path<String>)
     let manifest = (!elsewhere.is_empty()).then(|| serde_json::to_vec_pretty(&serde_json::json!({"elsewhere": elsewhere})));
     let manifest = manifest.transpose().map_err(crate::machines::internal).map_err(Refusal)?;
     let count = elsewhere.len();
+    let copy = dir.join(format!("{COPY}{}", super::new_key()));
+    project.folder.snapshot(&copy).map_err(Refusal)?;
     let (sender, mut receiver) = mpsc::channel::<io::Result<Bytes>>(WAITING);
     let prefix = name.clone();
     tokio::task::spawn_blocking(move || {
         let writer = io::BufWriter::with_capacity(CHUNK, Chunks(sender.clone()));
         // A tar that ends cleanly but short would read as whole: a failure fails the stream.
-        if let Err(error) = write(&dir, &prefix, manifest.as_deref(), writer) {
+        let written = write(&dir, &prefix, manifest.as_deref(), &copy, writer);
+        let _ = fs::remove_file(&copy);
+        if let Err(error) = written {
             let _ = sender.blocking_send(Err(error));
         }
     });
@@ -72,9 +77,12 @@ fn elsewhere(lock: &Lock, missing: impl Fn(&File) -> bool) -> Vec<Elsewhere<'_>>
     away.map(|file| Elsewhere { sha256: &file.sha256, machine: &file.machine, length: file.length }).collect()
 }
 
-/// Every regular file under `dir`, in name order, as `<prefix>/<its path>`. A symlink is not its
-/// target's to give away, and a `.part` is still being written: they stay out.
-fn write(dir: &FsPath, prefix: &str, manifest: Option<&[u8]>, writer: impl Write) -> io::Result<()> {
+/// Where the copy of `project.db` a tar carries is made, beside it.
+const COPY: &str = ".project.db.copy-";
+
+/// Every regular file under `dir`, in name order, as `<prefix>/<its path>`, and `copy` as its `project.db`. A symlink is not its
+/// target's to give away, a `.part` is still being written, and the database itself goes as `copy`: they stay out.
+fn write(dir: &FsPath, prefix: &str, manifest: Option<&[u8]>, copy: &FsPath, writer: impl Write) -> io::Result<()> {
     let mut tar = tar::Builder::new(writer);
     if let Some(manifest) = manifest {
         let mut header = tar::Header::new_gnu();
@@ -82,6 +90,12 @@ fn write(dir: &FsPath, prefix: &str, manifest: Option<&[u8]>, writer: impl Write
         header.set_mode(0o644);
         tar.append_data(&mut header, format!("{prefix}/elsewhere.json"), manifest)?;
     }
+    let db = fs::File::open(copy)?;
+    let mut header = tar::Header::new_gnu();
+    header.set_size(db.metadata()?.len());
+    header.set_mode(0o644);
+    tar.append_data(&mut header, FsPath::new(prefix).join(super::db::DB), db)?;
+    let own = |name: &str| name.starts_with(super::db::DB) || name.starts_with(COPY);
     let mut dirs = vec![dir.to_owned()];
     while let Some(at) = dirs.pop() {
         let mut entries = fs::read_dir(&at)?.collect::<io::Result<Vec<_>>>()?;
@@ -90,7 +104,7 @@ fn write(dir: &FsPath, prefix: &str, manifest: Option<&[u8]>, writer: impl Write
             let kind = entry.file_type()?;
             if kind.is_dir() {
                 dirs.push(entry.path());
-            } else if kind.is_file() && !entry.file_name().to_string_lossy().ends_with(".part") {
+            } else if kind.is_file() && !entry.file_name().to_string_lossy().ends_with(".part") && !(at == dir && own(&entry.file_name().to_string_lossy())) {
                 // Gone since the listing: replaced or dropped, so it is no file of this project now.
                 let file = match fs::File::open(entry.path()) {
                     Ok(file) => file,

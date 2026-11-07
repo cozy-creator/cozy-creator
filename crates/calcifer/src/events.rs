@@ -5,7 +5,6 @@ use std::{
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
-    time::Duration,
 };
 
 use axum::{
@@ -28,15 +27,11 @@ use tokio::{
         },
         watch,
     },
-    time::{Instant, Interval, MissedTickBehavior},
+    time::Instant,
 };
 use tracing::warn;
 
 use crate::{api::Api, machines::Machines, project};
-
-/// How often an open stream looks for edits made outside Calcifer. A look is a few stats, on every OS and on any filesystem, and a hand's
-/// save shows on an open canvas within this and the page's one read.
-const LOOK: Duration = Duration::from_millis(250);
 
 /// What projects say to every stream. Process-wide, as `folder::WRITING` is: one process holds one
 /// Calcifer, and a `Folder` that writes may be no more than a path.
@@ -114,8 +109,8 @@ pub(crate) fn project_opened(dir: &Path) {
 }
 
 /// Tells every stream these rows of project `id`'s canvas changed; none is a row gone.
-pub fn canvas(id: &str, etag: &str, cards: BTreeMap<String, Option<Card>>) {
-    let event = StreamEvent::Canvas { id: id.to_owned(), etag: etag.to_owned(), cards };
+pub fn canvas(id: &str, seq: u64, cards: BTreeMap<String, Option<Card>>) {
+    let event = StreamEvent::Canvas { id: id.to_owned(), seq, cards };
     let _ = PROJECTS.said.send(event);
 }
 
@@ -147,8 +142,6 @@ pub(crate) async fn stream(
         warn!("the events stream cannot list the machines: {}", e.message);
         HashMap::new()
     });
-    let mut looks = tokio::time::interval(LOOK);
-    looks.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into() };
     let watch = Watch {
         pending: VecDeque::from([hello]),
@@ -158,7 +151,6 @@ pub(crate) async fn stream(
         machines_stale: false,
         shown,
         said,
-        looks,
         stop: api.stop_signal(),
         api,
     };
@@ -175,7 +167,6 @@ struct Watch {
     machines_stale: bool,
     shown: HashMap<String, Machine>,
     said: broadcast::Receiver<StreamEvent>,
-    looks: Interval,
     stop: watch::Receiver<bool>,
     api: Arc<Api>,
 }
@@ -215,7 +206,6 @@ impl Watch {
                     changed.ok()?;
                     self.machines_stale = true;
                 }
-                _ = self.looks.tick() => self.api.projects.look(),
                 () = stopping(&mut self.stop) => return None,
             }
         }

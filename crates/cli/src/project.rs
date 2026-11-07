@@ -27,21 +27,22 @@ const PARTIAL: u8 = 3;
 const EXAMPLES: &str = "Examples:
   cozy project new garden
   cozy open garden                             in your browser
-  cd garden && cozy project import ./kyogre.png   adds it to project.yaml as kyogre, which <kyogre> reads in any text
+  cd garden && cozy project import ./kyogre.png   adds it as kyogre, which <kyogre> reads in any text
   cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
   cozy project set whale megapixels=1 at=400,120   as its box's controls; --input takes a file of them
   cozy project delete whale                    prints the command that puts it back
   cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three more takes of fight
-  cozy project approve fight 2                 fight holds that file, as its `approved` in project.yaml
+  cozy project approve fight 2                 fight holds that file, as its `approved`
   cozy project unapprove fight                  it follows its inputs again
-  cozy project rename theo mara                in project.yaml, its <mentions> and its versions
-  cozy project history                         each edit, by the page, the CLI or a hand; `undo` and `redo` take one back or do it again
-  cozy project reclaim --yes                   deletes what project.yaml no longer names
+  cozy project rename theo mara                its <mentions> and its versions too
+  cozy project history                         each edit, by the page, the CLI or an import; `undo` and `redo` take one back or do it again
+  cozy project export -o garden.yaml           the project as YAML, for reading, a diff or git; `import garden.yaml` reads it back
+  cozy project reclaim --yes                   deletes what the project no longer names
   cozy project push                            its files to your Tensorhub account
-  cozy project pull                            on another computer, beside project.yaml and project.lock
+  cozy project pull                            on another computer, the files the project names
 
-project.yaml's comments and the README explain the rest.";
+A project is its folder: project.db, which holds what it says and has made, and files/. PROJECT-YAML.md explains the YAML.";
 
 const RENDER_EXAMPLES: &str = "Examples:
   cozy project render all --on kiyui               a new version of everything not approved, each reading the new ones before it
@@ -76,7 +77,7 @@ pub struct Args {
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
     /// Make a project folder.
-    #[command(after_help = "Example:\n  cozy project new garden && $EDITOR garden/project.yaml")]
+    #[command(after_help = "Example:\n  cozy project new garden && cozy open garden")]
     New {
         /// The folder to make it in.
         path: PathBuf,
@@ -114,8 +115,8 @@ enum Verb {
         approved: bool,
     },
     Render(Render),
-    /// Approve a take or version: its hash goes on the asset's line in project.yaml.
-    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unapprove fight` removes it.")]
+    /// Approve a take or version: its hash is the asset's `approved`.
+    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt sets fight's `approved`, changing nothing else. `cozy project unapprove fight` takes it away.")]
     Approve {
         /// The asset: `theo`, `dock_b`, `fight`, `fight_upscale`, …
         name: String,
@@ -129,7 +130,7 @@ enum Verb {
         #[arg(required = true, value_name = "NAME")]
         names: Vec<String>,
     },
-    /// Take back an asset's approval: its line in project.yaml goes, and its state follows its inputs again.
+    /// Take back an asset's approval: its `approved` goes, and its state follows its inputs again.
     #[command(after_help = "Example:\n  cozy project unapprove fight")]
     Unapprove {
         /// The asset.
@@ -144,14 +145,14 @@ enum Verb {
     /// Follow the render going to its end, as `render` follows its own: free, it starts nothing. With none going, the project as it stands.
     #[command(after_help = "Example:\n  cozy project render clash --on corteo --queue\n  cozy project wait\n\nExits 0 done, 1 something failed, 4 a run stopped moving: it goes on until you cancel it. Ctrl-C stops waiting, never the render.")]
     Wait,
-    /// What was done to the project, newest first: each edit by the page, the CLI or a hand in project.yaml, and whether it's undone.
+    /// What was done to the project, newest first: each edit by the page, the CLI or an import, and whether it's undone.
     #[command(after_help = "Example:\n  cozy project history\n  cozy project undo 42   that entry, if nothing since changed what it did")]
     History {
         /// How many, newest first.
         #[arg(short = 'n', value_name = "N", default_value_t = 20)]
         limit: usize,
     },
-    /// Undo the project's newest edit, whoever made it: the page, the CLI, or a hand in project.yaml. Refused if a later edit changed the same thing.
+    /// Undo the project's newest edit, whoever made it: the page, the CLI, or an import. Refused if a later edit changed the same thing.
     /// Renders aren't undone, and nothing is rented or ended.
     #[command(after_help = "Examples:\n  cozy project undo\n  cozy project undo 42        that entry of `cozy project history`\n  cozy project undo --to 40   every edit back to 40")]
     Undo {
@@ -170,39 +171,41 @@ enum Verb {
         #[arg(long, value_name = "ID", conflicts_with = "entry")]
         to: Option<u64>,
     },
-    /// Keep an asset's versions after renaming it in project.yaml.
-    #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
+    /// Rename an asset: its key, every <mention> of it, its versions and its place on the canvas.
+    #[command(after_help = "Example:\n  cozy project rename theo mara")]
     Rename {
-        /// Its name now, or in project.lock if project.yaml has moved on.
+        /// Its name now, or an orphan's whose versions the project still keeps.
         from: String,
         /// Its new name.
         to: String,
     },
-    /// List what project.yaml no longer names, and with --yes delete it: its versions, and any file nothing else names.
+    /// List what the project no longer names, and with --yes delete it: its versions, and any file nothing else names.
     #[command(after_help = "Example:\n  cozy project reclaim\n  cozy project reclaim --yes\n\nNothing is ever deleted without it.")]
     Reclaim {
         /// Delete them.
         #[arg(long)]
         yes: bool,
     },
-    /// Send every file project.lock names that your Tensorhub account lacks, private to it.
-    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; files/ stays out of git\n\nA file over 5 GiB goes as parts, which project.lock lists. A file on neither this computer nor the Hub is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
+    /// Send every file the project names that your Tensorhub account lacks, private to it.
+    #[command(after_help = "Example:\n  cozy project push\n\nA file over 5 GiB goes as parts, which the project lists. A file on neither this computer nor the Hub is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Push,
-    /// Fetch every file project.lock names that files/ lacks, as real files.
+    /// Fetch every file the project names that files/ lacks, as real files.
     #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
-    /// Move a project of format 2 or 3 to format 4: nothing goes out of date and nothing runs.
-    #[command(after_help = "Example:\n  cozy project upgrade\n\nEach box's state is worked out from the old files, as the cozy that reads that format did, and kept.\nThe old files stay beside the new, as project.yaml.v2/.v3 and project.lock.v2/.v3. Comments stay only there.")]
-    Upgrade {
-        /// What `cozy project status --json` said, with the cozy that reads format 2.
-        #[arg(long, value_name = "FILE")]
-        status: Option<PathBuf>,
+    /// The project as YAML, format 4: for reading, a diff or git. `cozy project import <file>.yaml` reads it back.
+    #[command(after_help = "Examples:\n  cozy project export\n  cozy project export -o garden.yaml && $EDITOR garden.yaml && cozy project import garden.yaml\n\nIt holds what the project says, its boxes and fields; its versions, takes and files stay in project.db.")]
+    Export {
+        /// Write it to this file, not stdout.
+        #[arg(short = 'o', long, value_name = "FILE")]
+        out: Option<PathBuf>,
     },
 }
 
-/// Add a picture, video or sound to the project as an element with a name, and print the name it got.
+/// Add a picture, video or sound to the project as an element with a name, and print the name it got. A `.yaml` file is the
+/// project as `export` writes it, read back: what differs is written, in one step `undo` takes back.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
+  cozy project import garden.yaml                the project as that file says, each box that differs
   cozy project import ./kyogre.png               prints kyogre
   cozy project import ./kyogre.png kyogre_art    prints kyogre_art
   cozy project import https://example.com/groudon.png
@@ -262,7 +265,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::New { path } => {
             let opened = open(ctx, Some(&path), true).await?;
             let folder = output::link(ctx, &opened.path);
-            output::say(ctx, &format!("made {folder}: a short film, ready to render or change in its project.yaml"));
+            output::say(ctx, &format!("made {folder}: a short film, ready to render or change"));
             output::nexts(ctx, &opened.next);
         }
         Verb::Ls => {
@@ -287,7 +290,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
-        Verb::Upgrade { status } => return upgrade(ctx, args.path.as_ref(), status.as_ref()),
+        Verb::Export { out } => return export(ctx, args.path.as_ref(), out).await,
         Verb::Add(add) => return assets::add(ctx, args.path.as_ref(), add).await,
         Verb::Set(set) => return assets::set(ctx, args.path.as_ref(), set).await,
         Verb::Delete { names, versions } => return assets::delete(ctx, args.path.as_ref(), names, versions).await,
@@ -404,7 +407,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 fn by(by: &By) -> String {
     match (by.via.as_str(), &by.client) {
         ("page", _) => "page".to_owned(),
-        ("file", _) => "project.yaml".to_owned(),
+        ("file", _) => "import".to_owned(),
         (via, Some(client)) => format!("{via} {client}"),
         (via, None) => via.to_owned(),
     }
@@ -507,6 +510,15 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
+    if is_yaml(&args.source) && args.into.is_none() {
+        let file = cwd.join(&args.source);
+        let text = std::fs::read_to_string(&file).map_err(|e| Error::new(Kind::Usage, "import_unreadable", format!("{}: {e}", file.display())))?;
+        calcifer.put_text(&format!("/v1/projects/{}/yaml", opened.id), &text).await?;
+        if !ctx.json {
+            output::say(ctx, &format!("imported {}", file.display()));
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     let hash = args.source.strip_prefix("sha256:").unwrap_or(&args.source);
     let by_hash = hash.len() >= 6 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) && !cwd.join(&args.source).exists();
     let source = match args.source.contains("://") || by_hash {
@@ -524,7 +536,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     }
     let path = format!("/v1/projects/{}/imports", opened.id);
     let exact = args.name.is_some();
-    let ask = Import { source, name: args.name, at: None, description: args.description, exact };
+    let ask = Import { source, name: args.name, at: None, description: args.description, exact, moves: Default::default(), seq: None };
     let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&imported);
@@ -534,30 +546,24 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     Ok(ExitCode::SUCCESS)
 }
 
-/// `cozy project upgrade`: here, in this process, as the files are all it takes and a Calcifer that reads this format can't read them yet.
-fn upgrade(ctx: &Context, at: Option<&PathBuf>, status: Option<&PathBuf>) -> Result<ExitCode, Error> {
-    let dir = match at {
-        Some(at) => at.clone(),
-        None => std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?,
-    };
-    let said = status.map(|file| std::fs::read_to_string(file).map_err(|e| Error::new(Kind::Usage, "status_unreadable", format!("{}: {e}", file.display())))).transpose()?;
-    let done = calcifer::project::upgrade(&dir, said.as_deref())?;
-    if done.current && !ctx.json {
-        done.said.iter().for_each(|line| output::say(ctx, line));
-        return Ok(ExitCode::SUCCESS);
+/// `GET /v1/projects/{id}/yaml`: the project as YAML, to stdout or `out`.
+async fn export(ctx: &Context, at: Option<&PathBuf>, out: Option<PathBuf>) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at, false).await?;
+    let text = ctx.calcifer().await?.text(&format!("/v1/projects/{}/yaml", opened.id)).await?;
+    match out {
+        Some(out) => {
+            std::fs::write(&out, &text).map_err(|e| Error::new(Kind::Unavailable, "export_write", format!("{}: {e}", out.display())))?;
+            output::say(ctx, &format!("wrote {}", out.display()));
+        }
+        None => print!("{text}"),
     }
-    if ctx.json {
-        output::json(&done);
-    } else {
-        let table = output::Table::new(ctx, ["NAME", "WAS", "BEFORE", "AFTER", "VERSION"]);
-        let rows = done.assets.iter().map(|row| [row.name.clone(), row.was.clone(), row.before.clone(), row.after.clone(), row.version.map_or("-".to_owned(), |number| number.to_string())]);
-        rows.fold(table, output::Table::row).print();
-        done.said.iter().for_each(|line| output::warn(line));
-        let worse = done.assets.iter().filter(|row| row.before == "current" && row.after != "current").count();
-        output::say(ctx, &format!("{} boxes are format 4, and {worse} went out of date. The old files stay beside them, as project.yaml.v2/.v3 and project.lock.v2/.v3", done.assets.len()));
-    }
-    let worse = done.assets.iter().any(|row| row.before == "current" && row.after != "current");
-    Ok(if worse { ExitCode::from(3) } else { ExitCode::SUCCESS })
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Whether `source` names the project as YAML, read back, rather than a file to add to it.
+fn is_yaml(source: &str) -> bool {
+    let lower = source.to_ascii_lowercase();
+    !source.contains("://") && (lower.ends_with(".yaml") || lower.ends_with(".yml"))
 }
 
 /// `pickup.take=<shot_1.3>`, `pickup.out_frame=240` and `pickup.beats_from=7` out of `names`: Pick up from here.

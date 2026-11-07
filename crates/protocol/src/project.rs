@@ -256,6 +256,11 @@ pub struct Import {
     /// A person typed `name`: refused if the project has it, not numbered.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exact: bool,
+    /// What its drop pushed aside, written with it, each only if no other client wrote it after `seq` (`CanvasPatch::placed`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub moves: BTreeMap<String, Card>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 /// What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
@@ -268,28 +273,34 @@ pub struct Imported {
     /// Its bytes were in `files/` already, so nothing was copied.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
+    /// Each of its `moves` another wrote since, left as it is: its row now (null: none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kept: BTreeMap<String, Option<Card>>,
 }
 
 /// `GET /v1/projects/{id}/canvas`: each element's row, by name. A name with no row isn't listed, and the page places it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Canvas {
-    pub etag: String,
+    /// The project's revision these rows are of.
+    pub seq: u64,
     pub cards: BTreeMap<String, Card>,
 }
 
-/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins, but for a name in `was`: its row is set only if it's
-/// still what `was` says it began from (null: none), so a place worked out from an older read can't clobber a newer one.
+/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins, but for a name in `placed`, the page's own working:
+/// its row is set only if no other client wrote it after `seq`, the revision it was worked out from, so it can't clobber a newer one (cl-800).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CanvasPatch {
     pub cards: BTreeMap<String, Option<Card>>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub was: BTreeMap<String, Option<Card>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CanvasPatched {
-    pub etag: String,
-    /// Each of `was` that had moved, left as it is: its row now (null: none).
+    pub seq: u64,
+    /// Each of `placed` another wrote since, left as it is: its row now (null: none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub kept: BTreeMap<String, Option<Card>>,
 }
@@ -602,6 +613,11 @@ pub struct NewAsset {
     /// What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// What its drop pushed aside, written with it, each only if no other client wrote it after `seq` (`CanvasPatch::placed`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub moves: BTreeMap<String, Card>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 /// What a write of an asset answers: its name, and what `If-Match` names from here on.
@@ -609,6 +625,9 @@ pub struct NewAsset {
 pub struct AssetMade {
     pub name: String,
     pub etag: String,
+    /// Each of its `moves` another wrote since, left as it is: its row now (null: none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kept: BTreeMap<String, Option<Card>>,
 }
 
 /// `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
@@ -619,6 +638,9 @@ pub struct AssetPatch {
     pub fields: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Where its box sits, set with its fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
 }
 
 /// What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.

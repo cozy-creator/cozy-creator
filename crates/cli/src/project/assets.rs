@@ -1,7 +1,6 @@
 //! What the canvas does, as an agent types it: `add`, `set`, `delete`, `restore`, and one asset of `status`. Each is the route the page
 //! calls, with its fields, so what either does shows on the other at once.
 use std::{
-    collections::BTreeMap,
     io::Read as _,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -10,7 +9,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use protocol::{
     error::{Error, Kind},
-    project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, CanvasPatch, CanvasPatched, Card, NewAsset, VersionBack, VersionMoved},
+    project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Card, NewAsset, VersionBack, VersionMoved},
 };
 use protocol::tool::{FieldType, Tools};
 use serde::{Deserialize, Serialize};
@@ -133,7 +132,7 @@ pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Resul
     let tool = if args.tool == "text" { String::new() } else { args.tool };
     let calcifer = ctx.calcifer().await?;
     as_declared(&calcifer, &opened.id, &tool, &mut fields).await;
-    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None };
+    let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None, moves: Default::default(), seq: None };
     let made: AssetMade = calcifer.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&made);
@@ -189,22 +188,13 @@ pub(super) async fn set(ctx: &Context, at: Option<&PathBuf>, args: Set) -> Resul
             as_declared(&calcifer, &opened.id, of, &mut fields).await;
         }
     }
-    if let Some(card) = card {
-        // A row only under the name the project has for it: one of nothing would wait for it for ever.
-        let held: AssetVersions = calcifer.get(&path).await?;
-        let ask = CanvasPatch { cards: BTreeMap::from([(held.asset.name, Some(card))]), was: BTreeMap::new() };
-        let _: CanvasPatched = calcifer.patch(&route(&["v1", "projects", &opened.id, "canvas"]), &ask).await?;
-    }
-    let patched: Option<AssetPatched> = match fields.is_empty() && tool.is_none() {
-        true => None,
-        false => Some(calcifer.patch(&path, &AssetPatch { fields, tool }).await?),
-    };
-    match (ctx.json, &patched) {
-        (true, Some(patched)) => output::json(patched),
-        (true, None) => output::json(&serde_json::json!({ "name": args.name })),
-        (false, _) => {
+    // Its fields and its row in one step: one transaction, one entry.
+    let patched: AssetPatched = calcifer.patch(&path, &AssetPatch { fields, tool, at: card }).await?;
+    match ctx.json {
+        true => output::json(&patched),
+        false => {
             println!("{}: set {names}", args.name);
-            patched.iter().flat_map(|patched| &patched.warnings).for_each(|warning| println!("warning: {warning}"));
+            patched.warnings.iter().for_each(|warning| println!("warning: {warning}"));
         }
     }
     Ok(ExitCode::SUCCESS)
