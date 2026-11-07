@@ -17,6 +17,8 @@ mod split;
 mod cache;
 pub mod checks;
 mod observer;
+mod escape;
+pub use escape::{EscapeRecord, Verdict, escapes_take, pass_mark, set_site, site_id};
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
 pub use split::{
@@ -188,6 +190,8 @@ struct Block {
     life: Life,
     // None means all previous work is complete. Some(stream) permits ordered reuse only there.
     reusable_on: Option<u64>,
+    // A live eager block's (birth pass, site) in `escape`'s tally.
+    tally: Option<(u32, u32)>,
 }
 
 impl Segment {
@@ -231,6 +235,7 @@ impl Block {
             scratch: false,
             life: Life::Ready,
             reusable_on: None,
+            tally: None,
         }
     }
 
@@ -335,6 +340,7 @@ pub(crate) struct State {
     workspace_sizes: Vec<usize>,
     // Freed workspaces by (stream, address): a graph on that stream may still name them.
     parked_workspaces: BTreeSet<(u64, u64)>,
+    escapes: escape::Escapes,
 }
 
 impl State {
@@ -966,7 +972,13 @@ impl Device {
         None
     }
 
-    fn activate(state: &mut State, ptr: u64, requested: usize) -> u64 {
+    /// A live eager block is tallied where it was born (`escape`); a pool's or workspace's is not.
+    fn activate(state: &mut State, ptr: u64, requested: usize, site: u32) -> u64 {
+        let block = &state.blocks[&ptr];
+        if !block.workspace && state.segments[&block.segment].pool.is_none() {
+            let key = state.escapes.born(block.capacity, site);
+            state.blocks.get_mut(&ptr).expect("taken block").tally = Some(key);
+        }
         state.stats.allocated_bytes += requested;
         state.stats.allocated_peak = state.stats.allocated_peak.max(state.stats.allocated_bytes);
         state.stats.allocations += 1;
@@ -1520,11 +1532,11 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         }
         if let Some(ptr) = Device::take(&mut state, class, bytes, stream, pool, || owner.over(exact) != 0) {
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
-            return Ok(Device::activate(&mut state, ptr, bytes));
+            return Ok(Device::activate(&mut state, ptr, bytes, escape::current(device)));
         }
         if let Some(id) = pool {
             if let Some(ptr) = Device::fit_pool(&mut state, id, class, bytes, stream) {
-                return Ok(Device::activate(&mut state, ptr, bytes));
+                return Ok(Device::activate(&mut state, ptr, bytes, escape::UNNAMED));
             }
             state.stats.ooms += 1;
             let session = state.pools.get_mut(&id).expect("routed pool");
@@ -1559,12 +1571,14 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 }
             };
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
-            Ok(Device::activate(&mut state, ptr, bytes))
+            Ok(Device::activate(&mut state, ptr, bytes, escape::current(device)))
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     });
     if matches!(result, Err(Error::OutOfMemory { .. })) {
-        owner.lock()?.stats.ooms += 1;
+        let mut state = owner.lock()?;
+        state.stats.ooms += 1;
+        state.escapes.refused(owner.owned().saturating_add(bytes), escape::room_held(owner));
     }
     result
 }
@@ -1652,6 +1666,9 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     let class = block.capacity;
     let reusable_on = block.reusable_on;
     let observed = measured.then(|| (block.charge(), block.phase, block.segment));
+    if let Some(key) = block.tally.take() {
+        state.escapes.died(key, class);
+    }
     if reusable {
         state.list((pool, class, reusable_on), ptr);
     }
@@ -1718,6 +1735,7 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     let capacity = block.capacity;
     let phase = block.phase;
     let segment = block.segment;
+    let tally = block.tally.take();
     block.requested = 0;
     block.life = if completed {
         Life::Ready
@@ -1730,6 +1748,9 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     if !completed && !block.fenced {
         block.fenced = true;
         state.fenced.push(ptr);
+    }
+    if let Some(key) = tally {
+        state.escapes.died(key, capacity);
     }
     if completed {
         state.list((None, capacity, None), ptr);
@@ -1837,6 +1858,20 @@ fn record_stream_any_inner(ptr: u64, stream: u64) -> Result<()> {
 
 /// Forget a stream only after its owner stopped submissions and synchronized it, before
 /// destroying its handle. Live tensors may outlive the stream; new uses need record_stream.
+/// Seals what a public client just stamped on its own stream (`Fences::seal`), on its thread: no
+/// later poll records on a stream it may destroy next (public-priority's take, SIGSEGV in the donor's
+/// cuEventRecord after its owner destroyed the stream it freed on, 1 exit in 5 on a 5090).
+pub fn seal_stream(device: i32, stream: u64) -> Result<()> {
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
+    let _state = owner.lock()?;
+    let _context = owner.driver().enter()?;
+    owner.fences().seal(owner.driver(), stream)
+}
+
 pub fn retire_stream(device: i32, stream: u64) -> Result<()> {
     valid_stream(stream)?;
     if stream == 0 || stream == 1 {

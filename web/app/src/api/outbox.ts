@@ -77,15 +77,6 @@ export class Outbox {
     }
   }
 
-  /** Takes back what hasn't been tried. Whether `action` was still waiting. */
-  takeBack(action: Action<any>): boolean {
-    const at = this.queue.indexOf(action)
-    if (at < 1) return false
-    this.queue.splice(at, 1)
-    this.tell()
-    return true
-  }
-
   /** Calcifer answers again: what's waiting goes now, and a try that may never be answered goes again. */
   back() {
     this.trying?.abort()

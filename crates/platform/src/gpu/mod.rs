@@ -253,6 +253,20 @@ impl Device {
         }
     }
 
+    /// What the display it drives uses now: its graphics processes' bytes (0 where the driver
+    /// does not attribute them), or None when it drives none.
+    pub fn display_use(&self) -> Result<Option<u64>> {
+        let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
+        if !device.is_display_active().map_err(failed("display active"))? {
+            return Ok(None);
+        }
+        let graphics = device.running_graphics_processes().unwrap_or_default();
+        Ok(Some(graphics.iter().map(|row| match row.used_gpu_memory {
+            UsedGpuMemory::Used(bytes) => bytes,
+            UsedGpuMemory::Unavailable => 0,
+        }).sum()))
+    }
+
     pub fn display_active(&self) -> Result<bool> {
         self.nvml
             .device_by_index(self.index)

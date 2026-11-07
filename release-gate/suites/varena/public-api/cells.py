@@ -166,7 +166,7 @@ def peer(args, cuda):
         scene.decline = True
         scene.normal.close()
         ask = subprocess.run([sys.executable, __file__, "take"], capture_output=True, text=True, timeout=120)
-        assert ask.returncode == 0, ask.stdout + ask.stderr
+        assert ask.returncode == 0, f"take exited {ask.returncode}: {ask.stdout}{ask.stderr}"
         row = scene.row("a peer took more than was free")
         assert scene.asked and row["resident"] == 0 and row["kv_live"] == KV, row
         scene.close([])

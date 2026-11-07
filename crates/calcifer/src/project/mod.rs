@@ -13,6 +13,7 @@ mod folder;
 mod format;
 mod format2;
 mod graph;
+mod history;
 pub(crate) mod host;
 mod jobs;
 pub(crate) mod model;
@@ -183,6 +184,10 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/archive", get(archive::archive))
+        .route("/v1/projects/{id}/history", get(history::list))
+        .route("/v1/projects/{id}/history/undo", post(history::undo))
+        .route("/v1/projects/{id}/history/redo", post(history::redo))
+        .route_layer(axum::middleware::from_fn(history::record))
 }
 
 impl Projects {
@@ -249,6 +254,7 @@ impl Projects {
         let dirs: Vec<PathBuf> = open.values().map(|project| project.folder.dir.clone()).collect();
         drop(open);
         for dir in dirs {
+            Folder::at(&dir).look_by_hand();
             crate::events::project_changed(&dir);
             canvas::look(&dir);
         }
@@ -1458,12 +1464,17 @@ async fn rename(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Renamed>, Refusal> {
-    let body = body?;
-    let asked: Rename = parse(&body)?;
-    format::named(&asked.to).map_err(Refusal)?;
+    let asked: Rename = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
+    rename_now(&api, &project, &id, asked).await.map(Json)
+}
+
+/// Asset `from` called `to`, as `POST rename` has it.
+async fn rename_now(api: &Arc<Api>, project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
+    format::named(&asked.to).map_err(Refusal)?;
     // What a machine holds it renames first: what it makes then lands here under the new name.
-    let _: Option<Renamed> = takeover::forward(&api, &project, "rename", &body).await?;
+    let body = Bytes::from(serde_json::to_vec(&asked).expect("a rename serializes"));
+    let _: Option<Renamed> = takeover::forward(api, project, "rename", &body).await?;
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let text = folder.text().map_err(Refusal)?;
@@ -1504,7 +1515,7 @@ async fn rename(
     let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
     let stamps = restamps(folder, &doc, &back, &from, &to, &said);
     // Its row first: a page that reads the new name knows it's the same box, where it was.
-    canvas::moved(folder, &id, &from, &to).map_err(Refusal)?;
+    canvas::moved(folder, id, &from, &to).map_err(Refusal)?;
     // Under `walking`, as a walk's end is: it is over, or it follows this.
     let walking = project.walking.lock().expect("walking lock");
     // A machine holding it walks it there, and has this already.
@@ -1520,7 +1531,7 @@ async fn rename(
     }
     if writes && let Err(error) = folder.edit_project(|text| assetfile::renamed(text, &from, &to)) {
         folder.update_lock(|lock| renamed(lock, &to, &from)).map_err(Refusal)?;
-        canvas::moved(folder, &id, &to, &from).map_err(Refusal)?;
+        canvas::moved(folder, id, &to, &from).map_err(Refusal)?;
         return Err(Refusal(error));
     }
     match follows {
@@ -1531,7 +1542,8 @@ async fn rename(
     if doc.tool(i) == Some(Tool::Cut) {
         film_renamed(folder, &from, &to);
     }
-    Ok(Json(Renamed { from, to, versions }))
+    history::renamed(&folder.dir, &from, &to);
+    Ok(Renamed { from, to, versions })
 }
 
 /// One asset's key moved by a rename, its inputs the same: what stood on `was` stands on `is`.

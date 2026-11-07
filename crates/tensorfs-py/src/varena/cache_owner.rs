@@ -2,7 +2,7 @@
 //! Runtime's callback must claim its owner/domain nonblocking before dropping GPU references.
 use super::*;
 use pyo3::types::PyBool;
-use varena::cache_owner::{CacheCallback, CallbackResult, CallbackScope, Cause, RequestKey};
+use varena::cache_owner::{CacheCallback, CallbackResult, CallbackScope, RequestKey};
 
 pyo3::create_exception!(tensorfs, CacheOwnerDeferredError, PyRuntimeError);
 
@@ -226,10 +226,7 @@ fn _varena_cache_request(
     bytes: usize,
 ) -> PyResult<Option<PyCacheRequest>> {
     py.detach(|| {
-        let key = RequestKey {
-            cause: Cause::Allocation,
-            generation: varena::cache_owner::next_generation()?,
-        };
+        let key = RequestKey { generation: varena::cache_owner::next_generation()? };
         varena::cache_owner::request_shrink(device, key, bytes)
     })
     .map(|request| request.map(|request| PyCacheRequest { request }))

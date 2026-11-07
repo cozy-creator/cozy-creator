@@ -1,8 +1,13 @@
 // How the canvas and what's around it are laid out (Paul, 11-06: "avoid errors and overlaps; make sure there's good spacing and everything is legible"), in a real browser
 // on a real Calcifer, measured: every kind of box (a picture with and without a tool, a shot with beats, text, an Edit, a long name) at rest, under the pointer and selected;
-// open on a take, written in, with More and its warnings open; failed, with many takes and an add-on, on a crowded canvas; far out, at the home zoom and close; at 1280×720,
+// open on a take, written in, with More and its warnings open; failed, with many takes and an add-on, on a crowded canvas; far out, at the home zoom and close; one being
+// made, saying how far it's got, at 75%, where what hangs off a box at rest keeps its size on screen; at 1280×720,
 // 1600×1000 and 2560×1440 at 2×. And the frame around the canvas: the top bar, the tools, the drawers, a note, the menus, the names list. Anything that collides, is cut off,
 // pokes past its edge, touches its neighbour or its panel's edge, reads too small, or is a square shadow under a drawn edge fails it, each said where, with a picture.
+// With scrollbars shown, one anywhere fails. Rastered on the GPU path as a person's Chrome is (page.js GPU), a drawn edge
+// whose line is gone from a side, or that draws past it, fails, pictured with it and without it. An open box's panel spans its picture and takes, a gap
+// under the picture and before the takes, through zooms by the wheel, the zoom control and the keys. Where nothing is drawn the pointer finds the canvas,
+// and a drag there pans it.
 //   node layout.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its pictures; $ALONE: on a shared computer, so it runs nothing;
 // $PAGE_ORIGIN: the page from elsewhere (a `vite` of the tree under test), its API through it; $PROJECT: one an earlier pass made, measured again; $SIZES: some of
@@ -12,7 +17,7 @@ const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav } = require('./page');
+const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -25,8 +30,11 @@ function check(name, ok, detail) {
   during = name;
   if (!ok) failures.push(name);
 }
+/** Ends what's still being made, once the measuring is done. */
+let stopMaking = () => {};
 async function died(why) {
   failures.push(`${during}: ${why}`);
+  stopMaking();
   summed();
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
@@ -63,7 +71,7 @@ function replaceFile(at, text) {
 
 /** What's wrong with how `scope` is laid out, in the page: each finding a rule, where, and what. A rule is one person's eye on it, measured.
  *  Self-contained: it runs in the page. */
-function audit({ floor, hangZoom }) {
+function audit({ floor, hangZoom, fitted = true }) {
   const found = [];
   const R = (el) => el.getBoundingClientRect();
   const zoom = Number(document.querySelector('.react-flow__viewport')?.style.transform.match(/scale\(([\d.]+)\)/)?.[1] ?? 1);
@@ -183,7 +191,7 @@ function audit({ floor, hangZoom }) {
   // 3. Each box: its name and × clear of its picture, its takes level with it, and what hangs under it on nothing else's.
   const boxes = [...document.querySelectorAll('.react-flow__node')].filter((node) => visible(node) && onScreen(R(node)));
   // A box and all that hangs off it: its name rises above it as it's drawn larger, and what's under it hangs below.
-  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .rest-waiting, .add-on, .refused-line')].filter(visible).map(R);
+  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .add-on, .refused-line')].filter(visible).map(R);
   for (const node of boxes) {
     const card = node.querySelector('.card');
     const media = node.querySelector(':scope .card > .media, :scope .card > .tl');
@@ -205,8 +213,20 @@ function audit({ floor, hangZoom }) {
       if (s.top - ringOn < m.top - 1) say('takes-above', side, `its first take starts ${Math.round(m.top - s.top + ringOn)} px above its picture`);
       if (s.top > m.top + 2 + ringOn) say('takes-below', side, `its first take starts ${Math.round(s.top - m.top)} px below its picture's top`);
     }
+    // What's under it, one block with its picture and its takes: from the picture's left edge to the takes' right, a gap under the picture
+    // and before the takes, and on neither.
     const under = node.querySelector('.here-under');
-    if (under && visible(under) && R(under).top < m.bottom + 2) say('under-on-picture', under, `what's under it starts ${Math.round(m.bottom - R(under).top)} px up its picture`);
+    if (under && visible(under)) {
+      const u = R(under);
+      const side = node.querySelector('.here-side:not(:empty)');
+      const t = side && visible(side) ? R(side) : null;
+      const gap = parseFloat(getComputedStyle(under).getPropertyValue('--here-gap')) * scaleOf(under);
+      if (Math.abs(u.left - m.left) > 1.5) say('under-left', under, `${Math.round(u.left - m.left)} px from its picture's left edge`);
+      if (Math.abs(u.right - (t ?? m).right) > 1.5) say('under-right', under, `${Math.round(u.right - (t ?? m).right)} px from ${t ? "its takes'" : "its picture's"} right edge`);
+      if (u.top - m.bottom < gap - 1) say('under-gap', under, `${Math.round(u.top - m.bottom)} px under its picture, not ${Math.round(gap)}`);
+      if (t && t.left - m.right < gap - 1) say('takes-gap', side, `${Math.round(t.left - m.right)} px beside its picture, not ${Math.round(gap)}`);
+      if (t && meet(u, t, 0)) say('under-on-takes', under, `${round(u)} on its takes ${round(t)}`);
+    }
   }
   // At rest, no box on another, with what hangs under each.
   const resting = boxes.filter((node) => !node.querySelector('.card.here') && !node.classList.contains('dragging'));
@@ -217,12 +237,12 @@ function audit({ floor, hangZoom }) {
     }
   }
   // What floats over the canvas, on nothing else that floats.
-  const floats = ['.top .ptabs', '.top .mtabs', '.top .canvas-controls', '.top .main-menu > summary', '.top .pill', '.tools', '.zoom', '.notes'].flatMap((s) => [...document.querySelectorAll(s)]).filter(visible);
+  const floats = ['.top .history', '.top .ptabs', '.top .mtabs', '.top .canvas-controls', '.top .main-menu > summary', '.top .pill', '.tools', '.zoom', '.notes'].flatMap((s) => [...document.querySelectorAll(s)]).filter(visible);
   for (let i = 0; i < floats.length; i++) for (let j = i + 1; j < floats.length; j++) if (meet(R(floats[i]), R(floats[j]))) say('chrome-overlap', floats[i], `on ${where(floats[j])}`);
-  // A box being worked on isn't under what floats.
-  for (const el of document.querySelectorAll('.card.here > .media, .card.here > .tl, .card.here > .head, .here-under, .here-side')) {
+  // A box being worked on, as the canvas fits it, isn't under what floats: zoomed in past that by hand, it's as near as was asked.
+  for (const el of fitted ? document.querySelectorAll('.card.here > .media, .card.here > .tl, .card.here > .head, .here-under, .here-side') : []) {
     if (!visible(el)) continue;
-    for (const over of document.querySelectorAll('.top .ptabs, .top .mtabs, .top .main-menu > summary, .tools, .zoom')) if (visible(over) && meet(R(el), R(over), 2)) say('under-chrome', el, `under ${where(over)}`);
+    for (const over of document.querySelectorAll('.top .history, .top .ptabs, .top .mtabs, .top .main-menu > summary, .tools, .zoom')) if (visible(over) && meet(R(el), R(over), 2)) say('under-chrome', el, `under ${where(over)}`);
   }
   // A shadow or fill that's square under a drawn edge, or a tint where there's nothing.
   for (const el of document.querySelectorAll('.here-under *, .drawer *, .tools *, .top *')) {
@@ -230,12 +250,154 @@ function audit({ floor, hangZoom }) {
     const s = getComputedStyle(el);
     if (s.borderImageSource !== 'none' && s.boxShadow !== 'none') say('square-shadow', el, 'a drawn edge with a square shadow');
   }
+  // 4. No bar on what scrolls. A drawn edge's sides stretch: tiled, the GPU draws them shifted out at a fractional scale.
+  for (const el of document.querySelectorAll('body *')) {
+    const s = getComputedStyle(el);
+    if (s.borderImageSource !== 'none' && !/^stretch( stretch)?$/.test(s.borderImageRepeat) && visible(el)) say('tiled-edge', el, `its drawn edge's sides ${s.borderImageRepeat}`);
+    if (!/auto|scroll/.test(s.overflowX + s.overflowY) || !visible(el)) continue;
+    const bar = Math.max(el.offsetWidth - el.clientWidth - parseFloat(s.borderLeftWidth) - parseFloat(s.borderRightWidth), el.offsetHeight - el.clientHeight - parseFloat(s.borderTopWidth) - parseFloat(s.borderBottomWidth));
+    const more = el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
+    if (bar > 0.5) say('scrollbar', el, `a ${Math.round(bar)} px bar, ${more ? 'with more to scroll' : 'with all of it in view'}`);
+  }
+  return found;
+}
+
+/** Where nothing is drawn, the pointer finds the canvas: no box, column, panel or wrapper takes it unseen. Each point of `around` (else the
+ *  window) `step` pixels apart. Self-contained: it runs in the page. */
+function emptyHits({ around, step }) {
+  const alpha = (color) => {
+    const m = color.match(/rgba?\(([^)]+)\)/);
+    const parts = m ? m[1].split(/[ ,/]+/).filter(Boolean) : [];
+    return parts.length > 3 ? Number(parts[3]) : m ? 1 : 0;
+  };
+  /** Whether `el` itself draws anything at x, y. */
+  const paints = (el, x, y) => {
+    const s = getComputedStyle(el);
+    if (s.visibility !== 'visible' || Number(s.opacity) === 0) return false;
+    // A control's whole box is what's pressed, whatever of it is drawn.
+    if (el.matches('img, video, canvas, svg, input, select, textarea, hr, button, a, summary, label, [role=button], [role=slider]') || s.backgroundImage !== 'none' || s.borderImageSource !== 'none' || alpha(s.backgroundColor) > 0.05) return true;
+    for (const pseudo of ['::before', '::after']) {
+      const p = getComputedStyle(el, pseudo);
+      if (p.content !== 'none' && (alpha(p.backgroundColor) > 0.05 || p.backgroundImage !== 'none' || parseFloat(p.borderTopWidth) > 0)) return true;
+    }
+    const r = el.getBoundingClientRect();
+    const k = r.width / (el.offsetWidth || r.width || 1);
+    const edges = [['Top', y - r.top], ['Right', r.right - x], ['Bottom', r.bottom - y], ['Left', x - r.left]];
+    if (edges.some(([side, d]) => parseFloat(s[`border${side}Width`]) * k >= d && alpha(s[`border${side}Color`]) > 0.05)) return true;
+    // A label's box is the label.
+    return [...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim());
+  };
+  const where = (el) => `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`;
+  const found = new Map();
+  const [x0, y0, x1, y1] = around ?? [0, 0, innerWidth, innerHeight];
+  for (let y = Math.max(1, y0); y < Math.min(innerHeight - 1, y1); y += step) {
+    for (let x = Math.max(1, x0); x < Math.min(innerWidth - 1, x1); x += step) {
+      const stack = document.elementsFromPoint(x, y);
+      const pane = stack.findIndex((el) => el.matches('.react-flow__pane'));
+      if (pane <= 0 || stack.slice(0, pane).some((el) => paints(el, x, y))) continue;
+      const at = `${where(stack[0])}${stack[0].closest('.react-flow__node .card') ? ` <${stack[0].closest('.react-flow__node .card').dataset.asset}>` : ''}`;
+      if (!found.has(at)) found.set(at, [Math.round(x), Math.round(y)]);
+    }
+  }
+  return [...found].map(([at, [x, y]]) => ({ rule: 'unseen-blocker', at, what: `takes the pointer at ${x},${y}, where nothing is drawn, from the canvas` }));
+}
+
+/** Each drawn edge on top, as the GPU draws it: its line on all four sides, and nothing of it past the line. Each is pictured with it and
+ *  without it, the page held still, and what it draws is where the two differ; `decoder` reads the pictures. */
+async function drawnEdges(page, decoder) {
+  const frames = await page.evaluate(() => {
+    const all = [...document.querySelectorAll('body *')].filter((el) => getComputedStyle(el).borderImageSource !== 'none' && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }));
+    const out = [];
+    for (const el of all) {
+      if (all.some((other) => other !== el && other.contains(el))) continue;
+      const r = el.getBoundingClientRect();
+      const scale = r.width / el.offsetWidth;
+      const o = parseFloat(getComputedStyle(el).borderImageOutset) * scale;
+      if (r.width < 40 || r.height < 30 || r.left - o < 1 || r.top - o < 1 || r.right + o > innerWidth - 1 || r.bottom + o > innerHeight - 1) continue;
+      // Along each side clear of its corners, where nothing else is over it.
+      const samples = [];
+      for (const side of ['top', 'right', 'bottom', 'left']) {
+        for (const t of [0.3, 0.5, 0.7]) {
+          const x = side === 'left' ? r.left + scale : side === 'right' ? r.right - scale : r.left + t * r.width;
+          const y = side === 'top' ? r.top + scale : side === 'bottom' ? r.bottom - scale : r.top + t * r.height;
+          const top = document.elementFromPoint(x, y);
+          if (top && el.contains(top)) samples.push({ side, x, y });
+        }
+      }
+      el.dataset.drawnEdge = String(out.length);
+      out.push({ at: `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`, rect: [r.left, r.top, r.right, r.bottom], o, scale, samples });
+    }
+    // Still: what opens is at its end (the GPU path's compositor holds it at its start), and what goes on forever is held.
+    for (const held of document.getAnimations()) if (held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity) held.finish();
+    window.heldStill = document.getAnimations().filter((held) => held.playState === 'running' && held.timeline === document.timeline);
+    for (const held of window.heldStill) held.pause();
+    return out;
+  });
+  const said = [];
+  for (const [i, frame] of frames.entries()) {
+    const [left, top, right, bottom] = frame.rect;
+    const pad = frame.o + 3;
+    const { width, height } = page.viewportSize();
+    const [x, y] = [Math.max(0, Math.floor(left - pad)), Math.max(0, Math.floor(top - pad))];
+    const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
+    const shown = await page.screenshot({ clip });
+    await page.evaluate((i) => (document.querySelector(`[data-drawn-edge="${i}"]`).style.visibility = 'hidden'), i);
+    const bare = await page.screenshot({ clip });
+    await page.evaluate((i) => document.querySelector(`[data-drawn-edge="${i}"]`).style.removeProperty('visibility'), i);
+    for (const { rule, what } of await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame })) said.push({ rule, at: frame.at, what });
+  }
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll('[data-drawn-edge]')) delete el.dataset.drawnEdge;
+    for (const held of window.heldStill) held.play();
+  });
+  return said;
+}
+
+/** A frame's sides from its two pictures, with it and without it: on each, its line is drawn within a few pixels of its edge, and nothing of
+ *  it lies past that. Self-contained: it runs in the decoder's page. */
+async function edgesOf({ shown, bare, clip, frame }) {
+  const read = async (base64) => {
+    const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext('2d');
+    context.drawImage(bitmap, 0, 0);
+    return context.getImageData(0, 0, bitmap.width, bitmap.height);
+  };
+  const [a, b] = [await read(shown), await read(bare)];
+  const k = a.width / clip.width;
+  const differs = (x, y) => {
+    const [px, py] = [Math.round((x - clip.x) * k), Math.round((y - clip.y) * k)];
+    if (px < 0 || py < 0 || px >= a.width || py >= a.height) return 0;
+    const i = (py * a.width + px) * 4;
+    return Math.max(Math.abs(a.data[i] - b.data[i]), Math.abs(a.data[i + 1] - b.data[i + 1]), Math.abs(a.data[i + 2] - b.data[i + 2]));
+  };
+  const [left, top, right, bottom] = frame.rect;
+  const sides = {};
+  for (const { side, x, y } of frame.samples) {
+    const [dx, dy] = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] }[side];
+    const [ex, ey] = { top: [x, top], right: [right, y], bottom: [x, bottom], left: [left, y] }[side];
+    const most = (from, to) => {
+      let held = 0;
+      for (let d = from; d <= to; d += 0.5 / k) held = Math.max(held, differs(ex + dx * d, ey + dy * d));
+      return held;
+    };
+    const tally = (sides[side] ??= { at: 0, line: 0, past: 0 });
+    tally.at++;
+    // The line wobbles from 3 px inside its edge to 2 px out; past it to the edge of its picture, nothing.
+    if (most(-4 * frame.scale, 2.5 * frame.scale) > 80) tally.line++;
+    if (frame.o - 0.5 > 3.5 * frame.scale && most(3.5 * frame.scale, frame.o - 0.5) > 12) tally.past++;
+  }
+  const found = [];
+  for (const [side, { at, line, past }] of Object.entries(sides)) {
+    if (line < at) found.push({ rule: 'edge-gone', what: `its ${side} line isn't drawn at ${at - line} of ${at} places` });
+    if (at > 1 && past === at) found.push({ rule: 'past-edge', what: `it draws outside its ${side} line` });
+  }
   return found;
 }
 
 (async () => {
   const base = process.env.PAGE_ORIGIN ?? calcifer();
-  const browser = await launch(playwright);
+  const browser = await launch(playwright, BARS);
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const signedIn = async (page) => {
     // `cozy open --no-open`'s link, on the page under test.
@@ -330,8 +492,14 @@ ${local ? `  card:
     tool: ${shotsPy}/crash
     plate: <clip>
     crash: the fixture's own failure, said in full so it wraps
+  making:
+    tool: ${shotsPy}/scenes
+    plate: <clip>
+    summary: <hero_art> walks the shore, segment after segment, as the tide comes in and the light goes long across the sand.
+    segments: 600
+    each: 5
 ` : ''}`);
-  names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken'] : [])];
+  names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = (asset, wait = true) => {
     const words = ['project', '-p', folder, 'render', asset, ...(local ? ['--on', 'local'] : []), '--plain'];
@@ -352,7 +520,7 @@ ${local ? `  card:
   if (local) {
     // Its first render waits on its install, which the box says.
     render('card', false);
-    const waiting = await until('the picture tool waits', () => box('card').locator('.rest-waiting, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
+    const waiting = await until('the picture tool waits', () => box('card').locator('.prog b, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
     seen.waits = waiting > 0;
     if (waiting) for (const finding of await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM })) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
     await until('the first take', () => api(`/v1/projects/${id}`), (state) => state.assets.find((held) => held.name === 'card')?.prefixes?.length >= 1, RUN_MS);
@@ -362,6 +530,11 @@ ${local ? `  card:
     render('broken');
   }
   await until('every take landed', () => api(`/v1/projects/${id}`), (state) => !state.assets.some((held) => held.standing === 'making'), RUN_MS);
+  // One being made all through the measuring, saying how far it's got, its steps a second each.
+  if (local) {
+    render('making', false);
+    stopMaking = () => execFileSync(COZY, ['project', '-p', folder, 'cancel', 'making'], { stdio: 'ignore' });
+  }
   }
   await first.close();
 
@@ -378,8 +551,17 @@ ${local ? `  card:
     await placed();
     const look = async (state, keep) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
-      await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
-      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM });
+      await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
+      seen.looks = (seen.looks ?? 0) + 1;
+      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted: !/^zoom-.*-in$/.test(state) });
+      // The pointer where nothing's drawn, around a box worked on or all over.
+      if (state === 'rest' || /^(open|writing|zoom)-/.test(state)) {
+        const block = await page.evaluate(() => {
+          const rects = [...document.querySelectorAll('.card.here, .card.here > .here-side, .card.here > .here-under')].map((el) => el.getBoundingClientRect()).filter((r) => r.width);
+          return rects.length ? [Math.min(...rects.map((r) => r.left)) - 60, Math.min(...rects.map((r) => r.top)) - 60, Math.max(...rects.map((r) => r.right)) + 60, Math.max(...rects.map((r) => r.bottom)) + 60] : null;
+        });
+        said.push(...(await page.evaluate(emptyHits, { around: block, step: block ? 10 : 24 })));
+      }
       for (const finding of said) findings.push({ size: size.name, state, ...finding });
       if (process.env.SHOT && (said.length || keep)) {
         const path = `${process.env.SHOT}-${size.name}-${state.replace(/[^\w.-]+/g, '_')}.png`;
@@ -424,6 +606,22 @@ ${local ? `  card:
       await page.mouse.click(2, size.viewport.height - 2);
       await zoomTo(2);
       await look('rest-close', true);
+    }
+    // At rest, being made, at 75%: what it says of how far it's got hangs off it as all else at rest does, one size on screen.
+    const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
+    await home();
+    if (names.includes('making') && (await making.count())) {
+      const at = await making.boundingBox();
+      await page.keyboard.down('Shift');
+      await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+      await page.keyboard.up('Shift');
+      await page.keyboard.press('Shift+2');
+      await settled(page);
+      await page.mouse.click(2, size.viewport.height - 2);
+      await zoomTo(0.75);
+      const said = await until('it says how far', () => making.locator('.prog b').innerText().catch(() => ''), (text) => /steps/i.test(text)).catch(() => '');
+      check(`making_says_how_far_${size.name}`, /steps/i.test(said), said);
+      await look('rest-making', true);
     }
     await home();
     for (const asset of size.open ? [] : names) {
@@ -490,6 +688,50 @@ ${local ? `  card:
     await look('note', true);
     await page.locator('.notes .note button', { hasText: 'Undo' }).first().click();
     await closeBox(page);
+    // Zoomed with a box open, by the wheel, the zoom control and the keys: what's under it stays one block with its picture and takes. Then a
+    // drag from beside its takes, where nothing's drawn, pans the canvas.
+    for (const asset of [many, 'wide_art', 'tall_art']) {
+      await openBox(page, asset);
+      await settled(page);
+      const wheel = async (dy) => {
+        const at = await page.locator(`.card.here[data-asset="${asset}"] > .media`).boundingBox();
+        await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
+        await page.keyboard.down('Control');
+        for (let i = 0; i < 3; i++) await page.mouse.wheel(0, dy);
+        await page.keyboard.up('Control');
+      };
+      for (const [step, act] of [
+        ['wheel-out', () => wheel(120)],
+        ['wheel-in', () => wheel(-160)],
+        ['control-out', () => page.click('button[aria-label="Zoom out"]')],
+        ['control-in', () => page.click('button[aria-label="Zoom in"]')],
+        ['key-out', () => page.keyboard.press('Control+Minus')],
+        ['key-in', () => page.keyboard.press('Control+Equal')],
+      ]) {
+        await act();
+        await settled(page);
+        await look(`zoom-${asset}-${step}`, step.endsWith('out'));
+      }
+      // Beside its takes where only the canvas is: a box pushed aside may sit close by, and a drag on it would carry it onto this one.
+      const from = await page.evaluate(() => {
+        const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media').getBoundingClientRect();
+        const y = side.top + side.height * 0.8;
+        const bare = (x) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
+        for (let x = side.right + 30; x < innerWidth - 20; x += 20) if (bare(x)) return { x, y };
+        for (let x = side.left - 30; x > 20; x -= 20) if (bare(x)) return { x, y };
+        return { x: side.right + 30, y };
+      });
+      const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
+      const before = await viewport();
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(from.x - 60, from.y - 40, { steps: 6 });
+      await page.mouse.up();
+      await settled(page);
+      const after = await viewport();
+      if (after === before) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'drag-no-pan', at: `beside <${asset}>'s takes`, what: `a drag from ${Math.round(from.x)},${Math.round(from.y)} left the canvas where it was` });
+      await closeBox(page);
+    }
     // What's around the canvas.
     await home();
     const chip = page.locator('.mtabs button, .mtabs a').first();
@@ -523,6 +765,65 @@ ${local ? `  card:
     await page.goto(`${base}/#/projects/${id}`);
     await context.close();
   }
+
+  // As a person's Chrome draws it, on the GPU path: each drawn edge whole at rest, on a box open, zoomed out and written in, and in a drawer; and on a
+  // 1.25x screen, where every edge is drawn at a fractional scale.
+  const drawn = await launch(playwright, GPU);
+  const decoder = await drawn.newPage();
+  const asked = SIZES.filter((held) => !process.env.SIZES || process.env.SIZES.split(',').includes(held.name));
+  for (const size of [...asked, { name: '1600x1000@1.25', viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1.25 }]) {
+    const context = await drawn.newContext({ viewport: size.viewport, deviceScaleFactor: size.deviceScaleFactor });
+    page = await context.newPage();
+    watch(page);
+    lookAt(page);
+    await signedIn(page);
+    await page.goto(`${base}/#/projects/${id}`);
+    await page.locator('.react-flow__node').first().waitFor();
+    await placed();
+    const edges = async (state) => {
+      // Still for a second: on the GPU path a box's fit can start well after its click.
+      const at = () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
+      for (let last = await at(), same = 0; same < 10; ) {
+        await page.waitForTimeout(100);
+        const now = await at();
+        same = now === last ? same + 1 : 0;
+        last = now;
+      }
+      seen.looks = (seen.looks ?? 0) + 1;
+      const said = await drawnEdges(page, decoder);
+      for (const finding of said) findings.push({ size: `${size.name} drawn`, state, ...finding });
+      if (process.env.SHOT && said.length) {
+        const path = `${process.env.SHOT}-${size.name}-drawn-${state}.png`;
+        await page.screenshot({ path, scale: 'css' });
+        shots.push(path);
+      }
+    };
+    await edges('rest');
+    const many = names.includes('card') ? 'card' : 'still';
+    await openBox(page, many);
+    await edges(`open-${many}`);
+    for (const step of ['out', 'out-again']) {
+      await page.click('button[aria-label="Zoom out"]');
+      await settled(page);
+      await edges(`open-${many}-zoomed-${step}`);
+    }
+    const next = page.locator(`.card.here[data-asset="${many}"] .here-side .take.add`);
+    if (await next.count()) {
+      await (await renderOf(page, many)).waitFor();
+      await settled(page);
+      await edges(`writing-${many}`);
+    }
+    await closeBox(page);
+    for (const drawer of ['runs', 'packages']) {
+      await page.goto(`${base}/#/projects/${id}/${drawer}`);
+      await page.locator('.drawer').waitFor();
+      await page.waitForTimeout(400);
+      await edges(`drawer-${drawer}`);
+    }
+    await context.close();
+  }
+  await drawn.close();
+  stopMaking();
 
   summed();
   seen.shots = shots.length;

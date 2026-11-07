@@ -133,6 +133,10 @@ pub struct GpuConfig {
     /// `gpu_memory_limit`, and `memory::Gpu::free`).
     #[serde(default)]
     pub gpu_memory_limit: Option<u64>,
+    /// How a call shares a GPU that drives a display (a shared machine's `machine.display_pace`):
+    /// sent in Start when one of its lane's GPUs drives one now.
+    #[serde(default)]
+    pub display_pace: Option<executor_protocol::DisplayPace>,
     /// Explicitly configured locations; the executor seal is imposed on top of them.
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
@@ -524,6 +528,9 @@ struct Session {
     invoked: std::collections::BTreeSet<String>,
     /// Its row of `Serving`: the manifests its constructions read.
     serving: u64,
+    /// Its TensorFS has varena v2, whose cores share each GPU through its ledger. An older one
+    /// is asked for nothing and asks for nothing: TensorD makes its room (`room_outside_ledger`).
+    ledger: bool,
 }
 impl Session {
     fn lane(&self) -> std::ops::Range<usize> {
@@ -769,11 +776,18 @@ fn parent_app(held: &HeldGeneration) -> App {
     (held.record.identity.clone(), held.record.application.clone())
 }
 
+/// What a GPU that drives a display keeps free at the driver beside a run, past what varena
+/// samples (the display's standing use, the run's context): as much again as the display's
+/// programs use now (a browser, a second monitor), and [`DISPLAY_MARGIN`] for the driver's own
+/// allocations (the 10-13 freeze logged NV_ERR_NO_MEMORY on shadow fault buffers), never under
+/// [`DISPLAY_FLOOR`]. An executor's own outside bytes grew about 50 MiB past a fresh process's
+/// 464 MiB on a 4090 (runs 40835-40850); varena keeps its 128 MiB slack on top.
+pub const DISPLAY_MARGIN: u64 = 256 << 20;
+pub const DISPLAY_FLOOR: u64 = 384 << 20;
+
 /// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
-    let room = host_memory::read().available;
-    let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
-    room >= 0 && room - PARENT_BYTES >= half
+    host_memory::cache_room() >= PARENT_BYTES
 }
 
 /// The manifests live executors read. A download's GC must not evict them: an evicted file a
@@ -902,6 +916,11 @@ struct Device {
     /// What its executors hold and ask for. They and it meet here without any wire.
     #[cfg(target_os = "linux")]
     ledger: Option<Arc<varena_ledger::Table>>,
+    /// Its own view of that ledger, for asks on behalf of an executor outside it.
+    #[cfg(target_os = "linux")]
+    asking: Option<Mutex<varena_ledger::Table>>,
+    /// Open while it drove a display at the pool's start: its use is read for each request.
+    display: Option<platform::gpu::Device>,
 }
 
 impl Device {
@@ -970,15 +989,24 @@ impl Pool {
         remove_old_executor_roots(root);
         let peaks = memory::Peaks::at(root.join("peaks"), notes.clone());
         let tenants = memory::Tenants::default();
-        let devices: Vec<Device> = envelope.iter().map(|entry| Device {
-            entry: entry.clone(),
-            memory: memory::Gpu::create(entry, &config.inventory, config.gpu_memory_limit, &peaks, &notes).map(Arc::new),
+        let devices: Vec<Device> = envelope.iter().map(|entry| {
             #[cfg(target_os = "linux")]
-            ledger: memory::row(entry, &config.inventory)
+            let open = || memory::row(entry, &config.inventory)
                 .and_then(|row| varena_ledger::parse_uuid(&row.device_uuid))
                 .and_then(|uuid| varena_ledger::Table::open(&uuid)
-                    .map_err(|error| tracing::warn!("GPU {entry} has no ledger: {error}")).ok())
-                .map(Arc::new),
+                    .map_err(|error| tracing::warn!("GPU {entry} has no ledger: {error}")).ok());
+            Device {
+                entry: entry.clone(),
+                memory: memory::Gpu::create(entry, &config.inventory, config.gpu_memory_limit, &peaks, &notes).map(Arc::new),
+                #[cfg(target_os = "linux")]
+                ledger: open().map(Arc::new),
+                #[cfg(target_os = "linux")]
+                asking: open().map(Mutex::new),
+                display: memory::row(entry, &config.inventory)
+                    .and_then(|row| platform::gpu::Device::open(&row.device_uuid).ok())
+                    .filter(|device| device.display_active().unwrap_or(false))
+                    .inspect(|_| tracing::info!("GPU {entry} drives a display: each run keeps free what it uses plus {} MiB", DISPLAY_MARGIN >> 20)),
+            }
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
         let running = memory::Running::default();
@@ -1112,9 +1140,10 @@ impl Pool {
     }
 
     /// An asker on GPU `index` stays short after every peer trimmed. Only an exit returns a CUDA
-    /// context: end the least recently used idle executor there, warm sets last, never an asker's
-    /// own (an idle executor recording a graph asked, and the supervisor ended it: every SDXL call on an
-    /// 8 GB card started a new process, 35140-35161). Whether one ended.
+    /// context: end the least recently used idle executor there, warm sets last and one outside the
+    /// ledger first (all it holds is held: no ask reaches it), never an asker's own (an idle executor
+    /// recording a graph asked, and the supervisor ended it: every SDXL call on an 8 GB card started
+    /// a new process, 35140-35161). Whether one ended.
     #[cfg(target_os = "linux")]
     fn end_idle_on(&self, index: usize, askers: &[u32]) -> bool {
         let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
@@ -1122,9 +1151,31 @@ impl Pool {
         let key = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.degree != 0 && session.lane().contains(&index))
             .filter(|(_, session)| !executor_births(&session.executor.birth, &session.followers).iter().any(|birth| askers.contains(&birth.pid)))
-            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.used))
+            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.ledger, session.used))
             .map(|(key, _)| key.clone());
         key.is_some_and(|key| self.end_session(&key))
+    }
+    /// Before an executor outside the ledger (`Session::ledger`) serves a call on `lane`, room for
+    /// it, as v1 made it: it sizes itself by what the driver has free, which no peer gives it.
+    /// Idle executors outside the ledger there end, since nothing else returns what they hold; for
+    /// a construction it has not loaded, idle ledger members too, whose contexts no ask returns
+    /// (v1 ended every idle neighbour for a first call); then every member left gives back what it
+    /// holds idle. Warm sets stay.
+    fn room_outside_ledger(&self, lane: std::ops::Range<usize>, loading: bool) {
+        let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
+            .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
+        let keys: Vec<String> = self.sessions.lock().unwrap().iter()
+            .filter(|(_, s)| s.degree != 0 && s.start < lane.end && lane.start < s.start + s.degree as usize)
+            .filter(|(_, s)| (loading || !s.ledger) && !s.loaded.keys().any(|key| warm.contains(key)))
+            .map(|(key, _)| key.clone()).collect();
+        let ended = keys.iter().filter(|key| self.end_session(key)).count();
+        #[cfg(target_os = "linux")]
+        let given: u64 = self.devices[lane.clone()].iter().filter_map(|device| device.asking.as_ref())
+            .filter_map(|table| table.lock().unwrap().ask_all_idle(Instant::now() + std::time::Duration::from_secs(2))).sum();
+        #[cfg(not(target_os = "linux"))]
+        let given = 0;
+        self.notes.note(serde_json::json!({"event": "room_outside_ledger", "gpus": lane, "loading": loading,
+            "ended": ended, "given": given, "free": self.free(&lane)}));
     }
     /// Current minimum driver free bytes, used only for exit diagnostics.
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -1221,6 +1272,21 @@ impl Pool {
             io::Error::new(io::ErrorKind::Unsupported, why)
         })
     }
+    /// The machine's display pace for a call on these GPUs when one of them drives a display now
+    /// (NVML's display-active: a desktop is initialized on it), else none.
+    fn display_pace(&self, gpus: &[Device]) -> Option<executor_protocol::DisplayPace> {
+        let pace = self.config.display_pace?;
+        let shown = gpus.iter().find(|gpu| {
+            let id = gpu.memory.as_ref().map_or(gpu.entry.as_str(), |memory| memory.uuid.as_str());
+            platform::gpu::Device::open(id).and_then(|device| device.display_active()).unwrap_or(false)
+        })?;
+        tracing::info!(
+            "GPU {} drives a display: its calls pause {} ms after each {} ms",
+            shown.entry, pace.pause_ms, pace.work_ms
+        );
+        Some(pace)
+    }
+
     fn lane_devices(&self, start: usize, degree: u32) -> io::Result<String> {
         Ok(self
             .lane(start, degree)?
@@ -1349,6 +1415,22 @@ impl Pool {
                 .map(|member| parent_app(&member.held)).collect();
             self.end_idle_parents(|key| !members.contains(key));
         }
+    }
+    /// The limit of each GPU of `lane` that drove a display at the pool's start, in its order:
+    /// its total less what the display keeps free ([`DISPLAY_MARGIN`]); empty when none does (a
+    /// pod, which reads nothing). Read at Start and again for each request.
+    fn display_limit(&self, lane: &str) -> Vec<u64> {
+        let limits: Vec<u64> = lane.split(',').map(|entry| {
+            let entry = entry.trim();
+            let Some(device) = self.devices.iter().find(|d| d.entry == entry).and_then(|d| d.display.as_ref()) else { return 0 };
+            let Some(gpu) = memory::row(entry, &self.config.inventory) else { return 0 };
+            let Ok(Some(used)) = device.display_use() else { return 0 };
+            let reserve = (used + DISPLAY_MARGIN).max(DISPLAY_FLOOR);
+            let limit = gpu.memory_bytes.saturating_sub(reserve);
+            tracing::debug!("GPU {entry} drives a display using {} MiB: a run uses at most {} of its {} MiB", used >> 20, limit >> 20, gpu.memory_bytes >> 20);
+            limit
+        }).collect();
+        if limits.iter().all(|&bytes| bytes == 0) { vec![] } else { limits }
     }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
@@ -2794,8 +2876,7 @@ impl Pool {
     /// priority: the first `few` while half the host's memory stays available. Cache only: the
     /// kernel takes it back whenever anything needs the memory.
     fn read_ahead(&self, held: impl IntoIterator<Item = HeldGeneration>, few: usize) {
-        let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
-        let mut room = host_memory::read().available.saturating_sub(half);
+        let mut room = host_memory::cache_room();
         let fits = |held: &HeldGeneration| {
             room = room.saturating_sub(i64::try_from(crate::import_pages::recorded(held)).unwrap_or(i64::MAX));
             room >= 0
@@ -2904,6 +2985,8 @@ impl Pool {
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
                     shared: false,
+                    display_limit: vec![],
+                    display_pace: None,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3247,7 +3330,9 @@ impl Pool {
             serving: self.serving.clone(),
             id,
         });
+        let ledger = in_ledger(&executor.hello.tensorfs_version);
         Ok(Session {
+            ledger,
             env: plan.executor.clone(),
             start,
             generation: plan.generation.clone(),
@@ -3283,6 +3368,9 @@ impl Pool {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
         let gpus = self.lane(start, degree)?;
+        if !session.ledger && degree > 0 {
+            self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
+        }
         let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
         // A call begins: the host is looked at before it grows.
         self.nudge_host();
@@ -3336,6 +3424,8 @@ impl Pool {
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
                     shared: self.config.host.mode == HostMode::Shared,
+                    display_limit: self.display_limit(&lane),
+                    display_pace: self.display_pace(gpus),
                 }),
                 &mut callbacks,
             )?)?;
@@ -3565,6 +3655,7 @@ impl Pool {
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
                 weights,
+                display_limit: self.display_limit(&lane),
             })),
             &mut callbacks,
         );
@@ -3696,6 +3787,13 @@ impl Pool {
 /// interpreter's own Runtime; its builders inherit that path.
 const RUNTIME_FIRST: &str = "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); \
     runpy.run_module('cozy_runtime.internal.machine_kernels', run_name='__main__')";
+
+/// Whether an executor of TensorFS `version` shares its GPUs through their ledgers: varena v2,
+/// TensorFS 0.21 on. One that names none is taken as current.
+fn in_ledger(version: &str) -> bool {
+    use std::str::FromStr;
+    pep440_rs::Version::from_str(version).map_or(true, |version| version.release() >= &[0, 21][..])
+}
 
 /// A Runtime wheel's importable tree, unpacked once per wheel digest under `into`.
 fn unpack_runtime(wheel: &Path, into: &Path) -> io::Result<PathBuf> {
@@ -3880,11 +3978,35 @@ fn with_end(error: io::Error, ended: &device_executor::Ended) -> io::Error {
     if !channel_lost(&error) {
         return error;
     }
-    let why = format!("the executor ended on its own ({})", ended.status);
+    #[cfg(unix)]
+    let oom = ended.oom_killed && std::os::unix::process::ExitStatusExt::signal(&ended.status) == Some(libc::SIGKILL);
+    #[cfg(not(unix))]
+    let oom = false;
+    let why = match oom {
+        true => host_out_of_memory(),
+        false => format!("the executor ended on its own ({})", ended.status),
+    };
     match refused(&error) {
         Some(_) => error,
         None if undelivered(&error) => io::Error::other(Undelivered(why)),
+        None if oom => io::Error::other(Refused { code: "host_out_of_memory".into(), detail: why }),
         None => io::Error::other(why),
+    }
+}
+
+/// Why the kernel killed an executor for host memory, in this machine's numbers.
+fn host_out_of_memory() -> String {
+    let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    match platform::contain::budget() {
+        Some(budget) => format!(
+            "the computer ran out of memory for this run: the kernel stopped its executor at this machine's \
+             {:.1} GiB limit, which keeps {:.1} GiB for the computer's other programs",
+            gib(budget.max), gib(budget.reserve)
+        ),
+        None => format!(
+            "the host ran out of memory for this run: the kernel stopped its executor at {:.1} GiB",
+            gib(u64::try_from(host_memory::read().bound).unwrap_or(0))
+        ),
     }
 }
 

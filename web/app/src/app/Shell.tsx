@@ -239,6 +239,7 @@ export function Shell() {
   const location = useLocation()
   const matches = useMatches()
   const [slot, setSlot] = useState<HTMLElement | null>(null)
+  const [history, setHistory] = useState<HTMLElement | null>(null)
   const [room, setRoom] = useState<HTMLElement | null>(null)
   // The first import on an empty canvas makes a project: the same canvas stays mounted, so nothing on it is lost.
   const adopted = useRef(new Map<string, string>())
@@ -271,6 +272,7 @@ export function Shell() {
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
+        <span className="history-controls" ref={setHistory} />
         <ProjectTabs id={id} room={room} />
         {remote && (
           <Link className="pill warn" to={to("machines")}>
@@ -283,7 +285,7 @@ export function Shell() {
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>
-      <CanvasHost key={hostKey} projectId={id} slot={slot} onAdopt={adopt} />
+      <CanvasHost key={hostKey} projectId={id} slot={slot} history={history} onAdopt={adopt} />
       {handle?.drawer && (
         <aside className="drawer">
           <Outlet />

@@ -365,11 +365,17 @@ export interface Progress {
   bytes_done?: number
   bytes_total?: number
   step_ms?: number
-  step_avg_ms?: number
+  /** The median of its stage's last five steps after the first. */
+  step_steady_ms?: number
   at_ms?: number
   done_fraction?: number
   bytes_per_s?: number
+  /** The seconds the whole run has left, as Calcifer estimates them; every client shows this one. */
   eta_s?: number
+  /** 0 to 1. */
+  eta_confidence?: number
+  /** `first_run` with no `eta_s`: nothing like it ran on this machine or its GPU yet. */
+  eta_basis?: "machine" | "gpu" | "steps" | "first_run"
 }
 
 export interface OutputItem {
@@ -991,7 +997,40 @@ export type ServerEvent =
   | { type: "machine.removed"; name: string }
   | { type: "project.changed"; id: string; rev: string; assets?: string[]; gone?: string[]; head?: boolean }
   | { type: "canvas"; id: string; etag: string; cards: Record<string, Row | null> }
+  | { type: "history"; id: string; undo?: HistoryEntry; redo?: HistoryEntry }
   | { type: "resync" }
+
+/** Who made an edit: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client. */
+export interface By {
+  via: "page" | "cli" | "file" | "api"
+  client?: string
+}
+
+/** One edit of a project, as its history keeps it (`GET /v1/projects/{id}/history`). */
+export interface HistoryEntry {
+  id: number
+  at_ms: number
+  by: By
+  words: string
+  names?: string[]
+  /** The page's own ids for it (`Cozy-Edit`). */
+  edits?: string[]
+  undone?: { at_ms: number; by: By }
+}
+
+export interface History {
+  entries: HistoryEntry[]
+  undo?: number
+  redo?: number
+}
+
+export interface HistoryStepped {
+  entries: HistoryEntry[]
+  already?: boolean
+  stopped?: ErrorBody
+  undo?: number
+  redo?: number
+}
 
 export interface AssetMade {
   name: string

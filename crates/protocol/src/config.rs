@@ -116,6 +116,9 @@ pub struct MachineConfig {
     /// imported ahead of a request) or `dedicated` (the machine's alone). Absent: a rental is
     /// dedicated, anything else shared.
     pub mode: Option<MachineMode>,
+    /// A shared machine's calls on a GPU that also drives the display pause for it, so the
+    /// desktop stays smooth: `[machine.display_pace]` `work_ms` (80) and `pause_ms` (16, 0: never).
+    pub display_pace: Option<executor_protocol::DisplayPace>,
 }
 
 /// How a machine shares its computer (`machine.mode`).

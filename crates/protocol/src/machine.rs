@@ -554,8 +554,9 @@ pub struct Progress {
     pub bytes_total: u64,
     /// The latest step's time, while a stage steps.
     pub step_ms: f64,
-    /// The mean of its steps after the first, which carries the stage's setup; 0 before one.
-    pub step_avg_ms: f64,
+    /// The median of its last five steps after the first, which carries the stage's setup: its
+    /// steady pace, robust to a slow step; 0 before its second.
+    pub step_steady_ms: f64,
     /// How far this stage is, when it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_fraction: Option<f64>,
@@ -635,6 +636,10 @@ pub struct Outcome {
     /// How its executor served the request other than as sent, in the executor's order. Advisory.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub adjustments: Vec<Adjustment>,
+    /// The GPU it ran on, by name (`NVIDIA GeForce RTX 4090`), as its controller recorded it: what
+    /// a later run's time left is learned from on another machine of that GPU. Empty: unknown.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gpu: String,
 }
 
 /// One request field served other than as sent.
@@ -933,18 +938,8 @@ pub struct GpuMemory {
     pub free_bytes: u64,
     /// Bytes no cozy process holds (another app's), as its last reading measured them.
     pub foreign_bytes: u64,
-    pub created_bytes: u64,
-    pub created_chunks: u64,
     /// Allocated to live processes.
     pub allocated_bytes: u64,
-    /// The GPU page cache: landed weights of exited processes, kept for the next of their layout.
-    pub page_cache_bytes: u64,
-    pub page_cache_chunks: u64,
-    /// Bytes a process holds that no live manager created (a previous TensorD's).
-    pub books_only_bytes: u64,
-    /// The share of wall time at least one allocation waited (`some` pressure), over 10 s and 60 s.
-    pub pressure_some_10s: f32,
-    pub pressure_some_60s: f32,
     pub processes: Vec<ProcessMemory>,
 }
 
@@ -955,7 +950,6 @@ pub struct ProcessMemory {
     pub pid: u32,
     /// Its executor group (plan and lane).
     pub executor: String,
-    pub chunks: u64,
     pub bytes: u64,
 }
 

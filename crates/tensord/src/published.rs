@@ -794,7 +794,8 @@ impl Publisher {
     }
 
     /// The Runtime and TensorFS versions an environment of `locked` built here holds: this
-    /// machine's own pair's where it stands in for the lock's (`stands_in`), else the lock's.
+    /// machine's own pair's where it stands in for the lock's (`stands_in`), else the lock's (its
+    /// series' newest patch, which only the build reads).
     fn planned_pair(&self, locked: &Locked) -> BTreeMap<String, String> {
         match self.stands_in(locked) {
             true => self.machine_pair(),
@@ -803,11 +804,11 @@ impl Publisher {
     }
 
     /// What of this machine's pair an environment of `locked` (none: unlocked code) is built
-    /// from, for its identity: nothing where the lock's own pair runs.
+    /// from, for its identity; where the lock's own series runs, at its newest patch then.
     pub(crate) fn pair_key(&self, locked: Option<&Locked>) -> Value {
         match locked.is_none_or(|locked| self.stands_in(locked)) {
             true => json!({"sdk": self.sdk.requirements, "links": self.sdk.find_links}),
-            false => Value::Null,
+            false => json!("newest patch"),
         }
     }
 
@@ -1061,8 +1062,8 @@ impl Publisher {
     /// platform's resolution needs, by the lock's URLs and hashes, so a machine of any platform
     /// the lock covers installs it. The wheels the release's Hub hosts (its project wheel, its
     /// carried git dependencies, its org's packages) come through TensorFS's downloader instead
-    /// and install from disk. The pair is the lock's, or this machine's where that is a later patch
-    /// of it (`Publisher::stands_in`).
+    /// and install from disk. The pair is the lock's at its series' newest released patch, or this
+    /// machine's where that is a later patch of the lock's (`Publisher::stands_in`).
     fn generation(
         &self,
         generations: &Path,
