@@ -908,18 +908,6 @@ struct Device {
     ledger: Option<Arc<varena_ledger::Table>>,
 }
 
-impl Device {
-    /// What its executors hold and could give back.
-    #[cfg(target_os = "linux")]
-    fn idle_bytes(&self) -> u64 {
-        self.ledger.as_ref().map_or(0, |table| table.idle())
-    }
-    #[cfg(not(target_os = "linux"))]
-    fn idle_bytes(&self) -> u64 {
-        0
-    }
-}
-
 pub(crate) struct Permit {
     pool: Arc<Pool>,
     token: crate::gpu_allocation::Permit,
@@ -1191,24 +1179,19 @@ impl Pool {
     pub fn width(&self) -> usize {
         self.devices.len()
     }
-    /// The first `degree` GPUs as the lane rule reads them; one the inventory does not name
-    /// runs no native format.
+    /// The first `degree` GPUs as the lane rule reads them, with the smallest one's memory: its
+    /// card's, or `gpu_memory_limit` when lower; never what is free. One the inventory does not
+    /// name runs no native format.
     pub fn gpus(&self, degree: u32) -> crate::precision::Gpus {
-        let ccs: Vec<&str> = self.devices.iter().take(degree as usize)
-            .map(|d| self.inventory(&d.entry).map_or("", |g| g.compute_cap.as_str())).collect();
-        crate::precision::Gpus::of(&ccs)
+        let rows: Vec<Option<&crate::machine::receipt::Gpu>> = self.devices.iter().take(degree as usize).map(|d| self.inventory(&d.entry)).collect();
+        let ccs: Vec<&str> = rows.iter().map(|g| g.map_or("", |g| g.compute_cap.as_str())).collect();
+        let cap = |bytes: u64| self.config.gpu_memory_limit.map_or(bytes, |limit| bytes.min(limit));
+        let capacity = rows.iter().flatten().map(|g| g.memory_bytes).filter(|&n| n > 0).map(cap).min();
+        crate::precision::Gpus::of(&ccs).with_capacity(capacity)
     }
     /// Why a GPU of this computer is not used: each run on it is told.
     pub fn problems(&self) -> Vec<String> {
         self.config.problems.clone()
-    }
-    /// The first `degree` GPUs' current capability and free bytes, counting what idle peers hold:
-    /// they give it back when asked, so it is room a new model can plan on.
-    pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
-        let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
-        let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
-        tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)

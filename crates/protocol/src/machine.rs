@@ -319,8 +319,8 @@ pub struct RunSpec {
     /// 0: widest group every model slot supports on this machine. Positive: at most this many
     /// GPUs, for the run and its children.
     pub gpus: u32,
-    /// The main model's lane, a label (`bf16`, `fp8`, …). Empty, and every other slot: the Hub
-    /// picks for the machine's hardware. For a model-only warm run with a weights destination,
+    /// The main model's lane, a label (`bf16`, `fp8`, …). Empty, and every other slot: the
+    /// machine picks from the release's lanes. For a model-only warm run with a weights destination,
     /// the lane its commit is labelled. The package's own children inherit it; another
     /// package's take none.
     pub lane: String,
@@ -381,8 +381,8 @@ pub struct InputFile {
 pub const BASE: &str = "base";
 
 /// One model slot's choice, by name (th-245: the machine resolves it at the Hub). A Hub model is
-/// `repository` at `release` (empty: the newest) in `lane`, else in the lane the Hub picks for
-/// the machine's hardware. `manifest` names a commit (or a header) by hash: one of the
+/// `repository` at `release` (empty: the newest) in `lane`, else in the lane the machine picks
+/// from the release's lanes. `manifest` names a commit (or a header) by hash: one of the
 /// repository's at the Hub (with `repository`), or one this machine holds (without). A slot with
 /// no choice takes its declared default release, a callee's included (`<package>/<path>`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

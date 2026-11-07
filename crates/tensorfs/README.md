@@ -333,7 +333,7 @@ repo → release → lane → commit (a cozytensors.tree/1)
 ```
 
 A commit holds one header and one lane label; a release names one commit per lane. `lane=` picks one, else the
-endpoint picks what the GPUs run best; `"owner/model@sha256:…"` names an unreleased commit. Opening downloads
+machine picks what its GPUs run best from the release's lanes (offline, of those it holds); `"owner/model@sha256:…"` names an unreleased commit. Opening downloads
 metadata by default; each tensor read fetches only the objects it needs. Set `lazy=False` to wait for the whole
 checkpoint in the shared store, or call `checkpoint.download(components=["unet"])` to preload a selection.
 `materialize` returns a plain folder, while `download_file` returns one repository file. These folder/file

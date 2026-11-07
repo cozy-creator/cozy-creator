@@ -72,7 +72,7 @@ pub struct Spec {
     pub models: Vec<domain::ModelChoice>,
     pub attention_kernel: String,
     pub gpus: u32,
-    /// The main model's lane; empty, and every other slot: the Hub's pick for the hardware. A
+    /// The main model's lane; empty, and every other slot: the machine's pick for its GPUs. A
     /// model-only upload's commit lane.
     pub lane: String,
     /// The Hub the run reads, under its signer's newest capability there when its request carried one.
@@ -633,14 +633,13 @@ impl Runs {
                 "lane": named.lane, "tree": named.tree.as_ref().map(ObjectRef::id), "checkpoint": header.id()});
             (header, named.tree, row)
         } else {
-            // A Hub commit by name, or by hash; no lane is the Hub's pick for this machine's
-            // hardware.
+            // A Hub commit by name, or by hash; no lane is this machine's pick for its GPUs.
             let named = crate::published::choose(choice, &choice.parameter)
                 .map_err(|(code, message)| refused(code, message))?;
-            let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
+            let gpus = self.service.gpu().map(|gpu| gpu.gpus(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.repository), format!("saving {}", choice.repository));
             let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.repository, &self.service.engine.caller_id(id));
-            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, &spec.catalog_revision, structure, stop, &|done, total| {
+            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &gpus, &spec.catalog_revision, structure, stop, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };

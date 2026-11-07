@@ -1,8 +1,8 @@
 //! Published packages and their models, prepared from a Hub by name (th-245) and reused: a
 //! run whose installation and model resolution are held reads nothing from the Hub. Port of the
 //! Python worker's release-root preparation (package set from the release's locked
-//! requirements with uv; each model's commit as the Hub resolves it for the machine's hardware,
-//! then a TensorFS download) with its `release_root_preparing` progress answers.
+//! requirements with uv; each model's lane of its release as this machine picks it, then a
+//! TensorFS download) with its `release_root_preparing` progress answers.
 pub(crate) mod environment;
 pub mod layer;
 use crate::{
@@ -31,8 +31,9 @@ use crate::{
 };
 use tensorfs::{
     err::Refusal,
-    fetch::{Hardware, Landed, Progress as Counted},
+    fetch::{Landed, Progress as Counted, Released},
     format::ObjectRef,
+    precision::{Ask, Gpus},
     sha256,
 };
 use crate::catalog::normalized;
@@ -117,7 +118,7 @@ pub struct Request {
     pub choices: Vec<domain::ModelChoice>,
     /// 0 selects the widest supported machine group; otherwise exactly this many GPUs.
     pub gpus: u32,
-    /// The main model's lane; empty lets the Hub pick for the hardware.
+    /// The main model's lane; empty lets the machine pick.
     pub lane: String,
 }
 
@@ -135,10 +136,9 @@ impl Request {
 }
 
 /// A Hub commit as a run names it (th-245): `repository` at `release` (empty: the newest) in
-/// `lane` (empty: the Hub's pick for the hardware), or by hash (`tree` and no release): a commit,
-/// or a bare header (no tree). Resolved, it carries the release, lane and commit the Hub named,
-/// that commit's header (the checkpoint's id on this machine), and why a better lane was passed
-/// over.
+/// `lane` (empty: the machine's pick), or by hash (`tree` and no release): a commit, or a bare
+/// header (no tree). Resolved, it carries the release, lane and commit served, that commit's
+/// header (the checkpoint's id on this machine), and why it is not the lane the rule wanted first.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Named {
     pub repository: String,
@@ -666,25 +666,34 @@ impl Publisher {
         Ok(())
     }
 
-    /// The commit `named` is: one by hash as given, a name as the Hub resolves its release and
-    /// lane (or, with no lane, `hardware`); then that commit's header. Journaled per catalog
-    /// revision and GPUs (free VRAM moves; the first answer stands) so a warm run, across
-    /// restarts too, asks the Hub nothing (th-245).
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, revision: &str) -> Result<Named, Failure> {
+    /// The commit `named` is: one by hash as given; a name, the lane of its release this machine
+    /// picks for `ask` on `gpus` (`named.lane` pins one) from the release's lanes, which are
+    /// journaled per catalog revision so a warm run, across restarts too, asks the Hub nothing
+    /// (th-245); with the Hub unreachable, a lane the store holds. Then that commit's header.
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, gpus: &Gpus, ask: &Ask, revision: &str) -> Result<Named, Failure> {
         if named.tree.is_some() {
             return self.commit(service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
-        let name = json!(["resolve-v3", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
-        let held = service.engine.with_journal(|j| j.named(&name, revision)).map_err(io_failure)?;
-        if let Some((release, lane, tree, header, reasons)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
-            return Ok(Named { release, lane, tree: Some(tree), header: Some(header), reasons, ..named });
-        }
-        let r = origin::resolve(&self.machine, source, &named.repository, &named.release, &named.lane, hardware)
+        let key = json!(["release-v1", origin, named.repository, named.release]).to_string();
+        let held = service.engine.with_journal(|j| j.named(&key, revision)).map_err(io_failure)?;
+        let answer = match held.and_then(|held| serde_json::from_str::<Released>(&held).ok()) {
+            Some(released) => Ok(released),
+            None => {
+                let answer = origin::release(&self.machine, source, &named.repository, &named.release);
+                if let Ok(released) = &answer {
+                    let said = serde_json::to_string(released).map_err(|e| io_failure(io::Error::other(e)))?;
+                    service.engine.with_journal(|j| j.bind_named(&key, revision, &said)).map_err(io_failure)?;
+                }
+                answer
+            }
+        };
+        let ask = Ask { pin: (!named.lane.is_empty()).then(|| named.lane.clone()), ..ask.clone() };
+        let release = (!named.release.is_empty()).then_some(named.release.as_str());
+        let chosen = tensorfs::lanes::resolve(&self.store, &named.repository, release, Some(answer), gpus, &ask)
             .map_err(|e| unsigned(source, refused("model_resolution_failed", e.clone()), &e))?;
-        let answer = json!([r.release, r.lane, r.commit, r.header, r.reasons]).to_string();
-        service.engine.with_journal(|j| j.bind_named(&name, revision, &answer)).map_err(io_failure)?;
-        Ok(Named { release: r.release, lane: r.lane, tree: Some(r.commit), header: Some(r.header), reasons: r.reasons, ..named })
+        let (lane, reasons) = (chosen.lane, chosen.reasons);
+        Ok(Named { release: chosen.release, lane: lane.label, tree: Some(lane.commit), header: Some(lane.header), reasons, ..named })
     }
 
     /// A commit (or a bare header) named by its hash, with what a hash alone does not say: its
@@ -752,14 +761,14 @@ impl Publisher {
         service: &Service,
         source: &hub::Source,
         named: Named,
-        hardware: &Hardware,
+        gpus: &Gpus,
         revision: &str,
         structure: bool,
         stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware, revision).map_err(failed)?;
+        let named = self.resolve(service, source, named, gpus, &Ask::default(), revision).map_err(failed)?;
         // A checkpoint this store already holds whole moves nothing and asks the Hub nothing.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, stop, bytes).map_err(failed)?;
@@ -1200,8 +1209,8 @@ impl Publisher {
 
     /// The run's model grants and its precision warnings. Each slot takes the run's choice, else
     /// its declared default (also under a choice of adapters alone); a Hub one is exact as its
-    /// choice names it (th-241), else in the first lane of the rule's order its release
-    /// publishes (`precision`). The request's GPU
+    /// choice names it (th-241), else in the lane the rule picks for the slot's tolerances on
+    /// the call's GPUs (`precision::choose`). The request's GPU
     /// count chooses the group independently of the weight lane; 0 uses the widest group every
     /// slot supports on the machine. A slot with neither is refused.
     fn model(
@@ -1228,7 +1237,7 @@ impl Publisher {
         // The GPUs the call runs on (none for `accelerator=False`): what its models resolve for.
         let entry = protocol::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
         let degree = gpu.degree(&entry, request.gpus);
-        let hardware = gpu.hardware(degree);
+        let gpus = gpu.gpus(degree);
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
@@ -1266,10 +1275,9 @@ impl Publisher {
             if Some(slot) == main && !request.lane.is_empty() {
                 named.lane = request.lane.clone();
             }
-            // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only.
-            let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
-            let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, &request.catalog_revision)?;
+            // Its tolerances: `min_bits`, its phase, and plain lanes only for a class that takes no
+            // encoded leaves or raw weights read as data.
+            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &gpus, &Ask::of(slot), &request.catalog_revision)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.repository)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1314,8 +1322,8 @@ impl Publisher {
                 .iter()
                 .find(|c| c.parameter == grant.slot || c.parameter == parameter)
             {
-                // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, &request.catalog_revision);
+                // An adapter takes the default rule on the run's GPUs: `--lane` is the main model's.
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &gpus, &Ask::default(), &request.catalog_revision);
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs: Vec<String> = (slots.iter())
                     .find(|slot| slot["path"] == grant.slot.as_str())
@@ -1361,7 +1369,7 @@ impl Publisher {
 
 /// A function's main model, the one a run's `--lane` names (owner, 10-22): its first slot
 /// constructed up front, neither raw weights nor on demand. Its LoRAs and auxiliary models take
-/// their own choice's lane, else the Hub's pick.
+/// their own choice's lane, else the machine's pick.
 fn main_model(slots: &[Value]) -> Option<&Value> {
     slots.iter().find(|slot| crate::gpu_service::constructed(slot) && slot["on_demand"] != true)
 }
@@ -1388,7 +1396,7 @@ fn warnings_key(resolution: &str) -> String {
 }
 
 /// A Hub model slot's commit as its choice names it (th-245): by hash, else `repository` at
-/// `release` in the choice's lane; no lane is the Hub's pick (`resolve`).
+/// `release` in the choice's lane; no lane is the machine's pick (`resolve`).
 pub(crate) fn choose(choice: &domain::ModelChoice, path: &str) -> Result<Named, Failure> {
     if choice.repository.is_empty() {
         return Err(("model_choice_absent", format!("{path}'s choice names no model repository")));
@@ -1825,7 +1833,7 @@ pub(crate) fn io_failure(error: io::Error) -> Failure {
 
 /// A slot's declared default as a choice (its `default`: `[org/]model@release`, or a local
 /// model `local/<name>`, its newest): what a run that names no model for the slot gets, in its
-/// declared `lane`, else the Hub's pick. A model with no org is first-party, the root's (xs-071).
+/// declared `lane`, else the machine's pick. A model with no org is first-party, the root's (xs-071).
 pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<domain::ModelChoice> {
     let default = slot.get("default")?.as_str()?;
     let (model, release) = match default.split_once('@') {

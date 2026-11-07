@@ -152,9 +152,9 @@ impl PyEndpoint {
         })
     }
 
-    /// The commit of `repo_id` at `release` (none: the newest) in `lane` (none: what `gpus`
-    /// run best, of plain lanes only with `plain`; none: the CPU): `{release, lane, commit,
-    /// header, reasons}`.
+    /// The commit of `repo_id` at `release` (none: the newest) in `lane` (none: the lane this
+    /// machine's rule picks for `gpus`, of plain lanes only with `plain`; none: the CPU):
+    /// `{release, lane, commit, header, reasons}`.
     #[pyo3(signature = (repo_id, *, release = None, lane = None, gpus = None, plain = false))]
     fn resolve<'py>(
         &self,
@@ -165,11 +165,15 @@ impl PyEndpoint {
         gpus: Option<Vec<String>>,
         plain: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), free_vram: None, plain };
-        let resolved = py
-            .detach(|| block_on(self.endpoint.resolve(repo_id, release.as_deref(), lane.as_deref(), &hardware)))
+        let gpus = gpus.unwrap_or_default();
+        let gpus = tensorfs::precision::Gpus::of(&gpus.iter().map(String::as_str).collect::<Vec<_>>());
+        let ask = tensorfs::precision::Ask { pin: lane, plain, ..Default::default() };
+        let chosen = py
+            .detach(|| block_on(self.endpoint.resolve(repo_id, release.as_deref(), &gpus, &ask)))
             .or_raise(py)?;
-        config_to_py(py, &serde_json::to_value(resolved).expect("Resolved is serializable"))
+        let answer = serde_json::json!({"release": chosen.release, "lane": chosen.lane.label, "commit": chosen.lane.commit,
+            "header": chosen.lane.header, "reasons": chosen.reasons});
+        config_to_py(py, &answer)
     }
 }
 

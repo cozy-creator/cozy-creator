@@ -79,7 +79,7 @@ pub(crate) struct Family {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Download {
-    /// The lane (a label: bf16, fp8, …); absent, the Hub picks what the machine runs best.
+    /// The lane (a label: bf16, fp8, …); absent, the machine picks what its GPUs run best.
     #[arg(long, value_parser = protocol::model_ref::lane)]
     lane: Option<String>,
     /// org/name[@release], org/name@sha256:<commit>, hf://…, civitai://… or https://….
