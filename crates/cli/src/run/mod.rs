@@ -9,6 +9,7 @@ use clap::ValueHint;
 use clap_complete::ArgValueCompleter;
 use protocol::{
     calcifer::{FileTerm, On, ReleaseFrom, Run, RunRequest, Target},
+    code::LocalCode,
     error::{Error, Kind},
     machine::WarmLevel,
 };
@@ -20,6 +21,7 @@ use crate::{
 };
 pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, stalled_words, watched};
 
+pub(crate) mod fetch;
 mod follow;
 pub(crate) mod list;
 pub(crate) mod live;
@@ -37,18 +39,19 @@ const EXAMPLES: &str = "Examples:
   cozy run birefnet/remove_background --file image=./character.png
   cozy run sdxl/generate prompt='a fox in fresh snow'  (inline, for quick runs)
   cozy run sdxl/generate --describe                    (the fields it takes)
+  cozy run ./my_package/generate prompt=x -o out       (local code, sent by content; its outputs downloaded to out/)
+  cozy run wan/generate 'video=<clip:48-144>'          (frames 48 to 144 of the project's box clip)
 
-A video path may name a segment, path#t=<start>,<end> (seconds, m:ss or h:mm:ss; either may be left
-out): it is cut once into ~/.cozy/cache/clips and sent instead of the whole file.
-
+A run belongs to a project: -p, else COZY_PROJECT. Its outputs land there; -o downloads them here.
 A run is followed to its end: Ctrl-C stops following, never the run; `cozy run show N` follows it again.";
 
 #[derive(clap::Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
 pub struct Args {
-    /// The project's folder, if not the one you are in. A run belongs to a project; `ls` lists that project's.
-    #[arg(short = 'p', value_name = "PATH", global = true)]
-    path: Option<PathBuf>,
+    /// The project a run belongs to: its name or id, or its folder on Calcifer's computer by its absolute path. Default:
+    /// COZY_PROJECT. `ls` lists that project's.
+    #[arg(short = 'p', value_name = "PROJECT", global = true)]
+    project: Option<String>,
     #[command(subcommand)]
     verb: Option<Verb>,
     #[command(flatten)]
@@ -95,6 +98,9 @@ struct RunArgs {
     /// Print the function's request contract instead of running it.
     #[arg(long)]
     describe: bool,
+    /// Download its outputs into this folder once they land, each named `<run>-<output>.<ext>`.
+    #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
+    output: Option<PathBuf>,
 }
 
 /// Where a run goes; shared by every verb that submits one.
@@ -159,6 +165,9 @@ enum Verb {
         /// A snapshot of a run still going, instead of following it.
         #[arg(long)]
         once: bool,
+        /// Download its outputs into this folder, each named `<run>-<output>.<ext>`.
+        #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
+        output: Option<PathBuf>,
     },
     /// Cancel a queued or running run.
     Cancel {
@@ -189,12 +198,7 @@ fn run_state(text: &str) -> Result<String, String> {
 }
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
-    let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    // The project is the folder, as a repository is to git.
-    let within = match &args.path {
-        Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
-        None => cwd,
-    };
+    let within = crate::project::chosen(args.project.as_ref());
     match args.verb {
         Some(Verb::Ls {
             state,
@@ -203,17 +207,15 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             limit,
             all,
         }) => {
-            let query = list::Query {
-                status: state,
-                package,
-                machine: on,
-                project: Some(within).filter(|_| !all),
-                before: None,
-                limit,
+            // A project named: only its runs.
+            let project = match within.filter(|_| !all) {
+                Some(named) => Some(crate::project::open(ctx, Some(&named)).await?.id),
+                None => None,
             };
+            let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
         }
-        Some(Verb::Show { run, once }) => show::exec(ctx, &run, once).await,
+        Some(Verb::Show { run, once, output }) => show::exec(ctx, &run, once, output.as_deref()).await,
         Some(Verb::Cancel { run }) => {
             let calcifer = ctx.calcifer().await?;
             let mut run = calcifer.run(&run).await?;
@@ -233,33 +235,51 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 }
 
 
-async fn run(ctx: &Context, args: RunArgs, within: PathBuf) -> Result<ExitCode, Error> {
+async fn run(ctx: &Context, args: RunArgs, within: Option<String>) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let target = local(ctx, &args.target.clone().unwrap_or_default(), &cwd)?;
+    let written = args.target.clone().unwrap_or_default();
+    // Local code goes by content: the target is then the function it names.
+    let (target, code) = match local(ctx, &written, &cwd)? {
+        Some((package, function)) => (function.unwrap_or_default(), Some(Sender::new(ctx).await?.code(&package).await?)),
+        None => (written, None),
+    };
     let inputs = !args.inputs.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
-        return describe(ctx, &target, args.placement.on.as_deref()).await;
+        return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await;
     }
-    let ask = request(ctx, &args, target.clone(), &cwd, within).await?;
+    let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within).await?;
     match send(ctx, ask).await {
         // A package's functions, when the run names none and gives it nothing.
-        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, args.placement.on.as_deref()).await,
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await,
         Err(e) => Err(e),
         Ok(run) => {
+            if let Some(dir) = &args.output {
+                downloaded(ctx, &run, dir).await?;
+            }
             paste(ctx, &run);
             Ok(exit_code(&run))
         }
     }
 }
 
-/// One line per file a run left in its project, to paste into project.yaml: `image: 65b436d4f9a3`.
+/// `--output`: its outputs downloaded into `dir`, each said where it went.
+pub(crate) async fn downloaded(ctx: &Context, run: &Run, dir: &Path) -> Result<(), Error> {
+    for (name, path) in fetch::outputs(ctx, run, dir).await? {
+        if !ctx.json {
+            output::say(ctx, &format!("{name}: {}", output::link(ctx, &std::path::absolute(&path).unwrap_or(path.clone()))));
+        }
+    }
+    Ok(())
+}
+
+/// One line per file a run left in its project, to paste into a box: `image: 65b436d4f9a3`.
 pub(crate) fn paste(ctx: &Context, run: &Run) {
     if ctx.json || run.project.is_none() {
         return;
     }
     for output in follow::for_people(run) {
-        let Some(sha256) = output.path.as_ref().and(output.sha256.as_ref()) else { continue };
+        let Some(sha256) = output.url.as_ref().and(output.sha256.as_ref()) else { continue };
         let field = match output.media_type.split('/').next() {
             Some(kind @ ("image" | "video" | "audio")) => kind,
             _ => output.name.as_str(),
@@ -270,15 +290,18 @@ pub(crate) fn paste(ctx: &Context, run: &Run) {
     }
 }
 
-/// `raw` as a run names it: local code (`./dir[/fn]`, `x.py`) by its absolute path, as Calcifer reads no client's working folder.
-pub(crate) fn local(ctx: &Context, raw: &str, cwd: &Path) -> Result<String, Error> {
-    let Some(path) = protocol::target::local(raw, cwd, &ctx.user_home) else { return Ok(raw.to_owned()) };
-    let absolute = std::path::absolute(&path).map_err(|e| Error::new(Kind::Usage, "path_unreadable", format!("{raw}: {e}")))?;
-    Ok(absolute.to_string_lossy().into_owned())
+/// The package (a folder or a script) and function `raw` names when it is local code here (`./dir[/fn]`, `x.py[/fn]`): it goes
+/// by content, as Calcifer reads no client's folder. A path that names neither is refused.
+pub(crate) fn local(ctx: &Context, raw: &str, cwd: &Path) -> Result<Option<(PathBuf, Option<String>)>, Error> {
+    let Some(path) = protocol::target::local(raw, cwd, &ctx.user_home) else { return Ok(None) };
+    let found = protocol::code::split(&path).ok_or_else(|| {
+        Error::new(Kind::NotFound, "target_not_found", format!("{raw} is not a package directory or a script here"))
+    })?;
+    Ok(Some(found))
 }
 
-/// The request `args` make of `target`, with every file and folder it names here sent first.
-async fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: PathBuf) -> Result<RunRequest, Error> {
+/// The request `args` make of `target` (of `code`, when it's local), with every file and folder it names here sent first.
+async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<LocalCode>, cwd: &Path, within: Option<String>) -> Result<RunRequest, Error> {
     let sender = Sender::new(ctx).await?;
     let mut paths = Paths::new(&sender);
     for term in &args.inputs {
@@ -298,6 +321,7 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, with
     };
     Ok(RunRequest {
         target,
+        code,
         // None: Calcifer's to say, by what this OS runs and the machines there are (`default_on`).
         on: args.placement.on.clone().map(On::from),
         hub: ctx.hub().to_string(),
@@ -312,7 +336,7 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, with
         lane: args.lane.clone(),
         attention_kernel: args.attention_kernel.clone(),
         warm: args.warm.map(Warm::level),
-        project: Some(within),
+        project: within,
         recipes: false,
         agreed: None,
     })
@@ -370,8 +394,8 @@ async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
 }
 
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.
-async fn describe(ctx: &Context, raw: &str, on: Option<&str>) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, on).await?;
+async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, code, on).await?;
     match (&target.contract, &target.request) {
         (Some(_), Some(request)) if ctx.json => output::json(request),
         (Some(contract), _) => anstream::print!("{contract}"),
@@ -381,14 +405,17 @@ async fn describe(ctx: &Context, raw: &str, on: Option<&str>) -> Result<ExitCode
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
-async fn functions(ctx: &Context, raw: &str, on: Option<&str>) -> Result<ExitCode, Error> {
-    print_functions(ctx, &target(ctx, raw, on).await?);
+async fn functions(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<ExitCode, Error> {
+    print_functions(ctx, &target(ctx, raw, code, on).await?);
     Ok(ExitCode::SUCCESS)
 }
 
-async fn target(ctx: &Context, raw: &str, on: Option<&str>) -> Result<Target, Error> {
+async fn target(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<Target, Error> {
+    let tree = code.map(|code| code.tree.to_string());
     let mut query = vec![("target", raw), ("hub", ctx.hub().as_str())];
     query.extend(on.map(|on| ("on", on)));
+    query.extend(tree.as_deref().map(|tree| ("tree", tree)));
+    query.extend(code.map(|code| ("at", code.at.as_str())).filter(|(_, at)| !at.is_empty()));
     ctx.calcifer().await?.get_query("/v1/targets", &query).await
 }
 

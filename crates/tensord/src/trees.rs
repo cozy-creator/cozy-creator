@@ -23,14 +23,14 @@ fn id(owner: &str) -> String {
 
 /// A tree's document for `files`.
 pub fn document(files: &BTreeMap<String, ObjectRef>) -> Vec<u8> {
-    let member = |o: &ObjectRef| Member { length: o.length, sha256: o.sha256.clone() };
+    let member = |o: &ObjectRef| Member { length: o.length, sha256: o.sha256.clone(), executable: false };
     tree::document(&files.iter().map(|(path, o)| (path.clone(), member(o))).collect())
 }
 
 /// A tree document's files, by path.
 pub fn parse(bytes: &[u8]) -> io::Result<BTreeMap<String, ObjectRef>> {
     let files = tree::parse(bytes)?.into_iter();
-    Ok(files.map(|(path, Member { length, sha256 })| (path, ObjectRef { sha256, length })).collect())
+    Ok(files.map(|(path, Member { length, sha256, .. })| (path, ObjectRef { sha256, length })).collect())
 }
 
 /// Holds the tree of `files` (each already held) for `owner`. Idempotent per owner.

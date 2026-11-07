@@ -1,6 +1,6 @@
 //! `/v1/packages`: the Hub's package catalog as this computer's account sees it (anonymous when
 //! signed out), and a package's yank and deletion by its owner.
-use std::{path::Path as FsPath, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -206,15 +206,16 @@ impl Ask for PackageInstall {
     async fn prepare(self, api: &Arc<Api>) -> Result<Prepared, Refusal> {
         let hub = origin(api, self.hub.as_deref())?;
         let home = api.machines.hubs.home();
-        if FsPath::new(&self.package).is_absolute() {
-            // Local code: installed live, read as it is at each run; it retires nothing.
+        if let Some(code) = &self.code {
+            // Local code: installed as it is now; it retires nothing.
             let reader = reader(api, &hub)?;
-            let source = crate::local_code::source(home, FsPath::new(&self.package), (&reader, &hub))
-                .await
-                .map_err(Refusal)?;
+            let source = crate::local_code::source(home, code, (&reader, &hub)).await.map_err(Refusal)?;
             let mut submit = crate::local_code::install_run(home, hub.as_str(), self.on, &source);
             submit.agreed = self.agreed;
             return Ok(Prepared { submit, after: None });
+        }
+        if protocol::target::written_as_path(&self.package) {
+            return Err(Refusal(crate::runs::target::by_path(&self.package)));
         }
         let package = self.package.trim().to_ascii_lowercase();
         if package.split('/').count() != 2 {

@@ -152,6 +152,21 @@ pub fn open(path: &Path) -> Result<Connection, Error> {
     Ok(conn)
 }
 
+/// The project's id and name, as `meta` keeps them (cl-819); none before it was given one.
+pub fn identity(conn: &Connection) -> Option<(String, String)> {
+    let value = |key: &str| conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten();
+    Some((value("id")?, value("name").unwrap_or_default()))
+}
+
+/// Keeps the project's id and name, in one transaction.
+pub fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str) -> Result<(), Error> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| sql(at, e))?;
+    for (key, value) in [("id", id), ("name", name)] {
+        tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]).map_err(|e| sql(at, e))?;
+    }
+    tx.commit().map_err(|e| sql(at, e))
+}
+
 /// What another connection's commit changes: `Folder` reads again when this moves.
 pub fn data_version(conn: &Connection) -> i64 {
     conn.pragma_query_value(None, "data_version", |r| r.get(0)).unwrap_or(0)

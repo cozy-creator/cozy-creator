@@ -18,15 +18,17 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
     let on = args.placement.on()?;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let package = match protocol::target::local(&args.package, &cwd, &ctx.user_home) {
-        Some(path) => crate::ask::absolute(&path.to_string_lossy())?,
-        None => args.package,
+    // Local code goes by content.
+    let (package, code) = match crate::run::local(ctx, &args.package, &cwd)? {
+        Some((path, _)) => (String::new(), Some(crate::send::Sender::new(ctx).await?.code(&path).await?)),
+        None => (args.package, None),
     };
     let mut ask = ModelQuantize {
         hub: Some(ctx.hub().to_string()),
         model: args.model,
         lane: args.lane.clone(),
         package,
+        code,
         on: on.clone(),
         agreed: None,
     };

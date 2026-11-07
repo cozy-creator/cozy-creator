@@ -285,6 +285,20 @@ impl Client {
         answer.text().await.map_err(unreachable)
     }
 
+    /// A file Calcifer serves (an output, one file of a folder output), written to `to` as it comes: what it wrote.
+    pub async fn download(&self, path: &str, to: &std::path::Path) -> Result<u64, Error> {
+        let mut answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
+        let unwritable = |e: std::io::Error| Error::new(Kind::Unavailable, "download_unwritable", format!("{}: {e}", to.display()));
+        let mut file = std::fs::File::create(to).map_err(unwritable)?;
+        let mut written = 0;
+        while let Some(chunk) = answer.chunk().await.map_err(unreachable)? {
+            file.write_all(&chunk).map_err(unwritable)?;
+            written += chunk.len() as u64;
+        }
+        file.sync_all().map_err(unwritable)?;
+        Ok(written)
+    }
+
     /// One request whose answer is read as `T`. An answer showing this Calcifer is older than this
     /// cozy (a route it does not serve, a body it can't read, or a read's answer without fields this
     /// cozy reads) restarts it once, the normal way, and asks again: none of those carried anything

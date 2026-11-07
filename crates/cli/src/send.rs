@@ -1,6 +1,6 @@
 //! The CLI's one way in for files, the page's: each goes to Calcifer by content (`PUT /v1/files/sha256:<hex>`) and is named by its
 //! digest. What Calcifer holds is skipped, and a part it holds is resumed. A folder is its tree document (`protocol::tree`), sent after
-//! its files. Calcifer reads no path of this computer's.
+//! its files, and local code is its package's tree (`protocol::code`). Calcifer reads no path of this computer's.
 use std::{
     collections::BTreeMap,
     io::SeekFrom,
@@ -10,6 +10,7 @@ use std::{
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use protocol::{
     calcifer::{Sent, path_key},
+    code::LocalCode,
     error::{Error, Kind},
     ids::Digest,
     machine::missing,
@@ -63,6 +64,27 @@ impl<'a> Sender<'a> {
             self.calcifer.put_part(&digest, staged.document.into(), 0, length).await?;
         }
         Ok(digest)
+    }
+
+    /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
+    /// (`protocol::code`). What never goes is said.
+    pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
+        let (at, memo) = (path.to_owned(), self.memo());
+        let staged = tokio::task::spawn_blocking(move || protocol::code::stage(&at, Some(&memo)))
+            .await
+            .map_err(|e| Error::internal("stage", e.to_string()))??;
+        if !staged.left.is_empty() {
+            crate::output::warn(&format!("left out of the code it sends: {}", staged.left.join(", ")));
+        }
+        for file in &staged.files {
+            self.bytes(&file.path, file.digest, file.length).await?;
+        }
+        let code = staged.code();
+        let length = staged.document.len() as u64;
+        if self.calcifer.held(&code.tree).await?.is_some() {
+            self.calcifer.put_part(&code.tree, staged.document.into(), 0, length).await?;
+        }
+        Ok(code)
     }
 
     /// `path`'s `length` bytes under `digest`, but what Calcifer holds of them.

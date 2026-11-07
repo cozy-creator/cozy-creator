@@ -11,6 +11,7 @@ use std::{
 use hub_client::cards::{self, Card};
 use protocol::{
     calcifer::{On, ReleaseFrom, Target, TargetFunction},
+    code::LocalCode,
     config::Origin,
     error::{Error, Kind},
     interface::Interface,
@@ -42,23 +43,47 @@ pub(crate) enum Resolved {
     },
 }
 
+/// The local code and function a target names: a client's by content (`code`, `text` its function), or a project's (`text` a
+/// path from its folder `cwd`, read into a copy as a client's is); none for a published target. A client's path is refused:
+/// Calcifer reads no client's folder.
+fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) -> Option<Result<(LocalCode, Option<String>), Error>> {
+    if let Some(code) = code {
+        let function = Some(text.trim()).filter(|text| !text.is_empty()).map(str::to_owned);
+        return Some(Ok((code.clone(), function)));
+    }
+    let home = api.machines.hubs.home();
+    match cwd {
+        Some(cwd) => crate::local_code::target(text, Some(cwd), &api.machines.user_home).map(|found| {
+            let (path, function) = found?;
+            Ok((crate::local_code::own(home, &path)?, function))
+        }),
+        None if protocol::target::written_as_path(text) => Some(Err(by_path(text))),
+        None => None,
+    }
+}
+
+/// A client's local code named by its path, which Calcifer can't read.
+pub(crate) fn by_path(text: &str) -> Error {
+    Error::new(Kind::Usage, "target_by_path", format!("{} is a path, and Calcifer reads no client's folder", text.trim()))
+        .remedy("send local code by content: its tree's files by PUT /v1/files, and `code` naming the tree (cozy does)")
+}
+
 /// `text` resolved for a run `on` its machine: local code made ready there (or its install sent
 /// under `key`), else a published release.
 pub(crate) async fn resolve(
     api: &Arc<Api>,
     hub: &str,
     text: &str,
-    cwd: Option<&Path>,
+    code: Option<&LocalCode>,
     on: &On,
     warm: bool,
     given: bool,
     key: &str,
     agreed: Option<protocol::calcifer::Agreed>,
 ) -> Result<Resolved, Error> {
-    let user_home = &api.machines.user_home;
-    if let Some(local) = crate::local_code::target(text, cwd, user_home) {
-        let (path, function) = local?;
-        let prepared = crate::local_code::prepare(api, &path, on, hub, warm, key, agreed).await?;
+    if let Some(found) = local(api, text, code, None) {
+        let (code, function) = found?;
+        let prepared = crate::local_code::prepare(api, &code, on, hub, warm, key, agreed).await?;
         let interface = match &prepared.interface {
             Some(document) => Some(parse(document)?),
             None => None,
@@ -75,12 +100,12 @@ pub(crate) async fn resolve(
 }
 
 /// `GET /v1/targets`: the package, its release and why for a run `on` its machine, and the function,
-/// checked as a run checks it; local code as its machine read it, else from its source, installing and starting nothing.
-pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<&Path>, on: &On) -> Result<Target, Error> {
-    let user_home = &api.machines.user_home;
-    if let Some(local) = crate::local_code::target(text, cwd, user_home) {
-        let (path, function) = local?;
-        let (package, document) = crate::local_code::describe(api, &path, on, hub).await?;
+/// checked as a run checks it; local code (a client's `code`, or a project's from its folder `cwd`) as its machine read it, else
+/// from its source, installing and starting nothing.
+pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>, on: &On) -> Result<Target, Error> {
+    if let Some(found) = local(api, text, code, cwd) {
+        let (code, function) = found?;
+        let (package, document) = crate::local_code::describe(api, &code, on, hub).await?;
         let interface = parse(&document)?;
         let function = match chosen(&interface, function) {
             Some(function) => Some(super::callable(&package, &interface, &function)?.name.clone()),

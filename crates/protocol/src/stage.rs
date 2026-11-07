@@ -22,7 +22,7 @@ pub fn stage(root: &Path, memo: Option<&Path>) -> Result<Staged, Error> {
     for (name, path) in found {
         let length = fs::metadata(&path).map_err(|e| unreadable(&path, e))?.len();
         let digest = crate::digests::of(memo, &path)?;
-        members.insert(name, Member { length, sha256: hex::encode(digest.bytes()) });
+        members.insert(name, Member { length, sha256: hex::encode(digest.bytes()), executable: false });
         files.push(StagedInput { path, digest, length });
     }
     Ok(Staged { document: tree::document(&members), files })

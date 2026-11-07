@@ -22,7 +22,8 @@ pub(crate) const TABLES: &str = "
         id TEXT PRIMARY KEY,
         path TEXT NOT NULL,
         used_at_ms INTEGER NOT NULL,
-        walking INTEGER NOT NULL DEFAULT 0
+        walking INTEGER NOT NULL DEFAULT 0,
+        name TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE TABLE IF NOT EXISTS sessions (
         token_sha256 TEXT PRIMARY KEY,
@@ -56,10 +57,11 @@ pub(crate) const TABLES: &str = "
         step TEXT NOT NULL
     ) STRICT;";
 
-/// A project folder Calcifer opened, by its id.
+/// A project Calcifer opened, by its id: its name, and where it last was.
 #[derive(Clone, Debug)]
 pub struct KnownProject {
     pub id: String,
+    pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
     /// Its walk was going: the next start walks it again.
@@ -75,7 +77,19 @@ pub struct SessionRow {
 }
 
 fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
-    Ok(KnownProject { id: row.get(0)?, path: PathBuf::from(row.get::<_, String>(1)?), used_at_ms: row.get(2)?, walking: row.get(3)? })
+    let path = PathBuf::from(row.get::<_, String>(1)?);
+    let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
+    let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
+    Ok(KnownProject { id: row.get(0)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
+}
+
+/// A store from before cl-819 names no project: its column, added.
+pub(crate) fn project_names(conn: &Connection) -> rusqlite::Result<()> {
+    let named = conn.prepare("SELECT name FROM projects LIMIT 0").is_ok();
+    match named {
+        true => Ok(()),
+        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN name TEXT NOT NULL DEFAULT ''"),
+    }
 }
 
 fn strings(conn: &Connection, sql: &str) -> Result<Vec<String>> {
@@ -99,24 +113,24 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name FROM projects WHERE id = ?1", [id], known).optional()?))
     }
 
-    /// Every project folder opened here, last used first.
+    /// Every project opened here, last used first.
     pub fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking FROM projects ORDER BY used_at_ms DESC, id")?;
+            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name FROM projects ORDER BY used_at_ms DESC, id")?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
 
-    /// `id`, in `path`, opened at `used_at_ms`; whether it was walking stands.
-    pub fn project_opened(&self, id: &str, path: &Path, used_at_ms: i64) -> Result<()> {
+    /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last); whether it was walking stands.
+    pub fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>) -> Result<()> {
         self.write(|tx| {
             tx.execute(
-                "INSERT INTO projects (id, path, used_at_ms) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, used_at_ms = excluded.used_at_ms",
-                params![id, path.to_string_lossy(), used_at_ms],
+                "INSERT INTO projects (id, path, used_at_ms, name) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, used_at_ms = COALESCE(?5, projects.used_at_ms)",
+                params![id, path.to_string_lossy(), used_at_ms.unwrap_or(0), name, used_at_ms],
             )?;
             Ok(())
         })

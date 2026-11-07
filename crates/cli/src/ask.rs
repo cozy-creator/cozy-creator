@@ -30,15 +30,3 @@ pub(crate) async fn start<A: Serialize, T: DeserializeOwned>(
     }
     calcifer.post(route, ask, Some(&mint_key())).await
 }
-
-/// `raw`, absolute when it names a local path (`./x`, `/x`): Calcifer reads it from its own
-/// working directory.
-pub(crate) fn absolute(raw: &str) -> Result<String, Error> {
-    let path = std::path::Path::new(raw);
-    if !raw.starts_with('.') && !path.is_absolute() {
-        return Ok(raw.to_owned());
-    }
-    let absolute = std::path::absolute(path)
-        .map_err(|e| Error::new(Kind::Usage, "path_unreadable", format!("{raw}: {e}")))?;
-    Ok(absolute.to_string_lossy().into_owned())
-}

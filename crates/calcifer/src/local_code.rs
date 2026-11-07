@@ -1,13 +1,11 @@
-//! Local code: a package directory or a script on this computer that nobody published, run where a
-//! published function would be (`cozy run ./dir`, a project's `with: ./dir/fn`). A machine installs
-//! it from TensorD's `LocalSource`, a manifest naming each source file by its content; the
-//! interface its install answers is kept by the manifest and the Runtime that read it, so the same
-//! code on the same Runtime is called at once. A directory travels with the path dependencies its
-//! sources name, under their common directory; a script is a one-file package, its PEP 723 block
-//! its pyproject.toml. Nothing is locked here: a project without a uv.lock is resolved on the
-//! machine. Every machine, this computer's too, is sent the files by content, and Calcifer writes
-//! only the bytes it lacks: no machine reads a host path (cl-817).
-//! Every client and Calcifer's projects use this one module (cl-716).
+//! Local code: a package directory or a script nobody published, run where a published function would be (`cozy run ./dir`, a
+//! project's `with: ./dir/fn`). It comes by content (cl-819): a client sends its tree (`protocol::code`), and a project's own
+//! folder is read into one here. Calcifer works from its copy of the tree, kept by the tree's digest, and reads no client's disk.
+//! A machine installs it from TensorD's `LocalSource`, a manifest naming each source file by its content; the interface its
+//! install answers is kept by the manifest and the Runtime that read it, so the same code on the same Runtime is called at once.
+//! A script is a one-file package, its PEP 723 block its pyproject.toml. Nothing is locked here: a project without a uv.lock is
+//! resolved on the machine. Every machine, this computer's too, is sent the files by content, and Calcifer writes only the bytes
+//! it lacks: no machine reads a host path (cl-817). Every client and Calcifer's projects use this one module (cl-716).
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Display,
@@ -15,12 +13,13 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, LazyLock, Mutex},
-    time::UNIX_EPOCH,
+    time::{Duration, SystemTime},
 };
 
 use platform::{durable, paths::Home};
 use protocol::{
     calcifer::{Kind as RunKind, On, Run, StagedInput, Status, SubmitRun},
+    code::{self as shared, LocalCode},
     config::Origin,
     error::{Error, Kind},
     ids::Digest,
@@ -28,7 +27,8 @@ use protocol::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
+
+pub use protocol::code::source_files;
 
 use crate::{api::Api, update::BroughtUp};
 
@@ -55,8 +55,6 @@ pub struct Source {
     pub package: String,
     pub source: v1::LocalSource,
     pub inputs: Vec<StagedInput>,
-    /// What never goes, as people read it (`source_files`).
-    pub left: Vec<String>,
     /// What the machine's environment is built from, apart from the project's own source: its
     /// metadata and lock, its path dependencies, carried wheels and indexes.
     pub environment: Digest,
@@ -92,28 +90,143 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
 
 pub use protocol::target::{local, spelled, written_as_path};
 
-/// Local code `text` names (`./dir[/fn]`, `./script.py[/fn]` from `cwd`, the project's folder; a client's by its absolute path): its
-/// package directory or script and the function it names. None: `text` is not written as a path (a published name).
+/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path): a folder of
+/// Calcifer's own computer, as the project is, and the function it names. None: `text` is not written as a path (a published
+/// name). A client's own code comes by content instead (`copied`).
 pub fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
     let raw = text.trim();
     let path = local(raw, cwd.unwrap_or(Path::new("")), home)?;
     if !path.is_absolute() {
-        let said = format!("{raw} is relative, and Calcifer has no folder of a client's to start it from");
-        return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its absolute path")));
+        let said = format!("{raw} is relative, and names no folder of the project's");
+        return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its path from the project's folder")));
     }
-    let package = |path: &Path| path.is_dir() || (path.is_file() && path.extension().is_some_and(|e| e == "py"));
-    if package(&path) {
-        return Some(Ok((path, None)));
+    Some(shared::split(&path).ok_or_else(|| {
+        Error::new(Kind::NotFound, "target_not_found", format!("{raw} is not a package directory or a script beside the project"))
+    }))
+}
+
+/// Where copies of local code are kept, by their tree's digest.
+fn copies(home: &Home) -> PathBuf {
+    home.calcifer().join("code")
+}
+
+/// How many copies are kept, at least, and for how long one unused stays.
+const COPIES: usize = 64;
+const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The package `code` names, in Calcifer's copy of its tree: made once from the files it holds (`PUT /v1/files`), and only read
+/// after. A script's copy holds the package it is beside its tree. Its project's folder.
+pub fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
+    let dir = copies(home).join(hex(&code.tree));
+    if !dir.join("tree").is_dir() {
+        let held = |digest: &Digest| Some(home.calcifer().join("files").join(hex(digest).as_str())).filter(|path| path.is_file());
+        let not_held = |what: String| {
+            Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no {what}")).remedy("PUT its bytes to /v1/files/sha256:<hex> first")
+        };
+        let document = held(&code.tree).ok_or_else(|| not_held(format!("tree document {}", code.tree)))?;
+        let document = fs::read(&document).map_err(|e| refuse("code_unreadable", e))?;
+        if Digest::of(&document) != code.tree {
+            return Err(refuse("code_invalid", format!("the file held as {} is not that tree", code.tree)));
+        }
+        let members = protocol::tree::parse(&document).map_err(|e| refuse("code_invalid", e))?;
+        if let Some((name, member)) = members.iter().find(|(_, member)| held(&digest_of(member)).is_none()) {
+            return Err(not_held(format!("{name} of local code (sha256:{})", member.sha256)));
+        }
+        materialize(home, &code.tree, &members, |digest| held(digest))?;
     }
-    let function = path.file_name().map(|n| n.to_string_lossy().into_owned());
-    Some(match path.parent().filter(|parent| package(parent)) {
-        Some(parent) => Ok((parent.to_path_buf(), function)),
-        None => Err(Error::new(
-            Kind::NotFound,
-            "target_not_found",
-            format!("{raw} is not a package directory or a script on this computer"),
-        )),
-    })
+    package_in(&dir, &code.at)
+}
+
+/// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
+/// client's is, so the one path from here on is the copy's.
+pub fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
+    let staged = shared::stage(path, Some(&home.root().join("cache").join("digests")))?;
+    if !staged.left.is_empty() {
+        tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
+    }
+    let code = staged.code();
+    let members = protocol::tree::parse(&staged.document).map_err(|e| refuse("code_invalid", e))?;
+    let from = |digest: &Digest| staged.files.iter().find(|file| file.digest == *digest).map(|file| file.path.clone());
+    if !copies(home).join(hex(&code.tree)).join("tree").is_dir() {
+        materialize(home, &code.tree, &members, from)?;
+    }
+    Ok(code)
+}
+
+/// The tree's files, each from `from`, copied under `code/<digest>/tree`, made whole and then named; and a copy unused for a day
+/// past the newest `COPIES` goes.
+fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, protocol::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
+    let root = copies(home);
+    let dir = root.join(hex(tree));
+    let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", root.display()));
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let part = root.join(format!("{}.part-{}-{nanos}", hex(tree), std::process::id()));
+    durable::private_dir(&root).map_err(|e| refuse("code_unwritable", format!("{}: {e}", root.display())))?;
+    for (name, member) in members {
+        let to = part.join("tree").join(name);
+        let source = from(&digest_of(member)).ok_or_else(|| refuse("code_unreadable", format!("{name}: its bytes are gone")))?;
+        fs::create_dir_all(to.parent().expect("a member's folder")).map_err(failed)?;
+        fs::copy(source, &to).map_err(failed)?;
+        mode(&to, member.executable).map_err(failed)?;
+    }
+    fs::create_dir_all(part.join("tree")).map_err(failed)?;
+    match fs::rename(&part, &dir) {
+        Ok(()) => {}
+        // Another made it first: the same bytes.
+        Err(_) if dir.join("tree").is_dir() => {
+            let _ = fs::remove_dir_all(&part);
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(&part);
+            return Err(failed(e));
+        }
+    }
+    sweep(&root);
+    Ok(())
+}
+
+fn digest_of(member: &protocol::tree::Member) -> Digest {
+    format!("sha256:{}", member.sha256).parse().expect("a tree names sha256 hex")
+}
+
+#[cfg(unix)]
+fn mode(path: &Path, executable: bool) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(if executable { 0o700 } else { 0o600 }))
+}
+
+#[cfg(not(unix))]
+fn mode(_path: &Path, _executable: bool) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The project's folder `at` names in the copy `dir`, said used now: a script's is the package it is, written beside the tree.
+fn package_in(dir: &Path, at: &str) -> Result<PathBuf, Error> {
+    let _ = fs::write(dir.join(".used"), b"");
+    let package = match at.is_empty() {
+        true => dir.join("tree"),
+        false => dir.join("tree").join(at),
+    };
+    match package.is_file() {
+        true => script(&package, &dir.join("script")),
+        false if package.join("pyproject.toml").is_file() => Ok(package),
+        false => Err(Error::new(Kind::NotFound, "project_file_missing", format!("{at}: no pyproject.toml"))
+            .remedy("run this in a package's directory (`cozy-runtime new <name>` makes one)")),
+    }
+}
+
+/// Copies past the newest `COPIES` unused for a day, and parts a day old.
+fn sweep(root: &Path) {
+    let used = |dir: &Path| fs::metadata(dir.join(".used")).or_else(|_| fs::metadata(dir)).and_then(|m| m.modified()).ok();
+    let mut kept: Vec<(SystemTime, PathBuf)> = (fs::read_dir(root).into_iter().flatten().flatten())
+        .map(|entry| entry.path())
+        .filter_map(|dir| Some((used(&dir)?, dir)))
+        .collect();
+    kept.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    let old = SystemTime::now() - UNUSED;
+    for (at, dir) in kept.into_iter().skip(COPIES).filter(|(at, _)| *at < old) {
+        let _ = (at, fs::remove_dir_all(dir));
+    }
 }
 
 /// A package project, as its pyproject.toml says.
@@ -130,11 +243,6 @@ pub struct Project {
 }
 
 impl Project {
-    /// The project in the current directory.
-    pub fn here() -> Result<Self, Error> {
-        Self::read(std::env::current_dir().map_err(|e| refuse("project_unreadable", e))?)
-    }
-
     pub fn read(root: PathBuf) -> Result<Self, Error> {
         let table = |file: &str| -> Result<toml::Table, Error> {
             let text = fs::read_to_string(root.join(file)).map_err(|e| {
@@ -216,69 +324,6 @@ impl Project {
     }
 }
 
-/// The files a package's source is, relative to `root`, sorted: what a publish uploads and local code
-/// sends. Credentials, keys, bytecode, weights and symlinks never go: each is said in `left`.
-pub fn source_files(root: &Path, left: &mut Vec<String>) -> Result<Vec<PathBuf>, Error> {
-    let mut files = vec![];
-    walk(root, Path::new(""), &mut files, left)?;
-    files.sort();
-    Ok(files)
-}
-
-fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String>) -> Result<(), Error> {
-    const SKIP: &str = ".git .hg .svn .jj __pycache__ .mypy_cache .ruff_cache .pytest_cache .tox";
-    const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
-    const SECRET_DIRS: &str = ".aws .ssh credentials secrets";
-    const SECRET_FILES: &str =
-        ".netrc .npmrc .pypirc credentials.json service-account.json id_ed25519";
-    const REFUSED: &str =
-        ".pyc .pyo .pem .key .p12 .pfx .jks .pickle .pkl .pt .ckpt .safetensors .onnx .gguf";
-    let listed = |list: &str, name: &str| list.split(' ').any(|item| item == name);
-    let entries = fs::read_dir(root.join(rel)).map_err(|e| refuse("project_unreadable", e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| refuse("project_unreadable", e))?;
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let path = rel.join(entry.file_name());
-        let kind = entry
-            .file_type()
-            .map_err(|e| refuse("project_unreadable", e))?;
-        if kind.is_symlink() {
-            left.push(format!("{} (a symlink)", path.display()));
-            continue;
-        }
-        if kind.is_dir() {
-            if listed(SECRET_DIRS, &name) {
-                left.push(format!("{} (holds credentials)", path.display()));
-                continue;
-            }
-            let at_root = rel.as_os_str().is_empty() && listed(SKIP_AT_ROOT, &name);
-            if !listed(SKIP, &name) && !name.ends_with(".egg-info") && !at_root {
-                walk(root, &path, files, left)?;
-            }
-            continue;
-        }
-        let secret = name == ".env"
-            || name.starts_with(".env.")
-            || name.starts_with("id_rsa")
-            || listed(SECRET_FILES, &name);
-        if secret || REFUSED.split(' ').any(|suffix| name.ends_with(suffix)) {
-            // Bytecode is a build's litter, not worth a word.
-            if !(name.ends_with(".pyc") || name.ends_with(".pyo")) {
-                left.push(path.display().to_string());
-            }
-            continue;
-        }
-        let scratch = name.ends_with(".swp")
-            || name.ends_with('~')
-            || name.starts_with(".#")
-            || name == ".ds_store";
-        if !scratch && name != "package-interface.json" {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
 /// The account's index on `hub` at the origin the Hub advertises (RFC 9728 `resource`): the one
 /// its publish check holds a uv.lock to, wherever this computer reaches the Hub. A Hub that
 /// advertises none takes no publication, and its configured origin stands.
@@ -330,35 +375,14 @@ struct Member {
     executable: bool,
 }
 
-/// The project `path` names: a package directory, or a script as the one-file package it is.
-pub fn project(home: &Home, path: &Path) -> Result<PathBuf, Error> {
-    if !path.exists() {
-        return Err(Error::new(
-            Kind::NotFound,
-            "target_not_found",
-            format!("{} does not exist", path.display()),
-        ));
-    }
-    let path = fs::canonicalize(path)
-        .map_err(|e| refuse("project_unreadable", format!("{}: {e}", path.display())))?;
-    match path.is_file() {
-        true => script(home, &path),
-        false => Ok(path),
-    }
-}
-
-/// `path` (a package directory or a script) as a machine installs it: its manifest and every file, sent by content. A project whose
-/// sources name the `tensorhub` index takes the namespace its lock was made for (`_` for a first-party checkout), read through
-/// `hub`'s reader: anonymous when this computer is signed out.
-pub async fn source(
-    home: &Home,
-    path: &Path,
-    (reader, hub): (&hub_client::Client, &Origin),
-) -> Result<Source, Error> {
-    let project_dir = project(home, path)?;
+/// `code` as a machine installs it: its manifest and every file of Calcifer's copy, sent by content. A project whose sources name
+/// the `tensorhub` index takes the namespace its lock was made for (`_` for a first-party checkout), read through `hub`'s reader:
+/// anonymous when this computer is signed out.
+pub async fn source(home: &Home, code: &LocalCode, (reader, hub): (&hub_client::Client, &Origin)) -> Result<Source, Error> {
+    let project_dir = copied(home, code)?;
     let project = Project::read(project_dir.clone())?;
-    let locals = path_dependencies(&project_dir)?;
-    let root = common(
+    let locals = shared::path_dependencies(&project_dir)?;
+    let root = shared::common(
         project_dir.as_path(),
         locals.iter().map(|l| {
             if l.is_file() {
@@ -374,6 +398,7 @@ pub async fn source(
             .to_string_lossy()
             .replace('\\', "/")
     };
+    // The copy holds only what goes: nothing is left out of it.
     let mut left = vec![];
     let mut names: Vec<PathBuf> = source_files(&project_dir, &mut left)?
         .into_iter()
@@ -401,7 +426,7 @@ pub async fn source(
             name: relative(&file),
             digest: digest.to_string(),
             length,
-            executable: executable(&file),
+            executable: shared::executable(&file),
         });
         // A carried wheel is an object the machine holds.
         if carried(&file) {
@@ -479,7 +504,6 @@ pub async fn source(
         length: document.len() as u64,
     });
     Ok(Source {
-        left,
         package: manifest.package,
         source: v1::LocalSource {
             manifest: digest.to_string(),
@@ -487,46 +511,6 @@ pub async fn source(
         inputs,
         environment,
     })
-}
-
-/// The local path dependencies the project's sources name (`{ path = "../lib" }`), each a
-/// directory or a file.
-fn path_dependencies(project: &Path) -> Result<Vec<PathBuf>, Error> {
-    let text = fs::read_to_string(project.join("pyproject.toml"))
-        .map_err(|e| refuse("project_unreadable", e))?;
-    let pyproject: toml::Table =
-        toml::from_str(&text).map_err(|e| refuse("project_file_invalid", e))?;
-    let sources = pyproject
-        .get("tool")
-        .and_then(|t| t.get("uv"))
-        .and_then(|u| u.get("sources"))
-        .and_then(|s| s.as_table());
-    let mut out = vec![];
-    for source in sources.into_iter().flat_map(|s| s.values()) {
-        let Some(path) = source.get("path").and_then(|p| p.as_str()) else {
-            continue;
-        };
-        let dependency = fs::canonicalize(project.join(path))
-            .map_err(|e| refuse("local_dependency_unreadable", format!("{path}: {e}")))?;
-        out.push(dependency);
-    }
-    out.sort();
-    out.dedup();
-    Ok(out)
-}
-
-/// The deepest directory holding `first` and every one of `rest`.
-fn common<'a>(first: &'a Path, rest: impl Iterator<Item = &'a Path>) -> PathBuf {
-    let mut root = first.to_path_buf();
-    for dir in rest {
-        while !dir.starts_with(&root) {
-            match root.parent() {
-                Some(parent) => root = parent.to_path_buf(),
-                None => break,
-            }
-        }
-    }
-    root
 }
 
 /// The distributions the lock takes from an account index, as the packages they are
@@ -558,14 +542,13 @@ fn callees(project: &Path) -> Result<BTreeMap<String, String>, Error> {
     Ok(lock.package.iter().filter_map(callee).collect())
 }
 
-/// A script as the one-file package it is (xs-099): its PEP 723 block is its pyproject.toml
-/// (`dependencies` and `requires-python` are [project]'s, [tool] is [tool]), named for the file,
-/// its module `cozy_script_<name>`, so `copy.py` isn't Python's `copy`, with its `app`. The project is
-/// written under `~/.cozy/scripts`, one per script path, and from there it is read as any package
-/// directory is.
-fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
+/// A script as the one-file package it is (xs-099): its PEP 723 block is its pyproject.toml (`dependencies` and
+/// `requires-python` are [project]'s, [tool] is [tool]), named for the file, its module `cozy_script_<name>`, so `copy.py`
+/// isn't Python's `copy`, with its `app`. The project is written at `root`, beside the copy's tree, and from there it is read
+/// as any package directory is.
+fn script(path: &Path, root: &Path) -> Result<PathBuf, Error> {
     let raw = fs::read(path).map_err(|e| refuse("script_unreadable", e))?;
-    let mut block = pep723(&String::from_utf8_lossy(&raw))?;
+    let mut block = shared::pep723(&String::from_utf8_lossy(&raw))?;
     let stem = path
         .file_stem()
         .unwrap_or_default()
@@ -584,11 +567,6 @@ fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
     let module = format!("cozy_script_{module}");
-    let at = hex::encode(Sha256::digest(path.to_string_lossy().as_bytes()));
-    let root = home
-        .root()
-        .join("scripts")
-        .join(format!("{name}-{}", &at[..16]));
     let file = format!("{module}.py");
     let table = |text: String| toml::from_str::<toml::Table>(&text).expect("a constant table");
     let mut project = table(format!(
@@ -623,7 +601,7 @@ fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
         if let Some(beside) = source.get("path").and_then(|p| p.as_str()) {
             let absolute = fs::canonicalize(path.parent().unwrap_or(path).join(beside))
                 .map_err(|e| refuse("local_dependency_unreadable", format!("{beside}: {e}")))?;
-            source["path"] = from(&root, &absolute).into();
+            source["path"] = from(root, &absolute).into();
         }
     }
     // Hatchling builds the one module, and admits git or URL dependencies as uv locks them.
@@ -640,7 +618,7 @@ fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
     pyproject.insert("tool".into(), tool.into());
     let pyproject =
         toml::to_string(&pyproject).map_err(|e| refuse("script_metadata_invalid", e))?;
-    fs::create_dir_all(&root).map_err(|e| refuse("script_unwritable", e))?;
+    fs::create_dir_all(root).map_err(|e| refuse("script_unwritable", e))?;
     for (name, bytes) in [
         (file.as_str(), raw.as_slice()),
         ("pyproject.toml", pyproject.as_bytes()),
@@ -649,7 +627,7 @@ fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
             fs::write(root.join(name), bytes).map_err(|e| refuse("script_unwritable", e))?;
         }
     }
-    Ok(root)
+    Ok(root.to_owned())
 }
 
 /// `to` as a slash path relative to the directory `dir`.
@@ -668,44 +646,6 @@ fn from(dir: &Path, to: &Path) -> String {
         .chain(down)
         .collect::<Vec<_>>()
         .join("/")
-}
-
-/// The script's `# /// script` metadata block (PEP 723) as TOML; none is an empty table.
-fn pep723(text: &str) -> Result<toml::Table, Error> {
-    let mut lines = text
-        .lines()
-        .skip_while(|line| line.trim_end() != "# /// script");
-    if lines.next().is_none() {
-        return Ok(toml::Table::new());
-    }
-    let mut block = String::new();
-    for line in lines {
-        match line.trim_end() {
-            "# ///" => {
-                return toml::from_str(&block).map_err(|e| refuse("script_metadata_invalid", e));
-            }
-            "#" => block.push('\n'),
-            line => match line.strip_prefix("# ") {
-                Some(content) => block.push_str(&format!("{content}\n")),
-                None => break,
-            },
-        }
-    }
-    Err(refuse(
-        "script_metadata_invalid",
-        "the `# /// script` block has no closing `# ///`",
-    ))
-}
-
-#[cfg(unix)]
-fn executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn executable(_path: &Path) -> bool {
-    false
 }
 
 /// Where local code's interfaces are kept, beside release cards: one file per source manifest
@@ -822,8 +762,6 @@ pub struct Prepared {
     pub package: String,
     pub source: v1::LocalSource,
     pub files: Vec<StagedInput>,
-    /// What never goes, as people read it (`source_files`).
-    pub left: Vec<String>,
     pub interface: Option<Value>,
     /// The machine's name for the installation, when an install answered here.
     pub installation: Option<String>,
@@ -832,13 +770,13 @@ pub struct Prepared {
     pub install: Option<Run>,
 }
 
-/// The code at `path` made callable `on` a machine, never waiting for an install: the install it
+/// `code` made callable `on` a machine, never waiting for an install: the install it
 /// needs is sent under `{key}/install` and returned, and once it has settled the same `key` finds
 /// its answer. `warm` installs again whatever is kept: a warm set names the machine's
 /// installation, which only an install answers.
 pub async fn prepare(
     api: &Arc<Api>,
-    path: &Path,
+    local: &LocalCode,
     on: &On,
     hub: &str,
     warm: bool,
@@ -849,13 +787,12 @@ pub async fn prepare(
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
     let reader = hubs.reader(origin.as_str())?;
-    let code = source(&home, path, (&reader, &origin)).await?;
+    let code = source(&home, local, (&reader, &origin)).await?;
     let runtime = runtime(api, on).await;
     let prepared = |interface, installation, machine, install| Prepared {
         package: code.package.clone(),
         source: code.source.clone(),
         files: code.inputs.clone(),
-        left: code.left.clone(),
         interface,
         installation,
         machine,
@@ -913,9 +850,9 @@ pub(crate) async fn install_through(api: &Arc<Api>, key: &str, submit: impl FnOn
 
 /// `prepare`, waiting out the install it needs: what Calcifer's own callers (a project's render
 /// blocks) use. What it says while it does (a machine brought up) goes to `say`.
-pub async fn ready(api: &Arc<Api>, path: &Path, on: &On, hub: &str, key: &str, say: &(dyn Fn(String) + Sync)) -> Result<Prepared, Error> {
+pub async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, key: &str, say: &(dyn Fn(String) + Sync)) -> Result<Prepared, Error> {
     loop {
-        let prepared = prepare(api, path, on, hub, false, key, None).await?;
+        let prepared = prepare(api, code, on, hub, false, key, None).await?;
         let Some(run) = &prepared.install else { return Ok(prepared) };
         said_on(run).for_each(say);
         crate::project::host::Host::new(api).wait(&run.id).await?;
@@ -1084,36 +1021,11 @@ pub fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>)
     Ok((said.trim_end().to_owned(), document))
 }
 
-/// What each local package last read as, by its path and the Runtime that read it, with the stats it read at, and whether it's its machine's own
-/// reading. One read at a time of each: any other waits and takes it. Kept for as long as Calcifer runs: a file that changes is another stamp,
-/// and it's read again; a static describer's reading stands only until the machine's own is kept.
-type Described = Arc<tokio::sync::Mutex<Option<(String, (String, Value), bool)>>>;
-static DESCRIBED: LazyLock<Mutex<HashMap<(PathBuf, Option<String>), Described>>> = LazyLock::new(Mutex::default);
-
-/// Each file a read of the local code at `path` depends on, by name, size and time: a stat each, so asking again reads no file's bytes.
-fn stamp_of(path: &Path) -> Result<String, Error> {
-    let path = fs::canonicalize(path).map_err(|e| refuse("project_unreadable", format!("{}: {e}", path.display())))?;
-    let mut names = vec![];
-    if path.is_file() {
-        names.push(path);
-    } else {
-        let mut left = vec![];
-        names.extend(source_files(&path, &mut left)?.into_iter().map(|file| path.join(file)));
-        for local in path_dependencies(&path)? {
-            match local.is_file() {
-                true => names.push(local),
-                false => names.extend(source_files(&local, &mut left)?.into_iter().map(|file| local.join(file))),
-            }
-        }
-    }
-    let mut stamp = Sha256::new();
-    for name in names {
-        let meta = fs::metadata(&name).map_err(|e| refuse("project_unreadable", format!("{}: {e}", name.display())))?;
-        let at = meta.modified().ok().and_then(|at| at.duration_since(UNIX_EPOCH).ok()).unwrap_or_default();
-        stamp.update(format!("{}\0{}\0{}\n", name.display(), meta.len(), at.as_nanos()));
-    }
-    Ok(hex::encode(stamp.finalize()))
-}
+/// What each copy of local code last read as, by the Runtime that read it, and whether it's its machine's own reading. One read
+/// at a time of each: any other waits and takes it. A copy never changes, so its reading stands for as long as Calcifer runs, but
+/// a static describer's only until the machine's own is kept.
+type Described = Arc<tokio::sync::Mutex<Option<((String, Value), bool)>>>;
+static DESCRIBED: LazyLock<Mutex<HashMap<(LocalCode, Option<String>), Described>>> = LazyLock::new(Mutex::default);
 
 /// The Runtime the machine `on` last said it runs, asking it nothing: no machine starts for a read.
 fn last_runtime(api: &Api, on: &On) -> Option<String> {
@@ -1123,50 +1035,48 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
     Some(status.runtime).filter(|runtime| !runtime.is_empty())
 }
 
-/// The local code at `path` (a package directory or a script) as a run `on` its machine reads it: `local/<name>` and its
-/// interface. What that machine's Runtime said installing this very source, else Runtime's static describer, on the Python and
-/// Runtime release its project names, or PyPI's newest. That can be older than the machine's, and refuse what the machine runs.
-/// Nothing installs, and no machine is asked. Read once for as long as its files stand (`stamp_of`).
-pub async fn describe(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result<(String, Value), Error> {
+/// `code` as a run `on` its machine reads it: `local/<name>` and its interface. What that machine's Runtime said installing this
+/// very source, else Runtime's static describer, on the Python and Runtime release its project names, or PyPI's newest. That can
+/// be older than the machine's, and refuse what the machine runs. Nothing installs, and no machine is asked.
+pub async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
-    let held = DESCRIBED.lock().expect("described lock").entry((path.to_owned(), runtime.clone())).or_default().clone();
+    let held = DESCRIBED.lock().expect("described lock").entry((code.clone(), runtime.clone())).or_default().clone();
     let mut held = held.lock().await;
-    let stamp = stamp_of(path)?;
-    if let Some((_, known, own)) = held.as_ref().filter(|(read, ..)| *read == stamp) {
+    if let Some((known, own)) = held.as_ref() {
         if *own {
             return Ok(known.clone());
         }
         // Read by the static describer: the machine's own reading, once an install keeps one, takes its place.
         let known = known.clone();
-        if let Some(found) = own_reading(api, path, hub, runtime.as_deref()).await {
-            *held = Some((stamp, found.clone(), true));
+        if let Some(found) = own_reading(api, code, hub, runtime.as_deref()).await {
+            *held = Some((found.clone(), true));
             return Ok(found);
         }
         return Ok(known);
     }
-    if let Some(found) = own_reading(api, path, hub, runtime.as_deref()).await {
-        *held = Some((stamp, found.clone(), true));
+    if let Some(found) = own_reading(api, code, hub, runtime.as_deref()).await {
+        *held = Some((found.clone(), true));
         return Ok(found);
     }
-    let known = read_interface(api, path, on, runtime).await?;
-    *held = Some((stamp, known.clone(), false));
+    let known = read_interface(api, code, on, runtime).await?;
+    *held = Some((known.clone(), false));
     Ok(known)
 }
 
 /// What the machine's Runtime said installing this very source, if it's kept here.
-async fn own_reading(api: &Arc<Api>, path: &Path, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
+async fn own_reading(api: &Arc<Api>, local: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
     let hubs = &api.machines.hubs;
     let home = hubs.home();
     let origin = Origin::parse(hub).ok()?;
     let reader = hubs.reader(origin.as_str()).ok()?;
-    let code = source(home, path, (&reader, &origin)).await.ok()?;
+    let code = source(home, local, (&reader, &origin)).await.ok()?;
     Some((code.package.clone(), kept(home, &code, runtime?)?))
 }
 
 /// Runtime's static describer's reading, on the Python and Runtime release its project names, or PyPI's newest.
-async fn read_interface(api: &Arc<Api>, path: &Path, on: &On, runtime: Option<String>) -> Result<(String, Value), Error> {
+async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Option<String>) -> Result<(String, Value), Error> {
     let home = api.machines.hubs.home();
-    let project = Project::read(project(home, path)?)?;
+    let project = Project::read(copied(home, code)?)?;
     let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
     let python = python(&project, &uv)?;
     let locked = locked_runtime(&project.root);
@@ -1177,7 +1087,7 @@ async fn read_interface(api: &Arc<Api>, path: &Path, on: &On, runtime: Option<St
     let described = described.map_err(|error| match (&runtime, &locked, on) {
         (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" => error
             .remedy(format!("PyPI's newest Runtime read this, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
-            .next(format!("cozy run {}", path.display())),
+            .next(format!("cozy run <its folder> --on {name}")),
         _ => error,
     });
     Ok((format!("local/{}", project.name), described?.1))

@@ -129,8 +129,11 @@ pub struct StagedInput {
 /// `seed`, when the request omits one, derives from the key.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunRequest {
-    /// `[org/]pkg/fn[@release]`, or local code by its absolute path: `/dir[/fn]`, `/script.py[/fn]`.
+    /// `[org/]pkg/fn[@release]`; with `code`, the function of it (empty: none named).
     pub target: String,
+    /// Local code, sent by content (cl-819): Calcifer reads no client's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<crate::code::LocalCode>,
     /// `local` (the default), a machine's name, `any`, or `new[:sku]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<On>,
@@ -174,9 +177,9 @@ pub struct RunRequest {
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
-    /// The project it belongs to: its id, or a folder in it, whose nearest with a project.yaml up from it is the project. A run needs one.
+    /// The project it belongs to: its id or name, or its folder on Calcifer's computer by its absolute path. A run needs one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<PathBuf>,
+    pub project: Option<String>,
     /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recipes: bool,
@@ -350,9 +353,9 @@ pub struct Run {
     pub target: String,
     pub hub: String,
     pub machine: Option<String>,
-    /// The project folder its outputs land in; none for what is no person's run.
+    /// The name of the project its outputs land in; none for what is no person's run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<PathBuf>,
+    pub project: Option<String>,
     /// That project's id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
@@ -506,10 +509,10 @@ pub struct OutputItem {
     /// The final bytes' digest, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<Digest>,
-    /// The file on this computer that holds this revision's bytes, once they landed there.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Calcifer's own: the file holding this revision's bytes once they landed. Never on the wire: a client fetches `url`.
+    #[serde(skip)]
     pub path: Option<PathBuf>,
-    /// Where Calcifer serves those bytes: an API path.
+    /// Where Calcifer serves those bytes once they landed, an API path; a folder's is its tree document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// A picture's or video's size, measured as this revision landed.
@@ -538,10 +541,43 @@ impl OutputItem {
         self.checkpoint.is_some()
     }
 
-    /// Still owed to this computer: its last revision neither landed nor failed.
+    /// Still owed to Calcifer: its last revision neither landed nor failed.
     pub fn owed(&self) -> bool {
-        !self.is_checkpoint() && !self.stays && self.path.is_none() && self.export_error.is_none()
+        !self.is_checkpoint() && !self.stays && self.url.is_none() && self.export_error.is_none()
     }
+}
+
+/// What an output is called as a file, in its run's output directory or where a client downloads it: `<number>-<name>[-<i>]`
+/// and its media type's extension (none for a folder).
+pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
+    let name: String = (name.chars().take(128))
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => c,
+            _ => '_',
+        })
+        .collect();
+    let stem = match index {
+        0 => format!("{number}-{name}"),
+        i => format!("{number}-{name}-{i}"),
+    };
+    let media_type = media_type.split(';').next().unwrap_or("").trim();
+    let extension = match media_type.to_ascii_lowercase().as_str() {
+        "image/png" => ".png",
+        "image/jpeg" | "image/jpg" => ".jpg",
+        "image/webp" => ".webp",
+        "image/gif" => ".gif",
+        "image/avif" => ".avif",
+        "video/mp4" => ".mp4",
+        "video/webm" => ".webm",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => ".wav",
+        "audio/mpeg" => ".mp3",
+        "audio/flac" => ".flac",
+        "audio/ogg" => ".ogg",
+        "application/json" => ".json",
+        "text/plain" => ".txt",
+        _ => "",
+    };
+    stem + extension
 }
 
 /// The machine's progress report, as it last sent it.

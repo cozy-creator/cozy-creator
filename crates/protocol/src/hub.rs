@@ -631,9 +631,12 @@ pub struct ModelUploading {
 pub struct PackageInstall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
-    /// `org/name`, or the absolute path of a package directory or a script: installed live, its
-    /// files read as they are at each run.
+    /// `org/name`; empty with `code`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub package: String,
+    /// Local code, by content: installed as it is now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<crate::code::LocalCode>,
     /// Absent, the Hub's newest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<String>,
@@ -674,23 +677,26 @@ pub struct ModelQuantize {
     pub model: String,
     /// The lane to write: a recipe the package declares for this model.
     pub lane: String,
-    /// `org/name[@release]`, or the absolute path of a package directory nobody published.
+    /// `org/name[@release]`; empty with `code`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub package: String,
+    /// Local code nobody published, by content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<crate::code::LocalCode>,
     pub on: crate::calcifer::On,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agreed: Option<crate::calcifer::Agreed>,
 }
 
-/// `POST /v1/package-locks` (an `Idempotency-Key`): locks the project in `dir` for the Hub and the
-/// account it publishes to (`root`: the root namespace, Hub admins), with uv on this computer;
-/// writes back only `uv.lock`. `202` with the work (`Authoring`); followed on
+/// `POST /v1/package-locks` (an `Idempotency-Key`): locks the package `code` is for the Hub and the
+/// account it publishes to (`root`: the root namespace, Hub admins), with uv in Calcifer's copy, and
+/// answers the new `uv.lock` for the client to write. `202` with the work (`Authoring`); followed on
 /// `GET /v1/package-locks/{id}/events`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockAsk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
-    /// The project's absolute directory.
-    pub dir: std::path::PathBuf,
+    pub code: crate::code::LocalCode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
     /// Dependencies that may move to their newest compatible release.
@@ -698,15 +704,15 @@ pub struct LockAsk {
     pub upgrade: Vec<String>,
 }
 
-/// `POST /v1/package-publications` (an `Idempotency-Key`): publishes the project in `dir` as
+/// `POST /v1/package-publications` (an `Idempotency-Key`): publishes the package `code` is as
 /// `<account>/<name>@<version>` (`root`: `<name>@<version>`): staged, relocked for this Hub, built,
 /// described statically, uploaded and finalized. `202` with the work (`Authoring`); followed on
 /// `GET /v1/package-publications/{id}/events`. A version already published is answered as it is.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishAsk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
-    pub dir: std::path::PathBuf,
+    pub code: crate::code::LocalCode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
     /// Published yanked: a gated candidate, never the package's newest release.
@@ -757,8 +763,10 @@ impl AuthoringEvent {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Locked {
-    pub lock: std::path::PathBuf,
+    /// The new `uv.lock`, for the client to write into the package's folder.
+    pub lock: String,
     pub account_index: Option<String>,
+    /// It differs from the `uv.lock` sent.
     pub changed: bool,
 }
 
@@ -772,4 +780,7 @@ pub struct Published {
     pub uploaded_bytes: u64,
     pub hub: String,
     pub warnings: Vec<String>,
+    /// The `uv.lock` it made first, the package having none, for the client to write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<String>,
 }

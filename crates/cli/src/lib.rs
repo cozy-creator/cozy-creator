@@ -74,7 +74,7 @@ enum Command {
     Model(model::Args),
     /// Projects: assets, and the operations that make them.
     Project(project::Args),
-    /// Open the canvas in your browser: the project you're in, else the home.
+    /// Open the canvas in your browser: the project you name, else COZY_PROJECT's, else the home.
     Open(open::Args),
     /// Claim an organization parked under your name.
     Org(org::Args),

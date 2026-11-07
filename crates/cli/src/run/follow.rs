@@ -1,7 +1,8 @@
-//! Following a run: live progress on stderr, each output named as it lands, and the run's record
+//! Following a run: live progress on stderr, each output named by its digest as it lands, and the run's record
 //! on stdout at the end; NDJSON of Calcifer's events with `--json`, its terminal event last. A
-//! followed run is over once it ended and each output's last revision landed here (checked
-//! against its digest) or failed, but for what stays on its machine; an output not saved fails the follow. Ctrl-C (Esc or q in
+//! followed run is over once it ended and each output's last revision landed in Calcifer (checked
+//! against its digest) or failed, but for what stays on its machine; an output not saved fails the follow.
+//! `--output` downloads them here (`fetch`). Ctrl-C (Esc or q in
 //! `cozy run ls`) stops following and never cancels: the run is Calcifer's, and `cozy run
 //! show` reattaches.
 use std::{
@@ -119,7 +120,7 @@ async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-/// An output still owed to this computer.
+/// An output still owed to Calcifer.
 fn owed(run: &Run) -> bool {
     run.output.iter().any(OutputItem::owed)
 }
@@ -129,7 +130,7 @@ fn saved(run: Run) -> Result<Run, Error> {
     let lost: Vec<String> = run
         .output
         .iter()
-        .filter(|item| !item.is_checkpoint() && !item.stays && item.path.is_none())
+        .filter(|item| !item.is_checkpoint() && !item.stays && item.url.is_none())
         .map(|item| match &item.export_error {
             Some(error) => format!("{} ({error})", item_name(item)),
             None => format!("{} (still saving when following ended)", item_name(item)),
@@ -143,7 +144,7 @@ fn saved(run: Run) -> Result<Run, Error> {
         Kind::Unavailable,
         "output_not_saved",
         format!(
-            "run {} ended {}, but this computer did not save its output {}",
+            "run {} ended {}, but its output {} did not land",
             run.number,
             status_word(run.status),
             lost.join(", ")
@@ -377,9 +378,9 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
         }
     }
     for item in for_people(run) {
-        let shown = match (&item.path, &item.export_error) {
+        let shown = match (&item.url, &item.export_error) {
             _ if let Some(reference) = &item.checkpoint => checkpoint(reference),
-            (Some(path), _) => output::link(ctx, path),
+            (Some(_), _) => landed(item),
             (None, Some(error)) => format!("not saved: {error}"),
             (None, None) => output::bytes(item.length),
         };
@@ -465,6 +466,16 @@ pub(crate) fn for_people(run: &Run) -> Vec<&OutputItem> {
     run.output.iter().filter(|item| !item.stays).collect()
 }
 
+/// A landed output as a person reads it: the start of its digest, which a box takes, and its size.
+fn landed(item: &OutputItem) -> String {
+    let digest = item.sha256.map(|digest| digest.to_string()).unwrap_or_default();
+    let hex = digest.trim_start_matches("sha256:");
+    match hex.is_empty() {
+        true => output::bytes(item.length),
+        false => format!("{}  {}", &hex[..hex.len().min(12)], output::bytes(item.length)),
+    }
+}
+
 fn item_name(item: &OutputItem) -> String {
     match item.index {
         0 => item.name.clone(),
@@ -546,7 +557,7 @@ impl View {
             | Event::Canceled { run, .. }
                 if owed(run) =>
             {
-                self.status("saving its outputs to this computer")
+                self.status("saving its outputs")
             }
             Event::Waiting { reason } => {
                 self.waiting = Some(reason.clone()).filter(|r| !r.is_empty());
@@ -557,10 +568,8 @@ impl View {
             // where to look, the log off a terminal each revision after.
             Event::OutputLanded { item, .. } if item.stays => {}
             Event::OutputLanded { item, .. } => {
-                match (item.path.as_ref(), self.named.insert(item.id.clone())) {
-                    (Some(path), true) => {
-                        self.line(&format!("  {}  {}", item_name(item), output::link_on(self.term, path)))
-                    }
+                match (item.url.as_ref(), self.named.insert(item.id.clone())) {
+                    (Some(_), true) => self.line(&format!("  {}  {}", item_name(item), landed(item))),
                     (Some(_), false) if self.bar.is_none() => {
                         self.line(&format!(
                             "  {}  r{}  {}",

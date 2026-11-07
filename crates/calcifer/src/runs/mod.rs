@@ -15,6 +15,7 @@ use axum::{
 };
 use protocol::{
     calcifer::{Kind as RunKind, MachineKind, MachineState, Note, NoteLevel, On, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
+    code::LocalCode,
     error::{Error, Kind},
     interface::{Callable, Interface},
     machine::{self as v1, WarmLevel},
@@ -56,18 +57,15 @@ pub(crate) async fn quote(
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
-    let bound = match local(&api, &ask) {
+    let bound = match &ask.code {
         // Local code rents with its install, which the call then follows to its machine.
-        Some(found) => {
-            let (path, _) = found.map_err(Refusal)?;
+        Some(code) => {
             let on = ask.on.clone().unwrap_or_else(|| default_on(&api));
             let hub = hub(&api, &ask.hub);
             let home = api.machines.hubs.home();
             let origin = protocol::config::Origin::parse(&hub).map_err(Refusal)?;
             let reader = api.machines.hubs.reader(&hub).map_err(Refusal)?;
-            let source = crate::local_code::source(home, &path, (&reader, &origin))
-                .await
-                .map_err(Refusal)?;
+            let source = crate::local_code::source(home, code, (&reader, &origin)).await.map_err(Refusal)?;
             crate::local_code::install_run(home, &hub, on, &source)
         }
         None => match prepare(&api, "quote", &ask).await.map_err(Refusal)? {
@@ -81,12 +79,19 @@ pub(crate) async fn quote(
 
 #[derive(Deserialize)]
 pub(crate) struct Asked {
+    /// With `tree`, the function of that local code (empty: none named).
+    #[serde(default)]
     target: String,
     #[serde(default)]
     hub: Option<String>,
     /// The machine a run would go to.
     #[serde(default)]
     on: Option<String>,
+    /// Local code by content: its tree, and where its package is in it.
+    #[serde(default)]
+    tree: Option<protocol::ids::Digest>,
+    #[serde(default)]
+    at: Option<String>,
 }
 
 /// `GET /v1/targets?target=`: what a run of the target `on` its machine calls, as `POST /v1/runs` resolves it.
@@ -97,7 +102,11 @@ pub(crate) async fn describe(
     let Query(asked) = query?;
     let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
     let on = asked.on.map_or_else(|| default_on(&api), On::from);
-    let resolved = target::describe(&api, &hub, &asked.target, None, &on).await.map_err(Refusal)?;
+    let code = match (asked.tree, asked.at) {
+        (Some(tree), at) => Some(LocalCode { tree, at: at.unwrap_or_default() }),
+        (None, _) => None,
+    };
+    let resolved = target::describe(&api, &hub, &asked.target, code.as_ref(), None, &on).await.map_err(Refusal)?;
     Ok(Json(resolved))
 }
 
@@ -117,11 +126,6 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
         )
         .remedy(format!("run the installed cozy (~/.cozy/bin/cozy), or update this one to {version}")),
     ))
-}
-
-/// The local code `ask` names, if it names local code.
-fn local(api: &Api, ask: &RunRequest) -> Option<Result<(PathBuf, Option<String>), Error>> {
-    crate::local_code::target(&ask.target, None, &api.machines.user_home)
 }
 
 /// Records `ask` under `key` and starts it; the same key again answers the recorded run without
@@ -219,7 +223,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     let mut on = set.first().cloned().unwrap_or_else(|| default_on(api));
     // Local code installs as it resolves. A package answers for itself first: one named without a
     // function lists its functions on an OS that runs no models here.
-    if local(api, ask).is_some() {
+    if ask.code.is_some() {
         protocol::calcifer::local_usable(&on.to_string())?;
         // Refused before that install, not after it.
         project_of(api, ask)?;
@@ -228,7 +232,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     let agreed = ask.agreed.clone();
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
     let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
-    let resolved = target::resolve(api, &hub, &ask.target, None, &on, ask.warm.is_some(), given, key, agreed).await?;
+    let resolved = target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed).await?;
     let (package, function, mut code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
@@ -279,16 +283,9 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     {
         return Ok(Prepared::Install(going));
     }
-    let left = match &resolved {
-        Resolved::Local { local, .. } => local.left.clone(),
-        Resolved::Release { .. } => vec![],
-    };
     let (submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
-    }
-    if !left.is_empty() {
-        notes.push(Note { level: NoteLevel::Warning, message: format!("left out of the code it runs: {}", left.join(", ")) });
     }
     Ok(Prepared::Run { submit, notes })
 }
@@ -331,11 +328,11 @@ struct Code<'a> {
 /// The project `ask` belongs to. A person's run has one, as a commit has a repository; keeping a function warm and `cozy model quantize` are no one's run.
 fn project_of(api: &Api, ask: &RunRequest) -> Result<Option<PathBuf>, Error> {
     let project = match ask.project.as_deref() {
-        Some(named) => crate::project::named(api, named)?,
+        Some(named) => Some(crate::project::named(api, named)?),
         None => None,
     };
     if project.is_none() && ask.warm.is_none() && !ask.recipes {
-        return Err(crate::project::not_in_one());
+        return Err(protocol::project::unnamed());
     }
     Ok(project)
 }

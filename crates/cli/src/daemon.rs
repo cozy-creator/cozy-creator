@@ -30,7 +30,7 @@ pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
 #[derive(clap::Args, Debug)]
 pub struct Status {}
 
-/// This cozy, Calcifer, the project here, the runs not yet settled, the machines and what they cost:
+/// This cozy, Calcifer, COZY_PROJECT's project, the runs not yet settled, the machines and what they cost:
 /// `cozy` alone too. Never starts Calcifer.
 pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     let exe = std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default();
@@ -83,7 +83,8 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     }
     let next = match &project {
         Some(Ok(state)) => {
-            println!("project: {}: {}", state.path.display(), crate::project::totals(state));
+            let name = state.path.file_name().map_or_else(|| state.id.clone(), |name| name.to_string_lossy().into_owned());
+            println!("project: {name}: {}", crate::project::totals(state));
             state.warnings.iter().for_each(|warning| println!("warning: {}", warning.message));
             state.next.clone()
         }
@@ -92,7 +93,7 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
             error.next.clone()
         }
         None => {
-            println!("project: none here");
+            println!("project: none named (COZY_PROJECT)");
             vec!["cozy project ls".into(), "cozy project new <name>".into()]
         }
     };
@@ -104,13 +105,12 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The project holding the folder you are in, as Calcifer reads it: none outside one.
+/// COZY_PROJECT's project, as Calcifer reads it: none when none is named.
 async fn project(client: &Client) -> Option<Result<State, Error>> {
-    let path = std::env::current_dir().ok()?;
-    let opened: Result<Opened, Error> = client.post("/v1/projects", &Open { path: Some(path), create: false, name: None }, None).await;
+    let project = crate::project::chosen(None)?;
+    let opened: Result<Opened, Error> = client.post("/v1/projects", &Open { project: Some(project), ..Open::default() }, None).await;
     match opened {
         Ok(opened) => Some(client.get(&format!("/v1/projects/{}", opened.id)).await),
-        Err(error) if error.code == "project_not_found" => None,
         Err(error) => Some(Err(error)),
     }
 }

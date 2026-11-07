@@ -120,8 +120,8 @@ pub(super) struct Add {
     terms: Vec<String>,
 }
 
-pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+pub(super) async fn add(ctx: &Context, at: Option<&String>, args: Add) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let (names, terms): (Vec<String>, Vec<String>) = args.terms.into_iter().partition(|term| !term.contains('='));
     if names.len() > 1 {
         return Err(input_error("field_term", format!("one name, not {}: a field is field=value", names.join(" and "))));
@@ -165,7 +165,7 @@ pub(super) struct Set {
     input: Option<PathBuf>,
 }
 
-pub(super) async fn set(ctx: &Context, at: Option<&PathBuf>, args: Set) -> Result<ExitCode, Error> {
+pub(super) async fn set(ctx: &Context, at: Option<&String>, args: Set) -> Result<ExitCode, Error> {
     let mut fields = fields_of(args.input.as_ref(), &args.terms)?;
     if fields.is_empty() {
         let said = "nothing to set: name a field=value, or --input a file";
@@ -179,7 +179,7 @@ pub(super) async fn set(ctx: &Context, at: Option<&PathBuf>, args: Set) -> Resul
         Some(other) => return Err(input_error("field_term", format!("tool is a function, not {other}")).next("cozy package ls")),
         None => None,
     };
-    let opened = open(ctx, at, false).await?;
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     let path = route(&["v1", "projects", &opened.id, "assets", &args.name]);
     if fields.values().any(|value| value.as_str().is_some_and(|text| text.starts_with(['[', '{']))) {
@@ -225,19 +225,19 @@ struct VersionDeleted<'a> {
 }
 
 /// The words of `-p` when it was given, as what's printed has to work from here.
-fn from(at: Option<&PathBuf>) -> String {
-    at.map_or_else(String::new, |at| match at.to_string_lossy().contains(' ') {
-        true => format!(" -p '{}'", at.display()),
-        false => format!(" -p {}", at.display()),
+fn from(at: Option<&String>) -> String {
+    at.map_or_else(String::new, |at| match at.contains(' ') {
+        true => format!(" -p '{at}'"),
+        false => format!(" -p {at}"),
     })
 }
 
 /// `names` deleted, each printing the command that restores it.
-pub(super) async fn delete(ctx: &Context, at: Option<&PathBuf>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
+pub(super) async fn delete(ctx: &Context, at: Option<&String>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
     if !versions.is_empty() {
         return discard(ctx, at, names, versions).await;
     }
-    let opened = open(ctx, at, false).await?;
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     for name in names {
         let deleted: AssetDeleted = calcifer.delete(&route(&["v1", "projects", &opened.id, "assets", &name])).await?;
@@ -255,11 +255,11 @@ pub(super) async fn delete(ctx: &Context, at: Option<&PathBuf>, names: Vec<Strin
 }
 
 /// `versions` of one asset discarded, each printing the command that brings it back.
-async fn discard(ctx: &Context, at: Option<&PathBuf>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
+async fn discard(ctx: &Context, at: Option<&String>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
     let [name] = names.as_slice() else {
         return Err(input_error("project_usage", "--version is of one asset".to_owned()).next(format!("cozy project delete {} --version {}", names[0], versions[0])));
     };
-    let opened = open(ctx, at, false).await?;
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     for number in versions {
         let moved: VersionMoved = calcifer.delete(&route(&["v1", "projects", &opened.id, "assets", name, "versions", &number.to_string()])).await?;
@@ -288,12 +288,12 @@ fn say_stale(moved: &VersionMoved) {
 }
 
 /// `delete`'s line: the asset back as it was, where it was, with what it made, or a take it discarded.
-pub(super) async fn restore(ctx: &Context, at: Option<&PathBuf>, name: String, kept: Option<String>, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
+pub(super) async fn restore(ctx: &Context, at: Option<&String>, name: String, kept: Option<String>, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
     let Some(kept) = kept else { return undiscard(ctx, at, name, versions, approved).await };
     let unreadable = |why: String| input_error("restore_unreadable", format!("that isn't what deleting {name} printed: {why}")).next("cozy project status");
     let bytes = URL_SAFE_NO_PAD.decode(kept.trim()).map_err(|why| unreadable(why.to_string()))?;
     let kept: Kept = serde_json::from_slice(&bytes).map_err(|why| unreadable(why.to_string()))?;
-    let opened = open(ctx, at, false).await?;
+    let opened = open(ctx, at).await?;
     let made: AssetMade = ctx.calcifer().await?.put(&route(&["v1", "projects", &opened.id, "assets", &name]), &AssetBack { text: kept.text, at: kept.at }).await?;
     match ctx.json {
         true => output::json(&made),
@@ -302,11 +302,11 @@ pub(super) async fn restore(ctx: &Context, at: Option<&PathBuf>, name: String, k
     Ok(ExitCode::SUCCESS)
 }
 
-async fn undiscard(ctx: &Context, at: Option<&PathBuf>, name: String, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
+async fn undiscard(ctx: &Context, at: Option<&String>, name: String, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
     if approved && versions.len() > 1 {
         return Err(input_error("project_usage", "--approved is of one --version: the one `delete` printed it for".to_owned()).next(format!("cozy project restore {name} --version {} --approved", versions[0])));
     }
-    let opened = open(ctx, at, false).await?;
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     for number in versions {
         let moved: VersionMoved = calcifer.put(&route(&["v1", "projects", &opened.id, "assets", &name, "versions", &number.to_string()]), &VersionBack { approved }).await?;
@@ -322,8 +322,8 @@ async fn undiscard(ctx: &Context, at: Option<&PathBuf>, name: String, versions: 
 }
 
 /// `status <name>`: its fields and each take or version.
-pub(super) async fn one(ctx: &Context, at: Option<&PathBuf>, name: String) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+pub(super) async fn one(ctx: &Context, at: Option<&String>, name: String) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let path = route(&["v1", "projects", &opened.id, "assets", &name]);
     let mut held: AssetVersions = ctx.calcifer().await?.get_query(&path, &[("call", "true")]).await?;
     // The newest `SHOWN`, unless --full; `asset.versions` counts them all.

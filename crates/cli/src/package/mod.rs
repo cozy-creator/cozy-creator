@@ -1,8 +1,8 @@
 //! `cozy package`: find packages on a Hub, keep them on machines, and publish your own.
 //!
 //! Install, update and remove are runs on a machine through Calcifer; the machine resolves and
-//! installs releases. Only `lock` and `publish` need uv, on the author's computer, and neither
-//! runs package code.
+//! installs releases. `lock` and `publish` send the package by content: Calcifer locks and builds
+//! its copy with uv, never running package code, and a lock comes back for the CLI to write.
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::Subcommand;
@@ -70,7 +70,7 @@ enum Command {
         #[command(flatten)]
         placement: Placement,
     },
-    /// Lock this project's dependencies for the Hub and account it publishes to (needs uv).
+    /// Lock this package's dependencies for the Hub and account it publishes to, writing its uv.lock.
     Lock {
         /// The package's folder, if not the one you are in.
         #[arg(short = 'p', value_name = "PATH")]
@@ -82,7 +82,7 @@ enum Command {
         #[arg(long)]
         root: bool,
     },
-    /// Publish this project as <account>/<name>@<version>, or <name>@<version> with --root (needs uv).
+    /// Publish the package in this folder as <account>/<name>@<version>, or <name>@<version> with --root.
     Publish {
         /// At the root namespace: first-party, Hub admins only.
         #[arg(long)]
@@ -117,17 +117,18 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
             Some(path) => {
-                let path = crate::ask::absolute(&path.to_string_lossy())?;
-                machine::install(ctx, path, None, placement.on()?).await
+                let on = placement.on()?;
+                let code = crate::send::Sender::new(ctx).await?.code(&path).await?;
+                machine::install(ctx, String::new(), Some(code), None, on).await
             }
             None => {
                 let named = PackageRef::parse(&package)?;
-                machine::install(ctx, named.package(), named.release, placement.on()?).await
+                machine::install(ctx, named.package(), None, named.release, placement.on()?).await
             }
         },
         Command::Update { package, placement } => {
             let named = PackageRef::parse(&package)?;
-            machine::install(ctx, named.package(), named.release, placement.on()?).await
+            machine::install(ctx, named.package(), None, named.release, placement.on()?).await
         }
         Command::Remove {
             packages,
@@ -179,10 +180,14 @@ impl std::fmt::Display for PackageRef {
     }
 }
 
-/// Local code `text` names (`run::target::local`), from the working directory.
-fn local(ctx: &Context, text: &str) -> Result<Option<PathBuf>, Error> {
+/// The package local code `text` names here (`run::local`), which goes by content.
+pub(crate) fn local(ctx: &Context, text: &str) -> Result<Option<PathBuf>, Error> {
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    Ok(protocol::target::local(text, &cwd, &ctx.user_home))
+    match crate::run::local(ctx, text, &cwd)? {
+        Some((package, None)) => Ok(Some(package)),
+        Some((_, Some(function))) => Err(Error::new(Kind::Usage, "package_ref_invalid", format!("{text} names a function, {function}: a package is its folder or script"))),
+        None => Ok(None),
+    }
 }
 
 /// Names to remove: `[org/]name` (or `local/name`), with no release.

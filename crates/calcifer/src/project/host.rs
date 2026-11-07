@@ -244,9 +244,11 @@ impl Host {
         format!("project-local-{}-{}", self.walk, &hex::encode(at)[..16])
     }
 
-    /// Local code at `path` made ready `on` a machine for a call, an install waited for.
+    /// The project's local code at `path` made ready `on` a machine for a call, an install waited for: read into a copy as a
+    /// client's is sent.
     pub async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
-        local_code::ready(&self.api, path, on, hub, &self.key(path, on), &|message| self.tell(message)).await
+        let code = local_code::own(self.api.machines.hubs.home(), path)?;
+        local_code::ready(&self.api, &code, on, hub, &self.key(path, on), &|message| self.tell(message)).await
     }
 
     /// What a walk's listeners hear of what this does for it.

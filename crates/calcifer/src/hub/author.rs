@@ -1,10 +1,11 @@
-//! `/v1/package-locks` and `/v1/package-publications`: authoring a package on this computer, with
-//! uv. Package code never runs here: the interface comes from Runtime's static describer.
+//! `/v1/package-locks` and `/v1/package-publications`: authoring a package a client sent by content
+//! (cl-819), with uv, in Calcifer's copy of it. Package code never runs here: the interface comes from
+//! Runtime's static describer.
 //!
 //! The project names no account: `{ index = "tensorhub" }` sources resolve to the account's index
 //! on the Hub, written into a private copy. Torch is the machine's (cl-715): the copy excludes its
-//! layer, so no lock holds it. The authored files never change; a lock writes back only
-//! `uv.lock`.
+//! layer, so no lock holds it. Nothing is written into the client's folder: a lock answers its
+//! `uv.lock`, which the client writes.
 use std::{
     collections::BTreeMap,
     fs,
@@ -200,11 +201,16 @@ async fn publisher(client: &hub_client::Client, root: bool) -> Result<String, Er
     }
 }
 
-/// Locks the project in `ask.dir` for the Hub and account it publishes to.
+/// The package `code` names, in Calcifer's copy.
+fn sent(api: &Api, code: &protocol::code::LocalCode) -> Result<Project, Error> {
+    blocking(|| Project::read(crate::local_code::copied(api.machines.hubs.home(), code)?))
+}
+
+/// Locks the package `ask.code` names for the Hub and account it publishes to, and answers its lock.
 pub(super) async fn lock(api: &Arc<Api>, ask: LockAsk, work: &Work) -> Result<Locked, Error> {
     let say = &|message: &str| work.say(message);
     let hub = origin(api, ask.hub.as_deref()).map_err(|r| r.0)?;
-    let project = blocking(|| Project::read(ask.dir.clone()))?;
+    let project = sent(api, &ask.code)?;
     let uv_path = tools(api, &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
     // The namespace it is locked for: the root's with `root`, else the one its lock already names,
@@ -237,15 +243,10 @@ pub(super) async fn lock(api: &Arc<Api>, ask: LockAsk, work: &Work) -> Result<Lo
             command.args(["--upgrade-package", package.as_str()]);
         }
         run(&mut command, "lock_failed")?;
-        let locked = fs::read(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
-        versions(&String::from_utf8_lossy(&locked))?;
-        let path = project.root.join("uv.lock");
-        let changed = fs::read(&path).ok().as_deref() != Some(&locked[..]);
-        if changed {
-            let staged = project.root.join(".uv.lock.cozy");
-            fs::write(&staged, &locked).and_then(|()| fs::rename(&staged, &path)).map_err(|e| refuse("lock_unwritable", e))?;
-        }
-        Ok(Locked { lock: path, account_index, changed })
+        let locked = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
+        versions(&locked)?;
+        let changed = fs::read_to_string(project.root.join("uv.lock")).ok().as_deref() != Some(locked.as_str());
+        Ok(Locked { lock: locked, account_index, changed })
     })
 }
 
@@ -269,13 +270,13 @@ impl File {
     }
 }
 
-/// Publishes the project in `ask.dir`: staged, relocked for this Hub and account, built,
+/// Publishes the package `ask.code` names: staged, relocked for this Hub and account, built,
 /// described, uploaded and finalized. A version already published is answered as it is.
 pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Result<Published, Error> {
     let say = &|message: &str| work.say(message);
     let hub = origin(api, ask.hub.as_deref()).map_err(|r| r.0)?;
     let hub_error = |e| refusal(&hub, e).0;
-    let project = blocking(|| Project::read(ask.dir.clone()))?;
+    let project = sent(api, &ask.code)?;
     if !project.identified {
         return Err(refuse("project_identity_missing", "a release needs a literal version in pyproject.toml's [project]"));
     }
@@ -289,6 +290,7 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
         uploaded_bytes: 0,
         hub: hub.to_string(),
         warnings: vec![],
+        lock: None,
     };
     match client.get_package_release(&account, &project.name, &project.version).await {
         Ok(_) => return Ok(result),
@@ -297,15 +299,23 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
             e => return Err(e),
         },
     }
+    // Locked first, its lock is answered for the client to write, and the release holds it.
     if !project.root.join("uv.lock").is_file() {
         say("this project has no uv.lock: locking it first");
-        lock(api, LockAsk { hub: ask.hub.clone(), dir: ask.dir.clone(), root: ask.root, upgrade: vec![] }, work).await?;
+        let locked = lock(api, LockAsk { hub: ask.hub.clone(), code: ask.code.clone(), root: ask.root, upgrade: vec![] }, work).await?;
+        result.lock = Some(locked.lock);
     }
     let uv_path = tools(api, &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
-    let committed = fs::read_to_string(project.root.join("uv.lock")).map_err(|_| {
-        Error::new(Kind::Validation, "package_unlocked", "this project has no uv.lock").next("cozy package lock")
-    })?;
+    let committed = match &result.lock {
+        Some(lock) => {
+            fs::write(stage.src.join("uv.lock"), lock).map_err(|e| refuse("stage_unavailable", e))?;
+            lock.clone()
+        }
+        None => fs::read_to_string(project.root.join("uv.lock")).map_err(|_| {
+            Error::new(Kind::Validation, "package_unlocked", "this project has no uv.lock").next("cozy package lock")
+        })?,
+    };
     // Locking the copy is a no-op for a lock made for this Hub and account. For another, it moves
     // the account's packages to this index pinned to the versions the lock holds: a pin this Hub
     // cannot meet is refused by name, never re-resolved to a newer release.

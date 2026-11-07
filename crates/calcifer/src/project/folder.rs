@@ -486,7 +486,8 @@ pub struct Owed {
 /// What a walk owes: what it sent and what its renders asked. Kept apart from the project, so it changes as often as it likes.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WalkFile {
-    /// The folder and Calcifer it is of: a copy of the folder, or another Calcifer, doesn't go on with paid work.
+    /// The project and Calcifer it is of: a copy of the project, which has its own id, or another Calcifer, doesn't go on with paid
+    /// work. A moved folder is the same project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound: Option<Bound>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -497,7 +498,9 @@ pub struct WalkFile {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Bound {
-    pub path: PathBuf,
+    /// The project's id; empty in a walk from before projects kept one, which goes on where it is.
+    #[serde(default)]
+    pub project: String,
     pub calcifer: String,
 }
 
@@ -1202,20 +1205,21 @@ impl Folder {
         })
     }
 
-    /// Who may go on with this folder's walk: this path, under this Calcifer. None where no Calcifer runs, which judges nothing.
+    /// Who may go on with this project's walk: this project, under this Calcifer. None where no Calcifer runs, which judges nothing.
     fn bound(&self) -> Option<Bound> {
-        let path = durable::canonical(&self.dir).unwrap_or_else(|_| self.dir.clone());
-        CALCIFER.get().map(|calcifer| Bound { path, calcifer: calcifer.clone() })
+        let dir = durable::canonical(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        CALCIFER.get().map(|calcifer| Bound { project: super::project_id(&dir), calcifer: calcifer.clone() })
     }
 
-    /// A walk of another folder (this is a copy) or another Calcifer's doesn't go on here: what it owes is dropped.
+    /// A walk of another project (this is a copy) or another Calcifer's doesn't go on here: what it owes is dropped.
     fn unbind_elsewhere(&self) -> Result<(), Error> {
         let Some(here) = self.bound() else { return Ok(()) };
-        let elsewhere = self.reading_walk(|walk| walk.bound.as_ref().is_some_and(|bound| *bound != here))?;
+        let other = |bound: &Bound| bound.calcifer != here.calcifer || (!bound.project.is_empty() && bound.project != here.project);
+        let elsewhere = self.reading_walk(|walk| walk.bound.as_ref().is_some_and(other))?;
         if !elsewhere {
             return Ok(());
         }
-        warn!("{}: its walk is of another folder or Calcifer, so it doesn't go on here", here.path.display());
+        warn!("{}: its walk is of another project or Calcifer, so it doesn't go on here", self.dir.display());
         self.act(|| {
             self.writing_walk(|walk| {
                 *walk = WalkFile::default();

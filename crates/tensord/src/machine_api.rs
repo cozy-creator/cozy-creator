@@ -250,7 +250,7 @@ impl NativeBackend {
                     let mut manifest = Vec::new();
                     self.service.engine.open_result(&record.id, index).map_err(problem)?
                         .read_to_end(&mut manifest).map_err(problem)?;
-                    for protocol::tree::Member { sha256: sha, length } in protocol::tree::parse(&manifest).map_err(problem)?.into_values() {
+                    for protocol::tree::Member { sha256: sha, length, .. } in protocol::tree::parse(&manifest).map_err(problem)?.into_values() {
                         let member = result.artifacts.iter().position(|a| a.sha256 == sha && a.length == length)
                             .ok_or_else(|| Error::internal("custody_corrupt", "a tree member is not held"))?;
                         let owner = identity(&json!({"workspace":self.workspace_id(),"actor":context.actor,

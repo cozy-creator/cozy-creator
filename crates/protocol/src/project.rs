@@ -9,24 +9,28 @@ use serde_json::{Map, Value};
 
 use crate::{calcifer::On, error::Error};
 
-/// `POST /v1/projects`: by `name`, a new empty project under `~/.cozy/projects`, the next free name when that one is taken. By `path`,
-/// the project holding it (the nearest folder up from it with a project.yaml), or with `create` a new one made there. The same folder
-/// is always the same project, and opening it records it in the index.
+/// `POST /v1/projects`: by `project`, an existing one, by its id or name, or its folder on Calcifer's computer (absolute), which
+/// it opens; else a new one called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is taken) or at
+/// `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in its
+/// `project.db`: the folder is only where it lives.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Open {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub create: bool,
+    pub starter: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Opened {
     pub id: String,
+    /// Where it lives on Calcifer's computer.
     pub path: PathBuf,
-    /// Its folder's name.
+    /// Its name, unique among the projects Calcifer knows: what `-p` takes.
     pub name: String,
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -34,6 +38,17 @@ pub struct Opened {
     /// What opening it did to it, said once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub said: Vec<String>,
+}
+
+/// How a client names a project: its id or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
+/// folder a client is in names none: Calcifer may be on another computer.
+pub const NAMED_BY: &str = "a project's name or id, or its folder on Calcifer's computer by its absolute path";
+
+/// A request in no project, which needs one.
+pub fn unnamed() -> Error {
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "name the project: -p <name>, or COZY_PROJECT=<name>")
+        .next("cozy project ls")
+        .next("cozy project new <name>")
 }
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
@@ -115,11 +130,11 @@ pub struct Projects {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Known {
     pub id: String,
-    /// Its folder's name.
+    /// Its name: what `-p` takes.
     pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
-    /// Its folder holds no project.yaml any more (moved or deleted); `DELETE` forgets it.
+    /// Its folder holds no project.db any more (moved or deleted); `DELETE` forgets it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
     /// Its runs are being made, or asked and not yet sent.

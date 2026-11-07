@@ -4,6 +4,7 @@
 pub mod calcifer;
 pub mod capability;
 pub mod choices;
+pub mod code;
 pub mod config;
 pub mod contract;
 pub mod digests;

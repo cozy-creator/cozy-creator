@@ -636,7 +636,7 @@ export class CanvasStore {
     if (run.number !== Math.min(...making)) return
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
     // as it goes is a revision that landed while its output is still in progress.
-    const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.path || (item.status === "completed" && item.url)) && /^(image|video)\//.test(item.media_type))
+    const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.url) && /^(image|video)\//.test(item.media_type))
     const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 }
     const held = this.get(owner)?.glimpse
     this.patch(owner, glimpse && JSON.stringify(glimpse) !== JSON.stringify(held) ? { run, glimpse } : { run })

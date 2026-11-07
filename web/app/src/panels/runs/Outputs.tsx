@@ -11,8 +11,8 @@ const mediaKind = (item: OutputItem) => {
   return kind === "image" || kind === "video" || kind === "audio" ? kind : "file"
 }
 
-/** Whether its bytes are on this computer, so its route serves them. */
-const landed = (item: OutputItem) => Boolean(item.url || item.path)
+/** Whether its bytes landed in Calcifer, so its route serves them. */
+const landed = (item: OutputItem) => Boolean(item.url)
 
 /** A URL for a tag that can't send a header. Only an API path is ever followed. */
 function useSrc(path: string | null): string | undefined {

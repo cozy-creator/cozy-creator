@@ -289,10 +289,12 @@ pub(crate) fn not_in_wheel(wheel: &Path, interface: &Interface) -> Vec<String> {
 
 // Local code
 
-/// The component of `function` of the local code at `path`, as its files are now. An edit to them makes another hash, so another URL.
+/// The component of `function` of the project's local code at `path`, as its files are now. An edit to them makes another hash, so
+/// another URL.
 async fn local(api: &Arc<Api>, id: &str, path: &Path, function: &str) -> Result<Arc<Component>, Error> {
     let hub = runs::hub(api, "");
-    let (_, document) = local_code::describe(api, path, &runs::default_on(api), &hub).await?;
+    let code = local_code::own(api.machines.hubs.home(), path)?;
+    let (_, document) = local_code::describe(api, &code, &runs::default_on(api), &hub).await?;
     let interface = Interface::parse(&document).map_err(|why| unreadable(id, why))?;
     let (ui, module) = declared(&interface, function, id)?;
     let roots: Vec<PathBuf> = match path.is_file() {
