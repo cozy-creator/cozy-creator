@@ -367,8 +367,8 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   factors), `weights` (a model's: its header verifies as a family) or `component` (weights no family's
   model is: a text encoder, a VAE, an upsampler), absent if it couldn't be read. Its `family` is its owner's label, else
   what its header verifies as; `family_from` says which (`owner`, or `weights` when its header verifies
-  as it). `family=` lists every model the Hub labels so, page by page (`limit` of them), and the newest
-  100 whose header alone says it.
+  as it). `family=` lists every model the Hub labels so, page by page (`limit` of them), and the others
+  (up to 1000 read) whose header alone says it.
 - `GET /v1/models/{org}/{name}?release=`: `ModelDetail`, its releases (the one named) and, to its
   org's members, every commit; `family`, `family_from`, `weights_family` (what its header verifies as),
   `kind` and `tags` as above.

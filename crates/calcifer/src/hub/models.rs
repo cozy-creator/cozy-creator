@@ -1,10 +1,9 @@
 //! `/v1/models`: the Hub's model catalog, and a model's family, releases and deletion as a member
 //! of its org. Signed in, a search also lists the caller's own unreleased (private) models and a
 //! model lists its commits to its org's members.
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
+
+use futures_util::{StreamExt as _, stream};
 
 use axum::{
     Json,
@@ -48,6 +47,13 @@ fn listed(text: Option<&str>) -> Vec<String> {
     text.unwrap_or_default().split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect()
 }
 
+/// A page of the Hub's search: its default most.
+const PAGE: u32 = 200;
+/// The most models a family's search reads for headers that say it with no label.
+const READ_AT_MOST: u32 = 1000;
+/// How many cards a search reads at once.
+const CARDS: usize = 16;
+
 /// `GET /v1/models`: one row per model, its card read for its newest release and lanes, all at once.
 pub(super) async fn search(
     State(api): State<Arc<Api>>,
@@ -66,7 +72,7 @@ pub(super) async fn search(
         _ => None,
     };
     let (tags, no_tags) = (listed(ask.tag.as_deref()), listed(ask.no_tag.as_deref()));
-    // With a family: what the Hub labels so, page by page, then the newest, whose header alone may say it (`checkpoints::said`).
+    // With a family: what the Hub labels so, page by page, then the rest, whose header alone may say it (`checkpoints::said`).
     let (mut names, mut total, mut newest) = (Vec::new(), 0, None);
     if exact.is_none() {
         let mut held: BTreeSet<(String, String)> = BTreeSet::new();
@@ -84,26 +90,27 @@ pub(super) async fn search(
                 break;
             }
         }
+        // Then every other model, the Hub's pages of them, up to READ_AT_MOST: one whose header alone says it has no label to find it by.
         if family.is_some() {
-            let answer = (client.search_models(q, None, &tags, &no_tags, 100, 0).await).map_err(|e| refusal(&hub, e))?;
             newest = Some(names.len());
-            take(&mut names, answer.models);
+            let (mut seen, mut offset) = (BTreeSet::new(), 0);
+            while offset < READ_AT_MOST {
+                let answer = (client.search_models(q, None, &tags, &no_tags, PAGE, offset).await).map_err(|e| refusal(&hub, e))?;
+                let fresh = answer.models.iter().filter(|m| seen.insert((m.org.clone(), m.name.clone()))).count();
+                offset += answer.models.len() as u32;
+                take(&mut names, answer.models);
+                if fresh == 0 || offset as i64 >= answer.search.total {
+                    break;
+                }
+            }
         }
     }
     let cards = match &exact {
         Some(repo) => vec![client.get_model(&repo.org, &repo.name).await.map_err(|e| refusal(&hub, e))?],
         None => {
-            let mut reads = tokio::task::JoinSet::new();
-            for (i, model) in names.into_iter().enumerate() {
-                let client = client.clone();
-                reads.spawn(async move { (i, client.get_model(&model.org, &model.name).await) });
-            }
-            let mut cards = BTreeMap::new();
-            while let Some(read) = reads.join_next().await {
-                let (i, card) = read.map_err(|e| Refusal(Error::internal("card_read", e.to_string())))?;
-                cards.insert(i, card.map_err(|e| refusal(&hub, e))?);
-            }
-            cards.into_values().collect::<Vec<_>>()
+            let reads = names.iter().map(|model| client.get_model(&model.org, &model.name));
+            let cards: Vec<Result<types::ModelCard, _>> = stream::iter(reads).buffered(CARDS).collect().await;
+            cards.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| refusal(&hub, e))?
         }
     };
     if exact.is_some() {
@@ -114,7 +121,7 @@ pub(super) async fn search(
     if let Some(family) = family {
         let is = |row: &FoundModel| row.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family));
         let labelled = |card: &types::ModelCard| card.model.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family));
-        // Of the newest, those its label doesn't already count.
+        // Of the rest, those its label doesn't already count.
         let from = newest.unwrap_or(cards.len());
         total += cards[from..].iter().zip(&models[from..]).filter(|(card, row)| is(*row) && !labelled(*card)).count() as i64;
         models.retain(is);
