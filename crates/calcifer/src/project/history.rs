@@ -153,6 +153,12 @@ fn book(dir: &FsPath) -> Arc<Book> {
         .clone()
 }
 
+/// The project in `dir` is forgotten: its book goes, and is read from `.history.json` if it's opened again.
+pub(super) fn let_go(dir: &FsPath) {
+    let key = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+    BOOKS.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+}
+
 impl Ledger {
     fn save(&self) {
         let bytes = serde_json::to_vec(&self.kept).expect("a history serializes");

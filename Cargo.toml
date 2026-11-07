@@ -71,6 +71,9 @@ jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
 libc = "0.2"
 libloading = "0.9"
+# The cozy binary's allocator (cl-822): it gives back what any thread freed, on every OS. No transparent huge pages:
+# a 2 MiB page that holds a few small allocations is 2 MiB resident.
+mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
 nvml-wrapper = "0.13"
 percent-encoding = "2.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
