@@ -85,6 +85,7 @@ pub const COMPLETE: usize = usize::MAX;
 
 impl Src<'_> {
     /// Itself, unless it is device bytes with no producer to wait for ([`COMPLETE`]).
+    #[cfg(feature = "cuda")]
     pub(crate) fn ordered(self) -> Option<Self> {
         match self {
             Src::Device { stream: COMPLETE, .. } => None,
