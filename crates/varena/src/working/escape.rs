@@ -221,6 +221,15 @@ fn room_now(owner: &Device) -> usize {
     owner.total.load(Ordering::Acquire)
 }
 
+/// The room an allocation was refused against: the cap, else the card, less what others held then.
+fn room_held(owner: &Device) -> usize {
+    let cap = owner.capacity();
+    if cap != usize::MAX {
+        return cap;
+    }
+    owner.total.load(Ordering::Acquire).saturating_sub(owner.outside.load(Ordering::Acquire))
+}
+
 /// A forward of the model `head` begins, its inputs of `shape` (0: unknown, and nothing is learned for
 /// it); `floor` is the most of its weights one block holds at once. Its first forward this request
 /// begins a loop (keyed by that forward's shape),
@@ -244,9 +253,12 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     let (peak, total) = (std::mem::replace(&mut escapes.peak, escapes.total), escapes.total);
     if !escapes.loops.contains_key(&head) {
         let learned = (shape != 0).then(|| escapes.learned.get(&(head, shape)).copied()).flatten();
+        let strict = room_held(owner);
         let verdict = learned.and_then(|learned| {
             let planned = learned.escaped.saturating_add(learned.transient).saturating_add(floor);
             let need = held.saturating_add(planned.max(learned.failed));
+            // A failed pass was refused with what others held then not given back: judged by that room.
+            let room = if held.saturating_add(learned.failed) > strict { strict } else { room };
             // What the last run held when refused counts as its working memory.
             let transient = learned.transient.max(learned.failed.saturating_sub(learned.escaped).saturating_sub(floor));
             (need > room).then(|| Verdict {
