@@ -191,8 +191,9 @@ cozy --json run "$here/inspect/inspect" --describe --on local > "$OUT/bound-desc
 
 step "a file uploaded by its digest, and one Calcifer does not hold"
 addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock") hex=$(sha256sum "$dir/still.png" | cut -c1-64)
-[ "$(curl -sS -o "$OUT/put.json" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" --data-binary "@$dir/still.png" "http://$addr/v1/files/sha256:$hex")" = 201 ] \
-  || check "PUT /v1/files/sha256:$hex is not 201: $(head -c 300 "$OUT/put.json")"
+code=$(curl -sS -o "$OUT/put.json" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" --data-binary "@$dir/still.png" "http://$addr/v1/files/sha256:$hex")
+# 200: the CLI sent it already, for the run above.
+{ [ "$code" = 201 ] || [ "$code" = 200 ]; } || check "PUT /v1/files/sha256:$hex is not 201 or 200: $(head -c 300 "$OUT/put.json")"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" "http://$addr/v1/files/sha256:$hex")" = 200 ] || check "HEAD of an uploaded file is not 200"
 if (cd "$dir" && cell bound-digest "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$hex" folder=./folder label=digest); then
   grep -qE "\"still_bytes\": *$size" "$OUT/bound-digest.ndjson" || check "bound-digest: the run was not given the uploaded picture"

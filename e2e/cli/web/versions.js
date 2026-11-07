@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until, importYaml, yamlOf, rowsOf } = require('./page');
+const { calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -90,8 +90,8 @@ async function died(why) {
     writeFileSync(path, png(shade, width, height));
     return path;
   };
-  const imported = (name, shade) => post(`${at}/imports`, { source: picture(shade), name, exact: true, at: { x: 100 + shade * 4, y: 100 } });
-  const joined = (name, shade, width, height) => post(`${at}/assets/${name}/versions`, { source: picture(shade, width, height) });
+  const imported = async (name, shade) => post(`${at}/imports`, { source: await upload(held?.token, picture(shade)), name, exact: true, at: { x: 100 + shade * 4, y: 100 } });
+  const joined = async (name, shade, width, height) => post(`${at}/assets/${name}/versions`, { source: await upload(held?.token, picture(shade, width, height)) });
 
   // Mentions, in an export a hand edited and imported: its words kept whatever comes. Its comments go: the project holds values (cl-803).
   const comments = ['      Two lines,', '      kept as they are.'];
@@ -658,7 +658,7 @@ async function died(why) {
     if (sends.length && !sends.includes('video')) {
       const reelAt = join(pictures, 'reel.mp4');
       writeFileSync(reelAt, MP4);
-      await post(`${at}/imports`, { source: reelAt, name: 'reel', exact: true, at: { x: 100, y: 900 } });
+      await post(`${at}/imports`, { source: await upload(held?.token, reelAt), name: 'reel', exact: true, at: { x: 100, y: 900 } });
       await box('reel').waitFor();
       await page.keyboard.press('f');
       await page.waitForTimeout(400);

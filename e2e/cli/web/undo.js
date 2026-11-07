@@ -12,7 +12,7 @@ const { execSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until, rowsOf, yamlOf } = require('./page');
+const { calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until, rowsOf, upload, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -106,9 +106,9 @@ function check(name, ok, detail) {
     writeFileSync(path, png(shade));
     return path;
   };
-  const imported = (name, shade, x, y) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: picture(shade), name, exact: true, at: { x, y } }) });
+  const imported = async (name, shade, x, y) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(shade)), name, exact: true, at: { x, y } }) });
   await imported('shot', 10, 80, 120);
-  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: picture(20) }) });
+  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(20)) }) });
   await imported('red', 30, 480, 120);
   await imported('green', 40, 880, 120);
   await imported('spare', 50, 1280, 120);

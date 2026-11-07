@@ -3554,8 +3554,10 @@ step "a project: thumbnails, and what reading a project gives"
 local T=http://$ADDR/v1/projects/$ID/thumbs thumb
 ffmpeg -v error -y -f lavfi -i "color=c=red@0.5:size=1024x512,format=rgba" -frames:v 1 "$OUT/alpha.png"
 ffmpeg -v error -y -f lavfi -i "sine=frequency=330:duration=2" "$OUT/sound.wav"
-name=$(jq -nc --arg s "$OUT/alpha.png" '{source: $s, name: "alpha"}' | api -X POST -d @- "http://$ADDR/v1/projects/$ID/imports" | jq -r .sha256)
-hash=$(jq -nc --arg s "$OUT/sound.wav" '{source: $s, name: "sound"}' | api -X POST -d @- "http://$ADDR/v1/projects/$ID/imports" | jq -r .sha256)
+# A client's file goes by content: sent, then imported by its hash.
+for file in alpha.png sound.wav; do api -o /dev/null -X PUT --data-binary "@$OUT/$file" "http://$ADDR/v1/files/sha256:$(sha "$OUT/$file")"; done
+name=$(jq -nc --arg s "sha256:$(sha "$OUT/alpha.png")" '{source: $s, name: "alpha"}' | api -X POST -d @- "http://$ADDR/v1/projects/$ID/imports" | jq -r .sha256)
+hash=$(jq -nc --arg s "sha256:$(sha "$OUT/sound.wav")" '{source: $s, name: "sound"}' | api -X POST -d @- "http://$ADDR/v1/projects/$ID/imports" | jq -r .sha256)
 api -o "$OUT/thumb.png" -D "$OUT/thumb.hdr" "$T/$name?w=128" || true
 { grep -qi '^content-type: image/png' "$OUT/thumb.hdr" && grep -qi 'immutable' "$OUT/thumb.hdr" && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,pix_fmt -of csv=p=0 "$OUT/thumb.png")" = '128,rgba' ]; } \
   || check "a picture's thumbnail: $(cat "$OUT/thumb.hdr"); $(ffprobe -v error -select_streams v:0 -show_entries stream=width,pix_fmt -of csv=p=0 "$OUT/thumb.png" 2>&1)"

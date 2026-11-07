@@ -220,6 +220,15 @@ const boxLog = (page) => page.evaluate(() => ({
 /** This computer's Calcifer, where its lock ($HOLDER) says: what serves each cell's page, unless $PAGE_ORIGIN does. */
 const calcifer = () => process.env.PAGE_ORIGIN ?? `http://${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).address}`;
 
+/** The file at `path` held by Calcifer, sent as a client sends every file (`PUT /v1/files`, cl-817): its `sha256:`. */
+async function upload(token, path) {
+  const bytes = readFileSync(path);
+  const digest = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
+  const answer = await fetch(`${calcifer()}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, body: bytes });
+  if (!answer.ok) throw new Error(`PUT /v1/files/${digest}: ${answer.status} ${await answer.text()}`);
+  return digest;
+}
+
 /** `page`, signed in as a person is: `cozy open --no-open`, and its link at once. Its code lives 60 s, so a cell asks for it with its browser
  *  up: asked for before a slow runner launched one, a code had run out by the time the page redeemed it (42113601659). */
 function signIn(page, options) {
@@ -314,4 +323,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, rowsOf, settled, signIn, summary, until, watchBoxes, wav, yamlOf };
+module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, renderOf, rowsOf, settled, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
