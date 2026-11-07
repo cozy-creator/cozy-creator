@@ -218,11 +218,10 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     let hub = spec.hub.take();
     let providers = spec.providers.take();
     let tensorfs = spec.tensorfs.take();
-    // What the run is, not how it reaches its sources: a spec re-sent with other access,
-    // another catalog revision or a reformatted payload names the same run.
+    // What the run is, not how it reaches its sources: a spec re-sent with other access or a
+    // reformatted payload names the same run.
     let identity_digest = {
         let mut identity = spec.clone();
-        identity.catalog_revision.clear();
         identity.payload = None;
         identity.hub = hub.as_ref().map(|hub| v1::HubAccess {
             origin: hub.origin.trim_end_matches('/').into(),
@@ -301,7 +300,6 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
             .unwrap_or_default(),
         weights_destination: spec.weights_destination,
         owner: spec.owner,
-        catalog_revision: spec.catalog_revision,
         application: String::new(),
         digest: identity_digest,
         journaled,

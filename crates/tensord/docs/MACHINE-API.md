@@ -65,8 +65,10 @@ warning each). A model-only upload's lane labels the commit it makes.
   `manifest` names a commit (or a header) by hash: one the capability reads, or one the machine
   holds. A weights output the Runtime writes, the machine uploads itself as a commit of the run's
   `weights_destination` in the output's lane. Name
-  resolutions and held preparations are kept per `catalog_revision`, so a warm run reads nothing
-  at a Hub and a revision the caller moved resolves once more; there is no TTL guess or forget verb.
+  resolutions and held preparations are kept, so a warm run never waits on a Hub; one older than
+  10 minutes is read again in the background by the run that uses it, and an answer that moved
+  (a publish, yank or new lane) makes the preparations held under the old one again. There is no
+  forget verb.
 - **List** is deleted. Status shows live runs; history is the CLI's own records plus a run's events.
 - **Update** is a run of `kind: update`. It stages and verifies a software cohort, activates it at
   measured idle and keeps the known-good install for rollback. The rental keeps its downloaded

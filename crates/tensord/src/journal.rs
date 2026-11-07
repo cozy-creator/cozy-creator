@@ -505,7 +505,8 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS native_outputs(actor TEXT NOT NULL,owner TEXT NOT NULL,source BLOB NOT NULL,PRIMARY KEY(actor,owner));
             CREATE TABLE IF NOT EXISTS triage(execution INTEGER PRIMARY KEY REFERENCES executions(id),record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS resolutions(actor TEXT NOT NULL,key TEXT NOT NULL,package TEXT NOT NULL,preparation TEXT NOT NULL,PRIMARY KEY(actor,key));
-            CREATE TABLE IF NOT EXISTS names(name TEXT PRIMARY KEY,revision TEXT NOT NULL,named TEXT NOT NULL);
+            DROP TABLE IF EXISTS names;
+            CREATE TABLE IF NOT EXISTS held_names(name TEXT PRIMARY KEY,named TEXT NOT NULL,read_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS objects(actor TEXT NOT NULL,sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(actor,sha256));
             CREATE TABLE IF NOT EXISTS object_uses(sha256 TEXT PRIMARY KEY,length INTEGER NOT NULL,used_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS run_objects(execution INTEGER NOT NULL REFERENCES executions(id),sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sha256));
@@ -699,17 +700,34 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
-    /// What a Hub named `name` (its origin, a repository, release and lane) under the caller's
-    /// catalog `revision` (th-245), or None. One row per name: a moved revision replaces it.
-    pub fn named(&self, name: &str, revision: &str) -> io::Result<Option<String>> {
+    /// What a Hub named `name` (its origin, a repository, release and lane: th-245), and when it
+    /// was read there, or None.
+    pub fn named(&self, name: &str) -> io::Result<Option<(String, i64)>> {
         self.connection
-            .query_row("SELECT named FROM names WHERE name=?1 AND revision=?2", params![name, revision], |r| r.get(0))
+            .query_row("SELECT named,read_ms FROM held_names WHERE name=?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()
             .map_err(db_error)
     }
-    pub fn bind_named(&mut self, name: &str, revision: &str, named: &str) -> io::Result<()> {
+    /// `name` as read now.
+    pub fn bind_named(&mut self, name: &str, named: &str) -> io::Result<()> {
         self.connection
-            .execute("INSERT OR REPLACE INTO names(name,revision,named) VALUES(?1,?2,?3)", params![name, revision, named])
+            .execute("INSERT OR REPLACE INTO held_names(name,named,read_ms) VALUES(?1,?2,?3)", params![name, named, timestamp()])
+            .map_err(db_error)?;
+        Ok(())
+    }
+    /// This machine's catalog: how many times a held name has resolved anew. Held preparations
+    /// are kept per catalog.
+    pub fn catalog(&self) -> io::Result<u64> {
+        let catalog: Option<String> = self.connection
+            .query_row("SELECT value FROM machine_metadata WHERE key='catalog'", [], |r| r.get(0))
+            .optional()
+            .map_err(db_error)?;
+        Ok(catalog.and_then(|c| c.parse().ok()).unwrap_or(0))
+    }
+    pub fn move_catalog(&mut self) -> io::Result<()> {
+        let next = (self.catalog()? + 1).to_string();
+        self.connection
+            .execute("INSERT OR REPLACE INTO machine_metadata(key,value) VALUES('catalog',?1)", [next])
             .map_err(db_error)?;
         Ok(())
     }

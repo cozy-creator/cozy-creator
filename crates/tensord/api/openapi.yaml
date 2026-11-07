@@ -792,7 +792,6 @@ components:
           $ref: '#/components/schemas/RunSpec'
           default:
             attention_kernel: ''
-            catalog_revision: ''
             entrypoint: ''
             gpus: 0
             inputs: []
@@ -805,12 +804,6 @@ components:
       type: object
       properties:
         attention_kernel: {type: string}
-        catalog_revision:
-          type: string
-          description: >-
-            The catalog revision the caller made its choices under (th-245): a held resolution is reused only
-            under the same one, so a publish, yank, bind or retarget the caller knows of resolves once more at
-            the Hub.
         entrypoint: {type: string}
         gpus:
           type: integer

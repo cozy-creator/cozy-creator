@@ -292,10 +292,6 @@ pub struct RunSpec {
     /// Objects uploaded with `PUT /v1/objects`, bound to payload fields.
     pub inputs: Vec<InputFile>,
     pub models: Vec<ModelChoice>,
-    /// The catalog revision the caller made its choices under (th-245): a held resolution is
-    /// reused only under the same one, so a publish, yank, bind or retarget the caller knows of
-    /// resolves once more at the Hub.
-    pub catalog_revision: String,
     pub attention_kernel: String,
     /// org/name: the requester's repository for the call's weights outputs, or a warm run's
     /// source model.
