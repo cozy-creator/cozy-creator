@@ -199,6 +199,10 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     boot.at("cache");
     let machine = Machine::new(store.clone(), layout.cache.as_deref())?;
     boot.at("journal");
+    // Before the sweep: earlier executor scopes are found where this machine's go.
+    if mode == protocol::config::MachineMode::Shared {
+        contain(&engine);
+    }
     let service = crate::service::Service::open(&engine, &generations, 1)?;
     // A short store admit frees the machine's garbage before the store evicts a model.
     let reclaimer = Arc::downgrade(&service);
@@ -522,3 +526,27 @@ fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::mach
         }
     });
 }
+
+/// A shared machine and its executors under one memory limit the kernel keeps, below what this
+/// computer's other programs need (`platform::contain::follow`); the host rule follows it from
+/// here. Where the host gives no such cgroup: one warning, and only the in-process limits hold.
+fn contain(engine: &std::path::Path) {
+    use platform::contain::{self, host_memory};
+    let contained = contain::contain(&contain::namespace(engine))
+        .and_then(|root| match contain::follow(host_memory::reserve()) {
+            Some(Ok(budget)) => Ok((root, budget)),
+            Some(Err(error)) => Err(format!("its limit was not written: {error}")),
+            None => Err("not contained".into()),
+        });
+    match contained {
+        Ok((root, budget)) => tracing::info!(
+            "memory: this machine and its executors are contained in {} at {:.1} GiB ({:.1} GiB kept for the computer's other programs)",
+            root.display(), budget.max as f64 / GIB, budget.reserve as f64 / GIB
+        ),
+        Err(why) => tracing::warn!(
+            "memory: the kernel does not contain this machine ({why}); a run that outgrows the computer is stopped only by the machine's own limits"
+        ),
+    }
+}
+
+const GIB: f64 = (1u64 << 30) as f64;

@@ -772,6 +772,15 @@ fn parent_app(held: &HeldGeneration) -> App {
     (held.record.identity.clone(), held.record.application.clone())
 }
 
+/// What a GPU that drives a display keeps free at the driver beside a run, past what varena
+/// samples (the display's standing use, the run's context): as much again as the display's
+/// programs use now (a browser, a second monitor), and [`DISPLAY_MARGIN`] for the driver's own
+/// allocations (the 10-13 freeze logged NV_ERR_NO_MEMORY on shadow fault buffers), never under
+/// [`DISPLAY_FLOOR`]. An executor's own outside bytes grew about 50 MiB past a fresh process's
+/// 464 MiB on a 4090 (runs 40835-40850); varena keeps its 128 MiB slack on top.
+pub const DISPLAY_MARGIN: u64 = 256 << 20;
+pub const DISPLAY_FLOOR: u64 = 384 << 20;
+
 /// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
     host_memory::cache_room() >= PARENT_BYTES
@@ -906,6 +915,8 @@ struct Device {
     /// Its own view of that ledger, for asks on behalf of an executor outside it.
     #[cfg(target_os = "linux")]
     asking: Option<Mutex<varena_ledger::Table>>,
+    /// Open while it drove a display at the pool's start: its use is read for each request.
+    display: Option<platform::gpu::Device>,
 }
 
 impl Device {
@@ -987,6 +998,10 @@ impl Pool {
                 ledger: open().map(Arc::new),
                 #[cfg(target_os = "linux")]
                 asking: open().map(Mutex::new),
+                display: memory::row(entry, &config.inventory)
+                    .and_then(|row| platform::gpu::Device::open(&row.device_uuid).ok())
+                    .filter(|device| device.display_active().unwrap_or(false))
+                    .inspect(|_| tracing::info!("GPU {entry} drives a display: each run keeps free what it uses plus {} MiB", DISPLAY_MARGIN >> 20)),
             }
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
@@ -1381,6 +1396,22 @@ impl Pool {
                 .map(|member| parent_app(&member.held)).collect();
             self.end_idle_parents(|key| !members.contains(key));
         }
+    }
+    /// The limit of each GPU of `lane` that drove a display at the pool's start, in its order:
+    /// its total less what the display keeps free ([`DISPLAY_MARGIN`]); empty when none does (a
+    /// pod, which reads nothing). Read at Start and again for each request.
+    fn display_limit(&self, lane: &str) -> Vec<u64> {
+        let limits: Vec<u64> = lane.split(',').map(|entry| {
+            let entry = entry.trim();
+            let Some(device) = self.devices.iter().find(|d| d.entry == entry).and_then(|d| d.display.as_ref()) else { return 0 };
+            let Some(gpu) = memory::row(entry, &self.config.inventory) else { return 0 };
+            let Ok(Some(used)) = device.display_use() else { return 0 };
+            let reserve = (used + DISPLAY_MARGIN).max(DISPLAY_FLOOR);
+            let limit = gpu.memory_bytes.saturating_sub(reserve);
+            tracing::debug!("GPU {entry} drives a display using {} MiB: a run uses at most {} of its {} MiB", used >> 20, limit >> 20, gpu.memory_bytes >> 20);
+            limit
+        }).collect();
+        if limits.iter().all(|&bytes| bytes == 0) { vec![] } else { limits }
     }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
@@ -2935,6 +2966,7 @@ impl Pool {
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
                     shared: false,
+                    display_limit: vec![],
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3372,6 +3404,7 @@ impl Pool {
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
                     shared: self.config.host.mode == HostMode::Shared,
+                    display_limit: self.display_limit(&lane),
                 }),
                 &mut callbacks,
             )?)?;
@@ -3601,6 +3634,7 @@ impl Pool {
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
                 weights,
+                display_limit: self.display_limit(&lane),
             })),
             &mut callbacks,
         );
@@ -3923,11 +3957,35 @@ fn with_end(error: io::Error, ended: &device_executor::Ended) -> io::Error {
     if !channel_lost(&error) {
         return error;
     }
-    let why = format!("the executor ended on its own ({})", ended.status);
+    #[cfg(unix)]
+    let oom = ended.oom_killed && std::os::unix::process::ExitStatusExt::signal(&ended.status) == Some(libc::SIGKILL);
+    #[cfg(not(unix))]
+    let oom = false;
+    let why = match oom {
+        true => host_out_of_memory(),
+        false => format!("the executor ended on its own ({})", ended.status),
+    };
     match refused(&error) {
         Some(_) => error,
         None if undelivered(&error) => io::Error::other(Undelivered(why)),
+        None if oom => io::Error::other(Refused { code: "host_out_of_memory".into(), detail: why }),
         None => io::Error::other(why),
+    }
+}
+
+/// Why the kernel killed an executor for host memory, in this machine's numbers.
+fn host_out_of_memory() -> String {
+    let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    match platform::contain::budget() {
+        Some(budget) => format!(
+            "the computer ran out of memory for this run: the kernel stopped its executor at this machine's \
+             {:.1} GiB limit, which keeps {:.1} GiB for the computer's other programs",
+            gib(budget.max), gib(budget.reserve)
+        ),
+        None => format!(
+            "the host ran out of memory for this run: the kernel stopped its executor at {:.1} GiB",
+            gib(u64::try_from(host_memory::read().bound).unwrap_or(0))
+        ),
     }
 }
 

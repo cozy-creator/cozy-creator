@@ -13,6 +13,11 @@ impl Scope {
         Err(Error::unsupported(Seam::Containment))
     }
 
+    /// Only Linux tells an OOM kill apart.
+    pub fn oom_killed(&self) -> bool {
+        false
+    }
+
     pub fn cgroup_relative(&self) -> Option<&str> {
         None
     }
@@ -49,4 +54,25 @@ pub fn stuck() -> Vec<super::Stuck> {
 
 pub fn all_stuck(_: &[crate::process::Birth]) -> bool {
     false
+}
+
+/// What a contained machine may use (Linux only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Budget {
+    pub max: u64,
+    pub reserve: u64,
+    pub used: u64,
+}
+
+/// Only Linux contains a machine in a cgroup of its own.
+pub fn contain(_: &str) -> std::result::Result<std::path::PathBuf, String> {
+    Err("no cgroup v2 on this system".into())
+}
+
+pub fn follow(_: u64) -> Option<std::io::Result<Budget>> {
+    None
+}
+
+pub fn budget() -> Option<Budget> {
+    None
 }

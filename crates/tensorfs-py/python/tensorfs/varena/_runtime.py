@@ -154,8 +154,10 @@ class PhaseController:
 class Pages:
     """One GPU's host tier: weight pages in pinned host RAM, which TensorFS alone manages."""
 
-    def __init__(self, device: int, *, cap: int, headroom: int) -> None:
-        self._native = _ext._VarenaPages(device, cap, headroom)
+    def __init__(self, device: int, *, cap: int, headroom: int, shared: bool = False) -> None:
+        """`headroom`: host RAM left free on a dedicated machine. A shared one (a person's
+        computer) leaves what it keeps for its other programs, twice that while it stalls."""
+        self._native = _ext._VarenaPages(device, cap, headroom, shared)
 
     def pending(self) -> bool:
         """Whether pages wait for an idle executor to pin them."""
