@@ -81,26 +81,38 @@ def dispatch(owner: Any, module: Any, call: Any, args: Any, kwargs: Any) -> Any:
     return result
 
 
-_select = getattr(catch, "select", None)
+_site = getattr(vt, "Site", None)
 
 
-def select(device: int, key: str, menu: Any, stream: int, floor: int = 0) -> Any:
+def _trace(key: str, leaf: Any, mark: str | None = None) -> None:
     """Each split decision in order, run-length: [level, basis, calls]. `declared` after a site has
-    `measured` is a level that never ran (its trial); `refused` is the finest, chosen with no estimate."""
-    level, selection = _select(device, key, menu, stream, floor)
+    `measured` is a level that never ran (its trial); `unobserved` ran with no leaf."""
     request = catch.CURRENT.get()
-    if request is not None:
-        trace = _traces.setdefault(request.id, {}).setdefault(key, [])
-        mark = [level, selection["basis"] if selection else "refused"]
-        if trace and trace[-1][:2] == mark:
-            trace[-1][2] += 1
-        else:
-            trace.append([*mark, 1])
-    return level, selection
+    if request is None:
+        return
+    trace = _traces.setdefault(request.id, {}).setdefault(key, [])
+    basis = mark or (leaf.selection["basis"] if leaf.selection else "unobserved")
+    if trace and trace[-1][:2] == [leaf.level, basis]:
+        trace[-1][2] += 1
+    else:
+        trace.append([leaf.level, basis, 1])
 
 
-if _select is not None:  # v2's native selection
-    catch.select = select
+if _site is not None:  # v2's varena sites
+    _enter, _exit = _site.enter, vt.Leaf.exit
+
+    def enter(self: Any, **named: Any) -> Any:
+        leaf = _enter(self, **named)
+        _trace(self.key, leaf)
+        return leaf
+
+    def leave(self: Any, **named: Any) -> Any:
+        again = _exit(self, **named)
+        if again is not None:
+            _trace(self.site.key, again, "retry")
+        return again
+
+    _site.enter, vt.Leaf.exit = enter, leave
 loop.Loops.run, graphs._dispatch = run, dispatch
 if PRESS == "eager":
     loop._eligible = lambda ctx, steps, tensors: ((), "the gate's eager arm")
