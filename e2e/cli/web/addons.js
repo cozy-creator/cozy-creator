@@ -1,14 +1,12 @@
 // Checkpoints on boxes (Paul, 11-05), in a real browser on a real Calcifer: the explorer in the left panel lists the Hub's fine-tunes and LoRAs and fetches nothing; one
 // carried shows what takes it; dropped where it can't go, a toast says why and nothing changes; dropped where it can, a chip stands under the box at once, follows it, leaves
 // its size alone, keeps other boxes clear of it, and stays near one size at any zoom. An X takes it off, strength is behind More, a hand-written `lora:` or `models:` is a chip, and
-// the file keeps every comment and `|`. It names no model: what it drops comes from `GET /v1/models` and `GET /v1/tools`.
+// the export keeps its words and `|` (its comments go at the import: cl-803). It names no model: what it drops comes from `GET /v1/models` and `GET /v1/tools`.
 //   node addons.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $RENDER: a machine with a GPU, on which a box with a LoRA and a fine-tune
 // really renders, and what its run was asked and applied is read back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { readFileSync, writeFileSync } = require('fs');
-const { join } = require('path');
-const { calcifer, carry: carryTo, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, openCanvas, renderOf, settled, until } = require('./page');
+const { calcifer, carry: carryTo, signIn, boxOf, closeBox, STEP_MS, importYaml, lastLook, launch, lookAt, noStall, openCanvas, renderOf, settled, until, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -60,8 +58,8 @@ async function died(why) {
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  const yamlAt = join(folder, 'project.yaml');
-  const yaml = () => readFileSync(yamlAt, 'utf8');
+  // The project as `cozy project export` writes it (cl-803: its state is project.db).
+  const yaml = () => yamlOf(folder);
   const box = (name) => boxOf(page, name);
 
   const tools = (await api('/v1/tools')).body.tools.filter((tool) => tool.model?.family);
@@ -84,8 +82,9 @@ async function died(why) {
   const [fineA, fineB] = fines(mine.model.family);
   const word = (model) => model.model.split('/').pop();
 
-  const comments = ['# Mine, and kept.', '  # What other makes.', '    # Its look.', '    instructions: |', '      A small boat,', '      on still water.'];
-  writeFileSync(yamlAt, `# Mine, and kept.
+  // A hand's file, imported: its words and `|` outlast all of this, and its comments go at the import (cl-803), as web-nodes reads it.
+  const words = ['    instructions: |', '      A small boat,', '      on still water.'];
+  importYaml(folder, `# Mine, and kept.
 version: 4
 
 assets:
@@ -115,7 +114,7 @@ assets:
 `);
   await box('hand').waitFor();
   await box('shot').waitFor();
-  const kept = () => comments.filter((line) => !yaml().includes(line));
+  const kept = () => words.filter((line) => !yaml().includes(line));
   const chips = (name) => box(name).locator('.add-on:not(.tool)');
   const toast = (words) => until(`the toast ${words}`, () => page.locator('.notes, .note-list, [role=status]').allInnerTexts().then((all) => all.join(' | ')), (all) => all.includes(words)).then(() => true, (why) => String(why));
 
@@ -222,7 +221,7 @@ assets:
   await page.mouse.up();
   await until('the other in the file', () => Promise.resolve(yaml()), (text) => text.includes(`ref: ${fineB.model}`) && text.split('shot:')[1].split('hand:')[0].indexOf(fineA.model) < 0);
   check('fine_tune_replaces', (await box('shot').locator('.add-on.fine-tune').count()) === 1 && (await box('shot').locator('.add-on.fine-tune').innerText()).includes(word(fineB)));
-  check('comments_and_blocks_stay', kept().length === 0, kept());
+  check('words_and_blocks_stay', kept().length === 0, kept());
   await shot('chips');
 
   // It's what the project reads.
@@ -401,7 +400,7 @@ assets:
   await box('hand').locator(`[aria-label="Take ${word(loraC)} off hand"]`).click();
   await until('off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraC.model));
   check('hand_written_rest_stays', yaml().includes(`${mine.model.slot}: {ref: ${fineB.model}}`) || yaml().split('hand:')[1].includes(fineB.model), yaml());
-  check('comments_outlast_it', kept().filter((line) => line !== '    # Its look.').length === 0, kept());
+  check('words_outlast_it', kept().length === 0, kept());
 
   await list('flowed').hover();
   await box('flowed').locator('[aria-label="Take wushu off flowed"]').click();
@@ -448,7 +447,7 @@ assets:
     const [lora] = loras(still.model.family);
     const fine = fines(still.model.family).find((model) => !still.model.default?.startsWith(`${model.model}@`));
     seen.render = { tool: still.id, local: Boolean(still.local), lora: lora.model, fine: fine.model };
-    writeFileSync(yamlAt, `${yaml().trimEnd()}\n  still:\n    tool: ${still.id}\n    instructions: A red boat on still water, ink on paper.\n`);
+    importYaml(folder, `${yaml().trimEnd()}\n  still:\n    tool: ${still.id}\n    instructions: A red boat on still water, ink on paper.\n`);
     await box('still').waitFor();
     await page.keyboard.press('f');
     await page.waitForTimeout(500);
