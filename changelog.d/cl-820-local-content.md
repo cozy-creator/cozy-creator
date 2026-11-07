@@ -1,0 +1,1 @@
+Local code: an edit to its code alone reuses its environment on the machine (only a change to its lock, pyproject or path dependencies builds one), and TensorD refuses a manifest that names a host path (`local_source_path_refused`): local code reaches every machine by content.
