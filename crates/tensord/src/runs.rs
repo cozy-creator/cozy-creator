@@ -2,8 +2,8 @@
 //! once and prepares inside itself: its code installs, its models resolve at the run's Hub and
 //! download, and each stage is the run's progress. Its Hub capability lives only in memory
 //! (`hub::Capability`), as do its provider tokens, for the run's life (its children prepare with
-//! them). A restart before it completes prepares it again, from its kept spec or, sent with tokens,
-//! as its controller sends it again (`journal::interrupt_preparations`).
+//! them). A restart before it completes prepares it again from its kept spec; one sent with access
+//! waits, `needs_access`, until its sender sends it again (`api::machine_runs::resume`).
 use crate::{
     api::domain,
     call_memo::{self, Memo},
@@ -90,8 +90,8 @@ pub struct Spec {
     pub application: String,
     /// The spec's identity (its access excluded): a resubmitted id must carry the same.
     pub digest: String,
-    /// The spec as sent, kept in the journal while it prepares so a restart prepares it again;
-    /// empty for one that cannot (a child run, provider tokens, which live in memory only).
+    /// The spec as sent less its access, kept in the journal while it prepares so a restart
+    /// prepares it again; empty for a child run.
     pub journaled: Vec<u8>,
 }
 

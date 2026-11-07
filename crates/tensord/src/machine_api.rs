@@ -105,6 +105,11 @@ impl NativeBackend {
                 {
                     "preparing"
                 }
+                State::Queued
+                    if record.waiting_reason.as_deref() == Some(crate::journal::NEEDS_ACCESS) =>
+                {
+                    "needs_access"
+                }
                 State::Queued => "queued",
                 // The worker protocol has no "starting": an attempt is queued until it runs.
                 State::Starting => "queued",

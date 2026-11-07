@@ -513,7 +513,8 @@ pub struct RunState {
     pub id: String,
     /// This machine's run number.
     pub number: u64,
-    /// queued, preparing, running, succeeded, failed, canceled
+    /// queued, preparing, needs_access (a restart interrupted its preparation: the same id and spec
+    /// sent again bring its access), running, succeeded, failed, canceled
     pub state: String,
     /// The log's head.
     pub sequence: u64,

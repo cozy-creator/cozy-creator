@@ -869,7 +869,7 @@ components:
             When it began executing (`running`), Unix ms: its time counts from here, never its queue's. 0
             before it does.
           minimum: 0
-        state: {type: string, description: 'queued, preparing, running, succeeded, failed, canceled'}
+        state: {type: string, description: 'queued, preparing, needs_access (a restart interrupted its preparation: the same id and spec sent again bring its access), running, succeeded, failed, canceled'}
         waiting: {type: string, description: 'Why a queued run waits, for people.'}
         waiting_for:
           type: array
