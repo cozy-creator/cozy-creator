@@ -599,13 +599,16 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
     let by = by_of(&headers);
     let mut done = vec![];
     let mut stopped = None;
+    // `walking` before any transaction, as every writer takes them: a rename put back follows a walk going.
+    let walking = project.walking.lock().expect("walking lock");
+    let follows = *walking;
     for entry in chosen {
         // Each entry one transaction: all of it put back, and marked so, or none of it.
         let stepped = project.folder.act(|| {
             if let Some(what) = moved(&project, &entry, way) {
                 return Err(conflict(&book, &entry, &what.0, way, &what.1).0);
             }
-            taken(&api, &project, &id, &entry, way).map_err(|Refusal(why)| why)?;
+            taken(&api, &project, &id, &entry, way, follows).map_err(|Refusal(why)| why)?;
             let mut marked = entry.clone();
             marked.undone = (way == Way::Back).then(|| Undone { at_ms: now_ms(), by: by.clone() });
             project.folder.write_ops(vec![marked.row()], vec![])?;
@@ -627,6 +630,7 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
             }
         }
     }
+    drop(walking);
     for name in done.iter().flat_map(|entry| &entry.names) {
         project.walker.lock().expect("walker lock").moved(name);
     }
@@ -684,12 +688,12 @@ fn chosen(entries: &[Entry], asked: &HistoryStep, way: Way) -> Result<Option<Vec
 }
 
 /// `entry` taken back or done again, each of its changes in turn, inside the act its step is.
-fn taken(api: &Arc<Api>, project: &Arc<Project>, id: &str, entry: &Entry, way: Way) -> Result<(), Refusal> {
+fn taken(api: &Arc<Api>, project: &Arc<Project>, id: &str, entry: &Entry, way: Way, follows: bool) -> Result<(), Refusal> {
     let order: Vec<&Change> = match way {
         Way::Back => entry.changes.iter().rev().collect(),
         Way::Forth => entry.changes.iter().collect(),
     };
-    order.into_iter().try_for_each(|change| put(api, project, id, change, way))
+    order.into_iter().try_for_each(|change| put(api, project, id, change, way, follows))
 }
 
 fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -> Refusal {
@@ -786,7 +790,7 @@ fn took(lock: &Lock, name: &str, number: u32) -> Took {
 }
 
 /// `change` made `way`: the same writes the route that made it makes.
-fn put(api: &Arc<Api>, project: &Arc<Project>, id: &str, change: &Change, way: Way) -> Result<(), Refusal> {
+fn put(api: &Arc<Api>, project: &Arc<Project>, id: &str, change: &Change, way: Way, follows: bool) -> Result<(), Refusal> {
     let folder = &project.folder;
     match change {
         Change::Asset { name, before, after } => {
@@ -814,7 +818,7 @@ fn put(api: &Arc<Api>, project: &Arc<Project>, id: &str, change: &Change, way: W
         }
         Change::Renamed { from, to } => {
             let (from, to) = if way == Way::Back { (to, from) } else { (from, to) };
-            super::rename_now(project, id, Rename { from: from.clone(), to: to.clone() }).map(drop)
+            super::renamed_under(project, id, Rename { from: from.clone(), to: to.clone() }, follows).map(drop)
         }
     }
 }

@@ -1546,11 +1546,17 @@ async fn rename(
 
 /// Asset `from` called `to`, as `POST rename` has it, in one transaction.
 fn rename_now(project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
+    // Under `walking`, as a walk's end is: it is over, or it follows this. Taken before the transaction, as every writer takes it.
+    let walking = project.walking.lock().expect("walking lock");
+    let done = renamed_under(project, id, asked, *walking);
+    drop(walking);
+    done
+}
+
+/// `rename_now` with `walking` held by the caller, whose walk `follows` is going.
+fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool) -> Result<Renamed, Refusal> {
     format::named(&asked.to).map_err(Refusal)?;
     let folder = &project.folder;
-    // Under `walking`, as a walk's end is: it is over, or it follows this.
-    let walking = project.walking.lock().expect("walking lock");
-    let follows = *walking;
     let done = folder.act(|| {
         let refuse = |kind, code, said: String| Error::new(kind, code, said);
         let written = folder.written()?;
@@ -1615,7 +1621,6 @@ fn rename_now(project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed
         history::renamed(folder, &from, &to);
         Ok(Renamed { from, to, versions })
     });
-    drop(walking);
     done.map_err(Refusal)
 }
 
