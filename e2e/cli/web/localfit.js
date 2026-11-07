@@ -3,13 +3,12 @@
 // rented GPU would do. Render here renders, and is kept by Calcifer: the next Render, and one after a reload, don't ask. Rent a GPU opens Rent with
 // the card the Hub places the tool on chosen, and renders nothing. Render all asks once, on its own control. The CLI says the same line once, as
 // a warning, and goes on, with no --on as with --on local. With a rental held nothing asks: release-gate/sessions/render-placement.sh.
-//   node localfit.js <sign-in link from `cozy open --no-open`>
+//   node localfit.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as nodes.js; $ALONE: on a shared computer, so it runs nothing. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { execFile } = require('child_process');
-const { writeFileSync } = require('fs');
+const { execFile, execFileSync } = require('child_process');
 const { join } = require('path');
-const { boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, STEP_MS, until, watchBoxes } = require('./page');
+const { boxOf, calcifer, closeBox, importYaml, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -27,8 +26,7 @@ const finish = (code) => {
 };
 
 (async () => {
-  const link = process.argv[2];
-  const base = new URL(link).origin;
+  const base = calcifer();
   const browser = await launch(playwright);
   const page = await (await browser.newContext({ viewport: { width: 1600, height: 1100 } })).newPage();
   lookAt(page);
@@ -39,7 +37,7 @@ const finish = (code) => {
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
-  await page.goto(link);
+  await signIn(page);
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
@@ -69,11 +67,10 @@ const finish = (code) => {
   const fit = async (names) => (await api(`/v1/projects/${id}/fit`, { method: 'POST', body: JSON.stringify({ names }) })).body;
   const box = (name) => boxOf(page, name);
   const asking = (name) => box(name).locator('.status.asking');
-  // Render is with its words, and it may be showing what it made.
+  // Render is with its words: on a take, its + goes to them.
   const render = async (name) => {
     await openBox(page, name);
-    if (await box(name).locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box(name).locator('.take.add[aria-label="Its words"]').click();
-    await box(name).locator('button[aria-label=Render]').click();
+    await (await renderOf(page, name)).click();
   };
   // Asked, it would have said so by the time a render's Queued gives way to its run; a weightless one is quick, so this watches until it's made.
   const neverAsks = async (name, made) => {
@@ -85,10 +82,12 @@ const finish = (code) => {
     return !asked;
   };
 
-  // A still whose package's GPU function loads a model, and Qwen Image from the Hub. Neither has run here.
-  writeFileSync(join(folder, 'project.yaml'), `version: 3\nassets:\n  heavy:\n    tool: ${heavy}/heavy\n    instructions: a lantern in fog\n  kite:\n    tool: qwen-image-2/generate_turbo\n    instructions: a red kite over dunes\n`);
+  // A still whose tool composes a GPU function that loads a model, not yet rendered here. Named before it's run, it's read by PyPI's Runtime, which
+  // knows no tool; the install a run makes on this machine's Runtime takes its place, as tools.js primes its fixture.
+  execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
+  const primed = (await runsOf('heavy')).length;
+  importYaml(folder, `version: 4\nassets:\n  heavy:\n    tool: ${heavy}/heavy\n    instructions: a lantern in fog\n`);
   await box('heavy').waitFor();
-  await box('kite').waitFor();
 
   // 1. The first Render asks, on the box, and nothing renders.
   await render('heavy');
@@ -96,10 +95,14 @@ const finish = (code) => {
   const said = await asking('heavy').innerText();
   check('asks_on_the_box', /no GPU/.test(said) && /Render here/.test(said) && /Rent a GPU/.test(said), said);
   seen.line = said;
-  // Render leaves the box, as any Render does: what it asks is under it, where Queued would be, and nothing covers the canvas.
-  check('asks_under_the_box', (await box('heavy').locator('.rest-asking .status.asking').count()) === 1 && (await page.locator('dialog[open], [role=dialog]').count()) === 0);
+  // Render keeps the box open, on its words: what it asks is under them, where Queued would be, and nothing covers the canvas. Left, it's under
+  // the box at rest.
+  const overCanvas = () => page.locator('dialog[open], [role=dialog]').count();
+  check('asks_in_the_box', (await page.locator('.card.here[data-asset="heavy"] .here-under .status.asking').count()) === 1 && (await overCanvas()) === 0, await box('heavy').innerText());
+  await closeBox(page);
+  check('asks_under_the_box', (await box('heavy').locator('.rest-asking .status.asking').count()) === 1 && (await overCanvas()) === 0);
   await page.waitForTimeout(1000);
-  check('asking_renders_nothing', (await runsOf('heavy')).length === 0 && (await versions('heavy')) === 0, await runsOf('heavy'));
+  check('asking_renders_nothing', (await runsOf('heavy')).length === primed && (await versions('heavy')) === 0, await runsOf('heavy'));
   await shot('asks');
 
   // 2. Render here renders, and Calcifer keeps it.
@@ -119,7 +122,21 @@ const finish = (code) => {
   await render('heavy');
   check('reload_does_not_ask', await neverAsks('heavy', 3));
 
-  // 5. Rent a GPU opens Rent with the card the Hub places Qwen Image on, and renders nothing. Only if it asks: a runner can't hold its weights.
+  // 5. The CLI never asks: it says the line once, as a warning, and goes on. With no --on it sends what the page does, here only this computer.
+  const cli = (args) => new Promise((done) => execFile(COZY, ['project', '-p', folder, 'render', 'heavy', ...args], { encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
+  const warnedOf = (said) => (said.stderr.match(/warning: This computer has no GPU/g) ?? []).length;
+  const rendered = await versions('heavy');
+  const unnamed = await cli([]);
+  check('cli_unnamed_warns_once', warnedOf(unnamed) === 1 && unnamed.code === 0, { code: unnamed.code, stderr: unnamed.stderr.slice(-600) });
+  check('cli_unnamed_goes_on', (await versions('heavy')) === rendered + 1 && (await runsOf('heavy')).every((run) => run.machine === 'local'), await versions('heavy'));
+  const named = await cli(['--on', 'local']);
+  check('cli_warns_once', warnedOf(named) === 1 && named.code === 0, { code: named.code, stderr: named.stderr.slice(-600) });
+  check('cli_goes_on', (await versions('heavy')) === rendered + 2, await versions('heavy'));
+
+  // 6. Qwen Image from the Hub, as 0.22's tool list drops it. Rent a GPU opens Rent with the card the Hub places it on, and renders nothing.
+  // Only if it asks: a runner can't hold its weights.
+  importYaml(folder, `${yamlOf(folder).trimEnd()}\n  kite:\n    tool: qwen-image-2/image\n    instructions: a red kite over dunes\n`);
+  await box('kite').waitFor();
   const kiteFit = await fit(['kite']);
   const placed = kiteFit?.rent;
   seen.placed = placed;
@@ -141,9 +158,9 @@ const finish = (code) => {
     const chosen = await page.locator('.sku.chosen b').innerText();
     check('rent_has_it_chosen', chosen === placed.sku && page.url().includes(`rent=${placed.sku}`), { chosen, placed: placed.sku, url: page.url() });
     await shot('rent');
-  } else check('rent_has_it_chosen', false, 'the Hub placed no card for qwen-image-2/generate_turbo');
+  } else check('rent_has_it_chosen', false, 'the Hub placed no card for qwen-image-2/image');
   await page.waitForTimeout(1500);
-  check('rent_renders_nothing', (await runsOf('generate_turbo')).length === 0 && (await versions('kite')) === 0, await runsOf('generate_turbo'));
+  check('rent_renders_nothing', (await runsOf('image')).length === 0 && (await versions('kite')) === 0, await runsOf('image'));
   await page.goBack();
   await closeBox(page);
 
@@ -157,18 +174,8 @@ const finish = (code) => {
   await shot('render-all-asks');
   await all.locator('button:has-text("Rent a GPU")').click();
   await page.waitForTimeout(1500);
-  check('render_all_rent_renders_nothing', (await versions('heavy')) === before && (await runsOf('generate_turbo')).length === 0);
+  check('render_all_rent_renders_nothing', (await versions('heavy')) === before && (await runsOf('image')).length === 0);
   await page.goBack();
-
-  // 6. The CLI never asks: it says the line once, as a warning, and goes on. With no --on it sends what the page does, here only this computer.
-  const cli = (args) => new Promise((done) => execFile(COZY, ['project', '-p', folder, 'render', 'heavy', ...args], { encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
-  const warnedOf = (said) => (said.stderr.match(/warning: This computer has no GPU/g) ?? []).length;
-  const unnamed = await cli([]);
-  check('cli_unnamed_warns_once', warnedOf(unnamed) === 1 && unnamed.code === 0, { code: unnamed.code, stderr: unnamed.stderr.slice(-600) });
-  check('cli_unnamed_goes_on', (await versions('heavy')) === before + 1 && (await runsOf('heavy')).every((run) => run.machine === 'local'), await versions('heavy'));
-  const named = await cli(['--on', 'local']);
-  check('cli_warns_once', warnedOf(named) === 1 && named.code === 0, { code: named.code, stderr: named.stderr.slice(-600) });
-  check('cli_goes_on', (await versions('heavy')) === before + 2, await versions('heavy'));
 
   check('no_page_errors', errors.length === 0, errors);
   check('ran', true);
