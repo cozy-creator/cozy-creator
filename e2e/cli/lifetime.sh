@@ -121,3 +121,93 @@ if launch halted silent seconds:=600; then
   echo "halted: the update said $(jq -c .status.update "$OUT/halted.machine.json") until run $n was canceled, then activated"
 fi
 }
+
+# kept_restore <gate> <config> <saved config>: the gate open, config.toml as it was, and Calcifer started on it.
+kept_restore() {
+  touch "$1"
+  if [ -f "$3" ]; then cp "$3" "$2"; else rm -f "$2"; fi
+  systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
+}
+# said <log> <run id> <words>: whether a line of the log names the run and says the words.
+said() { [ -n "$2" ] && awk -v id="$2" -v words="$3" 'index($0, id) && index($0, words) { found = 1 } END { exit !found }' "$1"; }
+
+# kept_preparing: a run accepted with access survives its machine's restart during its preparation (T4). Access stays
+# off the machine's disk (a provider token here; a Hub capability alike): the machine keeps the run as needs_access,
+# its sender's reattach sends that access again, and the same run prepares on and completes. Before, the machine
+# forgot such a run and Calcifer sent it again as a new one; any other sender found it gone (run_not_found).
+# Its build backend holds the run in its preparation (installing) until the cell opens its gate.
+kept_preparing() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a run with access survives a machine restart during its preparation"
+local dir=$OUT/kept/kept-gate gate=$OUT/kept/open config=$HOME/.cozy/config.toml n id
+mkdir -p "$dir"
+sed "s/words=len(payload.text.split())/words=7/" "$here/script/words.py" > "$dir/kept_gate.py"
+sed "s#@GATE@#$gate#" > "$dir/gate.py" <<'PY'
+"""hatchling's build, once the cell opens its gate: the run waits in its preparation until then."""
+import pathlib
+import time
+
+from hatchling import build as _hatchling
+from hatchling.build import build_sdist, get_requires_for_build_editable, get_requires_for_build_sdist, get_requires_for_build_wheel  # noqa: F401
+
+
+def _gate():
+    while not pathlib.Path("@GATE@").exists():
+        time.sleep(0.2)
+
+
+def build_wheel(*args, **kwargs):
+    _gate()
+    return _hatchling.build_wheel(*args, **kwargs)
+
+
+def build_editable(*args, **kwargs):
+    _gate()
+    return _hatchling.build_editable(*args, **kwargs)
+PY
+cat > "$dir/pyproject.toml" <<'TOML'
+[project]
+name = "kept-gate"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.30", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "kept_gate:app"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "gate"
+backend-path = ["."]
+
+[tool.hatch.build.targets.wheel]
+only-include = ["kept_gate.py"]
+TOML
+# Every run Calcifer sends carries the token from its next start. config.toml is restored however the cell ends,
+# a `fail` or an error under `set -e` too.
+[ -f "$config" ] && cp "$config" "$OUT/kept/config.toml"
+trap "kept_restore '$gate' '$config' '$OUT/kept/config.toml'" EXIT
+echo 'huggingface_token = "hf_e2e_kept_preparing"' >> "$config"
+systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
+n=$(run_submit "$OUT" kept run "$dir" "text=kept $RANDOM" --on local)
+if [ -z "$n" ]; then
+  check "kept: the run never began: $(tail -c 300 "$OUT/kept.err")"
+else
+  for _ in $(seq 300); do grep -qE '"stage": *"installing kept' "$OUT/kept.ndjson" && break; sleep 1; done
+  grep -qE '"stage": *"installing kept' "$OUT/kept.ndjson" || check "kept: run $n never held in its install"
+  machine_stop || check "kept: the local machine did not stop"
+  touch "$gate"
+  machine_ready
+  run_wait "$OUT" kept || true
+  id=$(run_get "$OUT" kept .id)
+  J '.status == "completed"' "$OUT/kept.json" || check "kept: run $n is $(jq -c '[.status, .reason]' "$OUT/kept.json"), not completed"
+  grep -q '"words": *7\b' "$OUT/kept.ndjson" || check "kept: run $n's reply is not its own code's"
+  cozy machine logs local --lines 5000 > "$OUT/kept.tensord.log" || check "kept: machine logs local failed"
+  said "$OUT/kept.tensord.log" "$id" needs_access || check "kept: the restarted machine did not keep run $n as needs_access"
+  cozy machine logs local calcifer --lines 5000 > "$OUT/kept.calcifer.log" || check "kept: machine logs local calcifer failed"
+  said "$OUT/kept.calcifer.log" "$id" "its access sent again" || check "kept: Calcifer did not send run $n's access again"
+  echo "kept: run $n ($id) was kept across the restart as needs_access, took its access again and completed"
+fi
+trap - EXIT
+kept_restore "$gate" "$config" "$OUT/kept/config.toml"
+}

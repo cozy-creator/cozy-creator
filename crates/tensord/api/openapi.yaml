@@ -792,7 +792,6 @@ components:
           $ref: '#/components/schemas/RunSpec'
           default:
             attention_kernel: ''
-            catalog_revision: ''
             entrypoint: ''
             gpus: 0
             inputs: []
@@ -805,12 +804,6 @@ components:
       type: object
       properties:
         attention_kernel: {type: string}
-        catalog_revision:
-          type: string
-          description: >-
-            The catalog revision the caller made its choices under (th-245): a held resolution is reused only
-            under the same one, so a publish, yank, bind or retarget the caller knows of resolves once more at
-            the Hub.
         entrypoint: {type: string}
         gpus:
           type: integer
@@ -869,7 +862,7 @@ components:
             When it began executing (`running`), Unix ms: its time counts from here, never its queue's. 0
             before it does.
           minimum: 0
-        state: {type: string, description: 'queued, preparing, running, succeeded, failed, canceled'}
+        state: {type: string, description: 'queued, preparing, needs_access (a restart interrupted its preparation: the same id and spec sent again bring its access), running, succeeded, failed, canceled'}
         waiting: {type: string, description: 'Why a queued run waits, for people.'}
         waiting_for:
           type: array

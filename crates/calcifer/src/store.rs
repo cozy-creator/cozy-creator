@@ -949,17 +949,6 @@ impl Store {
         })
     }
 
-    /// An accepted run its machine forgot was sent again: the machine numbers its events anew.
-    pub fn sent_again(&self, id: &str, state: &v1::RunState) -> Result<()> {
-        self.write(|tx| {
-            tx.execute(
-                "UPDATE runs SET cursor = 0, machine_number = ?2, machine_state = ?3 WHERE id = ?1",
-                params![id, state.number as i64, state.state],
-            )?;
-            Ok(())
-        })
-    }
-
     /// Records a batch of an accepted run's frames and moves its cursor past them.
     pub fn observe(&self, id: &str, batch: Batch) -> Result<Vec<Event>> {
         self.write(|tx| {
