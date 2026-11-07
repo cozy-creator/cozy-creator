@@ -386,6 +386,7 @@ impl Runs {
             lane: spec.lane.clone(),
             inputs: spec.inputs.clone(),
             parent: spec.parent.clone(),
+            prepares: spec.warm || spec.remove,
             ..Default::default() // root and family: stamped at acceptance
         };
         let (record, new) = self
@@ -401,6 +402,16 @@ impl Runs {
             self.prepare_later(actor, &record.id, spec).map_err(Refused::from)?;
         }
         Ok(record)
+    }
+
+    /// The GPUs `run`'s root took as it started; 0: none, or not yet.
+    fn root_width(&self, run: &str) -> u32 {
+        let engine = &self.service.engine;
+        let Ok(record) = engine.get(run) else { return 0 };
+        match record.invocation.root.as_str() {
+            "" => record.width,
+            root => engine.get(root).map_or(0, |root| root.width),
+        }
     }
 
     /// Prepare accepted run `run` on a thread of its own, which ends the run unless it binds.
@@ -899,6 +910,10 @@ impl Runs {
                 .degree(entry, spec.gpus),
             (None, None) => 0,
         };
+        let widths = match self.service.pool() {
+            Some(pool) if spec.parent.is_empty() => pool.widths(entry, &generation.record, spec.gpus),
+            _ => vec![],
+        };
         // A memoized callable's run is answered from the success this machine holds for its
         // signer under the same computation, and starts nothing. A writer (weights outputs,
         // published media) has an effect beyond its result: it always runs.
@@ -955,6 +970,7 @@ impl Runs {
                 lane: spec.lane.clone(),
                 inputs: spec.inputs,
                 degree,
+                widths,
                 parent: spec.parent,
                 application: spec.application,
             },
@@ -1373,8 +1389,12 @@ impl Runs {
                 })
                 .collect(),
             attention_kernel: context.attention_kernel,
-            // The caller's count caps a child's group; the child's own declaration picks within it.
-            gpus: context.gpus,
+            // The caller's count caps a child's group, else the GPUs its root took; the child's own
+            // declaration picks within it.
+            gpus: match context.gpus {
+                0 => self.root_width(parent),
+                gpus => gpus,
+            },
             // The asked lane follows the main model into the package's own children (long_form's
             // segments); another package's model (qwen-image-2 for references) takes its default.
             lane: if installed.package == caller { context.lane.clone() } else { String::new() },
