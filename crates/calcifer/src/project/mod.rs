@@ -416,9 +416,10 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         n => format!("{}-{n}", made.output),
     };
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
-    // A folder from before project.db moves to format 4 here, said once, and its first read imports it.
+    // A folder from before project.db moves to format 4 here, said once, and its first read imports it. One a read moved as the run
+    // was sent (it binds to the project) is said here too.
     let (upgraded, refused) = match project.join(db::DB).is_file() {
-        true => (vec![], None),
+        true => (Folder::at(project).upgraded(), None),
         false => match upgrade::on_touch(project) {
             Ok(said) => (said, None),
             Err(why) => (vec![], Some(why)),
@@ -1494,7 +1495,7 @@ async fn reclaim(
     let lost = folder.history_lost(&lock, &kept);
     let recorded = lock.recorded();
     if let (true, Some(why)) = (asked.yes, &lost) {
-        let remedy = format!("put {} back from git or a backup, or delete what you don't want from files/ by hand", folder::LOCK);
+        let remedy = format!("put {} back from a backup, or delete what you don't want from files/ by hand", db::DB);
         return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy project status")));
     }
     if asked.yes {
@@ -2096,7 +2097,8 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::proje
         })?;
         // Its file has a row, so its whole hash is known wherever its box names only the start of it.
         folder.update_lock(|lock| {
-            lock.files.entry(file.file.sha256.clone()).or_default();
+            let row = lock.files.entry(file.file.sha256.clone()).or_default();
+            (row.sha256, row.path, row.here) = (file.file.sha256.clone(), file.file.path.clone(), true);
         })?;
         Ok((name, kept))
     });
@@ -2372,7 +2374,8 @@ async fn save(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let given = written::Written::from_yaml(text).map_err(Refusal)?;
-    let doc = Doc::of(folder, &given, &folder.lock().map_err(Refusal)?).map_err(Refusal)?;
+    // Read from its text, so what it refuses names its lines.
+    let doc = Doc::of_text(folder, text, &folder.lock().map_err(Refusal)?).map_err(Refusal)?;
     let text = folder
         .act(|| {
             if let Some(read) = &read

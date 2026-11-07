@@ -522,7 +522,8 @@ fn written(assets: &[(String, Map<String, Value>)], head: &[String], before: &Ha
     let mut out = String::new();
     head.iter().for_each(|line| out.push_str(&format!("{line}\n")));
     out.push_str(&format!("version: {format}\n"));
-    out.push_str("\nassets:\n");
+    // No box is `{}`: a bare `assets:` reads back as null.
+    out.push_str(if assets.is_empty() { "\nassets: {}\n" } else { "\nassets:\n" });
     for (at, (name, body)) in assets.iter().enumerate() {
         if at > 0 {
             out.push('\n');

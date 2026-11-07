@@ -231,7 +231,7 @@ impl Binder<'_> {
                 return None;
             };
             let Some(named) = named else {
-                said.push(format!("{}'s {at}: <{inner}> has no file yet, so it goes as its name", self.call.name));
+                said.push(format!("{}'s {at}: <{inner}> has no file here, so it goes as its name", self.call.name));
                 return Some(mention.name.to_owned());
             };
             if !kinds.contains(&named.kind) {
@@ -285,6 +285,10 @@ impl Binder<'_> {
             },
         };
         let files: Files = files.into_iter().filter(|(_, sha256)| !gone.contains(sha256)).collect();
+        // All it has stays on a machine that's gone: the function does without it, as with a box that has no version.
+        if files.is_empty() {
+            return Some(None);
+        }
         let (kind, file) = match mention.part {
             Some(part) => (part.to_owned(), files.get(part)?.clone()),
             None => {
@@ -361,7 +365,7 @@ impl Binder<'_> {
                 let Some(mention) = self.mention_of(inner) else { continue };
                 match self.named(&mention) {
                     None => self.nothing.push(inner.to_owned()),
-                    Some(None) => self.warn(format!("{}'s {at}: <{inner}> has no file yet, so it's left empty", self.call.name)),
+                    Some(None) => self.warn(format!("{}'s {at}: <{inner}> has no file here, so it's left empty", self.call.name)),
                     Some(Some(named)) if kind != "file" && named.kind != kind => {
                         self.warn(format!("{}'s {at} takes {}, and <{inner}> is {}: it's left empty", self.call.name, a(kind), a(&named.kind)));
                     }

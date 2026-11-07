@@ -747,6 +747,11 @@ impl Lock {
                 held.ext = ext;
             }
         }
+        // Whole as `fill` makes a row: a reader bound before the next fill finds its hash and where it lands (cl-815).
+        held.sha256 = sha256.to_owned();
+        if !held.here {
+            held.path = format!("{FILES}/{}{}", hex_of(sha256), held.ext);
+        }
     }
 
     /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
@@ -768,6 +773,8 @@ struct Shared {
     held: Mutex<Option<Held>>,
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
+    /// What the first open's upgrade said, until a run landing in the project says it (`upgraded`).
+    upgraded: Mutex<Vec<String>>,
 }
 
 struct Held {
@@ -891,6 +898,11 @@ impl Folder {
         Ok(folder)
     }
 
+    /// What the first open's upgrade said and nothing has said yet: once.
+    pub fn upgraded(&self) -> Vec<String> {
+        std::mem::take(&mut *self.shared.upgraded.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     /// The project folder `dir` is, if it is one: `project.db`, or the files a first open imports.
     pub fn is_project(dir: &Path) -> bool {
         dir.join(db::DB).is_file() || dir.join(PROJECT).is_file() || super::legacy::pending(dir)
@@ -914,8 +926,9 @@ impl Folder {
                 None => {
                     // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once.
                     if !self.db().is_file() {
-                        super::upgrade::on_touch(&self.dir)?;
+                        let said = super::upgrade::on_touch(&self.dir)?;
                         super::legacy::import(self)?;
+                        self.shared.upgraded.lock().unwrap_or_else(|e| e.into_inner()).extend(said);
                     }
                     db::open(&self.db())?
                 }

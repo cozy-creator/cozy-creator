@@ -323,7 +323,8 @@ impl Doc {
         let version = top.get("version").and_then(Value::as_u64);
         if version.is_some_and(|version| version != format) || (version.is_none() && top.contains_key("entities")) {
             let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
-            return Err(invalid("project_format", said).next("cozy update"));
+            // Newer is a newer cozy's; older is one this cozy can't move, so a new project.
+            return Err(invalid("project_format", said).next(if version.is_some_and(|version| version > format) { "cozy update" } else { "cozy project new" }));
         }
         let mut warnings = vec![];
         if let Some(why) = folder.unsaved() {

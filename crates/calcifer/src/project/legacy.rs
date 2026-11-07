@@ -56,8 +56,16 @@ pub(super) fn import(folder: &Folder) -> Result<(), Error> {
 
 /// What a folder from after its import may still hold of one: an import that was never named.
 pub(super) fn leftovers(dir: &Path) {
-    if dir.join(db::DB).is_file() {
-        let _ = std::fs::remove_file(dir.join(NEW));
+    if !dir.join(db::DB).is_file() {
+        return;
+    }
+    let _ = std::fs::remove_file(dir.join(NEW));
+    // A write of those files a kill cut short, its upgrade's too: `.project.lock.<pid>.<n>.tmp` (`durable::replace`).
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".tmp") && IMPORTED.iter().any(|file| name.starts_with(&format!(".{file}."))) {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -66,9 +74,9 @@ fn read(folder: &Folder) -> Result<(db::Stored, Vec<(String, String)>), Error> {
     let dir = &folder.dir;
     let text = std::fs::read_to_string(dir.join(PROJECT)).map_err(|e| io(&dir.join(PROJECT), e))?;
     let written = Written::from_yaml(&text)?;
-    // As the reader would read it: a file it refuses isn't imported, and stays as it is.
+    // As the reader would read it, its lines too: a file it refuses isn't imported, and stays as it is.
     let lock = lock_file(dir)?;
-    super::format::Doc::of(folder, &written, &lock)?;
+    super::format::Doc::of_text(folder, &text, &lock)?;
     let walk: WalkFile = match std::fs::read_to_string(dir.join(WALK)) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| Error::new(Kind::Validation, "walk_unreadable", format!("{WALK}: {e}")))?,
         Err(_) => WalkFile::default(),

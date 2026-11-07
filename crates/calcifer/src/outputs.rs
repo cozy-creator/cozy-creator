@@ -200,10 +200,15 @@ impl Calcifer {
         }
     }
 
-    /// Whether `machine` still has what stays on it, a byte of it read as `bring` reads it. Only its saying it holds that no more
-    /// is a no: one out of reach may have it yet.
+    /// Whether `machine` still has what stays on it, a byte of it read as `bring` reads it, or it's on its way here. Only its saying
+    /// it holds that no more is a no: one out of reach may have it yet.
     pub(crate) async fn still_holds(&self, digest: &str, machine: &str) -> bool {
         let Ok(Some((run, item))) = self.store.making(digest, machine) else { return false };
+        // Its export going: `bring` waits for it, so a reader bound now has it (cl-815).
+        let owed = self.store.outputs_to_export(run.id.as_str()).unwrap_or_default();
+        if owed.iter().any(|owed| owed.name == item.name && owed.index == item.index) {
+            return true;
+        }
         if run.machine.as_deref() == Some("local")
             && let Some(machines) = self.machines()
             && machines.local_up().await.is_err()

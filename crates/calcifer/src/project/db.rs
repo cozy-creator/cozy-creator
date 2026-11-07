@@ -117,13 +117,25 @@ fn err(at: &Path, e: impl std::fmt::Display) -> Error {
     Error::new(Kind::Unavailable, "project_db", format!("{}: {e}", at.display()))
 }
 
+/// A SQLite error at `at`. Its write lock held past the busy timeout is another program's open transaction: `file_held`, which the page says
+/// and waits out, and a landing is owed.
+fn sql(at: &Path, e: rusqlite::Error) -> Error {
+    match e.sqlite_error_code() {
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+            let name = at.file_name().map_or_else(|| at.display().to_string(), |name| name.to_string_lossy().into_owned());
+            Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again")
+        }
+        _ => err(at, e),
+    }
+}
+
 fn json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("a project row serializes")
 }
 
 /// `project.db` in `dir` opened, made with this schema if it's new.
 pub fn open(path: &Path) -> Result<Connection, Error> {
-    let e = |error: rusqlite::Error| err(path, error);
+    let e = |error: rusqlite::Error| sql(path, error);
     let conn = Connection::open(path).map_err(e)?;
     conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(e)?;
     conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
@@ -147,7 +159,7 @@ pub fn data_version(conn: &Connection) -> i64 {
 
 /// All of it but the history, keys and asked texts.
 pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
-    let e = |error: rusqlite::Error| err(at, error);
+    let e = |error: rusqlite::Error| sql(at, error);
     let bad = |what: &str, why: serde_json::Error| err(at, format!("{what}: {why}"));
     let (mut written, mut canvas, mut lock, mut walk, mut measured) = (Written::default(), BTreeMap::new(), Lock::default(), WalkFile::default(), BTreeMap::new());
     let seq = conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).optional().map_err(e)?.and_then(|seq| seq.parse().ok()).unwrap_or(0);
@@ -233,7 +245,7 @@ fn file_record(file: &File) -> String {
 
 /// `after` written over `before`, row by row, with `extra`, as one transaction: the new revision, or none when nothing differed.
 pub fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &Stored, extra: &Extra) -> Result<Option<u64>, Error> {
-    let e = |error: rusqlite::Error| err(at, error);
+    let e = |error: rusqlite::Error| sql(at, error);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     let was = tx.total_changes();
     write(&tx, before, after, extra).map_err(e)?;
@@ -383,7 +395,7 @@ pub fn asked(conn: &Connection, digest: &str) -> Option<String> {
 
 /// Every history row, oldest first.
 pub fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
-    let e = |error: rusqlite::Error| err(at, error);
+    let e = |error: rusqlite::Error| sql(at, error);
     let mut rows = conn.prepare("SELECT id, at_ms, by, words, edits, changes, undone FROM ops ORDER BY id").map_err(e)?;
     let found = rows
         .query_map([], |r| Ok(OpRow { id: r.get::<_, i64>(0)? as u64, at_ms: r.get(1)?, by: r.get(2)?, words: r.get(3)?, edits: r.get(4)?, changes: r.get(5)?, undone: r.get(6)? }))
@@ -441,5 +453,5 @@ pub fn checkpoint(path: &Path) {
 /// A copy of the database as it stands, whole in one file: what an archive carries.
 pub fn snapshot(conn: &Connection, to: &Path, at: &Path) -> Result<(), Error> {
     let _ = std::fs::remove_file(to);
-    conn.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(drop).map_err(|e| err(at, e))
+    conn.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(drop).map_err(|e| sql(at, e))
 }
