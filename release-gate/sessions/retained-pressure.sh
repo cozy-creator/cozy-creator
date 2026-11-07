@@ -10,7 +10,6 @@
 #   packages     a packages_refs name: qwen-image-2 from that checkout ("": the Hub's release)
 #   cap          `--gpu-memory-limit` bytes (default 20 GiB of a 24 GB card)
 #   game_gb      what the game takes after step 2 (default 18)
-#   traffic_gb   GB the provider bills: the image, Qwen-Image 2.1 Turbo and the fixture's environment (default 45)
 . "$(dirname "$0")/lib.sh"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
@@ -19,7 +18,7 @@ FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 PK=$(param packages '')
 T=qwen-image-2/generate_turbo
 [ -z "$PK" ] || { [ -d "$PACKAGES/$PK/qwen-image-2" ] || fail "no packages checkout $PK"; T=$PACKAGES/$PK/qwen-image-2/generate_turbo; }
-quote "$(param traffic_gb 45)" 2400
+quote 2400
 rent
 
 args=(--tensord "$(param tensord "$(command -v cozy)")")
@@ -49,8 +48,10 @@ edit warm; step warm run "$T" --on "$NAME" --lane int8 --input "$OUT/warm.req.js
 step game-write run "$FIX/game.py" --on "$NAME" op=write \
   cfg="{\"name\": \"pressure\", \"gb\": $(param game_gb 18), \"trigger\": \"now\", \"give_up_s\": 90, \"hold_s\": 120, \"wait_s\": 0}" || fail "game write"
 cozy run show "$(runno game-write)" --once --json > "$OUT/game-write.json" 2>&1
-launch=$(jq -r '.result.value.launch' "$OUT/game-write.json") st=$(jq -r '.result.value.state' "$OUT/game-write.json")
-[ "$launch" != null ] || fail "no launcher: $(head -c 300 "$OUT/game-write.json")"
+# A function's value is its JSON text.
+value=$(jq -c '.result.value | if type == "string" then fromjson else . end' "$OUT/game-write.json" 2> /dev/null)
+launch=$(jq -r '.launch // empty' <<< "$value" 2> /dev/null) st=$(jq -r '.state // empty' <<< "$value" 2> /dev/null)
+[ -n "$launch" ] && [ -n "$st" ] || fail "no launcher: $(head -c 300 "$OUT/game-write.json")"
 edit pressure
 cozy --json run "$T" --on "$NAME" --lane int8 --input "$OUT/pressure.req.json" -p "$RUN_PROJECT" > "$OUT/pressure.ndjson" 2> "$OUT/pressure.err" &
 RUNP=$! started=''

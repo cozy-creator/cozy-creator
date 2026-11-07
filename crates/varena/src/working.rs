@@ -23,7 +23,7 @@ pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapsho
 pub use cache::{Cache, CacheStats};
 pub use split::{
     Room, SplitContext, SplitObservation, SplitSelection, room, split_begin, split_context, split_end,
-    split_select,
+    split_refused, split_select,
 };
 
 pub type PoolId = (u64, u64);
@@ -1575,10 +1575,11 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     });
-    if matches!(result, Err(Error::OutOfMemory { .. })) {
+    if matches!(result, Err(Error::OutOfMemory { .. } | Error::Exhausted { .. })) {
         let mut state = owner.lock()?;
         state.stats.ooms += 1;
         state.escapes.refused(owner.owned().saturating_add(bytes), escape::room_held(owner));
+        split::refused(&mut state, bytes, stream);
     }
     result
 }
@@ -2386,6 +2387,15 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     Ok(stats)
 }
 
+/// Allocations this device refused since it opened (`WorkingStats::ooms`), read alone: the package
+/// contract compares it at each component scope's entry and exit for a refusal a package returned past.
+pub fn ooms(device: i32) -> Result<u64> {
+    let Some(owner) = existing(device)? else {
+        return Ok(0);
+    };
+    Ok(owner.lock()?.stats.ooms)
+}
+
 pub fn reset_peak(device: i32) -> Result<()> {
     let Some(owner) = existing(device)? else {
         return Ok(());
@@ -2409,6 +2419,35 @@ pub fn pool_cancel_preparation(device: i32, pool: PoolId) -> Result<()> {
     }
     Ok(())
 }
+
+/// The owner reset every graph it captured here and allocates here no more: its references and
+/// preparation go, so its pages and its entry go at the next trim, once its blocks are free and
+/// complete. A capture whose end failed is never reset by Torch, and its reference would hold
+/// the pool mapped for the process's life. Refused while a capture on it is open.
+pub fn pool_close(device: i32, id: PoolId) -> Result<()> {
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let mut state = owner.lock()?;
+    let Some(pool) = state.pools.get_mut(&id) else {
+        return Ok(());
+    };
+    if pool.capture.is_some() || pool.routing {
+        return Err(Error::Invalid("close a graph pool after its capture ends"));
+    }
+    pool.references = 0;
+    pool.prepared = false;
+    pool.armed = false;
+    pool.in_use = false;
+    let streams: Vec<u64> = pool.streams.iter().copied().collect();
+    for stream in streams {
+        if !state.pools.values().any(|pool| pool.names_stream(stream)) {
+            owner.release_parked(&mut state, stream);
+        }
+    }
+    Ok(())
+}
+
 pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     if bytes != 0 {  // Zero is a use of a recorded pool: an LM's token, inside its eager phase.
         invalidate_eager_phase(device, "capture_preparation")?;

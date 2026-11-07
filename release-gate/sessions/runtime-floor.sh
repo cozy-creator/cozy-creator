@@ -6,12 +6,11 @@
 #   runtime    the machine's older Runtime prerelease (default 0.39.2)
 #   tensorfs   the machine's older TensorFS prerelease (default 0.18.1)
 #   sent       1: that wheel sent as a file (`--runtime <path>`), a development Runtime: the package runs on it, warned
-#   traffic_gb GB the provider bills (default 8)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 RUNTIME=$(param runtime 0.39.2) TENSORFS=$(param tensorfs 0.18.1)
 [ -f "$FIX/runtime-floor.py" ] || fail "no fixture checkout"
-quote "$(param traffic_gb 8)" 1200
+quote 1200
 rent
 WHEEL=$RUNTIME SENT=$(param sent)
 if [ "$SENT" = 1 ]; then

@@ -41,6 +41,8 @@ pub struct Input<'a> {
     pub gguf: bool,
     /// `--trained-on`: the component a LoRA was trained on, as its uploader says.
     pub trained_on: Option<&'a str>,
+    /// The pinned sources: a family variant's own reference names the variant a component is.
+    pub pinned: &'a [String],
 }
 
 pub fn check(input: &Input) -> Result<Checked> {
@@ -78,9 +80,20 @@ fn table_names<'a>(input: &'a Input, lora: bool) -> Vec<&'a str> {
 fn base(input: &Input, bases: &[(&str, &[&Planned])], out: &mut Checked) -> Result<()> {
     let tables = table_names(input, false);
     let by_table = tables.iter().find_map(|t| family::of_table(t));
-    let classes = (input.layout.pipeline.iter().map(|p| &p.class.name))
-        .chain(input.layout.components.iter().map(|c| &c.class.name));
-    let Some(fam) = by_table.or_else(|| classes.into_iter().find_map(|c| family::of_class(c))) else {
+    let classes = (input.layout.pipeline.iter().map(|p| p.class.name.as_str()))
+        .chain(input.layout.components.iter().map(|c| c.class.name.as_str()));
+    // A class several families share (Qwen3-VL's) is the first's whose form its components are.
+    let named = match by_table {
+        Some(fam) => vec![fam],
+        None => family::of_classes(classes),
+    };
+    let form = |fam: &Family| {
+        let stored: Vec<Stored> = (bases.iter().filter(|(c, _)| fam.def(c).is_some()))
+            .map(|(c, t)| Stored { name: c, keys: t.iter().map(|p| (p.key.as_str(), p.shape.as_slice())).collect() })
+            .collect();
+        !stored.is_empty() && fam.form_of(&stored).is_ok()
+    };
+    let Some(fam) = named.iter().copied().find(|fam| form(*fam)).or(named.first().copied()) else {
         return Ok(());
     };
     let converted = by_table.is_some();
@@ -112,7 +125,10 @@ fn base(input: &Input, bases: &[(&str, &[&Planned])], out: &mut Checked) -> Resu
     let mut components = BTreeMap::new();
     for (name, tensors) in &mine {
         match probe_component(input.set, fam, name, tensors)? {
-            Probed::Unprobed => drop(components.insert(name.to_string(), name.to_string())),
+            Probed::Unprobed => {
+                let pinned: Vec<&str> = input.pinned.iter().map(String::as_str).collect();
+                components.insert(name.to_string(), fam.pinned_variant(name, &pinned).to_owned());
+            }
             Probed::Matched { variant, line } => {
                 out.notes.push(line);
                 components.insert(name.to_string(), variant);

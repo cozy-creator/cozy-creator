@@ -15,6 +15,11 @@ from pathlib import Path
 import cozy_runtime
 import msgspec
 import torch
+
+from cozy_runtime.internal.contract import unsealed
+
+#: The driver's view, read on purpose: this cell tests the memory manager itself.
+mem_get_info = unsealed(torch, "mem_get_info")
 import triton
 from cozy_runtime import _kernels
 from cozy_runtime import lm, moe
@@ -310,7 +315,7 @@ def _big(name: str, index: int, shape: tuple[int, ...], shared: bool) -> dict:
     ready = attention.pinned(name, device)[0]
     candidate, target = ready.candidate, torch.device("cuda", index)
     torch.cuda.empty_cache()
-    free, _ = torch.cuda.mem_get_info(index)
+    free, _ = mem_get_info(index)
     if free < 24 << 30:
         return {"passed": True, "detail": f"not run: {free >> 30} GiB free cannot hold 2^31 elements of Q, K, V and out"}
     tokens, heads, dim = shape[1:]
@@ -787,7 +792,7 @@ def _big_gemm(name: str, index: int) -> dict:
     if fp8 and not ops.cutlass_fp8:
         return {"passed": True, "detail": "not run: no wheel GEMM for fp8 on this card"}
     torch.cuda.empty_cache()
-    free, _ = torch.cuda.mem_get_info(index)
+    free, _ = mem_get_info(index)
     if free < 12 << 30:
         return {"passed": True, "detail": f"not run: {free >> 30} GiB free cannot hold it"}
     g = torch.Generator(device=target).manual_seed(10)

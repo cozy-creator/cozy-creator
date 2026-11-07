@@ -1,0 +1,50 @@
+{
+ "note": "FLUX.2 [dev]'s BFL checkpoint (its module names) and four published LoRAs: fal's Turbo in Diffusers' names and its ComfyUI export (BFL names under diffusion_model., Diffusers' double-block attention under transformer.), and two AI-Toolkit LoRAs in BFL names (fused img_attn.qkv); flux2.lora maps them, kohya's and PEFT's spellings onto the DiT's linears",
+ "members": [
+  {
+   "source": "black-forest-labs/FLUX.2-dev@26afe3a78bb242c0a8bb181dcc8937bb16e5c66c",
+   "member": "flux2-dev.safetensors",
+   "header_file": "flux2-dev.safetensors.header",
+   "header_sha256": "57ff5134a3da016b85536408cb5051d9bc3b4ac9fb68103e33f93ad965d12283",
+   "header_bytes": 33824,
+   "full_length": 64446596128,
+   "declared_source_sha256": "6159a3f19f829c8e84ba6e9996b7afaf7c0a5f3428677f5b37445778a320d275"
+  },
+  {
+   "source": "fal/FLUX.2-dev-Turbo@9ee51cd87578162cf8d02355a870bc5f4570045c",
+   "member": "flux.2-turbo-lora.safetensors",
+   "header_file": "flux.2-turbo-lora.safetensors.header",
+   "header_sha256": "23d8f68fc64695e6d729e4ff3b00b9bc52d3f1d1bb09db0ce3193fc9e8d32020",
+   "header_bytes": 48680,
+   "full_length": 2760818216,
+   "declared_source_sha256": "f76cf9c2cc546ddca878799136434a1098477af3f4b0adff2cfd79f2ebe4aa01"
+  },
+  {
+   "source": "fal/FLUX.2-dev-Turbo@9ee51cd87578162cf8d02355a870bc5f4570045c",
+   "member": "comfy/Flux_2-Turbo-LoRA_comfyui.safetensors",
+   "header_file": "Flux_2-Turbo-LoRA_comfyui.safetensors.header",
+   "header_sha256": "849b2f4e7e3d4dfab2ab8ff2808750e0e2573ac76f0fe412b88467ef02094a5a",
+   "header_bytes": 45344,
+   "full_length": 2760814880,
+   "declared_source_sha256": "011487390b8020baf22a9d543930c90d74a4809b7241bee6b0622777b17b413b"
+  },
+  {
+   "source": "ostris/flux2_berthe_morisot@5e5738e335ca83a660e01434e81245ff397b598c",
+   "member": "flux2_berthe_morisot.safetensors",
+   "header_file": "flux2_berthe_morisot.safetensors.header",
+   "header_sha256": "75548ea2a1450fe86a8b8e7d15f157ed29476b57872976cb653fdd5e96480d1a",
+   "header_bytes": 41984,
+   "full_length": 390112256,
+   "declared_source_sha256": "2f64a49f5f34925df7720fe9b471eecd76a6c3615cb006ca18601e4d798b0545"
+  },
+  {
+   "source": "multimodalart/tarot-trtcrd-style@108aabce6e1a5497a8caace1367eed4b0ed100d7",
+   "member": "tarot-trtcrd-style.safetensors",
+   "header_file": "tarot-trtcrd-style.safetensors.header",
+   "header_sha256": "ec928565cdc5faf93334961ca76dea737a8428ad434790be3ae058e4f210a90f",
+   "header_bytes": 41952,
+   "full_length": 390112224,
+   "declared_source_sha256": "6bbf24d600fa873f88f6a6174abcdff95458ef662d04b4b3d27dc5a87abd7b85"
+  }
+ ]
+}

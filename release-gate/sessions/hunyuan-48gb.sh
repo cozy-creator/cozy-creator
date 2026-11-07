@@ -8,7 +8,6 @@
 #   runtime     a candidate Runtime wheel, https://…#sha256=<hex>, installed with `cozy machine update` (optional)
 #   runs        requests after the warm-up (3)
 #   max_exec_s  each run's execution bar (900; 0.35.2 on an A40: 8 steps of ~28 s)
-#   traffic_gb  GB the provider bills (100)
 . "$(dirname "$0")/lib.sh"
 T=$(param target hunyuan-image-3/generate_turbo) URL=$(param runtime) RUNS=$(param runs 3) MAX=$(param max_exec_s 900)
 if [[ $T == tree:* ]]; then
@@ -29,7 +28,7 @@ PROMPTS=(
   "A glassblower shaping a glowing vase in a dim workshop, film still"
 )
 [ "$RUNS" -lt "${#PROMPTS[@]}" ] || fail "runs is at most $((${#PROMPTS[@]} - 1))"
-quote "$(param traffic_gb 100)" $((1800 + (RUNS + 1) * MAX))
+quote $((1800 + (RUNS + 1) * MAX))
 rent
 
 jq -e '.status.gpus | length == 1 and .[0].memory_bytes > 40e9 and .[0].memory_bytes < 52e9' "$OUT/show.json" >/dev/null ||

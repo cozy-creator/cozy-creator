@@ -174,6 +174,7 @@ pub(super) fn read() -> HostMemory {
         mem_available,
         bound: total(),
         active: 0,
+        charged: total() - meminfo("MemFree"),
     };
     let Some((path, limits, usage)) = cgroups() else {
         return best;
@@ -192,6 +193,7 @@ pub(super) fn read() -> HostMemory {
                 mem_available,
                 bound: bound as i64,
                 active: active as i64,
+                charged: used as i64,
             };
         }
     }

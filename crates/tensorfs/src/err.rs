@@ -117,6 +117,8 @@ codes![
     LAYOUT_MISMATCH,
     // ingest border: conversion
     CONVERTS_NOTHING,
+    // a source key the conversion takes nowhere and does not know to leave out
+    UNPLACED_KEYS,
     MISSING_COMPANION_ROLE,
     DOUBLE_ENCODE,
     REMEDY_FROM_TARGET,

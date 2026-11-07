@@ -4,13 +4,13 @@ import { Link, useNavigate } from "react-router-dom"
 import { rentalSkusQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
-import type { Machine, RentalSku } from "../../types"
+import type { RentalSku } from "../../types"
 import { say } from "../../ui/notes"
 import { useSignal } from "../../ui/signal"
 import { Failure, Section } from "../common"
 import { usd } from "../format"
 import { dismiss, order, place, quote } from "./order"
-import { ordering, stableName } from "./words"
+import { stableName } from "./words"
 
 const fieldKey = "cozy.ssh-key"
 
@@ -62,13 +62,12 @@ function Sku({ sku, disabled, onPick }: { sku: RentalSku; disabled: boolean; onP
 }
 
 /** What the order is, and the one click on its stated price. It never rents by itself, and a dearer price rents nothing. */
-function Order({ machines }: { machines: Machine[] }) {
+function Order() {
   const { client } = useConnection()
   const queries = useQueryClient()
   const navigate = useNavigate()
   const to = useTo()
   const now = useSignal(order)
-  const pending = machines.find(ordering)
   const here = useRef<HTMLDivElement>(null)
   const shown = now.state !== "idle"
   useEffect(() => {
@@ -96,11 +95,10 @@ function Order({ machines }: { machines: Machine[] }) {
             </p>
           ))}
           <p>It bills until you end it, or after 15 minutes idle.</p>
-          {pending && <p className="warn">{pending.name} is still booting. One order at a time.</p>}
           {!now.quote.agreed && <p className="warn">This Calcifer didn't say what's agreed at this price, so it can't be ordered from here.</p>}
           <div className="row">
-            <button type="button" className="tb primary" disabled={Boolean(pending) || !now.quote.agreed} onClick={() => void go()}>
-              Rent {line(now.order, now.quote.gpu_usd_micros_per_hour)}
+            <button type="button" className="tb primary" disabled={!now.quote.agreed} onClick={() => void go()}>
+              Rent {line(now.order, now.quote.usd_micros_per_hour)}
             </button>
             <button type="button" className="tb" onClick={dismiss}>
               Not now
@@ -108,7 +106,7 @@ function Order({ machines }: { machines: Machine[] }) {
           </div>
         </>
       )}
-      {now.state === "placing" && <p>Ordering {line(now.order, now.quote.gpu_usd_micros_per_hour)}…</p>}
+      {now.state === "placing" && <p>Ordering {line(now.order, now.quote.usd_micros_per_hour)}…</p>}
       {now.state === "uncertain" && (
         <>
           <Failure error={now.error} lead="The order may stand, since no answer came" />
@@ -140,8 +138,8 @@ function Order({ machines }: { machines: Machine[] }) {
   )
 }
 
-/** The SKU list. Rent is one click on a stated price from the quote, one order at a time. */
-export function Rent({ machines, signedIn }: { machines: Machine[]; signedIn: boolean }) {
+/** The SKU list. Rent is one click on a stated price from the quote. */
+export function Rent({ signedIn }: { signedIn: boolean }) {
   const { client } = useConnection()
   const to = useTo()
   const now = useSignal(order)
@@ -174,7 +172,7 @@ export function Rent({ machines, signedIn }: { machines: Machine[]; signedIn: bo
             <Sku sku={sku} disabled={asking || !signedIn} onPick={pick} />
             {now.state !== "idle" && now.order.sku === sku.name && (
               <li className="order-row">
-                <Order machines={machines} />
+                <Order />
               </li>
             )}
           </Fragment>

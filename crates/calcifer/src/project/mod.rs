@@ -16,6 +16,7 @@ mod graph;
 mod history;
 pub(crate) mod host;
 mod jobs;
+mod keyed;
 pub(crate) mod model;
 mod remote;
 mod thumbs;
@@ -23,7 +24,6 @@ mod caption;
 mod direct;
 mod tools;
 mod sim;
-mod takeover;
 mod upgrade;
 mod walker;
 
@@ -33,7 +33,7 @@ use std::{
     path::{Path as FsPath, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -143,25 +143,15 @@ struct Project {
     importing: Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
-    /// When its walk last moved: a run's progress, anything it said, a cut's (unix ms). A rental's walk renews its clock only while this is recent.
-    moved: Arc<AtomicI64>,
-    /// Another machine holds its render (`takeover`): its watcher is going, the holder's end waits here until what it made is, what of it
-    /// isn't here yet (files, bytes), and when the holder last answered.
-    watching: AtomicBool,
-    ended: Mutex<Option<Event>>,
-    collecting: Mutex<(u64, u64)>,
-    heard: AtomicI64,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
     /// What kept its last render from reaching a machine (`State::unsent`).
     unsent: Mutex<Vec<Error>>,
 }
 
-pub fn routes() -> Router<Arc<Api>> {
+pub fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
-        .route("/v1/projects/take", post(takeover::take))
-        .route("/v1/projects/{id}/taken", get(takeover::taken))
         .route("/v1/projects/{id}", get(state).delete(forget))
         .route("/v1/projects/{id}/imports", post(import))
         .route("/v1/projects/{id}/assets/{name}/caption", post(caption::caption))
@@ -188,6 +178,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/history/undo", post(history::undo))
         .route("/v1/projects/{id}/history/redo", post(history::redo))
         .route_layer(axum::middleware::from_fn(history::record))
+        // Outside the history's: a write answered again is no edit of its own.
+        .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
 }
 
 impl Projects {
@@ -228,21 +220,13 @@ impl Projects {
                     moving: tokio::sync::Mutex::default(),
                     importing: Mutex::default(),
                     keys: Mutex::default(),
-                    moved: Arc::default(),
-                    watching: AtomicBool::new(false),
-                    ended: Mutex::default(),
-                    collecting: Mutex::default(),
-                    heard: AtomicI64::new(0),
                     said: Mutex::default(),
                     unsent: Mutex::default(),
                 })
             })
             .clone();
         project.said.lock().expect("said lock").extend(said);
-        if project.folder.walk_now()?.held.is_some() {
-            *project.walking.lock().expect("walking lock") = true;
-            takeover::watch(api, &project);
-        } else if project.folder.lock()?.owes() {
+        if project.folder.lock()?.owes() {
             walk(api, &project);
         }
         Ok(id)
@@ -460,7 +444,6 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
     project.jobs.begin();
     let walk = Walk::new(api, project);
     let following = following(api, project);
-    let clock = takeover::keep_clock(api, project);
     let api = api.clone();
     tokio::spawn(async move {
         remember(&api);
@@ -479,7 +462,6 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
         }
         crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
-        clock.abort();
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
         walk.say(Event::Ended { error, rendered: walk.rendered() });
     });
@@ -496,9 +478,6 @@ fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return,
             };
-            if project.jobs.has_run(&id) {
-                project.moved.store(now_ms(), Ordering::Relaxed);
-            }
             if let Some((name, message)) = project.jobs.ran(&id, &event, &project.folder.dir) {
                 let _ = project.events.send(Event::Warning { message, name: Some(name) });
             }
@@ -977,13 +956,12 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), held: takeover::held_by(&api, &project), unsent: vec![] }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
-    state.held = takeover::held_by(&api, &project);
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
     Ok(Json(state))
@@ -1466,15 +1444,12 @@ async fn rename(
 ) -> Result<Json<Renamed>, Refusal> {
     let asked: Rename = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    rename_now(&api, &project, &id, asked).await.map(Json)
+    rename_now(&project, &id, asked).await.map(Json)
 }
 
 /// Asset `from` called `to`, as `POST rename` has it.
-async fn rename_now(api: &Arc<Api>, project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
+async fn rename_now(project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
     format::named(&asked.to).map_err(Refusal)?;
-    // What a machine holds it renames first: what it makes then lands here under the new name.
-    let body = Bytes::from(serde_json::to_vec(&asked).expect("a rename serializes"));
-    let _: Option<Renamed> = takeover::forward(api, project, "rename", &body).await?;
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let text = folder.text().map_err(Refusal)?;
@@ -1518,8 +1493,7 @@ async fn rename_now(api: &Arc<Api>, project: &Arc<Project>, id: &str, asked: Ren
     canvas::moved(folder, id, &from, &to).map_err(Refusal)?;
     // Under `walking`, as a walk's end is: it is over, or it follows this.
     let walking = project.walking.lock().expect("walking lock");
-    // A machine holding it walks it there, and has this already.
-    let follows = *walking && folder.walk_now().map_err(Refusal)?.held.is_none();
+    let follows = *walking;
     if follows || old.is_some() || !stamps.is_empty() {
         folder
             .update_lock(|lock| {
@@ -1655,9 +1629,7 @@ async fn runs(
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let idempotency = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
-    if let Some(handed) = takeover::render(&api, &project, &asked, idempotency.as_ref()).await? {
-        return Ok(handed);
-    }
+    project.unsent.lock().expect("unsent lock").clear();
     if let Some((key, digest)) = &idempotency {
         // Kept in the walk's file too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
         let held = project.folder.walk_now().map_err(Refusal)?;
@@ -1875,12 +1847,8 @@ async fn cancel(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Cancelled>, Refusal> {
-    let body = body?;
-    let asked: Cancel = parse(&body)?;
+    let asked: Cancel = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(answer) = takeover::forward(&api, &project, "cancel", &body).await? {
-        return Ok(Json(answer));
-    }
     Ok(Json(cancelled(&api, &project, &asked.names, &|_| "canceled".to_owned())?))
 }
 
@@ -2125,12 +2093,8 @@ async fn approve(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Approved>, Refusal> {
-    let body = body?;
-    let asked: Approve = parse(&body)?;
+    let asked: Approve = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(answer) = takeover::forward(&api, &project, "approve", &body).await? {
-        return Ok(Json(answer));
-    }
     let folder = &project.folder;
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &asked.name).map_err(Refusal)?;
@@ -2184,12 +2148,8 @@ async fn unpin(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Unpinned>, Refusal> {
-    let body = body?;
-    let asked: Unpin = parse(&body)?;
+    let asked: Unpin = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(answer) = takeover::forward(&api, &project, "unpin", &body).await? {
-        return Ok(Json(answer));
-    }
     let folder = &project.folder;
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &asked.name).map_err(Refusal)?;
@@ -2743,7 +2703,6 @@ impl Walk {
     }
 
     fn say(&self, event: Event) {
-        self.project.moved.store(now_ms(), Ordering::Relaxed);
         self.project.jobs.told(&event);
         if matches!(event, Event::Started { .. }) {
             self.sync();
@@ -4296,7 +4255,7 @@ impl Walk {
         let cache = self.host.cache().join("cuts");
         let cutting_name = name.clone();
         let fps = canvas.fps;
-        let (rendering, rendered, moved) = (self.project.rendering.clone(), asset.name.clone(), self.project.moved.clone());
+        let (rendering, rendered) = (self.project.rendering.clone(), asset.name.clone());
         rendering.lock().expect("rendering lock").insert(rendered.clone(), 0.0);
         crate::events::project_settled(&folder.dir);
         let cutting_result = tokio::task::spawn_blocking(move || {
@@ -4304,7 +4263,6 @@ impl Walk {
             let dir = project.folder.dir.clone();
             // Each twentieth, so a page shows it moving and reads the project a few times, however long the film.
             let told = move |done: f64| {
-                moved.store(now_ms(), Ordering::Relaxed);
                 let mut now = rendering.lock().expect("rendering lock");
                 if now.get(&rendered).is_none_or(|was| done - was >= 0.05) {
                     now.insert(rendered.clone(), done.min(1.0));

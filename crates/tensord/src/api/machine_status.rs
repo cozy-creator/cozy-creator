@@ -21,7 +21,8 @@ use tokio_stream::{wrappers::IntervalStream, Stream, StreamExt};
 /// and a slot a run names no model for takes its declared default. `live-source/2`: that
 /// manifest may also name the uv indexes its project's sources use without declaring them and the
 /// local path dependencies its lock installs, and a locked project installs whatever indexes
-/// they name.
+/// they name. `env-runtime/1`: a package whose Runtime floor the machine's pair misses gets a Runtime that meets it in its own
+/// environment; a floor nothing meets is refused `runtime_floor_unmet`, the package's to fix, not the machine's age.
 pub const CAPABILITIES: &[&str] = &[
     "status/1",
     "run/1",
@@ -35,6 +36,7 @@ pub const CAPABILITIES: &[&str] = &[
     "remove/1",
     "live-source/1",
     "live-source/2",
+    v1::ENV_RUNTIME,
 ];
 
 const LIVE: [&str; 3] = ["queued", "starting", "running"];

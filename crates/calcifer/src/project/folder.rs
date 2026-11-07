@@ -523,38 +523,6 @@ pub struct WalkFile {
     pub pending: BTreeMap<String, Pending>,
     #[serde(default)]
     pub walk: Owed,
-    /// Another machine holds this folder's render, and this Calcifer collects what it makes (`takeover`). The one way a render's state
-    /// leaves the folder: while it's set, nothing walks here.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held: Option<Held>,
-}
-
-/// Who holds a folder's render, and what's on its way to them.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Held {
-    /// This computer's name for the machine.
-    pub machine: String,
-    /// The project's id there, once it took it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub id: String,
-    /// project.yaml as both last had it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub base: String,
-    /// Renders asked here and not yet answered there, each under its `Idempotency-Key`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub asking: Vec<Handing>,
-    /// Each key a render was asked under while it holds, and that ask's digest.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub keys: BTreeMap<String, String>,
-    /// The other machines it drives, which admit its key until the hold ends.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub drives: BTreeSet<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Handing {
-    pub key: String,
-    pub runs: protocol::project::Runs,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -583,7 +551,7 @@ pub fn bind_calcifer(dir: &Path) -> Result<(), Error> {
 
 impl WalkFile {
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.walk.is_empty() && self.held.is_none()
+        self.pending.is_empty() && self.walk.is_empty()
     }
 }
 
@@ -816,39 +784,6 @@ impl Lock {
             if name.is_some() {
                 held.ext = ext;
             }
-        }
-    }
-
-    /// What `other`, another computer's copy of this project's lock, knows that this one doesn't: each version of an asset `named` names, or
-    /// that this one holds, and each file. `holder`: `other` walked it, so what failed and was tried is its word.
-    pub fn absorb(&mut self, other: &Lock, named: impl Fn(&str) -> bool, holder: bool) {
-        for (key, theirs) in &other.assets {
-            if !named(key) && !self.assets.contains_key(key) {
-                continue;
-            }
-            let mine = self.assets.entry(key.clone()).or_default();
-            if mine.name.is_empty() {
-                (mine.name, mine.kind) = (theirs.name.clone(), theirs.kind.clone());
-            }
-            for version in &theirs.versions {
-                if !mine.versions.iter().any(|held| held.number == version.number) {
-                    mine.versions.push(version.clone());
-                }
-            }
-            mine.versions.sort_by_key(|version| version.number);
-            mine.numbered = mine.numbered.max(theirs.numbered);
-            if holder {
-                (mine.tried, mine.failed) = (theirs.tried.clone(), theirs.failed.clone());
-            }
-        }
-        for (sha256, file) in &other.files {
-            self.files.entry(sha256.clone()).or_insert_with(|| File { machine: String::new(), ..file.clone() });
-        }
-        for (key, tags) in &other.reserved {
-            self.reserved.entry(key.clone()).or_insert_with(|| tags.clone());
-        }
-        for (key, makes) in &other.makes {
-            self.makes.entry(key.clone()).or_insert_with(|| makes.clone());
         }
     }
 
@@ -1192,12 +1127,11 @@ impl Folder {
             let mut lock = self.lock_file()?;
             let kept = self.walk_kept()?;
             let before = kept.as_ref().map(|walk| (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes")));
-            let held = kept.as_ref().and_then(|walk| walk.held.clone());
             if let Some(walk) = kept {
                 (lock.pending, lock.walk) = (walk.pending, walk.walk);
             }
             change(&mut lock);
-            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk), held };
+            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
             let after = (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes"));
             // Unchanged, it isn't written.
             *moved.borrow_mut() = (before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty())).then_some(walk);
@@ -1332,17 +1266,6 @@ impl Folder {
             // Another disk.
             Err(_) => std::fs::copy(at, part).and_then(|_| std::fs::remove_file(at)),
         })
-    }
-
-    /// The held file at `at` put where project.lock has it, whatever it is. Err: why not.
-    pub fn place_held(&self, at: &Path, path: &str) -> Result<(), String> {
-        let to = self.path(path);
-        let placed = to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| match std::fs::rename(at, &to) {
-            Ok(()) => Ok(()),
-            // Another disk.
-            Err(_) => std::fs::copy(at, &to).and_then(|_| std::fs::remove_file(at)),
-        });
-        placed.map_err(|e| format!("{}: {e}", to.display()))
     }
 
     /// `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock. Err: why not.
@@ -1525,7 +1448,7 @@ impl Folder {
 }
 
 /// `text` as a lock of this format. A lock of another isn't read, so nothing writes over it.
-pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
+fn parse_lock(text: &str) -> Result<Lock, Error> {
     let unreadable = |why: String| Error::new(Kind::Validation, UNREADABLE, format!("{LOCK}: {why}"));
     let value = protocol::yaml::to_json(text).map_err(unreadable)?;
     match value["format"].as_u64() {

@@ -14,7 +14,6 @@ base64.workspace = true
 platform = { workspace = true, features = ["fetch"] }
 protocol.workspace = true
 ed25519-dalek = { workspace = true, features = ["pem", "pkcs8"] }
-eventsource-stream.workspace = true
 futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true

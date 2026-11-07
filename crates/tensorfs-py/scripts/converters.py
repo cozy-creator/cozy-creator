@@ -65,6 +65,9 @@ H3_SCRIPT = (
     "86f61f62934d1eccf2a76ec57b6d072e2c23767c6e49d96aa1cf24d40422b42c",
 )
 H3_REFERENCE = "hf://MiniMaxAI/MiniMax-H3@42ed227ee7df40d41602854ae760620d6eb651fe"
+# DoRA's per-output-channel magnitude, `[out]` or `[out, 1]`: kohya's, LyCORIS', OneTrainer's and ComfyUI's `dora_scale`,
+# PEFT's `lora_magnitude_vector` (`save_and_load.py` drops its adapter name and `.weight`).
+MAGNITUDE = [".dora_scale", ".lora_magnitude_vector"]
 SEEDVR = "https://raw.githubusercontent.com/ByteDance-Seed/SeedVR/e4de8c24441a67e1b7df56abea10645059bb1185/"
 
 
@@ -481,7 +484,7 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
     for stem in ("transformer.transformer_blocks.{N}.adaln_proj.linear", "diffusion_model.blocks.{N}.adaln_proj.linear"):
         rows.append(["transformer_blocks.{N}.adaln_curve", stem, curve, {"N": blocks}])
     lora = {"a": [".lora_A.weight", ".lora_down.weight", ".curve_A.weight"],
-            "b": [".lora_B.weight", ".lora_up.weight", ".curve_B.weight"], "alpha": [".alpha"]}
+            "b": [".lora_B.weight", ".lora_up.weight", ".curve_B.weight"], "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": "h3.lora", "producers": H3_LORA_PRODUCERS, "lora": lora, "constants": {"adaln_t_table": adaln_t_table()},
             "components": [{"name": "transformer", "rows": rows}]}
 
@@ -574,7 +577,8 @@ def sdxl_lora(table: dict[str, Any], layers: dict[str, dict[str, tuple[int, ...]
             ops = {"io": [shape[1], shape[0]]} | ({"kernel": list(shape[2:])} if len(shape) == 4 else {})
             rows.extend([module, stem, ops] for stem in stems[module])
         components.append({"name": c["name"], "prefix": prefix, "rows": rows})
-    lora = {"a": [".lora_down.weight", ".lora_A.weight"], "b": [".lora_up.weight", ".lora_B.weight"], "alpha": [".alpha"]}
+    lora = {"a": [".lora_down.weight", ".lora_A.weight"], "b": [".lora_up.weight", ".lora_B.weight"], "alpha": [".alpha"],
+            "magnitude": MAGNITUDE}
     return {"name": "sdxl.lora", "lora": lora, "components": components}
 
 
@@ -635,7 +639,8 @@ def krea2_lora() -> dict[str, Any]:
             mine = [k for k in keys if k.startswith(c["prefix"])] if c["prefix"] else []
             assert all(k[len(c["prefix"]):].rsplit(".", 2)[0] in stems for k in mine), (vector, c["prefix"])
         assert any(k.startswith(c["prefix"]) for c in components[:-1] for k in keys), vector
-    lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"]}
+    lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"],
+            "magnitude": MAGNITUDE}
     return {"name": "krea2.lora", "lora": lora, "components": components}
 
 
@@ -654,9 +659,10 @@ def qwenimage21_lora() -> dict[str, Any]:
     into `gate_up`, `[gate; proj]` (`comfy/lora.py` `model_lora_keys_unet`), and LoRAs trained on it
     (AI-Toolkit's) adapt that under `diffusion_model.` and `lora_unet_`: A as is, B's halves. Factors are
     PEFT's (also under DiffSynth's adapter name, `lora_A.default`), kohya's, LightX2V's `lora.down`/
-    `lora.up` and PDD's bare `lora_down`/`lora_up` parameters. A PDD export keeps one output head per step
-    (`proj_out.weight` `[steps, 64, 4096]`, `qwenimage21_pdd.py`), stored as `proj_out.heads`; its
-    replacement q/k and text norms equal the base's to bf16 rounding and are left out."""
+    `lora.up` and PDD's bare `lora_down`/`lora_up` parameters, with a DoRA's magnitudes (`dora_scale`, e-n-v-y's
+    Fix; split like B). A PDD export keeps one output head per step (`proj_out.weight` `[steps, 64, 4096]`,
+    `qwenimage21_pdd.py`), stored as `proj_out.heads`; its replacement q/k and text norms equal the base's to
+    bf16 rounding and are left out, by name (`optional`)."""
     model = construct("diffusers:QwenImage21Transformer2DModel", reference_config(QWEN21_REFERENCE, "transformer/config.json"))
     census = {n: (m.in_features, m.out_features) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
 
@@ -674,6 +680,8 @@ def qwenimage21_lora() -> dict[str, Any]:
         for prefix, spell in spellings.items()
     ]
     components[-1]["keep"] = [["proj_out.heads", "proj_out.weight", {"io": list(census["proj_out"])}]]
+    norms = [n for n, m in model.named_modules() if n.endswith((".norm_q", ".norm_k")) or n == "txt_in.text_norm"]
+    components[-1]["optional"] = [f"{n}.weight" for n in norms]
     for c in components:
         if c["prefix"] not in ("diffusion_model.", "lora_unet_"):
             continue
@@ -685,26 +693,257 @@ def qwenimage21_lora() -> dict[str, Any]:
                     ops = {"io": [fan_in, 2 * fan_out], "b": {"view": [2, -1], "take": [0, [half]], "shape": [fan_out, -1]}}
                     c["rows"].append([target, stem, ops])
     # Each published LoRA is spelled as some component's rows say: every factor at its row's shape, else
-    # PDD's heads and its norms (left out).
+    # PDD's heads and its norms (left out by name).
     a = (".lora_A.weight", ".lora_down.weight", ".lora.down.weight", ".lora_down", ".lora_A.default.weight")
     b = (".lora_B.weight", ".lora_up.weight", ".lora.up.weight", ".lora_up", ".lora_B.default.weight")
     for vector in ("qwen-image-2.1-lightning", "turbo8_lora_step2500", "Qwen-Image-2.1-Fun-Acc-4Step",
-                   "qwen-image-2.1-qma-camera-angles", "Qwen2.1_Anime_consistency"):
+                   "qwen-image-2.1-qma-camera-angles", "Qwen2.1_Anime_consistency", "qwen-image-2.1-fix-1.0-comfy"):
         keys = header(QWEN21 / f"{vector}.safetensors.header")
         prefix = max((c["prefix"] for c in components if all(k.startswith(c["prefix"]) for k in keys)), key=len)
         c = next(c for c in components if c["prefix"] == prefix)
         io = {stem: tuple(ops["io"]) for _, stem, ops in c["rows"]}
         for key, (_, shape) in keys.items():
             local = key.removeprefix(prefix)
-            stem, factor = next(((local.removesuffix(s), f) for f, ss in (("a", a), ("b", b)) for s in ss if local.endswith(s)), (None, None))
+            spelling = (("a", a), ("b", b), ("m", MAGNITUDE))
+            stem, factor = next(((local.removesuffix(s), f) for f, ss in spelling for s in ss if local.endswith(s)), (None, None))
             if stem is None:
-                assert (local == "proj_out.weight" and tuple(shape[1:]) == census["proj_out"][::-1]) or local.endswith(
-                    ("norm_q.weight", "norm_k.weight", "text_norm.weight")), (vector, key)
+                assert (local == "proj_out.weight" and tuple(shape[1:]) == census["proj_out"][::-1]) or (
+                    local in c.get("optional", [])), (vector, key)
                 continue
             fan_in, fan_out = io[stem]
             assert (shape[1] == fan_in) if factor == "a" else (shape[0] == fan_out), (vector, key, shape)
-    lora = {"a": list(a), "b": list(b), "alpha": [".alpha"]}
+            assert factor != "m" or tuple(shape[1:]) in ((), (1,)), (vector, key, shape)
+    lora = {"a": list(a), "b": list(b), "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": "qwenimage21.lora", "lora": lora, "components": components}
+
+
+# ------------------------------------------------------------------ ComfyUI single files
+
+FAMILIES = ROOT.parent / "tensorfs" / "families"
+QWEN21_COMFY = VECTORS / "qwen-image-2.1-comfy-headers"
+# A family component in ComfyUI's single-file layout: its own (Diffusers') names under `prefix`, but for the
+# linears ComfyUI's model fuses, each stored as the concatenation of the family's along the output axis, in the
+# order `fused` names them. The headers are published files in it, plain and quantized.
+COMFY = {
+    "qwenimage21.comfy": {
+        "family": "qwen-image-2", "component": "transformer", "prefix": "", "reference": QWEN21_REFERENCE,
+        "model": "diffusers:QwenImage21Transformer2DModel", "config": "transformer/config.json",
+        # comfy/ldm/qwen_image21/model.py (ComfyUI 1332fabf) SwiGLUFeedForward: `gate_up` is [gate; up], silu(gate) * up.
+        "fused": {"img_mlp.gate_up": ["img_mlp.gate_layer", "img_mlp.proj"]},
+        "headers": ["qwen_image_2.1_bf16", "NoctQ_V4_int8_convrot"],
+    },
+}
+# A quantized carrier's companion tensors beside its `weight` (ComfyUI's `comfy_quant` marker and scale).
+COMPANIONS = (".comfy_quant", ".weight_scale")
+
+
+def comfy_single_file(name: str) -> dict[str, Any]:
+    """A family component from ComfyUI's single file: each of the family's keys, in its model's construction order,
+    read by its own name, or as its slice of the tensor ComfyUI fuses it into."""
+    spec = COMFY[name]
+    family = json.loads((FAMILIES / f"{spec['family']}.json").read_text())
+    keys = {k: tuple(shape) for k, shape in family["components"][spec["component"]]["keys"]}
+    model = construct(spec["model"], reference_config(spec["reference"], spec["config"]))
+    census = {k: tuple(v.shape) for k, v in model.state_dict().items()}
+    assert census == keys, (name, "the model's census is not the family's component")
+    rows, sources = [], {}
+    for target, shape in census.items():
+        module, _, param = target.rpartition(".")
+        found = [(module.removesuffix(member) + stem, j, len(members)) for stem, members in spec["fused"].items()
+                 for j, member in enumerate(members) if module == member or module.endswith("." + member)]
+        if not found:
+            rows.append(row(target, target))
+            sources[target] = shape
+            continue
+        [(fused, j, n)] = found
+        # Rows lead (`-1` for the rest), so a row-wise quantized tensor is cut into whole rows (engine `selected_rows`).
+        ops = {"view": [n, -1], "take": [0, [j]], "shape": [shape[0], -1] if len(shape) > 1 else [-1]}
+        stand_in = np.arange(n * math.prod(shape)).reshape(n * shape[0], *shape[1:])
+        assert np.array_equal(apply(stand_in, ops), np.split(stand_in, n)[j]), target
+        rows.append(row(target, f"{fused}.{param}", ops))
+        assert sources.setdefault(f"{fused}.{param}", (n * shape[0], *shape[1:])) == (n * shape[0], *shape[1:]), target
+    for vector in spec["headers"]:
+        held = {k.removeprefix(spec["prefix"]): s for k, (_, s) in header(QWEN21_COMFY / f"{vector}.safetensors.header").items()
+                if not k.endswith(COMPANIONS)}
+        assert held == sources, (name, vector, sorted(set(held) ^ set(sources))[:4])
+    component = {"name": spec["component"], "prefix": spec["prefix"], "rows": rows}
+    return {"name": name, "reference": spec["reference"], "components": [component]}
+
+
+# ------------------------------------------------------------------ FLUX.2, FLUX.3 Klein and FIBO 2 LoRAs
+
+#: PEFT's and Diffusers' factors (also under DiffSynth's and PEFT's adapter name), and kohya's.
+DIT_A = (".lora_A.weight", ".lora_down.weight", ".lora_A.default.weight")
+DIT_B = (".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight")
+#: One native module onto Diffusers' (diffusers 0.41.0 `convert_flux2_transformer_checkpoint_to_diffusers`): several
+#: targets split its rows evenly (a fused Q/K/V's thirds), `swap` swaps its halves (BFL's adaLN is [shift; scale],
+#: Diffusers' [scale; shift]). `{i}` is each block.
+FLUX2_NATIVE = [
+    ("double_blocks.{i}.img_attn.qkv", ["transformer_blocks.{i}.attn.to_q", "transformer_blocks.{i}.attn.to_k", "transformer_blocks.{i}.attn.to_v"]),
+    ("double_blocks.{i}.txt_attn.qkv", [f"transformer_blocks.{{i}}.attn.add_{p}_proj" for p in "qkv"]),
+    ("double_blocks.{i}.img_attn.proj", ["transformer_blocks.{i}.attn.to_out.0"]),
+    ("double_blocks.{i}.txt_attn.proj", ["transformer_blocks.{i}.attn.to_add_out"]),
+    ("double_blocks.{i}.img_mlp.0", ["transformer_blocks.{i}.ff.linear_in"]),
+    ("double_blocks.{i}.img_mlp.2", ["transformer_blocks.{i}.ff.linear_out"]),
+    ("double_blocks.{i}.txt_mlp.0", ["transformer_blocks.{i}.ff_context.linear_in"]),
+    ("double_blocks.{i}.txt_mlp.2", ["transformer_blocks.{i}.ff_context.linear_out"]),
+    ("single_blocks.{i}.linear1", ["single_transformer_blocks.{i}.attn.to_qkv_mlp_proj"]),
+    ("single_blocks.{i}.linear2", ["single_transformer_blocks.{i}.attn.to_out"]),
+    ("img_in", ["x_embedder"]),
+    ("txt_in", ["context_embedder"]),
+    ("time_in.in_layer", ["time_guidance_embed.timestep_embedder.linear_1"]),
+    ("time_in.out_layer", ["time_guidance_embed.timestep_embedder.linear_2"]),
+    ("guidance_in.in_layer", ["time_guidance_embed.guidance_embedder.linear_1"]),
+    ("guidance_in.out_layer", ["time_guidance_embed.guidance_embedder.linear_2"]),
+    ("double_stream_modulation_img.lin", ["double_stream_modulation_img.linear"]),
+    ("double_stream_modulation_txt.lin", ["double_stream_modulation_txt.linear"]),
+    ("single_stream_modulation.lin", ["single_stream_modulation.linear"]),
+    ("final_layer.linear", ["proj_out"]),
+    ("final_layer.adaLN_modulation.1", ["norm_out.linear"], "swap"),
+]
+#: FLUX.3's (diffusers@7ecb1e1b, the flux-3-klein package's pin, `convert_flux3_transformer_checkpoint_to_diffusers`): renames.
+FLUX3_BLOCK = [("q_proj", "attn.to_q"), ("k_proj", "attn.to_k"), ("v_proj", "attn.to_v"), ("attn_out", "attn.to_out.0"),
+               ("mlp_in", "ff.linear_in"), ("mlp_out", "ff.linear_out")]
+FLUX3_NATIVE = [
+    *((f"content_mode_blocks.{m}.{{i}}.{n}", [f"mode_blocks.{m}.{{i}}.{d}"]) for m in ("image", "image_cond") for n, d in FLUX3_BLOCK),
+    *((f"txt_mode_blocks.{{i}}.{n}", [f"txt_mode_blocks.{{i}}.{d}"]) for n, d in FLUX3_BLOCK),
+    *((f"single_blocks.{{i}}.{n}", [f"single_transformer_blocks.{{i}}.{d}"]) for n, d in FLUX3_BLOCK),
+    *((f"emb_in.{m}", [f"x_embedders.{m}"]) for m in ("image", "image_cond")),
+    ("txt_in", ["context_embedder"]),
+    *((f"{s}_stream_modulations.{m}.lin", [f"{s}_stream_modulations.{m}.linear"]) for s in ("early", "single") for m in ("image", "image_cond", "txt")),
+    ("time_in.in_layer", ["timestep_embedder.linear_1"]),
+    ("time_in.out_layer", ["timestep_embedder.linear_2"]),
+    ("ref_time_in.in_layer", ["target_timestep_embedder.linear_1"]),
+    ("ref_time_in.out_layer", ["target_timestep_embedder.linear_2"]),
+    ("final_layer.image.linear", ["proj_out"]),
+    ("final_layer.image.adaLN_modulation.1", ["norm_out.linear"], "swap"),
+]
+
+
+def family_linears(name: str, component: str = "transformer") -> dict[str, tuple[int, int]]:
+    """A family's linears as its reference header has them (`families/<name>.json`): `{module: (in, out)}`."""
+    keys = json.loads((FAMILIES / f"{name}.json").read_text())["components"][component]["keys"]
+    return {k.removesuffix(".weight"): (s[1], s[0]) for k, s in keys if k.endswith(".weight") and len(s) == 2}
+
+
+def native_rows(census: dict[str, tuple[int, int]], rules: list[tuple[Any, ...]], reference: Path) -> list[list[Any]]:
+    """Each Diffusers linear's row from its native module, checked against the BFL reference header: every
+    native module's shape is its targets', and every native linear is mapped."""
+    native = {k.removesuffix(".weight"): s for k, (_, s) in header(reference).items() if k.endswith(".weight") and len(s) == 2}
+    rows, mapped = [], set()
+    for stem, targets, *how in rules:
+        for i in range(1000) if "{i}" in stem else [0]:
+            names = [t.replace("{i}", str(i)) for t in targets]
+            if not all(n in census for n in names):
+                assert "{i}" in stem and i > 0, (reference.name, names)
+                break
+            source = stem.replace("{i}", str(i))
+            fan_out, fan_in = native[source]
+            outs = {census[n][1] for n in names}
+            assert {census[n][0] for n in names} == {fan_in} and len(outs) == 1 and outs.pop() * len(names) == fan_out, source
+            for j, target in enumerate(names):
+                ops: dict[str, Any] = {"io": [fan_in, fan_out]}
+                if how == ["swap"]:
+                    ops["b"] = {"view": [2, -1], "take": [0, [1, 0]], "shape": [fan_out, -1]}
+                elif len(names) > 1:
+                    ops["b"] = {"view": [len(names), -1], "take": [0, [j]], "shape": [fan_out // len(names), -1]}
+                rows.append([target, source, ops])
+            mapped.add(source)
+    assert mapped == set(native), (reference.name, sorted(set(native) - mapped)[:5])
+    return rows
+
+
+def dit_lora(name: str, family: str, native: list[list[Any]], keep: list[list[Any]], vectors: dict[str, bool]) -> dict[str, Any]:
+    """LoRA factors onto every linear of a Diffusers DiT, in each spelling a published loader reads: Diffusers'
+    names under `transformer.` (Diffusers' `save_lora_weights`, SimpleTuner), `diffusion_model.` or bare
+    (ComfyUI, DiffSynth-Studio), `base_model.model.` (PEFT), and kohya's flattened `lora_unet_` and `lycoris_`,
+    with ComfyUI's `to_out` for `to_out.0`; and the native (BFL) names under `diffusion_model.` or bare (ComfyUI,
+    AI-Toolkit) and flattened under `lora_unet_` (kohya), a fused module's B rows split among its targets. Each
+    banked LoRA `vectors[path]` is one this table claims, every factor at its row's shape, or (False) one it
+    leaves unclaimed: more than half its keys are no module's."""
+    census = family_linears(family)
+
+    def spelled(d: str) -> list[str]:
+        return [d, d.removesuffix(".0")] if d.endswith(".to_out.0") else [d]
+
+    diffusers = [[d, s, {"io": list(io)}] for d, io in census.items() for s in spelled(d)]
+    flat = lambda rows: [[t, s.replace(".", "_"), o] for t, s, o in rows]  # noqa: E731
+    spellings = {
+        "transformer.": diffusers,
+        "diffusion_model.": diffusers + native,
+        "base_model.model.": [[d, d, {"io": list(io)}] for d, io in census.items()],
+        "lora_unet_": flat(diffusers) + flat(native),
+        "lycoris_": flat(diffusers),
+        "": diffusers + native,
+    }
+    components = [{"name": "transformer", "prefix": prefix, "rows": rows} for prefix, rows in spellings.items()]
+    if keep:
+        components[-1]["keep"] = keep
+    for c in components:
+        targets: dict[str, set[str]] = {}
+        for target, stem, ops in c["rows"]:
+            targets.setdefault(stem, set()).add(target)
+            assert target in census, (name, target)
+        split = {s for t, s, o in c["rows"] if "b" in o}
+        assert all(len(t) == 1 or s in split for s, t in targets.items()), (name, c["prefix"])
+    for vector, claimed in vectors.items():
+        keys = header(VECTORS / vector)
+        known = 0
+        for key, (_, shape) in keys.items():
+            c = max((c for c in components if key.startswith(c["prefix"])), key=lambda c: len(c["prefix"]))
+            local = key[len(c["prefix"]):]
+            if any(local == r[1] and tuple(shape[1:]) == tuple(r[2]["io"][::-1]) for r in c.get("keep", [])):
+                known += 1
+                continue
+            stem, factor = next(((local.removesuffix(s), f) for f, ss in (("a", DIT_A), ("b", DIT_B), ("alpha", (".alpha",)), ("m", MAGNITUDE))
+                                 for s in ss if local.endswith(s)), (None, None))
+            io = [r[2]["io"] for r in c["rows"] if r[1] == stem]
+            fits = bool(io) and (factor == "alpha" or (shape[1] == io[0][0] if factor == "a" else shape[0] == io[0][1]))
+            assert fits or not claimed, (vector, key, shape)
+            known += fits
+        assert (known * 2 > len(keys)) == claimed, (vector, known, len(keys))
+    lora = {"a": list(DIT_A), "b": list(DIT_B), "alpha": [".alpha"], "magnitude": MAGNITUDE}
+    return {"name": name, "lora": lora, "components": components}
+
+
+FLUX2 = VECTORS / "flux2-headers"
+FLUX3 = VECTORS / "flux3-klein-headers"
+FIBO2 = VECTORS / "fibo2-headers"
+
+
+def flux2_lora() -> dict[str, Any]:
+    census = family_linears("flux-2")
+    native = native_rows(census, FLUX2_NATIVE, FLUX2 / "flux2-dev.safetensors.header")
+    vectors = {f"flux2-headers/{v}.safetensors.header": True for v in (
+        "flux.2-turbo-lora", "Flux_2-Turbo-LoRA_comfyui", "flux2_berthe_morisot", "tarot-trtcrd-style")}
+    return dit_lora("flux2.lora", "flux-2", native, [], vectors)
+
+
+def flux3klein_lora() -> dict[str, Any]:
+    """Also PDD's per-step output heads (NoiseToNova's Turbo): `proj_out.weight` `[steps, out, in]` in its PEFT
+    export, `pdd.heads` in its ComfyUI one, both stored as `proj_out.heads`."""
+    census = family_linears("flux-3-klein")
+    native = native_rows(census, FLUX3_NATIVE, FLUX3 / "flux-3-image-klein.safetensors.header")
+    heads = {"io": list(census["proj_out"])}
+    keep = [["proj_out.heads", "proj_out.weight", heads], ["proj_out.heads", "pdd.heads", heads]]
+    vectors = {f"flux3-klein-headers/{v}.safetensors.header": True for v in (
+        "simpletuner-photo-aesthetics", "klein-angles", "RadianceChromeVoluptuous_Flux3Klein_v1.0", "alphajace_klein_comfy",
+        "Flux-3-Klein-turbo-pdd-4_8-steps-comfy", "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128",
+        # The Klein LoRAs Cozy mirrors (outputs/web-ui/mirrors, items 21-32).
+        "ausboss-flux-3-image-klein-outpaint", "ausboss-flux-3-image-klein-consistency", "ausboss-flux-3-image-klein-restore",
+        "denrakeiw-360_f3", "lilylilith-F.3K_FontBox_v2", "whoforscuba-party_time_v2.1_flux3", "andux-sexypose_klein3_tal3000",
+        "zoefollonier-missionary_v2_test_3000", "drdrt-DRDNSFW01h", "coachbate-flux.3_image_penis_21000",
+        "shizoghost-flux3-cock-15000-v1")}
+    return dit_lora("flux3klein.lora", "flux-3-klein", native, keep, vectors)
+
+
+def fibo2_lora() -> dict[str, Any]:
+    """Diffusers' names only: FIBO 2's ComfyUI exports fuse Q/K/V (and K/V, w1/w3) block-diagonally and pad the
+    FFN to 9728, which no row op expresses."""
+    vectors = {f"fibo2-headers/{v}.safetensors.header": claimed for v, claimed in (
+        ("fibo-2-anime", True), ("fibo-2-edit-idm-1step", True), ("Natural-Exposure-Fibo-2.0-dev-4000", True),
+        ("Fibo-2.0-Anime-LoRA-ComfyUI", False), ("akhaliq-pytorch_lora_weights", True))}
+    return dit_lora("fibo2.lora", "fibo-2", [], [], vectors)
 
 
 # ------------------------------------------------------------------ SeedVR2
@@ -931,6 +1170,10 @@ def generate() -> dict[str, dict[str, Any]]:
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
         "qwenimage21.lora": qwenimage21_lora(),
+        **{name: comfy_single_file(name) for name in COMFY},
+        "flux2.lora": flux2_lora(),
+        "flux3klein.lora": flux3klein_lora(),
+        "fibo2.lora": fibo2_lora(),
         "seedvr2": seedvr2(),
         "h3.latent_upscaler": h3_latent_upscaler(),
         "ideogram4.fp8": ideogram4(),

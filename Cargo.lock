@@ -354,13 +354,12 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "calcifer"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
  "ed25519-dalek",
- "eventsource-stream",
  "futures-util",
  "getrandom 0.3.4",
  "hex",
@@ -510,7 +509,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "anstream",
  "anstyle",
@@ -650,7 +649,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cozy"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "calcifer",
  "cli",
@@ -1181,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "executor-protocol"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "base64 0.23.1",
  "pyo3",
@@ -1705,7 +1704,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hub-client"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -2572,7 +2571,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "platform"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "flate2",
  "getrandom 0.3.4",
@@ -2595,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "platform-signal"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "rustix",
  "windows-sys 0.61.2",
@@ -2654,7 +2653,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3939,7 +3938,7 @@ dependencies = [
 
 [[package]]
 name = "tensord"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -3991,7 +3990,7 @@ dependencies = [
 
 [[package]]
 name = "tensorfs"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "backon",
@@ -4020,12 +4019,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "varena",
+ "varena-ledger",
  "webpki-roots",
 ]
 
 [[package]]
 name = "tensorfs-py"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "executor-protocol",
@@ -4039,6 +4039,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "varena",
+ "varena-ledger",
 ]
 
 [[package]]
@@ -4461,7 +4462,7 @@ dependencies = [
 
 [[package]]
 name = "varena"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "libc",
  "libloading 0.9.0",
@@ -4481,14 +4482,15 @@ dependencies = [
 
 [[package]]
 name = "varena-ledger"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "libc",
+ "platform",
 ]
 
 [[package]]
 name = "varena-ledger-cells"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "libc",
  "varena-ledger",

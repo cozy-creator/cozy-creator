@@ -10,7 +10,6 @@
 #   5. Every byte of the store is a model `model ls` names.
 # Each package is the release its interface was read at (`cozy run <fn>@<release> --describe`, 11-05).
 # params:
-#   traffic_gb  GB the provider bills (default 130)
 #   need_s      seconds the guard must buy (default 2700)
 . "$(dirname "$0")/lib.sh"
 # A step's run: its follower's first line is `run <n> · <target>`, and only a completed run's ends with a bare `run <n>`.
@@ -22,7 +21,7 @@ reason() { jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OU
 warned() { { jq -r '.. | strings' "$OUT/$1.json" 2>/dev/null; cat "$OUT/$1.txt" 2>/dev/null; } | grep -E 'the disk was short|evicted' | sort -u; }
 disk() { cozy machine show "$NAME" --json | jq -r '.status | "\(.disk_free_bytes // 0) \(.disk_models_bytes // 0) \(.models_bytes // 0) \(.disk_total_bytes // 0)"'; }
 gib() { awk -v b="$1" 'BEGIN { printf "%.1f GiB", b / 1073741824 }'; }
-quote "$(param traffic_gb 130)" "$(param need_s 2700)"
+quote "$(param need_s 2700)"
 rent
 
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"

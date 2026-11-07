@@ -48,6 +48,7 @@ pub(super) fn read() -> HostMemory {
         mem_available: available,
         bound: total(),
         active: 0,
+        charged: total() - available,
     }
 }
 

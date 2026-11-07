@@ -15,13 +15,15 @@ answers, and restarts it when it runs another cozy than the installed one.
 Calcifer and the CLI are one binary, but a running Calcifer can be older than a freshly updated CLI. The CLI
 reads an answer that shows this as a version skew and never shows it as a bare 404 (`calcifer_client.rs`,
 `Client::exchange` and `Client::opened`, behind every `get`, `post`, `delete`, `text` and `watch`):
-- from a Calcifer of another version, a route it does not serve (`404 unknown_route`), an answer without fields
-  the CLI reads, or a request body it cannot read (`400 body_invalid`, the CLI's newer shape): the CLI says so,
-  restarts Calcifer on the installed cozy and asks once more. From a Calcifer of the CLI's own version these are
+- from a Calcifer of another version, a route it does not serve (`404 unknown_route`), a request body it cannot
+  read (`400 body_invalid`, the CLI's newer shape), or a read's answer without fields the CLI reads: the CLI says
+  so, restarts Calcifer on the installed cozy and asks once more. From a Calcifer of the CLI's own version these are
   refused as they are: a restart could not help. If the restarted Calcifer is the same version,
   it refuses with `calcifer_outdated` and the remedy (`cozy update`).
 - request fields Calcifer did not read: Calcifer names them in `Cozy-Ignored-Fields`. The ask was carried out
   without them, so it is never sent again; the CLI says so and restarts Calcifer for the next command.
+- a write's `2xx` whose answer the CLI can't read: it was carried out, so it is never sent again either
+  (`answer_unreadable`); the CLI restarts Calcifer for the next command.
 
 ## Security
 
@@ -59,6 +61,12 @@ one key is one ask, however often it is sent (`409 idempotency_conflict` when a 
 It answers `202` with the resource as it stands, or `200` when the key had already made it. Work that goes on
 after the answer is followed on the resource's events stream; a POST never answers with a stream. Content that
 names itself (files by `sha256:`) is written with an idempotent PUT instead.
+
+**Every project write can be sent again.** A POST, PATCH, PUT or DELETE under `/v1/projects/` that carries an
+`Idempotency-Key` is done once: the same key and the same ask (method, path and body) again is answered what it was
+the first time, with `Idempotent-Replayed: true`, across a restart too (kept a day in `state.db`), and one still going
+is waited for. The same key for another ask is `409 idempotency_conflict`. The CLI makes one key per call and the
+page one per outbox action and ask, so a resent undo steps once and a resent discard is no `404`.
 
 **Lists.** A list answers an object holding the plural field (`{"runs": [...]}`), newest first, with `limit`
 (default 50, at most 1000) and `before` (the last id or number seen) for the next page, and how many more match
@@ -242,8 +250,9 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 - `POST /v1/machines` (`NewMachine`):
   - `{"kind": "rent", sku, hub?, gpus?, disk_gb?, ssh_key?, agreed}`, with an `Idempotency-Key`. It answers
     `202 Rented {machine, quote, replay}`, or `200` on a replay. Follow the boot on the events until the
-    machine is `ready`, or `ended` without one. `agreed` is the quote's `agreed`, sent back as it came: a dearer order rents
-    nothing (`rental_price_rose`).
+    machine is `ready`, or `ended` without one. `agreed` is the quote's `agreed`, sent back as it came; the order is
+    capped at it (the Hub's `max_usd_micros_per_hour`, the quote's price when absent), and a dearer one rents nothing
+    (the Hub's `409 rental.price_rose`).
     - A Hub that does not answer is asked again under the same key, across restarts, so one order buys one
       pod at most. Until it answers, the order is a `booting` machine in the list, under the name it was asked
       with and with no `rental_id`. Another rent of the same thing joins it (`503 rental_order_pending`).
@@ -307,8 +316,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - A removed key's next call is refused.
 - `GET /v1/rental-skus[?hub=]`: `RentalSkus {rental_skus}`. These are the Hub's products for rent now,
   cheapest first by their fewest GPUs. A product the Hub cannot sell now, for any reason, is not listed.
-- `POST /v1/rental-quotes` (`NewMachine` rent): `Quote`, the Hub's price for exactly that order: `gpu_usd_micros_per_hour`, what a
-  person is shown, and `agreed {usd_micros_per_hour, usd_micros_per_gb}`, the terms an order sends back. So does `RunQuote.quote`. Nothing is
+- `POST /v1/rental-quotes` (`NewMachine` rent): `Quote`, the Hub's one price for exactly that order: `usd_micros_per_hour`, the
+  machine with its disk and traffic, what a person is shown, and `agreed {usd_micros_per_hour}`, the cap an order sends back. So does `RunQuote.quote`. Nothing is
   rented.
   - First it admits the product at that GPU count, never widening it to another: `400 sku_unknown`, or
     `507 sku_out_of_stock`, `sku_cooldown` or `sku_retry_in_progress`.
@@ -487,7 +496,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, files, path, stale, warnings?}`. `version` is a short run of digits, its version, or anything else a hash prefix, which pins any file of the project; `number` is 0 when it is no version's. Writes the version's main file's hash as that asset's `approved`, over what the file holds this moment.
   Makes any tool whose reads settled, with no machine.
 - `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale}`. Takes its `approved` away. A constant, nothing but its file, keeps it (`400 project_edit`).
-- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. With `from` under `assets:` and `to` free, project.yaml's key and every `<from>` and `<from.N>` change. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names now with no versions (`409 rename_taken`), and its canvas row moves. `400 project_name` when `to` can't be a name: it holds what a name can't, ends in `.` and digits, or is `self`. It happens at once, whatever is going, and changes nothing else: a render going says `to` from then on, what lands is `to`'s, and what reads it reads on, on a machine that holds the render too. Nothing on disk moves. A name is no input: what read it stands as it did, each key written anew.
+- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. With `from` under `assets:` and `to` free, project.yaml's key and every `<from>` and `<from.N>` change. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names now with no versions (`409 rename_taken`), and its canvas row moves. `400 project_name` when `to` can't be a name: it holds what a name can't, ends in `.` and digits, or is `self`. It happens at once, whatever is going, and changes nothing else: a render going says `to` from then on, what lands is `to`'s, and what reads it reads on. Nothing on disk moves. A name is no input: what read it stands as it did, each key written anew.
 - `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, unrecorded?, deleted?, next?, lost?}`. `unrecorded`: how many of the files nothing has a record of, which `yes` leaves. `yes` clears discarded versions, and keeps what another version names, a clip of an Edit's version cut, or a `<name.N>` in any text reads, with its record, a deleted asset's too. `lost` says why `yes` would be `409 project_history_lost`: project.lock is gone, can't be read, or lists no version or run while `files/` holds what nothing names. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too, and canvas rows nothing names (`409 project_busy` while it renders). Never automatic.
 - `POST /v1/projects/{id}/push` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Sends every file
   project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. A file over 5 GiB goes as 1 GiB parts,
@@ -495,9 +504,6 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects/{id}/pull` `{hub?}`: the same, fetching every file `files/` lacks, as real files, each held to its digest.
 - `POST /v1/projects/{id}/cancel` `{names}` (or `["all"]`): `{dropped?, canceled?}`. Drops their queued work and cancels their runs; nothing dropped is sent again.
 - `GET /v1/projects/{id}/events` (SSE): `board` when it opens, when a render begins or ends and if the stream falls behind, `job {job, seq}` for each job as it changes, `ahead {ahead}`, `started`, `landed`, `said {message, name?}`, `warning {message, name?}`, `failed {error, name?, run?}`, `moved`, `transferred`, `cut {name, cut, …}`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice, and with the `board` as it stands. Each `board` is the whole render, sent at each change, with nothing queued behind a slow reader: all a view needs, with no run to follow. `{seq, on, began_at_ms, elapsed_ms?, shots, jobs: [{asset, state, noun, number?, shot?, why?, run?, machine?, started_at_ms?, took_ms?, stage?, detail?, fraction?, stalled?, preview?: {label, path}, path?, seconds?, error?}]}`. `seq` only rises: keep the highest heard. `jobs` go what has ended, then what is going, then what waits. `state`: `waiting`, `running`, `done`, `failed`, `canceled`, `not_sent`. `why` is a sentence: `after a, b`, `comes with c`, `waiting for a GPU, held by d`, or what came of it. `shot` is which of the render's `shots` it makes, 1 first, what's queued counted: a `kind: video` its package makes, not a cut or a still, the same number for the whole render, and `shots` grows only as another render joins. `stage` and `detail` say where it is: `segment 2/2, denoise`, `14/30`. `preview` is what the run has shown so far while it goes on, never its result. A `warning`'s `name` is the asset whose run gave it, and the same `message` can come from several. `ended`'s `error` is the first failure, or when more than that was asked, `render_incomplete`: `rendered 6 of 15; 9 failed: <the first>`, with the command for the rest in `next`. A second run failing the same way on a machine stops what that render sends there, and cancels what it sent that has not begun.
-- **Another machine holds it**: no render is handed over any more (Paul, 11-05); this is a hold left from before, until the code goes. X's own Calcifer walks the render and keeps what it makes, and this one collects. `runs` answers at once and the hand-off goes on from `.runs/walk.json`'s `held`, under each ask's key, whatever stops it: `POST /v1/projects/take` on X through its door, what X lacks of the files as `PUT /v1/files/sha256:<hex>` there, then `runs` there. While X holds, `GET /v1/projects/{id}` and `events` show X's board, `held: {machine, until_ms?, files, bytes, heard_at_ms}` says what of it isn't here yet and when X ends (its idle deadline, after which what isn't collected is lost), `cancel`, `approve` and `unpin` go to X, `rename` is `409 project_busy`, and a render `--on local` is `409 project_held`. Edits here reach X's `project.yaml`, and what X writes of it (a pin) comes back. Other machines named are X's to drive: each admits X's key until the hold ends.
-- `POST /v1/projects/take` `{from, name, yaml, base?, lock, code?: [{path, sha256}]}`, on the machine that is to hold it: `{id, path, wants?}`. Its folder is `<home>/projects/<name>-<from's id>`, the same each time. `yaml` becomes its project.yaml (`409 project_changed` when the one here changed since `base`, its ETag, was read), `lock`'s versions join these, `code` is written at its paths from what `PUT /v1/files` holds, and `wants` is what still lacks of that and of the files what stands names.
-- `GET /v1/projects/{id}/taken`: `{yaml, etag, lock, files: [{path, sha256, length, machine?}], busy, board?}`, what this machine has of a project it holds, for the computer that handed it.
 - `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
 - `GET /v1/projects/{id}/archive`: `application/x-tar`, streamed as it is read: every regular file in the project's folder on this machine as `<folder>/<path>`, symlinks and `.part`s left out. A file the lock names that isn't here (kept on a machine, or needing a pull) is named first in `<folder>/elsewhere.json`, `{elsewhere: [{sha256, machine, length?}]}`, and `Cozy-Elsewhere` counts them. A read that fails fails the stream, so a tar never ends cleanly and short.
 - `GET /v1/projects/{id}/canvas`: `{etag, cards: {name: {x, y, w?}}}`, from `project.canvas.yaml`. A name with no row isn't listed, and the page places it. `PATCH` `{cards: {name: {x, y, w?} | null}, was?: {name: {x, y, w?} | null}}`: `{etag, kept?}`, these rows set and a null one gone, last move wins, to a hundredth, and `canvas` on `GET /v1/events`. A name in `was` is set only if its row is still that (null: none), in the same write; one that moved is left as it is and answered in `kept` with its row now. The page sends it with what it works out itself, a new box's place or a box moved off another, so another writer's newer row stands; a person's move goes without. Nothing in it is an input.

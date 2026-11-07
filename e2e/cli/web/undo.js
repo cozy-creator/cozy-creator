@@ -9,7 +9,7 @@
 // that stops this Calcifer, and $START one that brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execSync, spawnSync } = require('child_process');
-const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
+const { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
 const { calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until } = require('./page');
@@ -58,7 +58,9 @@ function check(name, ok, detail) {
   };
   // What the CLI says, on either stream; refused, it throws.
   const cozy = (...words) => {
-    const ran = spawnSync(process.env.COZY, ['project', '-p', folder, ...words], { encoding: 'utf8' });
+    const argv = ['project', '-p', folder, ...words];
+    if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${argv.map((word) => `${word}\x1f`).join('')}\x1e`);
+    const ran = spawnSync(process.env.COZY, argv, { encoding: 'utf8' });
     if (ran.status !== 0) throw new Error(`cozy project ${words.join(' ')}: ${ran.stderr}`);
     return `${ran.stdout}${ran.stderr}`;
   };

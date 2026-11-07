@@ -13,7 +13,6 @@
 #              pod downloads the weights itself: for a driver whose own link is slow, such as a laptop) or none (the pod
 #              fetches everything itself: a host whose egress works, when the driver's link would only add waiting)
 #   ram_free_gib  leave only this much host RAM available (0: all of it)
-#   traffic_gb GB the provider bills: the image, both engines' weights, the results (250)
 #   need_s     seconds the guard must buy (10800); a hosted job ends at 6 h, so size a session below that
 #   stall_s    no runner progress for this long ends the session (1800)
 #   after      a command this driver runs once the cells are in, with NAME the pod, before the rental ends: more work on
@@ -67,7 +66,7 @@ python3 "$BENCH/bench.py" check --describe "${here[@]}" > "$OUT/check.json" 2>&1
 say "benchmarks $(git -C "$BENCH" rev-parse --short HEAD): models ${models[*]}; tiers $TIERS; arms $ARMS; free_mib $(jq -c . <<<"$FREE"); ram_free_gib $RAM; update ${update[*]##*/}"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
-quote "$(param traffic_gb 250)" "$(param need_s 10800)"
+quote "$(param need_s 10800)"
 rent
 
 if [ "${#update[@]}" -gt 0 ]; then

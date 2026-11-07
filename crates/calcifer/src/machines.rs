@@ -1709,6 +1709,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         disk_runs_bytes: frame.disk.as_ref().map_or(0, |d| d.runs_bytes),
         runs: vec![],
         activity: vec![],
+        capabilities: frame.capabilities.clone(),
         models: frame
             .models
             .iter()

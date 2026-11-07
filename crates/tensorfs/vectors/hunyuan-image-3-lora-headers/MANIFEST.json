@@ -1,0 +1,23 @@
+{
+ "note": "Two published HunyuanImage 3.0 PEFT LoRAs (base_model.model. over the model's own qkv_proj/o_proj): no table maps them; their unwrapped names are the hunyuan-image-3 family's",
+ "members": [
+  {
+   "source": "pixosg/HunyuanImage-3.0-Naruto-Style-Adapter@06fc329dcae8f6ea5858b91db34df728380bb0fd",
+   "member": "adapter_model.safetensors",
+   "header_file": "naruto-style.safetensors.header",
+   "header_sha256": "770fb820f4d8365bc17bcfafc9b83070b0430c25dfc20af99c688e8c4dcca204",
+   "header_bytes": 17424,
+   "full_length": 37766160,
+   "declared_source_sha256": "bef024970f30712de47d10a2ddd8c01ead977ceaaeec5ceb348dbd322dbaf7e5"
+  },
+  {
+   "source": "pixosg/HunyuanImage-3.0-Pixelart-Style-Adapter@1f13be4e7d38b310bb94b5d225ea6b6fc8c06c16",
+   "member": "adapter_model.safetensors",
+   "header_file": "pixelart-style.safetensors.header",
+   "header_sha256": "1e1e35f649e6b9edc87d14a4057cdb14cb754e45417f6bc604701e260ed12a25",
+   "header_bytes": 17336,
+   "full_length": 75514808,
+   "declared_source_sha256": "d78fc4bda00675fd61e3001ee4bafaece13e42079896777f65236416e3221347"
+  }
+ ]
+}

@@ -1,0 +1,167 @@
+{
+ "note": "FLUX.3 Image Klein's BFL checkpoint (its module names) and five published LoRAs: SimpleTuner's and a Diffusers-trained one (Diffusers' names under transformer.), two AI-Toolkit LoRAs in BFL names under diffusion_model., and NoiseToNova's PDD Turbo in both its ComfyUI export (BFL names, pdd.heads) and its PEFT export (bare Diffusers names, lora_A.default, per-step proj_out heads); flux3klein.lora maps them; and the 11 more Klein LoRAs Cozy mirrors (ausboss's, DenRakEiw's, lilylilith's and Civitai's: AI-Toolkit's BFL names, Wan2GP's and LoRAlab's with per-module alphas, Diffusers' names under transformer.)",
+ "members": [
+  {
+   "source": "black-forest-labs/flux-3-image-klein@8454017f9ebaada30c998fccd9f67a80c7580f68",
+   "member": "model.safetensors",
+   "header_file": "flux-3-image-klein.safetensors.header",
+   "header_sha256": "4e78a193a06d5071ef973debe6f4f43354a2ca9d3e51e7622054ac2ec51c9ec3",
+   "header_bytes": 40544,
+   "full_length": 11097404512,
+   "declared_source_sha256": "c3e9813cdd049c831c836b2e9db61150e49a93fc1a4c63b256494642fee0bd7c"
+  },
+  {
+   "source": "SimpleTuner/flux-3-klein-image-photo-aesthetics-distilled-assisted-1024-v2-kohaku-fa@ff8d62e1ecaedfef241dbdc9af34180cb3f7549f",
+   "member": "checkpoint-1000/pytorch_lora_weights.safetensors",
+   "header_file": "simpletuner-photo-aesthetics.safetensors.header",
+   "header_sha256": "590fecac1d452bbcd1c7cbc74e6d8bd8a3225751be12190011481b8b17bbb44a",
+   "header_bytes": 48472,
+   "full_length": 67681624,
+   "declared_source_sha256": "0e9653ce9f182a74103321050f62f0c63e45252a5db6b21af8f247f42137c172"
+  },
+  {
+   "source": "akhaliq/flux-3-image-klein-angles-lora@41425f3e32cc0509293e9aa8d04c0c89f9a90190",
+   "member": "pytorch_lora_weights.safetensors",
+   "header_file": "klein-angles.safetensors.header",
+   "header_sha256": "ff309d46c30f71f5abcaaab3662a19aaefaf492448b68e6f3796bdd62377e6e3",
+   "header_bytes": 71824,
+   "full_length": 80386192,
+   "declared_source_sha256": "ef3a69f012413354a68da8c9cd306b48b6b55e35a947ba5aa2f4d1b66047b20c"
+  },
+  {
+   "source": "AIImageStudio/RadianceChromeVoluptuous_Flux3Klein_v1.0@21121a41fccff536cee662818ca757bc0aa7ebc6",
+   "member": "RadianceChromeVoluptuous_Flux3Klein_v1.0.safetensors",
+   "header_file": "RadianceChromeVoluptuous_Flux3Klein_v1.0.safetensors.header",
+   "header_sha256": "96e6d89a1c4ec002b9ebf8447215bfa69f6c466f1e6a031375f0d0bce25ea964",
+   "header_bytes": 67664,
+   "full_length": 160696400,
+   "declared_source_sha256": "e4388d3fa379c1f501b2187073748270a9f996cfed5940539721090865f0823b"
+  },
+  {
+   "source": "Raume/alphajace-klein-lora@4a9e3f312bf9dedc53da54484d557e305c643781",
+   "member": "alphajace_klein_comfy.safetensors",
+   "header_file": "alphajace_klein_comfy.safetensors.header",
+   "header_sha256": "d1c9d6764a9e90cedf0b2170c2aacd1bcccf840b8ac135a6de09d03190a4dcf7",
+   "header_bytes": 67456,
+   "full_length": 160696192,
+   "declared_source_sha256": "a53667b28d1de089a2f20c9b4c0ce29b6bb39badae9b11ff85611104afba2ef2"
+  },
+  {
+   "source": "NoiseToNova/Flux-3-Klein-turbo-pdd-4_8-steps@f5c935d3baf5e1d1f233254f0ccabbd83f0a591c",
+   "member": "Flux-3-Klein-turbo-pdd-4_8-steps-comfy.safetensors",
+   "header_file": "Flux-3-Klein-turbo-pdd-4_8-steps-comfy.safetensors.header",
+   "header_sha256": "0970e6da689375996f26df92aa000809dab1a0469b91b2f9b631819221849c2e",
+   "header_bytes": 76760,
+   "full_length": 703966976,
+   "declared_source_sha256": "430b58fdda438f49976cb66368c56a8cde4f58b45f792f0825f678c5983d85a0"
+  },
+  {
+   "source": "NoiseToNova/Flux-3-Klein-turbo-pdd-4_8-steps@f5c935d3baf5e1d1f233254f0ccabbd83f0a591c",
+   "member": "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128.safetensors",
+   "header_file": "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128.safetensors.header",
+   "header_sha256": "6706e75f2193a0552b9f675be67046ba9554fa7330c61a5225548816cc2b49f5",
+   "header_bytes": 54760,
+   "full_length": 1206506984,
+   "declared_source_sha256": "08b3f6f7be6286bc2b26690db898d37cdacbeb437a1b9b2c0d52c7706b19c279"
+  },
+  {
+   "source": "ausboss/FLUX-3-Image-Klein-Outpaint-LoRA@b12111c044be18b2004875270e735c27ff5524c4",
+   "member": "flux-3-image-klein-outpaint.safetensors",
+   "header_file": "ausboss-flux-3-image-klein-outpaint.safetensors.header",
+   "header_sha256": "b61200a870c78448ff8038b9abc478e8c82a70f1a06806e849a13a199479175e",
+   "header_bytes": 68368,
+   "full_length": 160697104,
+   "declared_source_sha256": "25385da7f6bfac0c18513e52729dc29f96cda543f0d086df9e5dda3842dede83"
+  },
+  {
+   "source": "ausboss/FLUX-3-Image-Klein-Consistency-LoRA@0367b0cdeb14b16423ff64e1c256a1a5f76cd414",
+   "member": "flux-3-image-klein-consistency.safetensors",
+   "header_file": "ausboss-flux-3-image-klein-consistency.safetensors.header",
+   "header_sha256": "3342b2655a0facc205fb340f1cb8b1feeb5a81282a0075f888c979cd55af23e9",
+   "header_bytes": 68152,
+   "full_length": 160696888,
+   "declared_source_sha256": "abd03ed85d48f0b6d14c93a1fc150cd4ae1c3d71e06e518194ad873cc8660f14"
+  },
+  {
+   "source": "ausboss/FLUX-3-Image-Klein-Restore-LoRA@be1d0a1c5edf6655d0c370d531a8157815bb5469",
+   "member": "flux-3-image-klein-restore.safetensors",
+   "header_file": "ausboss-flux-3-image-klein-restore.safetensors.header",
+   "header_sha256": "3772c8b35074d196a6c2c0bedc0d110b4bbf3d0f3048caf4d545360ab9c9f174",
+   "header_bytes": 68328,
+   "full_length": 160697064,
+   "declared_source_sha256": "7b758f5c1d494da7675dbebd8309f36c3dcaf4aa67a3349f667403c7a681187e"
+  },
+  {
+   "source": "DenRakEiw/Flux_3_klein_360_Degree@fb60ab053421cdd20e9233739015d8fe6abb0bfa",
+   "member": "360_f3.safetensors",
+   "header_file": "denrakeiw-360_f3.safetensors.header",
+   "header_sha256": "e8d71bb36cf518ba69a6bec8cafad4689595d4afa8d8d48294c2df2030910046",
+   "header_bytes": 67608,
+   "full_length": 160696344,
+   "declared_source_sha256": "a150f3794782072a01729c809a2906c3f2d5b26cab3a4cbe7af7e3f2ec08d5ce"
+  },
+  {
+   "source": "lilylilith/FLUX.3_Klein_FontBox@cc54360032a713a54d398c173eef2d67344cb3d3",
+   "member": "F.3K_FontBox_v2.safetensors",
+   "header_file": "lilylilith-F.3K_FontBox_v2.safetensors.header",
+   "header_sha256": "f7d38e6ce7adb9f3c040838ed205b2912528a63b2200ef408c71ddb381600a1f",
+   "header_bytes": 67392,
+   "full_length": 120538944,
+   "declared_source_sha256": "d4229e28015e3f73cdf7bb74869cb90b1efc96533cc0856d7a1d365d70a76be4"
+  },
+  {
+   "source": "civitai:2458332/3421681",
+   "member": "party_time_v2.1_flux3.safetensors",
+   "header_file": "whoforscuba-party_time_v2.1_flux3.safetensors.header",
+   "header_sha256": "64175416371a1997ff0489fac13058781a6407e2cd845235479289d53474e23b",
+   "header_bytes": 68672,
+   "full_length": 642583616,
+   "declared_source_sha256": "5d29c6357e6c45c6275c4833a96ef0bb7e58304af8243307b44b9f2df3874e84"
+  },
+  {
+   "source": "civitai:2990158/3411937",
+   "member": "sexypose_klein3_tal3000.safetensors",
+   "header_file": "andux-sexypose_klein3_tal3000.safetensors.header",
+   "header_sha256": "bc92b8ac299e9793664bf2aa5e952105469b05f4b002c87124d2468b0b5ef89a",
+   "header_bytes": 67688,
+   "full_length": 160696424,
+   "declared_source_sha256": "e6d9c922fbd1851ba3828ddff60ba6b48dbd4b93ffe8da08db81636391dd7e1f"
+  },
+  {
+   "source": "civitai:3004318/3409463",
+   "member": "missionary_v2_test_3000.safetensors",
+   "header_file": "zoefollonier-missionary_v2_test_3000.safetensors.header",
+   "header_sha256": "81dfbd787d373cf883602cde949c0ecdb84e56ef16d5396dfd005b5f4693d7db",
+   "header_bytes": 84456,
+   "full_length": 283987320,
+   "declared_source_sha256": "75f6358a5d9e5e209432abcaa0b0671f9a36b9288fc370ff240d8dd895df6f2f"
+  },
+  {
+   "source": "civitai:3010564/3416554",
+   "member": "DRDNSFW01h.safetensors",
+   "header_file": "drdrt-DRDNSFW01h.safetensors.header",
+   "header_sha256": "a2a76d3ce779c8d4126b57753fec5b6f2579c7e50a1f2c4f3eb6f4304aab1bcf",
+   "header_bytes": 82824,
+   "full_length": 283985688,
+   "declared_source_sha256": "42a724fe6b3dce0275a6569643c20718705ef15457451971a80e7d87336acb60"
+  },
+  {
+   "source": "civitai:3004100/3408177",
+   "member": "flux.3_image_penis_21000.safetensors",
+   "header_file": "coachbate-flux.3_image_penis_21000.safetensors.header",
+   "header_sha256": "88caa65f6deef062cf980df5127a09859223e95ba08709fc0c4b215f01433dee",
+   "header_bytes": 67632,
+   "full_length": 160696368,
+   "declared_source_sha256": "1655342c9ffd4db39391e2577ad5caadcdc29a7689a4aed2d8dc76dd995aa8e0"
+  },
+  {
+   "source": "civitai:3031830/3444392",
+   "member": "flux3-cock-15000-v1.safetensors",
+   "header_file": "shizoghost-flux3-cock-15000-v1.safetensors.header",
+   "header_sha256": "639c7b898c7128616e5235e5cfe09ebd6d37ac39d911bef3396e8fecdf8d1081",
+   "header_bytes": 72640,
+   "full_length": 321330112,
+   "declared_source_sha256": "23332c884381e75024bb2a9098e012fb49fc20cddeffe6cb630ffdeb21102144"
+  }
+ ]
+}
