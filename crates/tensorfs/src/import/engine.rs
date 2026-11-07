@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub const TABLES: [&str; 13] = [
+pub const TABLES: [&str; 16] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("qwenimage21.comfy"),
@@ -33,6 +33,9 @@ pub const TABLES: [&str; 13] = [
     table!("sdxl.lora"),
     table!("krea2.lora"),
     table!("qwenimage21.lora"),
+    table!("flux2.lora"),
+    table!("flux3klein.lora"),
+    table!("fibo2.lora"),
     table!("seedvr2"),
     table!("h3.latent_upscaler"),
     table!("ideogram4.fp8"),
@@ -630,6 +633,18 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
         .filter(|g| !owner.contains_key(g))
         .collect();
     Ok(out)
+}
+
+/// The family whose LoRA tables claim a LoRA's tensors, by key and shape as recognition does: one kept as its
+/// source spelled it (stored before a table read it) says its family too. None when no family's do, or two's.
+pub fn lora_family<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> Option<&'static crate::family::Family> {
+    let tensor = |shape: &[u64]| Tensor { dtype: Dtype::BF16, shape: shape.to_vec(), file: 0, start: 0, len: 0, encoded: None, derive: None };
+    let tensors = tensors.map(|(key, shape)| (key.to_owned(), tensor(shape))).collect();
+    let group = Group { folder: String::new(), stem: String::new(), tensors, metadata: BTreeMap::new() };
+    let claim = |t: &&Table| t.lora.is_some() && project(t, &group).is_ok_and(|claimed| !claimed.is_empty());
+    let names: BTreeSet<&str> = (tables().iter().filter(claim)).filter_map(|t| crate::family::of_table(&t.name)).map(|f| f.name.as_str()).collect();
+    let mut names = names.into_iter();
+    names.next().filter(|_| names.next().is_none()).and_then(crate::family::named)
 }
 
 /// The tables that know any of `group`'s keys, by how many, most first: `h3.lora (580 of 600
