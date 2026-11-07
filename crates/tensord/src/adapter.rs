@@ -220,7 +220,7 @@ fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Te
     let fit: Vec<(&String, usize)> = base.components().iter().filter(run).map(|c| (&c.name, layers(&keyed(c)))).filter(|(_, n)| *n > 0).collect();
     let most = fit.iter().map(|(_, n)| *n).max().unwrap_or_default();
     let matches: Vec<&String> = fit.iter().filter(|(_, n)| *n == most).map(|(name, _)| *name).collect();
-    let family = tensorfs::family::Record::read(&base.metadata);
+    let family = tensorfs::family::Record::of(base);
     let trained = |c: &&&String| trained_on.is_some_and(|t| family.as_ref().map_or(c.as_str(), |f| f.component(c)) == t);
     match matches.iter().find(trained) {
         Some(one) => vec![(*one).clone()],
@@ -243,7 +243,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
     let mut grafts: BTreeMap<String, Vec<Take>> = BTreeMap::new();
     let mut graph = Graph { format: FORMAT, layers: vec![], adapters: vec![] };
     // The base's verified family, and each stored component's family component (tfs-137).
-    let family = tensorfs::family::Record::read(&header.metadata);
+    let family = tensorfs::family::Record::of(header);
     let mut warnings = vec![];
     for (index, (selection, adapter)) in adapters.iter().enumerate() {
         let declared = tensorfs::family::Adapter::read_all(&adapter.header().metadata);

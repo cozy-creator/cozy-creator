@@ -866,7 +866,12 @@ def flux3klein_lora() -> dict[str, Any]:
     keep = [["proj_out.heads", "proj_out.weight", heads], ["proj_out.heads", "pdd.heads", heads]]
     vectors = {f"flux3-klein-headers/{v}.safetensors.header": True for v in (
         "simpletuner-photo-aesthetics", "klein-angles", "RadianceChromeVoluptuous_Flux3Klein_v1.0", "alphajace_klein_comfy",
-        "Flux-3-Klein-turbo-pdd-4_8-steps-comfy", "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128")}
+        "Flux-3-Klein-turbo-pdd-4_8-steps-comfy", "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128",
+        # The Klein LoRAs Cozy mirrors (outputs/web-ui/mirrors, items 21-32).
+        "ausboss-flux-3-image-klein-outpaint", "ausboss-flux-3-image-klein-consistency", "ausboss-flux-3-image-klein-restore",
+        "denrakeiw-360_f3", "lilylilith-F.3K_FontBox_v2", "whoforscuba-party_time_v2.1_flux3", "andux-sexypose_klein3_tal3000",
+        "zoefollonier-missionary_v2_test_3000", "drdrt-DRDNSFW01h", "coachbate-flux.3_image_penis_21000",
+        "shizoghost-flux3-cock-15000-v1")}
     return dit_lora("flux3klein.lora", "flux-3-klein", native, keep, vectors)
 
 
@@ -875,7 +880,7 @@ def fibo2_lora() -> dict[str, Any]:
     FFN to 9728, which no row op expresses."""
     vectors = {f"fibo2-headers/{v}.safetensors.header": claimed for v, claimed in (
         ("fibo-2-anime", True), ("fibo-2-edit-idm-1step", True), ("Natural-Exposure-Fibo-2.0-dev-4000", True),
-        ("Fibo-2.0-Anime-LoRA-ComfyUI", False))}
+        ("Fibo-2.0-Anime-LoRA-ComfyUI", False), ("akhaliq-pytorch_lora_weights", True))}
     return dit_lora("fibo2.lora", "fibo-2", [], [], vectors)
 
 

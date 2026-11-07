@@ -955,6 +955,7 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             sources: &sources,
             gguf: !ggufs_planned.is_empty(),
             trained_on: req.trained_on,
+            pinned: &pinned,
         })?,
     };
     set.forget_read_ahead();

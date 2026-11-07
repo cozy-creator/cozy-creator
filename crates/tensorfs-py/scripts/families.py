@@ -164,6 +164,14 @@ FAMILIES: list[dict[str, Any]] = [
         "folders": ["transformer", "text_encoder", "vae"],
         "optional": {"transformer": [f"target_timestep_embedder.linear_{n}.weight" for n in (1, 2)]},
         "sources": ["flux3klein.lora"],
+        # The base DiT, a checkpoint of its own: one pinned to it is that variant, so a LoRA trained on one adapts
+        # the other with a warning (tensord adapter.rs).
+        "variants": {"transformer_base": ("transformer", "hf://black-forest-labs/flux-3-image-klein-base@1469d27cfb9bb1bd81d3a93f5a023b39dbf136e4")},
+        # AI-Toolkit writes only `ss_base_model_version=flux3`, for either DiT; a file that names its checkpoint
+        # (`base_model`: ausboss's AI-Toolkit LoRAs, Wan2GP's flux3 trainer) says which.
+        "trained_on": [{"producer": "its file", "field": "base_model", "values": {
+            "black-forest-labs/flux-3-image-klein": "transformer", "black-forest-labs/flux-3-image-klein-base": "transformer_base",
+            "flux3_klein_base": "transformer_base"}}],
     },
     {
         "name": "fibo-2",
@@ -171,6 +179,11 @@ FAMILIES: list[dict[str, Any]] = [
         "classes": ["BriaFibo2Pipeline", "BriaFibo2Transformer2DModel"],
         "folders": ["transformer", "text_encoder", "vae"],
         "sources": ["fibo2.lora"],
+        # Edit-Turbo: Dev's keys, shapes and config, other weights (the Hub mirror's 901c026 no longer resolves).
+        "variants": {"transformer_edit_turbo": ("transformer", "hf://briaai/Fibo-2.0-edit-turbo@7b133d62d92e897f1468af0427a73cc41a03cb5d")},
+        # DiffSynth-Studio's `base_model`.
+        "trained_on": [{"producer": "its file", "field": "base_model", "values": {
+            "briaai/Fibo-2.0-dev": "transformer", "briaai/Fibo-2.0-edit-turbo": "transformer_edit_turbo"}}],
     },
     {
         "name": "hunyuan-image-3",
@@ -551,6 +564,12 @@ def build(spec: dict[str, Any]) -> dict[str, Any]:
         comps[comp] = {"class": class_of(spec["reference"], files, folder), "keys": [[k, s] for k, s in keys]}
         if comp in spec.get("optional", {}):
             comps[comp]["optional"] = spec["optional"][comp]
+    # A variant with a checkpoint of its own: its keys and shapes are its root's, but for the root's optional ones.
+    for comp, (root, reference) in spec.get("variants", {}).items():
+        theirs, _ = component(reference, tree(reference), root)
+        optional = set(spec.get("optional", {}).get(root, []))
+        assert {(k, tuple(s)) for k, s in theirs if k not in optional} == {(k, tuple(s)) for k, s in comps[root]["keys"] if k not in optional}, comp
+        comps[comp] = {"same_as": root, "reference": reference}
     # LoRA-only targets a family's adapters train that no weight is: [path, [out, in]].
     for comp, sites in spec.get("sites", {}).items():
         comps[comp]["sites"] = sites
