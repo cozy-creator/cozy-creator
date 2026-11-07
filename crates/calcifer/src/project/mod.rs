@@ -980,10 +980,24 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     }
     open.remove(&id);
     drop(open);
+    let known = api.calcifer.store().known_project(&id)?;
     match api.calcifer.store().forget_project(&id)? {
-        true => Ok(StatusCode::NO_CONTENT),
+        true => {
+            if let Some(known) = known {
+                let_go(&id, &known.path);
+            }
+            Ok(StatusCode::NO_CONTENT)
+        }
         false => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
     }
+}
+
+/// What this Calcifer kept of a project it forgot, let go: project.db's connection and all it held, its history, its films' frame
+/// counts and what streams were told of it. Opened again, it's read anew.
+fn let_go(id: &str, dir: &FsPath) {
+    folder::let_go(dir);
+    history::let_go(dir);
+    crate::events::let_go(id);
 }
 
 /// Its assets as they stand.

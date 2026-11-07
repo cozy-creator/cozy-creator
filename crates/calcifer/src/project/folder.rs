@@ -795,6 +795,13 @@ fn shared(dir: &Path) -> Arc<Shared> {
     SHARED.lock().unwrap_or_else(|e| e.into_inner()).entry(dir).or_default().clone()
 }
 
+/// The project in `dir` is forgotten: its connection and what it held go once nothing uses them, and its films' frame counts.
+pub fn let_go(dir: &Path) {
+    let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+    SHARED.lock().unwrap_or_else(|e| e.into_inner()).remove(&dir);
+    FILMS.lock().expect("films lock").retain(|path, _| !path.starts_with(&dir));
+}
+
 /// A write that took this long, waiting and held, is said, with how long each took.
 const SLOW_MS: f64 = 5.0;
 /// How many commits go to the WAL before a checkpoint moves them into the database, beside the writes.

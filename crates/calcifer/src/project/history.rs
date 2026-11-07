@@ -144,6 +144,12 @@ struct Book {
 
 static BOOKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Book>>>> = LazyLock::new(Mutex::default);
 
+/// The project in `dir` is forgotten: its book goes, and is read from project.db if it's opened again.
+pub(super) fn let_go(dir: &FsPath) {
+    let key = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+    BOOKS.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+}
+
 fn book(folder: &Folder) -> Arc<Book> {
     let key = durable::canonical(&folder.dir).unwrap_or_else(|_| folder.dir.clone());
     let mut books = BOOKS.lock().unwrap_or_else(|e| e.into_inner());
