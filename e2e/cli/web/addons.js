@@ -303,6 +303,47 @@ assets:
   }
   check('a_lora_on_open_canvas_makes_nothing', (await dropped(loraA)) === null);
 
+  // Open, a box whose tool runs a model has the left bar to itself (Paul, 11-06): its name and tool over its model, the default first, and its LoRAs,
+  // those on it first; a click swaps or adds, and nothing of the tool's own inner parts is there. Left, the tools are back, searched and scrolled as they were.
+  await shelf.evaluate((el) => { el.scrollTop = 120; });
+  const listThen = { q: await page.locator('.tools input[aria-label="Search the checkpoints"]').inputValue(), top: await scrolledTo() };
+  await box('shot').locator('.media').first().click({ position: { x: 20, y: 20 } });
+  await page.locator('.card.here[data-asset="shot"]').waitFor();
+  const picks = page.locator('.tools .picks');
+  await picks.locator('[data-picks="lora"] li').first().waitFor();
+  const pick = (model) => picks.locator(`[data-pick="${model}"]`);
+  const ownModel = mine.model.default.split('@')[0];
+  const offered = await picks.locator('[data-pick]').evaluateAll((all) => all.map((one) => one.dataset.pick));
+  const lit = await picks.locator('.pick.on').getAttribute('data-pick').catch(() => null);
+  seen.picks = { offered: offered.length, lit };
+  const titled = await page.locator('.tools .box-shelf-head').innerText();
+  check('an_open_box_has_the_left_bar', titled.includes('shot') && titled.includes(mine.label) && !(await shelf.isVisible()) && offered[0] === ownModel && (!offered.includes(fineB.model) || lit === fineB.model), { offered, titled, lit });
+  check('only_its_familys_picks', offered.every((ref) => ref === ownModel || familyOf(ref) === mine.model.family) && offered.includes(loraC.model) && !offered.includes(loraA.model), offered);
+  const slotOf = () => yaml().split('shot:')[1]?.split('hand:')[0] ?? '';
+  const weighs = (ref) => models.find((model) => model.model === ref)?.kind === 'weights';
+  // Another fine-tune than the one on it and its default, if its family has one besides its Turbo.
+  const swapTo = offered.find((ref) => weighs(ref) && ref !== ownModel && ref !== fineB.model);
+  if (swapTo) {
+    await pick(swapTo).click();
+    check('a_click_swaps_its_model', await until('swapped', () => Promise.resolve(slotOf()), (text) => text.includes(swapTo) && !text.includes(fineB.model)).then(() => true, (why) => String(why)));
+  } else seen.no_swap = 'its family has only its default and its Turbo';
+  await pick(ownModel).click();
+  check('its_default_puts_it_back', await until('its own again', () => Promise.resolve(slotOf()), (text) => !/models:/.test(text)).then(() => true, (why) => String(why)));
+  await pick(loraC.model).click();
+  check('a_click_adds_a_lora', await until('added', () => Promise.resolve(slotOf()), (text) => text.includes(loraC.model)).then(() => true, (why) => String(why)) === true && (await picks.locator('.picks-on .add-on-row').count()) === 3);
+  // As it was, for what follows: that LoRA off by its × there, and its fine-tune back.
+  await picks.locator(`[aria-label="Take ${word(loraC)} off shot"]`).click();
+  await until('the LoRA off', () => Promise.resolve(slotOf()), (text) => !text.includes(loraC.model));
+  await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { models: { [mine.model.slot]: { ref: fineB.model } } } }) });
+  await until('its fine-tune back', () => Promise.resolve(slotOf()), (text) => text.includes(fineB.model));
+  await page.keyboard.press('Escape');
+  await page.locator('.card.here').waitFor({ state: 'detached' });
+  await until('the tools back', () => picks.count(), (n) => n === 0, 3000).catch(() => {});
+  const listNow = { q: await page.locator('.tools input[aria-label="Search the checkpoints"]').inputValue(), top: await scrolledTo() };
+  check('left_the_tools_are_back', (await picks.count()) === 0 && (await shelf.isVisible()) && listNow.q === listThen.q && Math.abs(listNow.top - listThen.top) < 2, { listThen, listNow });
+  await until('its chips as they were', () => chips('shot').count(), (n) => n === 3);
+  await settled(page);
+
   // Chips follow.
   const list = (name) => box(name).locator('.add-ons');
   const moved = await list('shot').boundingBox();

@@ -122,6 +122,9 @@ export function letGo(store: CanvasStore, x: number, y: number) {
   return true
 }
 
+/** What the lists of checkpoints show. Once the Hub tags what's NSFW, a Show NSFW switch decides here. */
+export const listed = (_found: FoundModel) => true
+
 /** What a model family is called: what the tool of it on your list says, else its own words, `sdxl` being SDXL and `krea-2` Krea 2. */
 export function familyName(family: string, tools: Map<string, Tool>): string {
   const labels = [...tools.values()].flatMap((tool) => (tool.model?.family === family ? [tool.label] : []))

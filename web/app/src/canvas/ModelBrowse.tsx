@@ -4,7 +4,7 @@ import { useConnection } from "../app/Connection"
 import type { FoundModel, Tool } from "../types"
 import { useSignal } from "../ui/signal"
 import type { Load } from "./carry"
-import { carrying, familyName, runnerOf, whyNot, wordOf } from "./checkpoints"
+import { carrying, familyName, listed, runnerOf, whyNot, wordOf } from "./checkpoints"
 import { useCanvasStore } from "./context"
 import { useDragScroll } from "./dragScroll"
 
@@ -48,7 +48,7 @@ function Row({ found, label, row }: { found: FoundModel; label: string; row: Ret
 }
 
 /** What's carried from a row: a checkpoint on open canvas is a box of the tool that runs it, the checkpoint on it unless it's that tool's own. */
-function loadOf(found: FoundModel, tools: Map<string, Tool>): Load {
+export function loadOf(found: FoundModel, tools: Map<string, Tool>): Load {
   const runner = runnerOf(found, tools)
   const own = runner?.model?.default?.split("@")[0] === found.model
   return { box: carrying(found, tools), tool: runner, fields: runner?.model && !own ? { models: { [runner.model.slot]: { ref: found.model } } } : undefined }
@@ -68,7 +68,7 @@ export function ModelBrowse({ q }: { q: string }) {
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   })
-  const models = data?.models ?? []
+  const models = (data?.models ?? []).filter(listed)
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("[data-checkpoint]")

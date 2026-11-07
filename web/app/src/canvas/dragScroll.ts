@@ -48,6 +48,9 @@ export function useDragScroll({ lift: liftOf, axis = "y" }: { lift?: (pressed: E
       let coast = 0
       let marker: HTMLElement | null = null
       let unmark = 0
+      // Where it was last, so a list hidden and shown again is where it was.
+      let last = 0
+      let hidden = false
 
       const fade = () => {
         if (!down) return
@@ -70,8 +73,16 @@ export function useDragScroll({ lift: liftOf, axis = "y" }: { lift?: (pressed: E
         unmark = window.setTimeout(() => marker?.classList.remove("on"), MARKED_MS)
       }
       const scrolled = () => {
+        if (hidden) return
+        last = at()
         fade()
         mark()
+      }
+      const resized = () => {
+        const gone = !el.clientHeight && !el.clientWidth
+        if (hidden && !gone && at() !== last) go(last)
+        hidden = gone
+        fade()
       }
 
       const stop = () => {
@@ -131,7 +142,7 @@ export function useDragScroll({ lift: liftOf, axis = "y" }: { lift?: (pressed: E
         coast = requestAnimationFrame(step)
       }
       fade()
-      const watch = new ResizeObserver(fade)
+      const watch = new ResizeObserver(resized)
       watch.observe(el)
       for (const child of el.children) watch.observe(child)
       el.addEventListener("scroll", scrolled, { passive: true })

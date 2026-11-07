@@ -266,6 +266,8 @@ async function died(why) {
     await open('moving');
     const movingHere = page.locator('.card.here[data-asset="moving"]');
     await movingHere.locator('.here-side .take[data-take="2"]').click();
+    // Open canvas once the canvas has drawn in on the box, not on its way there.
+    await settled(page);
     await movingHere.locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
     return until('moved out', async () => (await state()).assets.find((one) => one.sha256 === second && one.name !== 'moving'), Boolean).catch(() => null);
   };

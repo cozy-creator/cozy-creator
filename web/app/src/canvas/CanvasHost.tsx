@@ -814,6 +814,7 @@ function Canvas({
         }}
         place={placeTool}
         choose={choose}
+        box={opened}
       />
       <div
         ref={stage}
