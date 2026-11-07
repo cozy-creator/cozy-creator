@@ -56,6 +56,8 @@ pub(super) struct Splits {
     active: Option<Box<Active>>,
     sites: BTreeMap<String, Site>,
     pending: Vec<(u64, SplitObservation)>,
+    /// The last closed leaf an allocation was refused in, until `split_refused` answers for it.
+    refused: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +182,8 @@ pub struct SplitObservation {
     pub published: bool,
     pub reason: String,
     pub successful_passes: u64,
+    /// The bound a refused allocation in this leaf set on its level's need (0: none was refused).
+    pub refused_bytes: usize,
     classes: BTreeMap<usize, usize>,
 }
 
@@ -597,12 +601,17 @@ impl Site {
 }
 
 fn select(device: i32, owner: &'static Device, key: &str, stream: u64) -> Result<SplitSelection> {
+    select_from(device, owner, key, stream, 0)
+}
+
+/// `select` among the levels from index `least` on.
+fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, least: usize) -> Result<SplitSelection> {
     // A split's fit already counts completed working pages; split_begin trims what it needs.
     let keep = Protect { keep_working: true, ..Default::default() };
     // Make room for the target with memory this process can give up by itself.
     let at_target = reclaim::acquire(device, 0, Wait::Local, keep, || {
         let menu = snapshot(device, owner, key, stream)?;
-        let target = menu.target();
+        let target = menu.target().max(least);
         let selected = &menu.plans[target];
         if !selected.usable() {
             return Err(selected.short().into());
@@ -616,7 +625,7 @@ fn select(device: i32, owner: &'static Device, key: &str, stream: u64) -> Result
     // Only now a smaller legal choice, or what other threads and processes can give up.
     reclaim::acquire(device, 0, Wait::Yes, keep, || {
         let menu = snapshot(device, owner, key, stream)?;
-        let target = menu.target();
+        let target = menu.target().max(least);
         let choices = &menu.plans[target..];
         if let Some(selected) = choices.iter().find(|plan| plan.usable()) {
             return Ok(menu.selection(selected, target, stream));
@@ -625,6 +634,35 @@ fn select(device: i32, owner: &'static Device, key: &str, stream: u64) -> Result
             .expect("copied menu");
         Err(least.short().into())
     })
+}
+
+/// After `split_end` closed a leaf of `key` at `choice_id` in which an allocation was refused with
+/// everything reclaimable gone: the level a pure operation runs again at, finer than that one, with
+/// its room made (Retry). None when no allocation was refused in that leaf (the failure is the
+/// caller's, and final); `Exhausted` when no finer level can be given room (final).
+pub fn split_refused(device: i32, key: &str, choice_id: &str, stream: u64) -> Result<Option<SplitSelection>> {
+    valid_stream(stream)?;
+    context(device)?;
+    let owner = owner(device)?;
+    let least = {
+        let mut state = owner.lock()?;
+        let last = state.splits.refused.take();
+        if last.as_ref().is_none_or(|(k, c)| k != key || c != choice_id) {
+            return Ok(None);
+        }
+        let site = state.splits.sites.get(key).ok_or(Error::Invalid("unknown split configuration"))?;
+        let at = site.choices.iter().position(|choice| choice.id == choice_id)
+            .ok_or(Error::Invalid("split choice is not declared"))?;
+        let finest = site.choices.len() - 1;
+        let refused = site.samples.get(choice_id).map_or(0, |sample| sample.refused);
+        if at == finest {
+            return Err(Error::Exhausted { requested_bytes: refused, available_bytes: 0 });
+        }
+        at + 1
+    };
+    let selection = select_from(device, owner, key, stream, least)?;
+    owner.lock()?.stats.split_decisions += 1;
+    Ok(Some(selection))
 }
 
 /// Re-evaluate the exact agreed geometry and stream immediately before opening the leaf.
@@ -811,6 +849,7 @@ fn learn(state: &mut State, key: &str, choice: &str, refused: usize) {
     if refused == 0 {
         return;
     }
+    state.splits.refused = Some((key.to_owned(), choice.to_owned()));
     if let Some(site) = state.splits.sites.get_mut(key) {
         let sample = site.samples.entry(choice.to_owned()).or_default();
         if refused > sample.refused {
@@ -928,6 +967,7 @@ pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<Sp
         published: false,
         reason,
         successful_passes: 0,
+        refused_bytes: active.refused,
         classes: active.classes,
     };
     if let Some(parent) = parent {
@@ -970,6 +1010,7 @@ pub(super) fn phase_finished(
                 published: false,
                 reason: "split_interval_open".into(),
                 successful_passes: 0,
+                refused_bytes: active.refused,
                 classes: active.classes,
             },
         ));

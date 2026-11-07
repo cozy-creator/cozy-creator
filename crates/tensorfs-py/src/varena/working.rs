@@ -652,6 +652,26 @@ fn _varena_split_select<'py>(
     selection(py, &selected)
 }
 
+/// The level a pure op runs again at after its leaf was refused memory (Retry), None (final: no
+/// allocation of that leaf was refused), or `Exhausted` (final: no finer level has room).
+#[pyfunction]
+#[pyo3(signature = (device, key, choice_id, *, stream))]
+fn _varena_split_refused<'py>(
+    py: Python<'py>,
+    device: i32,
+    key: &str,
+    choice_id: &str,
+    stream: u64,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let selected = py
+        .detach(|| {
+            check()?;
+            varena::working::split_refused(device, key, choice_id, stream)
+        })
+        .map_err(|error| super::raise(py, error))?;
+    selected.map(|selected| selection(py, &selected)).transpose()
+}
+
 fn selection<'py>(
     py: Python<'py>, selected: &varena::working::SplitSelection,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -729,6 +749,7 @@ fn split_observation<'py>(
     row.set_item("published", observed.published)?;
     row.set_item("reason", &observed.reason)?;
     row.set_item("successful_passes", observed.successful_passes)?;
+    row.set_item("refused_bytes", observed.refused_bytes)?;
     Ok(row)
 }
 
@@ -848,6 +869,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_split_refused, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_end, module)?)?;
     module.add_class::<CallbackScope>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;

@@ -23,7 +23,7 @@ pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapsho
 pub use cache::{Cache, CacheStats};
 pub use split::{
     Room, SplitContext, SplitObservation, SplitSelection, room, split_begin, split_context, split_end,
-    split_select,
+    split_refused, split_select,
 };
 
 pub type PoolId = (u64, u64);

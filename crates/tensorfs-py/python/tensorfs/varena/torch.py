@@ -306,6 +306,15 @@ def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, co
     return _ext._varena_split_begin(_device(device), key, choice_id, stream=stream, completion_owner=completion_owner, plan_generation=plan_generation)
 
 
+def split_refused(device: DeviceLike, key: str, choice_id: str, *, stream: int) -> dict[str, Any] | None:
+    """After `split_end` closed a leaf whose allocation was refused with everything reclaimable
+    gone: a finer level's selection, its room made, for a pure op to run again at (Retry); None when
+    no allocation of that leaf was refused (the failure is final). Raises `Exhausted` when no finer
+    level can be given room. Only the core decides; a caller re-runs only on a selection."""
+    _installed()
+    return _ext._varena_split_refused(_device(device), key, choice_id, stream=stream)
+
+
 def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> dict[str, Any]:
     """Close host submission; only the enclosing phase's checked completion can publish."""
     _installed()
