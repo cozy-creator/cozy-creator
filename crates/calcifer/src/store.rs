@@ -2035,6 +2035,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         measurements: None,
         stalled: None,
         calls: vec![],
+        gpu: row.outcome.as_ref().map(|outcome| outcome.gpu.clone()).filter(|gpu| !gpu.is_empty()),
     })
 }
 

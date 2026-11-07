@@ -133,6 +133,10 @@ pub struct GpuConfig {
     /// `gpu_memory_limit`, and `memory::Gpu::free`).
     #[serde(default)]
     pub gpu_memory_limit: Option<u64>,
+    /// How a call shares a GPU that drives a display (a shared machine's `machine.display_pace`):
+    /// sent in Start when one of its lane's GPUs drives one now.
+    #[serde(default)]
+    pub display_pace: Option<executor_protocol::DisplayPace>,
     /// Explicitly configured locations; the executor seal is imposed on top of them.
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
@@ -1221,6 +1225,21 @@ impl Pool {
             io::Error::new(io::ErrorKind::Unsupported, why)
         })
     }
+    /// The machine's display pace for a call on these GPUs when one of them drives a display now
+    /// (NVML's display-active: a desktop is initialized on it), else none.
+    fn display_pace(&self, gpus: &[Device]) -> Option<executor_protocol::DisplayPace> {
+        let pace = self.config.display_pace?;
+        let shown = gpus.iter().find(|gpu| {
+            let id = gpu.memory.as_ref().map_or(gpu.entry.as_str(), |memory| memory.uuid.as_str());
+            platform::gpu::Device::open(id).and_then(|device| device.display_active()).unwrap_or(false)
+        })?;
+        tracing::info!(
+            "GPU {} drives a display: its calls pause {} ms after each {} ms",
+            shown.entry, pace.pause_ms, pace.work_ms
+        );
+        Some(pace)
+    }
+
     fn lane_devices(&self, start: usize, degree: u32) -> io::Result<String> {
         Ok(self
             .lane(start, degree)?
@@ -2904,6 +2923,7 @@ impl Pool {
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
                     shared: false,
+                    display_pace: None,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3336,6 +3356,7 @@ impl Pool {
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
                     shared: self.config.host.mode == HostMode::Shared,
+                    display_pace: self.display_pace(gpus),
                 }),
                 &mut callbacks,
             )?)?;

@@ -1,14 +1,16 @@
 import { useQuery } from "@tanstack/react-query"
-import { type DragEvent, useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Tool, Tools } from "../types"
 import { Icon, type IconName } from "../ui/Icon"
 import { say } from "../ui/notes"
-import { carried } from "./checkpoints"
-import { useCanvasStore } from "./context"
+import { useSignal } from "../ui/signal"
+import type { Load } from "./carry"
+import { BoxShelf } from "./BoxShelf"
+import { useCanvasStore, useOfElement } from "./context"
 import { TEXT_TOOL } from "./controls"
-import { DRAGGED_TOOL } from "./drag"
+import { useDragScroll } from "./dragScroll"
 import { ModelBrowse } from "./ModelBrowse"
 import { madeHere } from "./shown"
 import { carryingTool } from "./toolchange"
@@ -26,13 +28,8 @@ const GROUPS: { id: string; words: string; icon: IconName }[] = [
 const groupOf = (tool: Tool) =>
   tool.local ? "local" : tool.fields.some((field) => field.type === "slot" && field.required) && !tool.fields.some((field) => field.type === "prompt" || field.type === "words" || field.type === "group") ? "touch" : tool.makes
 
-function dragged(event: DragEvent, tool: Tool) {
-  event.stopPropagation()
-  event.dataTransfer.setData(DRAGGED_TOOL, tool.id)
-  event.dataTransfer.effectAllowed = "copy"
-  // Words and what's made here are boxes of their own: nothing takes them.
-  carried.set(tool === TEXT_TOOL || madeHere(tool.id) ? null : carryingTool(tool))
-}
+/** A tool carried out of the list: a box of it where it's let go, or on a box, that box's tool. Words and what's made here are boxes of their own: nothing takes them. */
+const toolLoad = (tool: Tool): Load => ({ tool, box: tool === TEXT_TOOL || madeHere(tool.id) ? undefined : carryingTool(tool) })
 
 /** Off your list at once. Nothing is deleted, and a box of it goes on as it was. */
 function useRemove() {
@@ -52,13 +49,8 @@ function useRemove() {
 
 function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => void; yours: boolean }) {
   const remove = useRemove()
-  const store = useCanvasStore()
-  const landed = () => {
-    carried.set(null)
-    store.setHot(null)
-  }
   return (
-    <li className="tool" draggable title={tool.description || tool.id} data-kind={tool.makes} data-tool={tool.id} onDragStart={(event) => dragged(event, tool)} onDragEnd={landed} onClick={() => place(tool)}>
+    <li className="tool" title={tool.description || tool.id} data-kind={tool.makes} data-tool={tool.id} onClick={() => place(tool)}>
       <b>{tool.label}</b>
       {yours && !tool.local && !madeHere(tool.id) && (
         <button
@@ -78,10 +70,14 @@ function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => vo
   )
 }
 
-/** What can be dropped on the canvas, by what it makes, and it folds away. The canvas stays where it is under it. */
-export function ToolPanel({ project, machine, waiting, shut, setShut, place, choose }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; choose: () => void }) {
+/** What can be dropped on the canvas, by what it makes, and it folds away. The canvas stays where it is under it. While a box whose tool runs a model is
+ *  open, it's what goes on that box instead (Paul, 11-06); leaving the box, the tools are back as they were, searched and scrolled as they were. */
+export function ToolPanel({ project, machine, waiting, shut, setShut, place, choose, box }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; choose: () => void; box?: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
+  const runs = useOfElement(box ?? "", (view) => view?.asset?.tool)
+  const known = useSignal(store.tools)
+  const boxed = box && known.get(runs ?? "")?.model ? box : null
   const [typed, setTyped] = useState("")
   const [q, setQ] = useState("")
   const [shelf, setShelf] = useState<"tools" | "browse" | "checkpoints">("tools")
@@ -95,6 +91,14 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
   useEffect(() => {
     store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools] : [TEXT_TOOL])
   }, [store, data, isPlaceholderData])
+  const tools = data?.tools ?? []
+  const list = useDragScroll({
+    lift(pressed) {
+      const from = pressed.closest<HTMLElement>("li.tool")
+      const tool = from && [TEXT_TOOL, ...tools].find((one) => one.id === from.dataset.tool)
+      return tool ? { load: toolLoad(tool), from } : null
+    },
+  })
   if (shut) {
     return (
       <aside className="tools shut" aria-label="Tools">
@@ -104,7 +108,6 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
       </aside>
     )
   }
-  const tools = data?.tools ?? []
   return (
     <aside className="tools" aria-label="Tools">
       <div className="row center">
@@ -116,50 +119,53 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
           <Icon name="back" />
         </button>
       </div>
-      <input className="field wide" aria-label={exploring ? "Search the checkpoints" : "Search the tools"} placeholder="Search" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
-      <div className="row center">
-        <button type="button" className={`act browse-toggle ${browsing ? "on" : ""}`} aria-pressed={browsing} onClick={() => setShelf(browsing ? "tools" : "browse")}>
-          {browsing ? "Your tools" : "Browse"}
-        </button>
-        <button type="button" className={`act browse-toggle ${exploring ? "on" : ""}`} aria-pressed={exploring} onClick={() => setShelf(exploring ? "tools" : "checkpoints")}>
-          {exploring ? "Your tools" : "Checkpoints"}
-        </button>
-      </div>
-      {browsing && <ToolBrowse q={q} listed={tools} />}
-      {exploring && <ModelBrowse q={q} />}
-      <div className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={shelf !== "tools"}>
-        {"text".includes(q.toLowerCase()) && (
-          <ul>
-            <ToolRow tool={TEXT_TOOL} place={place} yours={false} />
-          </ul>
-        )}
-        {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
-        {isPending && !error && (
-          <ul aria-hidden="true">
-            {Array.from({ length: 8 }, (_, i) => (
-              <li key={i} className="tool-ghost" />
-            ))}
-          </ul>
-        )}
-        {GROUPS.map((group) => {
-          const rows = tools.filter((tool) => groupOf(tool) === group.id)
-          if (!rows.length) return null
-          return (
-            <section key={group.id}>
-              <h4>
-                <Icon name={group.icon} />
-                {group.words}
-              </h4>
-              <ul>
-                {rows.map((tool) => (
-                  <ToolRow key={tool.id} tool={tool} place={place} yours={!q} />
-                ))}
-              </ul>
-            </section>
-          )
-        })}
-        {data && !tools.length && !isPlaceholderData && <p className="muted">Nothing for "{q}"</p>}
-        {data?.note && <p className="muted">{data.note}</p>}
+      {boxed && <BoxShelf name={boxed} />}
+      <div className="tool-shelf" hidden={Boolean(boxed)}>
+        <input className="field wide" aria-label={exploring ? "Search the checkpoints" : "Search the tools"} placeholder="Search" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
+        <div className="row center">
+          <button type="button" className={`act browse-toggle ${browsing ? "on" : ""}`} aria-pressed={browsing} onClick={() => setShelf(browsing ? "tools" : "browse")}>
+            {browsing ? "Your tools" : "Browse"}
+          </button>
+          <button type="button" className={`act browse-toggle ${exploring ? "on" : ""}`} aria-pressed={exploring} onClick={() => setShelf(exploring ? "tools" : "checkpoints")}>
+            {exploring ? "Your tools" : "Checkpoints"}
+          </button>
+        </div>
+        {browsing && <ToolBrowse q={q} listed={tools} />}
+        {exploring && <ModelBrowse q={q} />}
+        <div ref={list} className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={shelf !== "tools"}>
+          {"text".includes(q.toLowerCase()) && (
+            <ul>
+              <ToolRow tool={TEXT_TOOL} place={place} yours={false} />
+            </ul>
+          )}
+          {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
+          {isPending && !error && (
+            <ul aria-hidden="true">
+              {Array.from({ length: 8 }, (_, i) => (
+                <li key={i} className="tool-ghost" />
+              ))}
+            </ul>
+          )}
+          {GROUPS.map((group) => {
+            const rows = tools.filter((tool) => groupOf(tool) === group.id)
+            if (!rows.length) return null
+            return (
+              <section key={group.id}>
+                <h4>
+                  <Icon name={group.icon} />
+                  {group.words}
+                </h4>
+                <ul>
+                  {rows.map((tool) => (
+                    <ToolRow key={tool.id} tool={tool} place={place} yours={!q} />
+                  ))}
+                </ul>
+              </section>
+            )
+          })}
+          {data && !tools.length && !isPlaceholderData && <p className="muted">Nothing for "{q}"</p>}
+          {data?.note && <p className="muted">{data.note}</p>}
+        </div>
       </div>
     </aside>
   )

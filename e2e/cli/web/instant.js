@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawn } = require('child_process');
 const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, renderOf, until } = require('./page');
+const { calcifer, carry, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -106,14 +106,13 @@ async function loseAnswers(page, method, path, times) {
   const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
   const box = (name) => boxOf(page, name);
   const row = (label) => page.locator('.tools .tool', { has: page.locator(`b:text-is("${label}")`) }).first();
-  const stage = page.locator('.stage');
   await page.waitForSelector('.tools .tool');
   await page.waitForSelector('.empty-canvas');
 
   // The drop: a real drag of the Edit, which needs no Hub, its POST stalled. What a drop shows is timed in the page, by the frame.
   await page.evaluate(() => {
     const clock = (window.dropped = {});
-    document.querySelector('.stage').addEventListener('drop', () => {
+    document.querySelector('.stage').addEventListener('letgo', () => {
       clock.drop = performance.now();
       clock.boxes = document.querySelectorAll('.card[data-asset]').length;
       requestAnimationFrame(() => {
@@ -128,7 +127,7 @@ async function loseAnswers(page, method, path, times) {
     if (request.method() === 'GET' && pathname.startsWith(`/v1/projects/${id}`)) reads.push(`${pathname.slice(`/v1/projects/${id}`.length) || '/'}${search}`);
   });
   const posts = await hold(page, 'POST', '**/v1/projects/*/assets');
-  await row('Edit').dragTo(stage, { targetPosition: { x: 1100, y: 800 } });
+  await carry(page, row('Edit'), { x: 1100, y: 800 });
   await until('the frame after the drop', () => page.evaluate(() => window.dropped.frame), Boolean);
   const dropped = await page.evaluate(() => window.dropped);
   seen.drop = { frame_ms: dropped.frame - dropped.drop, boxes: [dropped.boxes, dropped.after] };
@@ -159,7 +158,7 @@ async function loseAnswers(page, method, path, times) {
 
   // An answer lost: the same key again, and one asset.
   const lost = await loseAnswers(page, 'POST', '**/v1/projects/*/assets', 2);
-  await row('Edit').dragTo(stage, { targetPosition: { x: 400, y: 900 } });
+  await carry(page, row('Edit'), { x: 400, y: 900 });
   const second = `${name}_2`;
   await box(second).waitFor();
   await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
@@ -171,7 +170,7 @@ async function loseAnswers(page, method, path, times) {
 
   // Another writer takes the name while this one's asked: the box takes what it got, and the other shows.
   const stalled = await hold(page, 'POST', '**/v1/projects/*/assets');
-  await row('Edit').dragTo(stage, { targetPosition: { x: 400, y: 200 } });
+  await carry(page, row('Edit'), { x: 400, y: 200 });
   const third = `${name}_3`;
   await box(third).waitFor();
   cozy('project', '-p', folder, 'add', 'cozy/edit', third);
@@ -189,10 +188,10 @@ async function loseAnswers(page, method, path, times) {
   const notes = () => page.locator('.notes .note .line').allInnerTexts();
   const boxes = await page.locator('.card[data-asset]').count();
   const refusing = await hold(page, 'POST', '**/v1/projects/*/imports');
+  // A take let go there that this Calcifer never held, as a carry lets one go.
   await page.evaluate(() => {
-    const data = new DataTransfer();
-    data.setData('application/x-cozy-file', JSON.stringify({ sha256: '0'.repeat(64), field: 'image', name: 'never_held' }));
-    document.querySelector('.stage').dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true, clientX: 900, clientY: 200 }));
+    const take = { sha256: '0'.repeat(64), field: 'image', name: 'never_held' };
+    document.elementFromPoint(900, 200).dispatchEvent(new CustomEvent('letgo', { bubbles: true, detail: { load: { take }, x: 900, y: 200 } }));
   });
   await box('never_held').waitFor({ timeout: 2000 });
   check('refused_box_shows_first', true);
@@ -239,7 +238,7 @@ async function loseAnswers(page, method, path, times) {
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
     const waits = await hold(page, 'POST', '**/v1/projects/*/assets');
-    await row('Edit').dragTo(stage, { targetPosition: { x: 1100, y: 200 } });
+    await carry(page, row('Edit'), { x: 1100, y: 200 });
     const fifth = `${name}_5`;
     await box(fifth).waitFor();
     const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
@@ -315,7 +314,7 @@ async function loseAnswers(page, method, path, times) {
   await unread.waitFor();
   check('what_cant_be_read_says_why', /format 2/.test(await unread.innerText()) && /git or a backup/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
   await until('the tools still there', () => row('Edit').count(), (n) => n === 1);
-  await row('Edit').dragTo(stage, { targetPosition: { x: 1200, y: 300 } });
+  await carry(page, row('Edit'), { x: 1200, y: 300 });
   await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
   check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
   await page.getByTitle(folder, { exact: true }).click();

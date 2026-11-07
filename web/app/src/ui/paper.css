@@ -1,6 +1,8 @@
 /* Paper's drawn edges. Each is one image the browser nine-slices, so a frame adds no element, no measuring and no script. Dark keeps plain borders.
    A drawn edge casts no shadow: a box's shadow is square, and showed as a grey box under the wavy edge. Under its middle, its own colour, held
-   short of the edge so no square corner shows past it: the slices' seams draw no line through the sheet. */
+   short of the edge so no square corner shows past it: the slices' seams draw no line through the sheet. Its sides stretch: Chrome's GPU
+   raster draws a tiled (round, repeat) side shifted outward wherever the edge is drawn at a fractional scale (a zoomed canvas, a 1.25×
+   screen), and the right and bottom sides showed as a gap and a cream strip outside the line. */
 :root:not([data-theme="dark"]) {
   --frame-panel: url("./frames/frame-panel.svg");
   --frame-sheet: url("./frames/frame-sheet.svg");
@@ -12,18 +14,19 @@
   .ptabs,
   .tools,
   .main-menu nav,
+  .history-list,
   .zoom-menu,
   .asset-menu {
     background: linear-gradient(#f6ebd0, #f6ebd0) center / calc(100% - 10px) calc(100% - 10px) no-repeat;
     border-color: transparent;
-    border-image: var(--frame-panel) 18 fill / 18px / 7px round;
+    border-image: var(--frame-panel) 18 fill / 18px / 7px stretch;
     box-shadow: none;
   }
   .here-under,
   .drawer {
     background: linear-gradient(#fbf6ea, #fbf6ea) center / calc(100% - 10px) calc(100% - 10px) no-repeat;
     border-color: transparent;
-    border-image: var(--frame-sheet) 18 fill / 18px / 7px round;
+    border-image: var(--frame-sheet) 18 fill / 18px / 7px stretch;
     box-shadow: none;
   }
   .tb,
@@ -32,17 +35,17 @@
   .render-all label {
     background: none;
     border-color: transparent;
-    border-image: var(--frame-control) 12 fill / 12px / 4px round;
+    border-image: var(--frame-control) 12 fill / 12px / 4px stretch;
   }
   .tb.primary {
-    border-image: var(--frame-primary) 12 fill / 12px / 4px round;
+    border-image: var(--frame-primary) 12 fill / 12px / 4px stretch;
   }
   .main-menu nav .tb {
     border-image: none;
   }
   .ptab.on {
     background: none;
-    border-image: var(--frame-chosen) 12 fill / 12px / 3px round;
+    border-image: var(--frame-chosen) 12 fill / 12px / 3px stretch;
   }
 }
 
@@ -58,8 +61,8 @@
   background-color: var(--box);
 }
 
-/* Warm cream around a picture skews how it reads, so a box being worked on shows it on neutral grey. */
-.card.here > .media:not(.blank) {
+/* Warm cream around a picture skews how it reads, so a box being worked on shows it on neutral grey; a transparent one keeps its soft check. */
+.card.here > .media:not(.blank):not(.alpha) {
   background-color: var(--stage);
 }
 .output video,

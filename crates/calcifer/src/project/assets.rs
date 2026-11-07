@@ -21,7 +21,8 @@ use protocol::{
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    Doc, Host, Project, Tool, Walk, assetfile, binder, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, keep_file, listed, measure_soon, model, noun, pin_in_file, stale_names,
+    Doc, Host, Project, Tool, Walk, assetfile, binder, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, history::{self, Took}, keep_file, listed,
+    measure_soon, model, noun, pin_in_file, stale_names,
 };
 use crate::api::{Api, Refusal, parse};
 
@@ -242,12 +243,17 @@ fn pictures(folder: &folder::Folder, name: &str, tool: &str) -> Result<Option<u3
 
 /// The file asset holds with no version saying so, made its next version.
 fn constant_numbered(folder: &folder::Folder, asset: &format::Asset, pin: &str) -> Result<u32, Error> {
-    let number = std::cell::Cell::new(0);
+    let number = std::cell::Cell::new((0, true));
     folder.update_lock(|lock| {
         let field = lock.files.get(pin).map_or_else(|| asset.kind.clone(), |file| file.field().to_owned());
-        number.set(lock.joined(&asset.name, &asset.kind, folder::Files::from([(field, pin.to_owned())])).0);
+        number.set(lock.joined(&asset.name, &asset.kind, folder::Files::from([(field, pin.to_owned())])));
     })?;
-    Ok(number.get())
+    let (number, already) = number.get();
+    // Its own picture numbered for the edit: a step back sets it aside again.
+    if !already {
+        history::take(&folder.dir, &asset.name, number, if asset.kind == "video" { "take" } else { "version" }, Took::Absent, Took::Listed);
+    }
+    Ok(number)
 }
 
 /// What `DELETE` answers, for `PUT` to put back: its lines. Its versions wait in project.lock.
@@ -260,6 +266,11 @@ struct Deleted {
 /// for `rename`, for `PUT` with what this answers, or for `reclaim`. A render going still makes what it was asked.
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
+    deleted(&api, &project, &id, &name).map(Json)
+}
+
+/// Asset `name` and its row gone, as `DELETE` has it.
+pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &str) -> Result<AssetDeleted, Refusal> {
     let folder = &project.folder;
     let unknown = || Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status"));
     // Its own lines are all this needs of the file.
@@ -277,7 +288,7 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     }))
     .map_err(Refusal)?;
     // Refused, nothing stops. Gone from the file, what lands of it lands nothing.
-    cancelled(&api, &project, std::slice::from_ref(&name), &deleted_why)?;
+    cancelled(api, project, std::slice::from_ref(&name), &deleted_why)?;
     let pin = doc.assets[i].pin.clone();
     // A box that never made anything has no row: nothing to rewrite.
     if pin.is_some() || folder.reading_lock(|lock| lock.asset(&name).is_some()).map_err(Refusal)? {
@@ -291,11 +302,11 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
             })
             .map_err(Refusal)?;
     }
-    canvas::set(folder, &id, BTreeMap::from([(name.clone(), None)])).map_err(Refusal)?;
+    canvas::set(folder, id, BTreeMap::from([(name.clone(), None)])).map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
     project.asked.notify_one();
     let text = serde_json::to_string(&Deleted { lines: lines.into_inner() }).expect("what's deleted serializes");
-    Ok(Json(AssetDeleted { name, text, at }))
+    Ok(AssetDeleted { name, text, at })
 }
 
 /// `DELETE /v1/projects/{id}/assets/{name}/versions/{number}`: that version off the asset, at once. Its number stays given and its files on record
@@ -316,6 +327,7 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
         folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?;
     }
     folder.update_lock(|lock| lock.asset_mut(&name, "").discard(number)).map_err(Refusal)?;
+    history::take(&folder.dir, &name, number, noun, Took::Listed, Took::Discarded);
     moved(&api, &project, name, number, noun, approved, &before).await.map(|Json(answer)| Json(VersionMoved { read_by: doc.read_by(i, number), ..answer }))
 }
 
@@ -340,6 +352,9 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     measure_soon(&api, &project);
     let (number, already) = joined.get();
     let noun = noun(&doc, &folder.lock().map_err(Refusal)?, i);
+    if !already {
+        history::take(&folder.dir, &name, number, noun, Took::Absent, Took::Listed);
+    }
     moved(&api, &project, name, number, noun, false, &before).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
 }
 
@@ -367,6 +382,7 @@ pub(super) async fn undiscard(
     }
     let before = stale_names(&doc, &doc.stand(&lock));
     folder.update_lock(|lock| lock.asset_mut(&name, "").undiscard(number)).map_err(Refusal)?;
+    history::take(&folder.dir, &name, number, noun, Took::Discarded, Took::Listed);
     moved(&api, &project, name, number, noun, main.is_some(), &before).await
 }
 
@@ -418,15 +434,22 @@ pub(super) async fn put_back(
 ) -> Result<Json<AssetMade>, Refusal> {
     let asked: AssetBack = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    let folder = &project.folder;
     let back: Deleted = serde_json::from_str(&asked.text).map_err(|_| Refusal(Error::new(Kind::Validation, "asset_text", format!("that isn't what deleting {name} answered"))))?;
+    let etag = put_back_lines(&project, &id, &name, &back.lines, asked.at)?;
+    Ok(Json(AssetMade { name, etag }))
+}
+
+/// Asset `name` back from its own lines, as `removed` said them, its versions with it, and with `at` its row: its new ETag.
+pub(super) fn put_back_lines(project: &Project, id: &str, name: &str, lines: &str, at: Option<protocol::project::Card>) -> Result<String, Refusal> {
+    let folder = &project.folder;
+    let name = name.to_owned();
     if Doc::load(folder).map_err(Refusal)?.find(&name).is_some() {
         return Err(Refusal(taken(&name)));
     }
     // Its row and its versions before its lines, as a new asset's row: a read between would see it with none. Again after, in case a render
     // asked in between set them aside.
-    if let Some(card) = asked.at {
-        canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
+    if let Some(card) = at {
+        canvas::set(folder, id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
     let revived = std::cell::Cell::new(false);
     folder.update_lock(|lock| revived.set(lock.untombstone(&name))).map_err(Refusal)?;
@@ -434,7 +457,7 @@ pub(super) async fn put_back(
         if Doc::read(folder, text)?.find(&name).is_some() {
             return Err(taken(&name));
         }
-        assetfile::restored(text, &name, &back.lines)
+        assetfile::restored(text, &name, lines)
     });
     let text = match edited {
         Ok(text) => text,
@@ -451,6 +474,5 @@ pub(super) async fn put_back(
     })
     .map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
-    let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
-    Ok(Json(AssetMade { name, etag }))
+    assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))
 }

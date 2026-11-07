@@ -1,24 +1,26 @@
 import { useQuery } from "@tanstack/react-query"
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
-import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
-import { machinesQuery, runsQuery } from "../api/queries"
+import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
+import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
-import type { MainFile, Run, Snap } from "../types"
+import type { MainFile, Snap } from "../types"
 import { Icon } from "../ui/Icon"
+import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
-import { carriedFile, type ElementNode, type ElementView } from "./CanvasStore"
+import type { CarriedFile, ElementNode, ElementView } from "./CanvasStore"
+import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
-import { DRAGGED_FILE, DRAGGED_NAME } from "./drag"
-import { Media, Preview, Thumb, usePreview, WalkedFrames } from "./Media"
+import { useDragScroll } from "./dragScroll"
+import { Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { FPS, framesIn, timecode } from "./ranges"
 import { aspectOf, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
-import { noHash, piecesOf, rowsIn, took } from "./text"
+import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 import { Asking } from "./Asking"
@@ -36,29 +38,6 @@ function kindOf(view: ElementView): string {
   if (madeHere(asset.tool)) return asset.kind === "video" ? "edit" : "frame"
   if (asset.field && !asset.tool) return "file"
   return asset.kind === "video" ? "shot" : asset.kind
-}
-
-const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
-
-/** A box waiting its turn, or for what its machine must have first: its update, and the package's install. An Edit rendered here says how far it is. */
-function Waiting({ view }: { view: ElementView }) {
-  const { client } = useConnection()
-  const going = useQuery(runsQuery(client, { status: "in_progress" }, 100))
-  const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
-  const rendering = view.asset?.rendering
-  if (rendering !== undefined) {
-    const done = Math.round(rendering * 100)
-    return (
-      <div className="status mak" role="progressbar" aria-label="Rendering" aria-valuenow={done}>
-        Rendering {done}%
-      </div>
-    )
-  }
-  const said = view.run?.waiting
-  if (said) return <div className="status mak">{said[0].toUpperCase() + said.slice(1)}</div>
-  const machine = [...(going.data?.runs ?? []), ...(queued.data?.runs ?? [])].find(settingUp)?.machine
-  if (machine) return <div className="status mak">Getting {machine} ready</div>
-  return view.queued || view.asked !== undefined ? <div className="status mak">Queued</div> : null
 }
 
 /** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
@@ -85,20 +64,25 @@ export function buttonsOnly(event: MouseEvent) {
   if ((event.target as Element).closest("button, input, select, .mention-text")) event.stopPropagation()
 }
 
-/** A take carried out: it lands as a box of its own, or as `<name.N>` in words. It's picked up from the big tile, and an Edit's from its row, as its big tile is its clips. */
-function takeOut(event: DragEvent, store: ReturnType<typeof useCanvasStore>, name: string, asset: NonNullable<ElementView["asset"]>, version: NonNullable<NonNullable<ElementView["asset"]>["prefixes"]>[number]) {
+type Version = NonNullable<NonNullable<ElementView["asset"]>["prefixes"]>[number]
+
+/** A take carried out: it lands as a box of its own, or as `<name.N>` in words. It's picked up from its tile or the big one, and an Edit's from its row, as its big tile is its clips. */
+function taken(store: ReturnType<typeof useCanvasStore>, name: string, asset: NonNullable<ElementView["asset"]>, version: Version & { main: NonNullable<Version["main"]> }): CarriedFile {
   const description = store.valueOf(name, "description")
-  const file = { sha256: version.main?.sha256 ?? "", field: version.main?.field ?? "", name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined, from: asset.name, number: version.number }
-  event.dataTransfer.setData(DRAGGED_FILE, JSON.stringify(file))
-  event.dataTransfer.effectAllowed = "copy"
-  carriedFile.set(file)
-  event.currentTarget.addEventListener("dragend", () => carriedFile.set(null), { once: true })
+  return { sha256: version.main.sha256, field: version.main.field, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined, from: asset.name, number: version.number }
 }
 
-/** An Edit's clips to choose from: a click puts one in, and one can be dragged to a place. A prompt reads pictures by name. */
+/** An Edit's clips to choose from: a click puts one in, one can be carried to a place, and the row drags across. A prompt reads pictures by name. */
 function Pictures({ name }: { name: string }) {
   const store = useCanvasStore()
   useSignal(store.names)
+  const row = useDragScroll({
+    axis: "x",
+    lift(pressed) {
+      const from = pressed.closest<HTMLElement>(".picture")
+      return from?.dataset.name ? { load: { name: from.dataset.name }, from } : null
+    },
+  })
   const held = store.namesLike("", name).flatMap((other) => {
     const view = store.get(other)
     const shown = view && shownOf(view)
@@ -106,7 +90,7 @@ function Pictures({ name }: { name: string }) {
   })
   if (!held.length) return null
   return (
-    <div className="pictures" aria-label="The project's pictures">
+    <div ref={row} className="pictures" aria-label="The project's pictures">
       {held.map(({ other, sha256 }) => (
         <button
           key={other}
@@ -114,8 +98,7 @@ function Pictures({ name }: { name: string }) {
           className="picture nodrag"
           title={other}
           aria-label={`Put ${other} in`}
-          draggable
-          onDragStart={(event) => event.dataTransfer.setData(DRAGGED_NAME, other)}
+          data-name={other}
           onClick={(event) => {
             const place = event.currentTarget.closest(".card")?.querySelector("[data-drop-target]")
             const target = place && store.dropTargets.get(place)
@@ -130,22 +113,54 @@ function Pictures({ name }: { name: string }) {
   )
 }
 
+/** The take shown, as words mention it: `<Kyogre_3.2>`, its one name. A click copies it; dragged onto a box or into a prompt it's a mention,
+ *  as a box dragged is. */
+function TakeName({ view }: { view: ElementView }) {
+  const number = shownOf(view)?.number
+  if (!view.asset || number === undefined) return null
+  const name = `${view.name}.${number}`
+  return (
+    <div className="take-name">
+      <button
+        type="button"
+        className="chip nodrag"
+        title={`Copy <${name}>`}
+        onPointerDown={(event) => carryOnMove(event.nativeEvent, { name }, event.currentTarget)}
+        onClick={() => void navigator.clipboard?.writeText(`<${name}>`).then(() => say(`Copied <${name}>`), () => say(`<${name}>`))}
+      >
+        {chipWords(name)}
+      </button>
+    </div>
+  )
+}
+
 /** A take on the row: a video's preview plays while the pointer rests on it. */
-function TakeThumb({ main, width }: { main: MainFile; width: number }) {
+function TakeThumb({ main, width, onShown }: { main: MainFile; width: number; onShown?: () => void }) {
   const { on, hover } = usePreview(main.field === "video")
   return (
     <span className="take-thumb" {...hover}>
-      <Thumb sha256={main.sha256} cardWidth={width} />
+      <Thumb sha256={main.sha256} cardWidth={width} onShown={onShown} />
       {on && <Preview sha256={main.sha256} />}
     </span>
   )
 }
 
-/** Each take or version, side by side, the newest first and what's still being made before that: a press looks at it, a double tap approves it or, approved, unapproves it, and held down the pointer slides between them. + first goes to its words: an Edit's, or the next take an image tool writes in the frame. An Edit's clips are what a take holds, so they stay with it unless it's approved. */
-function Takes({ view, name, width }: { view: ElementView; name: string; width: number }) {
+/** Each take or version, the newest first and what's still being made before that: a click looks at it, a double tap approves it or, approved, unapproves it.
+ *  Beside an open box they're a column, and a drag up or down scrolls it; an Edit's are a row under it, which drags across. A drag any other way carries a
+ *  take out. + first goes to its words: an Edit's, or the next take an image tool writes in the frame. An Edit's clips are what a take holds, so they stay
+ *  with it unless it's approved. */
+function Takes({ view, name, width, side }: { view: ElementView; name: string; width: number; side?: boolean }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const asset = view.asset!
+  const list = useDragScroll({
+    axis: side ? "y" : "x",
+    lift(pressed) {
+      const from = pressed.closest<HTMLElement>(".take[data-take]")
+      const version = from && asset.prefixes?.find((held) => held.number === Number(from.dataset.take))
+      return from && version?.main ? { load: { take: taken(store, name, asset, { ...version, main: version.main }) }, from } : null
+    },
+  })
   const onWords = view.hereWords && !(asset.timeline && !asset.pinned)
   const watch = watched(view)
   // Rendered from its words, what's being made is what's looked at.
@@ -154,6 +169,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
   const writes = paints(view, tools)
+  // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
+  const { client } = useConnection()
+  const newest = asset.prefixes?.at(-1)
   const adds = writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit")
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
@@ -171,20 +189,14 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   }
   const pick = (number: number) => {
     store.pickTake(name, number)
-    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined })
+    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined, watchRun: undefined })
   }
-  return (
+  const row = (
     <div
+      ref={side ? undefined : list}
       className="takes nodrag nopan nowheel"
-      onPointerMove={(event) => {
-        // Held down, the pointer slides from take to take.
-        if (!event.buttons) return
-        const over = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-take]")
-        const number = Number(over?.dataset.take)
-        if (number && number !== shown?.number) pick(number)
-      }}
       onWheel={(event) => {
-        event.currentTarget.scrollLeft += event.deltaX || event.deltaY
+        if (!side) event.currentTarget.scrollLeft += event.deltaX || event.deltaY
       }}
     >
       {adds && (
@@ -194,9 +206,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       )}
       {waiting && (
         <span className="take-at">
-          <span className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued">
+          <button type="button" className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued" onClick={() => store.watchTake(name)}>
             …
-          </span>
+          </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
             <Icon name="close" />
           </button>
@@ -204,9 +216,9 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       )}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <span className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`}>
+          <button type="button" className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`} onClick={() => store.watchTake(name, run)}>
             <TakeProgress view={view} run={run} />
-          </span>
+          </button>
           <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
             <Icon name="close" />
           </button>
@@ -220,14 +232,12 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             aria-label={`${asset.noun} ${version.number}`}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
-            draggable={Boolean(asset.timeline && version.main)}
-            onDragStart={(event) => version.main && takeOut(event, store, name, asset, version)}
-            onPointerDown={() => pick(version.number)}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
           >
-            {version.main && !version.main.absent ? <TakeThumb main={version.main} width={width} /> : null}
-            <span className="take-no">{version.number}</span>
+            {version.main && !version.main.absent ? (
+              <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
+            ) : null}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -240,6 +250,13 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
         </span>
       ))}
     </div>
+  )
+  return side ? (
+    <div ref={list} className="here-side nodrag nopan nowheel">
+      {row}
+    </div>
+  ) : (
+    row
   )
 }
 
@@ -425,23 +442,19 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
+  // How far it's got is on its picture, in one line, and an Edit's film on its own bar: here, only what's to be done about it.
   if (asset.standing === "making") {
-    const run = view.run
-    const stalled = run?.stalled
-    if (stalled) {
-      const since = took(Math.max(0, Date.now() - stalled.since_ms))
-      return (
-        <div className="status bad">
-          Stalled {since} on {stalled.machine}
-          {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
-        </div>
-      )
-    }
-    if (run?.queue_position !== undefined) return <div className="status mak">Queued, number {run.queue_position} in line</div>
-    // How far it's got is on its picture, and an Edit's film on its own bar.
-    return <Waiting view={view} />
+    const stalled = view.run?.stalled
+    if (!stalled) return null
+    const since = took(Math.max(0, Date.now() - stalled.since_ms))
+    return (
+      <div className="status bad">
+        Stalled {since} on {stalled.machine}
+        {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
+      </div>
+    )
   }
-  if (view.queued || view.asked !== undefined) return <Waiting view={view} />
+  if (view.queued || view.asked !== undefined) return null
   // What's at rest says nothing here: a failure is its toast, and a file that isn't here can be pulled.
   const shown = shownOf(view)
   if (shown?.absent && !shown.machine) return <Pull />
@@ -530,6 +543,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
         onPointerMove={moved}
         onPointerUp={done}
         onPointerCancel={done}
+        onLostPointerCapture={done}
       />
     </>
   )
@@ -635,7 +649,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           </span>
         )}
         {view.draft === undefined && !lite && <span className="sp" />}
-        {view.draft === undefined && here && versions.length > 1 && (
+        {view.draft === undefined && here && versions.length > 1 && at >= 0 && (
           <span className="count">
             {at + 1}/{versions.length}
           </span>
@@ -646,7 +660,17 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           </button>
         ) : null}
         {here ? (
-          <button type="button" className="iconb nodrag" aria-label="Close" title="Close" onClick={store.leaveHere}>
+          // Open or not, its × deletes it, with Undo: Esc or a click off it leaves.
+          <button
+            type="button"
+            className="iconb nodrag"
+            aria-label="Delete"
+            title="Delete"
+            onClick={() => {
+              store.leaveHere()
+              store.remove([name])
+            }}
+          >
             <Icon name="close" />
           </button>
         ) : view.placing && view.placing.stage !== "adding" ? (
@@ -657,7 +681,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           view.draft === undefined &&
           asset &&
           !lite && (
-            <button type="button" className="iconb nodrag on-hover" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
+            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
             </button>
           )
@@ -667,29 +691,28 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       {asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width} restWidth={width}>
           {here && (asset?.kind === "text" ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
-          {here && !view.hereWords && asset && shownVersion?.main && <div className="take-out nodrag nopan" draggable onDragStart={(event) => takeOut(event, store, name, asset, shownVersion)} />}
+          {here && !view.hereWords && asset && shownVersion?.main && (
+            <div
+              className="take-out nodrag nopan"
+              onPointerDown={(event) => {
+                const tile = self.current?.querySelector<HTMLElement>(`.take[data-take="${shownVersion.number}"]`)
+                carryOnMove(event.nativeEvent, { take: taken(store, name, asset, { ...shownVersion, main: shownVersion.main! }) }, tile ?? event.currentTarget)
+              }}
+            />
+          )}
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
       {!lite && asset && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
-      {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
-        <div className="rest-waiting">
-          <Waiting view={view} />
-        </div>
-      )}
       {!here && view.asking && (
         <div className="rest-asking nodrag nopan nowheel">
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
-      {here && asset && asset.kind !== "text" && !asset.timeline && (
-        <div className="here-side nodrag nopan nowheel">
-          <Takes view={view} name={name} width={width} />
-        </div>
-      )}
+      {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
       {here && asset && asset.kind !== "text" && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
@@ -701,6 +724,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             {!looking && (
               <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />
             )}
+            {!view.hereWords && <TakeName view={view} />}
             {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
             {!(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
             {view.warned && warned ? (

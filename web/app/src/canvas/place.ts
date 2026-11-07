@@ -3,7 +3,7 @@ import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Row, Tool } from "../types"
-import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage, UNDO_MS } from "./CanvasStore"
+import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
@@ -38,8 +38,8 @@ export class Placer {
     this.hooks = hooks
   }
 
-  /** One file is named by its field, focused; several take their stems, laid out from the point, with no focus. With `then`, none asks: it's told the name each gets. */
-  add(files: File[], point: { x: number; y: number }, then?: (name: string) => void) {
+  /** One file is named by its field, focused; several take their stems, laid out from the point, with no focus. With `then`, none asks: it's told the name each gets. `edit`: what they're part of. */
+  add(files: File[], point: { x: number; y: number }, then?: (name: string) => void, edit?: string) {
     const columns = Math.ceil(Math.sqrt(files.length))
     const left = point.x - CARD_WIDTH / 2
     const top = point.y - 16
@@ -53,31 +53,34 @@ export class Placer {
         y: Math.round(top + Math.floor(i / columns) * (CARD_WIDTH * 0.75 + 30 + GAP)),
         w: CARD_WIDTH,
       }
+      // Its step is made when it's sent; what it pushes aside as it's dropped is part of it already.
+      const by = edit ?? crypto.randomUUID()
       this.store.addPlacing(key, stem, { media, stage: "waiting", done: 0, stem, abort }, at, {
         naming: files.length === 1 && !then,
         preview: media === "image" ? URL.createObjectURL(file) : undefined,
-      })
-      void this.run(key, file, abort.signal, at, then)
+      }, by)
+      void this.run(key, file, abort.signal, at, then, by, !edit)
     })
   }
 
-  /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says. A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
-  addTool(tool: Tool, point: { x: number; y: number }) {
+  /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
+   *  (a checkpoint dropped is on it). A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
+  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "" } : startingFields(tool), timeline }, at, `Couldn't place ${tool.label}`)
+    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "" } : { ...startingFields(tool), ...fields }, timeline }, at, `Couldn't place ${tool.label}`)
     this.store.focusing = name
     if (!text && !timeline) this.store.openHere(name)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
-  private box(wanted: string, { kind, tool, fields, timeline }: Pick<Asset, "kind" | "tool" | "fields" | "timeline">, at: Row, failed: string): string {
+  private box(wanted: string, { kind, tool, fields, timeline }: Pick<Asset, "kind" | "tool" | "fields" | "timeline">, at: Row, failed: string, edit?: string): string {
     const key = `asset-${crypto.randomUUID()}`
     const text = !tool
     const body = text ? { tool: "", name: wanted, fields } : { tool, name: wanted, fields, kind }
     const row: Asset = { name: "", standing: text ? "current" : "missing", kind, noun: kind === "video" ? "take" : "version", tool, versions: 0, status: "", fields, timeline }
-    return this.store.place(wanted, { asset: row }, at, async (clear, once) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, once), (error) => say(failed, error))
+    return this.store.place(wanted, { asset: row }, at, async (clear, write) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, write), (error) => say(failed, error), undefined, edit)
   }
 
   /** Boxes copied, laid out as they were and together clear of what's there, around a point. All of them are there at once, in the queue like anything else, and a note offers Undo. */
@@ -86,25 +89,32 @@ export class Placer {
     const top = Math.min(...boxes.map(({ at }) => at.y))
     const w = Math.max(...boxes.map(({ at }) => at.x + at.w)) - left
     const h = Math.max(...boxes.map(({ at }) => at.y + at.h)) - top
-    const spot = this.store.clearFor({ x: Math.round(point.x - w / 2), y: Math.round(point.y - h / 2), w, h })
+    const edit = this.store.newStep(`Pasted ${boxes.length === 1 ? "a box" : `${boxes.length} boxes`}`)
+    const spot = this.store.clearFor({ x: Math.round(point.x - w / 2), y: Math.round(point.y - h / 2), w, h }, edit)
     const names = boxes.map((box) => {
       const at = { x: spot.x + box.at.x - left, y: spot.y + box.at.y - top, w: box.at.w }
-      return "file" in box ? this.file(box.file, at) : this.box(box.made.name, box.made, at, `Couldn't paste ${box.made.name}`)
+      return "file" in box ? this.file(box.file, at, edit) : this.box(box.made.name, box.made, at, `Couldn't paste ${box.made.name}`, edit)
     })
-    this.pasted(names)
+    this.pasted(names, edit)
   }
 
   /** Files from the system's clipboard: each a box near a point, named by what it's called there, and Undo. */
   pasteFiles(files: File[], point: { x: number; y: number }) {
     const names: string[] = []
-    this.add(files, point, (name) => {
-      names.push(name)
-      if (names.length === files.length) this.pasted(names)
-    })
+    const edit = this.store.newStep(`Pasted ${files.length === 1 ? files[0].name : `${files.length} files`}`)
+    this.add(
+      files,
+      point,
+      (name) => {
+        names.push(name)
+        if (names.length === files.length) this.pasted(names, edit)
+      },
+      edit,
+    )
   }
 
-  private pasted(names: string[]) {
-    say(`Pasted ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.remove(names) }, ms: UNDO_MS })
+  private pasted(names: string[], edit: string) {
+    say(`Pasted ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
   }
 
   /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. */
@@ -128,23 +138,27 @@ export class Placer {
   }
 
   /** A take or version dragged out: its own asset with the same file and what it says it is, there at once, and no new bytes. */
-  addFile(file: { sha256: string; field: string; name: string; description?: string }, point: { x: number; y: number }) {
+  /** A take carried out of its box onto the canvas moves there (`movedOut`), once its new box is made. */
+  addFile(file: CarriedFile, point: { x: number; y: number }) {
     this.file(file, { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16), w: CARD_WIDTH })
   }
 
-  private file(file: { sha256: string; field: string; name: string; description?: string }, at: Row): string {
+  private file(file: CarriedFile, at: Row, edit?: string): string {
     const key = `import-${crypto.randomUUID()}`
-    const { description } = file
+    const { description, from, number } = file
     return this.store.place(
       asName(file.name),
       { landed: { sha256: file.sha256, field: file.field } },
       at,
-      async (clear, once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description }, once),
+      async (clear, write) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description }, write),
       (error) => say(`Couldn't take out ${file.name}`, error),
+      (name, _, made) => from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
+      edit,
     )
   }
 
-  private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then?: (name: string) => void) {
+  /** `own`: `edit` is this file's alone, its step made as it's sent. */
+  private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then: ((name: string) => void) | undefined, edit: string, own: boolean) {
     const owed = this.store.outbox.owing()
     try {
       const digest = await inLine(() => this.hashAndSend(key, file, signal))
@@ -152,34 +166,36 @@ export class Placer {
       // Its import is in the queue from here, and counted there.
       owed()
       try {
-        const name = await this.ask(key, digest, dropped)
+        const name = await this.ask(key, digest, dropped, edit, own)
         then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
         const again = this.store.outbox.owing()
         await inLine(() => this.send(key, file, digest, signal)).finally(again)
-        const name = await this.ask(key, digest, dropped)
+        const name = await this.ask(key, digest, dropped, edit, own)
         then?.(name)
       }
     } catch (error) {
       if (signal.aborted) return
       say(file.name, error)
-      this.store.cancel(key)
+      this.store.cancel(key, edit)
     } finally {
       owed()
     }
   }
 
-  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }): Promise<string> {
+  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }, edit: string, own: boolean): Promise<string> {
     this.stage(key, "adding", 1)
     const at = this.store.position(key) ?? dropped
     const name = this.store.get(key)!.name
+    if (own && !this.store.history.stepOf({ edit })) this.store.newStep(`Added ${name}`, [], edit)
+    this.store.joinStep(edit, [key])
     this.store.beginAdding()
     try {
       const once = `import-${crypto.randomUUID()}`
-      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: async (signal) => this.client.import(await this.project(), once, { source: digest, name, at }, signal), done, refused }))
-      this.store.land(key, answer, at)
+      const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send: async (signal) => this.client.import(await this.project(), once, { source: digest, name, at }, { once: signal, edit }), done, refused }))
+      this.store.land(key, answer, at, edit)
       if (answer.note) say(answer.note)
       return answer.name
     } finally {

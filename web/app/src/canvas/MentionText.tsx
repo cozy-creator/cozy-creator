@@ -1,13 +1,13 @@
-import { type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ClipboardEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import type { Media } from "../types"
 import type { CanvasStore } from "./CanvasStore"
+import { LET_GO, type LetGo } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
 import { WANTED } from "./controls"
-import { DRAGGED_FILE } from "./drag"
 import { Thumb } from "./Media"
 import { baseOf, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { chipWords, mentionsIn, withMentions } from "./text"
@@ -180,6 +180,21 @@ export function MentionText({
     return () => void store.dropTargets.delete(el)
   }, [store, asset, put, onSave])
 
+  // A take carried out of a box and let go in this text: that version, where it was let go.
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const heard = (event: Event) => {
+      const { load, x, y } = (event as LetGo).detail
+      if (!load.take?.from || !load.take.number) return
+      event.stopPropagation()
+      put(mentionFrom(asset, load.take.from, load.take.number), document.caretRangeFromPoint?.(x, y) ?? caret.current)
+      onSave()
+    }
+    el.addEventListener(LET_GO, heard)
+    return () => el.removeEventListener(LET_GO, heard)
+  }, [asset, put, onSave])
+
   useEffect(() => {
     if (!focus || !box.current) return
     box.current.focus({ preventScroll: true })
@@ -201,18 +216,6 @@ export function MentionText({
     const selection = document.getSelection()
     selection?.collapse(parent, [...parent.childNodes].indexOf(name) + 1)
     if (selection?.rangeCount) caret.current = selection.getRangeAt(0).cloneRange()
-  }
-
-  /** A take carried out of a box, let go in this text: that version, where it was let go. */
-  const takeIn = (event: DragEvent) => {
-    const taken = event.dataTransfer.getData(DRAGGED_FILE)
-    if (!taken) return
-    const { from, number } = JSON.parse(taken)
-    if (!from || !number) return
-    event.preventDefault()
-    event.stopPropagation()
-    put(mentionFrom(asset, from, number), document.caretRangeFromPoint?.(event.clientX, event.clientY) ?? caret.current)
-    onSave()
   }
 
   /** After each keystroke: `<name>` finished by hand is a chip, and a `<` being typed offers names. */
@@ -325,10 +328,6 @@ export function MentionText({
         onCopy={copy}
         onCut={cut}
         onPaste={paste}
-        onDragOver={(event) => {
-          if (event.dataTransfer.types.includes(DRAGGED_FILE)) event.preventDefault()
-        }}
-        onDrop={takeIn}
         onBlur={() => {
           setMenu(null)
           onSave()

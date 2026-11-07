@@ -253,6 +253,38 @@ cozy --json run "$(birefnet)" --warm off --on local > "$OUT/warm-off.ndjson" || 
 cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "--warm off: birefnet is still in the warm set"
 }
 
+# Calcifer's time left, on a weightless run whose stages and steps time it as a model's do (tool.py's `stepped`, its first step slow as a
+# warm-up is). Its first run here says `first_run`, with no number, until it has two steps of its own. With history, each report has a
+# number from the first; at step 2 it is within 35% of what was left, and once three steps are in a step moves it at most 25% past its
+# countdown (and a second of rounding). Both are from replaying Paul's Qwen Turbo runs 171-208 through the estimator: 10 of 14 were within
+# 35% at step 2 (of the four past it, 181 and 208 spent 70 s encoding their prompt, and 195 and 196 ran on a Runtime half again as fast as
+# their history), and no step after the third moved one more than 23%. A weightless fixture is steadier than any of them.
+time_left() {
+step "time left: a first run, then from history"
+local turn had end out
+had=$(cozy --json run ls --package local/tool/stepped --state completed --limit 1 | jq '.runs | length')
+for turn in 1 2 3; do
+  out=$OUT/time-left-$turn
+  cell "time-left-$turn" "$here/project/tool.py/stepped" prompt=time "seed:=$RANDOM$turn" steps:=8 step:=0.8 first:=2.4 || continue
+  end=$(jq '.started_at_ms + .execution_ms' "$out.json")
+  grep '^{' "$out.ndjson" | jq -c 'select(.type == "run.progress") | .progress' > "$out.progress"
+  if [ "$turn" = 1 ] && [ "$had" = 0 ]; then
+    jq -se 'map(select((.completed // 0) < 2)) | length > 0 and all(.eta_s == null and .eta_basis == "first_run")' "$out.progress" > /dev/null \
+      || check "time left: a first run had a number before two steps of its own: $(head -c 600 "$out.progress")"
+    continue
+  fi
+  jq -se 'length > 0 and all(.eta_s != null and .eta_basis == "machine")' "$out.progress" > /dev/null \
+    || check "time left: run $turn had history and a report without its number: $(jq -sc 'map(select(.eta_s == null)) | .[:3]' "$out.progress")"
+  jq -se --argjson end "$end" 'map(select(.stage == "generating image" and .completed >= 2)) | .[0] | (($end - .at_ms) / 1000) as $truth
+      | (.eta_s - $truth | fabs) <= 0.35 * $truth + 1' "$out.progress" > /dev/null \
+    || check "time left: at step 2, more than 35% from what was left: $(jq -sc --argjson end "$end" 'map(select(.completed >= 2)) | .[0] | {eta_s, truth: (($end - .at_ms) / 1000)}' "$out.progress")"
+  jq -se 'map(select(.stage == "generating image" and .completed >= 3)) | group_by(.completed) | map(.[0])
+      | [range(1; length) as $k | .[$k - 1] as $a | .[$k] as $b | ($a.eta_s - ($b.at_ms - $a.at_ms) / 1000) as $counted
+         | ((($b.eta_s - $counted) | fabs) - 1) / ([$a.eta_s, 1] | max)] | all(. <= 0.25)' "$out.progress" > /dev/null \
+    || check "time left: a step moved it more than 25% past its countdown: $(jq -sc 'map(select(.stage == "generating image")) | group_by(.completed) | map(.[0] | {completed, eta_s, at_ms})' "$out.progress")"
+done
+}
+
 run_follow() {
 step "a run followed, a snapshot, a cancel"
 (cd "$here" && cozy --json run -p "$RUN_PROJECT" ./weightless/wait seconds:=120 --on local > "$OUT/wait.ndjson" 2>&1) &

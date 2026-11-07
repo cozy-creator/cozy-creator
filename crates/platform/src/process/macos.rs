@@ -94,6 +94,10 @@ pub(super) fn kill(_: &Handle, birth: &Birth) -> io::Result<()> {
 
 pub(super) fn background_thread() {}
 
+pub(super) fn background_process() {
+    let _ = rustix::process::setpriority_process(None, 10);
+}
+
 pub(super) fn set_name(_: &str) -> crate::Result<()> {
     Err(crate::Error::unsupported(crate::Seam::Process))
 }

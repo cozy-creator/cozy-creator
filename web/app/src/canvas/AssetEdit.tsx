@@ -1,4 +1,4 @@
-import { type CSSProperties, type DragEvent, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import type { Field, Media, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
@@ -6,10 +6,11 @@ import { useSignal } from "../ui/signal"
 import { AddOnRows } from "./AddOns"
 import { addOnsOf } from "./checkpoints"
 import type { CanvasStore, ElementView } from "./CanvasStore"
+import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
 import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
-import { Thumb } from "./Media"
+import { Ghosts, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { baseOf, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes } from "./shown"
@@ -366,6 +367,29 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
   const spans = field.spans ? spanOf(store, name, field, held[0], siblings) : null
   const refusing = useSignal(store.refusing)
   const [carried, setCarried] = useState(false)
+  // A take carried over it says whether it takes it, and let go on it, it's that take.
+  useEffect(
+    () =>
+      carriedAt.subscribe(() => {
+        const at = carriedAt.get()
+        const rect = carriedFile.get() && at ? slot.current?.getBoundingClientRect() : undefined
+        setCarried(Boolean(at && rect && at.x >= rect.left && at.x <= rect.right && at.y >= rect.top && at.y <= rect.bottom))
+      }),
+    [],
+  )
+  useEffect(() => {
+    const el = slot.current
+    if (!el) return
+    const heard = (event: Event) => {
+      const mention = store.carriedVersion(name)
+      if (!mention) return
+      event.stopPropagation()
+      setCarried(false)
+      take([mention])
+    }
+    el.addEventListener(LET_GO, heard)
+    return () => el.removeEventListener(LET_GO, heard)
+  })
   const version = carried ? store.carriedVersion(name) : null
   const why = (refusing && refusing.el === slot.current ? refusing.why : null) ?? (version ? refusal(version) : null)
   return (
@@ -377,12 +401,6 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
       data-accept={field.accept}
       role="group"
       aria-label={label}
-      onDragEnter={() => setCarried(true)}
-      onDragLeave={(event) => !event.currentTarget.contains(event.relatedTarget as Node | null) && setCarried(false)}
-      {...versionDrop(store, name, (mentions) => {
-        setCarried(false)
-        take(mentions)
-      })}
     >
       <span className="ctl-name">{field.label}</span>
       {why && <span className="refusal">{why}</span>}
@@ -409,22 +427,6 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
       {view.asset?.missing?.some((gone) => held.includes(gone)) && <span className="muted">Not in this project any more</span>}
     </div>
   )
-}
-
-/** A take carried out of a box, let go on a slot: that version, if it's what the slot takes. */
-function versionDrop(store: CanvasStore, name: string, take: (mentions: string[]) => void) {
-  return {
-    onDragOver(event: DragEvent) {
-      if (store.carriedVersion()) event.preventDefault()
-    },
-    onDrop(event: DragEvent) {
-      const mention = store.carriedVersion(name)
-      if (!mention) return
-      event.preventDefault()
-      event.stopPropagation()
-      take([mention])
-    },
-  }
 }
 
 /** A slot whose video is the timeline of a list group's rows: both lengths, and a warning when they differ. */
@@ -674,23 +676,6 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
     <div className="in-frame">
       <Ghosts name={name} view={view} />
       <ControlRow name={name} field={field} view={view} focus={store.focusing === name} named={false} framed />
-    </div>
-  )
-}
-
-/** Behind its words, faded, the pictures they mention: one fills the frame, up to four tile it 2×2, up to nine 3×3. */
-function Ghosts({ name, view }: { name: string; view: ElementView }) {
-  const store = useCanvasStore()
-  useSignal(store.names)
-  useSignal(store.tools)
-  const pictures = view.asset ? store.mentionedPictures(name) : []
-  if (!pictures.length) return null
-  const side = Math.ceil(Math.sqrt(pictures.length))
-  return (
-    <div className="ghosts" style={{ "--side": side } as CSSProperties} aria-hidden>
-      {pictures.map((sha256) => (
-        <Thumb key={sha256} sha256={sha256} cardWidth={960 / side} />
-      ))}
     </div>
   )
 }

@@ -401,6 +401,9 @@ pub struct Run {
     /// With `?detail=full`: what was asked of it, to show and to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<RunAsked>,
+    /// The GPU it ran on, by name, once settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
 }
 
 impl Run {
@@ -548,9 +551,10 @@ pub struct Progress {
     pub bytes_total: u64,
     #[serde(default)]
     pub step_ms: f64,
-    /// The stage's steady step time: the mean of its steps after the first; 0 before one.
+    /// The stage's steady step time: the median of its last five steps after the first; 0 before
+    /// its second.
     #[serde(default)]
-    pub step_avg_ms: f64,
+    pub step_steady_ms: f64,
     /// When the machine last saw it move (Unix ms; 0: unknown): how long a run has not.
     #[serde(default)]
     pub at_ms: i64,
@@ -561,9 +565,44 @@ pub struct Progress {
     /// The stage's bytes a second over its last 10 s, once a second of them is seen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes_per_s: Option<f64>,
-    /// The seconds its bytes still take at that rate.
+    /// The seconds the run has left, all of it, as Calcifer estimates them (CALCIFER-API.md "Time
+    /// left"): what runs like it took before, and its own steps as they come. None: no basis yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_s: Option<i64>,
+    /// How far to trust `eta_s`, 0 to 1: higher with closer history and more of the run done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_confidence: Option<f64>,
+    /// What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_basis: Option<EtaBasis>,
+}
+
+/// What a time left stands on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EtaBasis {
+    /// Runs like it on this machine, and its own steps as they come.
+    Machine,
+    /// Runs like it on other machines of this GPU, and its own steps.
+    Gpu,
+    /// Its own steps alone: nothing like it ran here.
+    Steps,
+    /// Nothing yet: no run like it here or on this GPU, and fewer than two of its own steps.
+    FirstRun,
+}
+
+/// What a run would take before it is sent (`GET /v1/estimate`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Estimate {
+    /// None: `first_run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_s: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_confidence: Option<f64>,
+    pub eta_basis: EtaBasis,
+    /// How many runs it stands on.
+    #[serde(default)]
+    pub runs: u32,
 }
 
 /// One event of a run's stream.
@@ -771,6 +810,15 @@ pub enum StreamEvent {
     /// What a machine is fetching ahead of a project's queued jobs, as it stands now.
     #[serde(rename = "ahead.updated")]
     AheadUpdated { project: String, ahead: Box<crate::project::Ahead> },
+    /// A project's history moved: an edit, an undo or a redo. `undo` and `redo` are what each would take now.
+    #[serde(rename = "history")]
+    History {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<Box<crate::project::HistoryEntry>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        redo: Option<Box<crate::project::HistoryEntry>>,
+    },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]
     Resync,

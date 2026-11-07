@@ -12,6 +12,7 @@ mod access;
 pub mod api;
 mod authorized;
 mod door;
+pub mod eta;
 pub mod events;
 mod files;
 mod hub;
@@ -107,14 +108,18 @@ pub struct Calcifer {
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
 type Turn = Arc<(tokio::sync::Mutex<()>, Mutex<u64>)>;
 
-/// What a run is doing now, never stored: the latest of each live event, and the stage moving
-/// bytes with its last few seconds of (when, bytes moved): its rate.
+/// What a run is doing now, never stored: the latest of each live event, the stage moving
+/// bytes with its last few seconds of (when, bytes moved): its rate, and what says its time left.
 #[derive(Default)]
 struct Live {
     waiting: Option<String>,
     progress: Option<Progress>,
     moving: (String, VecDeque<(Instant, u64)>),
+    clock: Option<eta::Clock>,
 }
+
+/// How often a running run's time left is said again as it counts down.
+const ETA_EVERY: Duration = Duration::from_secs(1);
 
 /// A machine's connection, shared by its runs' drivers.
 struct Machine {
@@ -620,8 +625,8 @@ impl Calcifer {
         }
     }
 
-    /// Records the run's progress, with how far it is and at what rate its bytes move; whether it
-    /// entered a stage it was not in.
+    /// Records the run's progress, with how far it is, at what rate its bytes move and its time
+    /// left; whether it entered a stage it was not in.
     fn progress(&self, id: &RunId, mut progress: Progress) -> bool {
         let entered = {
             let mut live = lock(&self.live);
@@ -630,14 +635,80 @@ impl Calcifer {
             let (done, total) = (progress.bytes_done, progress.bytes_total);
             if done > 0 || total > 0 {
                 progress.bytes_per_s = rate(&mut live.moving, &progress.stage, done, Instant::now());
-                progress.eta_s = (progress.bytes_per_s.filter(|rate| total > done && *rate >= 1.0))
-                    .map(|rate| ((total - done) as f64 / rate) as i64);
+            }
+            if let Some(clock) = &mut live.clock {
+                let received = store::now_ms() as f64;
+                clock.observe(&progress, if progress.at_ms > 0 { progress.at_ms as f64 } else { received }, received);
+                time_left(clock, &mut progress);
             }
             let was = live.progress.replace(progress.clone()).map(|p| p.stage);
             !progress.stage.is_empty() && was.as_deref() != Some(progress.stage.as_str())
         };
         let _ = self.events.send((id.clone(), Event::Progress { progress }));
         entered
+    }
+
+    /// Its time left as it counts down between reports: said again when its second moves.
+    fn tick(&self, id: &RunId) {
+        let progress = {
+            let mut live = lock(&self.live);
+            let Some(Live { progress: Some(progress), clock: Some(clock), .. }) = live.get_mut(id) else { return };
+            let was = progress.eta_s;
+            time_left(clock, progress);
+            if progress.eta_s == was {
+                return;
+            }
+            progress.clone()
+        };
+        let _ = self.events.send((id.clone(), Event::Progress { progress }));
+    }
+
+    /// What says the run's time left, from the runs like it before (`eta::Prior`): made once, as it is first followed.
+    fn clock(&self, run: &RunRow, machine: &str) {
+        if run.kind != protocol::calcifer::Kind::Call || lock(&self.live).get(&run.id).is_some_and(|live| live.clock.is_some()) {
+            return;
+        }
+        let prior = self.prior(&run.target, machine, &run.spec);
+        let mut clock = eta::Clock::new(prior);
+        if let Some(started) = run.started_at_ms {
+            clock.started(started as f64);
+        }
+        lock(&self.live).entry(run.id.clone()).or_default().clock = Some(clock);
+    }
+
+    /// The prior of a run of `target` on `machine` asked `spec`: its size as its input says.
+    fn prior(&self, target: &str, machine: &str, spec: &v1::RunSpec) -> Option<eta::Prior> {
+        let input: serde_json::Map<String, serde_json::Value> =
+            spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
+        let steps = input.get("steps").and_then(serde_json::Value::as_u64);
+        eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels(&input)).map(|prior| prior.with_steps(steps))
+    }
+
+    /// What a run of `target` on `machine` would take, before it is sent (`GET /v1/estimate`).
+    pub fn estimate(&self, target: &str, machine: &str, megapixels: Option<f64>, steps: Option<u64>) -> protocol::calcifer::Estimate {
+        let prior = eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels);
+        eta::before(prior.as_ref(), steps)
+    }
+
+    /// The completed runs of `target`, whatever its release, newest first, each by its phases.
+    fn history(&self, target: &str) -> Vec<eta::Took> {
+        let base = target.split('@').next().unwrap_or(target);
+        let filter = store::RunFilter { status: Some(RunStatus::Completed), target: Some(base.to_owned()), limit: 60, ..Default::default() };
+        let Ok((rows, ..)) = self.store.runs(&filter) else { return vec![] };
+        rows.iter()
+            .filter(|row| row.target.split('@').next() == Some(base))
+            .filter_map(|row| {
+                let outcome = row.outcome.as_ref()?;
+                let result: Option<serde_json::Map<String, serde_json::Value>> = outcome.result.as_ref().and_then(|r| serde_json::from_str(r.get()).ok());
+                let made = result.as_ref().and_then(|result| Some(result.get("width")?.as_f64()? * result.get("height")?.as_f64()? / 1e6));
+                eta::Took::of(row.machine.as_deref()?, &outcome.gpu, row.started_at_ms?, outcome.execution_ms, outcome.measurements.as_ref()?.get(), made)
+            })
+            .collect()
+    }
+
+    /// The GPU `machine` has, by name, as it last said; empty: unknown.
+    fn gpu_of(&self, machine: &str) -> String {
+        self.machines().and_then(|machines| machines.frame(machine)).and_then(|frame| frame.gpus.first().map(|gpu| gpu.name.clone())).unwrap_or_default()
     }
 
     fn wake(&self, id: &RunId) {
@@ -1008,6 +1079,7 @@ impl Calcifer {
             Some(stream) => stream,
             None => link.events(id, 0).await?,
         };
+        self.clock(run, machine);
         self.follow(&run.id, stream, link, wake, canceled, state_now).await
     }
 
@@ -1039,10 +1111,16 @@ impl Calcifer {
     ) -> Result<(), Stop> {
         use v1::Event as Frame;
         let (mut batch, mut frames) = (Batch::default(), 0u64);
+        let mut ticks = tokio::time::interval(ETA_EVERY);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let next = if batch.is_empty() {
                 tokio::select! {
                     next = stream.next() => next,
+                    _ = ticks.tick() => {
+                        self.tick(id);
+                        continue;
+                    }
                     _ = wake.notified() => {
                         let Some(run) = self.store.run(id.as_str())? else { return Ok(()) };
                         if run.state == State::Settled {
@@ -1143,6 +1221,9 @@ impl Calcifer {
                     self.machine_waiting(id, state.clone());
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);
+                        if let Some(clock) = lock(&self.live).get_mut(id).and_then(|live| live.clock.as_mut()) {
+                            clock.started(state.started_at_ms as f64);
+                        }
                     }
                     batch.machine_state = Some(state.state);
                     continue;
@@ -1150,6 +1231,13 @@ impl Calcifer {
                 Frame::Outcome(mut outcome) => {
                     // What its ask does once the machine completed it, before it settles.
                     self.after(id, &mut outcome).await;
+                    // What it ran on, for the runs after it on another machine of that GPU.
+                    if outcome.gpu.is_empty()
+                        && let Ok(Some(row)) = self.store.run(id.as_str())
+                        && let Some(machine) = row.machine.as_deref()
+                    {
+                        outcome.gpu = self.gpu_of(machine);
+                    }
                     let received = Instant::now();
                     tracing::info!(run = %id, phase = "outcome_received", sequence = durable,
                         machine_at_ms = frame.at_ms);
@@ -1410,12 +1498,26 @@ pub(crate) fn progress_of(p: v1::Progress, at_ms: i64) -> Progress {
         bytes_done: p.bytes_done,
         bytes_total: p.bytes_total,
         step_ms: p.step_ms,
-        step_avg_ms: p.step_avg_ms,
+        step_steady_ms: p.step_steady_ms,
         at_ms,
         ..Default::default()
     };
     progress.done_fraction = done_fraction(&progress);
     progress
+}
+
+/// Its clock's time left, now, on its progress.
+fn time_left(clock: &mut eta::Clock, progress: &mut Progress) {
+    let shown = clock.shown(store::now_ms() as f64);
+    progress.eta_s = shown.map(|(left, ..)| left);
+    progress.eta_confidence = shown.map(|(_, confidence, _)| confidence);
+    progress.eta_basis = Some(shown.map_or(protocol::calcifer::EtaBasis::FirstRun, |(.., basis)| basis));
+}
+
+/// A picture's size as a run's input asks it: its `megapixels`, else its `width` by its `height`.
+fn megapixels(input: &serde_json::Map<String, serde_json::Value>) -> Option<f64> {
+    let number = |key: &str| input.get(key).and_then(serde_json::Value::as_f64).filter(|n| *n > 0.0);
+    number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6))
 }
 
 /// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.

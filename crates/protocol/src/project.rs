@@ -1182,3 +1182,72 @@ pub struct Captioned {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
+
+/// Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct By {
+    /// `page`, `cli`, `file` or `api`.
+    pub via: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
+/// One edit of a project as its history keeps it: what it did in plain words, and whether it's undone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub id: u64,
+    pub at_ms: i64,
+    pub by: By,
+    pub words: String,
+    /// The assets it touched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    /// The page's own ids for the edit (`Cozy-Edit`), which undo and redo take as well as `id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undone: Option<Undone>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Undone {
+    pub at_ms: i64,
+    pub by: By,
+}
+
+/// `GET /v1/projects/{id}/history`: newest first, and the entries undo and redo would take now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct History {
+    pub entries: Vec<HistoryEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo: Option<u64>,
+}
+
+/// `POST /v1/projects/{id}/history/undo` and `…/redo`: one entry by its `id` or the page's `edit`; with `to`, every entry back to it (undo)
+/// or up to it (redo); with nothing, the next.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HistoryStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<u64>,
+}
+
+/// What a step undid or redid, in the order it did them; `already` when the entry asked was so already.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HistoryStepped {
+    pub entries: Vec<HistoryEntry>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already: bool,
+    /// What refused the next of a `to`, short of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<Error>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo: Option<u64>,
+}

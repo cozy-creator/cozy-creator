@@ -3,8 +3,9 @@
 # dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
 # ///
 """The tool cells' package: weightless tools as a canvas drops them. `still` makes a picture of one colour, `slow` too, saying how far
-it's got, and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
-tool, and `caption` answers what it's shown, as Calcifer's Caption asks a package's `caption`."""
+it's got in steps, and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
+tool, and `caption` answers what it's shown, as Calcifer's Caption asks a package's `caption`. `stepped` is no tool either: its stages and
+steps time a run as a model's do."""
 
 import os
 import time
@@ -66,11 +67,35 @@ class SlowBox(msgspec.Struct, kw_only=True):
 
 @app.tool(label="A slow still")
 def slow(payload: SlowBox, out: Outputs, tel: Telemetry) -> Picture:
-    """A still that takes its time, saying how far it's got."""
-    for step in range(10):
-        tel.progress(step / 10, stage="drawing")
+    """A still that takes its time, saying how far it's got in steps."""
+    step = tel.step_callback(10, stage="drawing")
+    for at in range(10):
         time.sleep(payload.seconds / 10)
+        step(at)
     return Picture(_picture(out), payload.instructions.text)
+
+
+class SteppedInput(msgspec.Struct, kw_only=True):
+    prompt: str = ""
+    steps: int = 8
+    step: float = 0.5
+    first: float = 2.0
+    seed: int | None = None
+
+
+@app.entrypoint()
+def stepped(payload: SteppedInput, out: Outputs, tel: Telemetry) -> Picture:
+    """A still made as a model makes one, weightless: its prompt encoded, its steps (the first slower, as a warm-up is), decoded."""
+    with tel.stage("encoding prompt"):
+        time.sleep(payload.step)
+    with tel.stage("generating image"):
+        on_step = tel.step_callback(payload.steps, stage="generating image")
+        for at in range(payload.steps):
+            time.sleep(payload.first if at == 0 else payload.step)
+            on_step(at)
+    with tel.stage("decoding image"):
+        time.sleep(payload.step)
+    return Picture(_picture(out), payload.prompt)
 
 
 class Beat(msgspec.Struct, kw_only=True):

@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
+const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -158,7 +158,7 @@ function linesOf(text, name) {
   // A tool dragged out of the list drops a box at that point: what it is comes from what it makes. The Edit is always there, and costs nothing.
   const dragOut = async (row, x, y) => {
     const namesBefore = (await state()).assets.map((held) => held.name);
-    await row.dragTo(page.locator('.stage'), { targetPosition: { x, y } });
+    await carry(page, row, { x, y });
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
@@ -238,8 +238,10 @@ function linesOf(text, name) {
   await away();
   await page.waitForTimeout(100);
 
-  // At rest a box is its picture or its text and a name, with nothing to press and no state in words.
-  check('at_rest_only_its_x', (await box('source-a').locator('button:visible').count()) === 0, await box('source-a').innerText());
+  // At rest a box is its picture or its text and a name, with no state in words; the one thing to press is its ×, always shown
+  // and big enough to hit (Paul, 11-06: "the X ... should be larger and always visible").
+  const atRest = box('source-a').locator('button:visible');
+  check('at_rest_only_its_x', (await atRest.count()) === 1 && (await atRest.getAttribute('aria-label')) === 'Delete' && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -290,7 +292,8 @@ function linesOf(text, name) {
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
 
-  // No box lies on another. Dropped on one that can't take it, it slides to the nearest clear place, the other stays, and where it ended is what's saved.
+  // No box lies on another. Dropped on one that can't take it, it stays where it was let go and the other is pushed aside (Paul, 11-06: "the placement
+  // position of the new object should be primary, and then other objects should move around it to make room"), and both are saved.
   // Words can't take a picture: a picture box would take it as its version (27c5db3f5).
   const canvasAt = join(folder, 'project.canvas.yaml');
   const lies = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
@@ -305,11 +308,21 @@ function linesOf(text, name) {
   await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 });
   await page.waitForTimeout(100);
   check('a_box_that_cant_take_it_doesnt_offer', (await box('kept_words').locator('.card.hot').count()) === 0 && (await page.locator('.stage[data-offering]').count()) === 0);
+  // Its middle, on the screen: a little smaller, it keeps it.
+  const middleOf = async (name) => {
+    const { x, y, width, height } = await box(name).boundingBox();
+    return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
+  };
+  const letGoAt = await middleOf('source-b');
   await page.mouse.up();
-  await until('it slid clear', () => apart('kept_words', 'source-b'), Boolean);
+  await until('they came apart', () => apart('kept_words', 'source-b'), Boolean);
   check('a_box_cant_lie_on_a_box', true);
-  check('the_other_box_stays', (await rows()).kept_words.x === stood.kept_words.x && (await rows()).kept_words.y === stood.kept_words.y, await rows());
-  await until('where it ended, saved', rows, (now) => now['source-b'].x !== stood['source-b'].x || now['source-b'].y !== stood['source-b'].y);
+  const ended = await until('the other pushed aside, saved', rows, (now) => now.kept_words.x !== stood.kept_words.x || now.kept_words.y !== stood.kept_words.y).catch(rows);
+  await page.waitForTimeout(400);
+  const endedAt = await middleOf('source-b');
+  check('the_box_let_go_stays', Math.abs(endedAt.x - letGoAt.x) <= 2 && Math.abs(endedAt.y - letGoAt.y) <= 2, { letGoAt, endedAt });
+  check('the_other_box_moves_aside', ended.kept_words.x !== stood.kept_words.x || ended.kept_words.y !== stood.kept_words.y, { stood, ended });
+  await until('where it was let go, saved', rows, (now) => now['source-b'].x !== stood['source-b'].x || now['source-b'].y !== stood['source-b'].y);
 
   // Another writer's `at`, on a box, settles the same way; so does a file that arrives with two on one spot, as a converted project does, with no input changing.
   const held = (await rows())['source-a'];

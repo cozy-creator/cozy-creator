@@ -2,7 +2,7 @@
 // move read back from project.canvas.yaml; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
 //   node place.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
-// Last, a box let go on others gives way at the least cost: a short move, a small shrink, or a little nudge of what it lies on (Paul, 11-06).
+// Last, where a box is let go or pulled to wins, and what it comes onto is pushed aside, down the line (Paul, 11-06).
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
 // terminal sees the same project and to lay boxes out; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -164,20 +164,22 @@ const constants = (folder) => {
   const was = rows(folder).clash_take;
   const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
   const yamlBeforeMove = yaml(folder);
-  // Somewhere clear: let go on another box, it goes to the nearest clear place instead (30fc7cbba).
+  // Somewhere clear, the nearest at least 120 off: let go on another box, it would stay there a little smaller and push that aside.
   const { dx, dy } = await page.evaluate((name) => {
     const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
     const mine = rects.find((held) => held.name === name).rect;
     const others = rects.filter((held) => held.name !== name).map((held) => held.rect);
     const gap = 32;
-    for (const y of [120, -120, 240, -240, 360, -360]) {
-      for (const x of [180, -180, 360, -360, 540, -540]) {
+    const clear = [];
+    for (let y = -600; y <= 600; y += 30) {
+      for (let x = -900; x <= 900; x += 30) {
         const [left, top, right, bottom] = [mine.left + x - gap, mine.top + y - gap, mine.right + x + gap, mine.bottom + y + gap];
         const onScreen = top > 60 && left > 230 && bottom < innerHeight - 20 && right < innerWidth - 20;
-        if (onScreen && !others.some((other) => other.left < right && other.right > left && other.top < bottom && other.bottom > top)) return { dx: x, dy: y };
+        if (Math.hypot(x, y) >= 120 && onScreen && !others.some((other) => other.left < right && other.right > left && other.top < bottom && other.bottom > top)) clear.push({ dx: x, dy: y });
       }
     }
-    throw new Error(`nowhere clear to move it: ${JSON.stringify({ mine, others })}`);
+    if (!clear.length) throw new Error(`nowhere clear to move it: ${JSON.stringify({ mine, others })}`);
+    return clear.sort((a, b) => Math.hypot(a.dx, a.dy) - Math.hypot(b.dx, b.dy))[0];
   }, 'clash_take');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -256,10 +258,16 @@ const constants = (folder) => {
 
   check('comments_and_text_kept', yaml(folder).startsWith(written), yaml(folder));
 
-  // Giving way (Paul, 11-06), on boxes the CLI lays out past everything else, each let go by hand straight down onto its spot:
-  // - on a crowded spot, where only a shrink fits near, it stays where it was let go, smaller, rather than going far;
-  // - with a free spot beside it, it only moves, and the other stays;
-  // - in a gap a little short of it, between boxes with room beyond, they're nudged a little apart and it stays as it was.
+  // Where a box is put wins (Paul, 11-06: "the placement position of the new object should be primary, and then other objects should move around it
+  // to make room, although the new object can also of course shrink in size if needed slightly"; "Resizing it will push the other surrounding objects
+  // out of the way"). On boxes the CLI lays out past everything else, each let go by hand straight down onto its spot, or pulled by its corner:
+  // - let go on another, it stays and the other is pushed aside, the least way, and nothing else moves;
+  // - in a gap a little short of it, what's either side goes a little apart and it stays as it was;
+  // - in a crowd, it stays, maybe a little smaller, and what it lies on goes aside;
+  // - in a gap short of it between two tight rows, it shrinks a little rather than shove both rows;
+  // - A B C D E in a row, B pulled wider by its corner: B stays, C goes right just enough, then D, then E, and nothing else moves
+  //   (Paul: "A simpler change would be to move C a bit to make room for the now-larger B"; "C displaces D, which displaces E, and so on").
+  //   One Undo puts all of it back.
   if (process.env.COZY) {
     const pictures = mkdtempSync(join(tmpdir(), 'web-place-'));
     const at = (name, x, y, w) => execFileSync(process.env.COZY, ['project', '-p', folder, 'set', name, `at=${x},${y},${w}`], { stdio: 'ignore' });
@@ -275,6 +283,12 @@ const constants = (folder) => {
     put('left', 0, 1800, 240);
     put('right', 468, 1800, 240);
     put('nudging', 234, 2100, 240);
+    const CHAIN = ['chain_a', 'chain_b', 'chain_c', 'chain_d', 'chain_e'];
+    CHAIN.forEach((name, i) => put(name, 260 * i, 2500, 240));
+    // Two rows four long, 10 apart, with a gap 4 short of the box between them, and room beyond.
+    for (let i = 0; i < 4; i++) put(`row_l${i}`, 250 * i, 2900, 240);
+    for (let i = 0; i < 4; i++) put(`row_r${i}`, 990 + 236 + 250 * i, 2900, 240);
+    put('squeezed', 990 + 118 - 120, 3300, 240);
     Object.keys(lay).forEach((name, i) => {
       const file = join(pictures, `${name}.png`);
       writeFileSync(file, png(40 + i * 9, 320, 180));
@@ -298,10 +312,18 @@ const constants = (folder) => {
       const on = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
       return cards.flatMap((a, i) => cards.slice(i + 1).filter((b) => on(a.rect, b.rect)).map((b) => `${a.name} on ${b.name}`));
     });
+    const zoomNow = () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+    // Rows that have stopped changing, both what the page wrote and what it shows.
+    const settledRows = (name) => until(`${name} settled`, async () => {
+      const one = JSON.stringify(rows(folder));
+      await page.waitForTimeout(400);
+      return one === JSON.stringify(rows(folder)) ? rows(folder) : null;
+    }, Boolean);
+    const movedSince = (before, after, name) => Object.fromEntries(Object.keys(lay).filter((other) => other !== name && apart(after[other], before[other]) > 0).map((other) => [other, apart(after[other], before[other])]));
     /** Let go `dy` below or above where it stands, held by its picture's middle: where it was let go is where it stood as the button came up. */
     const letGo = async (name, dy) => {
       const before = rows(folder);
-      const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+      const zoom = await zoomNow();
       const media = await element(page, name).locator('.media').first().boundingBox();
       const [x, y] = [media.x + media.width / 2, media.y + media.height / 2];
       await page.mouse.move(x, y);
@@ -313,30 +335,72 @@ const constants = (folder) => {
         return { e, f };
       });
       await page.mouse.up();
-      // It lands, then gives way: two rows, the second written at once.
-      await page.waitForTimeout(600);
-      const after = await until(`${name} settled`, async () => {
-        const one = JSON.stringify(rows(folder));
-        await page.waitForTimeout(400);
-        return one === JSON.stringify(rows(folder)) ? rows(folder) : null;
-      }, Boolean);
-      const moved = Object.fromEntries(Object.keys(lay).filter((other) => other !== name && apart(after[other], before[other]) > 0).map((other) => [other, apart(after[other], before[other])]));
-      return { dropped: { ...before[name], x: Math.round(held.e), y: Math.round(held.f) }, now: after[name], moved, lying: await lying() };
+      // It lands, and what it lies on goes aside, in one write.
+      await until(`${name} written`, () => Promise.resolve(rows(folder)[name]), (now) => now.x !== before[name].x || now.y !== before[name].y);
+      const after = await settledRows(name);
+      return { dropped: { ...before[name], x: Math.round(held.e), y: Math.round(held.f) }, now: after[name], moved: movedSince(before, after, name), lying: await lying() };
     };
-    const crowded = await letGo('crowded', ROW + 3 - 800);
-    seen.crowded = { ...crowded, by: apart(crowded.now, crowded.dropped) };
-    check('a_crowded_drop_shrinks_where_it_was_let_go', crowded.now.w < 360 * 0.97 && crowded.now.w >= 180 && seen.crowded.by <= 40, seen.crowded);
-    check('a_crowded_drop_nudges_little', Object.values(crowded.moved).every((by) => by <= 40), crowded.moved);
-    check('a_crowded_drop_lies_on_nothing', crowded.lying.length === 0, crowded.lying);
+    const stays = (one) => apart(one.now, one.dropped);
+
     const free = await letGo('free', -300);
-    seen.free = { ...free, by: apart(free.now, free.dropped) };
-    check('a_drop_with_room_beside_only_moves', free.now.w === 240 && seen.free.by > 0 && seen.free.by <= 60 && Object.keys(free.moved).length === 0, seen.free);
-    check('a_drop_with_room_lies_on_nothing', free.lying.length === 0, free.lying);
+    seen.pushed = { ...free, by: stays(free) };
+    check('a_box_let_go_on_another_stays', free.now.w === 240 && seen.pushed.by <= 1, seen.pushed);
+    // `beside` lay 40 under its left side: it goes left, a gap clear, and nothing else moves.
+    const pushedTo = rows(folder).beside;
+    check('what_it_lies_on_is_pushed_aside', Object.keys(free.moved).join() === 'beside' && pushedTo.y === lay.beside.y && pushedTo.x === free.now.x - 16 - 240, { moved: free.moved, beside: pushedTo, free: free.now });
+    check('a_push_lies_on_nothing', free.lying.length === 0, free.lying);
+
     const nudging = await letGo('nudging', -300);
-    seen.nudging = { ...nudging, by: apart(nudging.now, nudging.dropped) };
+    seen.nudging = { ...nudging, by: stays(nudging) };
     const outward = rows(folder);
-    check('small_nudges_absorb_a_drop', nudging.now.w === 240 && seen.nudging.by <= 3 && outward.left.x < lay.left.x && outward.right.x > lay.right.x && Object.values(nudging.moved).every((by) => by <= 40), seen.nudging);
+    check('small_pushes_absorb_a_drop', nudging.now.w === 240 && seen.nudging.by <= 1 && outward.left.x === nudging.now.x - 16 - 240 && outward.right.x === nudging.now.x + 240 + 16 && Object.keys(nudging.moved).sort().join() === 'left,right', seen.nudging);
     check('a_nudged_drop_lies_on_nothing', nudging.lying.length === 0, nudging.lying);
+
+    const crowded = await letGo('crowded', ROW + 3 - 800);
+    seen.crowded = { ...crowded, by: stays(crowded) };
+    check('a_crowded_drop_stays_where_it_was_let_go', crowded.now.w >= 360 * 0.8 && seen.crowded.by <= 3 && Object.keys(crowded.moved).length > 0, seen.crowded);
+    check('a_crowded_drop_lies_on_nothing', crowded.lying.length === 0, crowded.lying);
+
+    const squeezed = await letGo('squeezed', -400);
+    seen.squeezed = { ...squeezed, by: stays(squeezed) };
+    const pushedRows = Object.values(squeezed.moved).reduce((sum, by) => sum + by, 0);
+    check('a_tight_gap_shrinks_it_a_little', squeezed.now.w < 240 && squeezed.now.w >= 240 * 0.8 && seen.squeezed.by <= 3 && pushedRows < 8 * 18, seen.squeezed);
+    check('a_shrunk_drop_lies_on_nothing', squeezed.lying.length === 0, squeezed.lying);
+
+    // B pulled 100 wider by its corner, live: each after it goes right as little as keeps a gap of 16, or what it had if less.
+    const before = rows(folder);
+    const zoom = await zoomNow();
+    await element(page, 'chain_b').locator('.media').first().hover();
+    const corner = await element(page, 'chain_b').locator('.corner').boundingBox();
+    await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(corner.x + corner.width / 2 + 100 * zoom, corner.y + corner.height / 2, { steps: 10 });
+    await page.waitForTimeout(300);
+    const live = await page.evaluate((names) => Object.fromEntries(names.map((name) => {
+      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
+      return [name, Math.round(new DOMMatrix(getComputedStyle(node).transform).e)];
+    })), CHAIN);
+    await page.mouse.up();
+    await until('chain_b written', () => Promise.resolve(rows(folder).chain_b), (now) => now.w !== before.chain_b.w);
+    const after = await settledRows('chain_b');
+    const b = after.chain_b;
+    const want = { chain_a: before.chain_a.x, chain_b: before.chain_b.x };
+    for (let i = 2; i < CHAIN.length; i++) {
+      const [prev, name] = [CHAIN[i - 1], CHAIN[i]];
+      const gap = Math.min(16, before[name].x - before[prev].x - 240);
+      want[name] = Math.max(before[name].x, want[prev] + (prev === 'chain_b' ? b.w : 240) + gap);
+    }
+    seen.chain = { before: Object.fromEntries(CHAIN.map((name) => [name, before[name]])), after: Object.fromEntries(CHAIN.map((name) => [name, after[name]])), want, live };
+    check('a_box_pulled_wider_stays', b.x === before.chain_b.x && b.y === before.chain_b.y && Math.abs(b.w - 340) <= 2, seen.chain);
+    check('its_neighbours_go_right_just_enough', CHAIN.every((name) => after[name].x === want[name] && after[name].y === before[name].y) && after.chain_c.x > before.chain_c.x, seen.chain);
+    check('the_push_goes_down_the_line', after.chain_c.x - before.chain_c.x >= after.chain_d.x - before.chain_d.x && after.chain_d.x - before.chain_d.x >= after.chain_e.x - before.chain_e.x && after.chain_e.x > before.chain_e.x, seen.chain);
+    check('nothing_off_the_line_moves', Object.keys(movedSince(before, after, 'chain_b')).sort().join() === 'chain_c,chain_d,chain_e', movedSince(before, after, 'chain_b'));
+    check('pushed_while_pulled', CHAIN.slice(2).every((name) => live[name] > before[name].x + 40), seen.chain);
+    check('a_pull_lies_on_nothing', (await lying()).length === 0, await lying());
+    // One Undo, all of it.
+    await page.keyboard.press('Control+z');
+    const undone = await until('all back', () => Promise.resolve(rows(folder)), (now) => CHAIN.every((name) => now[name].x === before[name].x && now[name].y === before[name].y && now[name].w === before[name].w)).catch(() => rows(folder));
+    check('one_undo_puts_the_pull_back', CHAIN.every((name) => undone[name].x === before[name].x && undone[name].w === before[name].w), Object.fromEntries(CHAIN.map((name) => [name, undone[name]])));
     if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-given-way.png` });
   }
 
