@@ -1,0 +1,1 @@
+A model streaming through a capped card keeps its largest weights resident and streams its smaller ones, so less of the card sits in transit, and drops what its loop stopped reading (a language model's vision tower after its prompt). Reading ahead, it waits for the GPU to finish a block before evicting it rather than leaving the next one to a stalling read.
