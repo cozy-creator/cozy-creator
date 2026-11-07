@@ -308,8 +308,8 @@ def calibrate(
                     "native_snapshot_fit_pack_write_seconds": conversion_seconds,
                     "checkpoint_adoption_seconds": adoption_seconds},
             memory={"process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
-                    "torch_peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-                    "torch_peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+                    "torch_peak_allocated_bytes": _working()["allocated_peak"],
+                    "torch_peak_reserved_bytes": _working()["mapped_peak"],
                     "scope": "whole invocation including model calibration and frozen GPU reference; not native-fit-only"},
             historical_reference={
                 "producer": "torch-svdq-frozen/1",
@@ -429,3 +429,10 @@ def predict(
 
 # Register the real CPU Writer proof in this same ordinary release-gate package.
 from . import native as native
+
+
+def _working() -> dict[str, int]:
+    """The working allocator's own figures (varena's): Torch's readers are sealed."""
+    import tensorfs.varena.torch as vt
+
+    return vt.stats(torch.cuda.current_device())

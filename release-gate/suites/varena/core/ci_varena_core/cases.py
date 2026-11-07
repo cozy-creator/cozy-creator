@@ -10,6 +10,11 @@ from pathlib import Path
 
 import torch
 
+from cozy_runtime.internal.contract import unsealed
+
+#: The driver's view, read on purpose: this cell tests the memory manager itself.
+mem_get_info = unsealed(torch, "mem_get_info")
+
 MODE, SELECTED = sys.argv[1], sys.argv[2]
 os.environ["TORCH_CUBLAS_WORKSPACE_CACHE"] = "1"  # Runtime's setting
 if MODE == "varena":
@@ -34,7 +39,7 @@ def case(function):
 
 def cap(managed, gpu=None):
     """A development cap leaving this much for our own bytes, the core's slack on top."""
-    free, total = torch.cuda.mem_get_info(0)
+    free, total = mem_get_info(0)
     owned = vt.stats(0)["mapped_bytes"] + (gpu.stats()["resident_bytes"] if gpu else 0)
     vt.set_limit(0, 1 << 50)  # Any cap makes the core read the driver's reservation.
     reserved = vt.stats(0)["driver_reservation"]
@@ -155,7 +160,7 @@ def abandoned_fill():
 @case
 def cap_counts_the_driver():
     """A development cap reads as a smaller card: the driver's own charge comes out of it."""
-    free, total = torch.cuda.mem_get_info(0)
+    free, total = mem_get_info(0)
     used = total - free
     vt.set_limit(0, 1 << 50)
     reserved = vt.stats(0)["driver_reservation"]
@@ -167,7 +172,7 @@ def cap_counts_the_driver():
             held.append(torch.empty(64 * MIB, dtype=torch.uint8, device="cuda").fill_(1))
     except torch.OutOfMemoryError:
         pass
-    free, total = torch.cuda.mem_get_info(0)
+    free, total = mem_get_info(0)
     assert reserved and held and reserved + total - free <= limit, (len(held), reserved, total - free, limit)
     count = len(held)
     del held
@@ -311,7 +316,7 @@ def owner_wait(physical):
     torch.cuda.synchronize()
     filler = None
     if physical:
-        free, _ = torch.cuda.mem_get_info(0)
+        free, _ = mem_get_info(0)
         filler = torch.empty(free - 128 * MIB, dtype=torch.uint8, device="cuda").fill_(4)
     else:
         cap(vt.stats(0)["mapped_bytes"] + 16 * MIB)
