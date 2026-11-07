@@ -1,7 +1,9 @@
-"""The escaped suite's verdict (cells.sh), one of analyze.py's CHECKS: every completed GPU cell carries varena's escaped
-record (`measurements.memory.stats.varena[].stats.escaped`: per loop, what its passes left live as plain working
+"""The escaped suite's verdict (cells.sh), one of analyze.py's CHECKS: every completed capped GPU cell carries varena's
+escaped record (`measurements.memory.stats.varena[].stats.escaped`: per loop, what its passes left live as plain working
 blocks, by birth site), and no loop's undeclared escaped bytes pass BOUND or grow more than GROWTH a pass. State a
 model keeps across steps is held through `author.retained` (spilled to host and refilled), which the record never counts.
+Each cell's uncapped twin (<cell>-uncapped) completes only if the capped cell did, with the same kernels, and the capped
+one's driver peak stays within CAP and a CUDA context: success, peak and kernels, never the bytes (a cap may tile).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import os, sys
 
@@ -11,6 +13,9 @@ from runs import Run  # noqa: E402
 
 MIB = 1 << 20
 BOUND, GROWTH = 256 * MIB, 16 * MIB
+# cells.sh's cap, and what a CUDA context and the libraries outside varena add to the driver's count beside it.
+CAP, CONTEXT = 6 << 30, 1 << 30
+TWIN = '-uncapped'
 
 
 def loops(run):
@@ -23,10 +28,37 @@ def named(sites):
     return ', '.join(f'{s} {b / MIB:.0f} MiB' for s, b in sites) or 'no site named'
 
 
-def check(gate):
+def twins(out):
+    """Each capped cell's run beside its uncapped twin's: (cell, capped, uncapped), either None when it has no record."""
+    names = [line.split('\t')[0] for line in open(os.path.join(out, 'cells.tsv'))]
+    read = lambda n: Run.read(os.path.join(out, n + '.json'))
+    return [(n[:-len(TWIN)], read(n[:-len(TWIN)]), read(n)) for n in names if n.endswith(TWIN)]
+
+
+def compared(out):
     fails, notes = [], []
+    for cell, capped, uncapped in twins(out):
+        if uncapped is None or uncapped.status != 'completed':
+            continue
+        if capped is None or capped.status != 'completed':
+            why = capped.reason[:200] if capped else 'no record'
+            fails.append(f'{cell}: fails at the {CAP >> 30} GiB cap ({why}) and completes uncapped (run {uncapped.number}): '
+                         'it sizes its work from the card, not from varena\'s room')
+            continue
+        if (capped.gemm, capped.attention) != (uncapped.gemm, uncapped.attention):
+            fails.append(f'{cell}: kernels {capped.gemm} / {capped.attention} capped, {uncapped.gemm} / {uncapped.attention} uncapped')
+        peak = (capped.vram or {}).get('added')
+        line = f'{cell}: capped run {capped.number} added {peak / 1024:.1f} GiB' if peak is not None else f'{cell}: capped run {capped.number}: no driver reading'
+        if peak is not None and uncapped.vram:
+            line += f', uncapped run {uncapped.number} {uncapped.vram["added"] / 1024:.1f} GiB'
+        (fails if peak is not None and peak * MIB > CAP + CONTEXT else notes).append(line)
+    return fails, notes
+
+
+def check(gate):
+    fails, notes = compared(gate['out'])
     for name, run in gate['runs'].items():
-        if not run.gpus:
+        if not run.gpus or name.endswith(TWIN):
             continue
         held, recorded = loops(run)
         if not recorded:
