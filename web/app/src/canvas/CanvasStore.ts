@@ -1704,14 +1704,17 @@ export class CanvasStore {
     return null
   }
 
-  /** What a mention in `asset`'s text names, as far as this page knows: a box, a version of it, and whether that's gone. */
+  /** What a mention in `asset`'s text names, as far as this page knows: a box, a version of it, and whether that's gone. A box written with a dotted
+   *  name is read as its `_` form, as Calcifer reads it (format.rs `dotted_box`): `<kyogre.primordial>` is `kyogre_primordial`, not a take of kyogre. */
   mentionOf(said: string, asset: string): { name: string; number?: number; gone?: boolean } | null {
     const mention = baseOf(said)
     const name = this.nameOf(mention)
     if (name) return { name }
     const version = versionOf(mention)
     const of = version && (this.nameOf(version.name) ?? (isSelf(version.name) ? this.resolveName(asset) : null))
-    return of && version ? { name: of, number: version.number, gone: !numbersOf(this.get(of)?.asset).includes(version.number) } : null
+    if (of && version) return { name: of, number: version.number, gone: !numbersOf(this.get(of)?.asset).includes(version.number) }
+    const dotted = mention.includes(".") ? this.nameOf(asName(mention)) : null
+    return dotted ? { name: dotted } : null
   }
 
   /** The file a mention means, as this page knows it: a version's, else what the box shows. */
