@@ -152,7 +152,8 @@ function plate(path, color, seconds, hz) {
   check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
   await away();
   check('at_rest_its_first_clip', await until('its first clip\'s picture', () => card('Edit').locator('.media img').count(), (n) => n === 1));
-  check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button:visible').count()) === 0, await card('Edit').innerText());
+  // At rest its only button is its ×, always shown (Paul, 11-06), and no timeline.
+  check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button:visible:not([aria-label=Delete])').count()) === 0, await card('Edit').innerText());
   await openEdit();
 
   // Pull an end: the bubble says the timecode, the clips stay snapped. What's taken hold of has stopped: the canvas too, which draws in on
