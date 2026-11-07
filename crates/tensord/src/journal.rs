@@ -40,6 +40,13 @@ pub struct Invocation {
     /// without GPUs). Stamped once prepared; it schedules and fences restarts.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub degree: u32,
+    /// A root's widths on this machine, smallest first, of which it takes one as it starts
+    /// (cl-816). Stamped once prepared; none: it holds no GPU.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub widths: Vec<u32>,
+    /// It prepares only (warm, remove): it never takes a GPU.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prepares: bool,
     /// A child run's parent (its execution id): children end with it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub parent: String,
@@ -307,6 +314,9 @@ pub struct Execution {
     /// The run's own time running its callable, every ended attempt summed.
     #[serde(default)]
     pub executed_ms: u64,
+    /// The GPUs it took as it started: its plan's degree, or a deviceless root's lane.
+    #[serde(default)]
+    pub width: u32,
     #[serde(default)]
     pub executor: Option<ExecutorFacts>,
     pub result: Option<ResultRecord>,
@@ -360,6 +370,19 @@ impl Execution {
     pub fn observed(&self) -> bool {
         matches!(self.state, State::Running | State::Queued)
     }
+}
+
+/// What one completed root took: its width, its size as its input said, and its time running.
+#[derive(Clone, Debug)]
+pub struct RunTime {
+    pub width: u32,
+    pub size: protocol::machine::JobSize,
+    pub ms: f64,
+}
+
+/// A function's key in `run_times`: `<package>/<entrypoint>`, any release.
+pub fn function_key(package: &str, entrypoint: &str) -> String {
+    format!("{package}/{entrypoint}")
 }
 
 /// One journaled product of an execution's output log (`api::domain::RunProduct` bytes).
@@ -511,6 +534,8 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS run_objects(execution INTEGER NOT NULL REFERENCES executions(id),sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sha256));
             CREATE INDEX IF NOT EXISTS run_objects_digest ON run_objects(sha256);
             CREATE TABLE IF NOT EXISTS run_specs(execution INTEGER PRIMARY KEY REFERENCES executions(id),spec BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS run_times(execution INTEGER PRIMARY KEY REFERENCES executions(id),function TEXT NOT NULL,width INTEGER NOT NULL,size TEXT NOT NULL,ms INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS run_times_function ON run_times(function,execution);
             CREATE TABLE IF NOT EXISTS held_memos(actor TEXT NOT NULL,computation TEXT NOT NULL,record BLOB NOT NULL,used_ms INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(actor,computation));
             CREATE TABLE IF NOT EXISTS held_memo_objects(actor TEXT NOT NULL,computation TEXT NOT NULL,sha256 TEXT NOT NULL,PRIMARY KEY(actor,computation,sha256));
             CREATE INDEX IF NOT EXISTS held_memo_objects_digest ON held_memo_objects(sha256);
@@ -979,69 +1004,24 @@ impl Journal {
         Ok(projection)
     }
 
-    /// `accept_run`, also referencing `objects` (tree members, a local source) the run needs, and
-    /// keeping `spec` (empty: none) until its preparation ends, for a restart to prepare it again.
-    pub fn accept_run_objects(
-        &mut self,
-        actor: &str,
-        id: &str,
-        digest: &str,
-        invocation: Invocation,
-        objects: &[tensorfs::format::ObjectRef],
-        spec: &[u8],
-    ) -> io::Result<(Execution, bool)> {
-        validate_scope(actor, id, id)?;
-        let key = format!("run:{}", encoded(&(actor, id))?);
+    /// `actor`'s runs accepted as one admission, in one transaction (cl-816): each referencing its
+    /// `objects` (tree members, a local source) and keeping its `spec` (empty: none) until its
+    /// preparation ends, for a restart to prepare it again. Each answers the run, and whether it
+    /// is new; an id that names another spec or an update, or is invalid, is refused alone.
+    pub fn accept_runs(&mut self, actor: &str, runs: Vec<Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
-        if update_run_reserved(&tx, actor, id)? {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id names a software update"));
-        }
-        let prior: Option<String> = tx
-            .query_row(
-                "SELECT record FROM executions WHERE idempotency_key=?1",
-                [&key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db_error)?;
-        if let Some(prior) = prior {
-            let execution: Execution = serde_json::from_str(&prior).map_err(db_error)?;
-            if execution.canceled_before_acceptance && execution.state == State::Canceled {
-                return Ok((execution, false));
-            }
-            if execution
-                .submission
-                .as_ref()
-                .map(|s| s.invocation_digest.as_str())
-                != Some(digest)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "this run id already names another run spec",
-                ));
-            }
-            return Ok((execution, false));
-        }
-        let context = SubmissionContext {
-            actor: actor.into(),
-            request_id: id.into(),
-            submission_id: id.into(),
-            expected_workspace_id: String::new(),
-            capture_digest: String::new(),
-            invocation_digest: digest.into(),
-            payload_digest: String::new(),
-            preparation_id: String::new(),
-        };
-        let execution = insert(&tx, &key, invocation, Some(context), "", Some(PREPARING))?;
-        reference_objects(&tx, &execution.id, objects)?;
-        if !spec.is_empty() {
-            tx.execute("INSERT INTO run_specs(execution,spec) VALUES(?1,?2)", params![execution.id, spec]).map_err(db_error)?;
+        let mut accepted = vec![];
+        for run in runs {
+            accepted.push(match accepting(&tx, actor, run) {
+                Err(error) if matches!(error.kind(), io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidInput) => Err(error),
+                accepted => Ok(accepted?),
+            });
         }
         tx.commit().map_err(db_error)?;
-        Ok((execution, true))
+        Ok(accepted)
     }
 
     /// Reserves an absent run as canceled in the same transaction namespace as acceptance.
@@ -1282,10 +1262,56 @@ fn reference_objects(
 /// The waiting reason of a run accepted before its preparation completes.
 pub const PREPARING: &str = "preparing";
 
+/// One run of an admission (`Journal::accept_runs`).
+pub struct Accepting<'a> {
+    pub id: &'a str,
+    pub digest: &'a str,
+    pub invocation: Invocation,
+    pub objects: &'a [tensorfs::format::ObjectRef],
+    pub spec: &'a [u8],
+}
+
+fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) -> io::Result<(Execution, bool)> {
+    let Accepting { id, digest, invocation, objects, spec } = run;
+    validate_scope(actor, id, id)?;
+    let key = format!("run:{}", encoded(&(actor, id))?);
+    if update_run_reserved(tx, actor, id)? {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id names a software update"));
+    }
+    let prior: Option<String> = tx
+        .query_row("SELECT record FROM executions WHERE idempotency_key=?1", [&key], |row| row.get(0))
+        .optional()
+        .map_err(db_error)?;
+    if let Some(prior) = prior {
+        let execution: Execution = serde_json::from_str(&prior).map_err(db_error)?;
+        let canceled = execution.canceled_before_acceptance && execution.state == State::Canceled;
+        if !canceled && execution.submission.as_ref().map(|s| s.invocation_digest.as_str()) != Some(digest) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id already names another run spec"));
+        }
+        return Ok((execution, false));
+    }
+    let context = SubmissionContext {
+        actor: actor.into(),
+        request_id: id.into(),
+        submission_id: id.into(),
+        expected_workspace_id: String::new(),
+        capture_digest: String::new(),
+        invocation_digest: digest.into(),
+        payload_digest: String::new(),
+        preparation_id: String::new(),
+    };
+    let execution = insert(tx, &key, invocation, Some(context), "", Some(PREPARING))?;
+    reference_objects(tx, &execution.id, objects)?;
+    if !spec.is_empty() {
+        tx.execute("INSERT INTO run_specs(execution,spec) VALUES(?1,?2)", params![execution.id, spec]).map_err(db_error)?;
+    }
+    Ok((execution, true))
+}
+
 /// The tables holding rows of one execution.
-const EXECUTION_ROWS: [&str; 9] = [
+const EXECUTION_ROWS: [&str; 10] = [
     "public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied",
-    "run_calls", "triage", "run_objects", "run_specs",
+    "run_calls", "triage", "run_objects", "run_specs", "run_times",
 ];
 
 fn insert(
@@ -1339,6 +1365,7 @@ fn insert(
         running_revision: 0,
         started_at_ms: 0,
         executed_ms: 0,
+        width: 0,
         executor: None,
         result: None,
         pending_completion: None,
@@ -1499,6 +1526,39 @@ impl Journal {
         .collect()
     }
 
+    /// What a completed root took here, for the times of later ones (`estimate`): none for a
+    /// child, which its root's time holds, or for one answered without running.
+    fn timed(tx: &rusqlite::Transaction<'_>, record: &Execution) -> io::Result<()> {
+        let invocation = &record.invocation;
+        if !invocation.parent.is_empty() || record.executed_ms == 0 || record.memo.memoized {
+            return Ok(());
+        }
+        let size = encoded(&protocol::machine::JobSize::of(&invocation.input))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO run_times(execution,function,width,size,ms) VALUES(?1,?2,?3,?4,?5)",
+            params![record.id, function_key(&invocation.package, &invocation.entrypoint), record.width, size, record.executed_ms as i64],
+        )
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    /// The newest `limit` times of `function` here (`function_key`), newest first.
+    pub fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<RunTime>> {
+        let mut statement = self.connection
+            .prepare("SELECT width,size,ms FROM run_times WHERE function=?1 ORDER BY execution DESC LIMIT ?2")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map(params![function, limit.min(i64::MAX as usize) as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            })
+            .map_err(db_error)?;
+        rows.map(|row| {
+            let (width, size, ms) = row.map_err(db_error)?;
+            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64 })
+        })
+        .collect()
+    }
+
     fn selected(&self, query: &str, limit: usize) -> io::Result<Vec<Execution>> {
         let mut statement = self.connection.prepare(query).map_err(db_error)?;
         let records = statement
@@ -1596,6 +1656,9 @@ impl Journal {
             .map_err(db_error)?;
             if was_preparing && !preparing(&record) {
                 tx.execute("DELETE FROM run_specs WHERE execution=?1", [id]).map_err(db_error)?;
+            }
+            if !was_terminal && record.state == State::Completed {
+                Self::timed(&tx, &record)?;
             }
             also(&tx, &record)?;
         }
@@ -1832,14 +1895,15 @@ impl Journal {
         rows.collect::<Result<_, _>>().map_err(db_error)
     }
 
-    /// Only one dispatcher can claim a never-started attempt.
-    pub fn claim(&mut self, id: &str) -> io::Result<bool> {
+    /// Only one dispatcher can claim a never-started attempt, on `width` GPUs.
+    pub fn claim(&mut self, id: &str, width: u32) -> io::Result<bool> {
         let mut claimed = false;
         self.update(id, |record| {
             if record.state != State::Queued {
                 return Ok(false);
             }
             record.state = State::Starting;
+            record.width = width;
             record.attempt += 1;
             record.waiting_reason = None;
             claimed = true;

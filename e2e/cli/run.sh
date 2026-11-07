@@ -256,7 +256,7 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow time_left run_filters run_play projects bound_runs unseen local_edits path_manifest agent web_serves machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow time_left run_filters run_play projects bound_runs unseen local_edits local_quote path_manifest agent web_serves machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="second_executor lifetime update remove" ;;
   commands) parts="catalog basics yaml_requests run_filters projects bound_runs agent logs" ;;
@@ -268,8 +268,9 @@ case $SHARD in
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
-  # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, a host path refused.
-  local-code) parts="unseen local_edits path_manifest logs" ;;
+  # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
+  # runs (cl-816), a host path refused.
+  local-code) parts="unseen local_edits local_quote path_manifest logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"

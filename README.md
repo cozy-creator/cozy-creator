@@ -40,11 +40,15 @@ cozy run sdxl/generate --input request.yaml
 cozy run sdxl/generate --input request.yaml seed=8      # an inline input overrides the file
 cozy run birefnet/remove_background --file image=./character.png
 cozy run sdxl/generate --describe                       # the fields a function takes
+cozy run sdxl/generate --input request.yaml --estimate  # when each machine would finish it; sends nothing
 ```
 
 Inline `key=value` inputs are the quick form: `cozy run sdxl/generate prompt='a fox in fresh snow'`.
 Files go in with `--file` (or by path inside the YAML, relative to it). A run is followed to its end;
-Ctrl-C stops following, never the run, and `cozy run show <N>` picks it up again.
+Ctrl-C stops following, never the run, and `cozy run show <N>` picks it up again. With no `--on`, a run
+goes to the machine that quotes the soonest finish, and that machine chooses how many GPUs it uses;
+`--estimate [N]` prints each machine's quote for N of it sent at once (GPUs, start, finish, preparation,
+queue position, and whether it stands on measured runs).
 
 A video path can name a segment of it, `#t=<start>,<end>` (seconds, `m:ss` or `h:mm:ss`; either
 end may be left out: `#t=5`, `#t=,0:12`), in the YAML or in `--file name=path#t=…`. cozy cuts it once,

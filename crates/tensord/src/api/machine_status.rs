@@ -22,6 +22,8 @@ use tokio_stream::{wrappers::IntervalStream, Stream, StreamExt};
 /// manifest may also name the uv indexes its project's sources use without declaring them and the
 /// local path dependencies its lock installs, and a locked project installs whatever indexes
 /// they name.
+/// `estimate/1`: `POST /v1/estimate` quotes jobs packed with the queue. `run-batch/1`:
+/// `POST /v1/runs/batch` admits runs as one, which the machine packs together as it quoted them.
 pub const CAPABILITIES: &[&str] = &[
     "status/1",
     "run/1",
@@ -35,6 +37,8 @@ pub const CAPABILITIES: &[&str] = &[
     "remove/1",
     "live-source/1",
     "live-source/2",
+    "estimate/1",
+    "run-batch/1",
 ];
 
 const LIVE: [&str; 3] = ["queued", "starting", "running"];

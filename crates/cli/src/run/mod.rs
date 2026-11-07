@@ -8,9 +8,9 @@ use std::{
 use clap::ValueHint;
 use clap_complete::ArgValueCompleter;
 use protocol::{
-    calcifer::{FileTerm, On, ReleaseFrom, Run, RunRequest, Target},
+    calcifer::{FileTerm, On, ReleaseFrom, Run, RunEstimate, RunRequest, Target},
     error::{Error, Kind},
-    machine::WarmLevel,
+    machine::{Basis, WarmLevel},
 };
 use serde_json::{Map, Value};
 
@@ -37,6 +37,8 @@ const EXAMPLES: &str = "Examples:
   cozy run birefnet/remove_background --file image=./character.png
   cozy run sdxl/generate prompt='a fox in fresh snow'  (inline, for quick runs)
   cozy run sdxl/generate --describe                    (the fields it takes)
+  cozy run sdxl/generate --input request.yaml --estimate  (when each machine would finish it)
+  cozy run sdxl/generate --input request.yaml --estimate 4  (four of it sent at once)
 
 A video path may name a segment, path#t=<start>,<end> (seconds, m:ss or h:mm:ss; either may be left
 out): it is cut once into ~/.cozy/cache/clips and sent instead of the whole file.
@@ -95,6 +97,11 @@ struct RunArgs {
     /// Print the function's request contract instead of running it.
     #[arg(long)]
     describe: bool,
+    /// Print when each machine it may go to would finish it, as each quotes it now, instead of
+    /// running it: GPU width, start, finish, preparation, queue position and what that stands on.
+    /// With N, N of it as if sent at once.
+    #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "1", conflicts_with_all = ["warm", "describe"])]
+    estimate: Option<u32>,
 }
 
 /// Where a run goes; shared by every verb that submits one.
@@ -242,6 +249,9 @@ async fn run(ctx: &Context, args: RunArgs, within: PathBuf) -> Result<ExitCode, 
         return describe(ctx, &target, args.placement.on.as_deref()).await;
     }
     let ask = request(ctx, &args, target.clone(), &cwd, within).await?;
+    if let Some(count) = args.estimate {
+        return estimate(ctx, ask, count).await;
+    }
     match send(ctx, ask).await {
         // A package's functions, when the run names none and gives it nothing.
         Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, args.placement.on.as_deref()).await,
@@ -366,6 +376,61 @@ async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
             // Following stopped: the install goes on, and nothing is called.
             return Ok(install);
         }
+    }
+}
+
+/// `POST /v1/run-estimates`: each machine's quote for the run, the soonest finish first; nothing is sent. Local code not yet ready
+/// on its machine is installed first, then asked again under the same key.
+async fn estimate(ctx: &Context, ask: RunRequest, count: u32) -> Result<ExitCode, Error> {
+    let key = follow::mint_key();
+    let calcifer = ctx.calcifer().await?;
+    let estimate = loop {
+        let estimate: RunEstimate = calcifer.post(&format!("/v1/run-estimates?count={count}"), &ask, Some(&key)).await?;
+        let Some(install) = estimate.preparing else { break estimate };
+        if !settled(&follow::settle(ctx, *install).await?) {
+            return Ok(ExitCode::SUCCESS);
+        }
+    };
+    for note in &estimate.notes {
+        output::warn(&note.message);
+    }
+    if ctx.json {
+        output::json(&estimate);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let copies = estimate.machines.iter().any(|machine| machine.job > 0);
+    let header = ["MACHINE", "GPUS", "START", "FINISH", "PREPARE", "QUEUE", "BASIS"];
+    let table = output::Table::new(ctx, copies.then_some("JOB").into_iter().chain(header));
+    let rows = estimate.machines.iter().map(|machine| {
+        let mut name = machine.machine.clone();
+        if estimate.soonest.as_ref() == Some(&machine.machine) {
+            name += " *";
+        }
+        let basis = match machine.basis {
+            Basis::Measured => "measured",
+            Basis::Prior => "prior",
+            Basis::None => "none",
+        };
+        let basis = match (&machine.refusal, machine.quoted) {
+            (Some(refusal), _) => refusal.message.clone(),
+            (None, true) => basis.to_owned(),
+            (None, false) => format!("{basis}, Calcifer's at 1 GPU"),
+        };
+        let cells = [name, machine.width.to_string(), seconds(machine.start_ms), seconds(machine.finish_ms), seconds(machine.prepare_ms), machine.queue_position.to_string(), basis];
+        copies.then(|| (machine.job + 1).to_string()).into_iter().chain(cells).collect::<Vec<_>>()
+    });
+    rows.fold(table, output::Table::row).print();
+    if let Some(soonest) = &estimate.soonest {
+        output::say(ctx, &format!("* where it would go: {soonest}"));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `41.2s`, `3m12s`.
+fn seconds(ms: u64) -> String {
+    match ms / 1000 {
+        0..60 => format!("{:.1}s", ms as f64 / 1000.0),
+        s => format!("{}m{:02}s", s / 60, s % 60),
     }
 }
 

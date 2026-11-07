@@ -21,6 +21,8 @@ pub mod path {
     pub const CALCIFER: &str = "/v1/calcifer/{*path}";
     /// `POST` a [`super::RunRequest`]; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
+    /// `POST` a [`super::RunBatch`] (`run-batch/1`): runs admitted as one.
+    pub const RUNS_BATCH: &str = "/v1/runs/batch";
     /// `GET`: SSE of the run's [`super::RunEvent`]s after `Last-Event-ID`.
     pub const EVENTS: &str = "/v1/runs/{id}/events";
     pub const CANCEL: &str = "/v1/runs/{id}/cancel";
@@ -33,6 +35,8 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
+    /// `POST` an [`super::EstimateRequest`]: when each job would finish here; a quote, not a reservation.
+    pub const ESTIMATE: &str = "/v1/estimate";
 }
 
 /// `path` as the door to a machine's Calcifer judges it, percent-decoded: under `/v1/`, with no
@@ -193,6 +197,34 @@ pub struct RunRequest {
     /// The caller's run id, 1-256 bytes.
     pub id: String,
     pub spec: RunSpec,
+}
+
+/// `POST /v1/runs/batch` (`run-batch/1`, cl-816): runs admitted as one. Each new one is accepted
+/// with the others before any prepares, so the machine packs them together, as its estimate quoted
+/// them; `POST /v1/runs` is a batch of one. An update goes alone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunBatch {
+    pub runs: Vec<RunRequest>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunBatchAnswer {
+    /// One per run sent, in its order.
+    pub runs: Vec<Admitted>,
+}
+
+/// One run of a batch, as `POST /v1/runs` would answer it alone: its state, or its refusal.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Admitted {
+    /// The machine accepted it now; false: its id and spec already named it.
+    pub created: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<RunState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<crate::error::Error>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,6 +736,127 @@ pub struct Call {
     /// As [`Outcome::memo_basis`].
     #[serde(skip_serializing_if = "String::is_empty")]
     pub memo_basis: String,
+}
+
+// ---- Estimate -------------------------------------------------------------------------------
+
+/// `POST /v1/estimate` (cl-816): jobs a caller may send here, packed with this machine's queue as
+/// if all of them were sent now, by the model its scheduler gives each run its width by. A quote:
+/// nothing is reserved, and the queue settles two callers that pick the same machine.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EstimateRequest {
+    /// In the order they would be sent.
+    pub jobs: Vec<EstimateJob>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EstimateJob {
+    /// The caller's name for it, answered back.
+    pub key: String,
+    /// `org/package/function@release` (no release: any held here), or `sha256:<hex>/function`:
+    /// local code by its manifest's digest.
+    pub function: String,
+    /// The checkpoints it reads.
+    pub models: Vec<ModelRef>,
+    pub size: JobSize,
+    /// The user's GPU count; 0: the machine chooses.
+    pub gpus: u32,
+    /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
+    /// this machine has measured none of the function.
+    pub prior_ms: u64,
+}
+
+/// A checkpoint a job reads, as the catalog resolved it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelRef {
+    /// `sha256:<hex>`: a commit or header.
+    pub commit: String,
+    /// Its weights' bytes as the catalog lists them: what a machine that holds none of it fetches.
+    pub bytes: u64,
+}
+
+/// What a job makes, in the units a function's time scales with; each unknown one is absent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobSize {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub megapixels: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+}
+
+impl JobSize {
+    /// A run's size as its input says: `megapixels`, else `width` by `height`; `frames`, `steps`,
+    /// `tokens`. The one reading, for callers and the machine's history alike.
+    pub fn of(input: &serde_json::Value) -> Self {
+        let number = |key: &str| input.get(key).and_then(serde_json::Value::as_f64).filter(|n| *n > 0.0);
+        let count = |key: &str| input.get(key).and_then(serde_json::Value::as_u64).filter(|n| *n > 0);
+        JobSize {
+            megapixels: number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6)),
+            frames: count("frames"),
+            steps: count("steps"),
+            tokens: count("tokens"),
+        }
+    }
+
+    /// How much longer `self` takes than `other`: the product of each unit both know.
+    pub fn ratio(&self, other: &JobSize) -> f64 {
+        let each = [
+            self.megapixels.zip(other.megapixels),
+            self.frames.zip(other.frames).map(|(a, b)| (a as f64, b as f64)),
+            self.steps.zip(other.steps).map(|(a, b)| (a as f64, b as f64)),
+            self.tokens.zip(other.tokens).map(|(a, b)| (a as f64, b as f64)),
+        ];
+        each.into_iter().flatten().map(|(a, b)| a / b).product()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EstimateAnswer {
+    /// One per job asked, in its order.
+    pub jobs: Vec<Quote>,
+}
+
+/// When one job would run here. Times are milliseconds from the answer, so machines' clocks never
+/// enter a comparison of them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Quote {
+    pub key: String,
+    pub fits: bool,
+    /// Why it does not (`does_not_fit`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<Reason>,
+    /// The GPUs it would run on; 0: none.
+    pub width: u32,
+    pub start_ms: u64,
+    pub finish_ms: u64,
+    /// Its code's install and its weights' fetch, part of `start_ms`.
+    pub prepare_ms: u64,
+    /// How many runs and jobs start here before it.
+    pub queue_position: u32,
+    pub basis: Basis,
+}
+
+/// What a quote's run time stands on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Basis {
+    /// Runs of the function on this machine.
+    Measured,
+    /// The caller's `prior_ms`.
+    Prior,
+    /// Nothing: a minute is assumed.
+    #[default]
+    None,
 }
 
 // ---- Status ---------------------------------------------------------------------------------

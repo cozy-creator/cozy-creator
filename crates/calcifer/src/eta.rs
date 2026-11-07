@@ -2,11 +2,15 @@
 //! machine, else on others of its GPU. As it runs, that prior blended with its own steps: a stage's first step carries its warm-up and
 //! is never its pace; the median of its latest steps is, weighed more with each one. Phases it hasn't reached come from the prior.
 //! What's shown eases to a new estimate over a second or two: it never jumps. With no prior and under two steps of its own, it says so.
-//! Times are milliseconds on its machine's clock, which this computer's `now` is read on by the least lag seen of its reports.
+//! Times are milliseconds on its machine's clock, which this computer's `now` is read on by the least lag seen of its reports. A run
+//! sent on its machine's quote (cl-816) waits at least until that quote's finish, and with no runs like it here, the quote is its prior.
 
 use std::collections::BTreeMap;
 
-use protocol::calcifer::{EtaBasis, Progress};
+use protocol::{
+    calcifer::{EtaBasis, Progress},
+    machine::{Basis, JobSize},
+};
 use serde::Deserialize;
 
 /// How many of the newest runs like it a prior stands on.
@@ -25,6 +29,8 @@ pub struct Took {
     pub machine: String,
     pub gpu: String,
     pub megapixels: Option<f64>,
+    /// The GPUs it ran on, as its executor said: 1 when it didn't.
+    pub width: u32,
     /// From its start to its first stage: its executor's start and its models' load.
     pub lead_ms: f64,
     /// Its stages in the order they began, none of them a `host ·` span inside another.
@@ -59,6 +65,14 @@ impl Steps {
 struct Measured {
     #[serde(default)]
     attribution: Attribution,
+    #[serde(default)]
+    execution: Execution,
+}
+
+#[derive(Deserialize, Default)]
+struct Execution {
+    #[serde(default)]
+    degree: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -108,7 +122,7 @@ impl Took {
             (Some((_, first)), Some(last)) => ((first.started_unix_ms - started).clamp(0.0, end - started), (end - last).max(0.0)),
             _ => (end - started, 0.0),
         };
-        Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, lead_ms, stages, tail_ms })
+        Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, width: measured.execution.degree.max(1), lead_ms, stages, tail_ms })
     }
 
     fn total_ms(&self) -> f64 {
@@ -225,6 +239,12 @@ impl Prior {
         })
     }
 
+    /// A whole run's time and nothing of its phases: its machine's quote, standing on `basis`.
+    fn whole(ms: f64, basis: EtaBasis) -> Self {
+        let confidence = if basis == EtaBasis::Machine { 0.6 } else { 0.4 };
+        Prior { basis, runs: 0, lead_ms: ms, stages: vec![], tail_ms: 0.0, confidence, weight: GPU_WEIGHT }
+    }
+
     /// As asked for `steps` steps, where its input says: each stage that steps takes that many.
     pub fn with_steps(mut self, steps: Option<u64>) -> Self {
         for each in self.stages.iter_mut().filter_map(|stage| stage.steps.as_mut()) {
@@ -253,6 +273,22 @@ impl Prior {
         let from = after.map_or(0, |at| at + 1);
         (from..self.stages.len()).map(|at| self.stage_ms(at, None)).sum::<f64>() + self.tail_ms
     }
+}
+
+/// What a run of `size` takes on one GPU, by the runs like it at one width on `machine`, else on its GPU: a machine's
+/// estimate's `prior_ms`, used where that machine ran none of it.
+pub fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<f64> {
+    let one: Vec<Took> = history.iter().filter(|took| took.width <= 1).cloned().collect();
+    Some(Prior::of(&one, machine, gpu, size.megapixels)?.with_steps(size.steps).total_ms(size.steps))
+}
+
+/// What a run's machine quoted as it was sent (cl-816), on this computer's clock: when it would start and finish, and what that
+/// stands on.
+#[derive(Clone, Copy, Debug)]
+pub struct Quoted {
+    pub start_at: f64,
+    pub finish_at: f64,
+    pub basis: Basis,
 }
 
 /// An estimate of what a run has left.
@@ -294,6 +330,8 @@ pub struct Clock {
     shown: Option<(f64, f64)>,
     /// How far this computer's clock is ahead of its machine's, as the least lag of a report seen.
     ahead: Option<f64>,
+    /// Its machine's quote: it waits until at least its finish.
+    quoted: Option<Quoted>,
 }
 
 impl Clock {
@@ -303,6 +341,19 @@ impl Clock {
 
     pub fn prior(&self) -> Option<&Prior> {
         self.prior.as_ref()
+    }
+
+    /// What its machine quoted: with no runs like it here, its run's time is the prior, unless that stands on nothing.
+    pub fn quoted(&mut self, quoted: Quoted) {
+        let basis = match quoted.basis {
+            Basis::Measured => Some(EtaBasis::Machine),
+            Basis::Prior => Some(EtaBasis::Gpu),
+            Basis::None => None,
+        };
+        if let (None, Some(basis)) = (&self.prior, basis) {
+            self.prior = Some(Prior::whole((quoted.finish_at - quoted.start_at).max(0.0), basis));
+        }
+        self.quoted = Some(quoted);
     }
 
     /// Its execution began at `at`.
@@ -354,14 +405,31 @@ impl Clock {
     }
 
     /// What it has left at `now` (this computer's), as best known; none with no basis.
-    pub fn estimate(&self, now: f64) -> Option<Estimate> {
-        let now = now - self.ahead.unwrap_or(0.0);
+    pub fn estimate(&self, here: f64) -> Option<Estimate> {
+        let now = here - self.ahead.unwrap_or(0.0);
         let prior = self.prior.as_ref();
+        let whole = prior.filter(|prior| prior.stages.is_empty());
         // What's left of the phase it's in, and how well that phase keeps to what was expected of it.
-        let ((current, fit), rest) = match (self.started, &self.stage) {
-            (None, _) => ((self.fetching_ms.unwrap_or(0.0), 1.0), prior?.total_ms(None)),
-            (Some(started), None) => (left_of(prior?.lead_ms, now - started), prior?.rest_ms(None)),
-            (Some(_), Some((name, index, at))) => {
+        let ((current, fit), rest) = match (self.started, &self.stage, whole) {
+            (None, ..) => {
+                let queued = self.quoted.map_or(0.0, |quoted| quoted.finish_at - here);
+                let fetching = self.fetching_ms.unwrap_or(0.0);
+                ((fetching, 1.0), (prior?.total_ms(None)).max(queued - fetching))
+            }
+            // The whole run's time alone: what's left of it, or what its own steps say once they say more.
+            (Some(started), stage, Some(whole)) => {
+                let counted = left_of(whole.lead_ms, now - started);
+                let stepped = stage.as_ref().and_then(|(name, _, at)| {
+                    let steps = self.steps.as_ref().filter(|steps| steps.stage == *name && steps.total > 0)?;
+                    self.steps_left(steps, None, *at, now)
+                });
+                match stepped {
+                    Some((left, _)) if left > counted.0 => ((left, counted.1), 0.0),
+                    _ => (counted, 0.0),
+                }
+            }
+            (Some(started), None, None) => (left_of(prior?.lead_ms, now - started), prior?.rest_ms(None)),
+            (Some(_), Some((name, index, at)), None) => {
                 let stepping = self.steps.as_ref().filter(|steps| steps.stage == *name && steps.total > 0);
                 let current = match (stepping, index) {
                     (Some(steps), _) => self.steps_left(steps, *index, *at, now)?,
@@ -433,17 +501,4 @@ impl Clock {
 fn left_of(expected: f64, ran: f64) -> (f64, f64) {
     let ran = ran.max(0.0);
     ((expected - ran).max(0.0), if ran > expected { expected / ran } else { 1.0 })
-}
-
-/// What a run of `steps` steps would take before it's sent, by its prior; none: `first_run`.
-pub fn before(prior: Option<&Prior>, steps: Option<u64>) -> protocol::calcifer::Estimate {
-    match prior {
-        Some(prior) => protocol::calcifer::Estimate {
-            eta_s: Some((prior.total_ms(steps) / 1000.0).round() as i64),
-            eta_confidence: Some((prior.confidence * 100.0).round() / 100.0),
-            eta_basis: prior.basis,
-            runs: prior.runs as u32,
-        },
-        None => protocol::calcifer::Estimate { eta_s: None, eta_confidence: None, eta_basis: EtaBasis::FirstRun, runs: 0 },
-    }
 }

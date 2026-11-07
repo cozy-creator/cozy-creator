@@ -138,20 +138,29 @@ impl Link {
         lanes[i].clone()
     }
 
-    /// Sends the run: its state, the machine's acceptance. The same id and spec again answer the
-    /// run as it is; another spec is `run_id_conflict`.
-    pub async fn submit(&self, id: &str, spec: v1::RunSpec) -> Result<v1::RunState, LinkError> {
-        let request = v1::RunRequest {
-            id: id.into(),
-            spec,
-        };
-        Ok(self.machine.submit(&request).await?)
+    /// Sends `runs` as one admission where the machine takes one (`run-batch/1`), else each alone: each one's state, the machine's
+    /// acceptance, in their order. The same id and spec again answer the run as it is; another spec is `run_id_conflict`.
+    pub async fn admit(&self, runs: Vec<v1::RunRequest>, batched: bool) -> Result<Vec<Result<v1::RunState, LinkError>>, LinkError> {
+        if batched {
+            let answers = self.machine.submit_batch(&v1::RunBatch { runs }).await?;
+            return Ok(answers.into_iter().map(|answer| answer.map_err(LinkError::from)).collect());
+        }
+        let mut answers = vec![];
+        for run in &runs {
+            answers.push(self.machine.submit(run).await.map_err(LinkError::from));
+        }
+        Ok(answers)
     }
 
     /// The run's log after `after`: its state first, then its events until its outcome. Closing
     /// it never cancels.
     pub async fn events(&self, id: &str, after: u64) -> Result<Live<v1::RunEvent>, LinkError> {
         Ok(Box::pin(self.machine.events(id, after).await?.map_err(LinkError::from)))
+    }
+
+    /// When each of `jobs` would finish there, packed with its queue (`estimate/1`).
+    pub async fn estimate(&self, jobs: &v1::EstimateRequest) -> Result<v1::EstimateAnswer, LinkError> {
+        Ok(self.machine.estimate(jobs).await?)
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).

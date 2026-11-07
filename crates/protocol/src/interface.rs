@@ -261,15 +261,6 @@ impl Call {
     pub fn gpu(&self) -> bool {
         self.accelerator != Some(false)
     }
-
-    /// The GPU widths it runs at: none for a CPU callee.
-    pub fn widths(&self) -> Vec<u32> {
-        match (self.gpu(), self.gpus.is_empty()) {
-            (false, _) => vec![],
-            (true, true) => vec![1],
-            (true, false) => self.gpus.clone(),
-        }
-    }
 }
 
 /// A pickup's frames: `offset + k * every`, from frame `first`.

@@ -83,6 +83,7 @@ pub(super) fn router<B: MachineBackend>(identity: Arc<MachineIdentity>, backend:
         .route(path::RELEASE, post(release::<B>))
         .route(path::CALCIFER, get(calcifer::<B>).head(calcifer::<B>).post(calcifer::<B>).put(calcifer::<B>).patch(calcifer::<B>).delete(calcifer::<B>))
         .route(path::RUNS, post(submit::<B>).layer(DefaultBodyLimit::max(16 << 20)).get(runs::<B>))
+        .route(path::RUNS_BATCH, post(submit_batch::<B>).layer(DefaultBodyLimit::max(64 << 20)))
         .route(path::EVENTS, get(events::<B>))
         .route(path::CANCEL, post(cancel::<B>))
         .route(path::OUTPUT, get(output::<B>))
@@ -90,6 +91,7 @@ pub(super) fn router<B: MachineBackend>(identity: Arc<MachineIdentity>, backend:
         .route(path::LOG, get(log::<B>))
         .route(path::OBJECT, put(put_object::<B>).head(head_object::<B>).get(follow_object::<B>))
         .route(path::OBJECTS_HELD, post(held_objects::<B>).layer(DefaultBodyLimit::max(16 << 20)))
+        .route(path::ESTIMATE, post(estimate::<B>))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
         .method_not_allowed_fallback(|| async {
@@ -283,28 +285,64 @@ fn run_id(id: &str) -> Result<(), Error> {
     }
 }
 
-/// `POST /v1/runs`: accepts a run (201), or answers the one the same id and spec name (200).
-/// A new run is admitted before it is accepted: an update's activation and a rental's idle
-/// release wait for it.
+/// `POST /v1/runs`: accepts a run (201), or answers the one the same id and spec name (200): an
+/// admission of one (`admit`).
 async fn submit<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
-    let caller = m.caller(&headers)?;
-    caller.machine()?;
     let request: v1::RunRequest = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("the run request is not JSON: {e}")))?;
-    run_id(&request.id)?;
-    let (created, state) = match request.spec.kind {
-        v1::RunKind::Update => {
-            super::machine_update::submit(m.identity.clone(), m.backend.clone(), caller.actor, request).await?
-        }
-        _ => {
-            let admitted = m.admit()?;
-            let accepted = super::machine_runs::submit(&m.backend, caller.actor, request).await?;
-            drop(admitted);
-            accepted
-        }
-    };
+    let (created, state) = admit(&m, &headers, vec![request]).await?.pop().expect("one run answered")?;
     let status = if created { StatusCode::CREATED } else { StatusCode::OK };
     Ok(json(status, &state))
+}
+
+/// `POST /v1/runs/batch` (`run-batch/1`): runs admitted as one (`admit`), each answered alone.
+async fn submit_batch<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
+    let batch: v1::RunBatch = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("the run batch is not JSON: {e}")))?;
+    let runs = (admit(&m, &headers, batch.runs).await?.into_iter())
+        .map(|admitted| match admitted {
+            Ok((created, state)) => v1::Admitted { created, state: Some(state), refusal: None },
+            Err(error) => v1::Admitted { refusal: Some(error), ..Default::default() },
+        })
+        .collect();
+    Ok(json(StatusCode::OK, &v1::RunBatchAnswer { runs }))
+}
+
+/// The one admission of runs sent (cl-816): accepted together before any prepares, so the
+/// scheduler packs them as the machine's quote did; each new or answered as the one its id and
+/// spec name, or refused alone. They are admitted before they are accepted: an update's activation
+/// and a rental's idle release wait for them. An update goes alone.
+async fn admit<B: MachineBackend>(m: &Machine<B>, headers: &HeaderMap, requests: Vec<v1::RunRequest>)
+    -> Result<Vec<Result<(bool, v1::RunState), Error>>, Error> {
+    let caller = m.caller(headers)?;
+    caller.machine()?;
+    for request in &requests {
+        run_id(&request.id)?;
+    }
+    if requests.iter().any(|request| request.spec.kind == v1::RunKind::Update) {
+        let Ok([request]) = <[v1::RunRequest; 1]>::try_from(requests) else {
+            return Err(Error::validation("invalid_request", "an update is sent alone"));
+        };
+        let updated = super::machine_update::submit(m.identity.clone(), m.backend.clone(), caller.actor, request).await?;
+        return Ok(vec![Ok(updated)]);
+    }
+    let admitted = m.admit()?;
+    let accepted = super::machine_runs::submit(&m.backend, caller.actor, requests).await?;
+    drop(admitted);
+    Ok(accepted)
+}
+
+/// `POST /v1/estimate`: when each job would run here, packed with the machine's queue by the
+/// model its scheduler gives each run its width by (`estimate`). It reserves nothing.
+async fn estimate<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    let request: v1::EstimateRequest = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("the estimate request is not JSON: {e}")))?;
+    let runs = m.backend.runs().ok_or_else(|| Error::unavailable("machine_runs_unavailable", "this machine runs nothing yet"))?;
+    let actor = crate::machine_api::actor_id(caller.actor);
+    let answer = m.call(move |_| crate::estimate::quote(&runs, &actor, request)).await?;
+    Ok(json(StatusCode::OK, &answer))
 }
 
 #[derive(Deserialize)]

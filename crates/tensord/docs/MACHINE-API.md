@@ -12,8 +12,10 @@ onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
 - `GET /v1/status` (identity and readiness receipt without a cap; the whole picture, as SSE on
   change, with one), `POST /v1/keepalive`, `POST /v1/release`;
 - `ANY /v1/calcifer/{*path}`: the door to [this machine's own Calcifer](#its-own-calcifer);
-- `POST /v1/runs` (idempotent on id per signer), `GET /v1/runs/{id}/events` (SSE after
+- `POST /v1/runs` (idempotent on id per signer), `POST /v1/runs/batch` (`run-batch/1`: runs admitted
+  as one, `POST /v1/runs` being a batch of one), `GET /v1/runs/{id}/events` (SSE after
   `Last-Event-ID`; closing it never cancels), `POST /v1/runs/{id}/cancel`;
+- `POST /v1/estimate` (`estimate/1`): when each job would run if all were sent now, a quote;
 - `GET /v1/runs/{id}/outputs/{output}` (ranged, `ETag` = revision, readable while it grows),
   `GET /v1/runs/{id}/triage`, `GET /v1/logs/{name}`;
 - `PUT`/`HEAD /v1/objects/sha256:<hex>`: content-addressed parts in any order, side by side,
@@ -26,7 +28,13 @@ the cap in its hello) serves a run's output log and bytes, live or finished. **O
 Refusals are `{"error":{kind, code, message}}`; a run's outcome carries the same typed reasons.
 Unknown fields are ignored.
 
-`RunSpec.gpus` is optional (`run-gpus/1`). Zero uses the widest GPU group supported by
+**The machine owns GPU width** (cl-816). A root sent with no count takes, as it starts, its width in
+the packing of the whole queue (`pack.rs`) that `POST /v1/estimate` quotes from: a lone job runs wide,
+several queued jobs one GPU each. Jobs a caller places together it sends together, as one batch: every
+new run of a batch is journaled in one transaction before any prepares, so the scheduler packs them as
+the quote did. A quote reserves nothing; separate callers are settled by the queue.
+
+`RunSpec.gpus` is optional (`run-gpus/1`). Zero lets the machine choose among the GPU groups supported by
 all package-code model slots on the machine. A positive value requests exactly that many
 GPUs; unsupported operations fail instead of reducing the count. This includes GPU child
 calls of a deviceless root, whose explicit count reserves one subset while it runs. Checkpoint identity and weight

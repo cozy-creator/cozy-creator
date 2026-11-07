@@ -496,11 +496,7 @@ impl LocalSources {
         run: &str,
         observer: published::Observer,
     ) -> Result<Installation, Refused> {
-        // Like published installations, local aliases include the selected SDK. The source
-        // digest alone cannot identify the environment after an update.
-        let sdk = &self.publisher.sdk;
-        let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": self.publisher.torch_pins(None)});
-        let alias = format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32]);
+        let alias = alias(&self.publisher, digest);
         let package = open_manifest(&self.objects, actor, digest).map(|(m, _)| m.package).unwrap_or_default();
         let installer = self.installer(&package);
         let _installing = match installer.turn.try_lock() {
@@ -548,6 +544,14 @@ impl LocalSources {
         self.preparing.lock().unwrap().insert(run.to_string(), installed.generation.clone());
         Ok(installed)
     }
+}
+
+/// The installation alias of the manifest `digest` (`sha256:<hex>`) on this machine. Like a published installation's, it
+/// includes the selected SDK: the digest alone cannot identify the environment after an update.
+pub(crate) fn alias(publisher: &Publisher, digest: &str) -> String {
+    let sdk = &publisher.sdk;
+    let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": publisher.torch_pins(None)});
+    format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32])
 }
 
 /// The other Apps `environment` holds, by `packages` (distribution -> package): described once

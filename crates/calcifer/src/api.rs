@@ -139,7 +139,6 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/events", get(events))
         .route("/v1/runs/{id}/outputs/{name}", get(crate::outputs::serve))
         .route("/v1/runs/{id}/play", get(crate::play::play))
-        .route("/v1/estimate", get(estimate))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
         .route("/v1/machines", get(machines::list).post(machines::create))
@@ -162,6 +161,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/rentals", get(machines::rentals))
         .route("/v1/rental-quotes", post(machines::quote))
         .route("/v1/run-quotes", post(crate::runs::quote))
+        .route("/v1/run-estimates", post(crate::runs::estimate))
         .route("/v1/targets", get(crate::runs::describe))
         .route("/v1/tools", get(crate::toolbox::list))
         .route("/v1/tools/list", post(crate::toolbox::change))
@@ -454,28 +454,6 @@ pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
                 .next("cozy run ls"),
         )
     })
-}
-
-#[derive(Deserialize)]
-struct Asking {
-    /// A run's target as its record names it (`local/pkg/function`, `org/pkg/function@release`).
-    target: String,
-    /// The machine it would run on (default `local`), as a run's `--on` names it.
-    on: Option<String>,
-    megapixels: Option<f64>,
-    steps: Option<u64>,
-}
-
-/// What a run would take on a machine before it is sent: from the runs like it there, else on its GPU.
-async fn estimate(State(api): State<Arc<Api>>, query: Result<Query<Asking>, QueryRejection>) -> Result<Json<protocol::calcifer::Estimate>, Refusal> {
-    let Query(asking) = query?;
-    let on = asking.on.as_deref().unwrap_or("local");
-    let machine = match api.machines.named(on).map_err(Refusal)? {
-        Some(row) => row.name,
-        None if on.eq_ignore_ascii_case("local") => "local".to_owned(),
-        None => return Err(Refusal(machines::not_found(on))),
-    };
-    Ok(Json(api.calcifer.estimate(&asking.target, &machine, asking.megapixels.filter(|mp| *mp > 0.0), asking.steps)))
 }
 
 #[derive(Deserialize)]

@@ -393,27 +393,14 @@ impl Engine {
             .commit_public_terminal(id, record)
     }
 
-    pub fn accept_run_objects(
-        &self,
-        actor: &str,
-        id: &str,
-        digest: &str,
-        invocation: Invocation,
-        objects: &[tensorfs::format::ObjectRef],
-        spec: &[u8],
-    ) -> io::Result<(Execution, bool)> {
+    /// See `Journal::accept_runs`: one admission, which the dispatcher sees whole.
+    pub fn accept_runs(&self, actor: &str, runs: Vec<crate::journal::Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
         let mut owned = self.owned.lock().unwrap();
-        let (record, new) = self
-            .journal
-            .lock()
-            .unwrap()
-            .accept_run_objects(actor, id, digest, invocation, objects, spec)?;
-        if new {
-            owned.insert(record.id.clone());
-        }
+        let accepted = self.journal.lock().unwrap().accept_runs(actor, runs)?;
+        owned.extend(accepted.iter().flatten().filter(|(_, new)| *new).map(|(record, _)| record.id.clone()));
         drop(owned);
         self.notify_activity();
-        Ok((record, new))
+        Ok(accepted)
     }
 
     /// The preparing run names its code and models and becomes dispatchable, or completes with
@@ -527,6 +514,10 @@ impl Engine {
     ) -> io::Result<Vec<(u64, Birth)>> {
         self.journal.lock().unwrap().gpu_births_after(after, limit)
     }
+    /// See `Journal::run_times`.
+    pub fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<crate::journal::RunTime>> {
+        self.journal.lock().unwrap().run_times(function, limit)
+    }
     pub fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.nonterminal(limit))
     }
@@ -586,13 +577,13 @@ impl Engine {
     }
 
     /// Trusted adapters share one claim, supervisor reservation and journal. They
-    /// register the exact process birth before authorizing any authored code.
-    pub(crate) fn dispatch_managed<F>(self: &Arc<Self>, id: &str, run: F) -> io::Result<bool>
+    /// register the exact process birth before authorizing any authored code. It takes `width` GPUs.
+    pub(crate) fn dispatch_managed<F>(self: &Arc<Self>, id: &str, width: u32, run: F) -> io::Result<bool>
     where
         F: FnOnce(Arc<Self>, String) -> io::Result<()> + Send + 'static,
     {
         let mut owned = self.owned.lock().unwrap();
-        if owned.contains(id) || !self.journal.lock().unwrap().claim(id)? {
+        if owned.contains(id) || !self.journal.lock().unwrap().claim(id, width)? {
             return Ok(false);
         }
         owned.insert(id.into());
