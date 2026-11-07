@@ -1,9 +1,12 @@
-//! A run's local source: unpublished code, named by the digest of its manifest object.
+//! A run's local source: unpublished code, named by the digest of its manifest object and sent
+//! by content. No machine reads a host path: a manifest that names one is refused.
 //!
-//! A remote editable project and its libraries are kept under the exact manifest's source
-//! home. Each environment points at that home, so a later install cannot rewrite code or data
-//! an accepted run still reads. This computer's explicit live path is read in place, never
-//! copied. Both use the shared dependency cache.
+//! Each manifest's files are their own tree (`source-<manifest>/tree`), so a later install cannot
+//! rewrite code or data an accepted run still reads. The environment is keyed on what it is built
+//! from (lock, project metadata, path dependencies, carried wheels, this machine's Python, pair
+//! and PyTorch), never the project's own code, and installs the project editable with its paths
+//! named from each generation's `source`: one environment runs every tree built on it, so an edit
+//! to the code alone builds nothing. It uses the shared dependency cache.
 use crate::{
     journal::Installation,
     published::{self, environment, Job, Publisher},
@@ -38,9 +41,6 @@ pub struct Manifest {
     pub files: Vec<Member>,
     #[serde(default)]
     pub project: String,
-    /// This computer's machine: that common directory itself, read in place and never copied.
-    #[serde(default)]
-    pub path: String,
     /// uv indexes the project's sources name without declaring, by name: an authored tree
     /// names its account's index (`tensorhub`), whose URL depends on who runs it.
     #[serde(default)]
@@ -109,7 +109,7 @@ pub struct LocalSources {
     /// The machine's generations (`catalog`).
     generations: PathBuf,
     pub cas: Cas,
-    /// Each signer's packages: remote `source-<manifest>/{tree,env-*}`, direct paths `env-*`.
+    /// Each signer's packages: `env-<inputs>` environments and `source-<manifest>/tree` trees.
     editable: PathBuf,
     /// By package: one package's installs go in turn, and another's go beside them.
     installing: Mutex<HashMap<String, Arc<Installing>>>,
@@ -137,11 +137,7 @@ fn keyed(name: &str, prefix: &str, length: usize) -> bool {
 }
 
 /// Only this layout's environments leave. Unknown entries in a package home are preserved.
-fn collect_environments(home: &Path, named: &HashSet<PathBuf>) -> usize {
-    // In the spelling Python writes (Windows' canonicalize says \\?\C:\…), as `named` is.
-    let root = platform::durable::canonical(home).unwrap_or_else(|_| home.to_path_buf());
-    // A named but missing environment still retains its source for recovery.
-    let kept = named.iter().filter(|env| env.parent() == Some(root.as_path())).count();
+fn collect_environments(home: &Path, named: &HashSet<PathBuf>) {
     for entry in fs::read_dir(home).into_iter().flatten().flatten() {
         let path = entry.path();
         if !keyed(&entry.file_name().to_string_lossy(), "env-", 16) || !path.is_dir() {
@@ -152,7 +148,6 @@ fn collect_environments(home: &Path, named: &HashSet<PathBuf>) -> usize {
             removed("carried wheels", &path.with_extension("wheels"));
         }
     }
-    kept
 }
 
 /// Removes `path` (`what`), logging the bytes it freed.
@@ -202,12 +197,18 @@ fn open_manifest(
             "a local package manifest is at most 1 MiB",
         ));
     }
-    let manifest = serde_json::from_slice(&fs::read(path)?).map_err(|e| {
-        refused(
-            "local_source_invalid",
-            format!("the local package manifest is invalid: {e}"),
-        )
-    })?;
+    let invalid = |e: serde_json::Error| refused("local_source_invalid", format!("the local package manifest is invalid: {e}"));
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(path)?).map_err(invalid)?;
+    if document.get("path").is_some() {
+        return Err(refused(
+            "local_source_path_refused",
+            "a local package manifest names its files by content: no machine reads a host path (`path`)",
+        ));
+    }
+    let manifest: Manifest = serde_json::from_value(document).map_err(invalid)?;
+    if manifest.files.is_empty() {
+        return Err(refused("local_source_invalid", "a local package manifest names its files"));
+    }
     let sha256 = digest.trim_start_matches("sha256:").to_string();
     Ok((manifest, ObjectRef { sha256, length }))
 }
@@ -234,29 +235,24 @@ impl LocalSources {
         Ok(self.editable.join(&sha256::hex_digest(actor.as_bytes())[..16]).join(name))
     }
 
-    /// A local source's objects, its manifest and every member this machine needs written:
-    /// what a run takes custody of when it is accepted. Every captured member is retained:
-    /// a cached generation may be collected while this run waits to install. The caller's
-    /// object cache still avoids reuploading unchanged bytes. A directory read in place needs
-    /// none of its files. One the signer did not write is `local_source_incomplete`, naming it.
+    /// A local source's objects, its manifest and every member: what a run takes custody of when
+    /// it is accepted. Every captured member is retained: a cached generation may be collected
+    /// while this run waits to install. The caller's object cache still avoids reuploading
+    /// unchanged bytes. One the signer did not write is `local_source_incomplete`, naming it.
     pub fn written(&self, actor: &str, digest: &str) -> Result<Vec<ObjectRef>, Refused> {
         let (manifest, own) = open_manifest(&self.objects, actor, digest)?;
+        self.home(actor, &manifest.package)?;
         let mut written = vec![own];
-        if !manifest.files.is_empty() || !manifest.path.is_empty() {
-            self.home(actor, &manifest.package)?;
-        }
-        let files = manifest.files.iter().filter(|_| manifest.path.is_empty());
-        for m in manifest.wheels.iter().chain(files) {
+        for m in manifest.wheels.iter().chain(&manifest.files) {
             written.push(written_member(&self.objects, actor, m)?);
         }
         Ok(written)
     }
 
-    /// The identity of the environment a live manifest runs in (`env-<identity[..16]>`): one per
-    /// lock, project metadata, local path dependencies, carried wheels and this machine's
-    /// interpreter, the SDK pair it takes (`Publisher::pair_key`) and client, and per path read in
-    /// place: its editable install names that path, so the same package at another path is another
-    /// environment. Remote environments live beside their immutable source; direct paths remain live.
+    /// The identity of the environment a manifest runs in (`env-<identity[..16]>`): one per lock,
+    /// project metadata, local path dependencies, carried wheels, the project's place in its tree,
+    /// indexes, and this machine's interpreter, the SDK pair it takes (`Publisher::pair_key`) and
+    /// PyTorch. The project's own code is none of it: each generation names its tree.
     fn environment(&self, manifest: &Manifest, locked: Option<&published::Locked>) -> String {
         let own = manifest.own();
         let held = |name: &str| {
@@ -267,7 +263,7 @@ impl LocalSources {
         let carried: Vec<_> = manifest.wheels.iter().map(|w| (&w.name, &w.digest)).collect();
         let key = serde_json::json!({
             "lock": held("uv.lock"), "project": held("pyproject.toml"), "beside": beside, "wheels": carried,
-            "path": manifest.path, "own": manifest.project,
+            "own": manifest.project,
             "indexes": manifest.indexes, "pair": self.publisher.pair_key(locked), "python": self.publisher.sdk.python,
             "torch": self.publisher.torch_pins(None),
         });
@@ -313,9 +309,9 @@ impl LocalSources {
         Ok(tree)
     }
 
-    /// Install editable against this manifest's remote tree, or the explicit direct path: its
-    /// environment built as a release's is (`published::environment`) when it is not ready, then a
-    /// generation of it describing the project as it is now.
+    /// Install editable against this manifest's tree: its environment built as a release's is
+    /// (`published::environment`) when none built from the same inputs is ready, then a generation
+    /// of it and the tree describing the project as it is now.
     #[allow(clippy::too_many_arguments)]
     fn install_live(
         &self,
@@ -327,21 +323,15 @@ impl LocalSources {
         job: &Job,
     ) -> Result<Installation, Refused> {
         let home = self.home(actor, &manifest.package)?;
-        let home = if manifest.path.is_empty() { home.join(format!("source-{digest}")) } else { home };
-        fs::create_dir_all(&home)?;
-        let root = match manifest.path.is_empty() {
-            true => self.sync(actor, &home, &manifest.files)?,
-            false => PathBuf::from(&manifest.path),
-        };
+        let source = home.join(format!("source-{digest}"));
+        fs::create_dir_all(&source)?;
+        let tree = self.sync(actor, &source, &manifest.files)?;
         let project = match manifest.project.is_empty() {
-            true => root.clone(),
-            false => root.join(inside(&manifest.project)?),
+            true => tree.clone(),
+            false => tree.join(inside(&manifest.project)?),
         };
-        if !root.is_absolute() || !project.join("pyproject.toml").is_file() {
-            return Err(refused(
-                "local_source_absent",
-                format!("{} is not a project directory on this machine", project.display()),
-            ));
+        if !project.join("pyproject.toml").is_file() {
+            return Err(refused("local_source_invalid", format!("the manifest's files hold no {}pyproject.toml", manifest.own())));
         }
         for (name, url) in &manifest.indexes {
             let named = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
@@ -386,7 +376,7 @@ impl LocalSources {
                 locked: locked.as_ref(),
                 wheels: (!manifest.wheels.is_empty()).then_some(carried.as_path()),
                 skip: &[],
-                editable: true,
+                editable: Some(&tree),
                 indexes: &manifest.indexes,
                 package: &manifest.package,
                 label: &label,
@@ -397,7 +387,7 @@ impl LocalSources {
             fs::write(&ready, serde_json::to_vec(&built).map_err(std::io::Error::other)?)?;
         }
         let built: environment::Built = serde_json::from_slice(&fs::read(&ready)?).map_err(std::io::Error::other)?;
-        // One generation per environment and source: a run of code unchanged since reads it as it is.
+        // One generation per environment and tree: a run of code unchanged since reads it as it is.
         let identity = sha256::hex_digest(serde_json::json!([environment, digest]).to_string().as_bytes())[..32].to_string();
         if service.catalog.resolve(&identity).is_err() {
             job.stage(format!("describing {}", manifest.package));
@@ -406,21 +396,16 @@ impl LocalSources {
             fs::create_dir_all(&dir)?;
             let published = || -> Result<(), published::Failure> {
                 environment::hold(&dir)?;
-                platform::durable::symlink(&environment, &dir.join("env")).map_err(|e| published::io_failure(e.into()))?;
+                let link = |target: &Path, name| platform::durable::symlink(target, &dir.join(name)).map_err(|e| published::io_failure(e.into()));
+                link(&environment, "env")?;
+                link(&tree, environment::SOURCE)?;
                 let (env, distribution) = (dir.join("env"), published::distribution(&pyproject)?);
                 let python = platform::paths::venv_python(&env);
                 let stop = job.stop.as_ref();
-                // Its lock's Runtime too old for its code: re-locked in its folder, named when it is on this computer.
-                let relock = match manifest.path.is_empty() {
-                    true => "cozy package lock --upgrade-package cozy-runtime".to_owned(),
-                    false => match project.display().to_string() {
-                        dir if dir.contains(char::is_whitespace) => format!("cozy package lock -p '{dir}' --upgrade-package cozy-runtime"),
-                        dir => format!("cozy package lock -p {dir} --upgrade-package cozy-runtime"),
-                    },
-                };
-                let unread = |failure: published::Failure| built.unread(failure, &env, &manifest.package, &relock);
-                let (interface, closures) = environment::describe_project(&python, &project, stop).map_err(&unread)?;
-                let callees = environment::describe_environment(&python, &distribution, &manifest.callees, false, stop).map_err(&unread)?.callees;
+                // Its lock's Runtime too old for its code: re-locked in its folder.
+                let unread = |failure: published::Failure| built.unread(failure, &env, &manifest.package, "cozy package lock --upgrade-package cozy-runtime");
+                let (interface, closures) = environment::describe_project(&python, &project, stop).map_err(unread)?;
+                let callees = callees(&environment, &python, &distribution, &manifest.callees, stop).map_err(unread)?;
                 let described = environment::Described { source_digest: manifest.source_digest(), callees, closures };
                 let record = built.record((&identity, &built_from), (&distribution, &manifest.release), &env, &interface,
                     &self.publisher.sdk.runtime_build, described)?;
@@ -470,28 +455,32 @@ impl LocalSources {
         // An unavailable or partial inventory says nothing about which sources are unused.
         let Ok(generations) = fs::read_dir(&self.generations)
             .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>()) else { return; };
+        // What generations link, canonical as each home's entries are read.
         let mut named = HashSet::new();
         for generation in generations {
-            let env = generation.path().join("env");
-            match fs::read_link(&env) {
-                Ok(target) => { named.insert(platform::durable::canonical(&target).unwrap_or(target)); }
-                // Published generations own an ordinary environment directory.
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput && env.is_dir() => {}
-                Err(_) => return,
+            for name in ["env", environment::SOURCE] {
+                let link = generation.path().join(name);
+                match fs::read_link(&link) {
+                    Ok(target) => { named.insert(platform::durable::canonical(&target).unwrap_or(target)); }
+                    // Published generations own an ordinary environment directory, and no tree.
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidInput && link.is_dir() => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound && name == environment::SOURCE => {}
+                    Err(_) => return,
+                }
             }
         }
-        let kept = collect_environments(&home, &named);
+        collect_environments(&home, &named);
         for entry in fs::read_dir(&home).into_iter().flatten().flatten() {
             let path = entry.path();
+            let root = platform::durable::canonical(&path).unwrap_or_else(|_| path.clone());
+            // A half-synced tree is kept for recovery, and one a generation links (or holds the environment of).
             if keyed(&entry.file_name().to_string_lossy(), "source-", 64)
-                && !held_tree(&path).is_empty() && collect_environments(&path, &named) == 0
+                && !held_tree(&path).is_empty() && !named.iter().any(|linked| linked.starts_with(&root))
             {
                 removed("editable source", &path);
             }
         }
-        if kept == 0 {
-            let _ = fs::remove_dir(&home); // Only an empty home; never erase unknown entries.
-        }
+        let _ = fs::remove_dir(&home); // Only an empty home; never erase unknown entries.
     }
 
     /// This signer's installation of the manifest `digest` (`sha256:<hex>`).
@@ -541,9 +530,6 @@ impl LocalSources {
             }
         }
         let (manifest, object) = open_manifest(&self.objects, actor, digest)?;
-        if manifest.files.is_empty() && manifest.path.is_empty() {
-            return Err(refused("local_source_invalid", "a local package manifest names its files or its path"));
-        }
         let (engine, waiter) = (service.engine.clone(), run.to_string());
         let job = Job {
             observer: Some(observer),
@@ -562,6 +548,24 @@ impl LocalSources {
         self.preparing.lock().unwrap().insert(run.to_string(), installed.generation.clone());
         Ok(installed)
     }
+}
+
+/// The other Apps `environment` holds, by `packages` (distribution -> package): described once
+/// per environment, as its files are the same for every tree it runs.
+fn callees(environment: &Path, python: &Path, root: &str, packages: &BTreeMap<String, String>, stop: Option<&Stop>)
+    -> Result<Vec<crate::catalog::Callee>, published::Failure> {
+    let key = sha256::hex_digest(serde_json::json!([root, packages]).to_string().as_bytes());
+    let kept = environment.join(format!(".callees-{}.json", &key[..16]));
+    if let Some(callees) = fs::read(&kept).ok().and_then(|raw| serde_json::from_slice(&raw).ok()) {
+        return Ok(callees);
+    }
+    let callees = environment::describe_environment(python, root, packages, false, stop)?.callees;
+    let staged = kept.with_extension("new");
+    let wrote = serde_json::to_vec(&callees).map_err(std::io::Error::other).and_then(|raw| fs::write(&staged, raw)).and_then(|()| fs::rename(&staged, &kept));
+    if let Err(error) = wrote {
+        tracing::warn!("{}: its callees were not kept: {error}", environment.display());
+    }
+    Ok(callees)
 }
 
 /// A build's failure as the run's reason.

@@ -264,6 +264,97 @@ if [ -f "${CAND_RT:-}" ]; then
 fi
 }
 
+# cl-820: local code edited between runs on `local`, as cl-817's edit.sh timed it (an edit took 7.9 s read in place, 10.2 s once it
+# went by content with an environment per tree). The environment is keyed on what it is built from (lock, pyproject, path
+# dependencies), never the code: an edit to the code alone runs on the same one, an edit back runs the first code again, and a new
+# dependency builds another. Each step's `cozy run` wall time, the reply and the environment TensorD ran it in.
+local_edits() {
+step "local code edited between runs"
+[ -n "$LOCAL" ] || return 0
+local code=$OUT/edits/e2e-edits envs=$HOME/.cozy/machine/var/lib/cozy/tensord/editable
+local module=$code/e2e_weightless/__init__.py first now
+rm -rf "$code" && mkdir -p "$OUT/edits" && cp -r "$here/weightless" "$code"
+sed -i 's/^name = "e2e-weightless"/name = "e2e-edits"/' "$code/pyproject.toml"
+: > "$OUT/edits.txt"
+timed() {  # timed <step> <reply>: the environment its run had, on stdout
+  local t0 t1 env
+  t0=$(date +%s.%N)
+  cozy --json run -p "$RUN_PROJECT" "$code/reverse" text=abc --on local > "$OUT/edit-$1.ndjson" 2> "$OUT/edit-$1.err" \
+    || { check "edit $1: cozy run did not complete: $(tail -c 300 "$OUT/edit-$1.err")" >&2; return 1; }
+  t1=$(date +%s.%N)
+  grep -q "\"text\": *\"$2\"" "$OUT/edit-$1.ndjson" || check "edit $1: the reply is not $2: $(grep -o '"text": *"[^"]*"' "$OUT/edit-$1.ndjson" | tail -1)" >&2
+  env=$(cd "$envs" && ls -d -- */e2e-edits/env-* 2> /dev/null | sed 's#.*/##' | paste -sd, -)
+  printf '%s: %s in %.1f s, environment %s\n' "$1" "$2" "$(echo "$t1 - $t0" | bc)" "${env:-none}" | tee -a "$OUT/edits.txt" >&2
+  echo "$env"
+}
+first=$(timed first cba) || return 0
+[ -n "$first" ] || check "edit first: TensorD holds no environment for e2e-edits under $envs"
+sed -i 's/return Reversed(text=payload.text\[::-1\])/return Reversed(text=payload.text[::-1] + "!edited")/' "$module"
+if now=$(timed edited 'cba!edited'); then [ "$now" = "$first" ] || check "edit: the code alone built another environment ($first, then $now)"; fi
+sed -i 's/ + "!edited"//' "$module"
+if now=$(timed back cba); then [ "$now" = "$first" ] || check "edit back: another environment than the first's ($first, then $now)"; fi
+sed -i 's/"msgspec>=0.19"\]/"msgspec>=0.19", "six>=1.16"]/' "$code/pyproject.toml"
+if now=$(timed dependency cba); then [ -n "$now" ] && [ "$now" != "$first" ] || check "edit: a new dependency ran on the environment before it ($now)"; fi
+}
+
+# cl-820: a signer this machine admits sends TensorD a manifest that names a host path, as only a hand-made one can (no cozy sends
+# one): it is refused, typed, before the run is accepted, so nothing installs from that folder.
+path_manifest() {
+step "a manifest naming a host path is refused"
+[ -n "$LOCAL" ] || return 0
+local pem=$OUT/signer.pem key='' code=0
+for _ in $(seq 100); do
+  openssl genpkey -algorithm ed25519 -out "$pem" 2> /dev/null || { check "path manifest: openssl could not make an Ed25519 key"; return; }
+  key=$(openssl pkey -in "$pem" -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n')
+  [[ $key == -* ]] || break
+done
+cozy --json machine authorize "$key" > "$OUT/path-authorize.json" || { check "path manifest: machine authorize failed"; return; }
+cozy --json machine show local > "$OUT/path-local.json" || check "path manifest: machine show local failed"
+uv run -q --no-project --with cryptography python -I - "$pem" "$(jq -r .address "$OUT/path-local.json")" \
+  "$(jq -r .fingerprint "$OUT/path-local.json")" "$here/weightless" "$OUT/path-refused.json" <<'PY' || code=$?
+import base64, hashlib, http.client, json, os, ssl, sys, time
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+pem, address, fingerprint, project, out = sys.argv[1:]
+key = load_pem_private_key(open(pem, "rb").read(), None)
+b64 = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+host, port = address.split("://")[-1].rsplit(":", 1)
+tls = ssl.create_default_context()
+tls.check_hostname, tls.verify_mode = False, ssl.CERT_NONE
+
+def call(method, path, body=b"", token=""):
+    connection = http.client.HTTPSConnection(host.strip("[]"), int(port), context=tls, timeout=60)
+    connection.connect()
+    leaf = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+    assert leaf == fingerprint.removeprefix("sha256:"), f"{address} presents the leaf {leaf}, not {fingerprint}"
+    headers = {"content-length": str(len(body))} | ({"authorization": f"Cozy-Cap {token}"} if token else {})
+    connection.request(method, path, body=body, headers=headers)
+    answer = connection.getresponse()
+    return answer.status, answer.read()
+
+worker = json.loads(call("GET", "/v1/status")[1])["worker_id"]
+public = key.public_key().public_bytes_raw()
+grant = json.dumps({"m": worker, "a": "machine", "e": int(time.time()) + 600, "k": b64(hashlib.sha256(public).digest()[:16])}).encode()
+signed = key.sign(b"cozy-capability/1\0" + grant)  # protocol::capability's DOMAIN, then the grant
+token = f"{b64(grant)}.{b64(signed)}"
+# The fixture's folder on this computer, as a manifest named it before cl-817 (`in_place`).
+manifest = json.dumps({"package": "local/e2e-weightless", "release": "0.1.0", "path": os.path.dirname(project),
+                       "project": os.path.basename(project)}).encode()
+digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+status, body = call("PUT", f"/v1/objects/{digest}", manifest, token)
+assert status < 300, f"PUT /v1/objects/{digest}: {status} {body[:300]!r}"
+run = {"id": f"e2e-path-{time.time_ns()}", "spec": {"kind": "call", "source": {"local": {"manifest": digest}},
+                                                   "entrypoint": "reverse", "payload": {"text": "abc"}}}
+status, body = call("POST", "/v1/runs", json.dumps(run).encode(), token)
+open(out, "wb").write(body)
+print(f"POST /v1/runs, a manifest naming {os.path.dirname(project)}: {status} {body[:300].decode()}")
+sys.exit(0 if status >= 400 else 1)
+PY
+cozy --json machine authorize "$key" --remove > /dev/null || check "path manifest: machine authorize --remove failed"
+[ "$code" = 0 ] && J '.error.code == "local_source_path_refused"' "$OUT/path-refused.json" \
+  || check "path manifest: not refused local_source_path_refused (exit $code): $(head -c 300 "$OUT/path-refused.json" 2> /dev/null)"
+}
+
 yaml_requests() {
 step "a YAML request, then inline inputs over it"
 text=yaml-$RANDOM back=''

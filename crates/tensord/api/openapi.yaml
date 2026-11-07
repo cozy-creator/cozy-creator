@@ -606,13 +606,14 @@ components:
       type: object
       description: >-
         Local code: `manifest` names a JSON object written with `PUT /v1/objects`: `{package: "local/<dist>",
-        release, python_requires, python_version, callees: {distribution: package}}` and its code. A live
-        project is installed editable from `files: [{name, digest, length, executable}]`: the project and the
-        path dependencies its lock names, each file under their common directory, with `project` the project's
-        directory there. The machine keeps one such tree and one environment per signer and package. `path`
-        names that common directory on this computer's machine, which reads it in place. `wheels: [{name,
-        digest, length}]` are locked dependencies the caller carries because the machine cannot fetch them.
-        Members are objects the same signer wrote.
+        release, python_requires, python_version, callees: {distribution: package}}` and its code, by content.
+        The project is installed editable from `files: [{name, digest, length, executable}]`: the project and
+        the path dependencies its lock names, each file under their common directory, with `project` the
+        project's directory there. The machine keeps a tree per manifest and an environment per signer,
+        package and what it is built from (lock, pyproject, path dependencies, wheels): an edit to the code
+        alone reuses it. `wheels: [{name, digest, length}]` are locked dependencies the caller carries because
+        the machine cannot fetch them. Members are objects the same signer wrote. No machine reads a host
+        path: a manifest naming `path` is refused, `local_source_path_refused`.
       properties: {manifest: {type: string, description: '`sha256:<hex>` of the manifest object.'}}
     LogLine:
       type: object

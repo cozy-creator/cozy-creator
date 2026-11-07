@@ -1106,7 +1106,7 @@ impl Publisher {
             locked: Some(locked),
             wheels: (!files.is_empty()).then_some(wheels.as_path()),
             skip: &locked.git,
-            editable: false,
+            editable: None,
             indexes: &BTreeMap::new(),
             package,
             label: &label,

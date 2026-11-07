@@ -16,8 +16,8 @@ use tokio_stream::{wrappers::IntervalStream, Stream, StreamExt};
 /// set and each environment's level. `upload/1`: a warm run of one provider source puts it in
 /// its weights destination. `remove/1`: a remove run drops the caller's installations and
 /// deletes their environments once nothing holds them; Status names each one's Hub.
-/// `live-source/1`: a local source's manifest may name a live project file by file (or its
-/// directory on this computer), installed editable in one tree and environment per package;
+/// `live-source/1`: a local source's manifest names a live project file by file, by content,
+/// installed editable in a tree per manifest and an environment per what it is built from;
 /// and a slot a run names no model for takes its declared default. `live-source/2`: that
 /// manifest may also name the uv indexes its project's sources use without declaring them and the
 /// local path dependencies its lock installs, and a locked project installs whatever indexes

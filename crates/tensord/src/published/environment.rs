@@ -28,8 +28,9 @@ pub(crate) struct Project<'a> {
     pub wheels: Option<&'a Path>,
     /// Lock rows left to `wheels` besides their own (a release's git rows its Hub carries).
     pub skip: &'a [String],
-    /// Local code: the project installed editable, read where it is.
-    pub editable: bool,
+    /// Local code: the project installed editable from this tree (its directory or one above it),
+    /// which each generation links as its own `SOURCE`: one environment runs every tree built on it.
+    pub editable: Option<&'a Path>,
     /// Indexes an unlocked project's sources name without declaring (name → URL).
     pub indexes: &'a BTreeMap<String, String>,
     /// Its package, which the machine lists installing (`activity`).
@@ -109,7 +110,7 @@ impl Publisher {
     fn build_on(&self, env: &Path, project: &Project, job: &Job, layer: Option<&Layer>, own: &[String]) -> Result<Built, Failure> {
         let _cache = self.uv_cache_hold().map_err(io_failure)?;
         let over = project.locked.is_some_and(|locked| self.stands_in(locked));
-        let editable_after = project.editable && project.locked.is_some();
+        let editable_after = project.editable.is_some() && project.locked.is_some();
         let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, over];
         let total = steps.iter().filter(|s| **s).count() + 1 + usize::from(project.fetch.is_some());
         let step = std::cell::Cell::new(0);
@@ -212,8 +213,8 @@ impl Publisher {
             // Its dependencies are in place: the project alone, whatever indexes its sources name.
             self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir], &[], job)?;
         }
-        if project.editable {
-            live_paths(env).map_err(io_failure)?;
+        if let Some(tree) = project.editable {
+            live_paths(env, tree).map_err(io_failure)?;
         }
         // Torch for itself, the rare fallback: at what the package requires, from the index for
         // this machine's accelerator.
@@ -557,31 +558,44 @@ fn linked_applications(env: &Path) -> Vec<String> {
         .collect()
 }
 
-/// An editable install's source paths spelled as `import` lines. Python adds them at startup all
-/// the same, and the Runtime's static reader, which never runs such a line, reads the environment's
-/// installed packages without following the project out of it: the project is described from its
-/// own directory.
-fn live_paths(env: &Path) -> io::Result<()> {
+/// What a local generation links its tree as, beside its `env`.
+pub(crate) const SOURCE: &str = "source";
+
+/// An editable install's source paths spelled as `import` lines, each under `tree` named from the
+/// `SOURCE` of the generation Python runs as (`sys.prefix` is its `env`, the link unresolved), so
+/// each generation reads its own tree. Python adds them at startup all the same, and the Runtime's
+/// static reader, which never runs such a line, reads the environment's installed packages without
+/// following the project out of it: the project is described from its own directory.
+fn live_paths(env: &Path, tree: &Path) -> io::Result<()> {
     let Some(site) = platform::paths::venv_site_packages(env) else {
         return Ok(());
     };
-    let env = platform::durable::canonical(env)?;
+    let (env, tree) = (platform::durable::canonical(env)?, platform::durable::canonical(tree)?);
     for entry in fs::read_dir(&site)? {
         let path = entry?.path();
         if path.extension().is_none_or(|e| e != "pth") {
             continue;
         }
         let text = fs::read_to_string(&path)?;
-        let inside = |line: &str| platform::durable::canonical(&site.join(line.trim_end())).is_ok_and(|p| p.starts_with(&env));
-        let live = |line: &str| !line.is_empty() && !line.starts_with('#') && !line.starts_with("import ") && !line.starts_with("import\t") && !inside(line);
+        let target = |line: &str| platform::durable::canonical(&site.join(line.trim_end())).ok();
+        let live = |line: &str| !line.is_empty() && !line.starts_with('#') && !line.starts_with("import ") && !line.starts_with("import\t")
+            && !target(line).is_some_and(|p| p.starts_with(&env));
         if !text.lines().any(live) {
             continue;
         }
-        let spelled: String = text.lines().map(|line| match live(line) {
-            true => format!("import sys; sys.path.append({})\n", Value::from(line.trim_end())),
-            false => format!("{line}\n"),
+        let under = |line: &str| target(line).and_then(|p| p.strip_prefix(&tree).ok().map(|rest| {
+            rest.components().map(|c| Value::from(c.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>()
+        }));
+        let spelled: String = text.lines().map(|line| match (live(line), under(line)) {
+            (true, Some(parts)) => format!("import os, sys; sys.path.append(os.path.join(os.path.dirname(sys.prefix), {}, *{}))\n",
+                Value::from(SOURCE), Value::from(parts)),
+            (true, None) => format!("import sys; sys.path.append({})\n", Value::from(line.trim_end())),
+            (false, _) => format!("{line}\n"),
         }).collect();
-        fs::write(&path, spelled)?;
+        // A new file: uv links the one it installed from its cache.
+        let staged = path.with_extension("pth.new");
+        fs::write(&staged, spelled)?;
+        fs::rename(&staged, &path)?;
     }
     Ok(())
 }
