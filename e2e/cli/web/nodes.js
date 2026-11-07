@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
+const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -158,7 +158,7 @@ function linesOf(text, name) {
   // A tool dragged out of the list drops a box at that point: what it is comes from what it makes. The Edit is always there, and costs nothing.
   const dragOut = async (row, x, y) => {
     const namesBefore = (await state()).assets.map((held) => held.name);
-    await row.dragTo(page.locator('.stage'), { targetPosition: { x, y } });
+    await carry(page, row, { x, y });
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);

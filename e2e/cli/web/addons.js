@@ -8,7 +8,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, renderOf, until } = require('./page');
+const { calcifer, carry: carryTo, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, openCanvas, renderOf, settled, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -138,7 +138,15 @@ assets:
   await page.click('.tools button:has-text("Checkpoints")');
   const row = (model) => page.locator(`[data-checkpoint="${model.model}"]`);
   await row(loraA).waitFor();
-  check('explorer_lists', (await page.locator('.checkpoints h4').allInnerTexts()).join().includes('LoRAs') && (await page.locator('.checkpoints h4').allInnerTexts()).join().includes('Fine-tunes'), await page.locator('.checkpoints h4').allInnerTexts());
+  // Grouped by the model each is for, called what its tool is (Paul, 11-06), each row its own name less its family's, and what it is under it.
+  const groups = await page.locator('.checkpoints section').evaluateAll((all) => all.map((one) => ({ family: one.dataset.family, words: one.querySelector('h4').textContent, rows: [...one.querySelectorAll('[data-checkpoint]')].map((row) => row.dataset.checkpoint) })));
+  const ofMine = groups.find((group) => group.family === mine.model.family);
+  const mineIs = tools.filter((tool) => tool.model.family === mine.model.family).map((tool) => tool.label).sort((a, b) => a.length - b.length)[0];
+  const familyOf = (ref) => models.find((model) => model.model === ref)?.family;
+  check('explorer_groups_by_family', ofMine?.words === mineIs && ofMine.rows.includes(loraA.model) && ofMine.rows.includes(fineA.model) && groups.every((group) => !group.family || group.rows.every((ref) => familyOf(ref) === group.family)), groups);
+  const said = { name: await row(loraA).locator('b').innerText(), what: await row(loraA).locator('span').innerText(), fine: await row(fineA).locator('span').innerText() };
+  const prefix = new RegExp(`^(${mine.model.family.split('-').map((_, i, all) => all.slice(i).join('[- _]')).join('|')})\\b`, 'i');
+  check('rows_say_their_own_name_and_kind', said.what === 'LoRA' && said.fine === 'Fine-tune' && !prefix.test(said.name) && word(loraA).includes(said.name.split(' ').pop()), said);
   await page.fill('input[aria-label="Search the checkpoints"]', word(loraA));
   await until('the search', () => page.locator('[data-checkpoint]').count(), (n) => n >= 1 && n < models.length);
   await row(loraA).waitFor();
@@ -221,6 +229,79 @@ assets:
   const fields = (await state()).assets.find((asset) => asset.name === 'shot').fields;
   check('project_reads_them', fields.lora?.length === 2 && fields.models?.[mine.model.slot]?.ref === fineB.model, fields);
   check('no_run_and_no_weights', (await madeHere()) === 0 && (await fetched([loraA.model, loraB.model, fineA.model, fineB.model])).length === 0);
+
+  // The list is long: dragged up or down it scrolls, by a mouse or a finger, a slim marker showing where it is, and nothing is carried; dragged sideways a
+  // row is carried out, by a finger too (Paul, 11-06).
+  if (!(await page.locator('.checkpoints').count())) await page.click('.tools button:has-text("Checkpoints")');
+  await row(loraB).waitFor();
+  await page.keyboard.press('f');
+  await settled(page);
+  const shelf = page.locator('.browse.checkpoints');
+  const scrolledTo = () => shelf.evaluate((el) => el.scrollTop);
+  const room = await shelf.evaluate((el) => el.scrollHeight - el.clientHeight);
+  const rest = await shelf.boundingBox();
+  const middle = rest.x + rest.width / 2;
+  const fileThen = yaml();
+  await page.mouse.move(middle, rest.y + rest.height - 30);
+  await page.mouse.down();
+  for (let step = 1; step <= 8; step++) await page.mouse.move(middle + step, rest.y + rest.height - 30 - step * 20);
+  const scrolling = { marked: await page.locator('.scroll-marker.on').count(), ghosts: await page.locator('.carry-ghost').count(), lit: await page.locator('.box-takes').count() };
+  await page.mouse.up();
+  const byMouse = await scrolledTo();
+  check('the_list_drags_with_a_mouse', room > 100 && byMouse > 60 && scrolling.marked === 1 && scrolling.ghosts === 0 && scrolling.lit === 0 && yaml() === fileThen, { room, byMouse, scrolling });
+  await until('the marker gone', () => page.locator('.scroll-marker.on').count(), (n) => n === 0, 4000);
+  await shelf.evaluate((el) => { el.scrollTop = 0; });
+  const fingers = await context.newCDPSession(page);
+  await fingers.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const touch = (type, points) => fingers.send('Input.dispatchTouchEvent', { type, touchPoints: points });
+  await touch('touchStart', [{ x: middle, y: rest.y + rest.height - 30 }]);
+  for (let step = 1; step <= 6; step++) await touch('touchMove', [{ x: middle, y: rest.y + rest.height - 30 - step * 20 }]);
+  await touch('touchEnd', []);
+  const byFinger = await scrolledTo();
+  check('the_list_drags_with_a_finger', byFinger > 60 && yaml() === fileThen, byFinger);
+  await row(loraB).scrollIntoViewIfNeeded();
+  const lifted = await row(loraB).boundingBox();
+  const onto = await cardRect('hand');
+  const [from, to] = [{ x: lifted.x + lifted.width / 2, y: lifted.y + lifted.height / 2 }, { x: onto.x + onto.width / 2, y: onto.y + onto.height / 2 }];
+  await touch('touchStart', [from]);
+  for (let step = 1; step <= 3; step++) await touch('touchMove', [{ x: from.x + step * 5, y: from.y }]);
+  for (let step = 1; step <= 10; step++) await touch('touchMove', [{ x: from.x + 15 + ((to.x - from.x - 15) * step) / 10, y: from.y + ((to.y - from.y) * step) / 10 }]);
+  await touch('touchEnd', []);
+  await fingers.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await fingers.detach();
+  const byHand = await until('the LoRA a finger carried', () => Promise.resolve(yaml().split('hand:')[1]?.split('flowed:')[0] ?? ''), (text) => text.includes(loraB.model)).then(() => true, (why) => String(why));
+  check('a_finger_carries_one_sideways', byHand === true, yaml());
+  // As it was, for what follows.
+  await box('hand').locator(`[aria-label="Take ${word(loraB)} off hand"]`).click();
+  await until('hand as it was', () => chips('hand').count(), (n) => n === 2);
+
+  // A checkpoint runs alone: let go on open canvas it's a box of the tool that runs it, on it unless it's that tool's own, as a base model is. A LoRA
+  // there makes nothing.
+  const runner = (model) => tools.find((tool) => tool.model.family === model.family && tool.model.default?.split('@')[0] === model.model) ?? tools.find((tool) => tool.model.family === model.family);
+  const ownOf = (model) => runner(model).model.default?.split('@')[0] === model.model;
+  const own = fines(mine.model.family).find(ownOf);
+  const swapped = fines(mine.model.family).find((model) => !ownOf(model));
+  const dropped = async (model) => {
+    const before = (await state()).assets.map((asset) => asset.name);
+    await row(model).scrollIntoViewIfNeeded();
+    await carryTo(page, row(model), await openCanvas(page));
+    const made = await until(`a box of ${model.model}`, async () => (await state()).assets.find((asset) => !before.includes(asset.name)), Boolean, 5000).catch(() => null);
+    if (made) {
+      await closeBox(page);
+      await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
+      await until('it gone', () => box(made.name).count(), (n) => n === 0);
+    }
+    return made && { tool: made.tool, models: made.fields?.models ?? null };
+  };
+  if (swapped) {
+    const ofFine = await dropped(swapped);
+    check('a_checkpoint_on_open_canvas_is_a_box_of_it', ofFine?.tool === runner(swapped).id && ofFine.models?.[runner(swapped).model.slot]?.ref === swapped.model, ofFine);
+  }
+  if (own) {
+    const ofBase = await dropped(own);
+    check('a_base_model_on_open_canvas_is_its_tool', ofBase?.tool === runner(own).id && !ofBase.models, ofBase);
+  }
+  check('a_lora_on_open_canvas_makes_nothing', (await dropped(loraA)) === null);
 
   // Chips follow.
   const list = (name) => box(name).locator('.add-ons');
@@ -317,6 +398,7 @@ assets:
   await page.reload();
   await chips('shot').first().waitFor();
   check('reloaded', (await chips('shot').count()) === 2, await chips('shot').allInnerTexts());
+
   // Where there's a machine: a render passes both on its function's call, and the machine says what it applied. A shared machine goes first to what's already on it: this
   // waits for it to be idle, and gives way if anyone else asks for it. It cancels no run but its own.
   if (process.env.RENDER) {
