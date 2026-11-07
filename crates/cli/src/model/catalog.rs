@@ -137,7 +137,13 @@ fn family(view: &ModelDetail) -> String {
 fn said(view: &ModelDetail, repo: &Repo) -> Record {
     let mut record = Record::new().field("model", &view.model).field("family", &family(view));
     if let Some(kind) = view.kind {
-        record = record.field("kind", if kind == protocol::hub::ModelKind::Lora { "LoRA" } else { "weights" });
+        use protocol::hub::ModelKind;
+        let kind = match kind {
+            ModelKind::Lora => "LoRA",
+            ModelKind::Weights => "a model's weights",
+            ModelKind::Component => "a component (no family's model)",
+        };
+        record = record.field("kind", kind);
     }
     if !view.tags.is_empty() {
         record = record.field("tags", &view.tags.join(", "));

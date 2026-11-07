@@ -131,7 +131,7 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
     for (row, facts) in models.iter_mut().zip(facts) {
         let weights = facts.as_ref().and_then(|facts| facts.family.as_deref());
         (row.family, row.family_from) = family(row.family.take(), weights);
-        row.kind = facts.map(|facts| if facts.lora { ModelKind::Lora } else { ModelKind::Weights });
+        row.kind = facts.as_ref().map(ModelKind::of);
     }
 }
 

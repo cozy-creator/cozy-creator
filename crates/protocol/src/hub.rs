@@ -234,8 +234,21 @@ pub enum FamilyFrom {
 pub enum ModelKind {
     /// Only a LoRA's factors: it goes on a model.
     Lora,
-    /// Weights of its own: it stands in for a model.
+    /// A model's weights, its header verified as a family's: it stands in for a model.
     Weights,
+    /// Weights no family's model is (a text encoder, a VLM, a VAE, an upsampler, a layout no table reads): a part, never a box's model.
+    Component,
+}
+
+impl ModelKind {
+    /// What a header says it is: a LoRA, else a family's model, else a component.
+    pub fn of(facts: &tensorfs::family::Facts) -> ModelKind {
+        match (facts.lora, &facts.family) {
+            (true, _) => ModelKind::Lora,
+            (false, Some(_)) => ModelKind::Weights,
+            (false, None) => ModelKind::Component,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

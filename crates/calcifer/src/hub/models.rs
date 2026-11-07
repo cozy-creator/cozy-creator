@@ -209,7 +209,7 @@ async fn detail(api: &Api, hub: &Origin, repo: &Repo, release: Option<String>) -
         family,
         family_from,
         weights_family: facts.as_ref().and_then(|f| f.family.clone()),
-        kind: facts.map(|f| if f.lora { ModelKind::Lora } else { ModelKind::Weights }),
+        kind: facts.as_ref().map(ModelKind::of),
         created_at: card.model.created_at,
         source: card.model.source.filter(|s| !s.is_empty()),
         author: card.model.author.map(author),

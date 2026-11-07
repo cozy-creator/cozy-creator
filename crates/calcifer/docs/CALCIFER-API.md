@@ -364,7 +364,8 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   and tags, and exactly `org/name` is that model. `tag=` and `no_tag=` (comma-separated) keep models with
   every one, and with none (`no_tag=nsfw` leaves out models that make sexual or nude images). Each says
   what its header says, read once from the Hub and fetching no weights: `kind` is `lora` (only a LoRA's
-  factors) or `weights` (its own), absent if it couldn't be read. Its `family` is its owner's label, else
+  factors), `weights` (a model's: its header verifies as a family) or `component` (weights no family's
+  model is: a text encoder, a VAE, an upsampler), absent if it couldn't be read. Its `family` is its owner's label, else
   what its header verifies as; `family_from` says which (`owner`, or `weights` when its header verifies
   as it). `family=` lists every model the Hub labels so, page by page (`limit` of them), and the newest
   100 whose header alone says it.
