@@ -10,9 +10,9 @@
 // Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawn } = require('child_process');
-const { existsSync, readFileSync, rmSync, writeFileSync } = require('fs');
+const { rmSync } = require('fs');
 const { join } = require('path');
-const { calcifer, carry, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, openBox, renderOf, until } = require('./page');
+const { PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, importYaml, lastLook, lookAt, openBox, renderOf, until, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -28,21 +28,19 @@ const FIRST_RUN_MS = 300_000;
 /** What it made besides its own project: forgotten however it ends, or the next cell's page lands on one that can't be read. */
 let forgetMade = async () => {};
 
-/** Another writer, as fast as a process can be: the moment the file says `argv[2]`, it says `argv[3]` instead. */
+/** Another writer of project.db (argv 1), as fast as a process can be: the moment box argv 2's field argv 3 is argv 4, it's argv 5 instead. */
 const OUTSIDE = `
-const { readFileSync, renameSync, writeFileSync, writeSync } = require('fs');
-const [, at, written, instead] = process.argv;
-writeSync(1, 'watching');
-for (const end = Date.now() + 10000; Date.now() < end;) {
-  try {
-    const text = readFileSync(at, 'utf8');
-    if (text.includes(written)) {
-      writeFileSync(at + '.outside', text.replace(written, instead));
-      renameSync(at + '.outside', at);
-      break;
-    }
-  } catch {}
-}`;
+import json, sqlite3, sys, time
+at, box, field, written, instead = sys.argv[1:]
+db = sqlite3.connect(at, isolation_level=None, timeout=30)
+print('watching', flush=True)
+end = time.monotonic() + 10
+while time.monotonic() < end:
+    row = db.execute('SELECT value FROM fields WHERE box = ? AND field = ?', (box, field)).fetchone()
+    if row and json.loads(row[0]) == written:
+        db.execute('UPDATE fields SET value = ? WHERE box = ? AND field = ?', (json.dumps(instead), box, field))
+        break
+`;
 
 /** A stand-in for a slow network: each call `match` names waits here until `release`. */
 async function hold(page, method, path) {
@@ -98,8 +96,11 @@ async function loseAnswers(page, method, path, times) {
   }, [path, init]);
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
-  const yaml = () => readFileSync(join(folder, 'project.yaml'), 'utf8');
-  const canvas = () => (existsSync(join(folder, 'project.canvas.yaml')) ? readFileSync(join(folder, 'project.canvas.yaml'), 'utf8') : '');
+  // The project as `cozy project export` writes it, and its canvas as Calcifer answers it (cl-803: both are project.db's), asked from here: what
+  // the page reads is counted.
+  const yaml = () => yamlOf(folder);
+  const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
+  const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}` } })).json()).cards ?? {};
   const cozy = (...words) => execFileSync(COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const status = () => JSON.parse(cozy('--json', 'project', '-p', folder, 'status')).assets;
   const hasAsset = (name) => new RegExp(`^  ${name}:`, 'm').test(yaml());
@@ -144,12 +145,12 @@ async function loseAnswers(page, method, path, times) {
   await page.mouse.up();
   const place = () => box(name).evaluate((card) => getComputedStyle(card.closest('.react-flow__node')).transform);
   const moved = await place();
-  check('nothing_saved_yet', !hasAsset(name) && !canvas().includes(`${name}:`));
+  check('nothing_saved_yet', !hasAsset(name) && !(name in (await cards())));
   check('no_spinner_on_it', (await box(name).locator('.status').count()) === 0, await box(name).innerText());
   reads.length = 0;
   await posts.release();
-  await until('it landed', () => Promise.resolve(hasAsset(name) && canvas().includes(`${name}:`)), Boolean);
-  await until('its move landed', () => Promise.resolve(/x: (\d+)/.exec(canvas().split('\n').find((line) => line.includes(`${name}:`)))?.[1]), (x) => Number(x) > 0);
+  await until('it landed', async () => hasAsset(name) && name in (await cards()), Boolean);
+  await until('its move landed', async () => (await cards())[name]?.x, (x) => Number(x) > 0);
   await page.waitForTimeout(800);
   check('own_echo_moves_nothing', (await place()) === moved, { moved, now: await place() });
   check('own_echo_reads_no_whole_project', !reads.some((read) => read === '/' || read === '/canvas'), reads);
@@ -226,8 +227,8 @@ async function loseAnswers(page, method, path, times) {
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
   await closeBox(page);
 
-  // Another writer in the moment a write is flushing, its file renamed in and the fsync still going: the answer is for the write's own lines. Told the other's as its own, the page writes over them with no conflict.
-  const outside = spawn(process.execPath, ['-e', OUTSIDE, join(folder, 'project.yaml'), 'text: ours', 'text: outside'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  // Another program writing project.db the moment a write commits: the answer is for the write's own fields. Told the other's as its own, the page writes over them with no conflict.
+  const outside = spawn(PYTHON, ['-c', OUTSIDE, join(folder, 'project.db'), 'words', 'text', 'ours', 'outside'], { stdio: ['ignore', 'pipe', 'ignore'] });
   const landed = new Promise((ended) => outside.once('exit', ended));
   await new Promise((watching) => outside.stdout.once('data', watching));
   const wrote = await api(`/v1/projects/${id}/assets/words`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: 'ours' } }) });
@@ -253,7 +254,12 @@ async function loseAnswers(page, method, path, times) {
 
   // A render whose answer is lost: the box says Queued at once, and however often it's asked, one run.
   if ((await api('/v1/status')).body.local_usable && !process.env.ALONE) {
-    writeFileSync(join(folder, 'project.yaml'), `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
+    // Named before it's run, it's read by PyPI's Runtime, which knows no tool: the install a run makes on this machine's Runtime takes its place, as
+    // tools.js primes its fixture, and the page knows it makes pictures.
+    const stillRuns = async () => (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
+    execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
+    const primed = (await stillRuns()).length;
+    importYaml(folder, `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
     await box('fixture').waitFor();
     await page.waitForTimeout(500);
     await openBox(page, 'fixture');
@@ -269,9 +275,9 @@ async function loseAnswers(page, method, path, times) {
     await renders.done();
     await page.waitForTimeout(1500);
     const held = status().find((asset) => asset.name === 'fixture');
-    const runs = (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
+    const runs = (await stillRuns()).length - primed;
     check('render_key_one', renders.keys.length >= 2 && new Set(renders.keys).size === 1, renders.keys);
-    check('render_ran_once', held.versions === 1 && runs.length === 1, { versions: held.versions, runs: runs.length });
+    check('render_ran_once', held.versions === 1 && runs === 1, { versions: held.versions, runs });
     // Render keeps the box open: shut, as what follows begins at rest.
     await closeBox(page);
   }
@@ -287,7 +293,13 @@ async function loseAnswers(page, method, path, times) {
       rmSync(project.path, { recursive: true, force: true });
     }
   };
-  writeFileSync(join(old.path, 'project.lock'), JSON.stringify({ format: 2 }));
+  // One a newer cozy has written, its schema one this cozy doesn't read, as after a downgrade. Calcifer reads a schema as it opens a project, so
+  // it's opened again by a Calcifer that starts after: on a shared computer, with no restart, that half isn't asked.
+  const unreadable = Boolean(process.env.RESTART);
+  if (unreadable) {
+    execFileSync(PYTHON, ['-c', 'import sqlite3, sys; sqlite3.connect(sys.argv[1], isolation_level=None).execute("PRAGMA user_version = 99")', join(old.path, 'project.db')]);
+    await new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
+  }
   await page.reload();
   await page.waitForSelector('.ptabs .ptab.on');
   await box(name).waitFor();
@@ -309,16 +321,18 @@ async function loseAnswers(page, method, path, times) {
   check('back_shows_its_boxes_at_once', true);
   await page.waitForTimeout(300);
   check('each_project_keeps_its_view', (await view()) === kept, { kept, now: await view() });
-  await tab(old).click();
-  const unread = page.locator('.unread');
-  await unread.waitFor();
-  check('what_cant_be_read_says_why', /format 2/.test(await unread.innerText()) && /git or a backup/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
-  await until('the tools still there', () => row('Edit').count(), (n) => n === 1);
-  await carry(page, row('Edit'), { x: 1200, y: 300 });
-  await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
-  check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
-  await page.getByTitle(folder, { exact: true }).click();
-  await box(name).waitFor();
+  if (unreadable) {
+    await tab(old).click();
+    const unread = page.locator('.unread');
+    await unread.waitFor();
+    check('what_cant_be_read_says_why', /schema 99/.test(await unread.innerText()) && /cozy update/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
+    await until('the tools still there', () => row('Edit').count(), (n) => n === 1);
+    await carry(page, row('Edit'), { x: 1200, y: 300 });
+    await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
+    check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
+    await page.getByTitle(folder, { exact: true }).click();
+    await box(name).waitFor();
+  }
   await forgetMade();
 
   check('no_page_errors', errors.length === 0, errors);
