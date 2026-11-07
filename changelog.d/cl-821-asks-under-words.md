@@ -1,0 +1,1 @@
+Web: Render on an image tool's box (Qwen Image 2's among them) on a computer with no GPU says what it asks first under the box's words again ("Render here" or "Rent a GPU"), as it does "Waits for a machine": the box turns to its new take only once the render is sent.
