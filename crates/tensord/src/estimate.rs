@@ -115,13 +115,13 @@ impl<'a> Here<'a> {
     /// manifest's digest (`sha256:<hex>`, a run's `local:sha256:<hex>`), as the alias its install takes; a release by its
     /// package, and its release when one is named; an installation by its alias.
     fn installation<'i>(&self, installations: &'i [Installation], code: &str, release: &str) -> Option<&'i Installation> {
-        let newest = |held: &dyn Fn(&Installation) -> bool| installations.iter().rev().find(|i| held(i));
+        let find = |held: &dyn Fn(&Installation) -> bool| installations.iter().rev().find(|i| held(i));
         let digest = code.strip_prefix("local:").unwrap_or(code);
         if digest.starts_with("sha256:") {
             let alias = crate::local_source::alias(&*self.service.publisher()?, digest);
-            return newest(&|i| i.alias == alias);
+            return find(&|i| i.alias == alias);
         }
-        newest(&|i| i.alias == code || (i.package == code && (release.is_empty() || i.release == release)))
+        find(&|i| i.alias == code || (i.package == code && (release.is_empty() || i.release == release)))
     }
 
     /// What `entrypoint` of `installation` takes here at `gpus` asked: its widths, and the package its runs are timed under,
