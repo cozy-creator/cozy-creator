@@ -266,6 +266,7 @@ case $SHARD in
   projectdb) parts="projectdb logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
+  projectdb-web) parts="db_existing_web logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"

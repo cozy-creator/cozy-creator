@@ -302,7 +302,7 @@ function yamlOf(folder) {
 function importYaml(folder, text) {
   const at = `${folder}.import-${process.pid}-${Date.now()}.yaml`;
   writeFileSync(at, text);
-  execFileSync(process.env.COZY, ['project', '-p', folder, 'import', at], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  execFileSync(process.env.COZY, ['project', '-p', folder, 'import', at], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 /** Rows of `folder`'s project.db for `query`, read only, each an array. */

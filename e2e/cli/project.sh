@@ -568,6 +568,8 @@ assets:
 YAML
 printf '%s\n' "$was_lock" > "$V/project.lock"
 cp "$V/project.yaml" "$OUT/upgrade-v2.yaml"; cp "$V/project.lock" "$OUT/upgrade-v2.lock"
+# What its first open says, once, is on the open's answer: the CLI prints it.
+cozy project -p "$V" status > "$OUT/upgraded.txt" 2>&1 || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.txt")"
 cozy --json --full project -p "$V" status > "$OUT/upgraded-status.json" 2> "$OUT/upgraded.err" || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.err")"
 cmp -s "$V/project.yaml.v2" "$OUT/upgrade-v2.yaml" && cmp -s "$V/project.lock.v2" "$OUT/upgrade-v2.lock" || check "upgrade: the old files aren't kept beside the new"
 { [ -f "$V/project.db" ] && [ ! -e "$V/project.yaml" ] && [ ! -e "$V/project.lock" ] && [ -f "$V/project.yaml.v3" ]; } || check "upgrade: 2 to 3 to 4, into project.db: $(ls -A "$V" | tr '\n' ' ')"
@@ -580,8 +582,8 @@ J '.assets[] | select(.name == "hero_old") | .fields.description == "The hero of
 J '.assets[] | select(.name == "poster") | .versions == 1 and .fields.instructions == "After an edit, with <table_1> and <coast.1>."' "$OUT/upgraded-status.json" || check "upgrade: poster: $(row "$V" poster .)"
 { grep -q 'cozy/edit' "$OUT/upgraded.yaml" && grep -q '<hero_old>' "$OUT/upgraded.yaml" && ! grep -qE '^ *(kind|with|render|pieces|writes):|^entities|^defaults' "$OUT/upgraded.yaml"; } || check "upgrade: what it says: $(cat "$OUT/upgraded.yaml")"
 J '.assets[] | select(.name == "frame_1") | (.pinned | not) and .approved == null and .versions == 1 and .tool == "cozy/frame" and .fields.video == "<take>" and .fields.at == 5.5' "$OUT/upgraded-status.json" || check "upgrade: a frame a beat wrote isn't a frame of its shot, unapproved: $(row "$V" frame_1 .)"
-J '[.warnings[].message | select(contains("poster mentions <coast.1>"))] | length == 1' "$OUT/upgraded-status.json" || check "upgrade: a mention of nothing wasn't said: $(jq -c '[.warnings[].message]' "$OUT/upgraded-status.json")"
-J '([.warnings[].message | select(contains("hero, hero_old are now a picture reference like any other"))] | length == 1) and ([.warnings[].message | select(contains("hero.old is hero_old"))] | length == 1)' "$OUT/upgraded-status.json" || check "upgrade: what format 4 reads another way wasn't said once: $(jq -c '[.warnings[].message]' "$OUT/upgraded-status.json")"
+[ "$(grep -c 'poster mentions <coast.1>' "$OUT/upgraded.txt")" = 1 ] || check "upgrade: a mention of nothing wasn't said: $(cat "$OUT/upgraded.txt")"
+{ [ "$(grep -c 'hero, hero_old are now a picture reference like any other' "$OUT/upgraded.txt")" = 1 ] && [ "$(grep -c 'hero.old is hero_old' "$OUT/upgraded.txt")" = 1 ]; } || check "upgrade: what format 4 reads another way wasn't said once: $(cat "$OUT/upgraded.txt")"
 cozy project -p "$V" status > /dev/null 2>&1 || check "upgrade: opened again"
 [ ! -e "$V/project.yaml" ] || check "upgrade: a second open left a project.yaml"
 
@@ -605,6 +607,8 @@ assets:
     soundscape: Quiet.
     beats: [{duration: 5, description: It stops.}]
 YAML
+# What its first open says, once, is on the open's answer: the CLI prints it.
+cozy project -p "$W" status > "$OUT/upgraded-defaults.txt" 2>&1 || check "upgrade: defaults: $(tail -c 300 "$OUT/upgraded-defaults.txt")"
 status "$W" > "$OUT/upgraded-defaults-status.json" || check "upgrade: defaults: $(tail -c 300 "$OUT/status.err")"
 of() { jq -c --arg n "$1" '.assets[] | select(.name == $n) | .fields' "$OUT/upgraded-defaults-status.json"; }
 J '.text == "Plain"' <<< "$(of style)" || check "upgrade: style: $(of style)"
@@ -615,7 +619,7 @@ J '.instructions == "Style: <style>.\n\nA dog." and .aspect_ratio == "3:2"' <<< 
 J '.summary == "<video_style>\n<clear> walks." and .soundscape == "<soundscape>" and (has("music") | not) and (has("style") | not) and .aspect_ratio == "16:9"' <<< "$(of shot)" || check "upgrade: shot: $(of shot)"
 J '.summary == "<video_style>" and .soundscape == "Quiet."' <<< "$(of plain_shot)" || check "upgrade: a shot with no summary: $(of plain_shot)"
 ! grep -q '^defaults' <(cozy project -p "$W" export) || check "upgrade: defaults stayed: $(cozy project -p "$W" export)"
-J '[.warnings[].message | select(contains("H3 shots now carry the style in their summary"))] | length == 1' "$OUT/upgraded-defaults-status.json" || check "upgrade: the move wasn't said once: $(jq -c '[.warnings[].message]' "$OUT/upgraded-defaults-status.json")"
+[ "$(grep -c 'H3 shots now carry the style in their summary' "$OUT/upgraded-defaults.txt")" = 1 ] || check "upgrade: the move wasn't said once: $(cat "$OUT/upgraded-defaults.txt")"
 
 step "a project: a format 2 folder opened: names that fold to one are said, by name, and nothing is written"
 local N=$OUT/upgrade-names

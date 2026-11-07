@@ -17,7 +17,7 @@ const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml } = require('./page');
+const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};

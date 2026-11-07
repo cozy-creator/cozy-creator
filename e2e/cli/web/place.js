@@ -34,9 +34,9 @@ const FIELD = { png: 'image', jpg: 'image', mp4: 'video', wav: 'audio' };
 const constants = (folder) => {
   const found = {};
   const files = readdirSync(folder).includes('files') ? readdirSync(join(folder, 'files')) : [];
-  for (const line of yaml(folder).split('\n')) {
-    const m = line.match(/^\s+(\S+):\s*\{approved:\s*"?(\w+)"?\}/);
-    if (m) found[m[1]] = { field: FIELD[files.find((name) => name.startsWith(m[2]))?.split('.').pop()], hash: m[2] };
+  // A box that only approves a file, as the export writes it.
+  for (const m of yaml(folder).matchAll(/^ {2}(\S+):\n {4}approved:\s*"?(\w+)"?\n(?! {4})/gm)) {
+    found[m[1]] = { field: FIELD[files.find((name) => name.startsWith(m[2]))?.split('.').pop()], hash: m[2] };
   }
   return found;
 };
