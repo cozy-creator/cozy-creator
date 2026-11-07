@@ -267,13 +267,14 @@ fn push(changes: &mut Vec<Change>, next: Change) {
 /// What changed between two writings of the project, box by box.
 pub(super) fn diffed(before: &Written, after: &Written) -> Vec<Change> {
     let mut keys: Vec<String> = before.boxes.iter().chain(&after.boxes).map(|held| name_key(&held.name)).collect();
-    keys.dedup();
     let mut seen = std::collections::HashSet::new();
     keys.retain(|key| seen.insert(key.clone()));
+    // A box gone remembers where it was, so a step back puts it there.
+    let placed = |written: &Written, key: &str| written.find(key).map(|at| Boxed { at: Some(at), ..written.boxes[at].clone() });
     keys.into_iter()
         .filter_map(|key| match (before.get(&key), after.get(&key)) {
-            (None, Some(now)) => Some(Change::Asset { name: now.name.clone(), before: None, after: Some(now.clone()) }),
-            (Some(was), None) => Some(Change::Asset { name: was.name.clone(), before: Some(was.clone()), after: None }),
+            (None, Some(now)) => Some(Change::Asset { name: now.name.clone(), before: None, after: placed(after, &key) }),
+            (Some(was), None) => Some(Change::Asset { name: was.name.clone(), before: placed(before, &key), after: None }),
             (Some(was), Some(now)) if was == now => None,
             (Some(was), Some(now)) if was.name != now.name => Some(Change::Asset { name: now.name.clone(), before: Some(was.clone()), after: Some(now.clone()) }),
             (Some(was), Some(now)) => {
@@ -518,7 +519,7 @@ pub(super) fn imported(dir: &FsPath) -> Vec<db::OpRow> {
         let lines = lines.as_str()?;
         let written = Written::from_yaml(&format!("version: 4\n{lines}")).ok()?;
         let held = written.boxes.into_iter().next()?;
-        Some(Boxed { name: if held.name.is_empty() { name.to_owned() } else { held.name }, fields: held.fields })
+        Some(Boxed { name: if held.name.is_empty() { name.to_owned() } else { held.name }, fields: held.fields, at: None })
     };
     let entries = kept.entries.into_iter().filter_map(|mut entry| {
         for change in entry.get_mut("changes")?.as_array_mut()? {
@@ -773,7 +774,7 @@ fn wanted<T>(way: Way, before: T, after: T) -> T {
 }
 
 fn same_fields(a: &Boxed, b: &Boxed) -> bool {
-    a == b || super::format::canonical(&Value::Object(a.map())) == super::format::canonical(&Value::Object(b.map()))
+    (a.name == b.name && a.fields == b.fields) || super::format::canonical(&Value::Object(a.map())) == super::format::canonical(&Value::Object(b.map()))
 }
 
 fn took(lock: &Lock, name: &str, number: u32) -> Took {

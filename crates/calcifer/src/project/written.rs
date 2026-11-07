@@ -34,6 +34,9 @@ pub struct Written {
 pub struct Boxed {
     pub name: String,
     pub fields: Vec<(String, Value)>,
+    /// Where it was in the list, for one taken out: a put back goes there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<usize>,
 }
 
 fn unknown(name: &str) -> Error {
@@ -131,7 +134,7 @@ impl Written {
                     Value::Object(fields) => ordered(fields, &keys_at(text, &[SECTION, name]).unwrap_or_default()),
                     _ => vec![],
                 };
-                Some(Boxed { name: name.clone(), fields })
+                Some(Boxed { name: name.clone(), fields, at: None })
             })
             .collect();
         Ok(Self { head, boxes })
@@ -217,13 +220,13 @@ impl Written {
             true => (TEXT.to_owned(), json!("")),
             false => (TOOL.to_owned(), json!(tool)),
         };
-        self.push(Boxed { name: name.to_owned(), fields: vec![first] })?;
+        self.push(Boxed { name: name.to_owned(), fields: vec![first], at: None })?;
         self.set(name, fields)
     }
 
     /// A box holding one file: a name and the file it approves.
     pub fn constant(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
-        self.push(Boxed { name: name.to_owned(), fields: vec![("approved".to_owned(), json!(prefix_of(sha256)))] })
+        self.push(Boxed { name: name.to_owned(), fields: vec![("approved".to_owned(), json!(prefix_of(sha256)))], at: None })
     }
 
     fn push(&mut self, held: Boxed) -> Result<(), Error> {
@@ -255,15 +258,20 @@ impl Written {
         Ok(())
     }
 
-    /// Box `name` gone, and what puts it back.
+    /// Box `name` gone, and what puts it back where it was.
     pub fn removed(&mut self, name: &str) -> Result<Boxed, Error> {
         let at = self.find(name).ok_or_else(|| unknown(name))?;
-        Ok(self.boxes.remove(at))
+        Ok(Boxed { at: Some(at), ..self.boxes.remove(at) })
     }
 
-    /// What `removed` took, back at the end under the name it had.
-    pub fn restored(&mut self, back: Boxed) -> Result<(), Error> {
-        self.push(back)
+    /// What `removed` took, back where it was, else at the end, under the name it had.
+    pub fn restored(&mut self, mut back: Boxed) -> Result<(), Error> {
+        if self.find(&back.name).is_some() {
+            return Err(Error::new(Kind::Conflict, "asset_exists", format!("the project has a {} already", back.name)));
+        }
+        let at = back.at.take().unwrap_or(self.boxes.len()).min(self.boxes.len());
+        self.boxes.insert(at, back);
+        Ok(())
     }
 
     /// Box `name`'s fields what they were once, where it is.

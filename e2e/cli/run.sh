@@ -18,6 +18,7 @@ parse "$@"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
 . "$(dirname "$0")/agent.sh"
+. "$(dirname "$0")/projectdb.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
@@ -26,8 +27,6 @@ step status; cozy --json status | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 [ "$SHARD" != commands ] || version_skew
 step candidates; candidates
-# What `install`'s release made, for what reads it from here on.
-! grep -q '^version: 2' "$OUT/project/project.yaml" || cozy project -p "$OUT/project" upgrade > "$OUT/upgrade.txt" 2>&1 || check "a release's project didn't upgrade: $(tail -c 300 "$OUT/upgrade.txt")"
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
 
@@ -263,6 +262,9 @@ case $SHARD in
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="web_serves logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left machines completions calcifer_faults calcifer_restarts logs" ;;
+  # project.db (cl-803) alone, and its latency against the cozy before it.
+  projectdb) parts="projectdb logs" ;;
+  projectdb-latency) parts="db_latency logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"

@@ -156,7 +156,7 @@ pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     let mut rows = conn.prepare("SELECT key, name, ord FROM boxes").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).map_err(e)? {
         let (key, name, ord) = row.map_err(e)?;
-        boxes.insert(key, (ord, Boxed { name, fields: vec![] }));
+        boxes.insert(key, (ord, Boxed { name, fields: vec![], at: None }));
     }
     let mut rows = conn.prepare("SELECT box, field, value FROM fields ORDER BY box, ord").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(e)? {

@@ -12,7 +12,7 @@ RUN_CLI=${RUN_CLI:-cozy}
 
 # run_project <dir>: <dir> made a project unless it is one, for this script's runs wherever the script goes.
 run_project() {
-  [ -f "$1/project.yaml" ] || "$RUN_CLI" project new "$1" > /dev/null || return 1
+  [ -f "$1/project.db" ] || [ -f "$1/project.yaml" ] || "$RUN_CLI" project new "$1" > /dev/null || return 1
   RUN_PROJECT=$(cd "$1" && pwd)
 }
 

@@ -217,7 +217,7 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; a fu
 test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"
 
 ["project import"]
-test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs"
+test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs; projectdb: a .yaml read back as the project"
 "--description" = "pr: web-live: a file lifted out as its own asset, with its words"
 "--into" = "pr: projects: a file joins a box as its next version, and makes no asset of its own"
 
@@ -237,12 +237,12 @@ test = "pr: by the CLI: the line delete printed, run as printed, its takes kept;
 "--version" = "pr: discards: a discarded take back in its place, as delete printed it"
 "--approved" = "pr: discards: the approved take back with its approval, as delete printed it"
 
-["project upgrade"]
-test = "pr: projects: format 2 to format 3, nothing out of date and nothing run"
-"--status" = "pr: projects: what the older cozy said, its measurements and fields kept"
+["project export"]
+test = "pr: projectdb: the project as YAML, read back by import unchanged; an edited one imports as one entry"
+"-o" = "pr: projectdb: roundtrip: written to a file"
 
 ["project approve"]
-test = "pr: projects: one line of project.yaml, comments surviving, an edit just before it surviving"
+test = "pr: projects: its approved set, an edit just before it surviving"
 
 ["project unapprove"]
 test = "pr: projects: gives the file back, restoring an input the pin was over"
