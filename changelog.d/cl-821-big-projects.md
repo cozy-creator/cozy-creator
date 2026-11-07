@@ -1,0 +1,1 @@
+Projects of thousands of boxes: a write takes milliseconds (a 5,000-box project held each one for 4.4 s), `cozy project import` and the first open of a folder from before take seconds (were over 3 minutes), and a delete reads only its box.
