@@ -16,6 +16,7 @@ use platform::{durable, paths::Home};
 use protocol::{
     calcifer::On,
     error::{Error, Kind},
+    project::Unheld,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
@@ -1676,22 +1677,37 @@ impl Folder {
 
     /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, their bytes, and how many
     /// of them nothing has a record of. With `delete` those on record go, from disk and from the table: what `reclaim --yes` frees. One with no
-    /// record may be all that's left of a take, so it's said and it stays.
-    pub fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64), Error> {
+    /// record may be all that's left of a take, so it's said and it stays. What a run left in `.runs/` goes only if what stays in `files/`
+    /// holds every byte of it, by sha256: else it may be an output's only copy (one `files/` couldn't take, or a folder), and stays, unheld.
+    pub fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
         let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
+        // What stays in `files/`, by the sha256 its name says, which its bytes must say too before anything goes for it.
+        let mut held = BTreeMap::new();
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
-            let path = format!("{FILES}/{}", entry.file_name().to_string_lossy());
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = format!("{FILES}/{name}");
             let file = lock.files.values().find(|file| file.path == path);
-            if path.contains("/.") || file.is_some_and(|file| named.contains(&file.sha256)) || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            if path.contains("/.") || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
-            if !file.is_some_and(|file| recorded.contains(&file.sha256)) {
-                unrecorded += 1;
-                if delete {
-                    continue;
+            let hex = name.split('.').next().unwrap_or_default();
+            if hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                held.insert(format!("sha256:{hex}"), entry.path());
+            }
+            if file.is_some_and(|file| named.contains(&file.sha256)) {
+                continue;
+            }
+            match file.is_some_and(|file| recorded.contains(&file.sha256)) {
+                // Listed, and `delete` leaves it.
+                false => {
+                    unrecorded += 1;
+                    if delete {
+                        continue;
+                    }
                 }
+                true => drop(held.remove(&format!("sha256:{hex}"))),
             }
             bytes += entry.metadata().map_or(0, |meta| meta.len());
             files += 1;
@@ -1699,18 +1715,34 @@ impl Folder {
                 std::fs::remove_file(entry.path()).map_err(|e| io_at(&entry.path(), e))?;
             }
         }
-        // What runs left where they land: a folder they made, or a file still there.
-        let left = walked(&self.dir.join(RUNS));
-        files += left.0;
-        bytes += left.1;
+        let holds = |sha256: &Option<String>| sha256.as_ref().is_some_and(|sha256| held.get(sha256).is_some_and(|at| hash(at).is_ok_and(|bytes| bytes == *sha256)));
+        // What runs left where they land, each a file still there or a folder one made.
+        let mut unheld = vec![];
+        for entry in std::fs::read_dir(self.dir.join(RUNS)).into_iter().flatten().flatten() {
+            let (at, folder) = (entry.path(), entry.file_type().is_ok_and(|kind| kind.is_dir()));
+            let within = hashed(&at);
+            let length = within.iter().map(|(_, length)| length).sum();
+            if !within.iter().all(|(sha256, _)| holds(sha256)) {
+                let sha256 = within.into_iter().next().and_then(|(sha256, _)| sha256).filter(|_| !folder);
+                unheld.push(Unheld { path: format!("{RUNS}/{}", entry.file_name().to_string_lossy()), sha256, bytes: length });
+                continue;
+            }
+            files += within.len() as u64;
+            bytes += length;
+            if delete {
+                let gone = if folder { std::fs::remove_dir_all(&at) } else { std::fs::remove_file(&at) };
+                gone.map_err(|e| io_at(&at, e))?;
+            }
+        }
         if delete {
             self.update_lock(|lock| {
                 lock.files.retain(|sha256, _| named.contains(sha256));
                 lock.runs.retain(|row| named.contains(&row.sha256));
             })?;
-            let _ = std::fs::remove_dir_all(self.dir.join(RUNS));
+            // Gone once nothing is left in it.
+            let _ = std::fs::remove_dir(self.dir.join(RUNS));
         }
-        Ok((files, bytes, unrecorded))
+        Ok((files, bytes, unrecorded, unheld))
     }
 
     /// Bytes on disk of `sha256`, if here.
@@ -1823,24 +1855,16 @@ fn file_of(sha256: &str, source: &Path) -> String {
     format!("{FILES}/{}{ext}", hex_of(sha256))
 }
 
-/// How many files are under `dir`, and their bytes.
-fn walked(dir: &Path) -> (u64, u64) {
-    let (mut files, mut bytes) = (0, 0);
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        match entry.metadata() {
-            Ok(meta) if meta.is_dir() => {
-                let below = walked(&entry.path());
-                files += below.0;
-                bytes += below.1;
-            }
-            Ok(meta) => {
-                files += 1;
-                bytes += meta.len();
-            }
-            Err(_) => {}
-        }
+/// Each file at or under `path`, its sha256 and length. One that can't be read has no sha256.
+fn hashed(path: &Path) -> Vec<(Option<String>, u64)> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => match std::fs::read_dir(path) {
+            Ok(entries) => entries.flat_map(|entry| entry.map_or_else(|_| vec![(None, 0)], |entry| hashed(&entry.path()))).collect(),
+            Err(_) => vec![(None, 0)],
+        },
+        Ok(meta) => vec![(hash(path).ok(), meta.len())],
+        Err(_) => vec![(None, 0)],
     }
-    (files, bytes)
 }
 
 /// A file in `files/` is named for its bytes: read-only, so that writing to it fails rather than make its name a lie.

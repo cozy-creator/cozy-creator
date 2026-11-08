@@ -924,6 +924,20 @@ pub struct Reclaimed {
     /// Why `yes` would be refused: its lock was lost, so these files may be all that's left of its takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost: Option<String>,
+    /// What runs left in `.runs/` that `files/` doesn't hold by its bytes, which `yes` leaves: it may be an output's only copy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unheld: Vec<Unheld>,
+}
+
+/// A file or folder a run left in `.runs/`, where its run's record names it, with bytes `files/` doesn't hold.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Unheld {
+    /// From the project's folder: `.runs/<name>`.
+    pub path: String,
+    /// A file's; a folder has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    pub bytes: u64,
 }
 
 fn is_zero(n: &u64) -> bool {

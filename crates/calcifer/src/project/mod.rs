@@ -1630,7 +1630,7 @@ fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
 }
 
 /// `POST /v1/projects/{id}/reclaim`: what it would free, and with `yes` frees it: orphans' versions, and any file nothing else
-/// names. Refused while the project renders. Never automatic.
+/// names. What a run left in `.runs/` that `files/` doesn't hold stays, listed. Refused while the project renders. Never automatic.
 async fn reclaim(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -1685,12 +1685,12 @@ async fn reclaim(
             })
             .map_err(Refusal)?;
     }
-    let (files, bytes, unrecorded) = folder.sweep(&kept, &recorded, asked.yes).map_err(Refusal)?;
+    let (files, bytes, unrecorded, unheld) = folder.sweep(&kept, &recorded, asked.yes).map_err(Refusal)?;
     if asked.yes {
         canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
     }
     let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
-    Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost }))
+    Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost, unheld }))
 }
 
 /// Renames asset `from` to `to`, at once, whatever is going, and nothing else about it changes: project.lock's row and all it keeps, its pin and what is pending or owed of

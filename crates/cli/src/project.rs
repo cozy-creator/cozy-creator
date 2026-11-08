@@ -375,6 +375,14 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if reclaimed.unrecorded > 0 {
                 output::say(ctx, &format!("{} with no record here, which --yes leaves: they may be all that's left of a take", reclaimed.unrecorded));
             }
+            if !reclaimed.unheld.is_empty() {
+                let left = reclaimed.unheld.iter().map(|left| match &left.sha256 {
+                    Some(sha256) => format!("{} ({})", left.path, &sha256[..sha256.len().min(19)]),
+                    None => format!("{}/", left.path),
+                });
+                let said = format!("files/ doesn't hold what runs left here, so it stays: {}", left.collect::<Vec<_>>().join(", "));
+                output::say(ctx, &said);
+            }
             if let Some(lost) = &reclaimed.lost {
                 output::say(ctx, &format!("{lost}: --yes is refused"));
             }

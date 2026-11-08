@@ -354,6 +354,7 @@ text_assets
 memo
 pins
 project_runs
+reclaim_unheld
 path_free
 entities
 orphans
@@ -1261,6 +1262,42 @@ PY
   (cd "$R" && cozy --json run -p "$R" "$OUT/$name.py/echo" text=abc --on local) > "$OUT/named-$name.ndjson" 2> "$OUT/named-$name.err" || check "runs: $name.py: $(tail -c 300 "$OUT/named-$name.err")"
   tail -1 "$OUT/named-$name.ndjson" | J '.run.result.back == "cba"' || check "runs: $name.py did not answer: $(tail -1 "$OUT/named-$name.ndjson" | jq -c .run.reason)"
 done
+}
+
+# A run's output that files/ can't take (cl-826): it stands only in .runs/, where its run's record names it. reclaim --yes leaves it,
+# says so by its sha256, and the run still serves it.
+reclaim_unheld() {
+step "a project: reclaim --yes leaves an output files/ couldn't take"
+local U=$OUT/reclaim-unheld n digest left said
+cozy project new "$U" > /dev/null || check "unheld: project new"
+mkdir -p "$U/files" && chmod a-w "$U/files"
+if touch "$U/files/.writable" 2> /dev/null; then
+  echo "unheld: files/ takes writes here even read-only (root, or Windows): nothing makes it refuse"
+  rm -rf "$U"; return 0
+fi
+(cd "$U" && cozy --json run -p "$U" "$here/project/draw.py" instructions=unheld) > "$OUT/unheld.ndjson" 2>&1 || check "unheld: a run: $(tail -c 300 "$OUT/unheld.ndjson")"
+n=$(run_number "$OUT/unheld.ndjson")
+cozy --json run show "$n" --once > "$OUT/unheld-run.json" 2>&1 || true
+digest=$(jq -r '.output[0].sha256 // empty' "$OUT/unheld-run.json" 2> /dev/null || true)
+left=$(find "$U/.runs" -type f 2> /dev/null || true)
+{ [ -n "$digest" ] && [ "$(printf '%s\n' "$left" | grep -c .)" = 1 ] && [ "sha256:$(sha "$left")" = "$digest" ] && [ -z "$(ls -A "$U/files")" ]; } \
+  || check "unheld: files/ refused nothing, or the output isn't in .runs/: ${digest:-no digest}, $(ls -A "$U/files" "$U/.runs" 2>&1 | tr '\n' ' ')"
+J '[.warnings[]?.message] | any(contains("stands in .runs/"))' "$OUT/unheld-run.json" || check "unheld: no warning says where it stands: $(jq -c .warnings "$OUT/unheld-run.json" 2> /dev/null)"
+# files/ takes writes again, as once its owner fixes it: what a run left there before it could still be the only copy.
+chmod u+w "$U/files"
+cozy --json project -p "$U" reclaim > "$OUT/unheld-dry.json" 2>&1 || check "unheld: reclaim: $(tail -c 300 "$OUT/unheld-dry.json")"
+J --arg d "$digest" '(.unheld | length) == 1 and .unheld[0].sha256 == $d and (.unheld[0].path | startswith(".runs/")) and .files == 0' "$OUT/unheld-dry.json" \
+  || check "unheld: reclaim doesn't list it as unheld: $(head -c 300 "$OUT/unheld-dry.json")"
+cozy project -p "$U" reclaim --yes > "$OUT/unheld-reclaim.txt" 2>&1 || check "unheld: reclaim --yes: $(tail -c 300 "$OUT/unheld-reclaim.txt")"
+said=$(grep -F "files/ doesn't hold what runs left here, so it stays" "$OUT/unheld-reclaim.txt" || true)
+{ [ -n "$said" ] && grep -qF "${digest:0:19}" <<< "$said"; } || check "unheld: reclaim --yes doesn't say what stays: $(tail -c 300 "$OUT/unheld-reclaim.txt")"
+{ [ -f "$left" ] && [ "sha256:$(sha "$left")" = "$digest" ]; } || check "unheld: reclaim --yes deleted an output files/ doesn't hold: $(ls -A "$U" "$U/.runs" 2>&1 | tr '\n' ' ')"
+rm -rf "$OUT/unheld-out"
+cozy run show "$n" --once -o "$OUT/unheld-out" > "$OUT/unheld-show.txt" 2>&1 || true
+{ [ "$(find "$OUT/unheld-out" -type f 2> /dev/null | wc -l)" = 1 ] && [ "sha256:$(sha "$(find "$OUT/unheld-out" -type f)")" = "$digest" ]; } \
+  || check "unheld: after reclaim --yes its run can't give its output: $(tail -c 300 "$OUT/unheld-show.txt")"
+echo "unheld: run $n output ${digest:-none}; reclaim --yes left ${left#"$U"/} sha256:$(sha "$left" 2> /dev/null || true); said: ${said:-nothing}"
+rm -rf "$U"
 }
 
 # What a page sends, or any client on another computer: a project by its id, local code by content (its tree, as `protocol::code`
