@@ -1,7 +1,7 @@
 // Calcifer closes a project nothing reads (cl-823): twenty projects of 1,000 assets each, opened and closed in one Calcifer by the CLI and the page.
 // A project is open while a call on it, its stream, a page showing it or its render reads it, and the sign is its project.db: Calcifer has the
 // file open only then. Each closes once the CLI's call has answered, and once the page shows another; Calcifer's memory is back within a tenth of
-// where it was after a first project went the same way; a reopen is as quick as its first open; a render keeps its project open while it goes,
+// where it was after two projects went the same way; a reopen is as quick as its first open; a render keeps its project open while it goes,
 // waiting for its machine too, and it closes once that has landed.
 //   node closes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $ALONE: on a shared computer, so it runs nothing; $HOLDER:
@@ -33,7 +33,7 @@ const CLOSE_MS = 10_000;
 /** How long Calcifer is left alone before its memory is read: what a thread let go of, its allocator gives back. */
 const SETTLE_MS = 15_000;
 const BARS = {
-  // Back within a tenth of where it stood after one project, twenty projects later: what a project costs open goes when it closes. Without
+  // Back within a tenth of where it stood after two projects, twenty projects later: what a project costs open goes when it closes. Without
   // closing, twenty hold ~700 MB on top.
   memory_times_start: 1.1,
   // A reopen reads project.db as its first open did, the middle of twenty each, a runner's jitter aside.
@@ -194,66 +194,60 @@ function held(folder) {
   await page.goto(`${base}/#/runs`);
   await page.waitForTimeout(SETTLE_MS);
   memory.cold = memoryNow();
-  // One project through all of it first, as each of the twenty goes: what Calcifer takes on at its first use of all this, its code read in
-  // and its allocator's own, is no project's. Its memory from there is the start.
-  const warm = join(homedir(), '.cozy', 'projects', `web-closes-${stamp}-warm`);
-  folders.push(warm);
-  generated(warm);
-  ids.push((await status(warm)).state.id);
-  await closes(warm);
-  await status(warm);
-  await closes(warm);
-  await page.goto(`${base}/#/projects/${ids[0]}`);
-  await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
-  await page.waitForTimeout(1000);
-  memory.warm_shown = memoryNow();
-  await page.goto(`${base}/#/runs`);
-  await closes(warm);
-  await status(warm);
-  await closes(warm);
-  await page.waitForTimeout(SETTLE_MS);
-  memory.start = memoryNow();
-
   const notClosed = { cli: [], page: [] };
   const notHeld = [];
-  for (let i = 0; i < PROJECTS; i++) {
-    const folder = folders[i];
-    seen.looks = (seen.looks ?? 0) + 1;
-    generated(folder);
-    // Its first read imports it; the read after is its first open of project.db. Each closes once it has answered.
-    const imported = await status(folder);
-    ids.push(imported.state.id);
-    times.import_s.push(seconds(imported.ms));
-    const afterImport = await closes(folder);
-    const opened = await status(folder);
-    times.open_s.push(seconds(opened.ms));
-    const afterOpen = await closes(folder);
-    times.closed_ms.cli.push(afterImport, afterOpen);
-    if (afterImport === null || afterOpen === null) notClosed.cli.push(i);
-    // The page shows it, and asks nothing more of it: it's open while it does. The one it showed before closes.
-    await page.goto(`${base}/#/projects/${imported.state.id}`);
-    await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
-    await page.waitForTimeout(1000);
-    if (readable && !held(folder)) notHeld.push(i);
-    if (i === PROJECTS >> 1) memory.half = memoryNow();
-    if (i > 0) {
-      await reopened(i - 1);
-      // Each with one project shown, the one before closed: what it holds after each, which levels off or grows with them.
-      memory.trend.push(memoryNow()[process.platform === 'linux' ? 'anon' : 'rss']);
-    }
-  }
-  await page.goto(`${base}/#/runs`);
-  await reopened(PROJECTS - 1);
 
-  /** Project `i`, which the page has stopped showing: closed, then read again by the CLI, which opens it as its first read did, and closed. */
-  async function reopened(i) {
-    const left = await closes(folders[i]);
-    times.closed_ms.page.push(left);
-    if (left === null) notClosed.page.push(i);
-    const again = await status(folders[i]);
-    times.reopen_s.push(seconds(again.ms));
-    if ((await closes(folders[i])) === null) notClosed.cli.push(i);
+  /** Each project in `list` as the twenty go: imported and opened by the CLI, shown by the page, which then shows the next (so two are open a
+   *  moment), and read again by the CLI. With `counted`, its times and what it holds after each are kept. */
+  async function pass(list, counted) {
+    /** Project `i`, which the page has stopped showing: closed, then read again by the CLI, which opens it as its first read did, and closed. */
+    const reopened = async (i) => {
+      const left = await closes(list[i]);
+      if (counted) times.closed_ms.page.push(left);
+      if (left === null) notClosed.page.push(list[i]);
+      const again = await status(list[i]);
+      if (counted) times.reopen_s.push(seconds(again.ms));
+      if ((await closes(list[i])) === null) notClosed.cli.push(list[i]);
+    };
+    for (let i = 0; i < list.length; i++) {
+      const folder = list[i];
+      seen.looks = (seen.looks ?? 0) + 1;
+      generated(folder);
+      // Its first read imports it; the read after is its first open of project.db. Each closes once it has answered.
+      const imported = await status(folder);
+      ids.push(imported.state.id);
+      const afterImport = await closes(folder);
+      const opened = await status(folder);
+      const afterOpen = await closes(folder);
+      if (counted) {
+        times.import_s.push(seconds(imported.ms));
+        times.open_s.push(seconds(opened.ms));
+        times.closed_ms.cli.push(afterImport, afterOpen);
+      }
+      if (afterImport === null || afterOpen === null) notClosed.cli.push(folder);
+      // The page shows it, and asks nothing more of it: it's open while it does. The one it showed before closes.
+      await page.goto(`${base}/#/projects/${imported.state.id}`);
+      await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
+      await page.waitForTimeout(1000);
+      if (readable && !held(folder)) notHeld.push(folder);
+      if (i > 0) {
+        await reopened(i - 1);
+        // Each with one project shown, the one before closed: what it holds after each, which levels off or grows with them.
+        if (counted) memory.trend.push(memoryNow()[process.platform === 'linux' ? 'anon' : 'rss']);
+      }
+    }
+    await page.goto(`${base}/#/runs`);
+    await reopened(list.length - 1);
+    await page.waitForTimeout(SETTLE_MS);
   }
+
+  // Two projects through all of it first, as the twenty go: what Calcifer takes on at its first use of all this (its code read in, its
+  // allocator's own for two projects open at a time) is no project's. Its memory from there is the start.
+  const warm = [0, 1].map((i) => join(homedir(), '.cozy', 'projects', `web-closes-${stamp}-warm-${i}`));
+  folders.push(...warm);
+  await pass(warm, false);
+  memory.start = memoryNow();
+  await pass(folders.slice(0, PROJECTS), true);
 
   check('each_is_open_while_the_page_shows_it', notHeld.length === 0, { not_held: notHeld });
   check('each_closes_once_the_cli_has_its_answer', notClosed.cli.length === 0, { open_still: notClosed.cli });
@@ -262,7 +256,6 @@ function held(folder) {
   seen.open_median_s = open;
   seen.reopen_median_s = reopen;
   check('a_reopen_is_as_quick_as_the_first_open', reopen <= open * BARS.reopen_times_open + BARS.reopen_slack_s, { open_s: open, reopen_s: reopen });
-  await page.waitForTimeout(SETTLE_MS);
   memory.end = memoryNow();
   // And left alone a minute more: what an allocator gives back late, and what it keeps.
   await page.waitForTimeout(60_000);
