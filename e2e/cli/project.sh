@@ -841,7 +841,13 @@ printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    
 code=0; cozy project -p "$C" status > "$OUT/old-landing-stuck.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "old landing: names that are one converted"
 (cd "$C" && cozy --json run -p "$C" "$here/project/draw.py" instructions=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
-[ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
+# Kept by its bytes: the one file in files/ is the run's output, by its sha256.
+local kept digest
+cozy --json run show "$(run_number "$OUT/old-landing-stuck.ndjson")" --once > "$OUT/old-landing-stuck-run.json" 2>&1 || true
+digest=$(jq -r '.output[0].sha256 // empty' "$OUT/old-landing-stuck-run.json" 2> /dev/null || true)
+kept=$(ls "$C/files" 2> /dev/null || true)
+{ [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] && [ "sha256:$(sha "$C/files/$kept")" = "$digest" ]; } || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
+echo "old landing: a project that can't convert kept ${digest:-nothing} as files/${kept:-nothing}, sha256:$(sha "$C/files/$kept" 2> /dev/null || true): $(jq -c '[.warnings[]?.message]' "$OUT/old-landing-stuck-run.json" 2> /dev/null || true)"
 rm -rf "$C"
 }
 

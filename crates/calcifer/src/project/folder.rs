@@ -1460,15 +1460,14 @@ impl Folder {
     /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. In this order: what's
     /// `measured` of it in project.db, its file in `files/`, then its row as here and its run's listing, in place of what an earlier revision
     /// of that output was, which goes if nothing else names it. So a file here is a file measured. Answers its path, and why it isn't listed:
-    /// paid-for bytes are kept whatever the project can say of them.
+    /// paid-for bytes are kept whatever the project can say of them. One that can't take what's measured (one that can't convert has no
+    /// project.db, so nothing reads it) keeps the file unmeasured and unlisted, and that is why.
     pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
-            if let Some(measured) = measured {
-                self.record_measured(&BTreeMap::from([(digest.to_owned(), measured.clone())]))?;
-            }
+            let unmeasured = measured.and_then(|measured| self.record_measured(&BTreeMap::from([(digest.to_owned(), measured.clone())])).err());
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
@@ -1500,17 +1499,20 @@ impl Folder {
                     row.measured_as(measured);
                 }
             };
-            // A walk's run lands on its version: nothing of the project moves until then.
-            let listed = self.act(|| match self.walk_now()? {
-                walk if walk.walk.runs.contains_key(&made.run) => {
-                    self.update_lock(here)?;
-                    self.update_walk(|walk| listed(&mut walk.walk.landing))
-                }
-                _ => self.update_lock(|lock| {
-                    here(lock);
-                    listed(&mut lock.runs);
+            // A walk's run lands on its version: nothing of the project moves until then. No row goes in without what's measured of it.
+            let listed = match unmeasured {
+                Some(why) => Err(why),
+                None => self.act(|| match self.walk_now()? {
+                    walk if walk.walk.runs.contains_key(&made.run) => {
+                        self.update_lock(here)?;
+                        self.update_walk(|walk| listed(&mut walk.walk.landing))
+                    }
+                    _ => self.update_lock(|lock| {
+                        here(lock);
+                        listed(&mut lock.runs);
+                    }),
                 }),
-            });
+            };
             (self.path(&path), old.into_inner(), listed.err())
         };
         if unlisted.is_none() {
