@@ -298,10 +298,16 @@ cozy project new "$L" > /dev/null 2>&1 || { check "latency: project new"; return
 db_calcifer; ID=$(id_of "$L")
 for ((i = 0; i < takes; i++)); do printf -v c '%06x' $((i * 33331 % 16777215)); ffmpeg -v error -y -f lavfi -i "color=c=0x$c:size=16x16:rate=24:duration=0.125" -pix_fmt yuv420p "$L/clips/$i.mp4"; done
 (cd "$L" && cozy project -p "$L" import "$L/clips/0.mp4" take > /dev/null) || { check "latency: import the first take"; return; }
+# Each take held by Calcifer first, as the page sends a file, and untimed: a join names it by its sha256, no path of ours (cl-819).
+local hex=()
+for ((i = 1; i < takes; i++)); do
+  hex[i]=$(sha "$L/clips/$i.mp4")
+  api -f -o /dev/null -X PUT --data-binary "@$L/clips/$i.mp4" "http://$ADDR/v1/files/sha256:${hex[i]}" || { check "latency: PUT take $i"; return; }
+done
 began=$SECONDS
 : > "$OUT/db-latency-join.txt"
 for ((i = 1; i < takes; i++)); do
-  api -o /dev/null -w '%{time_total}\n' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: join-$RANDOM$RANDOM" -d "{\"source\": \"$L/clips/$i.mp4\"}" "http://$ADDR/v1/projects/$ID/assets/take/versions" >> "$OUT/db-latency-join.txt"
+  api -o /dev/null -w '%{time_total}\n' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: join-$RANDOM$RANDOM" -d "{\"source\": \"sha256:${hex[i]}\"}" "http://$ADDR/v1/projects/$ID/assets/take/versions" >> "$OUT/db-latency-join.txt"
 done
 echo "latency: $takes takes joined in $((SECONDS - began)) s"
 [ "$(held "$L" take | jq '.versions | length')" = "$takes" ] || check "latency: take has $(held "$L" take | jq '.versions | length') versions, not $takes"
