@@ -4,7 +4,7 @@
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
 # models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), a box from its tool's fields (web/tools.js), an Edit rendered (web/timeline.js),
-# the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), a package's own UI (web/package_ui.js), the
+# the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and a save past project.db held by another program (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
@@ -105,6 +105,9 @@ jq -c '{times: .seen.times_ms, burst: .seen.burst, behind: .seen.behind}' "$OUT/
 step "web-scale: 5,000 assets: status, opening it, one edit, a landing, panning, memory"
 web_proof scale "$chrome" "$pw" ''
 jq -c '{scale: .seen.scale}' "$OUT/web-scale.json" 2> /dev/null || true
+step "web-closes: twenty projects of 1,000 assets by the CLI and the page, each closed once nothing reads it, memory back, a reopen as quick, a render holding its own"
+web_proof closes "$chrome" "$pw" ''
+jq -c '{times: .seen.times, memory: .seen.memory_mb, open: .seen.open_median_s, reopen: .seen.reopen_median_s, render: .seen.render}' "$OUT/web-closes.json" 2> /dev/null || true
 step "web-package-ui: a package's component drawn, its field saved and read back; what can't draw falls back; a release held to its hash"
 local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)

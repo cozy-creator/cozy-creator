@@ -167,6 +167,13 @@ pub fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str) -> R
     tx.commit().map_err(|e| sql(at, e))
 }
 
+/// How many of its transactions changed it, read alone: for a project nothing holds open.
+pub fn seq_at(path: &Path) -> Option<u64> {
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags).ok()?;
+    conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).optional().ok().flatten()?.parse().ok()
+}
+
 /// What another connection's commit changes: `Folder` reads again when this moves.
 pub fn data_version(conn: &Connection) -> i64 {
     conn.pragma_query_value(None, "data_version", |r| r.get(0)).unwrap_or(0)

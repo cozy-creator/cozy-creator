@@ -241,6 +241,12 @@ export class Client {
     return this.transport.fetch("/v1/events", { signal, headers: { Accept: "text/event-stream" } })
   }
 
+  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts. One that ended is told again on the next. */
+  async show(stream: string, projects: string[]): Promise<void> {
+    const body = JSON.stringify({ projects })
+    await this.transport.fetch(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }).catch(() => {})
+  }
+
   // Files
 
   /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */

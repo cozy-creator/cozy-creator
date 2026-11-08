@@ -1051,7 +1051,7 @@ export interface MachineModels {
 // The one stream
 
 export type ServerEvent =
-  | { type: "hello"; version: string }
+  | { type: "hello"; version: string; stream?: string }
   | { type: "run.updated"; run: Run }
   | { type: "machine.updated"; machine: Machine }
   | { type: "machine.removed"; name: string }

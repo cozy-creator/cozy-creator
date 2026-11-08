@@ -8,7 +8,12 @@ export type Health =
   | { state: "reconnecting"; attempt: number }
   | { state: "signed_out" }
 
-type Shared = { event: ServerEvent } | { health: Health } | { ask: true }
+type Shared =
+  | { event: ServerEvent }
+  | { health: Health }
+  | { ask: true }
+  | { shows: { tab: string; project: string | null } }
+  | { who: true }
 
 /** Three missed comments: the connection is dead, whatever the socket says. */
 const SILENT_MS = 45_000
@@ -38,7 +43,9 @@ export async function readEvents(body: ReadableStream<Uint8Array<ArrayBuffer>>, 
 
 /**
  * `GET /v1/events`, one per Calcifer across all tabs: a browser allows six connections to a host. The tab that wins the Web Lock
- * holds it and shares it by `BroadcastChannel`; when that tab goes, the next waiting takes the lock.
+ * holds it and shares it by `BroadcastChannel`; when that tab goes, the next waiting takes the lock. It tells Calcifer which project
+ * each tab shows (`PUT /v1/events/{stream}`), which stays open while one does: each tab says what it shows, and holds a lock of its own
+ * for its life, which the holding tab waits on to hear it's gone.
  */
 export class EventStream {
   readonly health = signal<Health>({ state: "connecting" })
@@ -48,6 +55,16 @@ export class EventStream {
   private client: Client
   private scope: string
   private remote: boolean
+  private tab = crypto.randomUUID()
+  /** Once this tab holds its own lock: what it says it shows is said after. */
+  private alive: Promise<void>
+  /** The project this tab shows. */
+  private showing: string | null = null
+  /** The holding tab's: what each tab shows, by tab, the stream's id, and what Calcifer was last told it shows. */
+  private shown = new Map<string, string | null>()
+  private stream: string | null = null
+  private told: string | null = null
+  private telling = false
 
   constructor(client: Client, scope: string, remote: boolean) {
     this.client = client
@@ -57,8 +74,57 @@ export class EventStream {
     this.channel.onmessage = ({ data }: MessageEvent<Shared>) => {
       if ("event" in data) this.dispatch(data.event)
       else if ("health" in data) this.health.set(data.health)
+      else if ("shows" in data) this.heard(data.shows.tab, data.shows.project)
+      else if ("who" in data) this.announce()
       else if (this.holding) this.channel.postMessage({ health: this.health.get() } satisfies Shared)
     }
+    this.alive = new Promise((held) => {
+      void navigator.locks.request(`cozy-tab:${scope}:${this.tab}`, () => {
+        held()
+        return new Promise<void>(() => {})
+      })
+    })
+  }
+
+  /** This tab shows `project`, or none. */
+  show(project: string | null) {
+    this.showing = project
+    if (this.holding) this.heard(this.tab, project)
+    else this.announce()
+  }
+
+  private announce() {
+    void this.alive.then(() => this.channel.postMessage({ shows: { tab: this.tab, project: this.showing } } satisfies Shared))
+  }
+
+  /** The holding tab hears what `tab` shows, and waits on its lock to hear when it goes. */
+  private heard(tab: string, project: string | null) {
+    if (!this.holding) return
+    if (tab !== this.tab && !this.shown.has(tab)) {
+      void navigator.locks.request(`cozy-tab:${this.scope}:${tab}`, () => {
+        this.shown.delete(tab)
+        void this.tell()
+      })
+    }
+    this.shown.set(tab, project)
+    void this.tell()
+  }
+
+  /** Calcifer told what the tabs show now, one call at a time. */
+  private async tell() {
+    if (this.telling || !this.stream) return
+    const projects = [...new Set([...this.shown.values()].filter((project) => project !== null))].sort()
+    const key = projects.join()
+    if (key === this.told) return
+    this.telling = true
+    const stream = this.stream
+    try {
+      await this.client.show(stream, projects)
+      if (this.stream === stream) this.told = key
+    } finally {
+      this.telling = false
+    }
+    void this.tell()
   }
 
   subscribe(listener: (event: ServerEvent) => void): () => void {
@@ -88,6 +154,8 @@ export class EventStream {
   /** Holds the lock for as long as this tab lives, unless this computer's Calcifer says it's signed out. */
   private async hold() {
     this.holding = true
+    this.shown.set(this.tab, this.showing)
+    this.channel.postMessage({ who: true } satisfies Shared)
     for (let attempt = 1; ; attempt++) {
       try {
         if (await this.follow()) attempt = 1
@@ -123,6 +191,10 @@ export class EventStream {
           if (event.type === "hello") {
             live = true
             this.say({ state: "live" })
+            // A new stream holds nothing open yet.
+            this.stream = event.stream ?? null
+            this.told = null
+            void this.tell()
           }
           this.publish(event)
         },
@@ -132,6 +204,7 @@ export class EventStream {
       ).catch(() => {})
       return live
     } finally {
+      this.stream = null
       clearInterval(watch)
     }
   }

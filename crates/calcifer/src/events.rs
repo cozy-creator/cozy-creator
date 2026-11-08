@@ -14,7 +14,7 @@ use axum::{
 };
 use futures_util::Stream;
 use protocol::{
-    calcifer::{Event, Machine, StreamEvent},
+    calcifer::{Event, Machine, Shown, StreamEvent},
     error::Error,
     ids::RunId,
     project::Card,
@@ -128,8 +128,13 @@ pub(crate) fn tell(api: Arc<Api>) {
     });
 }
 
-/// Project `id` is forgotten: nothing more is said of it, and its `rev` goes.
-pub(crate) fn let_go(id: &str) {
+/// Project `id` closed: its `rev` goes, and its next open takes another. What's owed of it is still said.
+pub(crate) fn project_closed(id: &str) {
+    PROJECTS.revs.lock().expect("revs lock").remove(id);
+}
+
+/// Project `id` is forgotten: nothing more is said of it.
+pub(crate) fn project_forgotten(id: &str) {
     PROJECTS.revs.lock().expect("revs lock").remove(id);
     PROJECTS.owed.lock().expect("owed lock").remove(id);
 }
@@ -174,8 +179,10 @@ pub(crate) async fn stream(
         warn!("the events stream cannot list the machines: {}", e.message);
         HashMap::new()
     });
-    let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into() };
+    let showing = Showing::new();
+    let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into(), stream: showing.0.clone() };
     let watch = Watch {
+        showing,
         pending: VecDeque::from([hello]),
         runs,
         owed: VecDeque::new(),
@@ -189,8 +196,66 @@ pub(crate) async fn stream(
     Sse::new(futures_util::stream::unfold(watch, Watch::next)).keep_alive(KeepAlive::default())
 }
 
+/// What each stream shows, by its id: the projects it holds open (`PUT /v1/events/{stream}`), until it ends or shows others (cl-823).
+static SHOWN: LazyLock<Mutex<HashMap<String, Vec<project::Reader>>>> = LazyLock::new(Mutex::default);
+
+/// A stream's place in `SHOWN`, by its id: what it holds is let go when it ends.
+struct Showing(String);
+
+impl Showing {
+    fn new() -> Self {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("the OS gives random bytes");
+        let id = format!("stream-{}", hex::encode(bytes));
+        SHOWN.lock().expect("shown lock").insert(id.clone(), vec![]);
+        Self(id)
+    }
+}
+
+impl Drop for Showing {
+    fn drop(&mut self) {
+        // Let go of outside the lock: the last reader of a project closes it.
+        let held = SHOWN.lock().expect("shown lock").remove(&self.0);
+        drop(held);
+    }
+}
+
+/// `PUT /v1/events/{stream}` `{projects}`: what the page on `stream` shows now, each project held open while the stream lasts or
+/// until it shows others. One that doesn't open isn't held: the page's own read of it says why. `404 stream_unknown` once the stream
+/// has ended: the next one's `hello` names it.
+pub(crate) async fn show(
+    State(api): State<Arc<Api>>,
+    axum::extract::Path(stream): axum::extract::Path<String>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Result<axum::http::StatusCode, crate::api::Refusal> {
+    let shown: Shown = crate::api::parse(&body?)?;
+    let gone = || crate::api::Refusal(Error::new(protocol::error::Kind::NotFound, "stream_unknown", format!("no stream {stream} is open: it ended")));
+    if !SHOWN.lock().expect("shown lock").contains_key(&stream) {
+        return Err(gone());
+    }
+    let mut ids = shown.projects;
+    ids.sort();
+    ids.dedup();
+    // What it showed already is held until these are: a project shown before and now isn't closed between.
+    let readers: Vec<project::Reader> = ids.iter().take(SHOWN_MOST).filter_map(|id| api.projects.reader(&api, id).ok()).collect();
+    let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| std::mem::replace(held, readers));
+    match was {
+        Some(was) => {
+            drop(was);
+            Ok(axum::http::StatusCode::NO_CONTENT)
+        }
+        None => Err(gone()),
+    }
+}
+
+/// How many projects one stream may hold open: a browser's tabs, each showing one.
+const SHOWN_MOST: usize = 64;
+
 /// One subscriber: what it owes, and the machine list as it last told it.
 struct Watch {
+    /// Its id, and the projects it holds open.
+    #[allow(dead_code, reason = "held for its drop")]
+    showing: Showing,
     pending: VecDeque<StreamEvent>,
     runs: broadcast::Receiver<(RunId, Event)>,
     /// The runs it owes an update, in the order they changed.

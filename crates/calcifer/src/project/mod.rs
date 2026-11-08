@@ -35,7 +35,7 @@ use std::{
     convert::Infallible,
     path::{Path as FsPath, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
@@ -83,11 +83,12 @@ use tools::Canvas;
 
 pub(crate) use thumbs::previews;
 
-/// The projects this Calcifer knows: those open since it started, by id, which each keeps in its `project.db` (cl-819). Every
-/// one it opened is in `state.db`'s `projects`, by id, with its name and where it last was.
+/// The projects this Calcifer knows: those open now, by id, which each keeps in its `project.db` (cl-819). Every one it opened is
+/// in `state.db`'s `projects`, by id, with its name and where it last was. A project is open while anything reads it: a call, a
+/// stream, its walk (which goes until nothing is owed), a page showing it. The last of them to let go closes it (cl-823).
 #[derive(Default)]
 pub struct Projects {
-    open: Mutex<HashMap<String, Arc<Project>>>,
+    open: Mutex<HashMap<String, Weak<Project>>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
     /// How many times that changed: what a read said of them is good until then.
@@ -104,6 +105,7 @@ struct Heard {
 }
 
 struct Project {
+    id: String,
     folder: Folder,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
@@ -129,6 +131,22 @@ struct Project {
     /// What kept its last render from reaching a machine (`State::unsent`).
     unsent: Mutex<Vec<Error>>,
 }
+
+impl Drop for Project {
+    /// Nothing reads it now: what Calcifer kept of it goes with it, its folder's `project.db` connection, parts and history once no
+    /// `Folder` names it. What streams were told of it goes too, and a reopen reads it anew.
+    fn drop(&mut self) {
+        let mut identities = IDENTITIES.lock().expect("identities lock");
+        if identities.get(&self.folder.dir).is_some_and(|(id, _)| *id == self.id) {
+            identities.remove(&self.folder.dir);
+        }
+        drop(identities);
+        crate::events::project_closed(&self.id);
+    }
+}
+
+/// A project held open, by a stream that shows it: it closes once nothing holds it.
+pub(crate) struct Reader(#[allow(dead_code, reason = "held for its drop")] Arc<Project>);
 
 pub fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
@@ -171,38 +189,53 @@ impl Projects {
     /// own folder, and told only while it's still open: a forget takes it out under `open` before letting go of what Calcifer kept of it
     /// (cl-822), which a look mustn't make again.
     pub(crate) fn look(&self) {
-        let open: Vec<(String, Arc<Project>)> = self.open.lock().expect("projects lock").iter().map(|(id, project)| (id.clone(), project.clone())).collect();
-        for (id, project) in open {
+        for project in self.now_open() {
+            let id = &project.id;
             let dir = &project.folder.dir;
             let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
             // Held while it's told: a forget waits for it.
             let still = self.open.lock().expect("projects lock");
-            if still.contains_key(&id) {
+            if still.get(id).is_some_and(|open| open.strong_count() > 0) {
                 crate::events::project_looked(dir, rev);
             }
         }
     }
 
-    /// Project `id`: open, else opened from the index.
+    /// Each project open now, held for as long as the caller holds it.
+    fn now_open(&self) -> Vec<Arc<Project>> {
+        self.open.lock().expect("projects lock").values().filter_map(Weak::upgrade).collect()
+    }
+
+    /// Project `id` as it's open now, if it is.
+    fn open_now(&self, id: &str) -> Option<Arc<Project>> {
+        self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
+    }
+
+    /// Project `id`: open, else opened from the index. It stays open while the answer is held.
     fn get(&self, api: &Arc<Api>, id: &str) -> Result<Arc<Project>, Refusal> {
-        if let Some(project) = self.open.lock().expect("projects lock").get(id).cloned() {
+        if let Some(project) = self.open_now(id) {
             return Ok(project);
         }
         let Some(entry) = api.calcifer.store().known_project(id)? else {
             let said = format!("this computer knows no project {id}");
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
         };
-        let opened = self.open(api, &entry.path).map_err(Refusal)?;
-        let found = self.open.lock().expect("projects lock").get(id).cloned();
-        found.filter(|_| opened == id).ok_or_else(|| {
+        let project = self.open(api, &entry.path).map_err(Refusal)?;
+        if project.id != id {
             let said = format!("{id} was in {}, which holds another project now", entry.path.display());
-            Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls"))
-        })
+            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
+        }
+        Ok(project)
     }
 
-    /// The project in `dir` (canonical), opened once, given its id and name and recorded in the index; its walk goes on when one
-    /// is owed.
-    fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
+    /// Project `id` held open by a stream that shows it, until the stream lets it go.
+    pub(crate) fn reader(&self, api: &Arc<Api>, id: &str) -> Result<Reader, Refusal> {
+        self.get(api, id).map(Reader)
+    }
+
+    /// The project in `dir` (canonical), opened if it isn't, given its id and name and recorded in the index; its walk goes on when
+    /// one is owed. It stays open while the answer is held.
+    fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<Arc<Project>, Error> {
         // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
         let said = match dir.join(db::DB).is_file() {
             true => vec![],
@@ -213,24 +246,27 @@ impl Projects {
             true => tokio::task::block_in_place(|| identify(api, dir))?,
             false => (folder_id(dir), String::new()),
         };
-        // Moved since it opened: the same project, read where it is now. One rendering goes on where it was.
-        let moved = self.open.lock().expect("projects lock").get(&id).filter(|open| open.folder.dir != dir).cloned();
+        // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
+        // rendering goes on where it was.
+        let moved = self.open_now(&id).filter(|open| open.folder.dir != dir);
         if let Some(open) = moved {
             if *open.walking.lock().expect("walking lock") {
                 let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
                 return Err(Error::new(Kind::Conflict, "project_busy", said));
             }
             self.open.lock().expect("projects lock").remove(&id);
-            folder::let_go(&open.folder.dir);
-            history::let_go(&open.folder.dir);
         }
         let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
-        let (id, _) = tokio::task::block_in_place(|| identify(api, dir))?;
+        let (id, name) = tokio::task::block_in_place(|| identify(api, dir))?;
+        IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
-        let project = (self.open.lock().expect("projects lock").entry(id.clone()))
-            .or_insert_with(|| {
+        let mut open = self.open.lock().expect("projects lock");
+        let project = match open.get(&id).and_then(Weak::upgrade) {
+            Some(project) => project,
+            None => {
                 let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
-                Arc::new(Project {
+                let project = Arc::new(Project {
+                    id: id.clone(),
                     folder,
                     jobs: Jobs::new(id.clone(), events.clone()),
                     model: tokio::sync::Mutex::default(),
@@ -244,14 +280,19 @@ impl Projects {
                     moving: tokio::sync::Mutex::default(),
                     said: Mutex::default(),
                     unsent: Mutex::default(),
-                })
-            })
-            .clone();
+                });
+                // What closed since the last open goes from the list.
+                open.retain(|_, held| held.strong_count() > 0);
+                open.insert(id, Arc::downgrade(&project));
+                project
+            }
+        };
+        drop(open);
         project.said.lock().expect("said lock").extend(said);
         if project.folder.lock()?.owes() {
             walk(api, &project);
         }
-        Ok(id)
+        Ok(project)
     }
 
 }
@@ -479,7 +520,7 @@ pub(crate) fn stays(project: &FsPath, sha256: &str, machine: &str, length: u64) 
     Folder::at(project).stays(sha256, machine, length).map_err(|e| e.message)
 }
 
-/// Each project folder's id and name, as its `project.db` keeps them, read once.
+/// Each open project's id and name by its folder, as its `project.db` keeps them, read as it opens.
 static IDENTITIES: std::sync::LazyLock<Mutex<HashMap<PathBuf, (String, String)>>> = std::sync::LazyLock::new(Mutex::default);
 
 /// The id of the project in `dir`, which its `project.db` keeps (cl-819).
@@ -492,13 +533,7 @@ pub(crate) fn identity(dir: &FsPath) -> (String, String) {
     if let Some(known) = IDENTITIES.lock().expect("identities lock").get(dir) {
         return known.clone();
     }
-    match kept_identity(dir) {
-        Some(kept) => {
-            IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), kept.clone());
-            kept
-        }
-        None => (folder_id(dir), folder_name(dir)),
-    }
+    kept_identity(dir).unwrap_or_else(|| (folder_id(dir), folder_name(dir)))
 }
 
 fn kept_identity(dir: &FsPath) -> Option<(String, String)> {
@@ -547,7 +582,6 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
         db::set_identity(&mut conn, &path, &id, &name)?;
     }
     drop(conn);
-    IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name.clone()));
     store.project_opened(&id, &name, dir, None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
     Ok((id, name))
 }
@@ -563,7 +597,7 @@ fn unique_name(api: &Api, id: &str, wanted: String) -> Result<String, Error> {
 /// What `project.changed` says of the project in `dir`: its revision in `project.db`, which moves with each commit, and how `files/` stands,
 /// as a pull's files come with no commit of their own.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    format!("{}.{}", Folder::at(dir).stamp(), stamp(&dir.join(folder::FILES)))
+    format!("{}.{}", Folder::stamp_at(dir), stamp(&dir.join(folder::FILES)))
 }
 
 /// What a file's stats say of it: another text whenever it's another file than it was.
@@ -583,6 +617,7 @@ pub fn resume(api: &Arc<Api>) {
         warn!("the projects being walked: {e}");
         vec![]
     });
+    // Each stays open while its walk goes.
     for dir in known.into_iter().filter(|entry| entry.walking).map(|entry| entry.path) {
         if let Err(error) = api.projects.open(api, &dir) {
             warn!("walking {} again: {}", dir.display(), error.message);
@@ -967,9 +1002,7 @@ impl Project {
 
 /// Records which open projects are being walked, which the next start walks again.
 fn remember(api: &Api) {
-    let walking: Vec<(String, bool)> = (api.projects.open.lock().expect("projects lock").iter())
-        .map(|(id, project)| (id.clone(), *project.walking.lock().expect("walking lock")))
-        .collect();
+    let walking: Vec<(String, bool)> = (api.projects.now_open().iter()).map(|project| (project.id.clone(), *project.walking.lock().expect("walking lock"))).collect();
     if let Err(e) = api.calcifer.store().projects_walking(&walking) {
         warn!("recording the projects being walked: {e}");
     }
@@ -1020,11 +1053,24 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             }
         }
     };
-    let id = api.projects.open(&api, &dir).map_err(Refusal)?;
-    api.calcifer.store().project_opened(&id, &identity(&dir).1, &dir, Some(now_ms()))?;
-    let opened = opened(id.clone(), &dir);
+    // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
+    // and a folder of files from before project.db, which is imported now, are opened here.
+    let unread = match dir.join(db::DB).is_file() {
+        true => Some(tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?.0).filter(|id| api.projects.open_now(id).is_none()),
+        false => None,
+    };
+    let (id, said) = match unread {
+        Some(id) => (id, vec![]),
+        None => {
+            let project = api.projects.open(&api, &dir).map_err(Refusal)?;
+            let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
+            (project.id.clone(), said)
+        }
+    };
+    let opened = opened(id, &dir);
+    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()))?;
     let next = made.then(|| format!("cozy project -p {} render all --on <machine>", opened.name)).into_iter().collect();
-    let said = moved_on.into_iter().chain(api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..)).collect();
+    let said = moved_on.into_iter().chain(said).collect();
     Ok(Json(Opened { next, said, ..opened }))
 }
 
@@ -1069,7 +1115,6 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
     let (id, name) = (fresh_id(), unique_name(api, "", name.to_owned())?);
     db::set_identity(&mut db::open(&part)?, &part, &id, &name)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
-    IDENTITIES.lock().expect("identities lock").insert(canonical.clone(), (id, name));
     crate::events::project_changed(&canonical);
     Ok(canonical)
 }
@@ -1107,7 +1152,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     }
     let limit = page.limit.unwrap_or(50).clamp(1, 1000);
     let older = known.len().saturating_sub(limit) as u64;
-    let open = api.projects.open.lock().expect("projects lock");
+    let open: HashMap<String, Arc<Project>> = api.projects.now_open().into_iter().map(|project| (project.id.clone(), project)).collect();
     let projects = (known.into_iter().take(limit))
         .map(|entry| Known {
             name: entry.name,
@@ -1121,34 +1166,24 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     Ok(Json(Listed { projects, older }))
 }
 
-/// Forgets project `id`: out of the index, never its folder. Refused while it renders.
+/// Forgets project `id`: out of the index, never its folder, and nothing more is said of it. Refused while it renders. It closes as
+/// any project does, once nothing reads it: a page still showing it holds it until it stops.
 async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<StatusCode, Refusal> {
     let mut open = api.projects.open.lock().expect("projects lock");
-    if open.get(&id).is_some_and(|project| *project.walking.lock().expect("walking lock")) {
+    let project = open.get(&id).and_then(Weak::upgrade);
+    if project.as_ref().is_some_and(|project| *project.walking.lock().expect("walking lock")) {
         let said = format!("{id} is rendering: forget it once its runs land");
         return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
     }
     open.remove(&id);
     drop(open);
-    let known = api.calcifer.store().known_project(&id)?;
+    drop(project);
     IDENTITIES.lock().expect("identities lock").retain(|_, (held, _)| *held != id);
+    crate::events::project_forgotten(&id);
     match api.calcifer.store().forget_project(&id)? {
-        true => {
-            if let Some(known) = known {
-                let_go(&id, &known.path);
-            }
-            Ok(StatusCode::NO_CONTENT)
-        }
+        true => Ok(StatusCode::NO_CONTENT),
         false => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
     }
-}
-
-/// What this Calcifer kept of a project it forgot, let go: project.db's connection and all it held, its history, its films' frame
-/// counts and what streams were told of it. Opened again, it's read anew.
-fn let_go(id: &str, dir: &FsPath) {
-    folder::let_go(dir);
-    history::let_go(dir);
-    crate::events::let_go(id);
 }
 
 /// Its assets as they stand.
@@ -1289,8 +1324,7 @@ fn heard_of(api: &Arc<Api>, with: &str) -> Option<Arc<Package>> {
             if let Ok(package) = Host::new(&api).published("", &with, None).await {
                 api.projects.heard.lock().expect("heard lock").entry(with).or_default().package = Some(Arc::new(package));
                 api.projects.heard_changes.fetch_add(1, Ordering::Relaxed);
-                let open: Vec<PathBuf> = api.projects.open.lock().expect("projects lock").values().map(|project| project.folder.dir.clone()).collect();
-                open.iter().for_each(|dir| crate::events::project_settled(dir));
+                api.projects.now_open().iter().for_each(|project| crate::events::project_settled(&project.folder.dir));
             }
         });
     }
@@ -2444,6 +2478,11 @@ async fn events(
             }
         }
     }));
+    // Its project stays open while it's followed.
+    let stream = stream.map(move |sent| {
+        let _reading = &project;
+        sent
+    });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 

@@ -33,9 +33,10 @@ CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `f
 | `request_keys(key, digest, status, content_type, body, at_ms)` | One write's `Idempotency-Key`, its ask's digest and its answer, a day | `.keys.json`, `state.db` |
 | `ops(id, seq, at_ms, by, words, edits, changes, undone)` | One history entry: undo/redo | `.history.json` |
 
-In memory Calcifer holds one copy per folder (`folder::State`): the boxes (`written::Written`), the canvas, the lock and the walk. A
+In memory Calcifer holds one copy per folder (`folder::Shared`): the boxes (`written::Written`), the canvas, the lock and the walk. A
 read costs no query. A write is applied to a copy of what it changes and committed as row changes; nothing is rewritten whole. Another
-connection's commit (`PRAGMA data_version`) drops the copy.
+connection's commit (`PRAGMA data_version`) drops the copy. The copy, its history and the connection last as long as anything holds
+the project open (`CALCIFER-API.md`, Projects): the last `Folder` to go closes the connection.
 
 ## One action, one transaction
 

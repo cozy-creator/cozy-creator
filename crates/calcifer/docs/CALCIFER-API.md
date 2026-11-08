@@ -114,7 +114,7 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 ### The event stream
 `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole. There is no backlog: subscribe, then read what you hold. It ends only when Calcifer stops, and a type a client doesn't know is for it to skip.
 
-- `hello {version}`, first.
+- `hello {version, stream}`, first. `stream` names this stream for `PUT /v1/events/{stream}`.
 - `run.updated {run}`: a run's change, as `GET /v1/runs/{id}` answers it.
 - `machine.updated {machine}`: a machine as `GET /v1/machines` lists it, each time it changes. `machine.removed {name}`: it left the list.
 - `project.changed {id, rev, assets?, gone?, head?}`: `assets` names those whose row is another now, each to read by `GET /v1/projects/{id}/assets/{name}`, and `gone` those no longer there; `head` says something else `GET /v1/projects/{id}?assets=false` holds changed. No `assets`: read the whole project, as a client does at the start and after `resync`. What it costs a client is what changed, whatever the project holds. `rev` is opaque, and changes with each transaction its `project.db` commits, when a file comes to or goes from `files/`, as a pull's do, and when a push or pull ends. Nothing outside Calcifer writes a project: an edit by hand is an import of its YAML.
@@ -123,6 +123,11 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `ahead.updated {project, ahead}`: what a machine is fetching ahead of a project's queued jobs, as it stands now: `{function, machine, run, stage?, done, total, ready?, held_back?}`. The board's `ahead` has them all.
 - `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
 - `resync`: this stream fell behind and goes on: read again what you hold.
+
+`PUT /v1/events/{stream}` `{projects: [id]}`: `204`, the projects the page on this stream shows now, each held open while the stream
+lasts or until a later `PUT` names it no more. One that can't open isn't held, and the page's own read of it says why. `404
+stream_unknown` once the stream has ended: the next stream's `hello` names it. The page sends what all its tabs show, from the tab that
+holds the stream, each time that changes.
 
 ### The page
 The web UI, embedded when cozy is built (`crates/calcifer/build.rs`, from `web/app/dist`). It holds no secret, so these
@@ -487,7 +492,10 @@ measured of each file, what its render owes, its history and its request keys. C
 transaction: what it writes, its history entry and its key commit together, or none does. Its id and name are kept in `project.db`
 (cl-819): the folder is only where it lives, on Calcifer's computer. A new project's id is 128 random bits; one from before keeps the id its
 path gave it. A moved folder is the same project, its walk going on, and the index follows it; a copy of a project another folder still
-holds takes a new id, and its walk's paid work doesn't go on. Names are unique in the index (`_2`), and a client names a project by its
+holds takes a new id, and its walk's paid work doesn't go on. Calcifer holds a project open, its parts, history and `project.db`
+connection, while anything reads it: a call on it, its `/events` stream, a page showing it (`PUT /v1/events/{stream}`), its render (until
+nothing is owed, waiting for a machine too). It closes when the last of these ends, and the next call opens it again (cl-823). `POST
+/v1/projects` names one and reads none of it. Names are unique in the index (`_2`), and a client names a project by its
 name or id, or by its folder on this computer (`protocol::project::NAMED_BY`): never the folder the client is in. Every file the
 project uses is a real file in `files/<sha256>.<ext>`, flat, and a file the database has a row for says only what a file can't: where it
 stays and its parts. YAML is its export (`PROJECT-YAML.md`): `GET …/yaml` writes it and `PUT …/yaml` reads it back. A folder of the files
@@ -516,8 +524,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects/{id}/imports` `{source, name?, at?: {x, y, w?}, description?, exact?, moves?, placed?}`, with an `Idempotency-Key`: `{name, sha256, field, path, already?, kept?}`. One call, one transaction, makes an element: the file in `files/`, a box `{approved, description?}` under its name, with `at` its row on the canvas, and `moves`, the rows its drop pushed aside, each with its revision in `placed` as `PATCH /canvas` takes it (`kept` the ones another wrote since, as they are). `source` is `sha256:<hex>` (a held file, moved rather than copied, or one the project has; else `404 file_not_held`), the start of the hash of a file the project has, or an `http(s)` URL (64 MiB at most, public addresses only at every hop); a client's own file comes held, never by its path. `name` absent: the stem of a URL, lower-cased, else `file`; the CLI sends a file's stem, lower-cased. It goes through `as_name`, and a name the project has, by the rule names match, gets `_2`, so `name` in the answer is the one it got. With `exact`, a person typed it: `409 asset_exists`, naming what has it. The same file twice is a second element with no new bytes, `already` saying so. `field` is `image`, `video` or `audio`, from the bytes; anything else is `400 import_failed`.
 - `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path (where it last was), used_at_ms,
   missing?, busy?}], older}`. `missing`: the folder no longer holds `project.db`.
-- `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
-  while it renders.
+- `DELETE /v1/projects/{id}`: `204`, forgotten from the index, and nothing more is said of it on `GET /v1/events`; the folder is
+  untouched. It closes as any does, once nothing reads it. `409 project_busy` while it renders.
 - `GET /v1/projects/{id}` (`?assets=false`: all but its assets; `unsent`: what kept its last render from reaching a machine, each error once, until another is asked): worked out once per revision, so another read costs only its answer. `{id, path, board?, assets, queue?: [{name, running, run?}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
   absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?, without?}], warnings: [{name?, message}], next?}`. `next` is the commands to run given what it holds and lacks. Each asset is `{name, standing, making?, kind, noun, tool?, versions, prefixes?: [{number, prefix, pickup?, latents?, execution_ms?, run?, main?, from?, without?}],
   version?, approved?, pinned?, inputs?, files, path?, sha256?, field?, width?, height?, duration_ms?, alpha?, absent?, machine?, made_by?, status, reads?: [{name, version?, at, key?}], fields?, etag?, failure?, changed?, missing?}`: `standing` is `current`, `out_of_date`, `missing` or `making`, for a client that shows it, `making` the runs making it now, `version` the version that is its state, `approved` is the version a pin is, `pinned` that its `approved` is its state,

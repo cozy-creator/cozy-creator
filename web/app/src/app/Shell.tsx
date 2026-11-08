@@ -232,8 +232,10 @@ function MainMenu({ id }: { id: string | null }) {
 }
 
 export function Shell() {
-  const { remote } = useConnection()
+  const { remote, stream } = useConnection()
   const id = useProjectId()
+  // Calcifer holds the project open while a tab shows it.
+  useEffect(() => stream.show(id), [stream, id])
   const to = useTo()
   const navigate = useNavigate()
   const location = useLocation()

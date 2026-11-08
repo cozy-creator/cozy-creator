@@ -777,9 +777,10 @@ impl Lock {
     }
 }
 
-/// What this Calcifer holds of one project folder, whichever `Folder` names it.
-#[derive(Default)]
+/// What this Calcifer holds of one project folder, whichever `Folder` names it, for as long as one does: the last to go closes it (cl-823).
 struct Shared {
+    /// Its canonical folder, which `SHARED` knows it by.
+    dir: PathBuf,
     /// One writer at a time: an act, or a write of no act's, holds it from what it changes to its commit.
     writing: Mutex<()>,
     /// Held while a file is kept and while files are deleted, so one isn't deleted between.
@@ -790,6 +791,27 @@ struct Shared {
     checkpointing: std::sync::atomic::AtomicBool,
     /// What the first open's upgrade said, until a run landing in the project says it (`upgraded`).
     upgraded: Mutex<Vec<String>>,
+    /// Its history, read from project.db once.
+    book: std::sync::OnceLock<Arc<super::history::Book>>,
+    /// What ffprobe last said of each film at its root.
+    films: Mutex<HashMap<PathBuf, Frames>>,
+}
+
+/// How many frames a film holds, as ffprobe said of it at its size and time.
+type Frames = ((u64, std::time::SystemTime), Option<u64>);
+
+impl Drop for Shared {
+    /// Nothing names the folder now: project.db's connection closes, beside whatever dropped it, as closing it may checkpoint its WAL.
+    fn drop(&mut self) {
+        let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+        if shared.get(&self.dir).is_some_and(|held| held.strong_count() == 0) {
+            shared.remove(&self.dir);
+        }
+        drop(shared);
+        if let Some(held) = self.held.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
+            std::thread::spawn(move || drop(held));
+        }
+    }
 }
 
 struct Held {
@@ -806,18 +828,27 @@ struct Held {
     shown: u64,
 }
 
-static SHARED: LazyLock<Mutex<HashMap<PathBuf, Arc<Shared>>>> = LazyLock::new(Mutex::default);
+/// Each project folder some `Folder` names now, by its canonical path: one `Shared` while any does.
+static SHARED: LazyLock<Mutex<HashMap<PathBuf, std::sync::Weak<Shared>>>> = LazyLock::new(Mutex::default);
 
 fn shared(dir: &Path) -> Arc<Shared> {
     let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
-    SHARED.lock().unwrap_or_else(|e| e.into_inner()).entry(dir).or_default().clone()
-}
-
-/// The project in `dir` is forgotten: its connection and what it held go once nothing uses them, and its films' frame counts.
-pub fn let_go(dir: &Path) {
-    let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
-    SHARED.lock().unwrap_or_else(|e| e.into_inner()).remove(&dir);
-    FILMS.lock().expect("films lock").retain(|path, _| !path.starts_with(&dir));
+    let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(held) = shared.get(&dir).and_then(std::sync::Weak::upgrade) {
+        return held;
+    }
+    let held = Arc::new(Shared {
+        dir: dir.clone(),
+        writing: Mutex::default(),
+        collecting: Mutex::default(),
+        held: Mutex::default(),
+        checkpointing: std::sync::atomic::AtomicBool::default(),
+        upgraded: Mutex::default(),
+        book: std::sync::OnceLock::new(),
+        films: Mutex::default(),
+    });
+    shared.insert(dir, Arc::downgrade(&held));
+    held
 }
 
 /// A write that took this long, waiting and held, is said, with how long each took.
@@ -908,7 +939,18 @@ pub struct Folder {
 }
 
 impl Folder {
-    /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
+    /// `stamp` of the project in `dir` while anything holds it. Of one nothing does, its transactions' count, read with nothing opened:
+    /// another than any it had open, and it moves with each commit.
+    pub fn stamp_at(dir: &Path) -> String {
+        let canonical = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+        let held = SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(&canonical).and_then(std::sync::Weak::upgrade);
+        match held {
+            Some(shared) => Self { dir: dir.to_owned(), tools: PathBuf::new(), shared, unsaved: Mutex::default() }.stamp(),
+            None => db::seq_at(&dir.join(db::DB)).map_or_else(String::new, |seq| seq.to_string()),
+        }
+    }
+
+    /// The project in `dir` as Calcifer holds it, else opened for as long as this lives: for what lands from outside a walk.
     pub fn at(dir: &Path) -> Self {
         Self { dir: dir.to_owned(), tools: PathBuf::new(), shared: shared(dir), unsaved: Mutex::default() }
     }
@@ -935,6 +977,11 @@ impl Folder {
 
     fn id(&self) -> usize {
         Arc::as_ptr(&self.shared) as usize
+    }
+
+    /// Its history, as `read` first reads it, for as long as anything holds the project.
+    pub(super) fn book(&self, read: impl FnOnce() -> super::history::Book) -> Arc<super::history::Book> {
+        self.shared.book.get_or_init(|| Arc::new(read())).clone()
     }
 
     pub fn db(&self) -> PathBuf {
@@ -1531,14 +1578,14 @@ impl Folder {
     pub fn film_frames(&self, path: &Path) -> Option<u64> {
         let meta = std::fs::metadata(path).ok()?;
         let held = (meta.len(), meta.modified().ok()?);
-        if let Some((known, frames)) = FILMS.lock().expect("films lock").get(path)
+        if let Some((known, frames)) = self.shared.films.lock().expect("films lock").get(path)
             && *known == held
         {
             return *frames;
         }
         let (_, ffprobe) = platform::tools::ffmpeg(&self.tools, &crate::tools::path())?;
         let frames = super::tools::frames_of(&ffprobe, path);
-        FILMS.lock().expect("films lock").insert(path.to_owned(), (held, frames));
+        self.shared.films.lock().expect("films lock").insert(path.to_owned(), (held, frames));
         frames
     }
 
@@ -1763,9 +1810,6 @@ fn walked(dir: &Path) -> (u64, u64) {
     }
     (files, bytes)
 }
-
-/// What ffprobe last said of each film at a project's root, by its size and time.
-static FILMS: LazyLock<Mutex<HashMap<PathBuf, ((u64, std::time::SystemTime), Option<u64>)>>> = LazyLock::new(Mutex::default);
 
 /// A file in `files/` is named for its bytes: read-only, so that writing to it fails rather than make its name a lie.
 pub(super) fn sealed(path: &Path) {

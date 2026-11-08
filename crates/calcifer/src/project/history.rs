@@ -7,9 +7,9 @@
 //! edit of the same thing refuses it, naming that edit. A render is never undone, and nothing here rents or ends a machine.
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
-    path::{Path as FsPath, PathBuf},
-    sync::{Arc, LazyLock, Mutex},
+    collections::BTreeMap,
+    path::Path as FsPath,
+    sync::{Arc, Mutex},
 };
 
 use axum::{
@@ -20,7 +20,6 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use platform::durable;
 use protocol::{
     error::{Error, Kind},
     project::{By, Card, History, HistoryEntry, HistoryStep, HistoryStepped, Rename, Undone},
@@ -136,36 +135,23 @@ fn json<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("a history row serializes")
 }
 
-/// One project's history as its rows say, and a turn for undo and redo, one at a time.
-struct Book {
+/// One project's history as its rows say, and a turn for undo and redo, one at a time. Its folder holds it while the project is open.
+pub(super) struct Book {
     entries: Mutex<Vec<Entry>>,
     stepping: tokio::sync::Mutex<()>,
 }
 
-static BOOKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Book>>>> = LazyLock::new(Mutex::default);
-
-/// The project in `dir` is forgotten: its book goes, and is read from project.db if it's opened again.
-pub(super) fn let_go(dir: &FsPath) {
-    let key = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
-    BOOKS.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
-}
-
 fn book(folder: &Folder) -> Arc<Book> {
-    let key = durable::canonical(&folder.dir).unwrap_or_else(|_| folder.dir.clone());
-    let mut books = BOOKS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(held) = books.get(&key) {
-        return held.clone();
-    }
-    let entries = match folder.ops() {
-        Ok(rows) => rows.into_iter().filter_map(Entry::of).collect(),
-        Err(error) => {
-            warn!("{}: its history can't be read: {}", folder.dir.display(), error.message);
-            vec![]
-        }
-    };
-    let held = Arc::new(Book { entries: Mutex::new(entries), stepping: tokio::sync::Mutex::default() });
-    books.insert(key, held.clone());
-    held
+    folder.book(|| {
+        let entries = match folder.ops() {
+            Ok(rows) => rows.into_iter().filter_map(Entry::of).collect(),
+            Err(error) => {
+                warn!("{}: its history can't be read: {}", folder.dir.display(), error.message);
+                vec![]
+            }
+        };
+        Book { entries: Mutex::new(entries), stepping: tokio::sync::Mutex::default() }
+    })
 }
 
 /// `changes`, made by `by`, in `entries`: one more entry, or onto what `edits` began, if one did and it stands. The rows that change.

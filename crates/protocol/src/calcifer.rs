@@ -819,14 +819,21 @@ pub struct RunList {
     pub others: Vec<Run>,
 }
 
+/// `PUT /v1/events/{stream}`: the projects a page on that stream shows, which Calcifer holds open
+/// while it lasts or until it shows others.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Shown {
+    pub projects: Vec<String>,
+}
+
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
 /// answers it. No backlog: a client subscribes, then reads what it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamEvent {
-    /// First on every stream.
+    /// First on every stream. `stream` names it for `PUT /v1/events/{stream}`.
     #[serde(rename = "hello")]
-    Hello { version: String },
+    Hello { version: String, stream: String },
     #[serde(rename = "run.updated")]
     RunUpdated { run: Box<Run> },
     #[serde(rename = "machine.updated")]

@@ -181,7 +181,7 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
         true => format!("{}+{}", revision(dir), crate::store::now_ms()),
         false => revision(dir),
     };
-    let project = api.projects.open.lock().expect("projects lock").get(&id).cloned();
+    let project = api.projects.open_now(&id);
     let whole = |id, rev| StreamEvent::ProjectChanged { id, rev, assets: None, gone: vec![], head: false };
     let Some(project) = project else { return whole(id, rev) };
     let Ok(model) = of(api, &project).await else {
@@ -203,7 +203,7 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
 
 /// No one's listening to `id`: whoever next does reads it whole.
 pub(crate) fn forget(api: &Arc<Api>, id: &str) {
-    if let Some(project) = api.projects.open.lock().expect("projects lock").get(id) {
+    if let Some(project) = api.projects.open_now(id) {
         *project.told.lock().expect("told lock") = None;
     }
 }
