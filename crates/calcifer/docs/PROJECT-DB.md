@@ -17,7 +17,7 @@ CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `f
 
 | Table | Row | Was |
 |---|---|---|
-| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1 | file stats |
+| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819) | file stats, its path |
 | `head(key, value)` | A top-level section other than `assets` (`version`, `defaults`), as JSON | project.yaml |
 | `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list | project.yaml |
 | `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) | project.yaml |
@@ -121,5 +121,7 @@ folder is a project when it holds `project.db` (or a `project.yaml` to import).
 ## Open for Paul
 
 1. `cozy project import x.yaml` reads a project; any other file is an asset, as before. Recommended over a new verb.
-2. Identity stays the folder's path hash (audit P5's UUID is its own change: a copied folder would share one).
+2. Identity is `meta`'s `id` (cl-819): 128 random bits for a new project, the path hash it had for one from before. Calcifer's index
+   (`state.db`) maps it to its name and where it last was; a moved folder is the same project, and a copy of one another folder still
+   holds takes a new id when it opens, so its walk's paid work doesn't go on there.
 3. A hand-edited YAML imports without its comments: the database holds values, not text.

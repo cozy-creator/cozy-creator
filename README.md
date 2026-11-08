@@ -43,20 +43,11 @@ cozy run sdxl/generate --describe                       # the fields a function 
 ```
 
 Inline `key=value` inputs are the quick form: `cozy run sdxl/generate prompt='a fox in fresh snow'`.
-Files go in with `--file` (or by path inside the YAML, relative to it). A run is followed to its end;
-Ctrl-C stops following, never the run, and `cozy run show <N>` picks it up again.
-
-A video path can name a segment of it, `#t=<start>,<end>` (seconds, `m:ss` or `h:mm:ss`; either
-end may be left out: `#t=5`, `#t=,0:12`), in the YAML or in `--file name=path#t=…`. cozy cuts it once,
-frame-accurately, keeps it in `~/.cozy/cache/clips`, and sends the cut, not the whole file; a machine that
-already holds it is not sent it again:
-
-```yaml
-references:
-  - name: Video 1
-    kind: video
-    video: "videos/match.m4v#t=3:19,3:32"
-```
+Files go in with `--file` (or by path inside the YAML, relative to it), and local code as `./dir/function`
+or `./script.py/function`: each is sent by content, so Calcifer, here or on another computer, reads no folder
+of yours. A run is followed to its end; Ctrl-C stops following, never the run, and `cozy run show <N>` picks
+it up again. `-o <dir>` downloads its outputs, on `cozy run` and `cozy run show`. A video's frames are a box
+of the project mentioned with them, `clip='<match:48-144>'`, cut before it's sent.
 
 ```sh
 cozy machine rent            # what is for rent; then cozy machine rent <sku>
@@ -70,7 +61,8 @@ First-party packages have no owner (`sdxl/generate`); everyone else's are `owner
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
 `--on new` to run on a rented one. macOS and Windows don't run models locally yet: add `--on new` to
 rent a Linux GPU, or `--on <machine>` for one you have. A run belongs to a project, as a commit to a
-repository, and its outputs land in that project's `files/`.
+repository, and its outputs land in that project's `files/`: name it with `-p <name>`, or once for the
+shell with `export COZY_PROJECT=<name>`. The folder you're in names none.
 
 `cozy --help` and `cozy <verb> --help` are the reference.
 
@@ -79,15 +71,18 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Projects
 
-A project is a folder: `project.yaml`, which says what should exist; `project.lock` and `files/`, cozy's record of what was made; and the cuts. Everything in the film is an asset, a package's function makes it, and a run happens only when an asset has no state. Putting old text back returns the old take with no run, and a pin in the file is what approving means.
+A project has a name and an id, and lives in a folder on Calcifer's computer: `project.db`, what it says and has made, `files/`
+and the cuts. Everything in the film is an asset, a package's function makes it, and a run happens only when an asset has no
+state. Putting old text back returns the old take with no run, and approving pins a take.
 
 ```sh
-cozy project new garden && cd garden       # a short film that renders as it stands
+cozy project new garden                    # a short film that renders as it stands, in ~/garden
+export COZY_PROJECT=garden                 # the project the verbs below work in; -p garden says it for one
 cozy project render all --on <machine>
 cozy project render clash -n 3 --on <machine>
-cozy project approve clash 2               # clash holds take 2, as `approved` in project.yaml
+cozy project approve clash 2               # clash holds take 2, as `approved`
 cozy project status
-cozy open                                  # the canvas, in your browser
+cozy open garden                           # the canvas, in your browser
 ```
 
 The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
