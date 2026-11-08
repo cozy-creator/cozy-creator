@@ -167,6 +167,20 @@ pub fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str) -> R
     tx.commit().map_err(|e| sql(at, e))
 }
 
+/// `meta`'s `key`, if it has one.
+pub fn meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten()
+}
+
+/// Keeps `value` as `meta`'s `key`, in a transaction of its own: no part of the project changes, and `seq` doesn't move.
+pub fn set_meta(conn: &Connection, at: &Path, key: &str, value: Option<&str>) -> Result<(), Error> {
+    let done = match value {
+        Some(value) => conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]),
+        None => conn.execute("DELETE FROM meta WHERE key = ?1", [key]),
+    };
+    done.map(drop).map_err(|e| sql(at, e))
+}
+
 /// How many of its transactions changed it, read alone: for a project nothing holds open.
 pub fn seq_at(path: &Path) -> Option<u64> {
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;

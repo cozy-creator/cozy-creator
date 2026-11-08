@@ -91,6 +91,13 @@ impl Jobs {
         self.board.subscribe()
     }
 
+    /// The board an earlier walk ended on, as project.db kept it: what this shows until a walk begins.
+    pub fn ended_on(&self, board: Board) {
+        let mut held = self.held.lock().expect("jobs lock");
+        held.seq = held.seq.max(board.seq);
+        self.board.send_replace(board);
+    }
+
     /// A walk begins: the board starts empty, its `seq` still rising.
     pub fn begin(&self) {
         let mut held = self.held.lock().expect("jobs lock");

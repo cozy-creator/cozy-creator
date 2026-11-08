@@ -17,7 +17,7 @@ CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `f
 
 | Table | Row | Was |
 |---|---|---|
-| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819) | file stats, its path |
+| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on; `upgraded`: what upgrading its files from before said, until a run landing in it says it | file stats, its path |
 | `head(key, value)` | A top-level section other than `assets` (`version`, `defaults`), as JSON | project.yaml |
 | `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list | project.yaml |
 | `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) | project.yaml |

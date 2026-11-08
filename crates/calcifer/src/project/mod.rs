@@ -242,10 +242,11 @@ impl Projects {
             false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
         };
         // A folder from before project.db is imported as it opens, and given its id once it has one.
-        let (id, _) = match dir.join(db::DB).is_file() {
-            true => tokio::task::block_in_place(|| identify(api, dir))?,
-            false => (folder_id(dir), String::new()),
+        let known = match dir.join(db::DB).is_file() {
+            true => Some(tokio::task::block_in_place(|| identify(api, dir))?),
+            false => None,
         };
+        let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _)| id.clone());
         // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
         // rendering goes on where it was.
         let moved = self.open_now(&id).filter(|open| open.folder.dir != dir);
@@ -257,7 +258,10 @@ impl Projects {
             self.open.lock().expect("projects lock").remove(&id);
         }
         let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
-        let (id, name) = tokio::task::block_in_place(|| identify(api, dir))?;
+        let (id, name) = match known {
+            Some(known) => known,
+            None => tokio::task::block_in_place(|| identify(api, dir))?,
+        };
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
@@ -284,6 +288,9 @@ impl Projects {
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
                 open.insert(id, Arc::downgrade(&project));
+                if let Some(board) = project.folder.last_board() {
+                    project.jobs.ended_on(board);
+                }
                 project
             }
         };
@@ -498,14 +505,15 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
     // A folder from before project.db moves to format 4 here, said once, and its first read imports it. One a read moved as the run
     // was sent (it binds to the project) is said here too.
+    let folder = Folder::at(project);
     let (upgraded, refused) = match project.join(db::DB).is_file() {
-        true => (Folder::at(project).upgraded(), None),
+        true => (folder.upgraded(), None),
         false => match upgrade::on_touch(project) {
             Ok(said) => (said, None),
             Err(why) => (vec![], Some(why)),
         },
     };
-    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
+    let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
     let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
@@ -656,7 +664,12 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
         crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
+        // What it ended on is read after the project has closed, as status gives it.
+        if let Err(error) = walk.project.folder.keep_board(&walk.project.jobs.board()) {
+            warn!("keeping a render's board: {}", error.message);
+        }
         let asks = std::mem::take(&mut *walk.ended.lock().expect("ended lock"));
+        // The walk holds its project until here: what follows it hears `ended` before the project can close.
         walk.say(Event::Ended { error, rendered: walk.rendered(), asks });
     });
 }

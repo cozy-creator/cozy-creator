@@ -29,6 +29,10 @@ use super::{
     written::Written,
 };
 
+/// `meta`'s keys for what the upgrade of the files from before said, until a run landing says it, and the board the last render ended on.
+const UPGRADED: &str = "upgraded";
+const BOARD: &str = "board";
+
 /// What a project was before `project.db`, imported once on its first open and deleted (`legacy`).
 pub const PROJECT: &str = "project.yaml";
 pub const LOCK: &str = "project.lock";
@@ -789,8 +793,6 @@ struct Shared {
     held: Mutex<Option<Held>>,
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
-    /// What the first open's upgrade said, until a run landing in the project says it (`upgraded`).
-    upgraded: Mutex<Vec<String>>,
     /// Its history, read from project.db once.
     book: std::sync::OnceLock<Arc<super::history::Book>>,
     /// What ffprobe last said of each film at its root.
@@ -843,7 +845,6 @@ fn shared(dir: &Path) -> Arc<Shared> {
         collecting: Mutex::default(),
         held: Mutex::default(),
         checkpointing: std::sync::atomic::AtomicBool::default(),
-        upgraded: Mutex::default(),
         book: std::sync::OnceLock::new(),
         films: Mutex::default(),
     });
@@ -965,9 +966,30 @@ impl Folder {
         Ok(folder)
     }
 
-    /// What the first open's upgrade said and nothing has said yet: once.
+    /// What the first open's upgrade said and nothing has said yet: once. project.db keeps it until then, whatever closes between.
     pub fn upgraded(&self) -> Vec<String> {
-        std::mem::take(&mut *self.shared.upgraded.lock().unwrap_or_else(|e| e.into_inner()))
+        let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(held) = self.held() else { return vec![] };
+        let Some(held) = held.as_ref() else { return vec![] };
+        let Some(said) = db::meta(&held.conn, UPGRADED) else { return vec![] };
+        if let Err(error) = db::set_meta(&held.conn, &self.db(), UPGRADED, None) {
+            warn!("{}: {}", self.dir.display(), error.message);
+        }
+        serde_json::from_str(&said).unwrap_or_default()
+    }
+
+    /// The board the last render here ended on, as project.db keeps it.
+    pub fn last_board(&self) -> Option<protocol::project::Board> {
+        let held = self.held().ok()?;
+        db::meta(&held.as_ref()?.conn, BOARD).and_then(|board| serde_json::from_str(&board).ok())
+    }
+
+    /// Keeps the board a render ended on, for a read after this project has closed and opened again.
+    pub fn keep_board(&self, board: &protocol::project::Board) -> Result<(), Error> {
+        let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let held = self.held()?;
+        let held = held.as_ref().expect("held");
+        db::set_meta(&held.conn, &self.db(), BOARD, Some(&serde_json::to_string(board).expect("a board serializes")))
     }
 
     /// The project folder `dir` is, if it is one: `project.db`, or the files a first open imports.
@@ -996,13 +1018,21 @@ impl Folder {
                 Some(was) => was.conn,
                 None if !Self::is_project(&self.dir) => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy project new <path>")),
                 None => {
-                    // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once.
-                    if !self.db().is_file() {
-                        let said = super::upgrade::on_touch(&self.dir)?;
-                        super::legacy::import(self)?;
-                        self.shared.upgraded.lock().unwrap_or_else(|e| e.into_inner()).extend(said);
+                    // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once. What that
+                    // said waits in project.db for a run landing in it (`upgraded`).
+                    let said = match self.db().is_file() {
+                        true => vec![],
+                        false => {
+                            let said = super::upgrade::on_touch(&self.dir)?;
+                            super::legacy::import(self)?;
+                            said
+                        }
+                    };
+                    let conn = db::open(&self.db())?;
+                    if !said.is_empty() {
+                        db::set_meta(&conn, &self.db(), UPGRADED, Some(&serde_json::to_string(&said).expect("words serialize")))?;
                     }
-                    db::open(&self.db())?
+                    conn
                 }
             };
             let mut stored = db::load(&conn, &self.db())?;
