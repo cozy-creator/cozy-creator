@@ -12,6 +12,7 @@ pub mod contain;
 pub mod durable;
 pub mod gpu;
 pub mod handles;
+pub mod heap;
 pub mod ipc;
 pub mod lock;
 pub mod memory;

@@ -140,7 +140,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in, rental?: {machine_id, idle_deadline_ms?}}`. `rental` is there on a rental: `machine_id` is its Hub's name for this pod, which has no rental id of its own, and `idle_deadline_ms` when it releases itself unless a job comes, absent while one is queued or running. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, rental?: {machine_id, idle_deadline_ms?}}`. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `rental` is there on a rental: `machine_id` is its Hub's name for this pod, which has no rental id of its own, and `idle_deadline_ms` when it releases itself unless a job comes, absent while one is queued or running. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
 

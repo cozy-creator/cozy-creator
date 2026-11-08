@@ -1,6 +1,6 @@
 // Calcifer closes a project nothing reads (cl-823): twenty projects of 1,000 assets each, opened and closed in one Calcifer by the CLI and the page.
 // A project is open while a call on it, its stream, a page showing it or its render reads it, and the sign is its project.db: Calcifer has the
-// file open only then. Each closes once the CLI's call has answered, and once the page shows another; Calcifer's memory is back within a tenth of
+// file open only then. Each closes once the CLI's call has answered, and once the page shows another; Calcifer's heap is back within a tenth of
 // where it was after two projects went the same way; a reopen is as quick as its first open; a render keeps its project open while it goes,
 // waiting for its machine too, and it closes once that has landed.
 //   node closes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -33,8 +33,8 @@ const CLOSE_MS = 10_000;
 /** How long Calcifer is left alone before its memory is read: what a thread let go of, its allocator gives back. */
 const SETTLE_MS = 15_000;
 const BARS = {
-  // Back within a tenth of where it stood after two projects, twenty projects later: what a project costs open goes when it closes. Without
-  // closing, twenty hold ~700 MB on top.
+  // Calcifer's heap back within a tenth of where it stood after two projects, twenty projects later: what a project costs open goes when it
+  // closes. Without closing, twenty hold ~700 MB on top.
   memory_times_start: 1.1,
   // A reopen reads project.db as its first open did, the middle of twenty each, a runner's jitter aside.
   reopen_times_open: 1.25,
@@ -111,14 +111,18 @@ function calciferMb() {
   return Math.round(Number(execFileSync('ps', ['-o', 'rss=', '-p', String(HOLDER.pid)], { encoding: 'utf8' }).trim()) / 1024);
 }
 
-/** Calcifer's memory in MiB: resident, and on Linux what of it is its own (anonymous) and what is files mapped in (its code, read in as it's
- *  first used), and how many threads it has. */
-function memoryNow() {
-  if (process.platform !== 'linux') return { rss: calciferMb() };
+/** Calcifer's memory in MiB. Its heap, what its code holds, as `cozy status` says: what a project open costs, and closing gives back. And as
+ *  its OS says, resident, and on Linux what of that is its own (anonymous) and files mapped in (its code, read in as it's first used), and
+ *  how many threads it has. Resident memory also counts what its allocator keeps of what was freed: on the same code, a minute after the
+ *  last close, it stood 1.02–1.15× where it was after warm-up (cl-826), so it's kept for the record and judges nothing. */
+async function memoryNow(cozy) {
+  const { calcifer } = JSON.parse((await cozy('--json', 'status')).stdout);
+  const heap = Math.round((calcifer?.heap_bytes ?? NaN) / 2 ** 20 * 10) / 10;
+  if (process.platform !== 'linux') return { heap, rss: calciferMb() };
   const status = readFileSync(`/proc/${HOLDER.pid}/status`, 'utf8');
   const field = (name) => Number(status.match(new RegExp(`^${name}:\\s+(\\d+)`, 'm'))?.[1] ?? NaN);
   const mb = (name) => Math.round(field(name) / 1024);
-  return { rss: mb('VmRSS'), anon: mb('RssAnon'), file: mb('RssFile'), threads: field('Threads') };
+  return { heap, rss: mb('VmRSS'), anon: mb('RssAnon'), file: mb('RssFile'), threads: field('Threads') };
 }
 
 /** Whether Calcifer has the project in `folder` open: its project.db among the files it holds. Null where this can't be read (Windows). */
@@ -175,7 +179,7 @@ function held(folder) {
   const ids = [];
   seen.project = { folders, ids };
   const times = { import_s: [], open_s: [], reopen_s: [], closed_ms: { cli: [], page: [] } };
-  const memory = { trend: [] };
+  const memory = { trend: [], trend_rss: [] };
   seen.times = times;
   seen.memory_mb = memory;
   seen.bars = BARS;
@@ -193,7 +197,7 @@ function held(folder) {
   await page.waitForSelector('.top');
   await page.goto(`${base}/#/runs`);
   await page.waitForTimeout(SETTLE_MS);
-  memory.cold = memoryNow();
+  memory.cold = await memoryNow(cozy);
   const notClosed = { cli: [], page: [] };
   const notHeld = [];
 
@@ -233,7 +237,11 @@ function held(folder) {
       if (i > 0) {
         await reopened(i - 1);
         // Each with one project shown, the one before closed: what it holds after each, which levels off or grows with them.
-        if (counted) memory.trend.push(memoryNow()[process.platform === 'linux' ? 'anon' : 'rss']);
+        if (counted) {
+          const now = await memoryNow(cozy);
+          memory.trend.push(now.heap);
+          memory.trend_rss.push(now.anon ?? now.rss);
+        }
       }
     }
     await page.goto(`${base}/#/runs`);
@@ -246,7 +254,7 @@ function held(folder) {
   const warm = [0, 1].map((i) => join(homedir(), '.cozy', 'projects', `web-closes-${stamp}-warm-${i}`));
   folders.push(...warm);
   await pass(warm, false);
-  memory.start = memoryNow();
+  memory.start = await memoryNow(cozy);
   await pass(folders.slice(0, PROJECTS), true);
 
   check('each_is_open_while_the_page_shows_it', notHeld.length === 0, { not_held: notHeld });
@@ -256,11 +264,12 @@ function held(folder) {
   seen.open_median_s = open;
   seen.reopen_median_s = reopen;
   check('a_reopen_is_as_quick_as_the_first_open', reopen <= open * BARS.reopen_times_open + BARS.reopen_slack_s, { open_s: open, reopen_s: reopen });
-  memory.end = memoryNow();
-  // And left alone a minute more: what an allocator gives back late, and what it keeps.
+  memory.end = await memoryNow(cozy);
+  // And left alone a minute more: what Calcifer lets go of late.
   await page.waitForTimeout(60_000);
-  memory.later = memoryNow();
-  check('calcifer_gives_back_what_it_closed', memory.later.rss <= memory.start.rss * BARS.memory_times_start, memory);
+  memory.later = await memoryNow(cozy);
+  memory.later_times_start = { heap: +(memory.later.heap / memory.start.heap).toFixed(3), rss: +(memory.later.rss / memory.start.rss).toFixed(3) };
+  check('calcifer_gives_back_what_it_closed', memory.later.heap <= memory.start.heap * BARS.memory_times_start, memory);
 
   // A render going keeps its project open, with no call, stream or page on it: one waiting for its machine, behind another's run there,
   // too. Each closes once its run has landed.

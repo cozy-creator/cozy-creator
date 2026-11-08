@@ -3,8 +3,9 @@
 
 /// mimalloc gives back what any thread freed, on every OS. glibc's malloc kept each thread's frees in that thread's arena: in one
 /// Calcifer, web-scale's 5,000-asset project three times left 2,389 MB resident after its last delete, 62 MB of it in use (cl-822).
+/// Counted, so Calcifer says what its code holds, which its resident memory doesn't (cl-826).
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: platform::heap::Counted<mimalloc::MiMalloc> = platform::heap::Counted(mimalloc::MiMalloc);
 
 fn main() -> std::process::ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();

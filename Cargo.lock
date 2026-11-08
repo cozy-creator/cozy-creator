@@ -655,6 +655,7 @@ dependencies = [
  "calcifer",
  "cli",
  "mimalloc",
+ "platform",
  "tensord",
 ]
 

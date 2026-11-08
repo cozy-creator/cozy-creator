@@ -316,6 +316,7 @@ fn running(ctx: &Context, holder: &Holder, here: &CalciferStatus) -> serde_json:
         "os": here.os,
         "local_usable": here.local_usable,
         "signed_in": here.signed_in,
+        "heap_bytes": here.heap_bytes,
         "started_at_ms": holder.started_at_ms,
         "log": ctx.home.calcifer_log(),
     })
@@ -331,5 +332,6 @@ fn calcifer_record(ctx: &Context, holder: &Holder, here: &CalciferStatus) -> out
         .field("pid", holder.pid)
         .field("version", &here.version)
         .field("signed in", if here.signed_in { "yes" } else { "no" })
+        .field("holds", output::bytes(here.heap_bytes))
         .field("log", output::link(ctx, &ctx.home.calcifer_log()))
 }

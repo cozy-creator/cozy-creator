@@ -1824,6 +1824,10 @@ pub struct CalciferStatus {
     pub local_usable: bool,
     /// Whether this computer holds a device key for its Hub. `GET /v1/account` asks the Hub whether it still counts.
     pub signed_in: bool,
+    /// Bytes Calcifer's code has allocated and not freed: what it holds, which its resident memory also counts with what its
+    /// allocator keeps of what was freed.
+    #[serde(default)]
+    pub heap_bytes: u64,
     /// This computer is a rental: which, and when it releases itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rental: Option<StatusRental>,

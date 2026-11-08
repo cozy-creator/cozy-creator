@@ -611,6 +611,7 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         os: std::env::consts::OS.into(),
         local_usable: platform::Os::CURRENT.local_inference(),
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
+        heap_bytes: platform::heap::held(),
         rental: api.machines.rental_here(),
     }))
 }
