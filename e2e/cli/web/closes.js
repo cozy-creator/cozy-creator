@@ -175,7 +175,7 @@ function held(folder) {
   const ids = [];
   seen.project = { folders, ids };
   const times = { import_s: [], open_s: [], reopen_s: [], closed_ms: { cli: [], page: [] } };
-  const memory = {};
+  const memory = { trend: [] };
   seen.times = times;
   seen.memory_mb = memory;
   seen.bars = BARS;
@@ -236,7 +236,11 @@ function held(folder) {
     await page.waitForTimeout(1000);
     if (readable && !held(folder)) notHeld.push(i);
     if (i === PROJECTS >> 1) memory.half = memoryNow();
-    if (i > 0) await reopened(i - 1);
+    if (i > 0) {
+      await reopened(i - 1);
+      // Each with one project shown, the one before closed: what it holds after each, which levels off or grows with them.
+      memory.trend.push(memoryNow()[process.platform === 'linux' ? 'anon' : 'rss']);
+    }
   }
   await page.goto(`${base}/#/runs`);
   await reopened(PROJECTS - 1);
@@ -260,7 +264,10 @@ function held(folder) {
   check('a_reopen_is_as_quick_as_the_first_open', reopen <= open * BARS.reopen_times_open + BARS.reopen_slack_s, { open_s: open, reopen_s: reopen });
   await page.waitForTimeout(SETTLE_MS);
   memory.end = memoryNow();
-  check('calcifer_gives_back_what_it_closed', memory.end.rss <= memory.start.rss * BARS.memory_times_start, memory);
+  // And left alone a minute more: what an allocator gives back late, and what it keeps.
+  await page.waitForTimeout(60_000);
+  memory.later = memoryNow();
+  check('calcifer_gives_back_what_it_closed', memory.later.rss <= memory.start.rss * BARS.memory_times_start, memory);
 
   // A render going keeps its project open, with no call, stream or page on it: one waiting for its machine, behind another's run there,
   // too. Each closes once its run has landed.
