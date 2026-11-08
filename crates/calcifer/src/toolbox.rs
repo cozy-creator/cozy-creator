@@ -64,11 +64,6 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
         Some(project) => crate::project::local_code_named(&api, project)?,
         None => vec![],
     };
-    for package in mine.packages.iter().filter(|package| is_local(package)) {
-        if !named.iter().any(|(written, _)| written == package) {
-            named.push((package.clone(), PathBuf::from(package)));
-        }
-    }
     let local = read_local(&api, &hub, named, &on).await;
     let held = held(&api, &hub, &on).await;
     let (cards, mut note) = on_your_list(&api, &hub, &mine, &held).await;
@@ -102,23 +97,27 @@ fn mine(api: &Api) -> Result<ToolList, Refusal> {
     Ok(kept.unwrap_or_else(|| ToolList { packages: DEFAULTS.map(str::to_owned).to_vec(), without: vec![] }))
 }
 
-/// Whether a package on your list is local code, a directory by its absolute path, rather than a Hub's.
+/// Whether a package kept on your list is a path, as an earlier cozy kept local code there: it's no Hub's, and not listed.
 fn is_local(package: &str) -> bool {
     Path::new(package).is_absolute()
 }
 
-/// A package as the Hub's paths name it. Local code stays its path.
+/// A package as the Hub's paths name it.
 fn owned(package: &str) -> String {
-    match package.contains('/') || is_local(package) {
+    match package.contains('/') {
         true => package.to_owned(),
         false => format!("{ROOT}/{package}"),
     }
 }
 
 /// `POST /v1/tools/list`: a package on your list, all of it again if some was taken off, or tools off it. Nothing is installed or deleted, and a box
-/// of a tool taken off goes on as it was.
+/// of a tool taken off goes on as it was. Local code is a project's, named by its boxes (cl-819): a path is refused.
 pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<ToolList>, Refusal> {
     let asked: ToolListChange = parse(&body?)?;
+    if let Some(path) = asked.add.as_deref().filter(|package| protocol::target::written_as_path(package)) {
+        let said = format!("{path} is local code, which is a project's: a box names it by its path from the project's folder");
+        return Err(Refusal(Error::new(Kind::Usage, "tool_list_local", said).next("cozy project add ./<dir>/<function>")));
+    }
     let add = asked.add.map(|package| (owned(&package), format!("{}/", shown(&package))));
     let add = add.as_ref().map(|(full, shown_as)| (full.as_str(), shown_as.as_str()));
     let mine = api.calcifer.store().change_tool_list(&DEFAULTS, add, &asked.remove);
@@ -183,7 +182,11 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, held: &[Tool])
 async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on: &On) -> Vec<Tool> {
     let mut tools = vec![];
     for (written, path) in named {
-        let (package, document) = match local_code::describe(api, &path, on, hub).await {
+        let described = match local_code::own(api.machines.hubs.home(), &path) {
+            Ok(code) => local_code::describe(api, &code, on, hub).await,
+            Err(why) => Err(why),
+        };
+        let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
                 tracing::warn!("{written} isn't listed: {}", why.message);
@@ -270,7 +273,7 @@ pub(crate) async fn candidates(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(Strin
 /// What a box of `tool` asks for, read as `read` reads it. None: it can't be read.
 pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<Vec<tool::ToolField>> {
     let hub = api.machines.hubs.default_origin();
-    let found = target::describe(api, &hub, tool, Some(dir), &runs::default_on(api)).await.ok()?;
+    let found = target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await.ok()?;
     let interface = Interface::parse(&found.interface).ok()?;
     let function = found.function.as_deref().or(target::only_function(&interface))?.to_owned();
     tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
@@ -284,7 +287,7 @@ pub(crate) async fn read(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<(Stri
         return Ok((edit.makes, edit.name));
     }
     let hub = api.machines.hubs.default_origin();
-    let found = target::describe(api, &hub, tool, Some(dir), &runs::default_on(api)).await?;
+    let found = target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await?;
     let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
     let package = shown(&found.package);
     let name = found.function.as_deref().map(str::to_owned).or_else(|| target::only_function(&interface).map(str::to_owned));

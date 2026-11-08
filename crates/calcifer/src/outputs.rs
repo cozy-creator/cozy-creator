@@ -637,40 +637,47 @@ fn probe(ffprobe: &Path, path: &Path) -> Measured {
     }
 }
 
-/// Which item of a list output; 0 (the default) for a single output.
+/// Which item of a list output; 0 (the default) for a single output. A folder's `member`: one of its files, by its tree path.
 #[derive(Deserialize)]
 pub struct Item {
     #[serde(default)]
     index: u32,
+    #[serde(default)]
+    member: Option<String>,
 }
 
 /// `GET /v1/runs/{id|number}/outputs/{name}[?index=i]`: the output's exported file, whole or one
-/// `Range` of it, with `ETag: "r<rev>"` naming the revision it holds; otherwise why not.
+/// `Range` of it, with `ETag: "r<rev>"` naming the revision it holds; otherwise why not. A folder's is its tree document
+/// (`protocol::tree`), and `?member=` one of its files: a client fetches what it asks for, by content.
 pub async fn serve(
     State(api): State<Arc<Api>>,
     Route((run, name)): Route<(String, String)>,
     query: Result<Query<Item>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
-    let index = query?.0.index;
+    let Item { index, member } = query?.0;
     let row = api::find(&api, &run)?;
     let number = row.number;
-    let (item, file) = {
+    let (item, file, landed_folder) = {
         let _placing = lock(&api.calcifer.exports.placing);
         let item = api.calcifer.store().output(row.id.as_str(), &name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("run {number} has no output {name} at index {index}");
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run show {number}")))
         })?;
-        let file = match (&item.checkpoint, &item.path, item.exported_rev) {
-            (None, Some(path), Some(_)) => Some(std::fs::File::open(path).map_err(|e| {
+        let (file, landed_folder) = match (&item.checkpoint, &item.path, item.exported_rev) {
+            (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(path.clone())),
+            (None, Some(path), Some(_)) => (Some(std::fs::File::open(path).map_err(|e| {
                 let message = format!("its file {} is gone: {e}", path.display());
                 Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
-            })?),
-            _ => None,
+            })?), None),
+            _ => (None, None),
         };
-        (item, file)
+        (item, file, landed_folder)
     };
+    if let Some(dir) = landed_folder {
+        return folder(&dir, member.as_deref(), number, &name, &headers).await;
+    }
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
             "output {name} of run {number} is a TensorFS checkpoint reference: {}@{}",
@@ -681,10 +688,6 @@ pub async fn serve(
             "output_is_a_checkpoint",
             message,
         ));
-    }
-    if item.media_type == tree::MEDIA {
-        let message = format!("output {name} of run {number} is a folder: open it on disk");
-        return Err(api::refuse(Kind::Conflict, "output_is_a_tree", message));
     }
     let (Some(file), Some(rev)) = (file, item.exported_rev) else {
         let record = api.calcifer.record(&row)?;
@@ -717,6 +720,40 @@ pub async fn serve(
     Ok(response)
 }
 
+/// A folder output: its tree document, or with `member` one of its files, each named by its content so a client caches it.
+async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
+    let gone = |e: std::io::Error| {
+        let message = format!("its folder {} is gone: {e}", dir.display());
+        Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
+    };
+    let at = dir.to_owned();
+    let staged = tokio::task::spawn_blocking(move || protocol::stage::stage(&at, None))
+        .await
+        .map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))?
+        .map_err(Refusal)?;
+    let (file, media_type, etag) = match member {
+        None => {
+            let digest = protocol::ids::Digest::of(&staged.document);
+            let mut part = tempfile::tempfile().map_err(gone)?;
+            std::io::Write::write_all(&mut part, &staged.document).and_then(|()| std::io::Seek::rewind(&mut part)).map_err(gone)?;
+            (part, tree::MEDIA.to_owned(), format!("\"{digest}\""))
+        }
+        Some(member) => {
+            let parts: Vec<&str> = member.split('/').collect();
+            let path = parts.iter().fold(dir.to_owned(), |path, part| path.join(part));
+            let held = staged.files.iter().find(|file| file.path == path).filter(|_| !parts.iter().any(|part| matches!(*part, "" | "." | "..")));
+            let Some(held) = held else {
+                let message = format!("output {name} of run {number} holds no {member}");
+                return Err(Refusal(api::refuse(Kind::NotFound, "output_member_not_found", message).0.next(format!("cozy run show {number}"))));
+            };
+            let media = crate::runs::bind::sniff(&held.path).map(|sniffed| sniffed.media_type).unwrap_or_else(|_| "application/octet-stream".into());
+            (std::fs::File::open(&held.path).map_err(gone)?, media, format!("\"{}\"", held.digest))
+        }
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    crate::files::send(file, len, &media_type, &etag, headers).map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))
+}
+
 /// Where a run that names no directory puts its outputs: its package's folder, `<org>-<name>` as
 /// the Go CLI named it (`fidika-minimax-h3`, `local-my-script`), from a target
 /// `<org>/<name>/<function>[@release]` (a root package's: `<name>`); the outputs folder itself for
@@ -742,37 +779,9 @@ pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
     }
 }
 
-/// The item's name in its run's output directory: `<number>-<name>[-<i>]` and its media type's
-/// extension (none for a tree, a directory).
+/// The item's name in its run's output directory (`protocol::calcifer::output_file_name`).
 pub fn file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
-    let name: String = (name.chars().take(128))
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => c,
-            _ => '_',
-        })
-        .collect();
-    let stem = match index {
-        0 => format!("{number}-{name}"),
-        i => format!("{number}-{name}-{i}"),
-    };
-    let media_type = media_type.split(';').next().unwrap_or("").trim();
-    let extension = match media_type.to_ascii_lowercase().as_str() {
-        "image/png" => ".png",
-        "image/jpeg" | "image/jpg" => ".jpg",
-        "image/webp" => ".webp",
-        "image/gif" => ".gif",
-        "image/avif" => ".avif",
-        "video/mp4" => ".mp4",
-        "video/webm" => ".webm",
-        "audio/wav" | "audio/x-wav" | "audio/wave" => ".wav",
-        "audio/mpeg" => ".mp3",
-        "audio/flac" => ".flac",
-        "audio/ogg" => ".ogg",
-        "application/json" => ".json",
-        "text/plain" => ".txt",
-        _ => "",
-    };
-    stem + extension
+    protocol::calcifer::output_file_name(number, name, index, media_type)
 }
 
 fn item_id(number: u64, item: &OutputRow) -> String {
@@ -875,7 +884,7 @@ async fn fetch_tree(
     let mut read: HashMap<String, PathBuf> = HashMap::new();
     let members =
         tree::parse(&listed).map_err(|e| Failure::Lost(format!("the tree's manifest: {e}")))?;
-    for (path, tree::Member { length, sha256 }) in members {
+    for (path, tree::Member { length, sha256, .. }) in members {
         let digest = format!("sha256:{sha256}");
         let file = stage.join(&path);
         if let Some(parent) = file.parent() {

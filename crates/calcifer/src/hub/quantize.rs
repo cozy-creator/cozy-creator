@@ -3,7 +3,7 @@
 //! named, a release or local code: packages that serve the same model can each declare a recipe
 //! for it. Its `quantize` (the Runtime's) runs on the machine, which uploads the output as a
 //! commit of the model in that lane.
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -72,7 +72,7 @@ pub(super) async fn quote(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<RunQuote>, Refusal> {
     let ask: ModelQuantize = parse(&body?)?;
-    if Path::new(&ask.package).is_absolute() {
+    if ask.code.is_some() {
         return Err(Refusal(Error::new(
             Kind::Usage,
             "quote_local",
@@ -93,11 +93,12 @@ async fn plan(api: &Arc<Api>, key: &str, ask: ModelQuantize) -> Result<Planned, 
     let hub = origin(api, ask.hub.as_deref())?;
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let model = ModelRef::parse(&ask.model).map_err(Refusal)?;
-    let target = match Path::new(&ask.package).is_absolute() {
-        true => format!("{}/{RECIPES}", ask.package.trim_end_matches('/')),
-        false => published(&ask.package)?,
+    let (target, code) = match &ask.code {
+        Some(code) => (RECIPES.to_owned(), Some(code.clone())),
+        None if protocol::target::written_as_path(&ask.package) => return Err(Refusal(crate::runs::target::by_path(&ask.package))),
+        None => (published(&ask.package)?, None),
     };
-    let (package, interface, release) = match resolve(api, &hub, &target, None, &ask.on, false, true, key, ask.agreed).await.map_err(Refusal)? {
+    let (package, interface, release) = match resolve(api, &hub, &target, code.as_ref(), &ask.on, false, true, key, ask.agreed).await.map_err(Refusal)? {
         Resolved::Release { package, card, .. } => (package, card.interface, card.release),
         Resolved::Local { local, interface: None, .. } => {
             return Ok(Planned::Install(Box::new(local.install.expect("an uninstalled local target is being installed"))));
@@ -131,6 +132,7 @@ async fn plan(api: &Arc<Api>, key: &str, ask: ModelQuantize) -> Result<Planned, 
     terms.extend(calibration(&interface, &found, &source.spelled));
     Ok(Planned::Run(RunRequest {
         target,
+        code,
         on: Some(ask.on),
         hub: hub.to_string(),
         terms,

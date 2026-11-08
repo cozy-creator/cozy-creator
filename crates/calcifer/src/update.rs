@@ -350,7 +350,7 @@ pub(crate) async fn release_first(api: &Arc<crate::api::Api>, key: &str, name: &
         return Ok(None);
     }
     let submit = || crate::hub::release_install(hub, On::Machine(name.to_owned()), package, release, None);
-    Ok(match crate::local_code::install_through(api, &format!("{key}/install"), submit).await? {
+    Ok(match crate::local_code::install_through(api, &format!("{key}/install"), None, submit).await? {
         crate::local_code::Install::Going(run) => Some(run),
         // The run says for itself why it can't go.
         crate::local_code::Install::Ended(_) => None,

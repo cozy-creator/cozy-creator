@@ -1,6 +1,6 @@
 //! A file tree's document, the one form every cozy process writes and reads:
-//! `{"entries": [{"blob": {"length", "sha256"}, "kind": "file", "path"}]}`, keys sorted and entries
-//! by path. A path is the file's parts below the tree joined with `/`, each part one every OS can
+//! `{"entries": [{"blob": {"length", "sha256"}, "executable"?, "kind": "file", "path"}]}`, keys sorted and
+//! entries by path; `executable` only when true. A path is the file's parts below the tree joined with `/`, each part one every OS can
 //! name: not empty, `.` or `..`, and without `\`, `:` or NUL.
 use std::{
     collections::BTreeMap,
@@ -13,11 +13,13 @@ use serde::{Deserialize, Serialize};
 /// The media type of a tree's document.
 pub const MEDIA: &str = "application/vnd.cozy.tree-manifest";
 
-/// A file of a tree: its bytes' length and sha256 (lowercase hex).
+/// A file of a tree: its bytes' length and sha256 (lowercase hex), and whether it runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub length: u64,
     pub sha256: String,
+    #[serde(skip)]
+    pub executable: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -28,6 +30,8 @@ struct Document {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     blob: Member,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    executable: bool,
     kind: String,
     path: String,
 }
@@ -35,7 +39,7 @@ struct Entry {
 /// The document of `files`.
 pub fn document(files: &BTreeMap<String, Member>) -> Vec<u8> {
     let entries = (files.iter())
-        .map(|(path, blob)| Entry { blob: blob.clone(), kind: "file".into(), path: path.clone() })
+        .map(|(path, blob)| Entry { blob: blob.clone(), executable: blob.executable, kind: "file".into(), path: path.clone() })
         .collect();
     serde_json::to_vec(&Document { entries }).expect("a tree document serializes")
 }
@@ -47,7 +51,8 @@ pub fn parse(bytes: &[u8]) -> io::Result<BTreeMap<String, Member>> {
         serde_json::from_slice(bytes).map_err(|e| invalid(format!("a tree document: {e}")))?;
     let hex = |s: &str| s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     let mut files = BTreeMap::new();
-    for Entry { blob, kind, path } in document.entries {
+    for Entry { mut blob, executable, kind, path } in document.entries {
+        blob.executable = executable;
         if kind != "file" {
             return Err(invalid(format!("a tree holds files, not {kind:?}")));
         }

@@ -50,11 +50,10 @@ struct Installed {
     after: AfterRun,
 }
 
-/// Installs `package` (`org/name`, else a package directory's or script's absolute path) on a
-/// machine through Calcifer: its environment, no weights. Calcifer names the newest release when
-/// none is given, and retires the older ones the machine holds once it is in.
-pub async fn install(ctx: &Context, package: String, release: Option<String>, on: On) -> Result<ExitCode, Error> {
-    let mut ask = PackageInstall { hub: Some(ctx.hub().to_string()), package, release, on: on.clone(), agreed: None };
+/// Installs `package` (`org/name`), or local code by content, on a machine through Calcifer: its environment, no weights.
+/// Calcifer names the newest release when none is given, and retires the older ones the machine holds once it is in.
+pub async fn install(ctx: &Context, package: String, code: Option<protocol::code::LocalCode>, release: Option<String>, on: On) -> Result<ExitCode, Error> {
+    let mut ask = PackageInstall { hub: Some(ctx.hub().to_string()), package, code, release, on: on.clone(), agreed: None };
     let submitted: Submitted = crate::ask::start(
         ctx,
         "/v1/package-installs",

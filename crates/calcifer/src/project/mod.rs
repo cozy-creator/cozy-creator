@@ -83,8 +83,8 @@ use tools::Canvas;
 
 pub(crate) use thumbs::previews;
 
-/// The projects this Calcifer knows: those open since it started, by id (one folder is always one
-/// project). Every folder it opened is in `state.db`'s `projects`.
+/// The projects this Calcifer knows: those open since it started, by id, which each keeps in its `project.db` (cl-819). Every
+/// one it opened is in `state.db`'s `projects`, by id, with its name and where it last was.
 #[derive(Default)]
 pub struct Projects {
     open: Mutex<HashMap<String, Arc<Project>>>,
@@ -192,20 +192,41 @@ impl Projects {
             let said = format!("this computer knows no project {id}");
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
         };
-        self.open(api, &entry.path).map_err(Refusal)?;
-        Ok(self.open.lock().expect("projects lock").get(id).cloned().expect("just opened"))
+        let opened = self.open(api, &entry.path).map_err(Refusal)?;
+        let found = self.open.lock().expect("projects lock").get(id).cloned();
+        found.filter(|_| opened == id).ok_or_else(|| {
+            let said = format!("{id} was in {}, which holds another project now", entry.path.display());
+            Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls"))
+        })
     }
 
-    /// The project in `dir` (canonical), opened once; its walk goes on when one is owed.
+    /// The project in `dir` (canonical), opened once, given its id and name and recorded in the index; its walk goes on when one
+    /// is owed.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
         // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
         let said = match dir.join(db::DB).is_file() {
             true => vec![],
             false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
         };
+        // A folder from before project.db is imported as it opens, and given its id once it has one.
+        let (id, _) = match dir.join(db::DB).is_file() {
+            true => tokio::task::block_in_place(|| identify(api, dir))?,
+            false => (folder_id(dir), String::new()),
+        };
+        // Moved since it opened: the same project, read where it is now. One rendering goes on where it was.
+        let moved = self.open.lock().expect("projects lock").get(&id).filter(|open| open.folder.dir != dir).cloned();
+        if let Some(open) = moved {
+            if *open.walking.lock().expect("walking lock") {
+                let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
+                return Err(Error::new(Kind::Conflict, "project_busy", said));
+            }
+            self.open.lock().expect("projects lock").remove(&id);
+            folder::let_go(&open.folder.dir);
+            history::let_go(&open.folder.dir);
+        }
         let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
+        let (id, _) = tokio::task::block_in_place(|| identify(api, dir))?;
         crate::events::project_opened(dir);
-        let id = project_id(dir);
         let project = (self.open.lock().expect("projects lock").entry(id.clone()))
             .or_insert_with(|| {
                 let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
@@ -240,13 +261,6 @@ const CANCELED: &str = "version_canceled";
 /// How long what was heard of a package stands before a read asks again, in the background.
 const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// The words a run hears outside a project, as `git` says it of a repository.
-pub(crate) fn not_in_one() -> Error {
-    Error::new(Kind::Usage, "not_in_a_project", "not in a project: cd into one, or make one")
-        .next("cozy project ls")
-        .next("cozy project new my-project && cd my-project")
-}
-
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
     dir.join(folder::RUNS)
@@ -257,17 +271,37 @@ pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
 }
 
-/// The folder of the project a request names: its id (`404 project_unknown` when this computer knows none), else the project
-/// holding a path, if one does.
-pub(crate) fn named(api: &Api, named: &FsPath) -> Result<Option<PathBuf>, Error> {
-    let text = named.to_string_lossy();
-    if !text.starts_with("project-") || text.contains(['/', '\\']) {
-        return Ok(holding(named).ok());
+/// The folder of the project a request names (`protocol::project::NAMED_BY`): its id or name in the index, or the project holding
+/// a folder of this computer's, by its absolute path. Never a client's folder: a relative path names none.
+pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
+    let text = text.trim();
+    let path = FsPath::new(text);
+    if protocol::target::written_as_path(text) {
+        if !path.is_absolute() {
+            let said = format!("{text} is relative, and Calcifer has no folder of a client's to start it from");
+            return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", protocol::project::NAMED_BY)));
+        }
+        return holding(path);
     }
-    let known = api.calcifer.store().known_project(&text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-    match known.map(|entry| entry.path) {
-        Some(path) => Ok(Some(path)),
-        None => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
+    Ok(known(api, text)?.path)
+}
+
+/// The project the index knows by `text`, its id or its name (in any case).
+fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
+    let store = api.calcifer.store();
+    let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
+    if let Some(entry) = store.known_project(text).map_err(failed)? {
+        return Ok(entry);
+    }
+    let mut named: Vec<_> = store.known_projects().map_err(failed)?.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
+    match named.len() {
+        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
+        1 => Ok(named.remove(0)),
+        _ => {
+            let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();
+            let said = format!("{text} names {} projects: {}", ids.len(), ids.join(", "));
+            Err(Error::new(Kind::Conflict, "project_ambiguous", said).remedy("name it by its id"))
+        }
     }
 }
 
@@ -433,9 +467,85 @@ pub(crate) fn stays(project: &FsPath, sha256: &str, machine: &str, length: u64) 
     Folder::at(project).stays(sha256, machine, length).map_err(|e| e.message)
 }
 
-/// One folder's id, the same for as long as it is there.
+/// Each project folder's id and name, as its `project.db` keeps them, read once.
+static IDENTITIES: std::sync::LazyLock<Mutex<HashMap<PathBuf, (String, String)>>> = std::sync::LazyLock::new(Mutex::default);
+
+/// The id of the project in `dir`, which its `project.db` keeps (cl-819).
 pub(crate) fn project_id(dir: &FsPath) -> String {
+    identity(dir).0
+}
+
+/// The project in `dir`: its id and name as its `project.db` keeps them. One given none yet goes by its folder's until it opens.
+pub(crate) fn identity(dir: &FsPath) -> (String, String) {
+    if let Some(known) = IDENTITIES.lock().expect("identities lock").get(dir) {
+        return known.clone();
+    }
+    match kept_identity(dir) {
+        Some(kept) => {
+            IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), kept.clone());
+            kept
+        }
+        None => (folder_id(dir), folder_name(dir)),
+    }
+}
+
+fn kept_identity(dir: &FsPath) -> Option<(String, String)> {
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    db::identity(&rusqlite::Connection::open_with_flags(dir.join(db::DB), flags).ok()?)
+}
+
+/// The id a folder from before cl-819 takes at its first open: its path's, as it was known by then, so links to it stand.
+fn folder_id(dir: &FsPath) -> String {
     format!("project-{}", &hex::encode(Sha256::digest(dir.to_string_lossy().as_bytes()))[..16])
+}
+
+/// A new project's id: 128 random bits.
+fn fresh_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the OS gives random bytes");
+    format!("project-{}", hex::encode(bytes))
+}
+
+fn folder_name(dir: &FsPath) -> String {
+    dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "untitled".into())
+}
+
+/// The project in `dir`, its id and name kept in its `project.db` (which it never makes: a folder from before has one once it's
+/// imported) and recorded in the index. One from before cl-819 keeps the id
+/// its path gave it; a copy of a project another folder still holds takes a new id; a name another project has takes `_2`.
+fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
+    let path = dir.join(db::DB);
+    if !path.is_file() {
+        return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)));
+    }
+    let mut conn = db::open(&path)?;
+    let kept = db::identity(&conn);
+    let store = api.calcifer.store();
+    let copied = |id: &str| {
+        let elsewhere = store.known_project(id).ok().flatten().filter(|known| known.path != dir);
+        elsewhere.is_some_and(|known| kept_identity(&known.path).is_some_and(|(held, _)| held == id))
+    };
+    let (id, name) = match &kept {
+        Some((id, name)) if !copied(id) => (id.clone(), name.clone()),
+        Some((_, name)) => (fresh_id(), name.clone()),
+        None => (folder_id(dir), String::new()),
+    };
+    let name = unique_name(api, &id, if name.is_empty() { folder_name(dir) } else { name })?;
+    if kept.as_ref() != Some(&(id.clone(), name.clone())) {
+        db::set_identity(&mut conn, &path, &id, &name)?;
+    }
+    drop(conn);
+    IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name.clone()));
+    store.project_opened(&id, &name, dir, None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+    Ok((id, name))
+}
+
+/// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by.
+fn unique_name(api: &Api, id: &str, wanted: String) -> Result<String, Error> {
+    let known = api.calcifer.store().known_projects().map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+    let taken = |name: &str| known.iter().any(|entry| entry.id != id && entry.name.eq_ignore_ascii_case(name));
+    let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
+    Ok(names.into_iter().find(|name| !taken(name)).expect("names go on"))
 }
 
 /// What `project.changed` says of the project in `dir`: its revision in `project.db`, which moves with each commit, and how `files/` stands,
@@ -850,24 +960,40 @@ fn remember(api: &Api) {
 
 /// What to run while a project's render goes on.
 fn status_next(folder: &Folder) -> Vec<String> {
-    vec![format!("cozy project -p {} status", folder.dir.display())]
+    vec![format!("cozy project -p {} status", identity(&folder.dir).1)]
 }
 
-/// By `name`, makes a new empty project in this person's home folder. By `path`, opens the project holding it (the nearest folder up from
-/// it with a project.yaml), or makes one there (`create`: the folder and its project.yaml). Either way it is recorded in the index as
-/// used now.
+/// By `project`, opens the project it names (`named`). Else makes a new one called `name`: in this person's home folder, or at
+/// `path`, a folder of this computer's. Either way it is recorded in the index as used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
     let open: Open = parse(&body?)?;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let mut moved_on = None;
-    let dir = match (&open.name, &open.path) {
-        (Some(name), _) => {
-            let made = key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned());
-            match made {
+    let made = open.project.is_none();
+    let dir = match (&open.project, &open.path) {
+        (Some(project), _) => named(&api, project).map_err(Refusal)?,
+        (None, Some(path)) if !path.is_absolute() => {
+            let said = format!("{} is relative: a project is made at a folder of Calcifer's computer by its absolute path", path.display());
+            return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
+        }
+        (None, Some(path)) => {
+            if Folder::is_project(path) {
+                let said = format!("{} is a project already", path.display());
+                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
+            }
+            std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
+            let name = open.name.clone().unwrap_or_else(|| folder_name(path));
+            made_new(&api, path, &name, open.starter).map_err(Refusal)?
+        }
+        (None, None) => {
+            let Some(name) = &open.name else {
+                return Err(Refusal(Error::new(Kind::Usage, "project_path", format!("name {}, or a new one by its name", protocol::project::NAMED_BY))));
+            };
+            match key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned()) {
                 Some(dir) => dir,
                 None => {
-                    let (dir, why) = named_project(&api, name).map_err(Refusal)?;
+                    let (dir, why) = named_project(&api, name, open.starter).map_err(Refusal)?;
                     moved_on = why;
                     if let Some(key) = key {
                         api.projects.made.lock().expect("made lock").insert(key.to_owned(), dir.clone());
@@ -876,41 +1002,23 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
                 }
             }
         }
-        (None, Some(path)) if !path.is_absolute() => {
-            return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is opened by its absolute path")));
-        }
-        (None, Some(path)) if open.create => {
-            if Folder::is_project(path) {
-                let said = format!("{} is a project already", path.display());
-                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
-            }
-            std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
-            let written = written::Written::from_yaml(&format::starter()).map_err(Refusal)?;
-            made_new(path, written).map_err(Refusal)?
-        }
-        (None, Some(path)) => holding(path).map_err(Refusal)?,
-        (None, None) => {
-            return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is made by its name, or opened by its absolute path")));
-        }
     };
-    // Known first: a walk this open starts records itself there.
-    let id = project_id(&dir);
-    api.calcifer.store().project_opened(&id, &dir, now_ms())?;
-    api.projects.open(&api, &dir).map_err(Refusal)?;
-    let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
+    let id = api.projects.open(&api, &dir).map_err(Refusal)?;
+    api.calcifer.store().project_opened(&id, &identity(&dir).1, &dir, Some(now_ms()))?;
+    let opened = opened(id.clone(), &dir);
+    let next = made.then(|| format!("cozy project -p {} render all --on <machine>", opened.name)).into_iter().collect();
     let said = moved_on.into_iter().chain(api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..)).collect();
-    Ok(Json(Opened { next, said, ..opened(id, &dir) }))
+    Ok(Json(Opened { next, said, ..opened }))
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
 fn opened(id: String, dir: &FsPath) -> Opened {
-    let name = dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    Opened { id, path: dir.to_owned(), name, next: vec![], said: vec![] }
+    Opened { id, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
 }
 
-/// A new empty project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
+/// A new project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
 /// there already stays as it is, a folder of anything or another project, and it says so: nothing is made in a folder it didn't make.
-fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Error> {
+fn named_project(api: &Api, name: &str, starter: bool) -> Result<(PathBuf, Option<String>), Error> {
     let home = &api.machines.user_home;
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
     let wanted = format::plain_name(name).unwrap_or_else(|| "untitled".to_owned());
@@ -919,7 +1027,7 @@ fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Err
         let dir = home.join(&name);
         match std::fs::create_dir(&dir) {
             Ok(()) => {
-                let dir = made_new(&dir, written::Written::blank())?;
+                let dir = made_new(api, &dir, &name, starter)?;
                 let why = (name != wanted).then(|| format!("{} is taken, so this is {name}", home.join(&wanted).display()));
                 return Ok((dir, why));
             }
@@ -930,15 +1038,23 @@ fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Err
     unreachable!("names go on")
 }
 
-/// A new project in `dir`, holding `written`: its `project.db`, made whole and then named. Its canonical folder.
-fn made_new(dir: &FsPath, written: written::Written) -> Result<PathBuf, Error> {
+/// A new project called `name` in `dir`, with a new id, holding the starter film or nothing: its `project.db`, made whole and then
+/// named. Its canonical folder.
+fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBuf, Error> {
     let io = |e: platform::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display()));
+    let written = match starter {
+        true => written::Written::from_yaml(&format::starter())?,
+        false => written::Written::blank(),
+    };
     let part = dir.join(format!("{}.new", db::DB));
     db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
+    let canonical = platform::durable::canonical(dir).map_err(io)?;
+    let (id, name) = (fresh_id(), unique_name(api, "", name.to_owned())?);
+    db::set_identity(&mut db::open(&part)?, &part, &id, &name)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
-    let dir = platform::durable::canonical(dir).map_err(io)?;
-    crate::events::project_changed(&dir);
-    Ok(dir)
+    IDENTITIES.lock().expect("identities lock").insert(canonical.clone(), (id, name));
+    crate::events::project_changed(&canonical);
+    Ok(canonical)
 }
 
 /// The project folder holding `path`: the nearest, up from it, that is one.
@@ -946,8 +1062,8 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
     let not_found = || {
         let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
         Error::new(Kind::NotFound, "project_not_found", said)
-            .remedy("run it inside a project's folder, or name one with -p <path>")
-            .next("cozy project new <path>")
+            .remedy(format!("name {}", protocol::project::NAMED_BY))
+            .next("cozy project ls")
     };
     let start = platform::durable::canonical(path).map_err(|_| not_found())?;
     (start.ancestors()).find(|dir| Folder::is_project(dir)).map(FsPath::to_owned).ok_or_else(not_found)
@@ -964,8 +1080,8 @@ struct Page {
     before: Option<String>,
 }
 
-/// The index, last used first: each project's folder name, path and last use, whether its folder
-/// is gone, and whether it is rendering.
+/// The index, last used first: each project's name, where it last was and its last use, whether its folder is gone, and whether
+/// it is rendering.
 async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<Json<Listed>, Refusal> {
     let mut known = api.calcifer.store().known_projects()?;
     if let Some(before) = &page.before {
@@ -977,7 +1093,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let open = api.projects.open.lock().expect("projects lock");
     let projects = (known.into_iter().take(limit))
         .map(|entry| Known {
-            name: entry.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+            name: entry.name,
             missing: !Folder::is_project(&entry.path),
             busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
             path: entry.path,
@@ -998,6 +1114,7 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     open.remove(&id);
     drop(open);
     let known = api.calcifer.store().known_project(&id)?;
+    IDENTITIES.lock().expect("identities lock").retain(|_, (held, _)| *held != id);
     match api.calcifer.store().forget_project(&id)? {
         true => {
             if let Some(known) = known {

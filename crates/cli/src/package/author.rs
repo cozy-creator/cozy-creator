@@ -1,6 +1,6 @@
 //! `cozy package lock|publish|yank|delete`: authoring, through Calcifer (CALCIFER-API.md
-//! "Packages"). Calcifer locks and publishes this directory's project with uv on this computer:
-//! package code never runs here, and the authored files never change but `uv.lock`.
+//! "Packages"). The package goes by content, and Calcifer locks and publishes its copy with uv:
+//! package code never runs, and the authored files never change but `uv.lock`, which the CLI writes.
 use std::process::ExitCode;
 
 use protocol::{
@@ -41,18 +41,37 @@ async fn authored(ctx: &Context, route: &str, ask: &impl Serialize) -> Result<Au
     }
 }
 
-pub async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
+/// The package folder `path` names (else this one), sent by content.
+async fn sent(ctx: &Context, path: Option<std::path::PathBuf>) -> Result<(std::path::PathBuf, protocol::code::LocalCode), Error> {
     let dir = match path {
         Some(path) => here()?.join(path),
         None => here()?,
     };
-    let ask = LockAsk { hub: Some(ctx.hub().to_string()), dir, root, upgrade: upgrade.to_vec() };
+    let code = crate::send::Sender::new(ctx).await?.code(&dir).await?;
+    Ok((dir, code))
+}
+
+/// The `uv.lock` Calcifer made, written into the package's folder `dir` whole: its path.
+fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::PathBuf, Error> {
+    let path = dir.join("uv.lock");
+    platform::durable::replace(&path, lock.as_bytes(), 0o644)
+        .map_err(|e| Error::new(Kind::Unavailable, "lock_unwritable", format!("{}: {e}", path.display())))?;
+    Ok(path)
+}
+
+pub async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
+    let (dir, code) = sent(ctx, path).await?;
+    let ask = LockAsk { hub: Some(ctx.hub().to_string()), code, root, upgrade: upgrade.to_vec() };
     let done = authored(ctx, "/v1/package-locks", &ask).await?;
     let result = done.locked.ok_or_else(|| Error::new(Kind::Internal, "untyped_answer", "a lock that ended with no lock"))?;
+    let lock = match result.changed {
+        true => written(&dir, &result.lock)?,
+        false => dir.join("uv.lock"),
+    };
     match ctx.json {
-        true => output::json(&result),
+        true => output::json(&serde_json::json!({"lock": lock, "account_index": result.account_index, "changed": result.changed})),
         false => output::Record::new()
-            .field("lock", result.lock.display())
+            .field("lock", lock.display())
             .field("account index", result.account_index.as_deref().unwrap_or("none"))
             .field("changed", result.changed)
             .print(ctx),
@@ -61,10 +80,16 @@ pub async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[St
 }
 
 pub async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode, Error> {
-    let ask = PublishAsk { hub: Some(ctx.hub().to_string()), dir: here()?, root, yanked };
+    let (dir, code) = sent(ctx, None).await?;
+    let ask = PublishAsk { hub: Some(ctx.hub().to_string()), code, root, yanked };
     let done = authored(ctx, "/v1/package-publications", &ask).await?;
     let result = (done.published)
         .ok_or_else(|| Error::new(Kind::Internal, "untyped_answer", "a publication that ended with no release"))?;
+    // Locked first, it holds the lock it was published with.
+    if let Some(lock) = &result.lock {
+        let path = written(&dir, lock)?;
+        output::say(ctx, &format!("wrote {}", path.display()));
+    }
     if ctx.json {
         output::json(&result);
     } else {

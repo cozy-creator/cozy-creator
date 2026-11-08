@@ -240,7 +240,7 @@ export interface ProjectList {
 export interface Opened {
   id: string
   path: string
-  name?: string
+  name: string
   /** What opening it did, or found, said once. */
   said?: string[]
 }
@@ -419,7 +419,7 @@ export interface OutputItem {
   label?: string
   status: ItemStatus
   sha256?: string
-  path?: string
+  /** Where Calcifer serves it once it landed; a folder's is its tree document. */
   url?: string
   width?: number
   height?: number

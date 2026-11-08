@@ -35,9 +35,9 @@ pub struct Query {
     pub package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
-    /// A project's folder: only its runs.
+    /// A project's id: only its runs.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<std::path::PathBuf>,
+    pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub before: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,7 +148,7 @@ pub(crate) fn matches(query: &Query, run: &Run) -> bool {
         .machine
         .as_ref()
         .is_none_or(|m| run.machine.as_ref() == Some(m));
-    let project = query.project.as_ref().is_none_or(|p| run.project.as_ref() == Some(p));
+    let project = query.project.as_ref().is_none_or(|p| run.project_id.as_ref() == Some(p));
     state && package && machine && project
 }
 
@@ -235,7 +235,7 @@ fn row(run: &Run) -> Vec<String> {
     vec![
         run.name(),
         clip_target(target),
-        run.project.as_ref().and_then(|at| at.file_name()).map_or_else(|| "—".into(), |name| name.to_string_lossy().into_owned()),
+        run.project.clone().unwrap_or_else(|| "—".into()),
         run.machine.clone().unwrap_or_else(|| "—".into()),
         status,
         clip(progress),

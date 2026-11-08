@@ -25,9 +25,10 @@ use crate::{
 const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
-  cozy project new garden
+  cozy project new garden                      in Calcifer's home folder, ~/garden; or at a folder of its, by its absolute path
+  export COZY_PROJECT=garden                   the project every verb after works in; -p garden says it for one
   cozy open garden                             in your browser
-  cd garden && cozy project import ./kyogre.png   adds it as kyogre, which <kyogre> reads in any text
+  cozy project import ./kyogre.png             adds it as kyogre, which <kyogre> reads in any text
   cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
   cozy project set whale megapixels=1 at=400,120   as its box's controls; --input takes a file of them
   cozy project delete whale                    prints the command that puts it back
@@ -42,7 +43,9 @@ const EXAMPLES: &str = "Examples:
   cozy project push                            its files to your Tensorhub account
   cozy project pull                            on another computer, the files the project names
 
-A project is its folder: project.db, which holds what it says and has made, and files/. PROJECT-YAML.md explains the YAML.";
+A project is named by its name or id, which `ls` lists, with -p or COZY_PROJECT: Calcifer may be on another computer, so the folder
+you are in names none. Its folder, on Calcifer's computer, holds project.db, what it says and has made, and files/. PROJECT-YAML.md
+explains the YAML.";
 
 const RENDER_EXAMPLES: &str = "Examples:
   cozy project render all --on kiyui               a new version of everything not approved, each reading the new ones before it
@@ -67,20 +70,20 @@ Ctrl-C stops following, never the runs.";
 #[derive(clap::Args, Debug)]
 #[command(after_help = EXAMPLES)]
 pub struct Args {
-    /// The project's folder, if not the one you are in.
-    #[arg(short = 'p', value_name = "PATH", global = true)]
-    path: Option<PathBuf>,
+    /// The project: its name or id, or its folder on Calcifer's computer by its absolute path. Default: COZY_PROJECT.
+    #[arg(short = 'p', value_name = "PROJECT", global = true)]
+    project: Option<String>,
     #[command(subcommand)]
     verb: Verb,
 }
 
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
-    /// Make a project folder.
-    #[command(after_help = "Example:\n  cozy project new garden && cozy open garden")]
+    /// Make a project, holding the starter film.
+    #[command(after_help = "Examples:\n  cozy project new garden && cozy open garden\n  cozy project new /srv/films/garden   at that folder of Calcifer's computer")]
     New {
-        /// The folder to make it in.
-        path: PathBuf,
+        /// Its name: it lives in Calcifer's home folder (`_2` when that's taken). Or a folder on Calcifer's computer, by its absolute path.
+        project: String,
     },
     /// List your projects.
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
@@ -262,10 +265,18 @@ struct Render {
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Verb::New { path } => {
-            let opened = open(ctx, Some(&path), true).await?;
-            let folder = output::link(ctx, &opened.path);
-            output::say(ctx, &format!("made {folder}: a short film, ready to render or change"));
+        Verb::New { project } => {
+            let ask = match protocol::target::written_as_path(&project) {
+                true => Open { path: Some(PathBuf::from(&project)), starter: true, ..Open::default() },
+                false => Open { name: Some(project), starter: true, ..Open::default() },
+            };
+            let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &ask, Some(&mint_key())).await?;
+            opened.said.iter().for_each(|said| output::warn(said));
+            if ctx.json {
+                output::json(&opened);
+                return Ok(ExitCode::SUCCESS);
+            }
+            output::say(ctx, &format!("made {} in {}: a short film, ready to render or change", opened.name, opened.path.display()));
             output::nexts(ctx, &opened.next);
         }
         Verb::Ls => {
@@ -274,7 +285,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&listed);
                 return Ok(ExitCode::SUCCESS);
             }
-            let table = output::Table::new(ctx, ["NAME", "FOLDER", "USED", "STATE"]);
+            let table = output::Table::new(ctx, ["NAME", "ID", "FOLDER", "USED", "STATE"]);
             let rows = listed.projects.iter().map(|known| {
                 let state = match (known.missing, known.busy) {
                     (true, _) => "missing",
@@ -282,33 +293,32 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                     (false, false) => "-",
                 };
                 let used = format!("{} ago", output::age(known.used_at_ms));
-                [known.name.clone(), known.path.display().to_string(), used, state.into()]
+                [known.name.clone(), known.id.clone(), known.path.display().to_string(), used, state.into()]
             });
             rows.fold(table, output::Table::row).print();
             if listed.older > 0 {
                 output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
             }
         }
-        Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
-        Verb::Export { out } => return export(ctx, args.path.as_ref(), out).await,
-        Verb::Add(add) => return assets::add(ctx, args.path.as_ref(), add).await,
-        Verb::Set(set) => return assets::set(ctx, args.path.as_ref(), set).await,
-        Verb::Delete { names, versions } => return assets::delete(ctx, args.path.as_ref(), names, versions).await,
-        Verb::Restore { name, kept, versions, approved } => return assets::restore(ctx, args.path.as_ref(), name, kept, versions, approved).await,
-        Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
+        Verb::Import(import) => return self::import(ctx, args.project.as_ref(), import).await,
+        Verb::Export { out } => return export(ctx, args.project.as_ref(), out).await,
+        Verb::Add(add) => return assets::add(ctx, args.project.as_ref(), add).await,
+        Verb::Set(set) => return assets::set(ctx, args.project.as_ref(), set).await,
+        Verb::Delete { names, versions } => return assets::delete(ctx, args.project.as_ref(), names, versions).await,
+        Verb::Restore { name, kept, versions, approved } => return assets::restore(ctx, args.project.as_ref(), name, kept, versions, approved).await,
+        Verb::Render(render) => return self::render(ctx, args.project.as_ref(), render).await,
         Verb::Approve { name, version } => {
-            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let opened = open(ctx, args.project.as_ref()).await?;
             let path = format!("/v1/projects/{}/approve", opened.id);
             let approved: Approved = ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version }, None).await?;
             approved.warnings.iter().for_each(|warning| output::warn(warning));
             if ctx.json {
                 output::json(&approved);
             } else {
-                let (name, noun, number) = (&approved.name, &approved.noun, approved.number);
-                let path = output::link(ctx, &opened.path.join(&approved.path));
+                let (name, noun, number, path) = (&approved.name, &approved.noun, approved.number, &approved.path);
                 match number {
-                    0 => output::say(ctx, &format!("{name}: approved in project.yaml ({path})")),
-                    number => output::say(ctx, &format!("{name}: {noun} {number} approved in project.yaml ({path})")),
+                    0 => output::say(ctx, &format!("{name}: approved ({path})")),
+                    number => output::say(ctx, &format!("{name}: {noun} {number} approved ({path})")),
                 }
                 if !approved.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
@@ -316,7 +326,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Unapprove { name } => {
-            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let opened = open(ctx, args.project.as_ref()).await?;
             let path = format!("/v1/projects/{}/unpin", opened.id);
             let unpinned: Unpinned = ctx.calcifer().await?.post(&path, &Unpin { name }, None).await?;
             if ctx.json {
@@ -332,7 +342,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Cancel { names } => {
-            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let opened = open(ctx, args.project.as_ref()).await?;
             let path = format!("/v1/projects/{}/cancel", opened.id);
             let cancelled: Cancelled = ctx.calcifer().await?.post(&path, &Cancel { names }, None).await?;
             if ctx.json {
@@ -346,7 +356,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Reclaim { yes } => {
-            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let opened = open(ctx, args.project.as_ref()).await?;
             let path = format!("/v1/projects/{}/reclaim", opened.id);
             let reclaimed: Reclaimed = ctx.calcifer().await?.post(&path, &Reclaim { yes }, None).await?;
             if ctx.json {
@@ -370,11 +380,11 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
             output::nexts(ctx, &reclaimed.next);
         }
-        Verb::Status { name: Some(name) } => return assets::one(ctx, args.path.as_ref(), name).await,
-        Verb::Status { name: None } => return status(ctx, args.path.as_ref()).await,
-        Verb::Wait => return wait(ctx, args.path.as_ref()).await,
+        Verb::Status { name: Some(name) } => return assets::one(ctx, args.project.as_ref(), name).await,
+        Verb::Status { name: None } => return status(ctx, args.project.as_ref()).await,
+        Verb::Wait => return wait(ctx, args.project.as_ref()).await,
         Verb::Rename { from, to } => {
-            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let opened = open(ctx, args.project.as_ref()).await?;
             let path = format!("/v1/projects/{}/rename", opened.id);
             let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
             match ctx.json {
@@ -383,18 +393,18 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }
-        Verb::History { limit } => return history(ctx, args.path.as_ref(), limit).await,
-        Verb::Undo { entry, to } => return step(ctx, args.path.as_ref(), "undo", HistoryStep { entry, to, edit: None }).await,
-        Verb::Redo { entry, to } => return step(ctx, args.path.as_ref(), "redo", HistoryStep { entry, to, edit: None }).await,
+        Verb::History { limit } => return history(ctx, args.project.as_ref(), limit).await,
+        Verb::Undo { entry, to } => return step(ctx, args.project.as_ref(), "undo", HistoryStep { entry, to, edit: None }).await,
+        Verb::Redo { entry, to } => return step(ctx, args.project.as_ref(), "redo", HistoryStep { entry, to, edit: None }).await,
         Verb::Push => {
-            let done = transfer(ctx, args.path.as_ref(), "push", "sent").await?;
+            let done = transfer(ctx, args.project.as_ref(), "push", "sent").await?;
             let at = done.kept_in.as_deref().unwrap_or("the Hub");
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
             output::say(ctx, &format!("{} files at {at}: {moved} sent ({bytes}), {rest} there already", done.files));
             return Ok(skipped(&done));
         }
         Verb::Pull => {
-            let done = transfer(ctx, args.path.as_ref(), "pull", "fetched").await?;
+            let done = transfer(ctx, args.project.as_ref(), "pull", "fetched").await?;
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
             output::say(ctx, &format!("{} files: {moved} fetched ({bytes}), {rest} here already", done.files));
             return Ok(skipped(&done));
@@ -414,8 +424,8 @@ fn by(by: &By) -> String {
 }
 
 /// `GET /v1/projects/{id}/history`.
-async fn history(ctx: &Context, at: Option<&PathBuf>, limit: usize) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+async fn history(ctx: &Context, at: Option<&String>, limit: usize) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let listed: History = ctx.calcifer().await?.get(&format!("/v1/projects/{}/history?limit={limit}", opened.id)).await?;
     if ctx.json {
         output::json(&listed);
@@ -440,8 +450,8 @@ async fn history(ctx: &Context, at: Option<&PathBuf>, limit: usize) -> Result<Ex
 }
 
 /// `POST /v1/projects/{id}/history/<verb>`, and what it did.
-async fn step(ctx: &Context, at: Option<&PathBuf>, verb: &str, asked: HistoryStep) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+async fn step(ctx: &Context, at: Option<&String>, verb: &str, asked: HistoryStep) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let stepped: HistoryStepped = ctx.calcifer().await?.post(&format!("/v1/projects/{}/history/{verb}", opened.id), &asked, None).await?;
     if ctx.json {
         output::json(&stepped);
@@ -481,8 +491,8 @@ fn skipped(done: &Transferred) -> ExitCode {
 }
 
 /// `POST /v1/projects/{id}/<verb>`, followed on the project's events to its end, which `--json` prints.
-async fn transfer(ctx: &Context, at: Option<&PathBuf>, verb: &str, moved: &str) -> Result<Transferred, Error> {
-    let opened = open(ctx, at, false).await?;
+async fn transfer(ctx: &Context, at: Option<&String>, verb: &str, moved: &str) -> Result<Transferred, Error> {
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
     let ask = At { hub: Some(ctx.hub().to_string()) };
@@ -502,12 +512,12 @@ async fn transfer(ctx: &Context, at: Option<&PathBuf>, verb: &str, moved: &str) 
         }
     }
     let said = format!("Calcifer stopped before the {verb} ended; run it again and it goes on from what landed");
-    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.path.display())))
+    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.name)))
 }
 
 /// `POST /v1/projects/{id}/imports`, and the name it got.
-async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     if is_yaml(&args.source) && args.into.is_none() {
@@ -553,8 +563,8 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
 }
 
 /// `GET /v1/projects/{id}/yaml`: the project as YAML, to stdout or `out`.
-async fn export(ctx: &Context, at: Option<&PathBuf>, out: Option<PathBuf>) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+async fn export(ctx: &Context, at: Option<&String>, out: Option<PathBuf>) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let text = ctx.calcifer().await?.text(&format!("/v1/projects/{}/yaml", opened.id)).await?;
     match out {
         Some(out) => {
@@ -593,9 +603,9 @@ fn pickup_of(names: &mut Vec<String>) -> Result<Option<Pickup>, Error> {
     serde_json::from_value(serde_json::Value::Object(said)).map(Some).map_err(|why| malformed(why.to_string()))
 }
 
-async fn render(ctx: &Context, at: Option<&PathBuf>, mut args: Render) -> Result<ExitCode, Error> {
+async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<ExitCode, Error> {
     let pickup = pickup_of(&mut args.names)?;
-    let opened = open(ctx, at, false).await?;
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     let queued = args.queue;
     let args_plain = args.plain;
@@ -648,14 +658,14 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, mut args: Render) -> Result
         return Ok(ExitCode::SUCCESS);
     }
     if asked.joined {
-        let name = opened.path.file_name().map_or_else(|| opened.path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let name = &opened.name;
         output::say(ctx, &match asked.added {
             0 => format!("a render is already going in {name}, and this adds nothing to it: joining it"),
             _ => format!("a render is already going in {name}: joining it"),
         });
     }
     let events = events.take().expect("following");
-    let status = format!("cozy project -p {} status", opened.path.display());
+    let status = format!("cozy project -p {} status", opened.name);
     if ctx.json {
         return following_json(ctx, events, &status).await;
     }
@@ -714,8 +724,8 @@ pub(crate) const FIELDS: &[&str] = &[
 
 /// `cozy project status`: an asset a row, what makes it and how it stands, the totals, then what to know and do. `--full`:
 /// every column and line, each file's path among them.
-async fn status(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+async fn status(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let state: State = ctx.calcifer().await?.get(&format!("/v1/projects/{}", opened.id)).await?;
     shown(ctx, &state);
     Ok(ExitCode::SUCCESS)
@@ -723,13 +733,13 @@ async fn status(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> 
 
 /// `cozy project wait`: the render going, followed as `render` follows its own. None going: the project as `status` shows
 /// it, failing when an asset's last try did.
-async fn wait(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at, false).await?;
+async fn wait(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at).await?;
     let calcifer = ctx.calcifer().await?;
     // Opened before the read, so nothing between the two is missed.
     let events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
     let state: State = calcifer.get(&format!("/v1/projects/{}", opened.id)).await?;
-    let status = format!("cozy project -p {} status", opened.path.display());
+    let status = format!("cozy project -p {} status", opened.name);
     match state.board.clone().filter(|_| state.busy) {
         Some(_) if ctx.json => following_json(ctx, events, &status).await,
         Some(board) => render::follow(ctx, render::Rendering::new(opened.path.clone(), board), events, false, &status).await,
@@ -895,16 +905,17 @@ fn retimes(retimed: &[String], fps: f64) -> String {
     }
 }
 
-/// The project holding `at` (else the folder you are in) as Calcifer opens it, made there first
-/// when `create`.
-pub(crate) async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> Result<Opened, Error> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let path = match at {
-        Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
-        None => cwd,
-    };
-    let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await?;
+/// The project `at` names, else COZY_PROJECT's, as Calcifer opens it.
+pub(crate) async fn open(ctx: &Context, at: Option<&String>) -> Result<Opened, Error> {
+    let project = chosen(at).ok_or_else(protocol::project::unnamed)?;
+    let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &Open { project: Some(project), ..Open::default() }, None).await?;
     opened.said.iter().for_each(|said| output::warn(said));
     Ok(opened)
+}
+
+/// The project a verb works in, as it's named (`protocol::project::NAMED_BY`): `-p`, else `COZY_PROJECT`. Never the folder this
+/// is run in: Calcifer may be on another computer.
+pub(crate) fn chosen(at: Option<&String>) -> Option<String> {
+    let named = at.cloned().or_else(|| std::env::var("COZY_PROJECT").ok());
+    named.map(|named| named.trim().to_owned()).filter(|named| !named.is_empty())
 }

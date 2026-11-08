@@ -33,6 +33,9 @@ pub(crate) enum After {
     /// on the same Hub go once the new one is in. A newer one stays (a pre-release, or one the Hub
     /// yanked since).
     Retire { package: String },
+    /// Local code installed: what its machine's Runtime read of it is kept for that source and Runtime, whatever asked for the
+    /// install (a run, `cozy package install`), so what reads it next (the page's tools, `fit`) has what the machine said.
+    Keep(crate::local_code::Filed),
 }
 
 impl Calcifer {
@@ -82,6 +85,14 @@ impl Calcifer {
                 if let Some(machine) = &row.machine {
                     done.retired = retire(&machines, id, machine, &package, &release).await;
                 }
+            }
+            After::Keep(filed) => {
+                let row = row.machine.as_deref().and_then(|name| machines.named(name).ok().flatten());
+                let status = row.and_then(|row| machines.picture(&row).ok()?.status);
+                if let Some(runtime) = status.map(|status| status.runtime).filter(|runtime| !runtime.is_empty()) {
+                    crate::local_code::keep(machines.hubs.home(), &filed, &runtime, &result["interface"]);
+                }
+                return;
             }
         }
         if let Some(object) = result.as_object_mut() {

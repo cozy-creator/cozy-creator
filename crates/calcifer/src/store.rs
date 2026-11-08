@@ -14,7 +14,7 @@ use protocol::{
     },
     config::Origin,
     ids::{Digest, RunId},
-    machine as v1, tree,
+    machine as v1,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
@@ -380,6 +380,7 @@ impl Store {
         }
         writer.execute_batch(ANSWERS)?;
         writer.execute_batch(crate::state::TABLES)?;
+        crate::state::project_names(&writer)?;
         private(path);
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;
@@ -1989,7 +1990,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         let path: Option<String> = r.get(8)?;
         let checkpoint = checkpoint_ref(r, 10)?;
         let media_type: String = r.get(5)?;
-        let url = (path.is_some() && checkpoint.is_none() && media_type != tree::MEDIA).then(|| output_url(row.number, &name, index));
+        let url = (path.is_some() && checkpoint.is_none()).then(|| output_url(row.number, &name, index));
         let measured = |column| -> rusqlite::Result<Option<u32>> { Ok(Some(r.get::<_, i64>(column)? as u32).filter(|n| *n > 0)) };
         let (measured_ms, grown_us) = (r.get::<_, i64>(14)? as u64, r.get::<_, i64>(15)? as u64);
         let id = match index {
