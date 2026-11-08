@@ -231,7 +231,7 @@ function linesOf(text, name) {
   });
   const cozy = (...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
-    execFile(COZY, words, { cwd: folder, encoding: 'utf8', maxBuffer: 1 << 26, timeout: FIRST_RUN_MS }, (error, stdout, stderr) => {
+    execFile(COZY, words, { cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, encoding: 'utf8', maxBuffer: 1 << 26, timeout: FIRST_RUN_MS }, (error, stdout, stderr) => {
       const at = Date.now();
       if (error) fail(new Error(`cozy ${words.join(' ')}: ${error.message}: ${stdout}${stderr}`));
       else done({ stdout, stderr, at });

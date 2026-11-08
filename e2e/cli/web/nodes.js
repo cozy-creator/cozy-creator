@@ -513,7 +513,7 @@ function linesOf(text, name) {
     importYaml(folder, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
     // Read with this machine's Runtime, as a run reads it: PyPI's can't, and this may be the first run of it here.
-    execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+    execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     const wire = await until('its functions listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.filter((held) => held.local && held.id.startsWith(fixture)), (held) => held.length > 0, FIRST_RUN_MS);
     const labelOf = (name) => wire.find((held) => held.function === name).label;
     const reload = async () => {
@@ -669,7 +669,7 @@ function linesOf(text, name) {
     // What a package shows beside its first text: both on the box as it opens, empty reading N/A, and what's typed is the file's, as the CLI reads it. An empty one is written nowhere.
     const shaped = join(__dirname, '..', 'project', 'shaped.py');
     // Read with this machine's Runtime, as tool.py is above.
-    execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+    execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     importYaml(folder, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
     // Render kept Other open, and drawn in on a box the canvas draws only what's near it: a new one is seen at rest, all of it in view.
     await away();

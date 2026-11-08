@@ -170,9 +170,10 @@ echo "homebrew: $(cat "$OUT/brew-version.txt")"
 brew uninstall cozy > /dev/null 2>&1 || check "brew uninstall cozy failed"
 }
 
-# cl-716 B: a run asked unbound, which Calcifer binds: a local function's video clip cut (`#t=`), a picture and a
-# folder; a file uploaded by its digest and named by it; a digest Calcifer does not hold refused; and the release's CLI,
-# which builds its run itself, refused as outdated. Fixtures by ffmpeg (the job's, on this shell's PATH).
+# cl-716 B: a run asked unbound, which Calcifer binds: a video's frames cut by the box mention that names them
+# (`<box:48-144>`, cl-819: `path#t=` went when ranges became mentions), a picture and a folder; a file uploaded by its
+# digest and named by it; a digest Calcifer does not hold refused; and the release's CLI, which builds its run itself,
+# refused as outdated. Fixtures by ffmpeg (the job's, on this shell's PATH).
 bound_runs() {
 step "a run Calcifer binds: a clip cut, a picture, a folder"
 local dir=$OUT/bound lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr token hex size code before
@@ -180,7 +181,10 @@ mkdir -p "$dir/folder/sub"; echo one > "$dir/folder/a.txt"; echo two > "$dir/fol
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=8 -c:v libx264 -pix_fmt yuv420p -g 24 "$dir/clip.mp4"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=64x64" -frames:v 1 "$dir/still.png"
 size=$(stat -c %s "$dir/still.png")
-if (cd "$dir" && cell bound "$here/inspect/inspect" --file "clip=./clip.mp4#t=2,6" --file still=./still.png folder=./folder label=bound); then
+[ -n "$(row "$RUN_PROJECT" bound_clip .name)" ] || cozy project -p "$RUN_PROJECT" import "$dir/clip.mp4" bound_clip > /dev/null || check "bound: import the clip"
+for _ in $(seq 60); do [ "$(row "$RUN_PROJECT" bound_clip .duration_ms)" != null ] && break; sleep 0.5; done
+# Frames 48 up to 144 at 24 fps: 2 to 6 s.
+if (cd "$dir" && cell bound "$here/inspect/inspect" 'clip=<bound_clip:48-144>' --file still=./still.png folder=./folder label=bound); then
   grep -qE '"clip_seconds": *(3\.9|4\.0|4\.1)' "$OUT/bound.ndjson" && grep -qE "\"still_bytes\": *$size" "$OUT/bound.ndjson" \
     && grep -qE '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]' "$OUT/bound.ndjson" \
     || check "bound: not a 4 s clip, the picture and the folder's two files: $(grep -oE '"(clip_seconds|still_bytes|folder_files)": *[^,}]*' "$OUT/bound.ndjson" | head -3 | paste -sd' ')"
@@ -218,15 +222,18 @@ else
 fi
 }
 
-# cl-817: the CLI in a folder Calcifer can't see, a container's own /work (this HOME, the suite's files and the fixtures at their
-# paths; Calcifer out here): each file goes by content, never by path. A clip, a picture and a folder (a Tree), --input naming files
-# beside it, a positional file, project import and --into, a model from a .safetensors file, and a Runtime wheel for the machine.
+# cl-817, cl-819: the CLI in a container whose /work only it has, Calcifer out here, sharing no disk: it sees only Calcifer's lock
+# record (its address and bearer) and config.toml, copied into a HOME of its own. Each verb goes by content, never a path:
+# a clip, a picture and a folder (a Tree), --input naming files beside it, a positional file; local code from /work (a package
+# and a script) run, described and listed, installed, locked (its uv.lock written back into /work) and published (refused only
+# for want of a sign-in), and quantize's recipe package; a project made and named by its name; import and --into; a run's
+# outputs downloaded by their digest; a model from a .safetensors file; and a Runtime wheel for the machine.
 unseen() {
 step "the CLI in a folder Calcifer can't see"
 [ -n "$LOCAL" ] && command -v docker > /dev/null || { echo "skipped: no local machine or no docker"; return 0; }
 # The runner's own OS: a candidate cozy is built on it, for its glibc (debian:12's 2.36 runs only a release's).
-local src=$OUT/unseen P=$OUT/unseen-project image=ubuntu:24.04 size wheel
-mkdir -p "$src/folder/sub" "$src/sub"
+local src=$OUT/unseen seen=$OUT/unseen-seen image=ubuntu:24.04 size name n hex
+rm -rf "$src" "$seen"; mkdir -p "$src/folder/sub" "$src/sub" "$seen"
 echo one > "$src/folder/a.txt"; echo two > "$src/folder/sub/b.txt"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=3 -c:v libx264 -pix_fmt yuv420p "$src/clip.mp4"
 for name in still other; do
@@ -235,34 +242,83 @@ done
 cp "$src/still.png" "$src/sub/beside.png"
 printf 'clip: ../clip.mp4\nstill: beside.png\nfolder: ../folder\nlabel: from-input\n' > "$src/sub/req.yaml"
 safetensors_file "$src/tiny.safetensors"
+cp -r "$here/inspect" "$here/weightless" "$src/" && cp "$here/project/draw.py" "$src/draw.py"
+rm -rf "$src"/*/.venv "$src"/*/uv.lock
 size=$(stat -c %s "$src/still.png")
 [ ! -e /work ] || { check "unseen: /work is on this computer too"; return; }
-cozy project new "$P" > /dev/null || { check "unseen: project new"; return; }
 docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; return; }
-# inside <name> <cozy words…>: the CLI in /work, a copy of $src that only its container has.
+# inside <name> <cozy words…>: the CLI in /work (or $DIR in it), a copy of $src that only its container has. $AFTER, a shell
+# line, then runs there, its words on stderr. Its stdout is unseen-<name>.out, its stderr unseen-<name>.err. $REFUSED: its
+# failure is the caller's to judge.
 inside() {
   local name=$1; shift
-  docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME="$HOME" -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
-    -v "$HOME:$HOME" -v "$OUT:$OUT" -v "$E2E:$E2E:ro" -v "$src:/src:ro" -v /etc/ssl/certs:/etc/ssl/certs:ro ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} \
-    --tmpfs "/work:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" -w /work "$image" \
-    sh -c 'cp -r /src/. /work && exec "$@"' sh "$COZY" "$@" > "$OUT/unseen-$name.out" 2> "$OUT/unseen-$name.err" \
-    || { check "unseen $name: cozy $*: $(tail -c 400 "$OUT/unseen-$name.err") $(tail -c 300 "$OUT/unseen-$name.out")"; return 1; }
+  cp "$HOME/.cozy/calcifer/calcifer.lock.holder" "$HOME/.cozy/config.toml" "$seen/"
+  docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME=/home/cli -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
+    -e COZY_PROJECT="${UNSEEN_PROJECT:-}" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" \
+    --tmpfs "/home/cli:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" --tmpfs "/work:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" \
+    -v "$seen:/seen:ro" -v "$COZY:/usr/local/bin/cozy:ro" -v "$src:/src:ro" -v /etc/ssl/certs:/etc/ssl/certs:ro \
+    ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} -w /work "$image" \
+    sh -c 'mkdir -p ~/.cozy/calcifer && cp /seen/calcifer.lock.holder ~/.cozy/calcifer/ && cp /seen/config.toml ~/.cozy/ \
+      && cp -r /src/. /work && cd "$DIR" && cozy "$@" && { [ -z "$AFTER" ] || sh -c "$AFTER" >&2; }' sh "$@" \
+    > "$OUT/unseen-$name.out" 2> "$OUT/unseen-$name.err" && return 0
+  [ -n "${REFUSED:-}" ] || check "unseen $name: cozy $*: $(tail -c 400 "$OUT/unseen-$name.err") $(tail -c 300 "$OUT/unseen-$name.out")"
+  return 1
+}
+# refused_inside <name> <code> <cozy words…>: inside, refused with that code, as Calcifer refuses what it read: so it read it.
+refused_inside() {
+  local name=$1 code=$2; shift 2
+  REFUSED=1 inside "$name" --json "$@" && { check "unseen $name: cozy $* was not refused"; return; }
+  grep -q "\"code\": *\"$code\"" "$OUT/unseen-$name.out" || check "unseen $name: cozy $*: not $code: $(tail -c 400 "$OUT/unseen-$name.out")"
 }
 said() { grep -qE "$2" "$OUT/unseen-$1.out" || check "unseen $1: not $2: $(grep -oE '"(clip_seconds|still_bytes|folder_files|label)": *[^,}]*' "$OUT/unseen-$1.out" | paste -sd' ')"; }
-if inside files --json run -p "$P" "$here/inspect/inspect" --file clip=./clip.mp4 --file still=./still.png folder=./folder label=files --on local; then
-  said files '"clip_seconds": *(2\.9|3\.0|3\.1)' && said files "\"still_bytes\": *$size" && said files '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]'
+# A project made from in there, by its name, then named by COZY_PROJECT: no path of either side's names it.
+if inside new --json project new unseen-film; then
+  UNSEEN_PROJECT=$(jq -r .name "$OUT/unseen-new.out")
+  J '.path | startswith("/work") | not' "$OUT/unseen-new.out" || check "unseen new: made in the container's folder: $(cat "$OUT/unseen-new.out")"
 fi
-inside input --json run -p "$P" "$here/inspect/inspect" --input ./sub/req.yaml --on local && said input '"label": *"from-input"' && said input "\"still_bytes\": *$size"
-inside positional --json run -p "$P" "$here/inspect/inspect" ./still.png --file clip=./clip.mp4 folder=./folder label=positional --on local && said positional "\"still_bytes\": *$size"
-inside import project -p "$P" import ./still.png && grep -qx still "$OUT/unseen-import.out" || check "unseen import: not named still: $(cat "$OUT/unseen-import.out")"
-inside into project -p "$P" import ./other.png --into still && grep -qx still.2 "$OUT/unseen-into.out" || check "unseen into: not still.2: $(cat "$OUT/unseen-into.out")"
-[ "$(row "$P" still .versions)" = 2 ] || check "unseen: still has not 2 versions: $(row "$P" still .)"
+export UNSEEN_PROJECT
+if inside files --json run ./inspect/inspect --file clip=./clip.mp4 --file still=./still.png folder=./folder label=files --on local; then
+  said files '"clip_seconds": *(2\.9|3\.0|3\.1)' && said files "\"still_bytes\": *$size" && said files '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]'
+  said files '"target": *"local/e2e-inspect/inspect"'
+fi
+inside input --json run ./inspect/inspect --input ./sub/req.yaml --on local && said input '"label": *"from-input"' && said input "\"still_bytes\": *$size"
+inside positional --json run ./inspect/inspect ./still.png --file clip=./clip.mp4 folder=./folder label=positional --on local && said positional "\"still_bytes\": *$size"
+inside describe --json run ./inspect/inspect --describe && J '.fields | any(.name == "clip") and any(.name == "folder")' "$OUT/unseen-describe.out" \
+  || check "unseen describe: $(head -c 300 "$OUT/unseen-describe.out")"
+inside functions --json run ./weightless && J '.package == "local/e2e-weightless" and (.functions | any(.function == "reverse"))' "$OUT/unseen-functions.out" \
+  || check "unseen functions: $(head -c 300 "$OUT/unseen-functions.out")"
+# A script's still, and its file downloaded into /work by its digest: what it holds is what the run says it made.
+if AFTER='sha256sum out/*' inside script --json run ./draw.py/draw instructions=unseen -o out --on local; then
+  hex=$(tail -1 "$OUT/unseen-script.out" | jq -r '.run.output[0].sha256 // empty' | sed 's/^sha256://')
+  { [ -n "$hex" ] && grep -q "^$hex  out/" "$OUT/unseen-script.err"; } || check "unseen script: out/ holds $(grep '  out/' "$OUT/unseen-script.err"), not sha256:$hex"
+  n=$(tail -1 "$OUT/unseen-script.out" | jq -r '.run.number // empty')
+  AFTER='sha256sum again/*' inside show run show "$n" -o again && grep -q "^$hex  again/" "$OUT/unseen-show.err" \
+    || check "unseen show: run show $n -o again: $(tail -c 300 "$OUT/unseen-show.err")"
+fi
+inside install --json package install ./weightless --on local && J '.run.status == "completed"' <(tail -1 "$OUT/unseen-install.out") \
+  || check "unseen install: $(tail -c 300 "$OUT/unseen-install.out")"
+# Its recipes read from Calcifer's copy, then refused only at the model's header, which a sign-in reads: from a path it couldn't
+# see, the package was refused first (`target_not_found`).
+refused_inside quantize not_logged_in model quantize zhengpeng7/birefnet --lane int8 --package ./weightless --on local
+AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless inside lock --json package lock && grep -qx 1 "$OUT/unseen-lock.err" \
+  || check "unseen lock: no uv.lock written in /work: $(tail -c 300 "$OUT/unseen-lock.err")"
+# Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
+ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"
+DIR=weightless refused_inside publish not_logged_in package publish
+inside import project import ./still.png && grep -qx still "$OUT/unseen-import.out" || check "unseen import: not named still: $(cat "$OUT/unseen-import.out")"
+inside into project import ./other.png --into still && grep -qx still.2 "$OUT/unseen-into.out" || check "unseen into: not still.2: $(cat "$OUT/unseen-into.out")"
+[ "$(row "${UNSEEN_PROJECT:-none}" still .versions)" = 2 ] || check "unseen: still has not 2 versions: $(row "${UNSEEN_PROJECT:-none}" still .)"
 inside model --json model download ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
 if [ -f "${CAND_RT:-}" ]; then
-  wheel=/wheels/$(basename "$CAND_RT")
-  inside runtime --json machine update local --runtime "$wheel" -y || true
+  inside runtime --json machine update local --runtime "/wheels/$(basename "$CAND_RT")" -y || true
 fi
+# Local code is a project's or goes by content: a path to your tool list is refused, as no client's folder is Calcifer's.
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+[ "$(curl -sS -o "$OUT/unseen-list.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'Content-Type: application/json' \
+  -d '{"add": "/work/weightless"}' "http://$(jq -r .address "$lock")/v1/tools/list")" = 400 ] && J '.error.code == "tool_list_local"' "$OUT/unseen-list.json" \
+  || check "unseen: a path added to the tool list: $(cat "$OUT/unseen-list.json")"
+unset UNSEEN_PROJECT
 }
 
 # cl-820: local code edited between runs on `local`, as cl-817's edit.sh timed it (an edit took 7.9 s read in place, 10.2 s once it

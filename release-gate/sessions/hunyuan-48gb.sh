@@ -47,7 +47,8 @@ for i in $(seq 0 "$RUNS"); do
     over \($s | length) steps; peak driver \(([.measurements.memory.driver[]?.peak_bytes] | max // 0) / 1e9 * 100 | floor / 100) GB"' \
     "$OUT/$n.json" | tr -s ' \n' ' ')"
   [ "$(jq -r .status "$OUT/$n.json")" = completed ] || fail "$n run $N: $(jq -r '.reason.message // .status' "$OUT/$n.json" | cut -c1-400)"
-  P=$(jq -r '[.output[]?.path | select(endswith(".png"))][0] // empty' "$OUT/$n.json")
+  cozy run show "$N" --once -o "$OUT/$n.out" > /dev/null 2>&1
+  P=$(ls "$OUT/$n.out"/*.png 2> /dev/null | head -1)
   IFS=x read -r w h < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$P" 2>/dev/null)
   y=$(ffprobe -v error -f lavfi -i "movie=$P,signalstats" -show_entries frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YMAX \
     -of csv=p=0 2>/dev/null | head -1)

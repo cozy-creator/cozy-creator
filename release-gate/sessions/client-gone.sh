@@ -45,8 +45,8 @@ sh() {
 }
 mend() { sh 'test -f /root/resolv.conf.gone && cat /root/resolv.conf.gone > /etc/resolv.conf; test -f /root/hosts.gone && cat /root/hosts.gone > /etc/hosts; echo up > /tmp/link'; }
 trap 'mend; finish' EXIT
-# c <cozy args>: as the computer that asks, in its project.
-c() { sh "su client -s /bin/sh -c 'cd \$HOME/\$(cat /tmp/film) 2>/dev/null; /opt/client/cozy $*'"; }
+# c <cozy args>: as the computer that asks, in its project (COZY_PROJECT: the folder you're in names none).
+c() { sh "su client -s /bin/sh -c 'cd \$HOME/\$(cat /tmp/film) 2>/dev/null; COZY_PROJECT=\$HOME/\$(cat /tmp/film) /opt/client/cozy $*'"; }
 line() { sh "echo $* > /tmp/link"; }
 holder_pid() { sh 'grep -o "\"pid\":[0-9]*" /home/client/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2'; }
 # write <path>: stdin, as the file <path> of the computer that asks.
@@ -116,13 +116,15 @@ cut_run() {
   t=0
   while [ $t -lt 300 ]; do
     record=$(c "--json run show $run --once")
-    jq -e '.status == "completed" and (.output[0].path // "") != ""' <<<"$record" > /dev/null 2>&1 && break
+    jq -e '.status == "completed" and (.output[0].url // "") != ""' <<<"$record" > /dev/null 2>&1 && break
     t=$((t + 5)); sleep 5
   done
   echo "$record" > "$OUT/$part-$TAG.json"
-  jq -e '.status == "completed" and (.output[0].path // "") != ""' <<<"$record" > /dev/null || { wrong "$part: back again, run $run did not land: $(head -c 400 <<<"$record")"; return; }
+  jq -e '.status == "completed" and (.output[0].url // "") != ""' <<<"$record" > /dev/null || { wrong "$part: back again, run $run did not land: $(head -c 400 <<<"$record")"; return; }
   local path sha want
-  path=$(jq -r '.output[0].path' <<<"$record") want=$(jq -r '.output[0].sha256' <<<"$record")
+  # Downloaded by its digest, as any client fetches what it asks for.
+  c "run show $run --once -o /tmp/landed-$part-$TAG" > /dev/null
+  path=$(sh "ls /tmp/landed-$part-$TAG/* | head -1") want=$(jq -r '.output[0].sha256' <<<"$record")
   sha=$(sh "sha256sum $path" | cut -c1-64)
   [ "sha256:$sha" = "$want" ] || wrong "$part: its file is $sha, not $want"
   cozy machine ssh "$NAME" -- "cat $path" < /dev/null > "$OUT/$part-$TAG.output" 2>> "$OUT/ssh.err"

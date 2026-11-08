@@ -42,7 +42,8 @@ say "$(jq -r '([.calls[] | select(.function | endswith("_piece")) | .measurement
   decode \(($m.attribution.stages.decode_video.total_ms // 0) / 1000 | floor) s; peak driver \(([$m.memory.driver[]?.peak_bytes] | max // 0) / 1e9 * 100 | floor / 100) GB;
   attention \([$m.observations[]? | select(.name == "attention.selected") | .value] | unique)"' "$OUT/h3.json" | tr -s ' \n' ' ')"
 [ "$(jq -r .status "$OUT/h3.json")" = completed ] || fail "run $N: $(jq -r '.reason.message // .status' "$OUT/h3.json" | cut -c1-400)"
-V=$(jq -r '[.output[]?.path | select(endswith(".mp4"))][0] // empty' "$OUT/h3.json")
+cozy run show "$N" --once -o "$OUT/h3.out" > /dev/null 2>&1
+V=$(ls "$OUT/h3.out"/*.mp4 2> /dev/null | head -1)
 F=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$V" 2>/dev/null)
 [ "$F" = 362 ] || fail "run $N's video decodes to ${F:-no} frames, not 362"
 S=$(jq '(.execution_ms // 0) / 1000 | floor' "$OUT/h3.json")

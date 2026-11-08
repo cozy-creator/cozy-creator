@@ -13,7 +13,7 @@
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # video_of <cell>: its tallest mp4.
 video_of() {
-  run_get "$OUT" "$1" '.output[]?.path' | grep -E '\.mp4$' | while read -r p; do
+  run_outputs "$OUT" "$1" | grep -E '\.mp4$' | while read -r p; do
     echo "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$p") $p"; done | sort -n | tail -1 | cut -d' ' -f2-
 }
 # judge <check> <cell> <jq condition> <frames.py mode> <reference mp4> [args]: frames.py on the cell's video.

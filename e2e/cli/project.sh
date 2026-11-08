@@ -77,7 +77,7 @@ conn.commit()
 PY
 }
 # prefix <project> <file>: `cozy project import`, and what its export writes for it.
-prefix() { (cd "$1" && cozy --json project import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
+prefix() { (cd "$1" && cozy --json project -p "$1" import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
 # api <curl args…>: Calcifer, with the bearer of its lock record.
 api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
 # ask <json>: POST /v1/runs under a new key, its answer on stdout; a local function's install is followed, then asked again under that key.
@@ -204,7 +204,7 @@ for _ in $(seq 600); do grep -q 'Not saved yet' "$OUT/render.txt" && break; slee
 grep -q 'Not saved yet' "$OUT/render.txt" || check "lock refused: nothing says it isn't saved: $(tail -c 300 "$OUT/render.txt")"
 grep -q 'project.db is open in another program' "$OUT/render.txt" || check "lock refused: it doesn't say what holds it: $(tail -c 300 "$OUT/render.txt")"
 for _ in $(seq 240); do
-  ended=$(cozy --json run ls --limit 0 | jq --arg s "$T" '[.runs[] | select(.project == $s and .status == "completed")] | length')
+  ended=$(cozy --json run ls --limit 0 | jq --arg s "$(status "$T" | jq -r .id)" '[.runs[] | select(.project_id == $s and .status == "completed")] | length')
   [ "$ended" = 3 ] && break; sleep 0.25
 done
 [ "$ended" = 3 ] || check "lock refused: $ended of 3 runs ended"
@@ -214,7 +214,7 @@ touch "$T.held.go"; wait "$holder" || true
 wait "$rendering" || code=$?
 [ "$code" = 0 ] || check "lock refused: the render (exit $code): $(tail -c 300 "$OUT/render.txt")"
 J '[.versions[].number] == [1, 2] and all(.versions[]; (.runs | length) == 1)' <<< "$(held "$T" take)" || check "lock refused: its versions: $(held "$T" take | jq -c '[.versions[] | {number, runs}]')"
-[ "$(cozy --json run ls --limit 0 | jq --arg s "$T" '[.runs[] | select(.project == $s)] | length')" = 3 ] || check "lock refused: something ran again"
+[ "$(cozy --json run ls --limit 0 | jq --arg s "$(status "$T" | jq -r .id)" '[.runs[] | select(.project_id == $s)] | length')" = 3 ] || check "lock refused: something ran again"
 [ "$(grep -c 'Not saved yet' "$OUT/render.txt")" = 1 ] || check "lock refused: said $(grep -c 'Not saved yet' "$OUT/render.txt") times"
 ! J '[.warnings[]?.message] | any(contains("Not saved yet"))' <<< "$(status "$T")" || check "lock refused: it still says so"
 rm -f "$T.held" "$T.held.go"
@@ -305,13 +305,13 @@ render "$T" film || check "held long: the render after: $(tail -c 300 "$OUT/rend
 # newest, which before 0.43 is published refuses them: said once, here, and the cells don't go on.
 tools_read() {
 step "a project: the fixtures' tools read on this machine"
-(cd "$OUT/project" && cozy run "$here/project/draw.py/draw" instructions=read --on local) > "$OUT/tools-read.txt" 2>&1 \
+(cd "$OUT/project" && cozy run -p "$OUT/project" "$here/project/draw.py/draw" instructions=read --on local) > "$OUT/tools-read.txt" 2>&1 \
   || fail "the fixtures' tools don't read here: the machine's Runtime (${CAND_RUNTIME:-none of its own, so the newest on PyPI}) needs cozy-runtime's tools (rc/tools), as --runtime: $(tail -c 300 "$OUT/tools-read.txt")"
 }
 
 projects() {
 tools_read
-step "a project: new, walk-up, -p"
+step "a project: new, named, a folder of it, -p"
 local P=$OUT/garden code ID calcifer
 # Calcifer takes no arguments: any says what it is, and starts no daemon.
 calcifer=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
@@ -321,11 +321,14 @@ code=0; cozy calcifer no-such-word > /dev/null 2>&1 || code=$?
 [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$calcifer" ] || check "cozy calcifer --help moved Calcifer from $calcifer to $(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")"
 cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null | grep -vxE 'project\.db-(wal|shm)')" = project.db ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.db"
-grep -q 'cozy project render all' "$OUT/project-new.txt" || check "project new does not say what's next: $(tail -c 300 "$OUT/project-new.txt")"
+grep -qE 'cozy project -p [^ ]+ render all' "$OUT/project-new.txt" || check "project new does not say what's next: $(tail -c 300 "$OUT/project-new.txt")"
 cozy project -p "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
 for name in kyogre groudon coast awaken erupt clash edit; do grep -q "$name" "$OUT/project-new-status.txt" || check "a new project's status names no $name"; done
 mkdir -p "$P/sub"
-(cd "$P/sub" && cozy --json project status) > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status from a subfolder failed: $(tail -c 300 "$OUT/project-status.err")"
+# The folder you're in names no project (cl-819): Calcifer may be on another computer. A folder of Calcifer's in it does.
+(cd "$P/sub" && cozy --json project status) > "$OUT/project-cwd.json" 2> /dev/null && check "status named a project by the folder it ran in"
+J '.error.code == "not_in_a_project"' "$OUT/project-cwd.json" || check "status in a project's folder, none named: $(head -c 300 "$OUT/project-cwd.json")"
+cozy --json project -p "$P/sub" status > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status of a folder in it failed: $(tail -c 300 "$OUT/project-status.err")"
 (cd / && cozy --json project -p "$P" status) > /dev/null 2>&1 || check "status by -p from / failed"
 ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 [ -n "$ID" ] || check "project status --json names no id"
@@ -733,7 +736,7 @@ cozy project -p "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first open:
 local P=$OUT/first-open-page
 mkdir -p "$P"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$P"
-answer=$(api -X POST -d "$(jq -n --arg p "$P" '{path: $p}')" "http://$ADDR/v1/projects")
+answer=$(api -X POST -d "$(jq -n --arg p "$P" '{project: $p}')" "http://$ADDR/v1/projects")
 J '.said | any(contains("project.yaml.v2"))' <<< "$answer" || check "first open: the route doesn't say so: $answer"
 
 step "a project: what can't convert is refused with why, and left as it is"
@@ -817,7 +820,7 @@ local T=$OUT/old-landing n
 mkdir -p "$T"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$T"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
-(cd "$T" && cozy --json run "$here/project/draw.py" instructions=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
+(cd "$T" && cozy --json run -p "$T" "$here/project/draw.py" instructions=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
 n=$(run_number "$OUT/old-landing.ndjson")
 [ "$(ls "$T/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: nothing in files/: $(ls -a "$T" "$T/.runs" 2>&1 | tr '\n' ' ')"
 J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(cozy --json run show "$n" --once)" || check "old landing: no warning says it upgraded: $(cozy --json run show "$n" --once | jq -c .warnings)"
@@ -826,7 +829,7 @@ J '.run_files == 1' <<< "$(status "$T")" || check "old landing: its output isn't
 
 step "a project: a run in flight lands, and is listed"
 local going
-(cd "$T" && cozy --json run "$here/project/shots.py/slow" seconds=8) > "$OUT/old-landing-slow.ndjson" 2>&1 & going=$!
+(cd "$T" && cozy --json run -p "$T" "$here/project/shots.py/slow" seconds=8) > "$OUT/old-landing-slow.ndjson" 2>&1 & going=$!
 wait "$going" || check "old landing: the slow run: $(tail -c 300 "$OUT/old-landing-slow.ndjson")"
 [ "$(ls "$T/files" | wc -l)" = 2 ] || check "old landing: its output isn't in files/: $(ls "$T/files" | tr '\n' ' ')"
 J '.run_files >= 1' <<< "$(status "$T")" || check "old landing: it isn't listed: $(status "$T" | jq -c .run_files)"
@@ -837,7 +840,7 @@ mkdir -p "$C"
 printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' | yaml_in "$C"
 code=0; cozy project -p "$C" status > "$OUT/old-landing-stuck.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "old landing: names that are one converted"
-(cd "$C" && cozy --json run "$here/project/draw.py" instructions=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
+(cd "$C" && cozy --json run -p "$C" "$here/project/draw.py" instructions=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
 [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
 rm -rf "$C"
 }
@@ -1170,15 +1173,15 @@ code=0; cozy project -p "$T" render card -n 2 --approve --on local > "$OUT/rende
 { [ "$code" != 0 ] && says memo --approve; } || check "memo: -n 2 --approve was not refused (exit $code)"
 }
 
-# A run belongs to a project, as a commit to a repository: outside one it refuses, and in one its outputs land in files/ by hash,
-# where --file and approve name them, and reclaim takes them once nothing does.
+# A run belongs to a project, as a commit to a repository: naming none it refuses (the folder it's run in names none: cl-819), and in
+# one its outputs land in files/ by hash, where --file and approve name them, and reclaim takes them once nothing does.
 project_runs() {
 step "a project: a run outside one refuses, and in one lands in files/"
 local R=$OUT/run-project away code hash other real lines
 away=$(mktemp -d)
 code=0; (cd "$away" && cozy run "$here/project/draw.py" instructions=outside) > "$OUT/outside.txt" 2>&1 || code=$?
 rmdir "$away"
-{ [ "$code" = 2 ] && grep -qF 'not in a project: cd into one, or make one' "$OUT/outside.txt" && grep -qF 'next: cozy project new my-project' "$OUT/outside.txt"; } || check "runs: outside a project: exit $code: $(tail -c 300 "$OUT/outside.txt")"
+{ [ "$code" = 2 ] && grep -qF 'name the project: -p <name>, or COZY_PROJECT=<name>' "$OUT/outside.txt" && grep -qF 'next: cozy project new <name>' "$OUT/outside.txt"; } || check "runs: outside a project: exit $code: $(tail -c 300 "$OUT/outside.txt")"
 cozy project new "$R" > /dev/null || check "runs: project new"
 yaml_in "$R" <<YAML
 version: 4
@@ -1187,8 +1190,8 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: A blue whale.
 YAML
-real=$(cd "$R" && pwd -P)
-(cd "$R" && cozy run "$here/project/draw.py" instructions=first) > "$OUT/run-first.txt" 2>&1 || check "runs: a run in the project: $(tail -c 300 "$OUT/run-first.txt")"
+real=$(status "$R" | jq -r .id)
+(cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=first) > "$OUT/run-first.txt" 2>&1 || check "runs: a run in the project: $(tail -c 300 "$OUT/run-first.txt")"
 hash=$(sed -n 's/^image: \([0-9a-f]\{12\}\)$/\1/p' "$OUT/run-first.txt"); [ -n "$hash" ] || check "runs: no line to paste: $(tail -c 300 "$OUT/run-first.txt")"
 ls "$R/files/$hash"* > /dev/null 2>&1 || check "runs: $hash is not in files/: $(ls "$R/files")"
 [ "$(find "$R/.runs" -type f 2> /dev/null | wc -l)" = 0 ] || check "runs: a file stayed where it landed: $(find "$R/.runs" -type f)"
@@ -1196,14 +1199,14 @@ ls "$R/files/$hash"* > /dev/null 2>&1 || check "runs: $hash is not in files/: $(
 J '.run_files == 1' <<< "$(status "$R")" || check "runs: status does not count it: $(status "$R" | jq -c .run_files)"
 cozy run -p "$R" "$here/project/draw.py" instructions=second > "$OUT/run-second.txt" 2>&1 || check "runs: -p: $(tail -c 300 "$OUT/run-second.txt")"
 other=$(sed -n 's/^image: \([0-9a-f]\{12\}\)$/\1/p' "$OUT/run-second.txt"); [ -n "$other" ] && [ "$other" != "$hash" ] || check "runs: -p made no new file: $(tail -c 300 "$OUT/run-second.txt")"
-(cd "$R" && cozy run "$here/project/copied.py" --file "image=$hash") > "$OUT/run-copy.txt" 2>&1 || check "runs: --file by hash: $(tail -c 300 "$OUT/run-copy.txt")"
+(cd "$R" && cozy run -p "$R" "$here/project/copied.py" --file "image=$hash") > "$OUT/run-copy.txt" 2>&1 || check "runs: --file by hash: $(tail -c 300 "$OUT/run-copy.txt")"
 J '.run_files == 3' <<< "$(status "$R")" || check "runs: three runs, and status says $(status "$R" | jq -c .run_files)"
 
 step "a project: run ls in it lists its runs, and --all every one"
-(cd "$R" && cozy --json run ls) > "$OUT/runs-in.json" 2> "$OUT/runs-in.err" || check "runs: run ls in it: $(tail -c 300 "$OUT/runs-in.err")"
-J --arg p "$real" '(.runs | length == 3) and all(.runs[]; .project == $p)' "$OUT/runs-in.json" || check "runs: run ls in it: $(jq -c '[.runs[] | {number, project}]' "$OUT/runs-in.json")"
-(cd "$R" && cozy --json run ls --all --limit 500) > "$OUT/runs-all.json" 2> "$OUT/runs-all.err" || check "runs: run ls --all: $(tail -c 300 "$OUT/runs-all.err")"
-J --arg p "$real" 'any(.runs[]; .project != $p)' "$OUT/runs-all.json" || check "runs: run ls --all lists only this project"
+(cd "$R" && cozy --json run ls -p "$R") > "$OUT/runs-in.json" 2> "$OUT/runs-in.err" || check "runs: run ls in it: $(tail -c 300 "$OUT/runs-in.err")"
+J --arg p "$real" '(.runs | length == 3) and all(.runs[]; .project_id == $p)' "$OUT/runs-in.json" || check "runs: run ls in it: $(jq -c '[.runs[] | {number, project_id}]' "$OUT/runs-in.json")"
+(cd "$R" && cozy --json run ls -p "$R" --all --limit 500) > "$OUT/runs-all.json" 2> "$OUT/runs-all.err" || check "runs: run ls --all: $(tail -c 300 "$OUT/runs-all.err")"
+J --arg p "$real" 'any(.runs[]; .project_id != $p)' "$OUT/runs-all.json" || check "runs: run ls --all lists only this project"
 
 step "a project: approve takes any file of its, by hash"
 cozy project -p "$R" approve kyogre "$hash" > "$OUT/approve.txt" 2>&1 || check "runs: approve by hash: $(tail -c 300 "$OUT/approve.txt")"
@@ -1249,34 +1252,42 @@ class Said(msgspec.Struct):
 def echo(payload: Ask) -> Said:
     return Said(back=payload.text[::-1])
 PY
-  (cd "$R" && cozy --json run "$OUT/$name.py/echo" text=abc --on local) > "$OUT/named-$name.ndjson" 2> "$OUT/named-$name.err" || check "runs: $name.py: $(tail -c 300 "$OUT/named-$name.err")"
+  (cd "$R" && cozy --json run -p "$R" "$OUT/$name.py/echo" text=abc --on local) > "$OUT/named-$name.ndjson" 2> "$OUT/named-$name.err" || check "runs: $name.py: $(tail -c 300 "$OUT/named-$name.err")"
   tail -1 "$OUT/named-$name.ndjson" | J '.run.result.back == "cba"' || check "runs: $name.py did not answer: $(tail -1 "$OUT/named-$name.ndjson" | jq -c .run.reason)"
 done
 }
 
-# What a page sends: a project by its id, a payload as text, a file by its hash, and no path. A file given to a run joins its project, so
-# the run can be asked again once what held it is gone.
+# What a page sends, or any client on another computer: a project by its id, local code by content (its tree, as `protocol::code`
+# makes it), a payload as text, a file by its hash, and no path. A file given to a run joins its project, so the run can be asked
+# again once what held it is gone.
 path_free() {
 step "a project: a run with no path sent"
-local R=$OUT/path-free lock=$HOME/.cozy/calcifer/calcifer.lock.holder id real pic hex other n asked input code w h url
+local R=$OUT/path-free lock=$HOME/.cozy/calcifer/calcifer.lock.holder id pic hex other n asked input code w h url script tree doc
 cozy project new "$R" > /dev/null || check "path-free: project new"
-real=$(cd "$R" && pwd -P)
 id=$(status "$R" | jq -r .id)
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
-asked=$(ask "$(jq -n --arg t "$here/project/draw.py" --arg p "$id" '{target: $t, project: $p, on: "local", input_text: "instructions: with no path\nseed: 7\n"}')")
+# draw.py by content: the script, then its tree's document, each PUT by its digest.
+script=$here/project/draw.py
+hex=$(sha256sum "$script" | cut -c1-64)
+api -sS -o /dev/null -X PUT --data-binary "@$script" "http://$ADDR/v1/files/sha256:$hex" || check "path-free: PUT draw.py"
+doc=$(jq -cn --arg h "$hex" --argjson n "$(stat -c %s "$script")" '{entries: [{blob: {length: $n, sha256: $h}, kind: "file", path: "draw.py"}]}')
+tree=$(printf %s "$doc" | sha256sum | cut -c1-64)
+printf %s "$doc" | api -sS -o /dev/null -X PUT --data-binary @- "http://$ADDR/v1/files/sha256:$tree" || check "path-free: PUT the tree"
+asked=$(ask "$(jq -n --arg t "sha256:$tree" --arg p "$id" '{target: "draw", code: {tree: $t, at: "draw.py"}, project: $p, on: "local", input_text: "instructions: with no path\nseed: 7\n"}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
-[ -n "$n" ] || { check "path-free: a run by the project's id and input_text: $asked"; return; }
+[ -n "$n" ] || { check "path-free: a run by the project's id, local code by content and input_text: $asked"; return; }
 ended "$n" > "$OUT/free-draw.json"
-J --arg i "$id" --arg p "$real" '.status == "completed" and .project_id == $i and .project == $p' "$OUT/free-draw.json" || check "path-free: the run: $(jq -c '{status, project, project_id, reason}' "$OUT/free-draw.json")"
+J --arg i "$id" '.status == "completed" and .project_id == $i and .project == "path-free"' "$OUT/free-draw.json" || check "path-free: the run: $(jq -c '{status, project, project_id, reason}' "$OUT/free-draw.json")"
 J '.request.input.instructions.text == "with no path" and .request.seed == 7 and (.request.target | endswith("/draw"))' "$OUT/free-draw.json" || check "path-free: request: $(jq -c .request "$OUT/free-draw.json")"
-pic=$(jq -r '.output[0].path' "$OUT/free-draw.json")
+J '.output | all(has("path") | not)' "$OUT/free-draw.json" || check "path-free: an output names a path of Calcifer's: $(jq -c .output "$OUT/free-draw.json")"
+url=$(jq -r '.output[0].url' "$OUT/free-draw.json") pic=$OUT/free-output.png
+[ "$(api -o "$pic" -w '%{http_code}' "http://$ADDR$url")" = 200 ] && [ "sha256:$(sha256sum "$pic" | cut -c1-64)" = "$(jq -r '.output[0].sha256' "$OUT/free-draw.json")" ] || check "path-free: $url does not serve its output"
 w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$pic") h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$pic")
 J --argjson w "$w" --argjson h "$h" '.output[0] | .width == $w and .height == $h' "$OUT/free-draw.json" || check "path-free: measured $(jq -c '.output[0] | {width, height}' "$OUT/free-draw.json"), not $w x $h"
-url=$(jq -r '.output[0].url' "$OUT/free-draw.json")
-[ "$(api -o "$OUT/free-output.png" -w '%{http_code}' "http://$ADDR$url")" = 200 ] && cmp -s "$OUT/free-output.png" "$pic" || check "path-free: $url does not serve its output"
-[ "$(api --get --data-urlencode "project=$id" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" = "$(api --get --data-urlencode "project=$R" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" ] || check "path-free: GET /v1/runs by id and by folder differ"
+[ "$(api --get --data-urlencode "project=$id" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" = "$(api --get --data-urlencode "project=path-free" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" ] || check "path-free: GET /v1/runs by id and by name differ"
 [ "$(api -o "$OUT/free-unknown.json" -w '%{http_code}' "http://$ADDR/v1/runs?project=project-0000000000000000")" = 404 ] && J '.error.code == "project_unknown"' "$OUT/free-unknown.json" || check "path-free: GET /v1/runs of an unknown id: $(head -c 200 "$OUT/free-unknown.json")"
-J '.error.code == "project_unknown"' <<< "$(ask "$(jq -n --arg t "$here/project/draw.py" '{target: $t, project: "project-0000000000000000", on: "local", input_text: "instructions: nowhere"}')")" || check "path-free: POST /v1/runs of an unknown id was not refused"
+J '.error.code == "project_unknown"' <<< "$(ask "$(jq -n --arg t "sha256:$tree" '{target: "draw", code: {tree: $t, at: "draw.py"}, project: "project-0000000000000000", on: "local", input_text: "instructions: nowhere"}')")" || check "path-free: POST /v1/runs of an unknown id was not refused"
+J '.error.code == "target_by_path"' <<< "$(ask "$(jq -n --arg t "$script" --arg p "$id" '{target: $t, project: $p, on: "local", input_text: "instructions: by path"}')")" || check "path-free: local code by a path was not refused"
 
 step "a project: a file by its hash joins the project, and the run can be asked again"
 pic=$OUT/free.png
@@ -1908,7 +1919,7 @@ YAML
 cozy project -p "$R" render all --queue --on local > "$OUT/walk-restarted.txt" 2>&1 || check "restarted: render: $(tail -c 300 "$OUT/walk-restarted.txt")"
 for _ in $(seq 240); do run=$(status "$R" | jq -r '.board.jobs[] | select(.asset == "first") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
 [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || check "restarted: first isn't running: $(status "$R" | jq -c .board.jobs)"
-# A copy of the folder is a project, and goes on with none of what its render owes.
+# A copy of the folder is a project of its own, with its own id, and goes on with none of what its render owes.
 local copy=$OUT/walk-restarted-copy
 cp -a "$R" "$copy"
 J '(.busy | not) and ((.board.jobs // []) | length == 0) and ((.queue // []) | length == 0)' <<< "$(status "$copy")" || check "restarted: a copy goes on with its render: $(status "$copy" | jq -c '{busy, queue}')"
@@ -1920,9 +1931,10 @@ ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 [ "$(jq -r .pid "$lock")" != "$pid" ] || check "restarted: Calcifer is still pid $pid"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$R")" && break; sleep 0.5; done
 { [ "$(made "$R" first)" = 1 ] && [ "$(made "$R" second)" = 1 ] && [ "$(made "$R" reader)" = 1 ]; } || check "restarted: made $(status "$R" | jq -c '[.assets[] | {(.name): .versions}] | add')"
-local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$R" '[.runs[] | select(.project == $r) | .target] | group_by(.) | map({(.[0]): length}) | add')
+local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$(status "$R" | jq -r .id)" '[.runs[] | select(.project_id == $r) | .target] | group_by(.) | map({(.[0]): length}) | add')
 J '[.[]] | add == 3' <<< "$sent" || check "restarted: runs sent: $sent"
-[ "$(cozy --json run ls --limit 0 | jq -c --arg r "$copy" '[.runs[] | select(.project == $r)] | length')" = 0 ] || check "restarted: a copy sent a run"
+[ "$(status "$copy" | jq -r .id)" != "$(status "$R" | jq -r .id)" ] || check "restarted: a copy has its original's id"
+[ "$(cozy --json run ls --limit 0 | jq -c --arg r "$(status "$copy" | jq -r .id)" '[.runs[] | select(.project_id == $r)] | length')" = 0 ] || check "restarted: a copy sent a run"
 [ "$(owed "$R")" = 0 ] || check "restarted: what the walk owed outlived the render"
 }
 
@@ -1952,9 +1964,9 @@ cp -a "$S" "$copy"
 J '(.busy | not) and ((.board.jobs // []) | length == 0)' <<< "$(status "$copy")" || check "spend: a copy goes on with its render: $(status "$copy" | jq -c '{busy, board}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$S")" && break; sleep 0.5; done
 { [ "$(made "$S" first)" = 1 ] && [ "$(made "$S" slow)" = 1 ] && [ "$(made "$S" reader)" = 1 ]; } || check "spend: made $(status "$S" | jq -c '[.assets[] | {(.name): .versions}] | add')"
-local ran; ran=$(cozy --json run ls --limit 0 | jq -c --arg s "$S" '[.runs[] | select(.project == $s) | .target] | group_by(.) | map({(.[0]): length}) | add')
+local ran; ran=$(cozy --json run ls --limit 0 | jq -c --arg s "$(status "$S" | jq -r .id)" '[.runs[] | select(.project_id == $s) | .target] | group_by(.) | map({(.[0]): length}) | add')
 J '[.[]] | add == 3' <<< "$ran" || check "spend: runs: $ran"
-[ "$(cozy --json run ls --limit 0 | jq --arg c "$copy" '[.runs[] | select(.project == $c)] | length')" = 0 ] || check "spend: the copy sent a run"
+[ "$(cozy --json run ls --limit 0 | jq --arg c "$(status "$copy" | jq -r .id)" '[.runs[] | select(.project_id == $c)] | length')" = 0 ] || check "spend: the copy sent a run"
 [ "$(owed "$copy")" = 0 ] || check "spend: the copy kept what its original owes"
 }
 
@@ -2158,7 +2170,7 @@ look=$(prefix "$T" "$T/look.mp4")
 { printf 'version: 4\nassets:\n  look: {approved: %s}\n  note: {description: A note.}\n' "$look"
   for i in 1 2 3 4 5; do printf '  f%s: {tool: cozy/frame, video: <look>, at: %s}\n' "$i" "$i"; done; } | yaml_in "$T"
 render "$T" all || check "no stall: render all: $(tail -c 300 "$OUT/render.txt")"
-id=$(api -X POST -d "$(jq -n --arg p "$T" '{path: $p}')" "http://$ADDR/v1/projects" | jq -r .id)
+id=$(api -X POST -d "$(jq -n --arg p "$T" '{project: $p}')" "http://$ADDR/v1/projects" | jq -r .id)
 dd if=/dev/zero of="$T/hog" bs=8M count=256 conv=fdatasync status=none & writer=$!
 : > "$T/took.txt"
 for i in $(seq 1 40); do
@@ -2277,7 +2289,7 @@ cozy project -p "$T" delete typed > /dev/null || check "by the CLI: delete typed
 rows() { api "http://$ADDR/v1/projects/$(status "$T" | jq -r .id)/canvas"; }
 [ "$(cozy project -p "$T" import "$T/red.png" red_art)" = red_art ] || check "by the CLI: import did not print its name"
 # Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
-(cd "$T" && cozy --json run "$tool/still" instructions=primed --on local > /dev/null 2>&1) || check "by the CLI: a run to read the tool"
+(cd "$T" && cozy --json run -p "$T" "$tool/still" instructions=primed --on local > /dev/null 2>&1) || check "by the CLI: a run to read the tool"
 
 [ "$(cozy project -p "$T" add "$tool/still" drawn 'instructions=From the line' count=3 style=flat soft:=true at=400,120,360)" = drawn ] || check "by the CLI: add: no name"
 J '.assets[] | select(.name == "drawn") | .tool != null and .fields.instructions == "From the line" and .fields.count == 3 and .fields.style == "flat" and .fields.soft == true' <<< "$(status "$T")" || check "by the CLI: add: $(row "$T" drawn .fields)"
@@ -2661,7 +2673,7 @@ YAML
 render "$T" coast same || { check "same: render: $(tail -c 500 "$OUT/render.txt")"; return; }
 rendered=$(asked "$T" same | jq -S -c .input)
 called=$(cozy --json --full project -p "$T" status same | jq -S -c '.call // .asset.call // empty')
-(cd "$T" && cozy --json run "$here/project/tool.py/told" 'instructions=<Amy> by <coast>, in <mood>.' 'shade:=0.5' 'beats:=[{"description": "<coast> at dusk.", "duration": 4}]' 'seed:=9' --on local) > "$OUT/same.ndjson" 2> "$OUT/same.err" \
+(cd "$T" && cozy --json run -p "$T" "$here/project/tool.py/told" 'instructions=<Amy> by <coast>, in <mood>.' 'shade:=0.5' 'beats:=[{"description": "<coast> at dusk.", "duration": 4}]' 'seed:=9' --on local) > "$OUT/same.ndjson" 2> "$OUT/same.err" \
   || check "same: cozy run: $(tail -c 400 "$OUT/same.err")"
 ran=$(cozy --json --full run show "$(tail -1 "$OUT/same.ndjson" | jq -r .run.number)" --once | jq -S -c .request.input)
 [ "$rendered" = "$ran" ] || check "same: Render sent $rendered and cozy run $ran"
@@ -2675,7 +2687,7 @@ latents_stay() {
 step "a tool: a Latents result stays on its machine, any other file comes down, and only its own package reads its extras (weightless 9)"
 local T=$OUT/latents run held
 tool_pictures "$T"
-(cd "$T" && cozy --json run "$here/project/boxes.py/shot" 'plate=<walk>' --on local) > "$OUT/latents.ndjson" 2> "$OUT/latents.err" || { check "latents: the run: $(tail -c 400 "$OUT/latents.err")"; return; }
+(cd "$T" && cozy --json run -p "$T" "$here/project/boxes.py/shot" 'plate=<walk>' --on local) > "$OUT/latents.ndjson" 2> "$OUT/latents.err" || { check "latents: the run: $(tail -c 400 "$OUT/latents.err")"; return; }
 run=$(tail -1 "$OUT/latents.ndjson" | jq -r .run.number)
 ended "$run" > "$OUT/latents.json"
 J '.output[] | select(.name == "latents") | .stays and .path == null and .sha256 != null' "$OUT/latents.json" || check "latents: a Latents field: $(jq -c '[.output[] | {name, stays, path}]' "$OUT/latents.json")"
@@ -2683,7 +2695,7 @@ J '[.output[] | select(.name == "video" or .name == "given")] | length == 2 and 
 held=$(jq -r '.output[] | select(.name == "latents") | .sha256' "$OUT/latents.json")
 { sql1 "$T" "SELECT record FROM lock_files WHERE sha256 = '$held'" | grep -q '"machine":"local"' && [ ! -e "$T/files/${held#sha256:}" ]; } || check "latents: project.db doesn't say who holds them, or they came here: $(sql "$T" "SELECT record FROM lock_files WHERE sha256 = '$held'")"
 [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/runs/$run/outputs/latents")" = 409 ] || check "latents: the output route served what stays"
-(cd "$T" && cozy --json run "$here/project/shots.py/only_untyped" prompt=alone --on local) > "$OUT/untyped.ndjson" 2> "$OUT/untyped.err" || check "latents: an untyped run: $(tail -c 300 "$OUT/untyped.err")"
+(cd "$T" && cozy --json run -p "$T" "$here/project/shots.py/only_untyped" prompt=alone --on local) > "$OUT/untyped.ndjson" 2> "$OUT/untyped.err" || check "latents: an untyped run: $(tail -c 300 "$OUT/untyped.err")"
 tail -1 "$OUT/untyped.ndjson" | J '.run.output[0] | (.stays | not) and .path != null' || check "latents: an untyped File didn't come down: $(tail -1 "$OUT/untyped.ndjson" | jq -c .run.output)"
 added "$T" <<YAML
   ours: {tool: $here/project/shaped.py/shot, summary: On <walk>., beats: [{duration: 2}]}
@@ -2735,7 +2747,7 @@ api -X POST -H "Idempotency-Key: pickup-$RANDOM$RANDOM" -d '{"names": ["clash"],
 for _ in $(seq 240); do [ "$(made "$T" clash)" = 3 ] && J '.busy | not' <<< "$(status "$T")" && break; sleep 0.5; done
 J '.versions[-1].pickup == {"take": "<clash.2>", "out_frame": 24}' <<< "$(held "$T" clash)" && J '.pickup.out_frame == 24' <<< "$(given clash)" || check "pickup: POST runs: $(cat "$OUT/pickup-route.json") $(held "$T" clash | jq -c '[.versions[] | {number, pickup}]')"
 # `cozy run`, by the same binder.
-(cd "$T" && cozy --json run "$here/project/shots.py/shoot" 'summary=Two lights meet on <look>.' 'pickup.take=<clash.1>' pickup.out_frame=30 --on local) > "$OUT/pickup-run.ndjson" 2> "$OUT/pickup-run.err" || check "pickup: cozy run: $(tail -c 300 "$OUT/pickup-run.err")"
+(cd "$T" && cozy --json run -p "$T" "$here/project/shots.py/shoot" 'summary=Two lights meet on <look>.' 'pickup.take=<clash.1>' pickup.out_frame=30 --on local) > "$OUT/pickup-run.ndjson" 2> "$OUT/pickup-run.err" || check "pickup: cozy run: $(tail -c 300 "$OUT/pickup-run.err")"
 input=$(cozy --json --full run show "$(tail -1 "$OUT/pickup-run.ndjson" | jq -r .run.number)" --once | jq -c .request.input)
 J '.pickup.out_frame == 30 and .pickup.take.type == "video" and (.summary.references | map(.key) == ["look"])' <<< "$input" || check "pickup: cozy run's call: $input"
 # Written in the file, it's said and not sent.
@@ -2753,7 +2765,7 @@ if [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind != "local" and 
   echo "another machine is up: release-gate/sessions/run-no-on.sh is that case"; return 0
 fi
 mkdir -p "$T"; printf 'version: 4\nassets: {}\n' | yaml_in "$T"
-(cd "$T" && cozy --json run "$here/project/tool.py/still" 'instructions=Wherever it ends first.') > "$OUT/no-on.ndjson" 2> "$OUT/no-on.err" || { check "no --on: $(tail -c 300 "$OUT/no-on.err")"; return; }
+(cd "$T" && cozy --json run -p "$T" "$here/project/tool.py/still" 'instructions=Wherever it ends first.') > "$OUT/no-on.ndjson" 2> "$OUT/no-on.err" || { check "no --on: $(tail -c 300 "$OUT/no-on.err")"; return; }
 tail -1 "$OUT/no-on.ndjson" | J '.run.machine == "local" and .run.status == "completed"' || check "no --on: it went to $(tail -1 "$OUT/no-on.ndjson" | jq -c '.run | {machine, status}')"
 }
 
@@ -3721,9 +3733,9 @@ session_surface() {
 step "a project: its link, and what's kept of a session"
 local P=$1 ID=$2 B=http://$ADDR code token media store=$HOME/.cozy/calcifer/state.db U
 U=$B/v1/projects/$ID/cuts/edit.mp4
-(cd "$P" && cozy --json open --no-open) > "$OUT/project-open.json" || check "session: open --no-open in its folder failed"
-J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open's link in its folder: $(cat "$OUT/project-open.json")"
-J '.url | contains("&to=") | not' <<< "$(cd "$OUT" && cozy --json open --no-open)" || check "session: open in no project isn't the home"
+COZY_PROJECT=$ID cozy --json open --no-open > "$OUT/project-open.json" || check "session: open --no-open of COZY_PROJECT failed"
+J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open's link of COZY_PROJECT: $(cat "$OUT/project-open.json")"
+J '.url | contains("&to=") | not' <<< "$(cd "$P" && cozy --json open --no-open)" || check "session: open naming no project isn't the home, though it's run in a project's folder"
 cozy --json open "$P/sub" --no-open > "$OUT/project-open-named.json" || check "session: open of a folder in it failed"
 J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open of a folder in it: $(cat "$OUT/project-open-named.json")"
 mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 1\nassets: {}\n' > "$OUT/open-old/project.yaml"
@@ -3801,7 +3813,7 @@ event_stream() {
 step "a project: GET /v1/events"
 local R=$OUT/stream log=$OUT/events.sse stream id n seen yaml real
 cozy project new "$R" > /dev/null || check "stream: project new"
-real=$(cd "$R" && pwd -P)
+real=$(status "$R" | jq -r .id)
 id=$(status "$R" | jq -r .id)
 curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
 soon told "$log" '.type == "hello"' || check "stream: no hello: $(head -c 300 "$log"; cat "$OUT/events.err")"
@@ -3813,8 +3825,8 @@ printf '  edited:\n    text: By hand.\n' | added "$R"
 soon told_more "$log" "$id" "$seen" || check "stream: a hand's edit told nothing: $(sse "$log" | cut -c1-200 | tail -5)"
 
 seen=$(revs "$log" "$id" | wc -l) yaml=$(cozy project -p "$R" export | sha /dev/stdin)
-(cd "$R" && cozy run "$here/project/draw.py" instructions=stream) > "$OUT/stream-run.txt" 2>&1 || check "stream: a run in the project: $(tail -c 300 "$OUT/stream-run.txt")"
-n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number') || check "stream: run ls in the project failed"
+(cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=stream) > "$OUT/stream-run.txt" 2>&1 || check "stream: a run in the project: $(tail -c 300 "$OUT/stream-run.txt")"
+n=$(cd "$R" && cozy --json run ls -p "$R" --limit 1 | jq -r '.runs[0].number') || check "stream: run ls in the project failed"
 [ "$(cozy project -p "$R" export | sha /dev/stdin)" = "$yaml" ] || check "stream: a landing changed the boxes, and this was to prove its own rows reach the stream"
 soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project == \"$real\"" \
@@ -3843,8 +3855,8 @@ local R=$OUT/live term n before code follower
 cozy project new "$R" > /dev/null || check "live: project new"
 python3 "$here/project/terminal.py" "$OUT/runs.screen" "$COZY" run ls --all > /dev/null & term=$!
 soon screen_says "$OUT/runs.screen" 'TARGET' || check "live: cozy run ls drew nothing"
-(cd "$R" && cozy run "$here/project/draw.py" instructions=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
-n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls in the project failed"
+(cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
+n=$(cd "$R" && cozy --json run ls -p "$R" --limit 1 | jq -r '.runs[0].number') || check "live: run ls in the project failed"
 soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
 
 if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
@@ -3858,8 +3870,8 @@ if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$G/project.yaml"
   printf '{"format": 2, "assets": {}, "files": {}}\n' > "$G/project.lock"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
-  (cd "$R" && cozy run "$here/project/draw.py" instructions=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
-  n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
+  (cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
+  n=$(cd "$R" && cozy --json run ls -p "$R" --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
   soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
   ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
   J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id doesn't say it upgraded: $(api "http://$ADDR/v1/projects/$gid" | jq -c .warnings)"

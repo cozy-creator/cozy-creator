@@ -36,6 +36,24 @@ const cozyHere = (args, options) => new Promise((done, fail) => {
 });
 const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
 
+/** The folder at `root` held by Calcifer as a tree (`protocol::tree`): each file PUT by its sha256, then the document. Its digest. */
+async function sentTree(base, token, root) {
+  const walk = (dir) => readdirSync(join(root, dir), { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? (entry.name === '__pycache__' ? [] : walk(join(dir, entry.name))) : [join(dir, entry.name)]);
+  const put = async (bytes) => {
+    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const answer = await fetch(`${base}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body: bytes });
+    if (!answer.ok) throw new Error(`PUT ${digest}: ${answer.status} ${await answer.text()}`);
+    return digest;
+  };
+  const entries = [];
+  for (const path of walk('').sort()) {
+    const bytes = readFileSync(join(root, path));
+    entries.push({ blob: { length: bytes.length, sha256: (await put(bytes)).slice(7) }, kind: 'file', path: path.split(/[\\/]/).join('/') });
+  }
+  return put(Buffer.from(JSON.stringify({ entries })));
+}
+
 /** A GET as a browser's script loader sends one: no credential, the path as it's written. */
 function raw(base, path, headers = {}) {
   const { hostname, port } = new URL(base);
@@ -193,7 +211,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     // Local code the project names, as a person keeps it beside the project. A run reads it with this machine's Runtime, so a box doesn't wait on PyPI's.
     const boxed = join(folder, 'boxed');
     cpSync(join(__dirname, '..', 'project', 'boxed'), boxed, { recursive: true });
-    const primed = () => execFileSync(COZY, ['--json', 'run', './boxed/plain', 'instructions=primed', '--on', 'local'], { ...quiet, cwd: folder });
+    const primed = () => execFileSync(COZY, ['--json', 'run', './boxed/plain', 'instructions=primed', '--on', 'local'], { ...quiet, cwd: folder, env: { ...process.env, COZY_PROJECT: folder } });
     primed();
     await page.reload();
     await page.waitForSelector('.top');
@@ -327,7 +345,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   if (seen.release_checked) {
     const name = 'e2e-boxed';
     const package_ = `e2e/${name}`;
-    const described = (await api(`/v1/targets?target=${encodeURIComponent(join(folder, 'boxed'))}`)).body.interface;
+    // Described by content, as any client sends local code (cl-819): its files, then its tree, each PUT by its digest.
+    const described = (await api(`/v1/targets?tree=${encodeURIComponent(await sentTree(base, token, join(folder, 'boxed')))}`)).body?.interface;
     check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.tool?.ui === 'ui/shade.js'), described?.entrypoints?.map((entry) => entry.tool?.ui));
     // Locked and built beside the local code, not in it: what a publish does, with a real wheel's real layout.
     const dist = mkdtempSync(join(tmpdir(), 'package-ui-'));

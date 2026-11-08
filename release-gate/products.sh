@@ -17,7 +17,7 @@ H3_SEED=2026102801
 av() {
   [ -f "$1.number" ] || return 0
   local f v a
-  f=$(run_get "$OUT" "$1" '.output[]?.path' | grep -E '\.mp4$' | while read -r p; do
+  f=$(run_outputs "$OUT" "$1" | grep -E '\.mp4$' | while read -r p; do
     echo "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$p") $p"; done | sort -n | tail -1)
   v=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)
   a=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)

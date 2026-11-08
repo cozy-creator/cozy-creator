@@ -85,7 +85,7 @@ const finish = (code) => {
 
   // A still whose tool composes a GPU function that loads a model, not yet rendered here. Named before it's run, it's read by PyPI's Runtime, which
   // knows no tool; the install a run makes on this machine's Runtime takes its place, as tools.js primes its fixture.
-  execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
+  execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
   const primed = (await runsOf('heavy')).length;
   importYaml(folder, `version: 4\nassets:\n  heavy:\n    tool: ${heavy}/heavy\n    instructions: a lantern in fog\n`);
   await box('heavy').waitFor();

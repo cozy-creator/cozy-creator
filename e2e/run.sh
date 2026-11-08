@@ -1,8 +1,8 @@
 # e2e/run.sh: how every suite runs `cozy` and reads what a run made (e2e/lib.sh, release-gate/gate.sh and its suites).
 # RUN_CLI is the cozy to call (default `cozy`). A run is kept in <dir> under its <name>: <name>.ndjson (its events),
 # <name>.err, <name>.number (`none`: it never got one) and <name>.json, its whole record (`cozy run show --once --json --full`).
-# A run belongs to a project (`run_project`): its outputs land in the project's files/, and `run_output` finds them by the
-# record's output[].path.
+# A run belongs to a project (`run_project`): its outputs land in the project's files/, and `run_output` downloads them by
+# their digest (`cozy run show -o`): Calcifer's paths are its own (cl-819).
 #
 # A run is followed by the CLI's own stream (`cozy --json run`, <name>.ndjson): it ends when that follower exits, at the
 # run's terminal event once its outputs landed, or with a typed error. Nothing here ends a run or a read for taking
@@ -75,5 +75,17 @@ run_cell() {
 # run_get <dir> <name> <jq filter>: from its record, empty when absent.
 run_get() { jq -r "($3) // empty" "$1/$2.json" 2> /dev/null || true; }
 
+# run_outputs <dir> <name>: each landed output of the run, downloaded into <dir>/<name>.out by its digest, in its record's
+# order, one path a line.
+run_outputs() {
+  local n stem file
+  n=$(cat "$1/$2.number" 2> /dev/null || true)
+  [ -n "$n" ] && [ "$n" != none ] || return 0
+  ls "$1/$2.out/$n-"* > /dev/null 2>&1 || "$RUN_CLI" --json run show "$n" --once -o "$1/$2.out" > /dev/null 2>&1 || true
+  for stem in $(run_get "$1" "$2" '.output[]? | select(.url) | if .index == 0 then .name else "\(.name)-\(.index)" end'); do
+    for file in "$1/$2.out/$n-$stem" "$1/$2.out/$n-$stem".*; do [ ! -e "$file" ] || echo "$file"; done
+  done
+}
+
 # run_output <dir> <name> <extensions, as a|b>: its first landed output with one of these extensions.
-run_output() { run_get "$1" "$2" '.output[]?.path' | grep -E "\.($3)$" | head -1 || true; }
+run_output() { run_outputs "$1" "$2" | grep -E "\.($3)$" | head -1 || true; }

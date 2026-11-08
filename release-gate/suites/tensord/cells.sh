@@ -22,9 +22,11 @@ get() {
     executor) q=.measurements.execution.executor.started_unix_ms;;
     gpus) q='[.measurements | .. | objects | select((.gpu | type) == "number" and .gpu >= 0) | .gpu] | unique | map(tostring) | join(",")';;
     window) q='"\(.accepted_at_ms // 0) \(.settled_at_ms // 0)"';; stage) q=.progress.stage;;
-    output) q=.output[0].path;; length) q=.output[0].length;; target) q=.target;;
+    length) q=.output[0].length;; target) q=.target;;
   esac
-  run_show "$T" "$(nm "$1")" "$1"; run_get "$T" "$(nm "$1")" "$q"
+  run_show "$T" "$(nm "$1")" "$1"
+  # Its first output, downloaded by its digest: Calcifer's paths are its own.
+  case $2 in output) run_outputs "$T" "$(nm "$1")" | head -1 ;; *) run_get "$T" "$(nm "$1")" "$q" ;; esac
 }
 # until_status <run> <in_progress|terminal>: the run followed to its end, or until its events reach the status
 # (e2e/run.sh's run_wait).

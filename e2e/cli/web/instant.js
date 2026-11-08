@@ -257,7 +257,7 @@ async function loseAnswers(page, method, path, times) {
     // Named before it's run, it's read by PyPI's Runtime, which knows no tool: the install a run makes on this machine's Runtime takes its place, as
     // tools.js primes its fixture, and the page knows it makes pictures.
     const stillRuns = async () => (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
-    execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
+    execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
     const primed = (await stillRuns()).length;
     importYaml(folder, `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
     await box('fixture').waitFor();

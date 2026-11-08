@@ -206,7 +206,7 @@ function calciferMb() {
   const cozy = (...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
     const from = Date.now();
-    execFile(COZY, words, { cwd: folder, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
+    execFile(COZY, words, { cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
       const at = Date.now();
       if (error) fail(new Error(`cozy ${words.join(' ').slice(0, 300)}: ${error.message}: ${stdout.slice(0, 500)}${stderr.slice(0, 500)}`));
       else done({ stdout, stderr, at, ms: at - from });

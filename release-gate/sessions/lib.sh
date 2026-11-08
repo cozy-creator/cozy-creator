@@ -44,7 +44,7 @@ trap 'RC=1; exit 1' INT TERM HUP
 # stops growing for 15 min cancels it.
 # A run belongs to a project: this session's, wherever the session has gone (`step` names it; a direct `cozy run` says -p).
 RUN_PROJECT=$OUT/project
-[ -f "$RUN_PROJECT/project.yaml" ] || cozy project new "$RUN_PROJECT" > /dev/null 2>> "$OUT/project.err" || fail "cozy project new: $(cat "$OUT/project.err")"
+[ -f "$RUN_PROJECT/project.db" ] || [ -f "$RUN_PROJECT/project.yaml" ] || cozy project new "$RUN_PROJECT" > /dev/null 2>> "$OUT/project.err" || fail "cozy project new: $(cat "$OUT/project.err")"
 step() {
   local n=$1; shift; [ "$1" != run ] || set -- "$@" -p "$RUN_PROJECT"; say "step $n: cozy $*"
   cozy "$@" > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0

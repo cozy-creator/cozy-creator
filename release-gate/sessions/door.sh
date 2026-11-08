@@ -125,7 +125,7 @@ door_keys() {
 door_runs() {
   mark "a run in a shell there, its real outputs through the door, $X"
   pod "mkdir -p $P/runs" ; put "$FIX/fixture.py" "$P/fixture.py"
-  T=1200 pod "cozy project new $P/runs/p > /dev/null; cd $P/runs/p && cozy --json run ../../fixture.py/hostile 'prompt=through the door $RANDOM' --on local" > "$OUT/hostile-run-$X.json"
+  T=1200 pod "cozy project new $P/runs/p > /dev/null; cd $P/runs/p && cozy --json run -p $P/runs/p ../../fixture.py/hostile 'prompt=through the door $RANDOM' --on local" > "$OUT/hostile-run-$X.json"
   local c=$?; [ "$c" = 0 ] || check "a run in a shell there exited $c: $(tail -c 300 "$OUT/hostile-run-$X.json") $(tail -c 300 "$OUT/pod.err")"
   api "$D/v1/runs?limit=1" > "$OUT/runs.json" || check "GET runs through the door"
   RUN=$(jq -r '.runs[0].id // empty' "$OUT/runs.json")
@@ -148,7 +148,7 @@ door_component() {
   local a=$P/boxed id link
   pod "cozy project new $a > /dev/null" || check "project new"
   put "$FIX/../../../../e2e/cli/project/draw.py" "$a/draw.py"
-  T=1200 pod "cd $a && cozy --json run ./draw.py/draw instructions=primed --on local" > /dev/null || check "a run of the tool there: $(tail -c 300 "$OUT/pod.err")"
+  T=1200 pod "cd $a && cozy --json run -p $a ./draw.py/draw instructions=primed --on local" > /dev/null || check "a run of the tool there: $(tail -c 300 "$OUT/pod.err")"
   id=$(pod "cozy --json project -p $a status" | jq -r '.id // empty')
   [ -n "$id" ] || { check "the project has no id: $(tail -c 300 "$OUT/pod.err")"; return; }
   answers "a box of it through the door" 201 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: door-component-$RANDOM" -d '{"tool":"./draw.py/draw","name":"drawn","at":{"x":0,"y":0,"w":300}}' "$D/v1/projects/$id/assets"
@@ -447,7 +447,7 @@ door_stream
 door_keys
 door_runs
 mark "a job holds the rental: End through the door refuses while one runs"
-pod "cd $P/runs/p && nohup cozy --json run ../../fixture.py/wait seconds:=600 --on local > $P/wait.json 2>&1 &"
+pod "cd $P/runs/p && nohup cozy --json run -p $P/runs/p ../../fixture.py/wait seconds:=600 --on local > $P/wait.json 2>&1 &"
 for _ in $(seq 180); do [ "$(deadline)" = 0 ] && break; sleep 2; done
 [ "$(deadline)" = 0 ] || check "with a job queued or running, status still names an idle deadline: $(deadline)"
 answers "End while a job runs" 409 machine_working "${bearer[@]}" -X DELETE "$D/v1/machines/local"

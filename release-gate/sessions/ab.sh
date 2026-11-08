@@ -112,9 +112,9 @@ for k in "${names[@]}"; do
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   cd "$OUT" || fail "no $OUT"
   N=$(runno "$k")
-  if [ -n "$N" ]; then cozy run show "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; fi
+  if [ -n "$N" ]; then cozy run show "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; cozy run show "$N" --once -o "$OUT/$k.out" > /dev/null 2>&1; fi
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
-  MADE[$k]=$(jq -r '[.output[]?.path // empty | select(test("[.](png|webp|jpg|mp4)$"))] | sort | .[0] // empty' "$OUT/$k.json" 2>/dev/null)
+  MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
@@ -128,7 +128,7 @@ done
 rm -f "$OUT/current"
 
 digests() { jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/$1.json" 2>/dev/null; }
-file() { jq -r '.output[]?.path' "$OUT/$1.json" 2>/dev/null | grep -E '\.(mp4|webm|png|webp|jpg|wav|flac)$' | head -1; }
+file() { ls "$OUT/$1.out"/* 2> /dev/null | grep -E '\.(mp4|webm|png|webp|jpg|wav|flac)$' | head -1; }
 frames() { local f; f=$(file "$1"); [ -s "$f" ] || { echo none; return; }; ffmpeg -nostdin -v error -i "$f" -map 0 -f framemd5 - | grep -v '^#' | md5sum | cut -c1-16; }
 psnr() { ffmpeg -nostdin -i "$(file "$1")" -i "$(file "$2")" -lavfi '[0:v][1:v]psnr' -f null - 2>&1 | grep -oE 'average:[0-9.inf]+' | tail -1; }
 differ=0

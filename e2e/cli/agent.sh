@@ -21,10 +21,12 @@ step "what an agent reads"
 local A=$OUT/agent F=$OUT/agent/film E=$OUT/agent/empty MEASURE=${1:-} n failed line words
 rm -rf "$A"; mkdir -p "$A"
 : > "$A/bytes.tsv"
-# view <label> <dir> <cozy args…>: one view from <dir>, its stdout kept in <label>.out and measured.
+# view <label> <dir> <cozy args…>: one view of the project at <dir> (COZY_PROJECT; none for /), its stdout kept in <label>.out and
+# measured.
 view() {
-  local label=$1 dir=$2 bytes; shift 2
-  (cd "$dir" && cozy "$@") > "$A/$label.out" 2> "$A/$label.err" || true
+  local label=$1 dir=$2 bytes named=''; shift 2
+  [ "$dir" = / ] || named=$dir
+  (cd "$dir" && COZY_PROJECT=$named cozy "$@") > "$A/$label.out" 2> "$A/$label.err" || true
   bytes=$(wc -c < "$A/$label.out")
   local most; most=$(budget "$label")
   printf '%s\t%s\t%s\tcozy %s\n' "$label" "$bytes" "$most" "$*" >> "$A/bytes.tsv"
@@ -55,11 +57,11 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: Not rendered yet.
 YAML
-(cd "$F" && cozy project render sky sea hill --on local) > "$A/render.txt" 2>&1 || check "agent: render: $(tail -c 300 "$A/render.txt")"
-(cd "$F" && cozy project approve sky 1) > /dev/null 2>&1 || check "agent: approve sky 1"
+(cd "$F" && cozy project -p "$F" render sky sea hill --on local) > "$A/render.txt" 2>&1 || check "agent: render: $(tail -c 300 "$A/render.txt")"
+(cd "$F" && cozy project -p "$F" approve sky 1) > /dev/null 2>&1 || check "agent: approve sky 1"
 sed -i 's/A green hill\./A green hill in the rain./' "$F/project.yaml"
-(cd "$F" && cozy --json run "$here/weightless/reverse" "text=agent $RANDOM" --on local) > "$A/reverse.ndjson" 2> "$A/reverse.err" || check "agent: the weightless run failed"
-(cd "$F" && cozy --json run "$here/project/shots.py/crash" "crash=the agent cell fails on purpose" --on local) > "$A/crash.ndjson" 2> "$A/crash.err" || true
+(cd "$F" && cozy --json run -p "$F" "$here/weightless/reverse" "text=agent $RANDOM" --on local) > "$A/reverse.ndjson" 2> "$A/reverse.err" || check "agent: the weightless run failed"
+(cd "$F" && cozy --json run -p "$F" "$here/project/shots.py/crash" "crash=the agent cell fails on purpose" --on local) > "$A/crash.ndjson" 2> "$A/crash.err" || true
 n=$(run_number "$A/reverse.ndjson") failed=$(run_number "$A/crash.ndjson")
 [ -n "$n" ] && [ -n "$failed" ] || fail "agent: no run numbers: $(tail -c 300 "$A/reverse.err" "$A/crash.err")"
 
@@ -97,21 +99,21 @@ assets:
 YAML
 view wait-idle "$F" project wait
 cmp -s "$A/wait-idle.out" "$A/project-status.out" || check "agent: wait with nothing going isn't what status says: $(diff "$A/wait-idle.out" "$A/project-status.out" | head -4)"
-code=0; (cd "$F" && cozy project wait) > /dev/null 2>&1 || code=$?
+code=0; (cd "$F" && cozy project -p "$F" wait) > /dev/null 2>&1 || code=$?
 [ "$code" = 0 ] || check "agent: project wait with nothing going and nothing failed exited $code"
-(cd "$W" && cozy project render slow_one --on local --queue) > "$A/wait-queue.out" 2>&1 || check "agent: render --queue: $(tail -c 300 "$A/wait-queue.out")"
-code=0; (cd "$W" && cozy project wait) > "$A/wait-follow.out" 2>&1 || code=$?
+(cd "$W" && cozy project -p "$W" render slow_one --on local --queue) > "$A/wait-queue.out" 2>&1 || check "agent: render --queue: $(tail -c 300 "$A/wait-queue.out")"
+code=0; (cd "$W" && cozy project -p "$W" wait) > "$A/wait-follow.out" 2>&1 || code=$?
 [ "$code" = 0 ] || check "agent: project wait on a render going exited $code: $(tail -c 300 "$A/wait-follow.out")"
-(cd "$W" && cozy --json project status) | J '.assets[] | select(.name == "slow_one") | .standing == "current"' || check "agent: wait returned before slow_one was made: $(cat "$A/wait-follow.out")"
-(cd "$W" && cozy project render broken --on local) > "$A/wait-broken.out" 2>&1 && check "agent: rendering broken exited 0"
-code=0; (cd "$W" && cozy project wait) > "$A/wait-failed.out" 2>&1 || code=$?
+(cd "$W" && cozy --json project -p "$W" status) | J '.assets[] | select(.name == "slow_one") | .standing == "current"' || check "agent: wait returned before slow_one was made: $(cat "$A/wait-follow.out")"
+(cd "$W" && cozy project -p "$W" render broken --on local) > "$A/wait-broken.out" 2>&1 && check "agent: rendering broken exited 0"
+code=0; (cd "$W" && cozy project -p "$W" wait) > "$A/wait-failed.out" 2>&1 || code=$?
 [ "$code" = 1 ] || check "agent: project wait after a failed render exited $code, not 1: $(tail -c 300 "$A/wait-failed.out")"
 
 # Calcifer's age moves between the two.
 diff <(grep -v '^calcifer:' "$A/home.out") <(grep -v '^calcifer:' "$A/status.out") > "$A/home-status.diff" || check "agent: cozy and cozy status differ: $(head -5 "$A/home-status.diff")"
 grep -q 'runs: none in this project' "$A/run-ls-empty.out" || check "agent: run ls of no runs: $(cat "$A/run-ls-empty.out")"
 grep -q 'assets: none in project.yaml' "$A/project-empty.out" || check "agent: status of no assets: $(cat "$A/project-empty.out")"
-grep -q 'project: none here' "$A/home-out.out" || check "agent: cozy outside a project: $(cat "$A/home-out.out")"
+grep -q 'project: none named' "$A/home-out.out" || check "agent: cozy naming no project: $(cat "$A/home-out.out")"
 grep -q '4 assets: 1 approved, 1 current, 1 out of date, 1 missing' "$A/home.out" || check "agent: cozy's totals: $(grep project: "$A/home.out")"
 grep -q 'RuntimeError' "$A/run-show-failed.out" || check "agent: run show of a failure has no traceback: $(cat "$A/run-show-failed.out")"
 [ "$(wc -c < "$A/run-show-full.out")" -gt "$(wc -c < "$A/run-show.out")" ] || check "agent: run show --full says no more than run show"

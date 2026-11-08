@@ -41,12 +41,15 @@ db_existing_web
 }
 
 db_existing_projects() {
-step "a project: new, walk-up, -p"
+step "a project: new, named, a folder of it, -p"
 local P=$OUT/garden ID
 cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null | grep -vxE 'project\.db-(wal|shm)')" = project.db ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.db"
 mkdir -p "$P/sub"
-(cd "$P/sub" && cozy --json project status) > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status from a subfolder failed: $(tail -c 300 "$OUT/project-status.err")"
+# The folder you're in names no project (cl-819): Calcifer may be on another computer. A folder of Calcifer's in it does.
+(cd "$P/sub" && cozy --json project status) > "$OUT/project-cwd.json" 2> /dev/null && check "status named a project by the folder it ran in"
+J '.error.code == "not_in_a_project"' "$OUT/project-cwd.json" || check "status in a project's folder, none named: $(head -c 300 "$OUT/project-cwd.json")"
+cozy --json project -p "$P/sub" status > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status of a folder in it failed: $(tail -c 300 "$OUT/project-status.err")"
 local cell
 # Each on its own: one that stops on its `set -e` is said, and the next goes on.
 for cell in cut_of_takes said_once film_is_its_file short_film_heals cut_versions by_asset hard_cut upgrades first_open version_text old_landing; do ( $cell ) || check "$cell stopped part way (exit $?)"; done
@@ -262,17 +265,17 @@ step "project.db: export then import changes nothing; an edited export is one en
 local R=$OUT/db-roundtrip pic=$OUT/db-roundtrip.png next=$OUT/db-roundtrip-2.png before after
 cozy project new "$R" > /dev/null 2>&1 || { check "roundtrip: project new"; return; }
 tiny "$pic"; ffmpeg -v error -y -f lavfi -i "color=c=navy:size=8x8" -frames:v 1 "$next"
-(cd "$R" && cozy project import "$pic" art > /dev/null) || check "roundtrip: import art"
-(cd "$R" && cozy project import "$next" --into art > /dev/null) || check "roundtrip: art's next version"
+(cd "$R" && cozy project -p "$R" import "$pic" art > /dev/null) || check "roundtrip: import art"
+(cd "$R" && cozy project -p "$R" import "$next" --into art > /dev/null) || check "roundtrip: art's next version"
 cozy project -p "$R" export -o "$OUT/db-roundtrip-1.yaml" > /dev/null || check "roundtrip: export"
 before=$(cozy --json project -p "$R" history | jq '.entries | length')
-(cd "$R" && cozy project import "$OUT/db-roundtrip-1.yaml" > /dev/null) || check "roundtrip: import of the export"
+(cd "$R" && cozy project -p "$R" import "$OUT/db-roundtrip-1.yaml" > /dev/null) || check "roundtrip: import of the export"
 cozy project -p "$R" export | cmp -s - "$OUT/db-roundtrip-1.yaml" || check "roundtrip: export, import, export differ"
 [ "$(cozy --json project -p "$R" history | jq '.entries | length')" = "$before" ] || check "roundtrip: importing what it holds made an entry"
 # A hand's edit of the export: a field, a rename, a box gone and one added.
 perl -pe 's/aspect_ratio: "16:9"/aspect_ratio: "4:3"/ if $. < 12; s/^  art:/  painting:/; s/<art>/<painting>/g' "$OUT/db-roundtrip-1.yaml" | perl -0pe 's/\n  coast:\n(    .*\n)+//' > "$OUT/db-roundtrip-2.yaml"
 printf '\n  added:\n    text: New words.\n' >> "$OUT/db-roundtrip-2.yaml"
-(cd "$R" && cozy project import "$OUT/db-roundtrip-2.yaml" > "$OUT/db-roundtrip-import.txt" 2>&1) || check "roundtrip: import of the edit: $(tail -c 300 "$OUT/db-roundtrip-import.txt")"
+(cd "$R" && cozy project -p "$R" import "$OUT/db-roundtrip-2.yaml" > "$OUT/db-roundtrip-import.txt" 2>&1) || check "roundtrip: import of the edit: $(tail -c 300 "$OUT/db-roundtrip-import.txt")"
 after=$(status "$R" || true)
 J '.assets | map(.name) | (index("painting") != null) and (index("art") == null) and (index("coast") == null) and (index("added") != null)' <<< "$after" || check "roundtrip: after the edit: $(jq -c '[.assets[].name]' <<< "$after")"
 J '.versions | length == 2' <<< "$(held "$R" painting)" || check "roundtrip: the renamed box's versions: $(held "$R" painting | jq -c '[.versions[]?.number]')"
@@ -294,7 +297,7 @@ mkdir -p "$L/clips"
 cozy project new "$L" > /dev/null 2>&1 || { check "latency: project new"; return; }
 db_calcifer; ID=$(id_of "$L")
 for ((i = 0; i < takes; i++)); do printf -v c '%06x' $((i * 33331 % 16777215)); ffmpeg -v error -y -f lavfi -i "color=c=0x$c:size=16x16:rate=24:duration=0.125" -pix_fmt yuv420p "$L/clips/$i.mp4"; done
-(cd "$L" && cozy project import "$L/clips/0.mp4" take > /dev/null) || { check "latency: import the first take"; return; }
+(cd "$L" && cozy project -p "$L" import "$L/clips/0.mp4" take > /dev/null) || { check "latency: import the first take"; return; }
 began=$SECONDS
 : > "$OUT/db-latency-join.txt"
 for ((i = 1; i < takes; i++)); do

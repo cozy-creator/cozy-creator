@@ -29,7 +29,7 @@ local S=$OUT/state-crash n=60 many=3000 i w1 w2 w3 opened edited signed id path 
 mkdir -p "$S"
 db_calcifer
 # Each its own transaction: a project made and known; a tool off your list; a session from a code.
-open_one() { api -sS -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: state-open-$1" -d "{\"path\": \"$S/p$1\", \"create\": true}" "http://$ADDR/v1/projects"; }
+open_one() { api -sS -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: state-open-$1" -d "{\"path\": \"$S/p$1\"}" "http://$ADDR/v1/projects"; }
 edit_one() { api -sS -X POST -H 'Content-Type: application/json' -d "{\"remove\": [\"qwen-image-2/crash_$1\"]}" "http://$ADDR/v1/tools/list"; }
 sign_one() {
   local code
