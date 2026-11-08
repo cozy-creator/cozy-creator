@@ -10,6 +10,7 @@ crates/platform/src/gpu/budget.rs
 crates/platform/src/gpu/cuda.rs
 crates/platform/src/handles/unix.rs
 crates/platform/src/handles/windows.rs
+crates/platform/src/heap.rs
 crates/platform/src/ipc/windows.rs
 crates/platform/src/lock.rs
 crates/platform-signal/src/windows.rs
