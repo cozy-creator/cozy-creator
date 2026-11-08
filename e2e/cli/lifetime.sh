@@ -1,20 +1,21 @@
 # e2e/cli/lifetime.sh: how a run ends now that nothing judges its progress (cl-663, design stalls.md), the part
 # cli/run.sh calls `lifetime`, with the local machine up. A run silent in a native wait far past the old 30 s floor
 # completes, and `run show` says how long it has made no progress; a cancel ends a silent run at once (its executor is
-# killed); an executor that dies while a child it forked holds its channel fails its run at once; an update waits for
-# the runs in flight, says which, holds new runs behind it, and goes on once a halted run is canceled.
+# killed); an update waits for the runs in flight, says which, holds new runs behind it, and goes on once a halted run
+# is canceled. A package can no longer fork (the contract's `process` rule), so the executor's dying under a child that
+# holds its channel is the release gate's to prove, with a Runtime-owned child.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 
 # launch <name> <entrypoint> [inputs...]: the run in the background, followed into $OUT/<name>.ndjson; its follower's
-# pid in $begun, its number in $n once its executor names its stage (silent's "waiting silently", orphan's pids).
+# pid in $begun, its number in $n once its executor names its stage (silent's "waiting silently").
 launch() {
   local name=$1 entry=$2
   shift 2
   (cd "$here" && cozy --json run -p "$RUN_PROJECT" "./weightless/$entry" "$@" --on local > "$OUT/$name.ndjson" 2>&1) &
   begun=$! n=''
-  for _ in $(seq 180); do grep -qE '"stage": *"(waiting silently|executor [0-9]+ forked [0-9]+)"' "$OUT/$name.ndjson" && break; sleep 1; done
-  grep -qE '"stage": *"(waiting silently|executor [0-9]+ forked [0-9]+)"' "$OUT/$name.ndjson" || { check "$name: its executor never began"; return 1; }
+  for _ in $(seq 180); do grep -qE '"stage": *"waiting silently"' "$OUT/$name.ndjson" && break; sleep 1; done
+  grep -qE '"stage": *"waiting silently"' "$OUT/$name.ndjson" || { check "$name: its executor never began"; return 1; }
   n=$(grep -oE '"number": *[0-9]+' "$OUT/$name.ndjson" | head -1 | grep -oE '[0-9]+$')
 }
 # settled <name> <seconds>: run $n's record once it ended, polled at most that long (a hang fails the step, never the
@@ -80,21 +81,6 @@ if launch cancel-silent silent seconds:=600; then
   [ "$took" -lt 30 ] || check "cancel-silent: run $n took ${took} s to end after its cancel"
   echo "cancel-silent: run $n canceled ${took} s after its cancel"
   (cd "$here" && cell after-cancel ./weightless/reverse "text=after$RANDOM") || check "no run went after a canceled run's executor was killed"
-fi
-
-step "an executor that dies under a forked child fails its run at once"
-if [ "$RUNNER_OS" != Windows ] && launch orphan orphan seconds:=600; then
-  read -r executor child < <(grep -oE '"stage": *"executor [0-9]+ forked [0-9]+"' "$OUT/orphan.ndjson" | head -1 | grep -oE '[0-9]+' | paste -sd' ')
-  t0=$SECONDS
-  kill -9 "$executor" || check "orphan: kill -9 $executor failed"
-  settled orphan 120
-  took=$((SECONDS - t0))
-  J '.status == "failed"' "$OUT/orphan.show.json" || check "orphan: run $n is $(jq -r .status "$OUT/orphan.show.json"), not failed"
-  grep -q 'ended on its own' "$OUT/orphan.show.json" || check "orphan: run $n's reason names not its executor's end: $(jq -c .reason "$OUT/orphan.show.json")"
-  [ "$took" -lt 30 ] || check "orphan: run $n took ${took} s to fail after its executor died"
-  for _ in $(seq 10); do kill -0 "$child" 2> /dev/null || break; sleep 1; done
-  ! kill -0 "$child" 2> /dev/null || check "orphan: the child $child its dead executor forked still runs"
-  echo "orphan: run $n failed ${took} s after its executor $executor died ($(jq -r .reason.message "$OUT/orphan.show.json")); its child $child is gone"
 fi
 
 step "an update waits for a running run, which completes, and a run submitted meanwhile queues behind it"
