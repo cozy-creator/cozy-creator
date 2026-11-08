@@ -1,8 +1,8 @@
 // Calcifer closes a project nothing reads (cl-823): twenty projects of 1,000 assets each, opened and closed in one Calcifer by the CLI and the page.
 // A project is open while a call on it, its stream, a page showing it or its render reads it, and the sign is its project.db: Calcifer has the
 // file open only then. Each closes once the CLI's call has answered, and once the page shows another; Calcifer's memory is back within a tenth of
-// where it began; a reopen is as quick as its first open; a render keeps its project open while it goes, waiting for its machine too, and it
-// closes once that has landed.
+// where it was after a first project went the same way; a reopen is as quick as its first open; a render keeps its project open while it goes,
+// waiting for its machine too, and it closes once that has landed.
 //   node closes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $ALONE: on a shared computer, so it runs nothing; $HOLDER:
 // Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
@@ -33,7 +33,8 @@ const CLOSE_MS = 10_000;
 /** How long Calcifer is left alone before its memory is read: what a thread let go of, its allocator gives back. */
 const SETTLE_MS = 15_000;
 const BARS = {
-  // Back within a tenth of where it began, twenty projects later: what a project costs open goes when it closes.
+  // Back within a tenth of where it stood after one project, twenty projects later: what a project costs open goes when it closes. Without
+  // closing, twenty hold ~700 MB on top.
   memory_times_start: 1.1,
   // A reopen reads project.db as its first open did, the middle of twenty each, a runner's jitter aside.
   reopen_times_open: 1.25,
@@ -110,6 +111,16 @@ function calciferMb() {
   return Math.round(Number(execFileSync('ps', ['-o', 'rss=', '-p', String(HOLDER.pid)], { encoding: 'utf8' }).trim()) / 1024);
 }
 
+/** Calcifer's memory in MiB: resident, and on Linux what of it is its own (anonymous) and what is files mapped in (its code, read in as it's
+ *  first used), and how many threads it has. */
+function memoryNow() {
+  if (process.platform !== 'linux') return { rss: calciferMb() };
+  const status = readFileSync(`/proc/${HOLDER.pid}/status`, 'utf8');
+  const field = (name) => Number(status.match(new RegExp(`^${name}:\\s+(\\d+)`, 'm'))?.[1] ?? NaN);
+  const mb = (name) => Math.round(field(name) / 1024);
+  return { rss: mb('VmRSS'), anon: mb('RssAnon'), file: mb('RssFile'), threads: field('Threads') };
+}
+
 /** Whether Calcifer has the project in `folder` open: its project.db among the files it holds. Null where this can't be read (Windows). */
 function held(folder) {
   const db = join(realpathSync(folder), 'project.db');
@@ -182,7 +193,26 @@ function held(folder) {
   await page.waitForSelector('.top');
   await page.goto(`${base}/#/runs`);
   await page.waitForTimeout(SETTLE_MS);
-  memory.start = calciferMb();
+  memory.cold = memoryNow();
+  // One project through all of it first, as each of the twenty goes: what Calcifer takes on at its first use of all this, its code read in
+  // and its allocator's own, is no project's. Its memory from there is the start.
+  const warm = join(homedir(), '.cozy', 'projects', `web-closes-${stamp}-warm`);
+  folders.push(warm);
+  generated(warm);
+  ids.push((await status(warm)).state.id);
+  await closes(warm);
+  await status(warm);
+  await closes(warm);
+  await page.goto(`${base}/#/projects/${ids[0]}`);
+  await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
+  await page.waitForTimeout(1000);
+  memory.warm_shown = memoryNow();
+  await page.goto(`${base}/#/runs`);
+  await closes(warm);
+  await status(warm);
+  await closes(warm);
+  await page.waitForTimeout(SETTLE_MS);
+  memory.start = memoryNow();
 
   const notClosed = { cli: [], page: [] };
   const notHeld = [];
@@ -205,7 +235,7 @@ function held(folder) {
     await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
     await page.waitForTimeout(1000);
     if (readable && !held(folder)) notHeld.push(i);
-    if (i === 0) memory.one_shown = calciferMb();
+    if (i === PROJECTS >> 1) memory.half = memoryNow();
     if (i > 0) await reopened(i - 1);
   }
   await page.goto(`${base}/#/runs`);
@@ -229,8 +259,8 @@ function held(folder) {
   seen.reopen_median_s = reopen;
   check('a_reopen_is_as_quick_as_the_first_open', reopen <= open * BARS.reopen_times_open + BARS.reopen_slack_s, { open_s: open, reopen_s: reopen });
   await page.waitForTimeout(SETTLE_MS);
-  memory.end = calciferMb();
-  check('calcifer_gives_back_what_it_closed', memory.end <= memory.start * BARS.memory_times_start, memory);
+  memory.end = memoryNow();
+  check('calcifer_gives_back_what_it_closed', memory.end.rss <= memory.start.rss * BARS.memory_times_start, memory);
 
   // A render going keeps its project open, with no call, stream or page on it: one waiting for its machine, behind another's run there,
   // too. Each closes once its run has landed.
@@ -260,7 +290,9 @@ function held(folder) {
       // Held, read first: a render that was going then and isn't by the list's read had closed nothing yet.
       const holding = [held(first), held(second)];
       const [going, runs] = await Promise.all([busy(), api(`/v1/runs?project=${made[1]}`)]);
-      const look = { going, held: holding, second_run: runs.runs?.[0]?.status ?? null };
+      const run = runs.runs?.[0];
+      // Its run waits for the machine as Calcifer's queued, or as the machine's: one CPU slot on a runner of four cores, held by the first's.
+      const look = { going, held: holding, second_run: run ? `${run.status}/${run.machine_state ?? ''}` : null };
       looks.push(look);
       seen.looks = looks.length;
       if (!going.some(Boolean) || Date.now() > ending) break;
@@ -270,7 +302,8 @@ function held(folder) {
     seen.render.second_runs = [...new Set(looks.map((look) => look.second_run))];
     const goingLooks = looks.filter((look) => look.going.some(Boolean));
     check('a_render_going_keeps_its_project_open', goingLooks.length > 0 && goingLooks.every((look) => look.going.every((going, at) => !going || look.held[at] !== false)), looks.filter((look) => look.going.some((going, at) => going && look.held[at] === false)).slice(0, 4));
-    check('one_waiting_for_its_machine_keeps_it_open', looks.some((look) => look.going[1] && look.second_run === 'queued' && look.held[1] !== false), seen.render.second_runs);
+    const waiting = (look) => look.second_run?.split('/').includes('queued');
+    check('one_waiting_for_its_machine_keeps_it_open', looks.some((look) => look.going[1] && waiting(look) && look.held[1] !== false), seen.render.second_runs);
     check('each_render_lands', !looks.at(-1).going.some(Boolean), looks.at(-1));
     const [firstClosed, secondClosed] = [await closes(first), await closes(second)];
     check('each_closes_once_its_render_has_landed', firstClosed !== null && secondClosed !== null, { first: firstClosed, second: secondClosed });
