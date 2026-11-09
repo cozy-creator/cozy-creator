@@ -79,7 +79,7 @@ local P=$OUT/writes-once lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr tok
 cozy project new "$P" > "$OUT/once-new.txt" 2>&1 || { check "once: project new failed: $(tail -c 300 "$OUT/once-new.txt")"; return; }
 for c in red green blue; do
   ffmpeg -v error -y -f lavfi -i "color=c=$c:size=64x64" -frames:v 1 "$OUT/once-$c.png" || { check "once: ffmpeg failed"; return; }
-  (cd "$P" && cozy --json project import "$OUT/once-$c.png" > "$OUT/once-import-$c.json") || { check "once: import $c failed"; return; }
+  cozy --json project -p "$P" import "$OUT/once-$c.png" > "$OUT/once-import-$c.json" || { check "once: import $c failed"; return; }
 done
 id=$(status "$P" | jq -r '.id // empty')
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock")
@@ -89,14 +89,14 @@ for try in first second; do
     -H "Idempotency-Key: $key" -X POST -d '{}' "http://$addr/v1/projects/$id/history/undo" || check "once: the $try undo got no answer"
 done
 first=$(jq -c '[.entries[].id]' "$OUT/once-first.json") second=$(jq -c '[.entries[].id]' "$OUT/once-second.json")
-(cd "$P" && cozy --json project history) > "$OUT/once-history.json"
+cozy --json project -p "$P" history > "$OUT/once-history.json"
 undone=$(jq -c '[.entries[] | select(.undone) | .id]' "$OUT/once-history.json")
 echo "once: undo sent twice under $key undid $first, then $second; the history's undone: $undone"
 [ "$first" = "$second" ] || check "once: the undo sent again was answered $second, not the first answer $first"
 grep -qi '^idempotent-replayed: true' "$OUT/once-second.headers" || check "once: the second undo isn't answered as replayed"
 [ "$(jq 'length' <<< "$undone")" = 1 ] || check "once: one undo sent twice undid $undone (cl-812)"
 # The CLI's own undo goes under a key of its own: kept, so a resend of it is answered, not done again.
-(cd "$P" && cozy --json project undo > "$OUT/once-cli-undo.json") || check "once: cozy project undo failed"
+cozy --json project -p "$P" undo > "$OUT/once-cli-undo.json" || check "once: cozy project undo failed"
 # Its key is the project's own, in project.db's request_keys (cl-803), committed with the undo.
 kept=$(sql1 "$P" "SELECT count(*) FROM request_keys WHERE key LIKE 'cli-%'" 2> "$OUT/once-keys.err") || kept=0
 echo "once: request keys kept under the CLI's keys: ${kept:-0}"
