@@ -3894,8 +3894,8 @@ seen=$(revs "$log" "$id" | wc -l) yaml=$(cozy project -p "$R" export | sha /dev/
 n=$(cd "$R" && cozy --json run ls -p "$R" --limit 1 | jq -r '.runs[0].number') || check "stream: run ls in the project failed"
 [ "$(cozy project -p "$R" export | sha /dev/stdin)" = "$yaml" ] || check "stream: a landing changed the boxes, and this was to prove its own rows reach the stream"
 soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
-soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project == \"$real\"" \
-  || check "stream: no run.updated says run $n completed in $real: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project]' | tail -5)"
+soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$real\"" \
+  || check "stream: no run.updated says run $n completed in $real: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
 
