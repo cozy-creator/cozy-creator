@@ -341,35 +341,35 @@ impl State {
         }
     }
 
-    /// Where a planned loop's kept prefix ends: the latest plan position of a region that stayed
-    /// through the pass with more bytes kept than streamed up to it. None in a loop's first pass,
-    /// or with no plan. A region kept far past the streamed ones does not stretch it.
+    /// Where what a planned loop keeps ends, in its keep order (`plan::Order::keep`): the first of
+    /// its regions past what it holds on the card now, less a window of two of the largest it
+    /// refilled this pass (one in use, one filling). None in a loop's first pass, with no plan, or
+    /// with nothing refilled. By bytes over every region of the loop, so a layout far from the keep
+    /// order moves to it and grows into the room it has: a test of kept against streamed bytes in
+    /// keep order held for one region of Qwen 4 MP at 8 GB, and its kept set shrank call on call
+    /// (guel 43054: 8 of 32 kept, 5.2 GB a step against the prefix's 3.2).
     pub(crate) fn prefix(&self, order: &plan::Order) -> Option<u64> {
         let boundary = self.phase_boundary?;
         if !self.plan_phase.as_ref().is_none_or(PlanPhase::loops) {
             return None;
         }
-        let mut regions: Vec<(u64, usize, bool)> = self.entries.iter()
-            .filter(|(_, entry)| entry.last_use > boundary && !entry.retained && !entry.high && !entry.prefetched
-                && !matches!(entry.uses.state(), Contents::Cold | Contents::Retired))
+        // (keep, bytes, refilled this pass, on the card)
+        let mut regions: Vec<(u64, usize, bool, bool)> = self.entries.iter()
+            .filter(|(_, entry)| !entry.retained && !entry.high && entry.uses.state() != Contents::Retired)
             .filter_map(|(id, entry)| match order.next_use(*id) {
-                Some((0, position)) => Some((position, entry.bytes, entry.filled <= boundary)),
+                Some((0, _)) => Some((order.keep(*id), entry.bytes, entry.filled > boundary, entry.handle.is_some())),
                 _ => None,
             })
             .collect();
         regions.sort_unstable();
-        let (mut kept, mut streamed, mut end) = (0usize, 0usize, None);
-        for (position, bytes, stayed) in regions {
-            if stayed {
-                kept += bytes;
-                if kept > streamed {
-                    end = Some(position);
-                }
-            } else {
-                streamed += bytes;
-            }
-        }
-        end
+        let window = 2 * regions.iter().filter(|(_, _, refilled, _)| *refilled).map(|(_, bytes, _, _)| *bytes).max()?;
+        let held: usize = regions.iter().filter(|(_, _, _, held)| *held).map(|(_, bytes, _, _)| bytes).sum();
+        let room = held.saturating_sub(window);
+        let mut kept = 0usize;
+        regions.into_iter().find_map(|(keep, bytes, _, _)| {
+            kept += bytes;
+            (kept > room).then_some(keep)
+        })
     }
 
     /// Eviction order for idle regions, lowest first. With a plan, the furthest next use goes
@@ -379,11 +379,11 @@ impl State {
     /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
     /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
     ///
-    /// A planned loop keeps a prefix of its plan, as v1 did: what it refilled inside the prefix
-    /// (`prefix`) is the prefix's again, and the prefix gives way from its end, the region the next
-    /// pass needs last. By fill alone, a region another phase had evicted was streamed every pass
-    /// after: Klein's upsampler refilled its 1.9 GB embedding each token, 6.2 GB a pass to v1's
-    /// 4.7 (pasan, run 42322).
+    /// A planned loop keeps a prefix of its keep order, which spreads what streams through the pass:
+    /// what it refilled inside that prefix (`prefix`) is kept again, and the prefix gives way from
+    /// its end. By fill alone, a region another phase had evicted was streamed every pass after:
+    /// Klein's upsampler refilled its 1.9 GB embedding each token, 6.2 GB a pass to v1's 4.7
+    /// (pasan, run 42322).
     fn rank(&self, id: u64, entry: &Entry, order: &plan::Order, prefix: Option<u64>) -> (u8, u64) {
         if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
             return (reclaim::CONTENTLESS, entry.last_use);
@@ -410,8 +410,8 @@ impl State {
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
             None => (used, u64::MAX - entry.last_use),
-            Some((0, position)) if touched && looping => match prefix {
-                Some(end) if used == reclaim::PHASE_USED || position < end => (reclaim::PHASE_USED, u64::MAX - position),
+            Some((0, _)) if touched && looping => match (prefix, order.keep(id)) {
+                (Some(end), keep) if used == reclaim::PHASE_USED || keep < end => (reclaim::PHASE_USED, u64::MAX - keep),
                 _ => (used, u64::MAX - entry.last_use),
             },
             Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
