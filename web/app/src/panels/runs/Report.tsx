@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import type { Moved, Report as Measurements } from "../../types"
+import type { Moved, Report as Measurements } from "../../api/calcifer"
 import { bytes, ms } from "../format"
 
 function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {

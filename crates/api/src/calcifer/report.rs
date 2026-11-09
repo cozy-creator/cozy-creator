@@ -4,18 +4,20 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Report {
     /// The attention kernels the run pinned, as its executors recorded them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attention_pins: Vec<String>,
     /// Each executor's measurements: the run's own, then each call's.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub measured: Vec<Measured>,
 }
 
 /// One executor's measurements.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Measured {
     /// `run`, or the call's index.
@@ -35,29 +37,32 @@ pub struct Measured {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportStage"))]
 #[serde(default)]
 pub struct Stage {
     /// The stage, `executor start`, `construction`, `loading <slot>`, or `unaccounted`.
     pub name: String,
     pub ms: f64,
     /// An executor's or a construction's three longest legs.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub legs: Vec<Leg>,
     /// Its steps: how many, and each one's mean.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<Steps>,
     /// The span's time no measurement covers.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unaccounted: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Leg {
     pub name: String,
     pub ms: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Steps {
     pub count: u64,
     pub each_ms: f64,
@@ -65,6 +70,7 @@ pub struct Steps {
 
 /// A model slot's checkpoint as its machine resolved it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportModel"))]
 #[serde(default)]
 pub struct Model {
     pub slot: String,
@@ -79,6 +85,7 @@ pub struct Model {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Adapter {
     pub model: String,
@@ -88,6 +95,7 @@ pub struct Adapter {
 
 /// A component's attention and GEMM kernels (a 16-bit lane's has no GEMM).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportComponent"))]
 #[serde(default)]
 pub struct Component {
     pub component: String,
@@ -97,15 +105,17 @@ pub struct Component {
 
 /// A GEMM kernel; one that served below its lane says what it served, what it wanted and why.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Gemm {
     pub kernel: String,
     pub format: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<Fallback>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Fallback {
     /// What served instead, when it was not the kernel itself.
@@ -115,6 +125,7 @@ pub struct Fallback {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportKernel"))]
 #[serde(default)]
 pub struct Kernel {
     /// None: the executor did not say.
@@ -130,6 +141,7 @@ pub struct Kernel {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportMemory"))]
 #[serde(default)]
 pub struct Memory {
     pub gpu: u32,
@@ -154,6 +166,7 @@ pub struct Memory {
 
 /// Bytes moved and, when they took time, their rate and its share of the measured ceiling.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Moved {
     pub bytes: u64,
@@ -163,6 +176,7 @@ pub struct Moved {
 
 /// Bytes make_room took of one class (F, O, S, N, D, W, P).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Taken {
     pub class: String,
     pub bytes: u64,
@@ -172,6 +186,7 @@ pub struct Taken {
 /// adopted (kept), read (store) and refilled (derived), how many were prefetched, and what
 /// make_room took in it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Step {
     pub gpu: u32,
@@ -186,6 +201,7 @@ pub struct Step {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct MakeRoom {
     pub gpu: u32,

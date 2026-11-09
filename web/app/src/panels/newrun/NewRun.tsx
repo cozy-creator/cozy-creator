@@ -3,7 +3,8 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/Shell"
-import type { RunRequest, Submitted, Target } from "../../types"
+import type { RunRequest, Submitted, Target } from "../../api/calcifer"
+import type { TargetInterface, TargetRequest } from "../../types"
 import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Failure } from "../common"
@@ -62,8 +63,8 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
   const navigate = useNavigate()
   const to = useTo()
   const files = useFiles()
-  const entry = resolved.interface.entrypoints?.find((candidate) => candidate.name === resolved.function)
-  const fields = useMemo(() => resolved.request?.fields ?? [], [resolved])
+  const entry = (resolved.interface as TargetInterface).entrypoints?.find((candidate) => candidate.name === resolved.function)
+  const fields = useMemo(() => (resolved.request as TargetRequest | null | undefined)?.fields ?? [], [resolved])
   const declared = useMemo(() => new Set(fields.map((field) => field.name)), [fields])
   const [values, setValues] = useState<Record<string, unknown>>(startInput ?? {})
   const [mode, setMode] = useState<"form" | "text">("form")

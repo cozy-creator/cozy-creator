@@ -1,4 +1,4 @@
-import type { ServerEvent } from "../types"
+import type { StreamEvent } from "./calcifer"
 import { signal } from "../ui/signal"
 import type { Client } from "./client"
 
@@ -9,7 +9,7 @@ export type Health =
   | { state: "signed_out" }
 
 type Shared =
-  | { event: ServerEvent }
+  | { event: StreamEvent }
   | { health: Health }
   | { ask: true }
   | { shows: { tab: string; project: string | null } }
@@ -49,7 +49,7 @@ export async function readEvents(body: ReadableStream<Uint8Array<ArrayBuffer>>, 
  */
 export class EventStream {
   readonly health = signal<Health>({ state: "connecting" })
-  private listeners = new Set<(event: ServerEvent) => void>()
+  private listeners = new Set<(event: StreamEvent) => void>()
   private channel: BroadcastChannel
   private holding = false
   private client: Client
@@ -127,7 +127,7 @@ export class EventStream {
     void this.tell()
   }
 
-  subscribe(listener: (event: ServerEvent) => void): () => void {
+  subscribe(listener: (event: StreamEvent) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
@@ -137,7 +137,7 @@ export class EventStream {
     void navigator.locks.request(`cozy-events:${this.scope}`, () => this.hold())
   }
 
-  private dispatch(event: ServerEvent) {
+  private dispatch(event: StreamEvent) {
     for (const listener of this.listeners) listener(event)
   }
 
@@ -146,7 +146,7 @@ export class EventStream {
     this.channel.postMessage({ health } satisfies Shared)
   }
 
-  private publish(event: ServerEvent) {
+  private publish(event: StreamEvent) {
     this.dispatch(event)
     this.channel.postMessage({ event } satisfies Shared)
   }
@@ -210,7 +210,7 @@ export class EventStream {
   }
 }
 
-function parse(data: string): ServerEvent | null {
+function parse(data: string): StreamEvent | null {
   try {
     const event = JSON.parse(data)
     return typeof event?.type === "string" ? event : null

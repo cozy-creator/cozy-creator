@@ -25,7 +25,7 @@ const STEPS: Record<string, string> = {
 function stepOf(error: unknown): Record<string, unknown> | undefined {
   if (!(error instanceof ApiError)) return undefined
   const { cause, metadata } = error.body
-  const member = cause === undefined ? undefined : STEPS[cause]
+  const member = cause == null ? undefined : STEPS[cause]
   return member && metadata ? { status: cause, [member]: metadata } : undefined
 }
 
@@ -60,7 +60,7 @@ export function signInClient(client: Client) {
         stepping = undefined
         const out = await client.sendCode("sign_in", ask.identifier)
         sent.set(ask.identifier, out.id)
-        if (out.retry_after_s === undefined) return reply(204)
+        if (out.retry_after_s == null) return reply(204)
         const metadata = { retry_after_seconds: out.retry_after_s }
         return reply(429, { error: { type: "", code: "rate_limited", message: "Too soon.", metadata } }, out.retry_after_s)
       }

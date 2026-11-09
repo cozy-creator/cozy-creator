@@ -1,4 +1,4 @@
-import type { Tool } from "../types"
+import type { Tool } from "../api/calcifer"
 import { signal } from "../ui/signal"
 import type { CarriedFile } from "./CanvasStore"
 import { type Carried, carried } from "./checkpoints"

@@ -25,6 +25,7 @@ pub mod tool;
 
 /// What a run does on its machine (`RunSpec.kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RunKind"))]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Call,
@@ -35,6 +36,7 @@ pub enum Kind {
 
 /// Where a run goes: `local`, a machine's name, `any`, or `new[:sku]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(type = "string"))]
 #[serde(from = "String", into = "String")]
 pub enum On {
     Machine(String),
@@ -79,6 +81,7 @@ pub struct SubmitRun {
 /// `POST /v1/run-quotes`: what a `new` run would rent, and its price; when the Hub placed it, why,
 /// and two other machines it would rent instead.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RunQuote {
     pub sku: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +99,7 @@ pub struct RunQuote {
 /// Another machine a run could rent, against the pick: its time as a multiple of the pick's, and
 /// the Hub's one price an hour. `label` says which way it trades.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Alternative {
     pub sku: String,
     pub gpus: u32,
@@ -106,6 +110,7 @@ pub struct Alternative {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Warning {
     pub code: String,
     pub message: String,
@@ -114,6 +119,7 @@ pub struct Warning {
 /// A run that has not moved: since when, on which machine, and what that machine costs an hour
 /// (none: not a rental, or its Hub has not said).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Stalled {
     pub since_ms: i64,
     pub machine: String,
@@ -133,6 +139,7 @@ pub struct StagedInput {
 /// binds against its function's interface. Under one `Idempotency-Key` it is one run, whose integer
 /// `seed`, when the request omits one, derives from the key.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RunRequest {
     /// `[org/]pkg/fn[@release]`; with `code`, the function of it (empty: none named).
     pub target: String,
@@ -197,6 +204,7 @@ pub struct RunRequest {
 /// one of the declared files; `file` is an uploaded file's `sha256:<hex>`, a hash prefix of a file
 /// of its project's, or a key of the request's `paths`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FileTerm {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -220,6 +228,7 @@ impl FileTerm {
 /// A file or folder a client sent by content (`PUT /v1/files`): a file's digest, or a folder's
 /// tree document's (`api::tree`), sent after each file it names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Sent {
     File(Digest),
@@ -234,6 +243,7 @@ pub fn path_key(written: &str) -> &str {
 
 /// `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "HeldFile"))]
 pub struct File {
     pub digest: Digest,
     pub length: u64,
@@ -242,6 +252,7 @@ pub struct File {
 
 /// `GET /v1/targets?target=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Target {
     /// `org/pkg`, or local code's `local/<name>`.
     pub package: String,
@@ -272,6 +283,7 @@ pub struct Target {
 
 /// One function a person runs of a package, and what it does.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TargetFunction {
     pub function: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -280,6 +292,7 @@ pub struct TargetFunction {
 
 /// Why a run binds and runs the release it does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseFrom {
     /// The target named it.
@@ -305,6 +318,7 @@ impl fmt::Display for ReleaseFrom {
 
 /// The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Submitted {
     pub run: Run,
     pub replay: bool,
@@ -320,12 +334,14 @@ pub struct Submitted {
 
 /// Something a request's handling said.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Note {
     pub level: NoteLevel,
     pub message: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum NoteLevel {
     Info,
@@ -333,6 +349,7 @@ pub enum NoteLevel {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RunStatus"))]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     /// Not yet accepted by a machine (still in the outbox, or sent and unconfirmed).
@@ -345,6 +362,7 @@ pub enum Status {
 
 /// One run as Calcifer holds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Run {
     /// Its id; `<machine>/<number>` for one another client of this account sent.
     pub id: RunId,
@@ -438,6 +456,7 @@ impl Run {
 
 /// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RunAsked {
     pub target: String,
     /// Its payload, each file by its `sha256:`, and `models` for the models and LoRAs it chose: what `input` takes.
@@ -452,6 +471,7 @@ pub use crate::machine::Adjustment;
 
 /// A memoizable run's or call's computation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Memo {
     /// `sha256:<hex>`.
@@ -459,12 +479,13 @@ pub struct Memo {
     /// Answered from a result its machine held: nothing ran.
     pub memoized: bool,
     /// What keyed its code (`machine::Outcome::memo_basis`); empty from a machine that predates it.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub basis: String,
 }
 
 /// One settled call of a run (the run's own function or a child call).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Call {
     pub run: String,
     pub index: u32,
@@ -490,6 +511,7 @@ pub struct Call {
 pub use crate::machine::Reason;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ItemStatus {
     InProgress,
@@ -499,6 +521,7 @@ pub enum ItemStatus {
 
 /// One output of a run at its newest revision, rewritten in place.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OutputItem {
     /// `<number>/<name>`, or `<number>/<name>/<i>` for a list's item `i`.
     pub id: String,
@@ -587,6 +610,7 @@ pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -
 
 /// The machine's progress report, as it last sent it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Progress {
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -632,6 +656,7 @@ pub struct Progress {
 
 /// What a time left stands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum EtaBasis {
     /// Runs like it on this machine, and its own steps as they come.
@@ -660,6 +685,7 @@ pub struct Estimate {
 
 /// One event of a run's stream.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RunEvent"))]
 #[serde(tag = "type")]
 pub enum Event {
     #[serde(rename = "run.created")]
@@ -807,6 +833,7 @@ impl Event {
 
 /// `GET /v1/runs`, newest first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RunList {
     pub runs: Vec<Run>,
     /// How many more runs match beyond the limit.
@@ -834,6 +861,7 @@ pub struct Shown {
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
 /// answers it. No backlog: a client subscribes, then reads what it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type")]
 pub enum StreamEvent {
     /// First on every stream. `stream` names it for `PUT /v1/events/{stream}`.
@@ -885,6 +913,7 @@ pub enum StreamEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MachineKind {
     /// This computer's machine.
@@ -896,6 +925,7 @@ pub enum MachineKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MachineState {
     /// No address yet: runs to it wait in the outbox.
@@ -912,6 +942,7 @@ pub enum MachineState {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Machine {
     pub name: String,
     pub kind: MachineKind,
@@ -1000,6 +1031,7 @@ pub fn clock(ms: i64) -> String {
 /// ambiguous while its create is answered, booting, or replanning between attempts. Times are
 /// the Hub's clock (unix ms).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Attempt {
     pub number: u32,
     pub state: String,
@@ -1014,6 +1046,7 @@ pub struct Attempt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Replaced {
     pub number: u32,
     pub failure: String,
@@ -1022,6 +1055,7 @@ pub struct Replaced {
 
 /// A rental as its Hub says it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Rental {
     /// The product asked for, or the card when another client rented it.
     pub sku: String,
@@ -1056,6 +1090,7 @@ pub struct Rental {
 
 /// A machine's `Status`, as it last sent it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineStatus {
     pub worker_id: String,
     pub version: String,
@@ -1133,6 +1168,7 @@ pub struct MachineStatus {
 
 /// Weights arriving or a package's environment built on a machine (`machine::Operation`), and the runs waiting on it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Operation {
     /// The same for as long as it lasts.
     pub id: String,
@@ -1165,6 +1201,7 @@ pub struct Operation {
 
 /// A run a machine holds for this controller, beside this controller's record of it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LiveRun {
     pub id: String,
     /// The machine's word for it: queued, preparing or running.
@@ -1178,6 +1215,7 @@ pub struct LiveRun {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Gpu {
     pub index: u32,
     pub name: String,
@@ -1199,6 +1237,7 @@ fn unlimited(bytes: &u64) -> bool {
 
 /// A model repository the machine holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Model {
     pub repository: String,
     pub total_bytes: u64,
@@ -1208,6 +1247,7 @@ pub struct Model {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Checkpoint {
     #[serde(default)]
     pub release: String,
@@ -1220,6 +1260,7 @@ pub struct Checkpoint {
 /// A package environment the machine holds for this controller.
 /// `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ssh {
     /// The command and its arguments, for what runs it.
     pub args: Vec<String>,
@@ -1229,6 +1270,7 @@ pub struct Ssh {
 
 /// `GET /v1/machines/{name}/packages`: what a machine holds installed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachinePackages {
     pub machine: String,
     pub packages: Vec<HeldPackage>,
@@ -1236,6 +1278,7 @@ pub struct MachinePackages {
 
 /// One package a machine holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HeldPackage {
     pub machine: String,
     pub package: String,
@@ -1253,6 +1296,7 @@ pub struct HeldPackage {
 
 /// `GET /v1/machines/{name}/models`: the models a machine holds. Its store's total counts shared content once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineModels {
     pub machine: String,
     pub models: Vec<HeldModel>,
@@ -1272,6 +1316,7 @@ pub struct MachineModels {
 
 /// One checkpoint a machine holds, and its repository's bytes there.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HeldModel {
     pub machine: String,
     pub model: String,
@@ -1337,6 +1382,7 @@ impl Machine {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Environment {
     pub installation: String,
     pub package: String,
@@ -1358,6 +1404,7 @@ pub struct Environment {
 
 /// One member of this controller's warm set on the machine.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct WarmItem {
     /// `org/name[@release]`, or an installation id.
     pub source: String,
@@ -1373,6 +1420,7 @@ pub struct WarmItem {
 
 /// `GET /v1/machines` (`?refresh=true` lists every Hub again first).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineList {
     pub machines: Vec<Machine>,
     /// When each Hub last answered a listing.
@@ -1406,6 +1454,7 @@ impl MachineList {
 
 /// Live rentals summed: how many, what they cost an hour now, and what they accrued so far.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LiveRentals {
     pub count: u32,
     pub usd_micros_per_hour: i64,
@@ -1457,12 +1506,14 @@ pub fn weakest(held: &str, next: &str, settled: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HubListing {
     pub hub: String,
     pub listed_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HubProblem {
     pub hub: String,
     pub code: String,
@@ -1471,6 +1522,7 @@ pub struct HubProblem {
 
 /// `POST /v1/machines` with `Rent`: 202, or 200 when the key had asked already (`replay`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Rented {
     pub machine: Machine,
     /// The Hub's quote the order was placed at.
@@ -1481,6 +1533,7 @@ pub struct Rented {
 /// The Hub's price for the exact rental asked (`POST /v1/rental-quotes`): one price an hour, the
 /// machine with its disk and traffic, and what an hour plus its download is expected to cost.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Quote {
     /// What a person is shown and charged.
     pub usd_micros_per_hour: i64,
@@ -1497,6 +1550,7 @@ pub struct Quote {
 
 /// The most a renter agreed to pay an hour: the order's `max_usd_micros_per_hour` at the Hub.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Agreed {
     pub usd_micros_per_hour: i64,
 }
@@ -1504,6 +1558,7 @@ pub struct Agreed {
 /// `DELETE /v1/machines/{name}[?force=true]`: `changed` is false when it had ended already. While
 /// its runs' outputs have not landed it is refused `outputs_exporting`, unless `force`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ended {
     pub machine: Machine,
     pub changed: bool,
@@ -1515,6 +1570,7 @@ pub struct Ended {
 /// `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output
 /// straight from its machine over WebRTC.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Play {
     /// `host:port` the browser dials.
     pub address: String,
@@ -1530,6 +1586,7 @@ pub struct Play {
 
 /// `POST /v1/machines/{name}/keepalive`, once the machine acknowledged it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Keepalive {
     pub acknowledged_at_ms: i64,
     /// None while a job is queued or running there.
@@ -1540,6 +1597,7 @@ pub struct Keepalive {
 /// `POST /v1/machines`: rent one (with an `Idempotency-Key`), add another computer's, or record
 /// this computer's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NewMachine {
     Rent {
@@ -1576,6 +1634,7 @@ pub enum NewMachine {
 
 /// `GET /v1/machines/{name}/logs/{log}`: the logs a machine keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MachineLog {
     /// TensorD's own log.
@@ -1598,6 +1657,7 @@ pub enum LogEvent {
 /// on this computer (a dev build: a wheel, or a `cozy` binary). With none named, each moves to its
 /// Hub's target.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Component>,
@@ -1616,6 +1676,7 @@ pub struct MachineUpdate {
 /// One component of a `MachineUpdate`: `{"version": "0.33.1"}`, or a dev build sent first
 /// (`PUT /v1/files`): `{"file": {sha256, name, version?}}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Component {
     Version(String),
@@ -1625,6 +1686,7 @@ pub enum Component {
 /// A dev build by content: a wheel named `<distribution>-<version>-….whl`, or a `cozy` binary and
 /// the release it says it is (`cozy --version`), when it says one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DevBuild {
     pub sha256: Digest,
     pub name: String,
@@ -1636,6 +1698,7 @@ pub struct DevBuild {
 /// run; `200` with none when the machine runs its Hub's target already. An update run that
 /// completes without the machine running what it asked for fails `update_unapplied`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Updating {
     pub machine: Machine,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1670,12 +1733,14 @@ pub struct Authorized {
 /// `GET /v1/rental-skus[?hub=]`: what is for rent now, cheapest first by its fewest GPUs, as the
 /// Hub offers it. A product the Hub cannot sell now, for whatever reason, is not listed.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RentalSkus {
     pub rental_skus: Vec<RentalSku>,
 }
 
 /// One product (a GPU card, or the CPU machine) with the widths buyable now.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RentalSku {
     #[serde(default)]
     pub name: String,
@@ -1702,6 +1767,7 @@ pub struct RentalSku {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct RentalPythonInterpreter {
     pub version: String,
@@ -1710,6 +1776,7 @@ pub struct RentalPythonInterpreter {
 
 /// One GPU count of a product and its one price an hour, the machine with its disk and traffic.
 #[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RentalSkuWidth {
     #[serde(default)]
     pub accelerator_count: i64,
@@ -1727,6 +1794,7 @@ pub struct RentalSkuWidth {
 
 /// What a rental is expected to cost at its prices, for the expected hours plus its download.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct RentalPriceEstimate {
     pub hours: f64,
@@ -1821,6 +1889,7 @@ pub struct Down {
 
 /// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CalciferStatus {
     pub version: String,
     /// `linux`, `macos` or `windows`.
@@ -1840,6 +1909,7 @@ pub struct CalciferStatus {
 
 /// `GET /v1/status` on a rental: a pod has no rental id of its own, so its Hub's worker id names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct StatusRental {
     pub machine_id: String,
     /// None while a job is queued or running there.
@@ -1864,6 +1934,7 @@ pub struct RedeemCode {
 
 /// `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BrowserSession {
     pub token: String,
     pub media: String,

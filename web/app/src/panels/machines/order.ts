@@ -1,5 +1,6 @@
 import { ApiError, type Client } from "../../api/client"
-import type { Quote, Rent, Rented } from "../../types"
+import type { Rent } from "../../types"
+import type { Quote, Rented } from "../../api/calcifer"
 import { signal } from "../../ui/signal"
 
 /**

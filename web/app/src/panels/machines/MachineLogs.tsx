@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { useConnection } from "../../app/Connection"
-import type { Machine, MachineLogName } from "../../types"
+import type { Machine } from "../../api/calcifer"
+import type { MachineLogName } from "../../types"
 import { Failure, LogView, plain } from "../common"
 import { follow, followingLine, type Following } from "../follow"
 

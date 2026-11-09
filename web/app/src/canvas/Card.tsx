@@ -5,7 +5,7 @@ import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallba
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
-import type { MainFile, Snap } from "../types"
+import type { MainFile, Snap } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -46,7 +46,7 @@ function TakeProgress({ view, run }: { view: ElementView; run: number }) {
   const on = useWaitsOn(mine)
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
   const fraction = mine?.progress?.done_fraction
-  return <>{fraction === undefined ? "…" : `${Math.round(fraction * 100)}%`}</>
+  return <>{fraction == null ? "…" : `${Math.round(fraction * 100)}%`}</>
 }
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
@@ -450,7 +450,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     return (
       <div className="status bad">
         Stalled {since} on {stalled.machine}
-        {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
+        {stalled.usd_micros_per_hour != null && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
       </div>
     )
   }

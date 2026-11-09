@@ -1,7 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { useConnection } from "../app/Connection"
-import type { Tool } from "../types"
+import type { Tool } from "../api/calcifer"
 import { say } from "../ui/notes"
 import { useCanvasStore } from "./context"
 import { useDragScroll } from "./dragScroll"

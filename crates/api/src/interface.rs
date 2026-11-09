@@ -274,6 +274,7 @@ impl Call {
 
 /// A pickup's frames: `offset + k * every`, from frame `first`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Snap {
     pub every: u32,
     pub offset: u32,

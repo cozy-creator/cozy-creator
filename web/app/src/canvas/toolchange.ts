@@ -1,4 +1,4 @@
-import type { Asset, Tool } from "../types"
+import type { Asset, Tool } from "../api/calcifer"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
 import { OWN } from "./controls"
 import { madeHere, toolName } from "./shown"

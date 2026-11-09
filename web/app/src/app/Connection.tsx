@@ -5,7 +5,8 @@ import { EventStream } from "../api/events"
 import { Outbox } from "../api/outbox"
 import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
-import type { Machine, MachineList, ProjectState, Run, RunList, ServerEvent, Status } from "../types"
+import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus } from "../api/calcifer"
+import type { Project } from "../types"
 import type { CanvasStore } from "../canvas/CanvasStore"
 import { signal } from "../ui/signal"
 import { readSession } from "./session"
@@ -51,7 +52,7 @@ class Bridge {
    * What the stream said changed of a project: at once if none was read lately, else one read per `READ_GAP_MS`, so a burst shows as it goes,
    * in few reads. One at a time, and one more if it changed during that read. Only what changed is read, whatever else the project holds.
    */
-  changed(id: string, change: { assets?: string[]; gone?: string[]; head?: boolean }) {
+  changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean }) {
     let slot = this.owed.get(id)
     if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false }))
     for (const name of change.assets ?? []) slot.names.add(name)
@@ -101,7 +102,7 @@ class Bridge {
       ])
       const asked = rows.flatMap((row) => row ?? [])
       const left = [...gone, ...names.filter((_, at) => !rows[at])]
-      if (asked.length || left.length || said) this.queries.setQueryData<ProjectState>(key, (state) => state && { ...withAssets(state, asked, left, said), began })
+      if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said), began })
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.
       held.whole = true
@@ -151,7 +152,7 @@ class Bridge {
     this.queries.setQueryData<MachineList>(["machines"], (list) => list && { ...list, machines: change(list.machines) })
   }
 
-  handle = (event: ServerEvent) => {
+  handle = (event: StreamEvent) => {
     switch (event.type) {
       case "hello":
         if (this.version && event.version !== this.version) this.newVersion.set(event.version)
@@ -204,7 +205,7 @@ export interface Connection {
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
   attempt: ReturnType<typeof signal<number>>
   signedOut: ReturnType<typeof signal<boolean>>
-  status: Status
+  status: CalciferStatus
 }
 
 const REMOTE_KEY = "cozy.calcifer"
@@ -245,7 +246,7 @@ export async function connect(): Promise<Boot> {
         attempt: hooks.attempt,
       })
     : here
-  let status: Status
+  let status: CalciferStatus
   try {
     if (remote) await here.status()
     status = await client.status()

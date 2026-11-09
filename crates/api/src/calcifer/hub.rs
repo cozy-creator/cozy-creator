@@ -14,6 +14,7 @@ pub struct At {
 /// `GET /v1/account`: who this computer signs in as at a Hub, as that Hub says. Credit is read
 /// only here; an account a sign-in answers carries none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Account {
     /// None until it is named, and while signed out.
     pub account: Option<String>,
@@ -35,6 +36,7 @@ pub struct Account {
 
 /// What an emailed code proves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
     /// Enrolls this computer's key.
@@ -48,6 +50,7 @@ pub enum Purpose {
 /// `POST /v1/account/codes`: the Hub emails a code. `email` names the account to sign in or
 /// export a key for; signing out everywhere mails the signed-in key's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CodeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
@@ -58,6 +61,7 @@ pub struct CodeRequest {
 
 /// A code on its way: `POST /v1/account/codes/{id}` with what arrived finishes it, once.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Code {
     pub id: String,
     pub email: String,
@@ -68,6 +72,7 @@ pub struct Code {
 
 /// `POST /v1/account/codes/{id}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CodeAnswer {
     pub code: String,
 }
@@ -83,6 +88,7 @@ pub struct CodeStep {
 
 /// What a finished code did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "purpose", rename_all = "snake_case")]
 pub enum Proven {
     /// This computer's key is enrolled and kept; `account` is None until it is named.
@@ -93,6 +99,7 @@ pub enum Proven {
 
 /// A key for another computer: its file, which the client writes owner-only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ExportedKey {
     pub email: String,
     pub device_key: String,
@@ -121,6 +128,7 @@ pub struct KeyInstall {
 /// `DELETE /v1/account`, or a finished `SignOutEverywhere`: this computer's key is erased,
 /// whatever the Hub answered its revocation (`notes` say when it did not confirm).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SignedOut {
     pub email: Option<String>,
     pub everywhere: bool,
@@ -170,6 +178,7 @@ pub struct OrgHandle {
 /// `POST /v1/orgs/{org}/claim` (`{hub}`): the org is the caller's once a handle it lists shows
 /// `code`; until then, where to post it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OrgClaim {
     pub claimed: bool,
     pub code: Option<String>,
@@ -179,6 +188,7 @@ pub struct OrgClaim {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OrgProof {
     pub checked: String,
     pub handle: String,
@@ -189,6 +199,7 @@ pub struct OrgProof {
 /// newest release; signed in, also its own and its orgs' while private (no release yet). `q` that
 /// is exactly `org/name` is that one model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelSearch {
     pub models: Vec<FoundModel>,
     /// How many models matched, shown or not.
@@ -198,6 +209,7 @@ pub struct ModelSearch {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FoundModel {
     pub model: String,
     /// The label its owner gave it, else what its header verifies as.
@@ -220,6 +232,7 @@ pub struct FoundModel {
 
 /// Where a model's family comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum FamilyFrom {
     /// Its owner's label, which its weights don't say (or weren't read).
@@ -230,6 +243,7 @@ pub enum FamilyFrom {
 
 /// What a checkpoint is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ModelKind {
     /// Only a LoRA's factors: it goes on a model.
@@ -252,6 +266,7 @@ impl ModelKind {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelAuthor {
     pub org: String,
     /// The author's display name.
@@ -265,6 +280,7 @@ pub struct ModelAuthor {
 /// `GET /v1/models/{org}/{name}?release=`: a model's releases (one, when named) and, to its org's
 /// members, every commit.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelDetail {
     pub model: String,
     /// The label its owner gave it, else what its header verifies as.
@@ -294,6 +310,7 @@ pub struct ModelDetail {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelRelease {
     pub version: String,
     pub created_at: String,
@@ -305,6 +322,7 @@ pub struct ModelRelease {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelLane {
     pub lane: String,
     /// `sha256:<hex>`.
@@ -318,6 +336,7 @@ pub struct ModelLane {
 
 /// The recipe that wrote a commit: its header's `metadata.provenance`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Provenance {
     pub package: String,
     pub release: String,
@@ -330,6 +349,7 @@ pub struct Provenance {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelCommit {
     pub commit: String,
     pub lane: String,
@@ -343,6 +363,7 @@ pub struct ModelCommit {
 /// clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `tags`
 /// replaces its tags (empty clears them), then `add_tags` are added and `remove_tags` removed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelEdit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
@@ -374,6 +395,7 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(field: D) -> R
 
 /// What `PATCH /v1/models/{org}/{name}` leaves: the model as `GET` reads it, and what the Hub clamped.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelEdited {
     pub model: ModelDetail,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -382,6 +404,7 @@ pub struct ModelEdited {
 
 /// `GET /v1/families`: the families TensorFS tells from a header.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Families {
     pub families: Vec<String>,
 }
@@ -389,6 +412,7 @@ pub struct Families {
 /// `POST /v1/models/{org}/{name}/releases`: one commit per lane, under a version higher than every
 /// earlier one; the Hub never reuses a version, which makes a retry safe.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelReleaseAsk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
@@ -398,6 +422,7 @@ pub struct ModelReleaseAsk {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelReleased {
     pub model: String,
     pub version: String,
@@ -423,6 +448,7 @@ pub struct ModelDeleted {
 
 /// `GET /v1/packages?q=&limit=`: the Hub's packages the caller can see.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PackageSearch {
     pub packages: Vec<FoundPackage>,
     pub total: i64,
@@ -431,6 +457,7 @@ pub struct PackageSearch {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FoundPackage {
     pub package: String,
     pub latest_release: Option<String>,
@@ -440,6 +467,7 @@ pub struct FoundPackage {
 /// `GET /v1/packages/{org}/{name}?release=`: a package's releases newest first, or the one named
 /// with what its publish warned of (its owner sees the warnings).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PackageDetail {
     /// As published: the Hub finds `qwen3-5` for `qwen3.5`.
     pub package: String,
@@ -450,6 +478,7 @@ pub struct PackageDetail {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PackageRelease {
     pub release: String,
     pub published: Option<String>,
@@ -494,6 +523,7 @@ pub struct AfterRun {
 /// A model's display metadata as set at the Hub: shown by `cozy model info`, never applied (a
 /// run's LoRA strength stays 1.0).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Displayed {
     pub model: String,
     pub trigger: Option<String>,
@@ -583,6 +613,7 @@ pub struct ModelUpload {
 
 /// A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RecordedCommit {
     pub commit: String,
     pub from: String,
@@ -599,6 +630,7 @@ pub struct RecordedCommit {
 
 /// A destination recorded as a mirror of its author's model, before anything uploads.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Mirrored {
     pub model: String,
     pub source: String,
@@ -614,6 +646,7 @@ pub struct Mirrored {
 /// `POST /v1/model-uploads` answered: the run, as `calcifer::Submitted` says it, or for a Hub commit what was
 /// recorded, with no run; and the mirror recorded before either.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelUploading {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::calcifer::Run>,
@@ -658,6 +691,7 @@ pub struct PackageRemoval {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PackageRemovals {
     pub machine: String,
     pub runs: Vec<crate::calcifer::Run>,

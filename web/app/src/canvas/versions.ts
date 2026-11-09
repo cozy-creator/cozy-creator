@@ -1,4 +1,4 @@
-import type { Asset, VersionPrefix } from "../types"
+import type { Asset, VersionPrefix } from "../api/calcifer"
 import { nameKey } from "./names"
 
 // How a text says one version, the same rule as `version_of` (`crates/calcifer/src/project/graph.rs`): `<abr>` moves with the box, and `<abr.2>` is that version for good.

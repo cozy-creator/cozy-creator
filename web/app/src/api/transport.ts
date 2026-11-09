@@ -1,4 +1,4 @@
-import type { Session } from "../types"
+import type { BrowserSession } from "./calcifer"
 
 export interface Playback {
   stop(): void
@@ -22,7 +22,7 @@ export interface Transport {
 /** This tab, as a project's history says who made an edit. */
 export const TAB = crypto.randomUUID().slice(0, 4)
 
-export function sameOrigin(session: () => Session | null, base = ""): Transport {
+export function sameOrigin(session: () => BrowserSession | null, base = ""): Transport {
   const resolve = (path: string) => {
     const url = new URL(base + path, location.origin)
     if (url.origin !== location.origin || !url.pathname.startsWith(`${base}/v1/`)) throw new Error(`Not an API path: ${path}`)

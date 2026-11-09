@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type PointerEvent as ReactPointerEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useConnection } from "../../app/Connection"
-import type { ClipNow } from "../../types"
+import type { ClipNow } from "../../api/calcifer"
 import { say } from "../../ui/notes"
 import { useSignal } from "../../ui/signal"
 import type { DropTarget } from "../CanvasStore"
@@ -259,7 +259,7 @@ export function TimelineControl({ name }: { name: string }) {
       ),
   )
   useEffect(() => {
-    if (draft === null) saver.etag = asset?.etag
+    if (draft === null) saver.etag = asset?.etag ?? undefined
     else if (!gesture.current && awaited.current && asset?.etag === awaited.current) {
       awaited.current = null
       setDraft(null)
@@ -505,7 +505,7 @@ export function TimelineControl({ name }: { name: string }) {
     >
       <div className="tl-stage">
         <Monitor preview={preview} layout={layout} aspect={aspect} empty={!clips.length && caret === null} />
-        {asset?.rendering !== undefined && (
+        {asset?.rendering != null && (
           <div className="tl-rendering" role="progressbar" aria-label="Rendering" aria-valuenow={Math.round(asset.rendering * 100)}>
             <i style={{ transform: `translateX(${Math.round(asset.rendering * 100) - 100}%)` }} />
           </div>

@@ -1,8 +1,10 @@
 //! A tool: a public function declared `@app.tool`, as `GET /v1/tools` lists it. What it makes comes from its result, and its box from its
 //! struct's typed fields. Nothing here knows a model.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::{
     choices,
@@ -20,6 +22,7 @@ pub const EDIT: &str = "cozy/edit";
 
 /// `GET /v1/tools`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Tools {
     pub tools: Vec<Tool>,
     /// Why the list holds only what's installed: the Hub didn't answer.
@@ -29,6 +32,7 @@ pub struct Tools {
 
 /// Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolList {
     pub packages: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -37,6 +41,7 @@ pub struct ToolList {
 
 /// `POST /v1/tools/list`: a package on the list, all its functions with it, or these tools off it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolListChange {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub add: Option<String>,
@@ -46,6 +51,7 @@ pub struct ToolListChange {
 
 /// One row of `GET /v1/tools/browse`: a package of the Hub that makes media.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BrowsedPackage {
     pub package: String,
     /// What it does, in a line.
@@ -56,6 +62,7 @@ pub struct BrowsedPackage {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Browsed {
     pub packages: Vec<BrowsedPackage>,
     /// How many more a bigger `limit` reads.
@@ -63,6 +70,7 @@ pub struct Browsed {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Tool {
     /// What a box names as its `tool`: `qwen-image-2/image`, `acme/sketchlab/draw`.
     pub id: String,
@@ -103,6 +111,7 @@ pub struct Tool {
 
 /// The model a tool runs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolModel {
     /// Its key in a node's `models`.
     pub slot: String,
@@ -116,12 +125,14 @@ pub struct ToolModel {
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolUi {
     /// Its entry module on this computer's Calcifer, named by its hash.
     pub module: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum FieldType {
     #[default]
@@ -144,6 +155,7 @@ pub enum FieldType {
 
 /// One thing a box asks for: a field of its tool's struct.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolField {
     /// Its key in the box's fields.
     pub field: String,
@@ -185,10 +197,10 @@ pub struct ToolField {
     pub options: Option<Vec<Value>>,
     /// A choice's own words for its values, by value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub words: Option<Map<String, Value>>,
+    pub words: Option<BTreeMap<String, String>>,
     /// What each of `options` does, by value: drawn as a menu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub descriptions: Option<Map<String, Value>>,
+    pub descriptions: Option<BTreeMap<String, String>>,
     /// A shape that allows only these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratios: Option<Vec<Value>>,
@@ -387,8 +399,8 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
             let key = |value: &Value| value.as_str().map_or_else(|| value.to_string(), str::to_owned);
             let of = |value: &Value| said.and_then(|said| said.get(&key(value)));
             let options = out.options.clone().unwrap_or_default();
-            let words: Map<String, Value> = options.iter().filter_map(|value| Some((key(value), of(value).and_then(|said| said.get("words").or(Some(said)).filter(|words| words.is_string()))?.clone()))).collect();
-            let descriptions: Map<String, Value> = options.iter().filter_map(|value| Some((key(value), of(value)?.get("description").filter(|said| said.is_string())?.clone()))).collect();
+            let words: BTreeMap<String, String> = options.iter().filter_map(|value| Some((key(value), of(value).and_then(|said| said.get("words").or(Some(said)))?.as_str()?.to_owned()))).collect();
+            let descriptions: BTreeMap<String, String> = options.iter().filter_map(|value| Some((key(value), of(value)?.get("description")?.as_str()?.to_owned()))).collect();
             out.words = Some(words).filter(|words| !words.is_empty());
             out.descriptions = Some(descriptions).filter(|said| !said.is_empty());
             out.auto = false;

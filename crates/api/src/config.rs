@@ -123,6 +123,7 @@ pub struct MachineConfig {
 
 /// How a machine shares its computer (`machine.mode`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum MachineMode {
     Shared,

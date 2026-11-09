@@ -1,7 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { useConnection } from "../app/Connection"
-import type { FoundModel, Tool } from "../types"
+import type { FoundModel, Tool } from "../api/calcifer"
 import { useSignal } from "../ui/signal"
 import { NSFW, ShowNsfw, Tags, useShowNsfw } from "../ui/Tags"
 import type { Load } from "./carry"

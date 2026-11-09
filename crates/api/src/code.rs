@@ -19,6 +19,7 @@ use crate::{
 /// Local code by content: its tree document's digest, each file and then the document sent first (`PUT /v1/files`), and
 /// where the package is in the tree.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LocalCode {
     pub tree: Digest,
     /// The package's folder or script in the tree, `/`-separated; empty: the tree itself.

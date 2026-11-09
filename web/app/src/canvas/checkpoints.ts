@@ -1,4 +1,4 @@
-import type { FoundModel, Tool } from "../types"
+import type { FoundModel, Tool } from "../api/calcifer"
 import { say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { isNsfw } from "../ui/Tags"

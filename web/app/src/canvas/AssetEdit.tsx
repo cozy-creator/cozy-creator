@@ -1,5 +1,6 @@
 import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
-import type { Field, Media, Tool } from "../types"
+import type { ToolField, Tool } from "../api/calcifer"
+import type { Media } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -59,7 +60,7 @@ const WORDS_ONLY: Media[] = []
 
 interface Drawn {
   name: string
-  field: Field
+  field: ToolField
   bound: Bound
   view: ElementView
   /** Where it is in the box, as `data-field` says: `beats.0.description`. */
@@ -76,7 +77,7 @@ interface Drawn {
 }
 
 /** Its reset, when it isn't at its default: unset takes its key out of the file. */
-function Reset({ field, bound }: { field: Field; bound: Bound }) {
+function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
   if (atDefault(field, bound.value)) return null
   return (
     <button type="button" className="reset nodrag" aria-label={`Reset ${field.label}`} title="Back to its default" onClick={bound.unset}>
@@ -93,9 +94,9 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       place={place}
       value={said(bound.value)}
       label={label}
-      placeholder={field.placeholder}
+      placeholder={field.placeholder ?? undefined}
       missing={view.asset?.missing ?? []}
-      takes={field.type === "words" ? WORDS_ONLY : field.takes}
+      takes={field.type === "words" ? WORDS_ONLY : ((field.takes as Media[] | null) ?? undefined)}
       focus={focus}
       thumbs={!framed}
       onDraft={bound.draft}
@@ -163,7 +164,7 @@ function NumberField({ field, bound, label }: Drawn) {
         className="nodrag nopan"
         type="range"
         aria-label={label}
-        min={field.min}
+        min={field.min ?? undefined}
         max={Math.max(field.max ?? 0, shown)}
         step={field.step ?? (field.integer ? 1 : "any")}
         value={shown}
@@ -351,7 +352,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
     if (!said.length) return bound.unset()
     bound.write(field.multiple ? said : said[0])
   }
-  const refusal = (mention: string) => whyNotIn(store, field.accept, mention, name, field.label)
+  const refusal = (mention: string) => whyNotIn(store, (field.accept as Media | null) ?? undefined, mention, name, field.label)
   const take = (mentions: string[]) => {
     const fresh = mentions.filter((one) => store.resolveName(baseOf(one)) !== store.resolveName(name))
     const why = fresh.map(refusal).find(Boolean)
@@ -411,7 +412,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
         <input
           className="slot-type nodrag"
           aria-label={`${label}: a name`}
-          placeholder={`Drag ${WANTED[field.accept ?? "image"]} here`}
+          placeholder={`Drag ${WANTED[(field.accept as Media | null) ?? "image"]} here`}
           value={typed}
           onChange={(event) => setTyped(event.target.value)}
           onKeyDown={(event) => {
@@ -430,7 +431,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
 }
 
 /** A slot whose video is the timeline of a list group's rows: both lengths, and a warning when they differ. */
-function spanOf(store: CanvasStore, name: string, field: Field, mention: string | undefined, siblings: Row | undefined) {
+function spanOf(store: CanvasStore, name: string, field: ToolField, mention: string | undefined, siblings: Row | undefined) {
   if (!mention || !field.spans) return null
   const tool = store.tools.get().get(store.get(name)?.asset?.tool ?? "")
   const group = (tool?.fields ?? []).find((held) => held.field === field.spans)
@@ -448,10 +449,10 @@ function spanOf(store: CanvasStore, name: string, field: Field, mention: string 
 }
 
 /** One row of a list, or a block: each member drawn by these same rules. */
-function Members({ name, group, bound, view, place, label }: { name: string; group: Field; bound: Bound; view: ElementView; place: string; label: string }) {
+function Members({ name, group, bound, view, place, label }: { name: string; group: ToolField; bound: Bound; view: ElementView; place: string; label: string }) {
   const members = group.members ?? []
   const row = isRow(bound.value) ? bound.value : {}
-  const each = (member: Field) => (
+  const each = (member: ToolField) => (
     <FieldControl
       key={member.field}
       name={name}
@@ -600,7 +601,7 @@ export function FieldControl(props: Drawn & { siblings?: Row }) {
 }
 
 /** A field of the box itself: on its face under its label, beside its name under More, or in the frame. */
-export function ControlRow({ name, field, view, focus, named, framed }: { name: string; field: Field; view: ElementView; focus: boolean; named: boolean; framed?: boolean }) {
+export function ControlRow({ name, field, view, focus, named, framed }: { name: string; field: ToolField; view: ElementView; focus: boolean; named: boolean; framed?: boolean }) {
   const store = useCanvasStore()
   return <FieldControl name={name} field={field} bound={topBound(store, name, field.field)} view={view} place={field.field} label={field.label} focus={focus} named={named} block={!framed} framed={framed} />
 }
@@ -662,7 +663,7 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
 }
 
 /** What goes in the frame while nothing's made to fill it, so you write on what you're making: its first prompt, else its first slot. A tool with its own box draws all of that itself. */
-function framed(view: ElementView, fields: Field[], tool: Tool | undefined): Field | undefined {
+function framed(view: ElementView, fields: ToolField[], tool: Tool | undefined): ToolField | undefined {
   if (!view.hereWords || tool?.ui) return undefined
   return fields.find((field) => field.type === "prompt" || field.type === "words") ?? fields.find((field) => field.type === "slot")
 }
@@ -694,7 +695,7 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 }
 
 /** What beside Render is only a thing to set: the rest of the face wants a line. */
-const small = (field: Field) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
+const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
 /** What a box asks and holds, under it. On its face: prompts, groups, what a render can't go without, a filled slot, and Render. Everything else is under More, expert settings in its Advanced. On a take: what's done with that. */
 export function AssetEdit({ name, view, editing, head, actions, children }: { name: string; view: ElementView; editing: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
@@ -715,7 +716,7 @@ export function AssetEdit({ name, view, editing, head, actions, children }: { na
   const expert = folded.filter((field) => field.advanced)
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
-  const row = (field: Field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
+  const row = (field: ToolField) => <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
   return (
     <div className="edit-face">
       {head && <div className="tool-head">{head}</div>}

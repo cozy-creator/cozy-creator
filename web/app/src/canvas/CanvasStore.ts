@@ -1,7 +1,25 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type Outbox } from "../api/outbox"
-import type { Entity, Field as BoxField, Fit, Imported, AssetDeleted, AssetPatched, Asset, HistoryStepped, MainFile, Pickup, ProjectState, RentFor, Row, Run, Standing, Tool, VersionMoved, VersionPrefix } from "../types"
+import type {
+  ToolField as BoxField,
+  Fit,
+  Imported,
+  AssetDeleted,
+  AssetPatched,
+  Asset,
+  HistoryStepped,
+  MainFile,
+  Pickup,
+  RentFor,
+  Card,
+  Run,
+  Standing,
+  Tool,
+  VersionMoved,
+  VersionPrefix,
+} from "../api/calcifer"
+import type { Entity, Project } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
@@ -145,8 +163,8 @@ export interface CarriedFile {
 
 /** Rows an edit pushed aside, sent with the box it makes: by name, the rows by node id, and by name the revision each was worked out from. */
 export interface Pushes {
-  moves: Record<string, Row>
-  ids: Map<string, Row>
+  moves: Record<string, Card>
+  ids: Map<string, Card>
   placed: Record<string, number>
 }
 
@@ -154,7 +172,7 @@ export interface Pushes {
 interface Gone {
   name: string
   view: ElementView
-  row: Row
+  row: Card
 }
 
 /** A box as a step found it: what it showed (none: it wasn't there) and where, by its node if it had one, so a rename since still finds it. */
@@ -162,7 +180,7 @@ interface Snap {
   name: string
   node?: string
   view?: ElementView
-  row?: Row
+  row?: Card
 }
 
 /** What a box's history puts back of its row: what it's made by, with, and from. */
@@ -195,7 +213,7 @@ const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => 
 const onlyHere = (on: string[]) => on.length === 1 && on[0] === "local"
 const unsaid = (fit: Fit | null): fit is Fit => Boolean(fit?.tools.some((tool) => !tool.here))
 
-export function toRow(node: ElementNode): Row {
+export function toRow(node: ElementNode): Card {
   return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: node.width ?? CARD_WIDTH }
 }
 
@@ -276,7 +294,7 @@ export class CanvasStore {
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
   /** Opens Rent, with a GPU that holds it chosen when one is known. */
-  rent: (pick?: RentFor) => void = () => {}
+  rent: (pick?: RentFor | null) => void = () => {}
   /** What Render all asks first, on its own control, once for every tool this computer would do poorly. */
   readonly allAsking = signal<{ fit: Fit } | null>(null)
   /** The box being worked on where it stands: the view to go back to, the one fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
@@ -297,15 +315,15 @@ export class CanvasStore {
   machines: () => string[] = () => []
   private ids = new Map<string, string>()
   /** The last `GET canvas` taken in: a canvas drawn again is handed it again, and what's happened since stands. */
-  private cardsRead?: Record<string, Row>
+  private cardsRead?: Record<string, Card>
   /** Each box by its node's id, the same whatever it's called: an action waits for its turn by this. */
   private namesById = new Map<string, string>()
   /** What Calcifer calls each, by id: a rename on its way shows here first. */
   private served = new Map<string, string>()
   private nextId = 0
-  private state: ProjectState | null = null
+  private state: Project | null = null
   private began = 0
-  private rows: Map<string, Row> | null = null
+  private rows: Map<string, Card> | null = null
   private owners = new Map<number, string>()
   private dragging = new Set<string>()
   /** Where what's being dragged started, for a drop that isn't a move. */
@@ -318,17 +336,17 @@ export class CanvasStore {
   /** Names about to land: what was dropped here, and nothing a read found. */
   private landings = new Set<string>()
   /** A position of ours that the stream hasn't echoed: it wins until then. */
-  private masks = new Map<string, Row>()
+  private masks = new Map<string, Card>()
   private gliding = new Map<string, ReturnType<typeof setTimeout>>()
   /** Boxes to clear of what they lie on, as soon as this turn's changes are in: true for one whose size is its own, which doesn't shrink. */
   private unsettled = new Map<string, boolean>()
   /** When each of this page's moves was answered, by name. */
   private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
-  private moving = new Map<string, Row>()
+  private moving = new Map<string, Card>()
   /** Of those, what this page worked one out from, where it's this page's own doing: written only if Calcifer still has it, so it can't
    * clobber another writer's newer row. A person's move has none: it's newest. */
-  private movingFrom = new Map<string, Row | null>()
+  private movingFrom = new Map<string, Card | null>()
   /** Of those, the edits each is part of: a request names the edits of what it writes. */
   private movingEdits = new Map<string, Set<string>>()
   /** The newest revision of the canvas this page has heard, by a read or the stream: what its own placing is worked out from. */
@@ -544,7 +562,7 @@ export class CanvasStore {
     return this.ids.get(this.resolveName(name))
   }
 
-  position(name: string): Row | null {
+  position(name: string): Card | null {
     const id = this.ids.get(this.resolveName(name))
     const node = id ? this.flow?.getNode(id) : undefined
     return node ? toRow(node) : null
@@ -552,7 +570,7 @@ export class CanvasStore {
 
   // From Calcifer
 
-  applyState(state: ProjectState) {
+  applyState(state: Project) {
     this.state = state
     this.began = state.began ?? 0
     this.transferring.set(Boolean(state.moving))
@@ -560,7 +578,7 @@ export class CanvasStore {
   }
 
   /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
-  applyCanvas(cards: Record<string, Row>, began = 0, seq?: number) {
+  applyCanvas(cards: Record<string, Card>, began = 0, seq?: number) {
     this.heard(seq)
     if (cards === this.cardsRead) return
     this.cardsRead = cards
@@ -585,7 +603,7 @@ export class CanvasStore {
   }
 
   /** A `canvas` event: the rows that changed. Stream order is the truth. */
-  applyRows(cards: Record<string, Row | null>, seq?: number) {
+  applyRows(cards: Record<string, Card | null>, seq?: number) {
     this.heard(seq)
     if (!this.rows) return
     for (const [name, row] of Object.entries(cards)) {
@@ -599,7 +617,7 @@ export class CanvasStore {
     }
   }
 
-  private applyRow(name: string, row: Row) {
+  private applyRow(name: string, row: Card) {
     if (this.dragging.has(name)) return
     const mask = this.masks.get(name)
     if (mask) {
@@ -637,7 +655,7 @@ export class CanvasStore {
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
     // as it goes is a revision that landed while its output is still in progress.
     const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.url) && /^(image|video)\//.test(item.media_type))
-    const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 }
+    const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 ?? undefined }
     const held = this.get(owner)?.glimpse
     this.patch(owner, glimpse && JSON.stringify(glimpse) !== JSON.stringify(held) ? { run, glimpse } : { run })
   }
@@ -762,7 +780,7 @@ export class CanvasStore {
     const same = (field: string) => JSON.stringify(asset.fields?.[field]) === JSON.stringify(view.asset?.fields?.[field])
     // What's on its way is met by `If-Match`: Calcifer refuses it, and that's this conflict too. It only needs its base to stay, unless no field of it moved.
     const typed = Object.keys({ ...(view.writing ? view.sent : {}), ...view.drafts })
-    if (typed.every(same)) return { base: asset.etag }
+    if (typed.every(same)) return { base: asset.etag ?? undefined }
     return view.drafts ? { conflict: true } : {}
   }
 
@@ -776,7 +794,7 @@ export class CanvasStore {
   /** A name with no row may just be ahead of its row on the stream, so ask once. Still none: place it, once, and write the row. */
   private async findHomes(elements: Placed[]) {
     if (!this.projectId) return
-    let cards: Record<string, Row> = {}
+    let cards: Record<string, Card> = {}
     let readSeq = this.canvasSeq
     try {
       const read = await this.client.canvas(this.projectId)
@@ -805,7 +823,7 @@ export class CanvasStore {
     if (nothingYet) this.onPlaced?.()
   }
 
-  private homes(left: Placed[]): Map<string, Row> {
+  private homes(left: Placed[]): Map<string, Card> {
     const boxes = new Map<string, Box>()
     for (const [name, id] of this.ids) {
       // A node just added isn't in the flow until it next draws; its row is.
@@ -834,7 +852,7 @@ export class CanvasStore {
     return { x: (left - seen.x) / seen.zoom, y: (top - seen.y) / seen.zoom, w: (innerWidth - left) / seen.zoom, h: (innerHeight - top) / seen.zoom }
   }
 
-  private addNodes(items: { element: Placed; row: Row }[]) {
+  private addNodes(items: { element: Placed; row: Card }[]) {
     if (!items.length) return
     const nodes = items.map(({ element, row }) => {
       const making = element.asset?.making ?? []
@@ -849,7 +867,7 @@ export class CanvasStore {
     this.followAll()
   }
 
-  private node(name: string, row: Row, selected = false, id = `e${++this.nextId}`): ElementNode {
+  private node(name: string, row: Card, selected = false, id = `e${++this.nextId}`): ElementNode {
     this.ids.set(name, id)
     this.namesById.set(id, name)
     // Drawn again, a box keeps what Calcifer calls it: a rename on its way hasn't reached it.
@@ -966,11 +984,11 @@ export class CanvasStore {
   }
 
   /** Slides there, briefly. */
-  private glide(name: string, at: { x: number; y: number; w?: number }) {
+  private glide(name: string, at: { x: number; y: number; w?: number | null }) {
     const id = this.ids.get(name)
     if (!id) return
     clearTimeout(this.gliding.get(id))
-    this.flow?.updateNode(id, { position: { x: at.x, y: at.y }, ...(at.w === undefined ? {} : { width: at.w }), className: "glide" })
+    this.flow?.updateNode(id, { position: { x: at.x, y: at.y }, ...(at.w == null ? {} : { width: at.w }), className: "glide" })
     this.gliding.set(id, setTimeout(() => this.flow?.updateNode(id, { className: undefined }), GLIDE_MS))
   }
 
@@ -1238,7 +1256,7 @@ export class CanvasStore {
   }
 
   /** `row` over what its row says, now, until a read begun after the answer says for itself, as `overlay`, and asked of Calcifer under `edit`. Refused, it goes, and the rest stays. */
-  private over<T extends { stale?: string[]; etag?: string }>(name: string, row: Partial<Asset>, send: (served: string, write: Write) => Promise<T>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void }) {
+  private over<T extends { stale?: string[]; etag?: string | null }>(name: string, row: Partial<Asset>, send: (served: string, write: Write) => Promise<T>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
@@ -1570,7 +1588,7 @@ export class CanvasStore {
   setDraft(name: string, field: string, value: unknown) {
     const view = this.get(name)
     if (!view) return
-    this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.known ?? view.asset?.etag })
+    this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.known ?? view.asset?.etag ?? undefined })
     clearTimeout(this.pauses.get(name))
     this.pauses.set(name, setTimeout(() => void this.save(name), TYPING_PAUSE_MS))
   }
@@ -1606,7 +1624,7 @@ export class CanvasStore {
     if (!view?.asset || !id) return Promise.resolve(true)
     const edit = opts.edit ?? this.writeStep(key, fields, opts.typed)
     const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
-    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, conflict: undefined, base: view.base ?? view.known ?? view.asset.etag, writing: (view.writing ?? 0) + 1 })
+    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, conflict: undefined, base: view.base ?? view.known ?? view.asset.etag ?? undefined, writing: (view.writing ?? 0) + 1 })
     const now = () => this.views.get(this.namesById.get(id) ?? "")
     return new Promise((settled) => {
       this.act(key, {
@@ -2151,7 +2169,7 @@ export class CanvasStore {
   }
 
   /** A file being placed has a row of its own, under its key, until it lands: its canvas drawn again finds it there. What it pushes aside is part of `edit`. */
-  addPlacing(key: string, name: string, placing: Placing, at: Row, opts: { naming: boolean; preview?: string }, edit: string) {
+  addPlacing(key: string, name: string, placing: Placing, at: Card, opts: { naming: boolean; preview?: string }, edit: string) {
     this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview, landing: true })
     const row = this.clearOf(key, at, edit)
     this.rows?.set(key, row)
@@ -2160,7 +2178,7 @@ export class CanvasStore {
   }
 
   /** `at` for a box not on the canvas yet: there, a little smaller at most, with what it lies on pushed aside under `edit`, unless something that can't be is in the way. */
-  private clearOf(key: string, at: Row, edit: string): Row {
+  private clearOf(key: string, at: Card, edit: string): Card {
     const view = this.views.get(key)
     if (!view) return at
     const w = at.w ?? widthFor(view)
@@ -2228,7 +2246,7 @@ export class CanvasStore {
   }
 
   /** The project holds it now. If it moved while being asked, its row moves too. */
-  land(key: string, answer: Imported, at: Row, edit?: string) {
+  land(key: string, answer: Imported, at: Card, edit?: string) {
     this.patch(key, { placing: undefined, draft: undefined, landed: { sha256: answer.sha256, field: answer.field } })
     this.moveName(key, answer.name)
     this.rows?.set(answer.name, at)
@@ -2410,11 +2428,11 @@ export class CanvasStore {
    * the answer: another writer may have taken it, and then the box takes the one it got. Refused, it goes and `refused` says why. `edit`: what it's part of,
    * else a step of its own.
    */
-  place<T extends { name: string; etag?: string; kept?: Record<string, Row | null> }>(
+  place<T extends { name: string; etag?: string; kept?: Record<string, Card | null> }>(
     wanted: string,
     view: Omit<ElementView, "name">,
-    dropped: Row,
-    ask: (at: Row, write: Write, pushes: Pushes) => Promise<T>,
+    dropped: Card,
+    ask: (at: Card, write: Write, pushes: Pushes) => Promise<T>,
     refused: (error: unknown) => void,
     done?: (name: string, answer: T, edit: string) => void,
     edit?: string,
@@ -2476,7 +2494,7 @@ export class CanvasStore {
 
   /** Its row, written in its turn, with whatever else this turn moves. `from`: the page's own doing, worked out from that row (null: none), which
    * it's written over only if Calcifer still has it. A person's move, with none, is written whatever, and one pending makes what follows it so too. */
-  private move(name: string, row: Row, from?: Row | null, edit = this.gesture, since?: number) {
+  private move(name: string, row: Card, from?: Card | null, edit = this.gesture, since?: number) {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
     if (!id) return
@@ -2532,7 +2550,7 @@ export class CanvasStore {
   }
 
   /** Those went with their box: what's still that row is written, and what another wrote first stands. */
-  pushesSent(pushes: Pushes, kept: Record<string, Row | null> = {}) {
+  pushesSent(pushes: Pushes, kept: Record<string, Card | null> = {}) {
     const at = performance.now()
     for (const [id, row] of pushes.ids) {
       if (this.moving.get(id) !== row) continue
@@ -2579,14 +2597,14 @@ export class CanvasStore {
     if (this.movesOwed || !this.moving.size) return
     this.movesOwed = true
     const ready = (id: string) => this.views.get(this.namesById.get(id) ?? "")?.pending !== NOT_YET && ![...(this.movingEdits.get(id) ?? [])].some((edit) => this.coming(edit))
-    let sent = new Map<string, Row>()
+    let sent = new Map<string, Card>()
     let edits = new Map<string, Set<string>>()
     this.outbox.add({
       send: (once, action) => {
         sent = new Map([...this.moving].filter(([id]) => ready(id)))
         edits = new Map([...sent.keys()].map((id) => [id, new Set(this.movingEdits.get(id))]))
         const edit = [...new Set([...edits.values()].flatMap((held) => [...held]))].join(",") || undefined
-        const cards = [...sent].flatMap(([id, row]): [string, Row, Row | null | undefined, string][] => {
+        const cards = [...sent].flatMap(([id, row]): [string, Card, Card | null | undefined, string][] => {
           const name = this.served.get(id)
           return name && this.namesById.has(id) ? [[name, row, this.movingFrom.get(id), id]] : []
         })

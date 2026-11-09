@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import * as React from "react"
 import { ApiError } from "../api/client"
 import { useConnection } from "../app/Connection"
-import type { Asset, Field, Tool } from "../types"
+import type { Asset, ToolField, Tool } from "../api/calcifer"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 
@@ -21,7 +21,7 @@ export interface ToolBoxProps {
   /** What its text can name as `<name>`. */
   mentions: { name: string; kind: string }[]
   /** What the tool declares of each field, by field. */
-  limits: Record<string, Field>
+  limits: Record<string, ToolField>
   /** The host's colours and type, as CSS values for `style`. */
   tokens: typeof TOKENS
 }
@@ -102,7 +102,7 @@ const Trouble = ({ why }: { why: string }) => (
   </p>
 )
 
-function Drawn({ own, name, view, controls }: { own: Own; name: string; view: ElementView; controls: Field[] }) {
+function Drawn({ own, name, view, controls }: { own: Own; name: string; view: ElementView; controls: ToolField[] }) {
   const store = useCanvasStore()
   const asset = view.asset as Asset
   const setFields = (fields: Record<string, unknown>) => {
@@ -139,9 +139,9 @@ export function ToolBox({
   tool: Tool | undefined
   name: string
   view: ElementView
-  shown: Field[]
-  folded: Field[]
-  row(control: Field): React.ReactNode
+  shown: ToolField[]
+  folded: ToolField[]
+  row(control: ToolField): React.ReactNode
   children(shown: React.ReactNode, folded: React.ReactNode): React.ReactNode
 }) {
   const { own, trouble } = useOwn(tool)
@@ -167,7 +167,7 @@ export function ToolBox({
       null,
     )
   }
-  const each = (control: Field) =>
+  const each = (control: ToolField) =>
     control.field === field ? (
       <Guard key={own.module} fallback={row(control)}>
         {drawn}
