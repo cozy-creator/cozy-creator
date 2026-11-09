@@ -94,14 +94,8 @@ impl DeviceKey {
     pub fn capability(&self, claims: &serde_json::Value) -> String {
         let mut claims = claims.clone();
         claims["jti"] = crate::workload::jti().into();
-        let pair = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(&self.key.to_bytes())
-            .expect("an Ed25519 seed");
-        let pkcs8 = pair.to_pkcs8().expect("an Ed25519 key's PKCS#8");
-        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
-        header.typ = Some(CAPABILITY_TYPE.into());
-        header.kid = Some(self.id.clone());
-        jsonwebtoken::encode(&header, &claims, &jsonwebtoken::EncodingKey::from_ed_der(pkcs8.as_ref()))
-            .expect("EdDSA signs")
+        let header = crate::workload::Header { typ: CAPABILITY_TYPE, alg: "EdDSA", jwk: None, kid: Some(&self.id) };
+        crate::workload::jws(&header, &claims, |signed| self.key.sign(signed).to_bytes().to_vec())
     }
 
     fn sign_challenge(key: &SigningKey, domain: &str, challenge: &str) -> Result<String, Error> {

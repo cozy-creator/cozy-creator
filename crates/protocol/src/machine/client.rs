@@ -11,7 +11,6 @@ use std::{
 
 use bytes::Bytes;
 use ed25519_dalek::SigningKey;
-use eventsource_stream::Eventsource as _;
 use futures_util::{Stream, StreamExt as _, TryStreamExt as _};
 use reqwest::{Method, RequestBuilder, Response, StatusCode, header};
 use rustls::{
@@ -571,9 +570,7 @@ fn held(response: &Response) -> Result<Ranges, Error> {
         .ok_or_else(|| Error::Answer(format!("the machine answered {HELD} {value:?}")))
 }
 
-fn sse(
-    response: Response,
-) -> Result<impl Stream<Item = Result<eventsource_stream::Event, Error>> + Send + 'static, Error> {
+fn sse(response: Response) -> Result<impl Stream<Item = Result<sse::Event, Error>> + Send + 'static, Error> {
     let streams = response
         .headers()
         .get(header::CONTENT_TYPE)
@@ -584,9 +581,21 @@ fn sse(
             "the machine answered a stream that is not SSE".into(),
         ));
     }
-    Ok(response.bytes_stream().eventsource().map_err(|e| match e {
-        eventsource_stream::EventStreamError::Transport(e) => transport(e),
-        e => Error::Answer(format!("the machine's SSE: {e}")),
+    let decoded = (response.bytes_stream(), sse::Decoder::default(), false);
+    Ok(futures_util::stream::unfold(decoded, |(mut bytes, mut decoder, mut ended)| async move {
+        loop {
+            match decoder.next() {
+                Some(Ok(event)) => return Some((Ok(event), (bytes, decoder, ended))),
+                Some(Err(e)) => return Some((Err(Error::Answer(format!("the machine's SSE: {e}"))), (bytes, decoder, true))),
+                None if ended => return None,
+                None => {}
+            }
+            match bytes.next().await {
+                Some(Ok(chunk)) => decoder.feed(&chunk),
+                Some(Err(e)) => return Some((Err(transport(e)), (bytes, decoder, true))),
+                None => ended = true,
+            }
+        }
     }))
 }
 
@@ -703,5 +712,83 @@ impl ServerCertVerifier for Pinned {
         self.provider
             .signature_verification_algorithms
             .supported_schemes()
+    }
+}
+
+/// Server-sent events, as the WHATWG `text/event-stream` format reads them: lines end at CRLF, LF or
+/// CR, a blank line dispatches an event that has data, and a stream's leading BOM is dropped.
+mod sse {
+    use std::collections::VecDeque;
+
+    /// One dispatched event: its name (`message` when none was given) and its data lines joined by `\n`.
+    #[derive(Debug, Default)]
+    pub struct Event {
+        pub event: String,
+        pub data: String,
+    }
+
+    /// Events from bytes fed in pieces of any size.
+    #[derive(Default)]
+    pub struct Decoder {
+        line: Vec<u8>,
+        pending: Event,
+        after_cr: bool,
+        started: bool,
+        ready: VecDeque<Result<Event, String>>,
+    }
+
+    impl Decoder {
+        pub fn feed(&mut self, bytes: &[u8]) {
+            for &byte in bytes {
+                match byte {
+                    b'\n' if std::mem::take(&mut self.after_cr) => {}
+                    b'\n' | b'\r' => {
+                        self.after_cr = byte == b'\r';
+                        let line = std::mem::take(&mut self.line);
+                        self.line_ended(&line);
+                    }
+                    _ => {
+                        self.after_cr = false;
+                        self.line.push(byte);
+                    }
+                }
+            }
+        }
+
+        /// The next event decoded so far, or a line that is not UTF-8.
+        pub fn next(&mut self) -> Option<Result<Event, String>> {
+            self.ready.pop_front()
+        }
+
+        fn line_ended(&mut self, line: &[u8]) {
+            let Ok(mut line) = std::str::from_utf8(line) else {
+                self.ready.push_back(Err("a line that is not UTF-8".into()));
+                return;
+            };
+            if !std::mem::replace(&mut self.started, true) {
+                line = line.strip_prefix('\u{feff}').unwrap_or(line);
+            }
+            if line.is_empty() {
+                let mut event = std::mem::take(&mut self.pending);
+                if event.data.pop().is_some() {
+                    if event.event.is_empty() {
+                        event.event = "message".into();
+                    }
+                    self.ready.push_back(Ok(event));
+                }
+                return;
+            }
+            let (field, value) = line.split_once(':').unwrap_or((line, ""));
+            let value = value.strip_prefix(' ').unwrap_or(value);
+            match field {
+                "event" => self.pending.event = value.into(),
+                "data" => {
+                    self.pending.data.push_str(value);
+                    self.pending.data.push('\n');
+                }
+                // Comments (an empty field), `id` and `retry`: nothing here reads them.
+                _ => {}
+            }
+        }
     }
 }

@@ -26,7 +26,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio_stream::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt};
 use v1::path;
 
 /// A refusal as its envelope, at the status its kind names unless the protocol names another.
@@ -388,8 +388,13 @@ async fn events<B: MachineBackend>(
         return Ok(sse(m.authority(&caller), events));
     }
     let events = super::machine_runs::follow(m.backend.clone(), caller.actor, id, after, caller.limit()).await?;
-    let events = tokio_stream::wrappers::ReceiverStream::new(events);
+    let events = received(events);
     Ok(sse(m.authority(&caller), followed(&m.identity, events.map(|e| e.and_then(|e| run_event(&e))))))
+}
+
+/// What `receiver` receives, as a stream.
+pub(super) fn received<T>(mut receiver: tokio::sync::mpsc::Receiver<T>) -> impl Stream<Item = T> {
+    futures_util::stream::poll_fn(move |cx| receiver.poll_recv(cx))
 }
 
 /// `events` holding the machine's idle clock while a client follows them.
@@ -535,7 +540,7 @@ fn ranged(
             }
         }
     });
-    let chunks = tokio_stream::wrappers::ReceiverStream::new(receiver).map(move |chunk| {
+    let chunks = received(receiver).map(move |chunk| {
         if let (Ok(_), Some(lifecycle)) = (&chunk, &lifecycle) {
             lifecycle.transferred();
         }
@@ -633,7 +638,7 @@ async fn log<B: MachineBackend>(
             let _ = sender.blocking_send(Err(e));
         }
     });
-    let lines = tokio_stream::wrappers::ReceiverStream::new(lines).map(move |lines| match lines {
+    let lines = received(lines).map(move |lines| match lines {
         Ok(lines) => {
             let after = lines.after.to_string();
             Ok(event("lines", &v1::LogLines { after: after.clone(), text: lines.text })?.id(after))
@@ -703,7 +708,7 @@ async fn follow_object<B: MachineBackend>(
             }
         }
     });
-    Ok(sse(m.authority(&caller), tokio_stream::wrappers::ReceiverStream::new(held)))
+    Ok(sse(m.authority(&caller), received(held)))
 }
 
 /// `POST /v1/objects/held`: `HEAD`'s answer for many objects in one request, in the order asked.

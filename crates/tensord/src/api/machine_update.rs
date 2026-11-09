@@ -12,7 +12,7 @@ use super::{auth::VerifiedActor, backend::MachineBackend, v1, MachineIdentity};
 use crate::machine::update::{Choice, Request, Status as Update, Updates, BINARY};
 use protocol::error::Error;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
-use tokio_stream::{wrappers::ReceiverStream, Stream};
+use futures_util::Stream;
 
 /// Whether run `id` is an update this machine holds or reserved.
 pub(super) fn owns(
@@ -200,7 +200,7 @@ pub(super) async fn events(
             }
         }
     });
-    Ok(ReceiverStream::new(receiver))
+    Ok(super::http::received(receiver))
 }
 
 fn stage(

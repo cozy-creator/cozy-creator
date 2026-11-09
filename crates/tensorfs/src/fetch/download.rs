@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize,
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Notify, Semaphore};
 
 use super::ask::{self, Backoff, ATTEMPTS};

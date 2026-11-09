@@ -667,7 +667,7 @@ impl Journal {
             connection
                 .execute(
                     "INSERT OR IGNORE INTO machine_metadata(key,value) VALUES('workspace_id',?1)",
-                    [uuid::Uuid::new_v4().to_string()],
+                    [crate::uuid::hyphenated()],
                 )
                 .map_err(db_error)?;
         }

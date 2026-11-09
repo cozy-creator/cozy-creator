@@ -3,11 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use tensorfs::raw::block_on;
-use tensorfs::{bearer, Config, Endpoint, Failure, HeaderMap, Kind, Request, Result, TokenProvider};
+use tensorfs::{bearer, Boxed, Config, Endpoint, Failure, HeaderMap, Kind, Request, Result, TokenProvider};
 
 use crate::store::{config_to_py, OrRaise};
 
@@ -61,30 +60,31 @@ fn failed(error: PyErr) -> Failure {
 
 struct PythonProvider(Py<PyAny>);
 
-#[async_trait]
 impl TokenProvider for PythonProvider {
-    async fn headers(&self, request: &Request<'_>) -> Result<Vec<(String, String)>> {
-        Python::attach(|py| {
-            let provider = self.0.bind(py);
-            let headers = PyDict::new(py);
-            for (name, value) in request.headers {
-                headers.set_item(name, value)?;
-            }
-            let args = (request.method, request.url, headers, request.payload);
-            let value = if provider.hasattr("headers")? {
-                provider.call_method1("headers", args)?
-            } else {
-                provider.call1(args)?
-            };
-            if let Ok(dict) = value.cast::<PyDict>() {
-                dict.iter()
-                    .map(|(k, v)| Ok((k.extract()?, v.extract()?)))
-                    .collect()
-            } else {
-                value.extract()
-            }
+    fn headers<'a>(&'a self, request: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>> {
+        Box::pin(async move {
+            Python::attach(|py| {
+                let provider = self.0.bind(py);
+                let headers = PyDict::new(py);
+                for (name, value) in request.headers {
+                    headers.set_item(name, value)?;
+                }
+                let args = (request.method, request.url, headers, request.payload);
+                let value = if provider.hasattr("headers")? {
+                    provider.call_method1("headers", args)?
+                } else {
+                    provider.call1(args)?
+                };
+                if let Ok(dict) = value.cast::<PyDict>() {
+                    dict.iter()
+                        .map(|(k, v)| Ok((k.extract()?, v.extract()?)))
+                        .collect()
+                } else {
+                    value.extract()
+                }
+            })
+            .map_err(failed)
         })
-        .map_err(failed)
     }
 
     fn retry(&self, sent: &Request<'_>, status: u16, headers: &HeaderMap) -> Result<bool> {

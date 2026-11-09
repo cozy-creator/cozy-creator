@@ -1,6 +1,5 @@
 //! Host destinations: positioned reads on a few threads, each copy cut on the request grid.
 
-use std::alloc::{self, Layout};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
@@ -238,10 +237,11 @@ pub(super) fn read_at(f: &File, buf: &mut [u8], at: u64) -> io::Result<usize> {
     std::os::windows::fs::FileExt::seek_read(f, buf, at)
 }
 
-/// One thread's aligned buffer for O_DIRECT reads its destination cannot take.
+/// One thread's aligned buffer for O_DIRECT reads its destination cannot take: zeroed, and one
+/// alignment longer than asked, so an aligned start always fits.
 #[derive(Default)]
 pub(super) struct Bounce {
-    buf: Option<(*mut u8, Layout)>,
+    buf: Vec<u8>,
 }
 
 impl Bounce {
@@ -263,31 +263,11 @@ impl Bounce {
     }
 
     pub(super) fn get(&mut self, len: usize) -> &mut [u8] {
-        if self.buf.is_none_or(|(_, l)| l.size() < len) {
-            self.free();
-            let layout = Layout::from_size_align(len, A as usize).expect("a bounce buffer layout");
-            // SAFETY: a non-zero size; freed in `free`.
-            let ptr = unsafe { alloc::alloc_zeroed(layout) };
-            if ptr.is_null() {
-                alloc::handle_alloc_error(layout);
-            }
-            self.buf = Some((ptr, layout));
+        let a = A as usize;
+        if self.buf.len() < len + a {
+            self.buf = vec![0; len + a];
         }
-        let (ptr, _) = self.buf.unwrap();
-        // SAFETY: ours, initialized, `layout.size() >= len`.
-        unsafe { std::slice::from_raw_parts_mut(ptr, len) }
-    }
-
-    fn free(&mut self) {
-        if let Some((ptr, layout)) = self.buf.take() {
-            // SAFETY: allocated in `get` with this layout.
-            unsafe { alloc::dealloc(ptr, layout) };
-        }
-    }
-}
-
-impl Drop for Bounce {
-    fn drop(&mut self) {
-        self.free();
+        let at = self.buf.as_ptr().align_offset(a);
+        &mut self.buf[at..at + len]
     }
 }

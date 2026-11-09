@@ -109,7 +109,8 @@ fn mint_leaf() -> io::Result<(String, String)> {
     let mut name = DistinguishedName::new();
     name.push(DnType::CommonName, "tensord");
     params.distinguished_name = name;
-    params.not_before = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    params.not_before = rcgen::date_time_ymd(1970, 1, 1) + now - std::time::Duration::from_secs(300);
     params.not_after = rcgen::date_time_ymd(9999, 12, 31);
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![

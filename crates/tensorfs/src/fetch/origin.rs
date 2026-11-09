@@ -1,20 +1,22 @@
 //! Where objects come from. An origin says where its objects can be read (`locate`); the Fetcher
 //! downloads, verifies and admits them.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
-
-use async_trait::async_trait;
 
 use super::token::TokenProvider;
 use crate::err::Result;
 use crate::format::ObjectRef;
 
-#[async_trait]
+/// What an async method of a `dyn` trait returns: `async fn` in a trait object is boxed by hand.
+pub type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 pub trait Origin: Send + Sync {
     /// Where each of `objects` can be read, in order. The Fetcher asks once per object as it
     /// starts it; an origin whose answer costs a round trip batches and caches.
-    async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>>;
+    fn locate<'a>(&'a self, objects: &'a [ObjectRef]) -> Boxed<'a, Result<Vec<Location>>>;
 
     /// Whether anyone may read these objects: only then are they written back to a shared
     /// volume.

@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio_stream::{wrappers::IntervalStream, Stream, StreamExt};
+use futures_util::{future::ready, Stream, StreamExt};
 
 /// What this machine serves, for clients that adapt to it.
 /// `run-gpus/1`: a run may request an exact GPU group, inherited and reserved by its calls.
@@ -57,7 +57,7 @@ pub(super) fn watch<B: MachineBackend>(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last: Option<v1::StatusFrame> = None;
     let read: Arc<Mutex<Option<(u64, Held)>>> = Arc::default();
-    IntervalStream::new(tick)
+    futures_util::stream::poll_fn(move |cx| tick.poll_tick(cx).map(Some))
         .then(move |_| {
             let (identity, backend, read) = (identity.clone(), backend.clone(), read.clone());
             async move {
@@ -77,13 +77,15 @@ pub(super) fn watch<B: MachineBackend>(
                 pictured(identity, &backend, held).await
             }
         })
-        .filter_map(move |next| match next {
-            Ok(next) if last.as_ref().is_some_and(|last| !changed(last, &next)) => None,
-            Ok(next) => {
-                last = Some(next.clone());
-                Some(Ok(next))
-            }
-            Err(error) => Some(Err(error)),
+        .filter_map(move |next| {
+            ready(match next {
+                Ok(next) if last.as_ref().is_some_and(|last| !changed(last, &next)) => None,
+                Ok(next) => {
+                    last = Some(next.clone());
+                    Some(Ok(next))
+                }
+                Err(error) => Some(Err(error)),
+            })
         })
 }
 

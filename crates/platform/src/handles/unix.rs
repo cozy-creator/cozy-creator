@@ -14,8 +14,7 @@ use std::{
 /// The peer as the kernel names it, whoever it runs as.
 #[cfg(target_os = "linux")]
 pub fn peer(stream: &UnixStream) -> io::Result<Peer> {
-    // SAFETY: ucred is plain old data; all-zero is a valid value.
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: correctly sized writable credential structure and size pointer.
     if unsafe {
@@ -100,12 +99,15 @@ pub fn recv_fd(stream: &UnixStream) -> Result<OwnedFd> {
         iov_base: marker.as_mut_ptr().cast(),
         iov_len: 1,
     };
-    // SAFETY: zero is a valid initial msghdr; all writable buffers live through recvmsg.
-    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_iov = &mut iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = control.as_mut_ptr().cast();
-    msg.msg_controllen = std::mem::size_of_val(&control) as _;
+    let mut msg = libc::msghdr {
+        msg_name: std::ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: control.as_mut_ptr().cast(),
+        msg_controllen: std::mem::size_of_val(&control) as _,
+        msg_flags: 0,
+    };
     // SAFETY: correctly sized aligned control/data buffers and live socket.
     // macOS has no MSG_CMSG_CLOEXEC: each descriptor is marked close-on-exec as it is taken.
     #[cfg(target_os = "linux")]

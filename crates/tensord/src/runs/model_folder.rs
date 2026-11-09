@@ -36,7 +36,7 @@ impl Staging {
         lease.write_all(LEASE.as_bytes())?;
         lease.sync_all()?;
         platform::durable::sync_dir(temporary.path())?;
-        let root = parent.join(uuid::Uuid::new_v4().simple().to_string());
+        let root = parent.join(crate::uuid::simple());
         fs::rename(temporary.path(), &root)?;
         let _ = temporary.keep();
         let staging = Self { root, lease: Some(lease) };

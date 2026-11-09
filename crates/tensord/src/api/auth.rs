@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use protocol::error::Error;
-use tokio_stream::Stream;
+use futures_util::Stream;
 
 #[derive(Clone)]
 pub struct Authority {

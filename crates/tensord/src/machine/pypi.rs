@@ -7,10 +7,9 @@ use std::{
     sync::Arc,
 };
 
-use async_trait::async_trait;
 use tensorfs::{
     err::{refuse, Code, Refusal, Result},
-    fetch::{policy::is_loopback_origin, Location, Origin},
+    fetch::{policy::is_loopback_origin, Boxed, Location, Origin},
     format::ObjectRef,
 };
 
@@ -177,10 +176,9 @@ fn fetch(machine: &Machine, url: &str, object: &ObjectRef, trust: Option<Arc<Vec
 /// A file at a fixed URL: the one object it serves.
 struct Url(String);
 
-#[async_trait]
 impl Origin for Url {
-    async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>> {
-        Ok(objects.iter().map(|_| Location::Url { url: self.0.clone(), headers: vec![] }).collect())
+    fn locate<'a>(&'a self, objects: &'a [ObjectRef]) -> Boxed<'a, Result<Vec<Location>>> {
+        Box::pin(async move { Ok(objects.iter().map(|_| Location::Url { url: self.0.clone(), headers: vec![] }).collect()) })
     }
 
     fn public(&self) -> bool {

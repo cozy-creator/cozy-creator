@@ -386,9 +386,7 @@ impl LocalListener {
             None => instance(&self.name, false, &self.security).map_err(Error::os("listen"))?,
         };
         let signal = event().map_err(Error::os("accept"))?;
-        // SAFETY: plain-old-data with its event set.
-        let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
-        overlapped.hEvent = raw(&signal);
+        let mut overlapped = OVERLAPPED { hEvent: raw(&signal), ..Default::default() };
         // SAFETY: a live pipe instance and an OVERLAPPED that outlives the wait below.
         let connected = unsafe { ConnectNamedPipe(raw(&pipe), &mut overlapped) } != 0;
         let error = io::Error::last_os_error();
@@ -450,9 +448,7 @@ pub fn pair() -> Result<(LocalStream, LocalStream)> {
     let server = instance(&name, true, &security).map_err(Error::os("pair"))?;
     let client = dial(&name).map_err(Error::os("pair"))?;
     let signal = event().map_err(Error::os("pair"))?;
-    // SAFETY: plain-old-data with its event set.
-    let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
-    overlapped.hEvent = raw(&signal);
+    let mut overlapped = OVERLAPPED { hEvent: raw(&signal), ..Default::default() };
     // SAFETY: a live pipe instance whose dialer has already connected, and an OVERLAPPED that
     // outlives any wait for it.
     if unsafe { ConnectNamedPipe(raw(&server), &mut overlapped) } == 0 {
@@ -552,9 +548,7 @@ fn transfer(
     waits: Option<u32>,
     start: impl FnOnce(*mut OVERLAPPED) -> i32,
 ) -> io::Result<u32> {
-    // SAFETY: plain-old-data with its event set.
-    let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
-    overlapped.hEvent = raw(event);
+    let mut overlapped = OVERLAPPED { hEvent: raw(event), ..Default::default() };
     if start(&mut overlapped) == 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {

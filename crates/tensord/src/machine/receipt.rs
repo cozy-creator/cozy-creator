@@ -1,8 +1,6 @@
 //! Readiness: what this machine measured about itself, sealed once under the attempt's key and
 //! carried by Status without a capability. The reader is Tensorhub `internal/podreadiness`.
 use base64::{engine::general_purpose::STANDARD, Engine};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -325,10 +323,10 @@ fn parse(raw: &[u8]) -> io::Result<Envelope> {
 }
 
 fn mac(key: &[u8], payload: &[u8]) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC admits any key size");
+    let mut mac = aws_lc_rs::hmac::Context::with_key(&aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, key));
     mac.update(DOMAIN);
     mac.update(payload);
-    tensorfs::sha256::hex(&mac.finalize().into_bytes())
+    tensorfs::sha256::hex(mac.sign().as_ref())
 }
 
 /// The boot id the payload names.

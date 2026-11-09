@@ -107,7 +107,7 @@ impl From<Body> for reqwest::Body {
             Body::Bytes(bytes) => return bytes.into(),
             Body::File { file, length, sent } => (tokio::fs::File::from_std(file), length, sent),
         };
-        let frames = futures::stream::unfold((file, length), move |(mut file, left)| {
+        let frames = futures_util::stream::unfold((file, length), move |(mut file, left)| {
             let sent = sent.clone();
             async move {
                 if left == 0 {

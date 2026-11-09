@@ -16,10 +16,7 @@ pub fn device_link(device: i32) -> Option<Link> {
 
 /// CUDA device `device`'s PCI address as sysfs names it (`0000:65:00.0`).
 pub(crate) fn pci_address(device: i32) -> Option<String> {
-    let d = cuda::driver().ok()?;
-    let mut dev = 0;
-    // SAFETY: driver out-param; an invalid ordinal returns an error.
-    cuda::check("cuDeviceGet", unsafe { (d.device_get)(&mut dev, device) }).ok()?;
+    let dev = cuda::device_at(device).ok()?;
     let attr = |a| cuda::attribute(dev, a).ok();
     Some(format!(
         "{:04x}:{:02x}:{:02x}.0",
@@ -48,10 +45,7 @@ pub fn h2d(device: i32) -> Option<(f64, u32)> {
 
 /// A GPU's ceiling key: its UUID and the driver.
 pub(super) fn h2d_key(device: i32) -> Option<String> {
-    let d = cuda::driver().ok()?;
-    let mut dev = 0;
-    // SAFETY: driver out-param; an invalid ordinal returns an error.
-    cuda::check("cuDeviceGet", unsafe { (d.device_get)(&mut dev, device) }).ok()?;
+    let dev = cuda::device_at(device).ok()?;
     let driver = std::fs::read_to_string("/sys/module/nvidia/version").unwrap_or_default();
     Some(format!("h2d {} {}", cuda::uuid(dev).ok()?, driver.trim()))
 }

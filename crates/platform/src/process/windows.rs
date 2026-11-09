@@ -490,8 +490,7 @@ pub(super) fn peak_resident() -> io::Result<u64> {
         ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
         Threading::GetCurrentProcess,
     };
-    // SAFETY: plain-old-data; all-zero is a valid value.
-    let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { mem::zeroed() };
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
     let size = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
     // SAFETY: the current process's pseudo-handle, which needs no closing, and a writable struct
     // of the `size` passed.
@@ -551,9 +550,7 @@ fn snapshot() -> io::Result<Vec<(u32, u32)>> {
         return Err(io::Error::last_os_error());
     }
     let snapshot = owned(snapshot)?;
-    // SAFETY: plain-old-data with its size set, as the call requires.
-    let mut entry: PROCESSENTRY32W = unsafe { mem::zeroed() };
-    entry.dwSize = mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut entry = PROCESSENTRY32W { dwSize: mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
     // SAFETY: a live snapshot and an entry sized above.
     let mut more = unsafe { Process32FirstW(raw(&snapshot), &mut entry) } != 0;
     let mut table = vec![];

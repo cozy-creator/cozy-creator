@@ -17,7 +17,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use axum::{
     Json,
     body::Bytes,
@@ -59,13 +58,14 @@ const TICK: Duration = Duration::from_secs(5);
 /// A signed-in client's Bearer on each request.
 struct Signed(Client);
 
-#[async_trait]
 impl TokenProvider for Signed {
-    async fn headers(&self, _: &Request<'_>) -> tensorfs::err::Result<Vec<(String, String)>> {
-        let Credential::User(session) = self.0.credential() else { unreachable!("a signed-in client") };
-        let bearer = session.bearer(&self.0.anonymous()).await;
-        let bearer = bearer.map_err(|e| Failed { code: Code::CREDENTIAL_REQUIRED, detail: e.to_string() })?;
-        Ok(vec![("authorization".into(), format!("Bearer {}", bearer.token))])
+    fn headers<'a>(&'a self, _: &'a Request<'a>) -> fetch::Boxed<'a, tensorfs::err::Result<Vec<(String, String)>>> {
+        Box::pin(async move {
+            let Credential::User(session) = self.0.credential() else { unreachable!("a signed-in client") };
+            let bearer = session.bearer(&self.0.anonymous()).await;
+            let bearer = bearer.map_err(|e| Failed { code: Code::CREDENTIAL_REQUIRED, detail: e.to_string() })?;
+            Ok(vec![("authorization".into(), format!("Bearer {}", bearer.token))])
+        })
     }
 }
 

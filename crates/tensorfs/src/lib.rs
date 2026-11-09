@@ -41,7 +41,7 @@ pub mod raw;
 mod session;
 #[cfg(feature = "store")]
 pub use session::{
-    bearer, Checkpoint, CheckpointFile, Client, Component, ComponentWriter, Config, Convert,
+    bearer, Boxed, Checkpoint, CheckpointFile, Client, Component, ComponentWriter, Config, Convert,
     ConversionControl, ConvertProgress, Download, Endpoint, Fetched, Format, HeaderMap, Open, Progress,
     Read, ReadInto, Ref, Request, Selection, TokenProvider, Writer, WriterOptions,
 };

@@ -49,6 +49,33 @@ pub fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
+/// Puts a copy of the program `new` at `target`, with `target`'s permissions, also while `target`
+/// runs: the running process keeps its old file. On Windows, where a running program's file can be
+/// renamed but not removed, the old one moves aside to `.<name>.old` until the next replacement.
+pub fn replace_program(target: &Path, new: &Path) -> io::Result<()> {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = target.with_file_name(format!(".{name}.swap"));
+    let placed = (|| {
+        fs::copy(new, &temp)?;
+        if let Ok(meta) = fs::metadata(target) {
+            fs::set_permissions(&temp, meta.permissions())?;
+        }
+        if cfg!(windows) {
+            let aside = target.with_file_name(format!(".{name}.old"));
+            match fs::remove_file(&aside) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+            rename_over(target, &aside)?;
+        }
+        rename_over(&temp, target)
+    })();
+    if placed.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    placed
+}
+
 /// Replaces `path` with `bytes`: a reader sees the old file or the new one, never a part, and after
 /// this returns a crash keeps the new one. `mode` is the Unix permission; Windows keeps the
 /// profile's ACL, and has no directory to sync: the rename is atomic in NTFS's journal.
@@ -402,8 +429,7 @@ impl FileId {
             use windows_sys::Win32::Storage::FileSystem::{
                 BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
             };
-            // SAFETY: plain-old-data; all-zero is a valid value.
-            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
             // SAFETY: a handle this File owns and keeps open, and the struct the call fills.
             if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
                 return Err(io::Error::last_os_error().into());
@@ -506,8 +532,7 @@ pub fn links(path: &Path) -> Result<u64> {
             BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
         };
         let file = itself(path)?;
-        // SAFETY: plain-old-data; all-zero is a valid value.
-        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: a handle this File owns and keeps open, and the struct the call fills.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
             return Err(io::Error::last_os_error().into());
@@ -552,8 +577,7 @@ pub fn changed(path: &Path) -> Result<std::time::SystemTime> {
             FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx,
         };
         let file = itself(path)?;
-        // SAFETY: plain-old-data; all-zero is a valid value.
-        let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+        let mut info = FILE_BASIC_INFO::default();
         let size = std::mem::size_of::<FILE_BASIC_INFO>() as u32;
         // SAFETY: a handle this File owns and keeps open; FileBasicInfo fills a FILE_BASIC_INFO,
         // and `size` is that struct's size.

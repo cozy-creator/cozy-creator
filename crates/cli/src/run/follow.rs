@@ -13,7 +13,6 @@ use std::{
 };
 
 use protocol::names::shown;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use protocol::{
     calcifer::{
         Adjustment, EtaBasis, Event, Machine, MachineState, NoteLevel, On, OutputItem, Progress, Run, RunQuote,
@@ -485,7 +484,7 @@ fn item_name(item: &OutputItem) -> String {
 
 /// The live view: one line redrawn in place on a terminal; sparse appended lines elsewhere.
 struct View {
-    bar: Option<ProgressBar>,
+    bar: Option<crate::progress::Line>,
     term: output::Term,
     /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
     /// minutes it had made no progress.
@@ -513,13 +512,10 @@ impl View {
     fn new(ctx: &Context, run: &Run) -> Self {
         output::say(ctx, &format!("run {} · {}", run.name(), run.target));
         let bar = (!ctx.json && ctx.term.stderr).then(|| {
-            let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
-            bar.set_style(
-                ProgressStyle::with_template("{spinner} {msg} {wide_bar} {elapsed}")
-                    .expect("a template")
-                    .progress_chars("━╸ "),
-            );
-            bar.enable_steady_tick(Duration::from_millis(120));
+            let bar = crate::progress::Line::stderr(true, None, |s| {
+                format!("{} {} {} {}", s.spinner(), s.msg(), crate::progress::WIDE_BAR, s.elapsed())
+            });
+            bar.steady(Duration::from_millis(120));
             bar
         });
         let mut view = Self {

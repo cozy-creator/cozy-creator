@@ -1763,7 +1763,7 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
 /// `card` kept beside the environment at `generation` for the release's later environments.
 /// A cache, written by rename and never synced: one lost is read from the Hub again.
 fn keep_card(generation: &Path, card: &Card) {
-    let staged = generation.join(format!(".{CARD}.{}", uuid::Uuid::new_v4().simple()));
+    let staged = generation.join(format!(".{CARD}.{}", crate::uuid::simple()));
     let kept = serde_json::to_vec(card).map_err(io::Error::other)
         .and_then(|bytes| fs::write(&staged, bytes))
         .and_then(|()| fs::rename(&staged, generation.join(CARD)));

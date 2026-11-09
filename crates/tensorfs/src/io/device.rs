@@ -169,7 +169,7 @@ impl Drop for Slot {
 /// is allocated there: on a two-socket EPYC, readers and slots left to the scheduler measured
 /// 64-94% of the H2D ceiling from run to run, kept local 92-94%.
 #[derive(Clone, Copy)]
-struct Near(#[cfg(target_os = "linux")] Option<libc::cpu_set_t>);
+struct Near(#[cfg(target_os = "linux")] Option<rustix::thread::CpuSet>);
 
 impl Near {
     #[cfg(target_os = "linux")]
@@ -177,29 +177,21 @@ impl Near {
         let list = super::metrics::pci_address(device).and_then(|pci| {
             std::fs::read_to_string(format!("/sys/bus/pci/devices/{pci}/local_cpulist")).ok()
         });
-        // SAFETY: plain C structs and calls on this thread's own mask.
-        unsafe {
-            let (mut allowed, mut near): (libc::cpu_set_t, libc::cpu_set_t) =
-                (std::mem::zeroed(), std::mem::zeroed());
-            if list.is_none()
-                || libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut allowed)
-                    != 0
-            {
+        use rustix::thread::CpuSet;
+        let (Some(list), Ok(allowed)) = (list, rustix::thread::sched_getaffinity(None)) else {
+            return Near(None);
+        };
+        let mut near = CpuSet::new();
+        for range in list.trim().split(',') {
+            let (lo, hi) = range.split_once('-').unwrap_or((range, range));
+            let (Ok(lo), Ok(hi)) = (lo.parse::<usize>(), hi.parse::<usize>()) else {
                 return Near(None);
+            };
+            for cpu in (lo..=hi).filter(|&cpu| cpu < CpuSet::MAX_CPU && allowed.is_set(cpu)) {
+                near.set(cpu);
             }
-            for range in list.as_deref().unwrap_or_default().trim().split(',') {
-                let (lo, hi) = range.split_once('-').unwrap_or((range, range));
-                let (Ok(lo), Ok(hi)) = (lo.parse::<usize>(), hi.parse::<usize>()) else {
-                    return Near(None);
-                };
-                for cpu in (lo..=hi).filter(|&cpu| {
-                    cpu < libc::CPU_SETSIZE as usize && libc::CPU_ISSET(cpu, &allowed)
-                }) {
-                    libc::CPU_SET(cpu, &mut near);
-                }
-            }
-            Near((libc::CPU_COUNT(&near) > 0).then_some(near))
         }
+        Near((near.count() > 0).then_some(near))
     }
     #[cfg(not(target_os = "linux"))]
     fn of(_: i32) -> Near {
@@ -209,8 +201,7 @@ impl Near {
     fn enter(&self) {
         #[cfg(target_os = "linux")]
         if let Some(set) = &self.0 {
-            // SAFETY: a valid mask for the calling thread.
-            unsafe { libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set) };
+            let _ = rustix::thread::sched_setaffinity(None, set);
         }
     }
 }

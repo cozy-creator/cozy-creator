@@ -21,6 +21,7 @@ mod open;
 mod org;
 pub mod output;
 mod package;
+mod progress;
 mod project;
 mod run;
 mod send;

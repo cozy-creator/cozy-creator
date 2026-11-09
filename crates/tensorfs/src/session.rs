@@ -21,7 +21,7 @@ pub use convert::{ConversionControl, Convert, ConvertProgress};
 pub use quantize::{FitDetails, Normalization, NormalizationResult, NormalizeBf16Tensor, Quantization, QuantizationResult, QuantizedTensor, QuantizeFit, QuantizeTensor, quantization_implementation};
 pub use endpoint::Endpoint;
 pub use file::CheckpointFile;
-pub use provider::{bearer, HeaderMap, Request, TokenProvider};
+pub use provider::{bearer, Boxed, HeaderMap, Request, TokenProvider};
 pub use writer::{ComponentWriter, PartData, Writer, WriterOptions};
 
 use std::fmt;
