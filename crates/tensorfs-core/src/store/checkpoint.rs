@@ -224,7 +224,7 @@ impl Checkpoint {
             .clone()
     }
 
-    pub(crate) fn pipeline(&self) -> Option<&Pipeline> {
+    pub fn pipeline(&self) -> Option<&Pipeline> {
         self.header.pipeline()
     }
 
