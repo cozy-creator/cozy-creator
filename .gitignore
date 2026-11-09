@@ -6,7 +6,7 @@ dist/
 node_modules/
 *.egg-info/
 *.exe
-crates/tensorfs-core/kernels/aot/
+crates/tensorfs/kernels/aot/
 
 # Agent task and ownership notes stay out of history
 .task/

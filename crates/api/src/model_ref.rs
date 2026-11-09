@@ -55,7 +55,7 @@ fn slug(part: &str) -> bool {
 
 /// A release or lane label: alphanumeric first, then up to 63 of `A-Za-z0-9._+!-`.
 pub fn label(flag: &str, value: &str) -> Result<String, Error> {
-    match tensorfs_core::format::label(value) {
+    match tensorfs::format::label(value) {
         true => Ok(value.to_owned()),
         false => Err(usage(
             "model_label_invalid",

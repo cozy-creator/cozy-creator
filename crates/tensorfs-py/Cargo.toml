@@ -17,8 +17,7 @@ executor-api = { workspace = true, features = ["python"] }
 varena.workspace = true
 libc.workspace = true
 platform.workspace = true
-tensorfs = { workspace = true, features = ["cuda"] }
-tensorfs-core.workspace = true
+tensorfs = { workspace = true, features = ["net", "cuda"] }
 pyo3 = "0.29.2"
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -23,7 +23,7 @@ pub(crate) struct PyCeiling {
 fn ceiling(py: Python<'_>, device: Option<i32>, path: Option<PathBuf>) -> PyResult<PyCeiling> {
     let path = match path {
         Some(path) => path,
-        None => tensorfs_core::home::resolve(None).map_err(|r| crate::errors::raise(py, r.into()))?,
+        None => tensorfs::home::resolve(None).map_err(|r| crate::errors::raise(py, r.into()))?,
     };
     let c = py.detach(|| tensorfs::io::ceiling(device, &path)).map_err(|e| {
         let kind = if e.kind() == std::io::ErrorKind::Unsupported { Kind::Unsupported } else { Kind::Io };

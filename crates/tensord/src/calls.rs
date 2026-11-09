@@ -956,7 +956,7 @@ fn receive(
 /// A child call's intent: its callable and its input, numbers exact.
 fn child_intent(module: &str, export: &str, input: &Value) -> String {
     let semantic = crate::boundary_json::exact(&json!([module, export, input]));
-    format!("sha256:{}", tensorfs_core::sha256::hex_digest(&semantic))
+    format!("sha256:{}", tensorfs::sha256::hex_digest(&semantic))
 }
 
 

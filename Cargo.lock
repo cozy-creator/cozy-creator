@@ -103,7 +103,7 @@ dependencies = [
  "serde_path_to_error",
  "sha2",
  "tempfile",
- "tensorfs-core",
+ "tensorfs",
  "thiserror 2.0.21",
  "toml",
  "ts-rs",
@@ -3796,7 +3796,6 @@ dependencies = [
  "str0m",
  "tempfile",
  "tensorfs",
- "tensorfs-core",
  "tokio",
  "tokio-rustls",
  "toml",
@@ -3815,27 +3814,8 @@ dependencies = [
  "aws-lc-rs",
  "base64",
  "bytes",
- "futures-util",
- "libc",
- "platform",
- "reqwest",
- "rustix",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "tensorfs-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "webpki-roots",
-]
-
-[[package]]
-name = "tensorfs-core"
-version = "0.22.0"
-dependencies = [
  "faer",
+ "futures-util",
  "libc",
  "libloading 0.9.0",
  "pep440_rs",
@@ -3845,13 +3825,18 @@ dependencies = [
  "rand_chacha",
  "rand_distr",
  "rayon",
+ "reqwest",
  "rustix",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
  "varena",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -3866,7 +3851,6 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "tensorfs",
- "tensorfs-core",
  "tracing",
  "tracing-subscriber",
  "varena",

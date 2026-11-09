@@ -22,7 +22,7 @@ use std::{
 };
 use crate::{cas::Cas, stop::Stop};
 use tensorfs::format::ObjectRef;
-use tensorfs_core::sha256;
+use tensorfs::sha256;
 
 /// The manifest object (JSON). Members are objects the same signer wrote.
 #[derive(Deserialize)]
@@ -552,7 +552,7 @@ impl LocalSources {
 pub(crate) fn alias(publisher: &Publisher, digest: &str) -> String {
     let sdk = &publisher.sdk;
     let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": publisher.torch_pins(None)});
-    format!("local-{}", &tensorfs_core::sha256::hex_digest(key.to_string().as_bytes())[..32])
+    format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32])
 }
 
 /// The other Apps `environment` holds, by `packages` (distribution -> package): described once

@@ -22,7 +22,7 @@ use std::{
 };
 use crate::reclaim::Disk;
 use tensorfs::format::ObjectRef;
-use tensorfs_core::sha256;
+use tensorfs::sha256;
 
 /// The largest memoized result record this machine holds for reuse.
 const MEMO_RESULT_BYTES: usize = 48 << 10;

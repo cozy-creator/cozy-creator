@@ -165,7 +165,7 @@ impl Grant {
             },
         };
         let store = match (&raw.store, rental) {
-            (None, false) => Some(tensorfs_core::home::resolve(None).map_err(|e| invalid(&e.to_string()))?),
+            (None, false) => Some(tensorfs::home::resolve(None).map_err(|e| invalid(&e.to_string()))?),
             (named, _) => named.clone(),
         };
         let idle_ms = match raw.idle_seconds {

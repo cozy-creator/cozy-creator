@@ -20,7 +20,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use tensorfs::format::ObjectRef;
-use tensorfs_core::sha256;
+use tensorfs::sha256;
 
 const MAX_PARTS: usize = 128;
 

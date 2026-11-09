@@ -326,7 +326,7 @@ fn mac(key: &[u8], payload: &[u8]) -> String {
     let mut mac = aws_lc_rs::hmac::Context::with_key(&aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, key));
     mac.update(DOMAIN);
     mac.update(payload);
-    tensorfs_core::sha256::hex(mac.sign().as_ref())
+    tensorfs::sha256::hex(mac.sign().as_ref())
 }
 
 /// The boot id the payload names.

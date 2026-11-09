@@ -29,7 +29,7 @@ use crate::{
     stop::Stop,
     storage::{self, Store},
 };
-use tensorfs_core::sha256;
+use tensorfs::sha256;
 use tensorfs::{
     err::Refusal,
     fetch::{Hardware, Landed, Progress as Counted},

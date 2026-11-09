@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$(uname -s)" != Darwin ]; then
-    if [ ! -f ../tensorfs-core/kernels/aot/catalog.rs ]; then
+    if [ ! -f ../tensorfs/kernels/aot/catalog.rs ]; then
         uv run --no-project --python 3.12 --with triton==3.8.0 python kernels/build.py
     fi
     export TENSORFS_REQUIRE_AOT=1

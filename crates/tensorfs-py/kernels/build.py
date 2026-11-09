@@ -29,7 +29,7 @@ STAGES = ("unpack", "regular_h4", "rotated", "requantize", "grouped_rotated", "c
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path(__file__).parents[2] / "tensorfs-core/kernels/aot")
+    parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path(__file__).parents[2] / "tensorfs/kernels/aot")
     parser.add_argument("--family", type=int, nargs="+", choices=FAMILIES, default=FAMILIES)
     args = parser.parse_args()
     out = args.out.resolve()

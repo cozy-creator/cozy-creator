@@ -28,6 +28,7 @@ pub struct Checkpoint {
     header: Arc<Header>,
     /// Each chunk's index and length by digest, built once for every read source of this open.
     chunk_index: Arc<OnceLock<Arc<BTreeMap<String, (u64, usize)>>>>,
+    #[cfg_attr(not(feature = "net"), allow(dead_code))]
     header_file: Option<PathBuf>,
     _hold: Option<Arc<Hold>>,
 }
@@ -146,6 +147,7 @@ impl Checkpoint {
         &self.id
     }
 
+    #[cfg(feature = "net")]
     pub(crate) fn verification_file(&self, object: &ObjectRef) -> Result<File> {
         if let (Some(path), true) = (&self.header_file, object == &self.id) {
             return File::open(path).map_err(fail("open", path));
@@ -395,6 +397,7 @@ fn absent(component: &str, key: &str) -> super::Error {
 }
 
 /// A folder's copy of `object`, when it has one of its length.
+#[cfg(feature = "net")]
 fn verification_open(path: &Path) -> Result<Option<File>> {
     match File::open(path) {
         Ok(file) => Ok(Some(file)),

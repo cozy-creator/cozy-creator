@@ -181,14 +181,14 @@ pub fn quantization_implementation() -> String {
         include_str!("quantize_fit.rs"),
         include_str!("quantize_bf16.rs"),
         include_str!("writer.rs"),
-        include_str!("../../../tensorfs-core/src/writer.rs"),
-        include_str!("../../../tensorfs-core/src/format/decode/elem.rs"),
-        include_str!("../../../tensorfs-core/src/format/decode/mod.rs"),
-        include_str!("../../../tensorfs-core/src/format/decode/plan.rs"),
-        include_str!("../../../tensorfs-core/src/format/decode/fp8.rs"),
-        include_str!("../../../tensorfs-core/src/format/decode/int8.rs"),
-        include_str!("../../../tensorfs-core/src/format/decode/affine.rs"),
-        include_str!("../../../tensorfs-core/src/format/decode/grid.rs"),
+        include_str!("../writer.rs"),
+        include_str!("../format/decode/elem.rs"),
+        include_str!("../format/decode/mod.rs"),
+        include_str!("../format/decode/plan.rs"),
+        include_str!("../format/decode/fp8.rs"),
+        include_str!("../format/decode/int8.rs"),
+        include_str!("../format/decode/affine.rs"),
+        include_str!("../format/decode/grid.rs"),
     ] {
         hash.update(&(source.len() as u64).to_le_bytes());
         hash.update(source.as_bytes());
