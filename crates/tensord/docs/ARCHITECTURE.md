@@ -113,7 +113,7 @@ code is still not sandboxed.
 | `reclaim.rs` | Self-managing caches: TTL and storage pressure for spools, logs, collected results, generations | `Disk`, `Swept`, `sweep` | E |
 | `child_launcher.rs` | Pool-owned spawn thread (PDEATHSIG follows the creating thread) | `ChildLauncher` | E |
 | `os.rs` | memfd, seals, peer credentials (`SO_PEERPIDFD`, `pidfd_open` fallback), pidfd exit | — | E |
-| `protocol.rs` | Length-prefixed frames of the executor seam | `read_body`, `write_body` | E |
+| `seam.rs` | Length-prefixed frames of the executor seam | `read_body`, `write_body` | E |
 | `boundary_json.rs` | Strict JSON parse (no duplicate keys) for boundary records | — | D1 |
 
 
