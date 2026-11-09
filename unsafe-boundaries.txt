@@ -33,6 +33,7 @@ crates/tensorfs-py/src/varena/phase.rs
 crates/tensorfs-py/src/varena/refill.rs
 crates/tensorfs-py/src/varena/refill/raw.rs
 crates/tensorfs-py/src/varena/stage_continuation.rs
+crates/tensorfs-py/src/varena/staging.rs
 crates/tensorfs-py/src/varena/tensor_export.rs
 crates/tensorfs-py/src/varena/working.rs
 crates/tensorfs/src/fetch/mod.rs
