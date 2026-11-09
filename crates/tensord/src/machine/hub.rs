@@ -1,22 +1,19 @@
-//! The Hub's worker API as this machine (hub-client, the worker credential), HTTPS to the
+//! The Hub's worker API as this machine (`api::hub`, the worker credential), HTTPS to the
 //! granted origin (public roots plus the granted CA): rental authority, the endpoint and speed
 //! reports and release.
 use super::grant::HubGrant;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::VerifyingKey;
-use hub_client::{types, Credential};
+use ::api::hub::{types, Credential};
 use std::{
     io,
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
 
-/// A bounded transport budget per call, never a limit on any work.
-const CALL_BUDGET: Duration = Duration::from_secs(30);
-
 pub(crate) struct Hub {
     grant: HubGrant,
-    client: hub_client::Client,
+    client: ::api::hub::Client,
     /// When the Hub last answered anything (0: never in this process).
     contact_ms: AtomicI64,
 }
@@ -42,7 +39,7 @@ impl Hub {
             token: grant.worker_token.clone(),
         };
         Ok(Self {
-            client: hub_client::Client::connect(&grant.origin, http, credential),
+            client: ::api::hub::Client::connect(&grant.origin, http, credential),
             grant,
             contact_ms: AtomicI64::new(0),
         })
@@ -53,26 +50,13 @@ impl Hub {
         self.contact_ms.load(Ordering::Acquire)
     }
 
-    /// One call within the budget.
-    async fn call<T>(
-        &self,
-        call: impl std::future::Future<Output = Result<T, hub_client::Error>>,
-    ) -> Result<T, hub_client::Error> {
-        match tokio::time::timeout(CALL_BUDGET, call).await {
-            Ok(answer) => answer,
-            Err(_) => Err(hub_client::Error::Call(
-                "Tensorhub did not answer within its call budget".into(),
-            )),
-        }
-    }
-
     /// An answer, or a refusal the Hub made, is contact. An unreachable Hub is not, nor a proxy's
     /// page in its place (`http_<status>`, no Hub envelope: `no available server` when it is down),
     /// so a pod still ends itself through the outage that page stands for.
-    fn heard<T>(&self, answer: Result<T, hub_client::Error>) -> Result<T, Refusal> {
+    fn heard<T>(&self, answer: Result<T, ::api::hub::Error>) -> Result<T, Refusal> {
         let contact = match &answer {
             Ok(_) => true,
-            Err(hub_client::Error::Hub { code, .. }) => !code.starts_with("http_"),
+            Err(::api::hub::Error::Hub { code, .. }) => !code.starts_with("http_"),
             Err(_) => false,
         };
         if contact {
@@ -80,12 +64,12 @@ impl Hub {
                 .store(super::lifecycle::now_ms(), Ordering::Release);
         }
         answer.map_err(|error| match error {
-            hub_client::Error::Hub { status: 401, code, .. } if code == "worker.ended" => Refusal::Ended,
-            hub_client::Error::Hub {
+            ::api::hub::Error::Hub { status: 401, code, .. } if code == "worker.ended" => Refusal::Ended,
+            ::api::hub::Error::Hub {
                 status: 401 | 403, ..
             } => Refusal::Denied,
-            hub_client::Error::Hub { status: 425, .. } => Refusal::NotReady,
-            hub_client::Error::Call(why) => Refusal::Transport(format!("reach Tensorhub: {why}"), None),
+            ::api::hub::Error::Hub { status: 425, .. } => Refusal::NotReady,
+            ::api::hub::Error::Call(why) => Refusal::Transport(format!("reach Tensorhub: {why}"), None),
             other => {
                 let wait = other.stated_wait();
                 Refusal::Transport(other.to_string(), wait)
@@ -95,7 +79,7 @@ impl Hub {
 
     /// The rental's current authorized keys and their lease.
     pub(crate) async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration), Refusal> {
-        let answer = self.call(self.client.get_worker_authorized_keys()).await;
+        let answer = self.client.get_worker_authorized_keys().await;
         let document = self.heard(answer)?;
         let invalid = || Refusal::Transport("rental authority metadata is invalid".into(), None);
         if document.worker_id != self.grant.worker_id
@@ -129,7 +113,7 @@ impl Hub {
                 .map(|(private, public)| (private.clone(), *public))
                 .collect(),
         };
-        let answer = self.call(self.client.report_worker_endpoint(&report)).await;
+        let answer = self.client.report_worker_endpoint(&report).await;
         self.heard(answer)
     }
 
@@ -141,15 +125,15 @@ impl Hub {
         cpu: Option<types::WorkerProbe>,
     ) -> Result<(), Refusal> {
         let report = types::WorkerSpeedReport { worker_id: self.grant.worker_id.clone(), download, cpu };
-        match self.call(self.client.report_worker_speed(&report)).await {
-            Err(hub_client::Error::Hub { status: 404, .. }) => Ok(()),
+        match self.client.report_worker_speed(&report).await {
+            Err(::api::hub::Error::Hub { status: 404, .. }) => Ok(()),
             answer => self.heard(answer),
         }
     }
 
     /// Ends this rental's allocation; acceptance is the Hub's 204.
     pub(crate) async fn release(&self) -> Result<(), Refusal> {
-        let answer = self.call(self.client.release_worker_rental(&self.grant.worker_id)).await;
+        let answer = self.client.release_worker_rental(&self.grant.worker_id).await;
         self.heard(answer)
     }
 }

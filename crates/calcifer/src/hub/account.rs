@@ -15,7 +15,7 @@ use axum::{
         rejection::{BytesRejection, QueryRejection},
     },
 };
-use hub_client::{Bearer, Client, Credential, DeviceKey, Enrollment, UserSession};
+use ::api::hub::{Bearer, Client, Credential, DeviceKey, Enrollment, UserSession};
 use api::{
     config::Origin,
     error::{Error, Kind},
@@ -183,7 +183,7 @@ pub(super) async fn send_code(
         Ok(enrollment) => enrollment,
         Err(e) => {
             // Asked again too soon: the code already out still works, so that's the answer.
-            let out = matches!(e, hub_client::Error::Hub { status: 429, .. }).then(|| api.codes.sent_to(&hub, ask.purpose, &email));
+            let out = matches!(e, ::api::hub::Error::Hub { status: 429, .. }).then(|| api.codes.sent_to(&hub, ask.purpose, &email));
             let Some((id, _)) = out.and_then(|mut codes| (!codes.is_empty()).then(|| codes.remove(0))) else {
                 return Err(refusal(&hub, e));
             };
@@ -195,8 +195,8 @@ pub(super) async fn send_code(
 }
 
 /// The Hub's word that this isn't the code: 401, which isn't this computer's sign-in failing.
-fn wrong_code(error: &hub_client::Error) -> bool {
-    matches!(error, hub_client::Error::Hub { status: 401, code, .. } if code == "invalid_code" || code == "code_expired")
+fn wrong_code(error: &::api::hub::Error) -> bool {
+    matches!(error, ::api::hub::Error::Hub { status: 401, code, .. } if code == "invalid_code" || code == "code_expired")
 }
 
 /// `POST /v1/account/codes/{id}`: what arrived, which does what the code was sent for. Either of
@@ -255,8 +255,8 @@ pub(super) async fn step(
 
 /// A refusal of a code that names a step of the Hub's own (one with `metadata`) leaves the
 /// enrollment waiting on it, under `id`.
-fn stepped(api: &Api, id: &str, pending: &Arc<Pending>, code: &str, error: hub_client::Error) -> Refusal {
-    if matches!(&error, hub_client::Error::Hub { metadata: Some(_), .. }) {
+fn stepped(api: &Api, id: &str, pending: &Arc<Pending>, code: &str, error: ::api::hub::Error) -> Refusal {
+    if matches!(&error, ::api::hub::Error::Hub { metadata: Some(_), .. }) {
         api.codes.step(id, pending, code);
     }
     refusal(&pending.hub, error)
@@ -276,7 +276,7 @@ async fn finished(api: &Api, hub: &Origin, purpose: Purpose, key: DeviceKey, bea
             key: String::from_utf8(key.document()).expect("a key is JSON"),
         }),
         Purpose::SignOutEverywhere => {
-            let proven = Client::connect(hub, reqwest::Client::new(), Credential::Bearer(bearer.token));
+            let proven = api.machines.hubs.anonymous(hub).map_err(Refusal)?.with(Credential::Bearer(bearer.token));
             proven.revoke_other_device_keys().await.map_err(|e| refusal(hub, e))?;
             Proven::SignOutEverywhere(erase(api, hub, true).await?)
         }

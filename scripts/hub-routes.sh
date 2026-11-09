@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Every route hub-client calls (`Method::<VERB>, "<path>"`) is one Tensorhub's API document has, by method and path,
+# Every route `api::hub` calls (`Method::<VERB>, "<path>"`) is one Tensorhub's API document has, by method and path,
 # parameter names aside, and every field its rental types read is in the document's schema (hub-fields, below):
 # scripts/hub-routes.sh <tensorhub api/openapi.yaml>. CI reads the document at check time.
 set -euo pipefail
 shape() { sed -E 's/\{[^}]*\}/{}/g' | sort -u; }
 documented=$(awk '/^  [^ ]/ { path = $1 } /^    (get|put|post|patch|delete):/ { print toupper($1), path }' "$1" |
   tr -d ":\"'" | { grep -E '^[A-Z]+ /' || true; } | shape)
-source=$(cat "$(dirname "$0")"/../crates/hub-client/src/*.rs | tr '\n' ' ')
+source=$(cat "$(dirname "$0")"/../crates/api/src/hub/*.rs | tr '\n' ' ')
 calls=$({ grep -oE '\.at\( *Method::[A-Z]+, *"[^"]*"' <<<"$source" || true; } | sed -E 's/.*Method::([A-Z]+), *"([^"]*)"/\1 \2/')
 [ -n "$documented" ] && [ -n "$calls" ] || { echo "hub-routes: no routes read" >&2; exit 1; }
 # A route not written out where it is called would go unchecked. Client::authkit_step is the one call
@@ -16,12 +16,12 @@ calls=$({ grep -oE '\.at\( *Method::[A-Z]+, *"[^"]*"' <<<"$source" || true; } | 
 called=$(shape <<<"$calls")
 missing=$(comm -23 <(echo "$called") <(echo "$documented"))
 if [ -n "$missing" ]; then
-  printf 'hub-client calls routes api/openapi.yaml does not have:\n%s\n' "$missing" >&2
+  printf '`api::hub` calls routes api/openapi.yaml does not have:\n%s\n' "$missing" >&2
   exit 1
 fi
-echo "hub-routes: $(wc -l <<<"$called") routes hub-client calls, all in api/openapi.yaml"
+echo "hub-routes: $(wc -l <<<"$called") routes `api::hub` calls, all in api/openapi.yaml"
 
-# hub-client's rental types read only fields the document's schema of the same name has (`Type=Schema` where the names
+# `api::hub`'s rental types read only fields the document's schema of the same name has (`Type=Schema` where the names
 # differ): a field the Hub never sends decodes as its default, silently. A struct-level rename or a flatten fails, unread.
 held='RentalRequest RentalFallback RentalDevelopment RentalQuote RentalPriceEstimate RentalSku RentalSkuWidth
   RentalPythonInterpreter RentalListing Rental RentalFailure RentalBoot ReplannedBoot=RentalReplannedBoot
@@ -32,8 +32,8 @@ perl - "$1" "$held" "$undocumented" "$(dirname "$0")/../crates" <<'PERL'
 use strict; use warnings;
 my ($doc, $held, $undocumented, $crates) = @ARGV;
 sub slurp { local (@ARGV, $/) = @_; <> }
-my ($client, $protocol) = map { slurp("$crates/$_") } 'hub-client/src/types.rs', 'api/src/calcifer.rs';
-my %reexported = map { $_ => 1 } (($client =~ /pub(?:\(crate\))? use api::calcifer::\{([^}]*)\}/)[0] // '') =~ /(\w+)/g;
+my ($client, $protocol) = map { slurp("$crates/$_") } 'api/src/hub/types.rs', 'api/src/calcifer.rs';
+my %reexported = map { $_ => 1 } (($client =~ /pub(?:\(crate\))? use crate::calcifer::\{([^}]*)\}/)[0] // '') =~ /(\w+)/g;
 my ($schemas) = slurp($doc) =~ /^  schemas:\n(.*?)(?=^ {0,2}\S|\z)/ms or die "hub-fields: no components.schemas\n";
 my %excused = map { $_ => 1 } split ' ', $undocumented;
 my ($bad, $count) = (0, 0);
@@ -80,5 +80,5 @@ for (split ' ', $held) {
 }
 for (sort keys %excused) { print STDERR "hub-fields: undocumented names $_, which no type reads\n"; $bad = 1 }
 exit 1 if $bad;
-print "hub-fields: $count fields of hub-client's rental types, all in api/openapi.yaml\n";
+print "hub-fields: $count fields of `api::hub`'s rental types, all in api/openapi.yaml\n";
 PERL

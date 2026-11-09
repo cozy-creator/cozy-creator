@@ -12,7 +12,7 @@ use axum::{
     http::StatusCode,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use hub_client::types::ModelCard;
+use ::api::hub::types::ModelCard;
 use api::{
     calcifer::{Run, RunQuote, RunRequest, Submitted},
     config::Origin,
@@ -249,9 +249,9 @@ async fn endpoint(api: &Api, hub: &Origin) -> Result<Endpoint, Refusal> {
 }
 
 /// `hub`'s distribution endpoint as `client`: signed in, trusting the private CA the Hub names (a test Hub's), else what's public.
-pub(super) async fn distribution(client: &hub_client::Client, hub: &Origin) -> Result<Endpoint, Refusal> {
+pub(super) async fn distribution(client: &::api::hub::Client, hub: &Origin) -> Result<Endpoint, Refusal> {
     let mut config = Config::from_env();
-    if let hub_client::Credential::User(session) = client.credential() {
+    if let ::api::hub::Credential::User(session) = client.credential() {
         let ca = (client.get_execution_environment().await).map_err(|e| refusal(hub, e))?.environment.tensorhub_ca_der_b64url;
         let token = (session.bearer(&client.anonymous()).await).map_err(|e| refusal(hub, e))?.token;
         config = Config { token: Some(tensorfs::bearer(token)), ca_der: ca.and_then(|ca| URL_SAFE_NO_PAD.decode(ca.trim()).ok()), ..config };

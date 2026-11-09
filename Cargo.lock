@@ -89,12 +89,16 @@ dependencies = [
 name = "api"
 version = "0.22.0"
 dependencies = [
+ "aws-lc-rs",
  "base64",
  "ed25519-dalek",
  "executor-api",
  "hex",
+ "httpdate",
  "idna_adapter",
+ "percent-encoding",
  "platform",
+ "reqwest",
  "saphyr",
  "saphyr-parser",
  "serde",
@@ -105,7 +109,9 @@ dependencies = [
  "tempfile",
  "tensorfs",
  "thiserror 2.0.21",
+ "tokio",
  "toml",
+ "tracing",
  "ts-rs",
  "url",
 ]
@@ -362,7 +368,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "hex",
- "hub-client",
  "infer",
  "jiff",
  "platform",
@@ -1615,26 +1620,6 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
-name = "hub-client"
-version = "0.22.0"
-dependencies = [
- "api",
- "aws-lc-rs",
- "base64",
- "ed25519-dalek",
- "httpdate",
- "percent-encoding",
- "platform",
- "reqwest",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "hyper"
@@ -3775,7 +3760,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "http-body-util",
- "hub-client",
  "hyper",
  "hyper-util",
  "jiff",

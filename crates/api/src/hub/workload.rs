@@ -19,7 +19,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{Client, Error, types::WorkloadToken};
+use crate::hub::{Client, Error, types::WorkloadToken};
 
 /// The OAuth client every machine redeems capabilities as.
 pub(crate) const CLIENT: &str = "tensord";

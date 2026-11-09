@@ -686,7 +686,7 @@ pub struct RentalQuote {
 }
 
 /// The catalog: Calcifer answers it as the Hub does.
-pub(crate) use api::calcifer::{RentalPriceEstimate, RentalSku};
+pub(crate) use crate::calcifer::{RentalPriceEstimate, RentalSku};
 
 /// One product at one GPU count: sold here, buyable now, or why it is held (`GET /v1/rental-skus/{name}`).
 #[derive(Debug, Default, Deserialize)]

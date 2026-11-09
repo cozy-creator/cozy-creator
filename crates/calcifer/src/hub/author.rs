@@ -15,7 +15,7 @@ use std::{
 };
 
 use futures_util::{StreamExt as _, TryStreamExt as _};
-use hub_client::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
+use ::api::hub::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
 use api::{
     config::Origin,
     error::{Error, Kind},
@@ -194,7 +194,7 @@ fn versions(lock: &str) -> Result<BTreeMap<String, String>, Error> {
 
 /// Whose name a publication takes: the signed-in account's, or with `root` the root namespace's
 /// (first-party; the Hub admits only its admins there).
-async fn publisher(client: &hub_client::Client, root: bool) -> Result<String, Error> {
+async fn publisher(client: &::api::hub::Client, root: bool) -> Result<String, Error> {
     match root {
         true => Ok(api::names::ROOT.to_owned()),
         false => account(client).await,
@@ -452,7 +452,7 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
 /// Sends each file the Hub does not hold to its grant, once per digest, sixteen at once; the bytes
 /// sent.
 async fn upload(files: &[File], grants: &[PackageFileGrant], say: Say<'_>) -> Result<u64, Error> {
-    let http = reqwest::Client::new();
+    let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").build().map_err(|e| refuse("release_upload_failed", e))?;
     let mut digests = std::collections::BTreeSet::new();
     let mut owed = vec![];
     for grant in grants.iter().filter(|g| !g.present) {
@@ -464,10 +464,9 @@ async fn upload(files: &[File], grants: &[PackageFileGrant], say: Say<'_>) -> Re
         };
         owed.push((file.path.clone(), file.local.clone(), target.clone()));
     }
-    let pace = (Duration::from_millis(250), Duration::from_secs(32));
     let sends = owed.into_iter().map(|(path, local, target)| {
         let http = http.clone();
-        async move { put(&http, &path, &local, &target, pace, say).await }
+        async move { put(&http, &path, &local, &target, say).await }
     });
     futures_util::stream::iter(sends)
         .buffer_unordered(16)
@@ -477,20 +476,19 @@ async fn upload(files: &[File], grants: &[PackageFileGrant], say: Say<'_>) -> Re
 
 /// PUTs the file at `local` to a content-addressed `target`, whose signed `If-None-Match: *`
 /// makes a re-send safe. A send that ends with no answer, or with the store's 5xx (transient by
-/// design, as S3's SlowDown), goes again after a pause that doubles from `first` to `ceiling`
-/// and starts over whenever a send carries the body further than any before. It gives up only
-/// when a whole such run passes with no send getting further: the store took nothing more.
+/// design, as S3's SlowDown), goes again by the one retry rule (`tensorfs::fetch::Backoff`): the
+/// count starts over whenever a send carries the body further than any before, and it gives up
+/// only when a whole run of attempts got no further: the store took nothing more.
 /// Another 4xx is final, and 412 is the object already there (0 bytes sent).
 async fn put(
     http: &reqwest::Client,
     path: &str,
     local: &Path,
     target: &PresignedUpload,
-    (first, ceiling): (Duration, Duration),
     say: Say<'_>,
 ) -> Result<u64, Error> {
     let failed = |message: String| Error::new(Kind::Unavailable, "release_upload_failed", message);
-    let (mut furthest, mut pause, mut sends) = (0, first, 0u32);
+    let (mut furthest, mut backoff) = (0, tensorfs::fetch::Backoff::transfer());
     loop {
         let file = tokio::fs::File::open(local).await.map_err(|e| refuse("release_file_unreadable", e))?;
         let length = file.metadata().await.map_err(|e| refuse("release_file_unreadable", e))?.len();
@@ -500,7 +498,6 @@ async fn put(
         for (name, value) in &target.required_headers {
             request = request.header(name, value);
         }
-        sends += 1;
         let why = match request.send().await {
             Ok(answer) => match answer.status().as_u16() {
                 200..=299 => return Ok(length),
@@ -511,20 +508,14 @@ async fn put(
             Err(e) => chain(&e),
         };
         let reached = carried.load(std::sync::atomic::Ordering::Relaxed).min(length);
-        if reached > furthest {
-            (furthest, pause) = (reached, first);
-        } else if pause > ceiling {
-            return Err(failed(format!(
-                "{path}: {why}; {sends} sends, none carrying more than {furthest} of its {length} bytes since a pause of {}s",
-                ceiling.as_secs_f64()
-            )));
-        }
-        say(&format!(
-            "{path}: {why}, after {reached} of {length} bytes; sending it again in {:.2}s",
-            pause.as_secs_f64()
-        ));
+        let further = reached > furthest;
+        furthest = furthest.max(reached);
+        let why = format!("{path}: {why}, after {reached} of {length} bytes");
+        let Some((pause, said)) = backoff.again(&why, further, None) else {
+            return Err(failed(format!("{}, none carrying more than {furthest} bytes", backoff.spent(&why))));
+        };
+        say(&said);
         tokio::time::sleep(pause).await;
-        pause *= 2;
     }
 }
 

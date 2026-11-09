@@ -13,7 +13,7 @@ use axum::{
     extract::{Query, State, rejection::{BytesRejection, QueryRejection}},
 };
 use futures_util::{StreamExt as _, stream};
-use hub_client::cards;
+use ::api::hub::cards;
 use api::{
     calcifer::On,
     config::Origin,

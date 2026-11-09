@@ -15,7 +15,7 @@ use axum::{
     body::Bytes,
     extract::{Path, State, rejection::BytesRejection},
 };
-use hub_client::types::RentalPlacementRequest;
+use ::api::hub::types::RentalPlacementRequest;
 use api::{
     calcifer::{On, ReleaseFrom},
     error::{Error, Kind},

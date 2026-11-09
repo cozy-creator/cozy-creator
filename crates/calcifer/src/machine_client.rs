@@ -431,7 +431,7 @@ fn builder(pin: [u8; 32], alpn: &[&[u8]]) -> reqwest::ClientBuilder {
     let mut tls = tls(Arc::new(Pinned::new(pin)));
     tls.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     // A machine's answer never sends this client anywhere else: a pod is not trusted that far.
-    reqwest::Client::builder()
+    tensorfs::fetch::http(&[]).expect("the webpki roots alone")
         .redirect(reqwest::redirect::Policy::none())
         .tls_backend_preconfigured(tls)
         .tcp_nodelay(true)

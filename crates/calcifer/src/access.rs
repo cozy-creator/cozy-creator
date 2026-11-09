@@ -13,7 +13,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use hub_client::Credential;
+use ::api::hub::Credential;
 use serde_json::json;
 use api::{
     calcifer::Reason,
@@ -319,7 +319,7 @@ pub(crate) fn anonymous_tensorfs(spec: &v1::RunSpec) -> Option<v1::TensorFSOptio
     })
 }
 
-fn hub_denied(origin: &Origin, error: hub_client::Error) -> Denied {
+fn hub_denied(origin: &Origin, error: ::api::hub::Error) -> Denied {
     match hub_refusal(origin, error) {
         error if error.kind == Kind::Unavailable => Denied::Unreachable(error.message),
         error => refused(error),

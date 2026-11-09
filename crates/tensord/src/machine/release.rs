@@ -30,7 +30,7 @@ pub(crate) fn cozy(version: &str, dir: &Path, machine: &Machine, stop: &Stop) ->
 }
 
 fn text(machine: &Machine, stop: &Stop, url: String) -> io::Result<String> {
-    let http = reqwest::Client::builder().user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION"))).build().map_err(io::Error::other)?;
+    let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").read_timeout(tensorfs::fetch::STALL).build().map_err(io::Error::other)?;
     let failed = |e: reqwest::Error| Refusal { code: Code::TRANSFER_FAILED, detail: e.to_string() };
     let asked = url.clone();
     machine

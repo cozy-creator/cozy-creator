@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hub_client::cards::{self, Card};
+use ::api::hub::cards::{self, Card};
 use api::{
     calcifer::{On, ReleaseFrom, Target, TargetFunction},
     code::LocalCode,

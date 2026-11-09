@@ -80,7 +80,7 @@ fn selected(plan: &str, distribution: &str, version: &str) -> io::Result<Artifac
 pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
     #[derive(serde::Deserialize)]
     struct Release { tag_name: String, #[serde(default)] draft: bool }
-    let http = reqwest::Client::builder().user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION"))).build().map_err(io::Error::other)?;
+    let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").read_timeout(tensorfs::fetch::STALL).build().map_err(io::Error::other)?;
     let read = |url: String| {
         let http = http.clone();
         machine.block(stop, async move {
@@ -187,13 +187,9 @@ impl Origin for Url {
 }
 
 fn client(bundle: Option<&[u8]>) -> io::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS));
-    if let Some(pem) = bundle {
-        for certificate in reqwest::Certificate::from_pem_bundle(pem).map_err(io::Error::other)? {
-            builder = builder.add_root_certificate(certificate);
-        }
-    }
-    builder.build().map_err(io::Error::other)
+    let roots = bundle.map(tensorfs::fetch::pem_roots).transpose().map_err(io::Error::other)?.unwrap_or_default();
+    let builder = tensorfs::fetch::http(&roots.iter().map(Vec::as_slice).collect::<Vec<_>>()).map_err(io::Error::other)?;
+    builder.redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS)).build().map_err(io::Error::other)
 }
 
 fn weather(error: reqwest::Error) -> Refusal {

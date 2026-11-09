@@ -3,19 +3,30 @@
 //! process speaks as: a user's device-key login and Bearer, a pod's worker capability, a machine's
 //! workload grant (`workload`). Bulk bytes
 //! (presigned GET/PUT) are not here: TensorFS moves them.
-#![forbid(unsafe_code)]
-#![deny(unreachable_pub)]
 pub mod cards;
 mod client;
 mod device;
 pub mod types;
 pub mod workload;
 
-use api::error::{Error as Refusal, Kind};
+use crate::error::{Error as Refusal, Kind};
 use serde_json::Value;
 
 pub use client::{Client, Credential};
 pub use device::{Bearer, DeviceKey, Enrollment, UserSession};
+
+/// What every Hub call goes over: cozy's one outbound client (`tensorfs::fetch::http`: `cozy/<version>` as the
+/// User-Agent, by which a Hub can refuse a cozy too old for it; 5 s to connect), no redirects, and a call that
+/// receives nothing for 30 s fails. `ca_der` is a private Hub's CA. Clones share one pool.
+pub fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, String> {
+    let extra: Vec<&[u8]> = ca_der.into_iter().collect();
+    let builder = tensorfs::fetch::http(&extra).map_err(|e| format!("the Hub's TLS: {}", e.detail))?;
+    builder
+        .redirect(reqwest::redirect::Policy::none())
+        .read_timeout(tensorfs::fetch::STALL)
+        .build()
+        .map_err(|e| format!("the Hub's TLS: {e}"))
+}
 
 /// A refused or failed call. `Hub` carries the Hub's own typed refusal verbatim.
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
@@ -93,7 +104,7 @@ impl Error {
             ),
             Self::Call(message) => {
                 // A timeout is the Hub keeping quiet; only what never connected says anything of this computer.
-                let remedy = match message.contains("timed out") || message.contains("no answer in") {
+                let remedy = match message.contains("timed out") {
                     true => "the Hub took too long to answer: it is busy or down, and asking again is safe",
                     false => "this computer couldn't reach the Hub: its connection, or the Hub being down. Asking again is safe",
                 };

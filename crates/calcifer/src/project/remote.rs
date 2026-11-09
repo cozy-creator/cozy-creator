@@ -24,7 +24,7 @@ use axum::{
     http::StatusCode,
 };
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
-use hub_client::{Client, Credential};
+use ::api::hub::{Client, Credential};
 use platform::durable::FileAt as _;
 use api::{
     config::Origin,

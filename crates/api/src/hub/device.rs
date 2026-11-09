@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
-use crate::types::AuthResult;
-use crate::{Client, Error};
+use crate::hub::types::AuthResult;
+use crate::hub::{Client, Error};
 use platform::paths::Home;
-use api::{config::Origin, error::Error as Refusal};
+use crate::{config::Origin, error::Error as Refusal};
 
 const ENROLL_DOMAIN: &str = "authkit.device-key-enrollment/1";
 const LOGIN_DOMAIN: &str = "authkit.device-key-login/1";
@@ -93,9 +93,9 @@ impl DeviceKey {
     /// with a fresh `jti`: what a workload may do for them, redeemed with the jwt-bearer grant.
     pub fn capability(&self, claims: &serde_json::Value) -> String {
         let mut claims = claims.clone();
-        claims["jti"] = crate::workload::jti().into();
-        let header = crate::workload::Header { typ: CAPABILITY_TYPE, alg: "EdDSA", jwk: None, kid: Some(&self.id) };
-        crate::workload::jws(&header, &claims, |signed| self.key.sign(signed).to_bytes().to_vec())
+        claims["jti"] = crate::hub::workload::jti().into();
+        let header = crate::hub::workload::Header { typ: CAPABILITY_TYPE, alg: "EdDSA", jwk: None, kid: Some(&self.id) };
+        crate::hub::workload::jws(&header, &claims, |signed| self.key.sign(signed).to_bytes().to_vec())
     }
 
     fn sign_challenge(key: &SigningKey, domain: &str, challenge: &str) -> Result<String, Error> {

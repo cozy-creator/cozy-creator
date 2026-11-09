@@ -293,7 +293,7 @@ impl Origin {
         &self.0
     }
 
-    /// This computer's device key at this Hub (hub-client's `DeviceKey`), mode 0600.
+    /// This computer's device key at this Hub (`hub::DeviceKey`), mode 0600.
     pub fn device_key(&self, home: &Home) -> PathBuf {
         home.keys().join(format!("device-{}.json", self.key_name()))
     }

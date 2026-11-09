@@ -1,6 +1,6 @@
 [package]
 name = "api"
-description = "The types of every cozy API (Calcifer's, the machine's) and the formats and pieces they share; no HTTP"
+description = "The types of every cozy API (Calcifer's, the machine's) and the formats and pieces they share; `hub` adds the Hub's client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -27,8 +27,16 @@ toml.workspace = true
 url.workspace = true
 idna_adapter.workspace = true
 ts-rs = { workspace = true, optional = true }
+aws-lc-rs = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync", "time"], optional = true }
+tracing = { workspace = true, optional = true }
 
 [features]
+# The Hub's client (`hub`), which Calcifer and TensorD share: the only HTTP here.
+hub = ["dep:aws-lc-rs", "dep:httpdate", "dep:percent-encoding", "dep:reqwest", "dep:tokio", "dep:tracing", "tensorfs/net"]
 # TypeScript declarations of the API's records, for the page (examples/ts.rs).
 ts = ["dep:ts-rs"]
 

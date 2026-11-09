@@ -233,7 +233,7 @@ impl Ask for PackageInstall {
         tokio::spawn({
             let (hub, package, release) = (hub.to_string(), package.clone(), chosen.clone());
             async move {
-                let _ = hub_client::cards::card(|| Ok(reader), &root, &hub, &package, &release).await;
+                let _ = ::api::hub::cards::card(|| Ok(reader), &root, &hub, &package, &release).await;
             }
         });
         let submit = release_install(hub.as_str(), self.on, &package, &chosen, self.agreed);
