@@ -17,14 +17,14 @@ CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `f
 
 | Table | Row | Was |
 |---|---|---|
-| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on; `upgraded`: what upgrading its files from before said, until a run landing in it says it | file stats, its path |
+| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown); `upgraded`: what upgrading its files from before said, until a run landing in it says it | file stats, its path |
 | `head(key, value)` | A top-level section other than `assets` (`version`, `defaults`), as JSON | project.yaml |
 | `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list | project.yaml |
 | `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) | project.yaml |
 | `canvas(key, name, x, y, w, seq, by)` | A box's row, and the transaction and client that last wrote it | project.canvas.yaml |
 | `lock_assets(key, name, kind, numbered, tried, failed)` | A box's record: the last number given, the last seed tried, its failure. `key#n` is an orphan set aside | project.lock |
 | `versions(key, number, discarded, record)` | One version or take, `record` its JSON (files, seed, run, key, pickup, clips, text) | project.lock |
-| `lock_files(sha256, record)` | A file's row where the file can't say it: where it stays, its parts | project.lock |
+| `lock_files(sha256, record)` | A file's row where the file can't say it: where it stays, its parts, or the whole hash of one no version or run records, which a box names only the start of (`Lock::keeps_row`) | project.lock |
 | `run_files(run, function, output, sha256)` | What a `cozy run` left in the project | project.lock |
 | `facts(kind, name, value)` | A package's tags (`reserved`) and what a tool makes (`makes`), as last read | project.lock |
 | `walk(id, record)` | What the render owes: its asks, pending runs, renames, numbers, and the folder and Calcifer it is bound to | `.runs/walk.json` |

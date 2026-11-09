@@ -267,7 +267,8 @@ pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     let mut rows = conn.prepare("SELECT sha256, record FROM lock_files").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
         let (sha256, record) = row.map_err(e)?;
-        lock.files.insert(sha256, serde_json::from_str(&record).map_err(|why| bad("lock_files", why))?);
+        let file = File { row: true, ..serde_json::from_str(&record).map_err(|why| bad("lock_files", why))? };
+        lock.files.insert(sha256, file);
     }
     let mut rows = conn.prepare("SELECT run, function, output, sha256 FROM run_files ORDER BY ord").map_err(e)?;
     for row in rows.query_map([], |r| Ok(RunFile { run: r.get::<_, i64>(0)? as u64, function: r.get(1)?, output: r.get(2)?, sha256: r.get(3)? })).map_err(e)? {
@@ -305,8 +306,11 @@ fn file_record(file: &File) -> String {
 
 /// `after` written over `before`, row by row, with `extra`, as one transaction: the new revision, or none when nothing differed.
 /// `locked` runs once it holds the write lock, before it writes: no other connection commits until it does.
-pub fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
+pub fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
+    if !Arc::ptr_eq(&before.lock, &after.lock) {
+        Arc::make_mut(&mut after.lock).mark_rows();
+    }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     locked();
     let was = tx.total_changes();
@@ -423,12 +427,13 @@ fn lock_written(tx: &Transaction, before: &Lock, after: &Lock) -> rusqlite::Resu
             tx.execute("INSERT OR REPLACE INTO versions (key, number, discarded, record) VALUES (?1, ?2, ?3, ?4)", params![key, *number as i64, discarded, json(*version)])?;
         }
     }
-    for sha256 in before.files.keys().filter(|sha256| !after.files.contains_key(*sha256)) {
+    let row = |lock: &Lock, sha256: &str| lock.files.get(sha256).filter(|file| file.row).map(file_record);
+    for (sha256, _) in before.files.iter().filter(|(sha256, file)| file.row && row(after, sha256).is_none()) {
         tx.execute("DELETE FROM lock_files WHERE sha256 = ?1", [sha256])?;
     }
-    for (sha256, file) in &after.files {
+    for (sha256, file) in after.files.iter().filter(|(_, file)| file.row) {
         let record = file_record(file);
-        if before.files.get(sha256).is_none_or(|was| file_record(was) != record) {
+        if row(before, sha256).is_none_or(|was| was != record) {
             tx.execute("INSERT OR REPLACE INTO lock_files (sha256, record) VALUES (?1, ?2)", params![sha256, record])?;
         }
     }
@@ -498,7 +503,7 @@ pub fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, Str
     let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops: ops.to_vec(), ..Default::default() };
     let mut fresh = stored.clone();
     fresh.seq = 0;
-    commit(&mut conn, path, &Stored::default(), &fresh, &extra, || ())?;
+    commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, || ())?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| err(path, e))?;
     drop(conn);
     Ok(())

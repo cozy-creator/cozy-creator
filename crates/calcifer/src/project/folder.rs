@@ -19,7 +19,6 @@ use protocol::{
     project::Unheld,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Map;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use tensorfs::err::{Code, Refusal};
@@ -112,13 +111,16 @@ pub fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
 }
 
 /// A file the project uses: its path in the project (`files/<sha256>.<ext>`), its sha256, and what is measured of it: a picture's or video's
-/// size, a video's rate and frames, a picture's alpha (the share of it fully transparent). Project.lock holds only what can't be read again
-/// from a file here (`Folder::fill`): where it stays, and its parts.
+/// size, a video's rate and frames, a picture's alpha (the share of it fully transparent). Its row in project.db holds only what can't be
+/// read again from a file here (`Folder::fill`, `Lock::keeps_row`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct File {
     /// It was in `files/` when this was read, listed once for all of them: a stat each is seconds, on Windows, across a project's thousands.
     #[serde(skip)]
     pub here: bool,
+    /// project.db holds its row (`lock_files`).
+    #[serde(skip)]
+    pub row: bool,
     #[serde(skip)]
     pub path: String,
     #[serde(skip)]
@@ -197,6 +199,11 @@ impl File {
     /// Whether a machine was left keeping it.
     pub fn stays(&self) -> bool {
         !self.machine.is_empty()
+    }
+
+    /// Its row would be empty: nothing is kept of where else it is, or what its name ends in.
+    fn says_nothing(&self) -> bool {
+        self.parts.is_empty() && self.ext.is_empty() && self.machine.is_empty() && self.length == 0
     }
 
     /// How long it lasts, if it does and that is measured.
@@ -518,6 +525,21 @@ pub struct Bound {
     pub calcifer: String,
 }
 
+impl Bound {
+    /// Of another project than `here` (a copy, which has its own id) or another Calcifer's: what it was doing isn't `here`'s.
+    fn elsewhere(&self, here: &Bound) -> bool {
+        self.calcifer != here.calcifer || (!self.project.is_empty() && self.project != here.project)
+    }
+}
+
+/// The board a render ended on, with the project and Calcifer whose render it was.
+#[derive(Serialize, Deserialize)]
+struct KeptBoard {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bound: Option<Bound>,
+    board: protocol::project::Board,
+}
+
 /// This Calcifer's id, the same across its restarts, once it has said it.
 static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -703,15 +725,28 @@ impl Lock {
         self.assets.iter().filter(move |(at, _)| **at == key || at.starts_with(&buried))
     }
 
-    /// The lock as it's written. A file holds a row only for what can't be read again from a file here: where it stays, its parts, or, with nothing
-    /// else naming it, its whole hash, which `project.yaml` holds only the start of.
+    /// The lock as it's written, each file's row only where it `keeps_row`.
     pub fn written(&self) -> String {
-        let named = self.recorded();
+        let recorded = self.recorded();
         let mut value = serde_json::to_value(self).expect("a lock serializes");
         if let Some(files) = value["files"].as_object_mut() {
-            files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
+            files.retain(|sha256, _| self.files.get(sha256).is_some_and(|file| Self::keeps_row(sha256, file, &recorded)));
         }
         protocol::yaml::from_json(&value)
+    }
+
+    /// Whether a file has a row: for what can't be read again from a file here (where it stays, its parts), or the whole hash of one no
+    /// version or run records, which a box names only the start of (`approved`, a pin), so it's known once the file is gone from `files/`.
+    fn keeps_row(sha256: &str, file: &File, recorded: &BTreeSet<String>) -> bool {
+        !file.says_nothing() || !recorded.contains(sha256)
+    }
+
+    /// Each file's `row` as this lock is written: what project.db keeps once it commits (`db::commit`).
+    pub fn mark_rows(&mut self) {
+        let recorded = self.recorded();
+        for (sha256, file) in &mut self.files {
+            file.row = Self::keeps_row(sha256, file, &recorded);
+        }
     }
 
     /// Each asset whose name the file has lost and with nothing on its way, set aside under a key no name can be, so that a later asset of that
@@ -993,14 +1028,18 @@ impl Folder {
         }
     }
 
-    /// The board the last render here ended on, as project.db keeps it.
+    /// The board the last render here ended on, as project.db keeps it. A copy's (its original's render) or another Calcifer's is none:
+    /// its runs aren't this project's, as what its walk owed isn't (`unbind_elsewhere`).
     pub fn last_board(&self) -> Option<protocol::project::Board> {
-        self.reading_db(|conn| db::meta(conn, BOARD)).ok().flatten().and_then(|board| serde_json::from_str(&board).ok())
+        let kept: KeptBoard = self.reading_db(|conn| db::meta(conn, BOARD)).ok().flatten().and_then(|kept| serde_json::from_str(&kept).ok())?;
+        let theirs = kept.bound.as_ref().zip(self.bound()).is_some_and(|(bound, here)| bound.elsewhere(&here));
+        (!theirs).then_some(kept.board)
     }
 
     /// Keeps the board a render ended on, for a read after this project has closed and opened again.
     pub fn keep_board(&self, board: &protocol::project::Board) -> Result<(), Error> {
-        self.write_past(|conn| db::set_meta(conn, &self.db(), BOARD, Some(&serde_json::to_string(board).expect("a board serializes"))))
+        let kept = KeptBoard { bound: self.bound(), board: board.clone() };
+        self.write_past(|conn| db::set_meta(conn, &self.db(), BOARD, Some(&serde_json::to_string(&kept).expect("a board serializes"))))
     }
 
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
@@ -1145,7 +1184,7 @@ impl Folder {
         // SQLite's wait on another program's write lock holds the turn alone: every read goes on meanwhile (cl-837).
         let conn = self.writer(&mut turn)?;
         let mut current = false;
-        let seq = db::commit(conn, &self.db(), &act.base, &after, &extra, || current = self.version() == seen)?;
+        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen)?;
         let (seq, shown) = {
             let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
             let held = held.as_mut().expect("held");
@@ -1377,8 +1416,7 @@ impl Folder {
     /// A walk of another project (this is a copy) or another Calcifer's doesn't go on here: what it owes is dropped.
     fn unbind_elsewhere(&self) -> Result<(), Error> {
         let Some(here) = self.bound() else { return Ok(()) };
-        let other = |bound: &Bound| bound.calcifer != here.calcifer || (!bound.project.is_empty() && bound.project != here.project);
-        let elsewhere = self.reading_walk(|walk| walk.bound.as_ref().is_some_and(other))?;
+        let elsewhere = self.reading_walk(|walk| walk.bound.as_ref().is_some_and(|bound| bound.elsewhere(&here)))?;
         if !elsewhere {
             return Ok(());
         }
