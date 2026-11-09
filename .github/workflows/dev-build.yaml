@@ -80,7 +80,7 @@ jobs:
           CARGO_BUILD_JOBS: '2'
         run: |
           cargo check --locked -p varena -p tensorfs -p tensorfs-py
-          cargo check --locked -p tensorfs --no-default-features
+          cargo check --locked -p tensorfs-core
       - uses: arduino/setup-task@v2
         if: contains(inputs.build, 'tensord')
         with:
