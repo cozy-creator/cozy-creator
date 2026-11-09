@@ -212,10 +212,11 @@ function linesOf(text, name) {
     tool = wire.id;
     check('local_tool_says_so', wire.local && !wire.label.includes('(local)') && wire.id.startsWith(drawer), wire);
     check('local_tools_are_editable', (await page.locator('.tools section:has(h4:has-text("Editable")) .tool').count()) > 0);
-    // A retry of a new asset makes no `_2`, on the wire.
+    // A retry of a new asset makes no `_2`, on the wire. Calcifer keeps a key a day whatever the project (cl-812): each pass, its own.
     const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
-    const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
-    const second = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
+    const twice = `nodes-twice-${id}`;
+    const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': twice }, body });
+    const second = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': twice }, body });
     check('retry_makes_no_second', first.status === 201 && second.status === 201 && second.body.name === first.body.name && !yaml().includes('Twice_2'), { first, second });
     check('new_asset_has_its_tool', /Twice:\n {4}tool: /.test(yaml()), linesOf(yaml(), 'Twice'));
     await api(`/v1/projects/${id}/assets/Twice`, { method: 'DELETE' });
