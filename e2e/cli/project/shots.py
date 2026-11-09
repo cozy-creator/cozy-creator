@@ -5,7 +5,7 @@
 """The project cell's shot package: weightless. `shoot` is a tool: its video is the take it picks up from, else its plate, else the first
 video its text mentions, and `given` says what it got, its pickup too. `refuse` is its own no. `bare` is a function of just its video,
 `scenes` a long shot's way, segment by segment, each shown as it ends, `fresh` makes its plate's video new bytes, a file nothing has
-measured, `noise` a video ffprobe can't read, `crash` fails, `slow` waits and has no seed, and `typed` says when a field isn't one."""
+measured, `noise` a video ffprobe can't read, `crash` fails, `slow` waits and has no seed, `takes` waits with one, and `typed` says when a field isn't one."""
 
 import json
 import os
@@ -192,5 +192,16 @@ class Wait(msgspec.Struct, kw_only=True):
 
 @app.entrypoint()
 def slow(payload: Wait, out: Outputs) -> BareTake:
+    time.sleep(payload.seconds)
+    return BareTake(out.save_bytes(os.urandom(8), media_type="video/mp4"))
+
+
+class Takes(msgspec.Struct, kw_only=True):
+    seconds: float = 20
+    seed: int | None = None
+
+
+@app.entrypoint()
+def takes(payload: Takes, out: Outputs) -> BareTake:
     time.sleep(payload.seconds)
     return BareTake(out.save_bytes(os.urandom(8), media_type="video/mp4"))

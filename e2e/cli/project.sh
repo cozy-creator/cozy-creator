@@ -182,10 +182,11 @@ version: 4
 assets:
   first: {tool: $here/project/draw.py/draw, instructions: Starts the project.}
   take:
-    tool: $here/project/shots.py/slow
+    tool: $here/project/shots.py/takes
     seconds: 3
 YAML
 render "$T" first || check "lock refused: first: $(tail -c 300 "$OUT/render.txt")"
+# A tool with a seed: -n 2 is two runs whether or not its function was described by the time they went (slow, with none, is one).
 render "$T" take -n 2 & rendering=$!
 for _ in $(seq 240); do [ "$(owed "$T")" = 2 ] && break; sleep 0.25; done
 [ "$(owed "$T")" = 2 ] || check "lock refused: the takes never went: $(owed "$T") owed"
