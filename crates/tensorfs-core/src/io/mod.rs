@@ -233,7 +233,7 @@ pub struct ReadControl {
 
 impl ReadControl {
     pub fn cancel(&self) { self.cancel.store(true, std::sync::atomic::Ordering::Release); }
-    pub(crate) fn canceled(&self) -> bool { self.cancel.load(std::sync::atomic::Ordering::Acquire) }
+    pub fn canceled(&self) -> bool { self.cancel.load(std::sync::atomic::Ordering::Acquire) }
     pub(crate) fn issue(&self, bytes: usize) {
         self.issued.fetch_add(bytes as u64, std::sync::atomic::Ordering::Release);
     }

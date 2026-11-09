@@ -54,7 +54,8 @@ pub enum Error {
     #[error(transparent)]
     Read(#[from] super::Error),
 }
-pub(crate) type Result<T> = std::result::Result<T, Error>;
+/// A source read's outcome.
+pub type Result<T> = std::result::Result<T, Error>;
 
 // The plan owns every file/inline source that a borrowed engine copy refers to.
 enum OwnedSource {
@@ -103,7 +104,7 @@ pub struct Source {
 }
 
 impl Source {
-    pub(crate) fn files(files: Vec<(ObjectRef, File)>, direct_io: bool, _plane: usize) -> Source {
+    pub fn files(files: Vec<(ObjectRef, File)>, direct_io: bool, _plane: usize) -> Source {
         Source {
             view: None,
             _owner: None,
@@ -157,6 +158,12 @@ impl Source {
         )))
     }
 
+    pub fn resident(&self, obj: &ObjectRef, _tally: &IoTally) -> Result<bool> {
+        self.load(std::slice::from_ref(obj))?;
+        let file = self.file(obj)?;
+        Ok(platform::durable::cached(&file, 0, obj.length).unwrap_or(false))
+    }
+
     /// Transfer a placement range. Uncovered padding is zeroed through the same engine.
     ///
     /// # Safety
@@ -185,7 +192,7 @@ impl Source {
     /// Each `dst` is exclusively writable for its length; its selected item ranges lie inside it.
     /// On CUDA error, retain device destination owners until `super::drain` proves completion.
     /// Inline host bytes use owned engine staging and are not borrowed by pending GPU work.
-    pub(crate) unsafe fn read_placements(
+    pub unsafe fn read_placements(
         &self,
         placements: &[Placement],
         threads: usize,
@@ -222,7 +229,7 @@ impl Source {
     ///
     /// # Safety
     /// Exactly the source/destination contract of [`Source::read_placements_cancelable`].
-    pub(crate) unsafe fn read_placements_cancelable_observed(
+    pub unsafe fn read_placements_cancelable_observed(
         &self,
         placements: &[Placement],
         threads: usize,
