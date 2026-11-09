@@ -59,6 +59,10 @@ pub(super) fn start(dir: &Path, spec: &ServiceSpec) -> Result<()> {
     record(dir, &spec.name, &Birth::of(child.pid())?)
 }
 
+pub(super) fn clear(_: &Path, _: &ServiceSpec) -> Result<()> {
+    Ok(())
+}
+
 pub(super) fn announce(dir: &Path, name: &str) -> Result<()> {
     // A console with no other process on it was opened for this service (a logon start): leave it
     // so its window closes. A terminal's console has the shell on it too, and stays.

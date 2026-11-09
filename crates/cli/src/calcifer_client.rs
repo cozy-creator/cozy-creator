@@ -636,7 +636,7 @@ impl Client {
                 false => "found Calcifer's service current",
             });
         }
-        let (mut child, mut asked) = (None, false);
+        let (mut child, mut asked, mut cleared) = (None, false, false);
         let began = Instant::now();
         let mut reported = began;
         loop {
@@ -644,7 +644,16 @@ impl Client {
             // Calcifer that was stopping, which held the lock until it went.
             if child.is_none() && self.lock_free() {
                 match managed {
-                    true => services.start(&spec).map_err(failed)?,
+                    // The manager stops starting a service killed or failed too often lately
+                    // (`Services::clear`): its refusal is cleared once a start, so a Calcifer that
+                    // keeps failing by itself is still said.
+                    true => services
+                        .start(&spec)
+                        .or_else(|refused| match std::mem::replace(&mut cleared, true) {
+                            true => Err(refused),
+                            false => services.clear(&spec).and_then(|()| services.start(&spec)),
+                        })
+                        .map_err(failed)?,
                     false => child = Some(spawn(&spec).map_err(failed)?),
                 }
                 if !std::mem::replace(&mut asked, true) {

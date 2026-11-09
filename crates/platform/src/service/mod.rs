@@ -80,6 +80,13 @@ impl Services {
         sys::start(&self.dir, spec)
     }
 
+    /// Forgets the manager's refusal to start it again (systemd's start limit), so the next `start`
+    /// is asked afresh. launchd's `start` boots out a job that isn't running, which forgets its
+    /// throttle; Windows has no manager.
+    pub fn clear(&self, spec: &ServiceSpec) -> Result<()> {
+        sys::clear(&self.dir, spec)
+    }
+
     /// Called by the running service itself, first thing: records its birth where `stop` looks
     /// for it. Windows' `Run` key has no manager to ask; systemd and launchd track it themselves.
     pub fn announce(&self, name: &str) -> Result<()> {
