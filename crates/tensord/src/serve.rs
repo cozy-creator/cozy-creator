@@ -5,7 +5,7 @@ use crate::{
     config::{self, Flags},
     machine::grant::Lifetime,
 };
-use std::{io, path::PathBuf, process::ExitCode, sync::Arc};
+use std::{io, process::ExitCode, sync::Arc};
 use crate::{origin::Machine, storage::Store};
 
 /// `cozy machine serve [--rental]`, from the arguments after `machine`: this computer's or a
@@ -129,16 +129,12 @@ pub fn version() -> io::Result<()> {
         #[serde(skip_serializing_if = "Option::is_none")]
         commit: Option<&'static str>,
         api: [&'static str; 1],
-        capabilities: Vec<&'static str>,
     }
-    // Machine contracts: clients choose by capability.
-    let capabilities = crate::api::CAPABILITIES.to_vec();
     let record = Version {
         name: "tensord",
         version: env!("CARGO_PKG_VERSION"),
         commit: Some(::api::COMMIT),
         api: ["cozy.machine.v1"],
-        capabilities,
     };
     println!("{}", serde_json::to_string(&record)?);
     Ok(())
@@ -172,7 +168,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     let fresh = readiness.attested().is_none();
     let keys = grant.keys()?;
-    let mut identity = crate::api::MachineIdentity::machine(
+    let identity = crate::api::Leaf::machine(
         grant.worker_id.clone(),
         keys.clone(),
         lifetime,
@@ -191,9 +187,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         fresh,
         grant.idle_ms,
     )?;
-    identity.lifecycle = Some(lifecycle.clone());
     let engine = layout.engine();
-    identity.store = Some(layout.store.clone());
     let generations = engine.join("generations");
     let paths = crate::machine::update::Paths::new(&engine, &layout.root);
     let (_owned, store) = own(&engine, &layout.store)?;
@@ -223,8 +217,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         true => crate::published::layer::Torch::Image(image_torch),
         false => crate::published::layer::Torch::Own { engine: engine.clone(), wanted: Default::default() },
     };
-    identity.torch = Some(torch.clone());
-    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), &paths.update("staged"), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch);
+    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), &paths.update("staged"), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch.clone());
     boot.at("updates");
     let running = {
         let engine = service.engine.clone();
@@ -238,11 +231,11 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         Some(lifecycle.clone()),
         Some(machine.clone()),
     )?;
-    identity.updates = Some(updates.clone());
-    let readiness = identity.readiness.clone();
+    let (readiness, committing) = (identity.readiness.clone(), updates.clone());
     std::thread::Builder::new()
         .name("readiness-report".into())
         .spawn(move || {
+            let updates = committing;
             readiness.wait_proved();
             // A Runtime update this process started on is now committed.
             if let Err(error) = updates.commit() {
@@ -263,10 +256,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         gpus.clear();
     }
     gpu_problems.iter().for_each(|problem| tracing::error!("{problem}"));
-    identity.gpus = gpus.clone();
-    identity.gpu_problems = gpu_problems.clone();
-    identity.gpu_memory_limit = gpu_memory_limit;
-    identity.mode = mode.name();
     boot.at("pool");
     {
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
@@ -327,9 +316,10 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             )
         })?;
     }
-    if let Some(hub) = grant.hub.clone().filter(|_| rental) {
-        identity.hubs = vec![(hub.origin.clone(), hub.worker_id.clone())];
+    let own_hub = grant.hub.clone().filter(|_| rental);
+    if let Some(hub) = own_hub.clone() {
         let hub = Arc::new(crate::machine::hub::Hub::new(hub)?);
+        let lifecycle = lifecycle.clone();
         let service = service.clone();
         let provider = grant.provider.clone();
         let (state, origin) = (layout.state.clone(), machine.clone());
@@ -354,8 +344,29 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     boot.at("api");
     let reach = reach(&api, grant.worker_port, endpoint.as_ref());
-    identity.webrtc = crate::machine::player::listen(&layout.state, grant.webrtc_port, !rental)?;
-    identity.player = grant.webrtc_reach.clone();
+    let crate::api::Leaf { authority, cert_pem, key_pem, cert_der, readiness, started_at_ms } = identity;
+    let identity = crate::api::MachineIdentity {
+        authority,
+        cert_pem,
+        key_pem,
+        cert_der,
+        readiness,
+        started_at_ms,
+        lifecycle,
+        hubs: own_hub.iter().map(|hub| (hub.origin.clone(), hub.worker_id.clone())).collect(),
+        updates,
+        webrtc: crate::machine::player::listen(&layout.state, grant.webrtc_port, !rental)?,
+        player: grant.webrtc_reach.clone(),
+        webrtc_port: None,
+        store_logs: store.root().join("logs"),
+        store: layout.store.clone(),
+        logs,
+        gpus,
+        gpu_problems,
+        gpu_memory_limit,
+        mode: mode.name(),
+        torch,
+    };
     // The boot answer ends before the API takes its listener: one server answers at a time.
     booting.abort();
     let _ = runtime.block_on(booting);
@@ -369,8 +380,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         &service,
         sdk,
         // A run naming no Hub reads this rental's own Hub's public content.
-        grant.hub.clone().filter(|_| rental),
-        Some(logs),
+        own_hub,
         reach,
     )?;
     // The Hub probes the endpoint the provider put in this pod's environment at once,
@@ -412,19 +422,15 @@ fn start_api(
     service: &Arc<crate::service::Service>,
     sdk: crate::published::PackageSdk,
     own_hub: Option<crate::machine::grant::HubGrant>,
-    logs: Option<PathBuf>,
     reach: Option<String>,
 ) -> io::Result<()> {
-    use crate::{api, machine_api::NativeBackend};
+    use crate::api;
     let store = store.clone();
-    let mut backend = NativeBackend::new(service.clone(), identity.authority.clone(), store.clone());
-    backend.logs = logs;
     let publisher = crate::published::Publisher::new(sdk, machine.clone());
     service.configure_publisher(publisher.clone());
-    backend.publisher = Some(publisher.clone());
     let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone(), store.clone())?);
     service.engine.hold_memos(&objects);
-    backend.runs = Some(Arc::new(crate::runs::Runs {
+    let runs = Arc::new(crate::runs::Runs {
         service: service.clone(),
         objects: objects.clone(),
         local: Arc::new(crate::local_source::LocalSources::new(objects, publisher.clone(), generations)),
@@ -434,12 +440,11 @@ fn start_api(
             .transpose()
             .map_err(|e| io::Error::other(e.0))?,
         contexts: Default::default(),
-    }));
-    crate::calls::Calls::configure(service, machine.clone(), backend.runs.as_ref())?;
-    if let Some(runs) = &backend.runs {
-        runs.restore_warm_sets()?;
-        crate::api::machine_runs::resume(runs)?;
-    }
+        projection: Default::default(),
+    });
+    crate::calls::Calls::configure(service, machine.clone(), Some(&runs))?;
+    runs.restore_warm_sets()?;
+    crate::runs::resume(&runs)?;
     listener.set_nonblocking(true)?;
     #[derive(serde::Serialize)]
     struct Ready<'a> {
@@ -468,7 +473,7 @@ fn start_api(
                 api::serve(
                     tokio::net::TcpListener::from_std(listener)?,
                     identity,
-                    Arc::new(backend),
+                    runs,
                 )
                 .await
             });

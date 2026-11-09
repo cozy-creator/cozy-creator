@@ -19,9 +19,10 @@ pub mod path {
     pub const STATUS: &str = "/v1/status";
     /// `POST`: renews a rental's idle deadline; answers the frame.
     pub const KEEPALIVE: &str = "/v1/keepalive";
-    /// `POST` a [`super::RunRequest`]; `GET` a [`super::RunList`], `?before=<number>&limit=`.
+    /// `POST` a [`super::RunRequest`] of [`super::RunKind::Update`], the one request a controller of
+    /// another release sends; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
-    /// `POST` a [`super::RunBatch`] (`run-batch/1`): runs admitted as one.
+    /// `POST` a [`super::RunBatch`]: work, admitted as one.
     pub const RUNS_BATCH: &str = "/v1/runs/batch";
     /// `GET`: SSE of the run's [`super::RunEvent`]s after `Last-Event-ID`.
     pub const EVENTS: &str = "/v1/runs/{id}/events";
@@ -29,11 +30,9 @@ pub mod path {
     pub const CANCEL: &str = "/v1/runs/{id}/cancel";
     /// `GET` with `Range` and `If-Match`; `?index=&member=`.
     pub const OUTPUT: &str = "/v1/runs/{id}/outputs/{output}";
-    /// `GET`: the run's triage bundle, JSON; its owner only.
-    pub const TRIAGE: &str = "/v1/runs/{id}/triage";
     /// `GET` with `?tail=`.
     pub const LOG: &str = "/v1/logs/{name}";
-    /// `PUT` with `Content-Range`, `HEAD`; `{digest}` is `sha256:<hex>`.
+    /// `PUT` with `Content-Range`; `GET` as SSE, what its upload holds; `{digest}` is `sha256:<hex>`.
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
@@ -183,9 +182,9 @@ pub struct RunRequest {
     pub spec: RunSpec,
 }
 
-/// `POST /v1/runs/batch` (`run-batch/1`, cl-816): runs admitted as one. Each new one is accepted
-/// with the others before any prepares, so the machine packs them together, as its estimate quoted
-/// them; `POST /v1/runs` is a batch of one. An update goes alone.
+/// `POST /v1/runs/batch` (cl-816): work, admitted as one. Each new run is accepted with the others
+/// before any prepares, so the machine packs them together, as its estimate quoted them. An update
+/// is not work: it goes to `POST /v1/runs`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunBatch {
@@ -641,8 +640,6 @@ pub struct Outcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Json>,
     pub outputs: Vec<Product>,
-    /// `GET /v1/runs/{id}/triage` answers its bundle.
-    pub triage: bool,
     /// What its executor measured, canonical JSON: `attribution` (stage and step tracks),
     /// `execution` (degree, ranks with the GPU and attention each served, executor boot,
     /// construction load and warm) and `observations` (attention rows). None for a run that ran
@@ -864,7 +861,7 @@ pub enum Basis {
 // ---- Status ---------------------------------------------------------------------------------
 
 /// The machine's picture. Without a machine-scope cap, `GET /v1/status` answers identity,
-/// version, capabilities and the sealed readiness `receipt` only. With one it answers all of it,
+/// version and the sealed readiness `receipt` only. With one it answers all of it,
 /// and as SSE (`Accept: text/event-stream`) sends the whole frame again whenever it changes. An
 /// open stream is not activity.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -878,7 +875,6 @@ pub struct StatusFrame {
     pub commit: String,
     /// Its binary arrived by a dev update (`cozy machine update --tensord <path>`), not a release.
     pub dev: bool,
-    pub capabilities: Vec<String>,
     /// The RFC 7638 thumbprint of this TensorD's workload key, made at its start and held in memory
     /// only: what its runs' capabilities bind (cl-675).
     pub workload_key: String,

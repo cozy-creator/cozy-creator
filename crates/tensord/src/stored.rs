@@ -1,6 +1,14 @@
-//! Current native execution values. These are not an RPC protocol. The journal stores the
-//! values marked Serialize as JSON, their bytes in base64 (archive.rs).
-use serde::{Deserialize, Serialize};
+//! What the journal stores as JSON, bytes in base64: a model choice, a run's products and a
+//! finished run's log. Measured on these, JSON is 3–5× protobuf's bytes, a few hundred bytes a record.
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+pub(crate) fn encode<T: Serialize>(value: &T) -> Vec<u8> {
+    serde_json::to_vec(value).expect("a stored value serializes")
+}
+
+pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
+    serde_json::from_slice(bytes)
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,28 +39,9 @@ pub(crate) struct DownloadAdapterRef {
     pub profiles: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ImageDistribution {
-    pub distribution: String,
-    pub version: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
-pub(crate) enum MachineExecutionAction {
-    Unspecified = 0,
-    Cancel = 3,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionControl {
-    pub execution: Option<MachineExecutionQuery>,
-    pub action: i32,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub(crate) struct MachineExecutionEvent {
+pub(crate) struct LogEvent {
     pub sequence: u64,
     pub attempt_ordinal: u64,
     pub at_ms: u64,
@@ -65,105 +54,11 @@ pub(crate) struct MachineExecutionEvent {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub(crate) struct MachineExecutionEventPage {
-    pub events: Vec<MachineExecutionEvent>,
+pub(crate) struct LogPage {
+    pub events: Vec<LogEvent>,
     pub next_after: u64,
     pub head_sequence: u64,
     pub compacted_through: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionEventsQuery {
-    pub execution: Option<MachineExecutionQuery>,
-    pub after: u64,
-    pub limit: u32,
-    pub wait: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionList {
-    pub executions: Vec<MachineExecutionState>,
-    pub head_number: u64,
-    pub execution_workspace_id: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionListQuery {
-    pub after_number: u64,
-    pub newest_first: bool,
-    pub before_number: u64,
-    pub limit: u32,
-    pub states: Vec<String>,
-    pub wait: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionQuery {
-    pub request_id: String,
-    pub expected_execution_workspace_id: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionState {
-    pub request_id: String,
-    pub attempt_ordinal: u64,
-    pub generation: u64,
-    pub state: String,
-    pub collected: bool,
-    pub sequence: u64,
-    pub worker_id: String,
-    pub worker_boot_id: String,
-    pub execution_workspace_id: String,
-    pub number: u64,
-    pub accepted_at_ms: u64,
-    /// When it began executing (`running`); 0 before.
-    pub started_at_ms: u64,
-    pub finished_at_ms: u64,
-    pub target: Option<MachineExecutionTarget>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionTarget {
-    pub package: String,
-    pub release: String,
-    pub entrypoint: String,
-    pub installation_id: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionTriage {
-    pub bundle: Option<TriageBundleRef>,
-    pub bundle_canonical_bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionTriageQuery {
-    pub execution: Option<MachineExecutionQuery>,
-    pub attempt_ordinal: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionWorkspace {
-    pub worker_id: String,
-    pub worker_boot_id: String,
-    pub execution_workspace_id: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachineExecutionWorkspaceQuery {}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct MachinePackage {
-    pub installation_id: String,
-    pub package: String,
-    pub release: String,
-    /// The Hub origin a published release came from; empty for local code.
-    pub origin: String,
-    pub installed_at_ms: u64,
-    pub sdk: Vec<ImageDistribution>,
-    pub entrypoints: Vec<String>,
-    /// Why this environment does not run the machine's own SDK; empty when it does.
-    pub warning: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -198,14 +93,6 @@ pub(crate) struct NativeByteTreeRef {
     pub content_bytes: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct PackageList {
-    pub packages: Vec<MachinePackage>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct PackageListQuery {}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Ref {
@@ -232,7 +119,6 @@ pub(crate) struct RunProduct {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub(crate) enum RunProductOp {
-    Unspecified = 0,
     Set = 1,
     Append = 2,
 }
@@ -243,13 +129,6 @@ pub(crate) struct RunProductPart {
     pub content: Option<Ref>,
     pub source: Option<NativeByteRetentionRequest>,
     pub duration_us: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct TriageBundleRef {
-    pub subject_id: String,
-    pub write_receipt_digest: Vec<u8>,
-    pub length: u64,
 }
 
 /// Stored bytes as base64 text.

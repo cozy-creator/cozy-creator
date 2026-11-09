@@ -7,11 +7,11 @@
 //! and speaks cozy/1, on the same wire as the Go agent's, so one player reaches either.
 use super::{
     auth::{Lapse, StreamAuthority, VerifiedActor},
-    backend::{MachineBackend, OutputSnapshot},
     capability::{self, Grant},
-    machine_runs::{follow, query},
+    machine_runs::follow,
     v1, MachineIdentity,
 };
+use crate::runs::{OutputSnapshot, Runs};
 use api::error::{Error, Kind};
 use serde_json::{json, Value};
 use platform::durable::FileAt;
@@ -53,9 +53,9 @@ const MIN_WINDOW: usize = 256 << 10;
 const MAX_WINDOW: usize = 16 << 20;
 
 /// One machine's cozy/1 listener state.
-pub(super) struct Media<B> {
+pub(super) struct Media {
     identity: Arc<MachineIdentity>,
-    backend: Arc<B>,
+    runs: Arc<Runs>,
     cert: DtlsCert,
     crypto: Arc<CryptoProvider>,
     admitted: Mutex<Admitted>,
@@ -78,8 +78,8 @@ struct Seat {
     task: OnceLock<tokio::task::AbortHandle>,
 }
 
-impl<B: MachineBackend> Media<B> {
-    pub(super) fn new(identity: Arc<MachineIdentity>, backend: Arc<B>) -> io::Result<Arc<Self>> {
+impl Media {
+    pub(super) fn new(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> io::Result<Arc<Self>> {
         let invalid = |what: &str| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -98,7 +98,7 @@ impl<B: MachineBackend> Media<B> {
             .to_vec();
         Ok(Arc::new(Self {
             identity,
-            backend,
+            runs,
             cert: DtlsCert {
                 certificate,
                 private_key,
@@ -108,7 +108,7 @@ impl<B: MachineBackend> Media<B> {
         }))
     }
 
-    fn admit(self: &Arc<Self>, ip: IpAddr) -> Option<Admission<B>> {
+    fn admit(self: &Arc<Self>, ip: IpAddr) -> Option<Admission> {
         let mut admitted = self.admitted.lock().unwrap();
         loop {
             let pending: Vec<&Arc<Seat>> =
@@ -136,12 +136,12 @@ impl<B: MachineBackend> Media<B> {
 }
 
 /// One admitted connection; dropping it gives its seat and its ufrag back.
-struct Admission<B: MachineBackend> {
-    media: Arc<Media<B>>,
+struct Admission {
+    media: Arc<Media>,
     seat: Arc<Seat>,
     ufrag: Option<String>,
 }
-impl<B: MachineBackend> Admission<B> {
+impl Admission {
     /// A ufrag names one session for its whole life. After a dropped TCP connection a browser
     /// reconnects with the same ufrag and resumes DTLS records no new session could read;
     /// closing that connection unanswered fails its PeerConnection, so the client reconnects
@@ -161,7 +161,7 @@ impl<B: MachineBackend> Admission<B> {
         *self.seat.key.lock().unwrap() = Some(key.into());
     }
 }
-impl<B: MachineBackend> Drop for Admission<B> {
+impl Drop for Admission {
     fn drop(&mut self) {
         let mut admitted = self.media.admitted.lock().unwrap();
         admitted.seats.retain(|s| !Arc::ptr_eq(s, &self.seat));
@@ -180,7 +180,7 @@ impl<B: MachineBackend> Drop for Admission<B> {
 }
 
 /// Serves cozy/1 to each connection the WebRTC port accepts.
-pub(super) async fn serve<B: MachineBackend>(media: Arc<Media<B>>, listener: TcpListener) {
+pub(super) async fn serve(media: Arc<Media>, listener: TcpListener) {
     loop {
         let Ok((tcp, peer)) = listener.accept().await else {
             // Out of descriptors, say: the listener itself still stands.
@@ -252,10 +252,10 @@ fn unix_now() -> i64 {
         .map_or(0, |since| since.as_secs() as i64)
 }
 
-async fn session<B: MachineBackend>(
+async fn session(
     tcp: TcpStream,
     peer: SocketAddr,
-    mut admission: Admission<B>,
+    mut admission: Admission,
     work_tx: mpsc::UnboundedSender<Work>,
     mut work: mpsc::UnboundedReceiver<Work>,
 ) -> io::Result<()> {
@@ -472,8 +472,8 @@ impl Pace {
 
 /// One session's cozy/1 state: pending until its hello verifies, then serving follow and get
 /// requests over its one channel.
-struct Cozy<B> {
-    media: Arc<Media<B>>,
+struct Cozy {
+    media: Arc<Media>,
     work: mpsc::UnboundedSender<Work>,
     channel: Option<ChannelId>,
     grant: Option<(Grant, VerifiedActor)>,
@@ -491,7 +491,7 @@ struct Cozy<B> {
     done: bool,
 }
 
-impl<B> Drop for Cozy<B> {
+impl Drop for Cozy {
     fn drop(&mut self) {
         for stream in &mut self.streams {
             if let Some(task) = stream.task.take() {
@@ -509,8 +509,8 @@ fn error(id: Option<&Value>, code: &str, message: &str) -> Value {
     message
 }
 
-impl<B: MachineBackend> Cozy<B> {
-    fn new(media: Arc<Media<B>>, work: mpsc::UnboundedSender<Work>) -> Self {
+impl Cozy {
+    fn new(media: Arc<Media>, work: mpsc::UnboundedSender<Work>) -> Self {
         Self {
             media,
             work,
@@ -718,11 +718,11 @@ impl<B: MachineBackend> Cozy<B> {
             after,
             etag: request["etag"].as_str().unwrap_or_default().into(),
         };
-        let (backend, work) = (self.media.backend.clone(), self.work.clone());
+        let (runs, work) = (self.media.runs.clone(), self.work.clone());
         // Off the session: opening an output may wait on the journal.
         let task = match get {
-            true => tokio::spawn(serve_get(backend, actor, target, work)),
-            false => tokio::spawn(serve_follow(backend, actor, target, work)),
+            true => tokio::spawn(serve_get(runs, actor, target, work)),
+            false => tokio::spawn(serve_follow(runs, actor, target, work)),
         };
         self.streams.push(Stream {
             id,
@@ -846,9 +846,7 @@ impl<B: MachineBackend> Cozy<B> {
                 self.sent += n as u64;
                 self.pace.written += frame.len() as u64;
                 // An output read, as one over HTTP is: someone watching a film holds the rental for as long as it moves.
-                if let Some(lifecycle) = &self.media.identity.lifecycle {
-                    lifecycle.transferred();
-                }
+                self.media.identity.lifecycle.transferred();
                 if *from == *to {
                     stream.items.pop_front();
                 }
@@ -892,16 +890,15 @@ fn source_error(id: &Value, refusal: &Error) -> Value {
     error(Some(id), code, &refusal.message)
 }
 
-async fn open_snapshot<B: MachineBackend>(
-    backend: &Arc<B>,
+async fn open_snapshot(
+    runs: &Arc<Runs>,
     actor: VerifiedActor,
     target: &Target,
 ) -> Result<OutputSnapshot, Error> {
     let (run, output) = (target.run.clone(), target.output.clone());
     let index = (target.index > 0).then_some(target.index);
-    super::http::blocking(backend, move |backend| {
-        let record = backend.get(actor, query(backend, actor, &run)?)?;
-        backend.open_output(actor, record.number, &output, index)
+    super::http::blocking(runs, move |runs| {
+        runs.open_output(actor, &run, &output, index)
     })
     .await
 }
@@ -925,8 +922,8 @@ fn end(target: &Target, status: Option<&str>, snapshot: Option<&OutputSnapshot>)
 }
 
 /// One byte range of an output's current bytes; a stale etag answers `changed`.
-async fn serve_get<B: MachineBackend>(
-    backend: Arc<B>,
+async fn serve_get(
+    runs: Arc<Runs>,
     actor: VerifiedActor,
     target: Target,
     work: mpsc::UnboundedSender<Work>,
@@ -935,7 +932,7 @@ async fn serve_get<B: MachineBackend>(
     let stop = |message| {
         let _ = work.send(Work::Stop { number, message });
     };
-    let snapshot = match open_snapshot(&backend, actor, &target).await {
+    let snapshot = match open_snapshot(&runs, actor, &target).await {
         Ok(snapshot) => snapshot,
         Err(status) => return stop(source_error(&target.id, &status)),
     };
@@ -975,8 +972,8 @@ async fn serve_get<B: MachineBackend>(
 /// Streams an output from the client's cursor (`after`, `offset`) as the run's log announces
 /// its revisions, until the run's end. Bytes are never read past the length the latest
 /// revision committed.
-async fn serve_follow<B: MachineBackend>(
-    backend: Arc<B>,
+async fn serve_follow(
+    runs: Arc<Runs>,
     actor: VerifiedActor,
     target: Target,
     work: mpsc::UnboundedSender<Work>,
@@ -985,7 +982,7 @@ async fn serve_follow<B: MachineBackend>(
     let stop = |message| {
         let _ = work.send(Work::Stop { number, message });
     };
-    let mut events = match follow(backend.clone(), actor, target.run.clone(), 0, None).await {
+    let mut events = match follow(runs.clone(), actor, target.run.clone(), 0, None).await {
         Ok(events) => events,
         Err(refusal) => return stop(source_error(&target.id, &refusal)),
     };
@@ -1016,7 +1013,7 @@ async fn serve_follow<B: MachineBackend>(
         if pending.is_empty() || terminal.is_none() && !events.is_empty() {
             continue;
         }
-        let snapshot = match open_snapshot(&backend, actor, &target).await {
+        let snapshot = match open_snapshot(&runs, actor, &target).await {
             Ok(snapshot) => snapshot,
             Err(status) => return stop(source_error(&target.id, &status)),
         };
@@ -1039,7 +1036,7 @@ async fn serve_follow<B: MachineBackend>(
         Some(other) => other,
         None => unreachable!(),
     };
-    let snapshot = open_snapshot(&backend, actor, &target).await.ok();
+    let snapshot = open_snapshot(&runs, actor, &target).await.ok();
     let items = vec![end(&target, Some(status), snapshot.as_ref())];
     let _ = work.send(Work::Push { number, items });
 }

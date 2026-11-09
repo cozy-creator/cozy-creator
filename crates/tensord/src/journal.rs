@@ -497,7 +497,7 @@ pub(crate) fn function_key(package: &str, entrypoint: &str) -> String {
     format!("{package}/{entrypoint}")
 }
 
-/// One journaled product of an execution's output log (`api::domain::RunProduct` bytes).
+/// One journaled product of an execution's output log (`stored::RunProduct` bytes).
 #[derive(Clone, Debug)]
 pub(crate) struct StoredProduct {
     pub sequence: u64,
@@ -1569,15 +1569,6 @@ impl Journal {
             .map(|record| record.map_err(db_error))
             .collect::<io::Result<Vec<_>>>()
             .map(readable)
-    }
-    pub(crate) fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
-        self.connection
-            .query_row(
-                "SELECT COALESCE(MAX(id),0) FROM executions WHERE actor=?1 OR ?1 IS NULL AND actor IS NOT NULL",
-                [actor],
-                |r| r.get(0),
-            )
-            .map_err(db_error)
     }
 
     /// Accepted history remains evidence of use even after every execution is terminal.

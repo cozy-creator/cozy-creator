@@ -1,79 +1,66 @@
-//! Deployed machine RPCs over the sole journal and authoritative TensorFS store.
+//! A run as its client reads it (`api::machine`): its state, its log and its outputs, and what the
+//! machine holds for a caller. A finished run's log is made once, at its first read, and kept.
+use super::Runs;
 use crate::{
-    api::{
-        auth::{Authority, VerifiedActor},
-        domain, v1,
-        MachineBackend,
-    },
+    api::auth::VerifiedActor,
     gpu_service::{without_gpus, KeptMember, Level},
     journal::{Execution, PublicTerminal, State},
-    service::Service,
+    objects::refusal,
+    stored,
 };
+use api::{error::Error, machine as v1};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     io::{self, Read},
-    sync::{Arc, Mutex},
     time::Duration,
 };
-use crate::storage::Store;
 use tensorfs::format::ObjectRef;
 use tensorfs::sha256;
-use api::error::Error;
 
-pub(crate) struct NativeBackend {
-    pub service: Arc<Service>,
-    pub authority: Authority,
-    pub store: Arc<Store>,
-    pub publisher: Option<Arc<crate::published::Publisher>>,
-    /// `cozy.machine.v1` Run sources and Write.
-    pub runs: Option<Arc<crate::runs::Runs>>,
-    /// Where TensorD's own log rolls; None on development front doors.
-    pub logs: Option<std::path::PathBuf>,
-    // Serialize native projection, not inference or observation. Only one result
-    // projection may establish a given immutable output's native custody at once.
-    projection: Mutex<()>,
+/// One consistent view of an output's current bytes: its parts in order.
+pub(crate) struct OutputSnapshot {
+    pub parts: Vec<(std::fs::File, u64)>,
+    pub length: u64,
+    /// The 1-based ordinal of this (output, index)'s products in the run's log.
+    pub rev: u64,
+    pub media_type: String,
+    /// `sha256:<hex>`, set once the run is terminal (the output is final).
+    pub sha256: Option<String>,
 }
-impl NativeBackend {
-    pub(crate) fn new(
-        service: Arc<Service>,
-        authority: Authority,
-        store: Arc<Store>,
-    ) -> Self {
-        Self {
-            service,
-            authority,
-            store,
-            publisher: None,
-            runs: None,
-            logs: None,
-            projection: Mutex::new(()),
-        }
+
+const LIVE: [&str; 3] = ["queued", "starting", "running"];
+
+/// A run's state by name. An attempt is queued until it runs; only a run sent here is accepted
+/// before it is prepared.
+fn state_name(record: &Execution) -> &'static str {
+    match record.state {
+        State::Completed => "succeeded",
+        State::Failed => "failed",
+        State::Canceled => "canceled",
+        State::Queued if record.waiting_reason.as_deref() == Some(crate::journal::PREPARING) => "preparing",
+        State::Queued | State::Starting => "queued",
+        State::Running => "running",
+        State::Unknown => "unknown",
     }
+}
+
+impl Runs {
     fn workspace_id(&self) -> String {
         self.service.engine.workspace_id()
     }
-    fn query(
-        &self,
-        actor: VerifiedActor,
-        query: domain::MachineExecutionQuery,
-    ) -> Result<Execution, Error> {
-        if query.expected_execution_workspace_id != self.workspace_id() {
-            return Err(refusal(
-                "execution_workspace_changed",
-                "the requested execution journal is not this workspace",
-            ));
-        }
+    /// `actor`'s run `id`.
+    fn record(&self, actor: VerifiedActor, id: &str) -> Result<Execution, Error> {
         self.service
             .engine
-            .get_public(reader(actor).as_deref(), &query.request_id)
+            .get_public(reader(actor).as_deref(), id)
             .map_err(|error| match error.kind() {
                 io::ErrorKind::NotFound => Error::not_found("run_not_found", "this machine has no such run"),
                 _ => problem(error),
             })
     }
-    fn state(&self, record: &Execution) -> Result<domain::MachineExecutionState, Error> {
+    fn state_of(&self, record: &Execution) -> Result<v1::RunState, Error> {
         let context = record
             .submission
             .as_ref()
@@ -84,57 +71,70 @@ impl NativeBackend {
             .public_terminal(&record.id)
             .map_err(problem)?
             .map(|held| {
-                crate::archive::decode_machine_execution_event_page(held.events.as_slice())
+                stored::decode::<stored::LogPage>(held.events.as_slice())
                     .map(|page| page.head_sequence)
                     .map_err(|_| Error::internal("custody_corrupt", "durable event projection corrupt"))
             })
             .transpose()?
             .unwrap_or(record.revision)
             .max(record.revision);
-        Ok(domain::MachineExecutionState {
-            request_id: context.request_id.clone(),
-            attempt_ordinal: record.attempt.max(1) as u64,
-            generation: record.attempt as u64,
-            collected: record.collected,
-            state: match record.state {
-                State::Completed => "succeeded",
-                State::Failed => "failed",
-                State::Canceled => "canceled",
-                // Only Run (`cozy.machine.v1`) accepts a run before it is prepared.
-                State::Queued
-                    if record.waiting_reason.as_deref() == Some(crate::journal::PREPARING) =>
-                {
-                    "preparing"
-                }
-                State::Queued => "queued",
-                // The worker protocol has no "starting": an attempt is queued until it runs.
-                State::Starting => "queued",
-                State::Running => "running",
-                State::Unknown => "unknown",
-            }
-            .into(),
-            sequence,
-            worker_id: self.authority.worker_id.clone(),
-            worker_boot_id: self.authority.boot_id.clone(),
-            execution_workspace_id: self.workspace_id(),
+        let invocation = &record.invocation;
+        Ok(v1::RunState {
+            id: context.request_id.clone(),
             number: record
                 .id
                 .parse()
                 .map_err(|_| Error::internal("internal", "invalid journal run number"))?,
-            accepted_at_ms: record.accepted_at_ms,
+            state: state_name(record).into(),
+            sequence,
+            attempt: record.attempt.max(1) as u32,
             started_at_ms: record.started_at_ms,
+            target: [invocation.package.as_str(), invocation.entrypoint.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("/"),
+            accepted_at_ms: record.accepted_at_ms,
             finished_at_ms: record.finished_at_ms,
-            target: Some(domain::MachineExecutionTarget {
-                package: record.invocation.package.clone(),
-                entrypoint: record.invocation.entrypoint.clone(),
-                installation_id: record.invocation.generation.clone(),
-                ..Default::default()
-            }),
+            ..Default::default()
         })
+    }
+    /// `actor`'s run `id` now.
+    pub(crate) fn state(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
+        self.state_of(&self.record(actor, id)?)
+    }
+    fn page(&self, actor: VerifiedActor, states: &[String], before: u64, newest: bool, limit: usize) -> Result<Vec<v1::RunState>, Error> {
+        let records = self
+            .service
+            .engine
+            .actor_page(reader(actor).as_deref(), 0, before, newest, states, limit)
+            .map_err(problem)?;
+        records.iter().map(|record| self.state_of(record)).collect()
+    }
+    /// The runs `actor` reads, newest first, before the run numbered `before` (0: the newest).
+    pub(crate) fn list(&self, actor: VerifiedActor, before: u64, limit: u32) -> Result<v1::RunList, Error> {
+        let limit = if limit == 0 { 64 } else { limit.min(256) };
+        Ok(v1::RunList { runs: self.page(actor, &[], before, true, limit as usize)? })
+    }
+    /// The runs of `actor`'s that have not ended, oldest first.
+    pub(crate) fn live(&self, actor: VerifiedActor) -> Result<Vec<v1::RunState>, Error> {
+        self.page(actor, &LIVE.map(String::from), 0, false, 256)
+    }
+    /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
+    pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
+        let canceled = self.service.engine.cancel_run(&actor_id(actor), id).map_err(|error| match error.kind() {
+            io::ErrorKind::Unsupported => refusal("update_control_unsupported", &error.to_string()),
+            io::ErrorKind::ResourceBusy => refusal("cancel_unavailable", &error.to_string()),
+            _ => problem(error),
+        })?;
+        if let Some(calls) = self.service.calls() {
+            calls.canceled(&canceled);
+        }
+        self.state_of(&canceled)
     }
     /// The run's journaled log: its published products, its memoized calls' results and its
     /// settled calls, as events with their journaled sequences.
-    fn product_events(&self, record: &Execution) -> Result<Vec<domain::MachineExecutionEvent>, Error> {
+    fn product_events(&self, record: &Execution) -> Result<Vec<stored::LogEvent>, Error> {
         let attempt = record.attempt.max(1) as u64;
         let engine = &self.service.engine;
         let mut events = engine
@@ -143,7 +143,7 @@ impl NativeBackend {
             .iter()
             .map(|stored| {
                 let product = crate::products::decode(stored).map_err(problem)?;
-                Ok(domain::MachineExecutionEvent {
+                Ok(stored::LogEvent {
                     sequence: stored.sequence,
                     attempt_ordinal: attempt,
                     at_ms: stored.at_ms,
@@ -157,7 +157,7 @@ impl NativeBackend {
         let calls = engine.calls(&record.id).map_err(problem)?.into_iter().map(|c| ("call", c));
         let logs = engine.logs(&record.id).map_err(problem)?.into_iter().map(|l| ("log", l));
         for (kind, stored) in calls.chain(logs) {
-            events.push(domain::MachineExecutionEvent {
+            events.push(stored::LogEvent {
                 sequence: stored.sequence,
                 attempt_ordinal: attempt,
                 at_ms: stored.at_ms,
@@ -169,7 +169,7 @@ impl NativeBackend {
         events.sort_by_key(|event| event.sequence);
         Ok(events)
     }
-    fn terminal(&self, record: &Execution) -> Result<domain::MachineExecutionEventPage, Error> {
+    fn terminal(&self, record: &Execution) -> Result<stored::LogPage, Error> {
         let _guard = self.projection.lock().unwrap();
         if let Some(held) = self
             .service
@@ -177,7 +177,7 @@ impl NativeBackend {
             .public_terminal(&record.id)
             .map_err(problem)?
         {
-            return crate::archive::decode_machine_execution_event_page(held.events.as_slice())
+            return stored::decode::<stored::LogPage>(held.events.as_slice())
                 .map_err(|_| Error::internal("custody_corrupt", "durable event projection is corrupt"));
         }
         if !record.state.terminal() {
@@ -272,7 +272,7 @@ impl NativeBackend {
                     api::interface::result(declaration)
                         .ok_or_else(|| Error::internal("custody_corrupt", "result schema absent"))?,
                     "",
-                    domain::RunProductOp::Set,
+                    stored::RunProductOp::Set,
                     0,
                     &references,
                     &mut products,
@@ -286,7 +286,7 @@ impl NativeBackend {
         let shown: Vec<_> = events.iter().filter_map(|e| e.product.clone()).collect();
         // An observer that last saw it queued still sees it start before it ends.
         if record.running_revision > 0 {
-            events.push(domain::MachineExecutionEvent {
+            events.push(stored::LogEvent {
                 sequence: record.running_revision,
                 attempt_ordinal: record.attempt.max(1) as u64,
                 at_ms: record.started_at_ms,
@@ -304,7 +304,7 @@ impl NativeBackend {
             .into_iter()
             .filter(|product| !crate::products::shown(&shown, product));
         for (index, product) in fresh.enumerate() {
-            events.push(domain::MachineExecutionEvent {
+            events.push(stored::LogEvent {
                 sequence: first_sequence + index as u64,
                 attempt_ordinal: record.attempt.max(1) as u64,
                 at_ms: record.finished_at_ms,
@@ -330,7 +330,7 @@ impl NativeBackend {
         }
         facts.push(("run.timing", timing));
         for (kind, body) in facts {
-            events.push(domain::MachineExecutionEvent {
+            events.push(stored::LogEvent {
                 sequence: first_sequence + events.len() as u64,
                 attempt_ordinal: attempt,
                 at_ms: record.finished_at_ms,
@@ -381,9 +381,7 @@ impl NativeBackend {
             body["error_code"] = json!(error_code);
         }
         // Observation only: the failed attempt's bundle, written before the run settled.
-        if let Some((triage, bundle)) = self.service.engine.triage(&record.id).map_err(problem)? {
-            body["triage_bundle"] = json!({"subject_id":triage.subject_id,
-                "write_receipt_digest":format!("sha256:{}", triage.sha256),"length":triage.length});
+        if let Some((_, bundle)) = self.service.engine.triage(&record.id).map_err(problem)? {
             if let Some(detail) = crate::triage::detail(&bundle) {
                 body["failure_detail"] = json!(detail);
             }
@@ -399,7 +397,7 @@ impl NativeBackend {
         }
         let bytes = canonical(&body)?;
         let digest = sha256::digest(&bytes);
-        let outcome = domain::AttemptOutcome {
+        let outcome = stored::AttemptOutcome {
             worker_boot_id: record.acceptance_boot_id.clone(),
             request_id: context.request_id.clone(),
             attempt_ordinal: record.attempt.max(1) as u64,
@@ -416,7 +414,7 @@ impl NativeBackend {
             .last()
             .map_or(record.revision, |event| event.sequence.max(record.revision))
             + 1;
-        events.push(domain::MachineExecutionEvent {
+        events.push(stored::LogEvent {
             sequence,
             attempt_ordinal: outcome.attempt_ordinal,
             at_ms: record.finished_at_ms,
@@ -429,7 +427,7 @@ impl NativeBackend {
             outcome: Some(outcome.clone()),
             ..Default::default()
         });
-        let page = domain::MachineExecutionEventPage {
+        let page = stored::LogPage {
             events,
             next_after: sequence,
             head_sequence: sequence,
@@ -441,50 +439,24 @@ impl NativeBackend {
             .commit_public_terminal(
                 &record.id,
                 PublicTerminal {
-                    outcome: crate::archive::encode_attempt_outcome(&outcome),
-                    events: crate::archive::encode_machine_execution_event_page(&page),
+                    outcome: stored::encode(&outcome),
+                    events: stored::encode(&page),
                 },
             )
             .map_err(problem)?;
-        crate::archive::decode_machine_execution_event_page(committed.events.as_slice())
+        stored::decode::<stored::LogPage>(committed.events.as_slice())
             .map_err(|_| Error::internal("custody_corrupt", "durable event projection is corrupt"))
     }
-}
-/// Printable ASCII only, bounded to its head and tail: a reason is shown to the client verbatim.
-fn safe(text: &str, limit: usize) -> String {
-    crate::triage::ends(text, limit)
-        .chars()
-        .map(|c| if (' '..='~').contains(&c) { c } else { ' ' })
-        .collect()
-}
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-impl MachineBackend for NativeBackend {
-    fn activity(&self) -> Option<u64> {
-        Some(self.service.engine.activity_epoch())
-    }
-    fn runs(&self) -> Option<Arc<crate::runs::Runs>> {
-        self.runs.clone()
-    }
-    fn open_output(
+    /// One output of `actor`'s run `id`: its current bytes. `index` is a list item's 1-based index.
+    pub(crate) fn open_output(
         &self,
         actor: VerifiedActor,
-        run: u64,
+        id: &str,
         output: &str,
         index: Option<u32>,
-    ) -> Result<crate::api::backend::OutputSnapshot, Error> {
+    ) -> Result<OutputSnapshot, Error> {
         let absent = || Error::not_found("output_not_found", "this machine has no such run or output");
-        let reader = reader(actor);
-        let record = match self.service.engine.get(&run.to_string()) {
-            Ok(record) if record.submission.as_ref().is_some_and(|s| reader.as_ref().is_none_or(|actor| s.actor == *actor)) => record,
-            Ok(_) => return Err(absent()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(absent()),
-            Err(error) => return Err(problem(error)),
-        };
+        let record = self.record(actor, id)?;
         let terminal = record.state.terminal();
         let events = if terminal {
             self.terminal(&record)?.events
@@ -493,10 +465,10 @@ impl MachineBackend for NativeBackend {
         };
         let (op, position) = match index {
             Some(index) => (
-                domain::RunProductOp::Append,
+                stored::RunProductOp::Append,
                 index.checked_sub(1).ok_or_else(absent)?,
             ),
-            None => (domain::RunProductOp::Set, 0),
+            None => (stored::RunProductOp::Set, 0),
         };
         let revisions: Vec<_> = events
             .into_iter()
@@ -511,7 +483,7 @@ impl MachineBackend for NativeBackend {
             .content
             .as_ref()
             .ok_or_else(|| Error::internal("custody_corrupt", "product content absent"))?;
-        let refs: Vec<&domain::Ref> = if current.parts.is_empty() {
+        let refs: Vec<&stored::Ref> = if current.parts.is_empty() {
             vec![content]
         } else {
             current
@@ -528,7 +500,7 @@ impl MachineBackend for NativeBackend {
                 Ok((file, r.length))
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Ok(crate::api::backend::OutputSnapshot {
+        Ok(OutputSnapshot {
             parts,
             length: content.length,
             rev: revisions.len() as u64,
@@ -536,15 +508,16 @@ impl MachineBackend for NativeBackend {
             sha256: terminal.then(|| format!("sha256:{}", sha256::hex(&content.digest))),
         })
     }
-    fn open_member(
+    /// One file of a tree output (`member`, its manifest path), at the output's revision.
+    pub(crate) fn open_member(
         &self,
         actor: VerifiedActor,
-        run: u64,
+        id: &str,
         output: &str,
         index: Option<u32>,
         member: &str,
-    ) -> Result<crate::api::backend::OutputSnapshot, Error> {
-        let tree = self.open_output(actor, run, output, index)?;
+    ) -> Result<OutputSnapshot, Error> {
+        let tree = self.open_output(actor, id, output, index)?;
         if tree.media_type != api::tree::MEDIA {
             return Err(Error::validation("invalid_request", "only a tree output has members"));
         }
@@ -559,7 +532,7 @@ impl MachineBackend for NativeBackend {
             .ok_or_else(|| Error::not_found("output_not_found", "the tree has no such member"))?;
         let (sha, length) = (object.sha256.as_str(), object.length);
         let file = self.service.engine.cas().file(object).map_err(storage)?;
-        Ok(crate::api::backend::OutputSnapshot {
+        Ok(OutputSnapshot {
             parts: vec![(file, length)],
             length,
             rev: tree.rev,
@@ -567,48 +540,8 @@ impl MachineBackend for NativeBackend {
             sha256: Some(format!("sha256:{sha}")),
         })
     }
-    fn read_triage(
-        &self,
-        actor: VerifiedActor,
-        request: domain::MachineExecutionTriageQuery,
-    ) -> Result<domain::MachineExecutionTriage, Error> {
-        let record = self.query(
-            actor,
-            request
-                .execution
-                .ok_or_else(|| Error::validation("invalid_request", "execution query absent"))?,
-        )?;
-        if request.attempt_ordinal != 0 && request.attempt_ordinal != record.attempt.max(1) as u64
-        {
-            return Err(Error::not_found("triage_not_found", "this machine keeps one attempt per run"));
-        }
-        let (triage, bytes) = self
-            .service
-            .engine
-            .triage(&record.id)
-            .map_err(problem)?
-            .ok_or_else(|| Error::not_found("triage_not_found", "this attempt kept no triage bundle"))?;
-        Ok(domain::MachineExecutionTriage {
-            bundle: Some(domain::TriageBundleRef {
-                subject_id: triage.subject_id,
-                write_receipt_digest: digest_bytes(&format!("sha256:{}", triage.sha256))?,
-                length: triage.length,
-            }),
-            bundle_canonical_bytes: bytes,
-        })
-    }
-    fn log(&self, name: &str) -> Result<platform::tail::Log, Error> {
-        // TensorFS and TensorD's memory notes append to the store's logs, each rotating to one
-        // older file; TensorD's own log rolls daily.
-        let store = self.store.root().join("logs");
-        match (name, &self.logs) {
-            ("tensorfs-transport", _) => Ok(platform::tail::Log::rotated(store, "transport.log")),
-            ("memory", _) => Ok(platform::tail::Log::rotated(store, "memory.log")),
-            ("tensord", Some(dir)) => Ok(platform::tail::Log::daily(dir.clone(), "tensord")),
-            _ => Err(Error::not_found("log_not_found", format!("this machine keeps no log {name}"))),
-        }
-    }
-    fn object(&self, actor: VerifiedActor, sha256: &str) -> Result<std::fs::File, Error> {
+    /// A complete object this signer wrote, verified against `sha256` (hex) as it was stored.
+    pub(crate) fn object(&self, actor: VerifiedActor, sha256: &str) -> Result<std::fs::File, Error> {
         // Only an object this signer wrote: another signer's reads as absent.
         let held = self
             .service
@@ -621,64 +554,17 @@ impl MachineBackend for NativeBackend {
         let object = ObjectRef { sha256: sha256.to_string(), length };
         self.service.engine.cas().file(&object).map_err(storage)
     }
-    fn list_packages(
-        &self,
-        actor: VerifiedActor,
-        _: domain::PackageListQuery,
-    ) -> Result<domain::PackageList, Error> {
-        let mut packages = vec![];
-        for installed in self
-            .service
-            .engine
-            .installations(&actor_id(actor))
-            .map_err(problem)?
-        {
+    /// `actor`'s installations, each with what it holds now (`StatusFrame.environments`).
+    pub(crate) fn environments(&self, actor: VerifiedActor) -> Result<Vec<v1::Environment>, Error> {
+        let (actor, gpu) = (actor_id(actor), self.service.gpu());
+        let held = gpu.as_ref().map(|gpu| gpu.levels()).unwrap_or_default();
+        let mut environments = vec![];
+        for installed in self.service.engine.installations(&actor).map_err(problem)? {
             let record = match self.service.catalog.record(&installed.generation) {
                 Ok(record) => record,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(problem(error)),
             };
-            let warning = record.sdk_fallback.clone();
-            let sdk = record
-                .dependencies
-                .into_iter()
-                .filter(|d| matches!(d.name.as_str(), "cozy-runtime" | "tensorfs"))
-                .map(|d| domain::ImageDistribution {
-                    distribution: d.name,
-                    version: d.version,
-                })
-                .collect();
-            let interface: Value = serde_json::from_slice(&installed.interface)
-                .map_err(|_| Error::internal("custody_corrupt", "held interface corrupt"))?;
-            let mut entrypoints = api::interface::entrypoints(&interface)
-                .filter_map(|e| api::interface::name(e).map(str::to_string))
-                .collect::<Vec<_>>();
-            entrypoints.sort();
-            packages.push(domain::MachinePackage {
-                installation_id: installed.alias,
-                package: installed.package,
-                release: installed.release,
-                origin: installed.hub,
-                sdk,
-                entrypoints,
-                warning,
-                ..Default::default()
-            });
-        }
-        packages.sort_by(|a, b| {
-            (&a.package, &a.release, &a.installation_id).cmp(&(
-                &b.package,
-                &b.release,
-                &b.installation_id,
-            ))
-        });
-        Ok(domain::PackageList { packages })
-    }
-    fn levels(&self, actor: VerifiedActor) -> Result<BTreeMap<String, &'static str>, Error> {
-        let (actor, gpu) = (actor_id(actor), self.service.gpu());
-        let held = gpu.as_ref().map(|gpu| gpu.levels()).unwrap_or_default();
-        let mut levels = BTreeMap::new();
-        for installed in self.service.engine.installations(&actor).map_err(problem)? {
             // `downloaded`: the store still holds every model of a preparation bound to it.
             let bound = self
                 .service
@@ -694,23 +580,39 @@ impl MachineBackend for NativeBackend {
             };
             // Only the installation's own App: a callee's executors in its environment are the
             // callee's.
-            let application = self
-                .service
-                .catalog
-                .record(&installed.generation)
-                .map(|record| record.application)
-                .unwrap_or_default();
             let level = held
-                .get(&(installed.generation.clone(), application))
+                .get(&(installed.generation.clone(), record.application))
                 .map_or(base, |held| base.max(*held));
-            levels.insert(installed.alias, level.name());
+            let interface: Value = serde_json::from_slice(&installed.interface)
+                .map_err(|_| Error::internal("custody_corrupt", "held interface corrupt"))?;
+            let mut entrypoints = api::interface::entrypoints(&interface)
+                .filter_map(|e| api::interface::name(e).map(str::to_string))
+                .collect::<Vec<_>>();
+            entrypoints.sort();
+            environments.push(v1::Environment {
+                level: level.name().into(),
+                installation: installed.alias,
+                package: installed.package,
+                release: installed.release,
+                entrypoints,
+                runtime: (record.dependencies.into_iter())
+                    .find(|d| d.name == "cozy-runtime")
+                    .map(|d| d.version)
+                    .unwrap_or_default(),
+                // Why this environment does not run the machine's own SDK; empty when it does.
+                warning: record.sdk_fallback,
+                hub: installed.hub,
+            });
         }
-        Ok(levels)
+        environments.sort_by(|a, b| (&a.package, &a.release, &a.installation).cmp(&(&b.package, &b.release, &b.installation)));
+        Ok(environments)
     }
-    fn memory(&self) -> BTreeMap<String, v1::GpuMemory> {
+    /// Each GPU's page accounting by UUID (`StatusFrame.gpus[].memory`).
+    pub(crate) fn memory(&self) -> BTreeMap<String, v1::GpuMemory> {
         self.service.gpu().map(|gpu| gpu.memory()).unwrap_or_default()
     }
-    fn warm_set(&self, actor: VerifiedActor) -> Result<Vec<v1::WarmItem>, Error> {
+    /// The caller's warm set, each member with what it holds now (`StatusFrame.warm`).
+    pub(crate) fn warm(&self, actor: VerifiedActor) -> Result<Vec<v1::WarmItem>, Error> {
         let actor = actor_id(actor);
         let kept = self
             .service
@@ -749,81 +651,24 @@ impl MachineBackend for NativeBackend {
         }
         Ok(items)
     }
-    fn workspace(
-        &self,
-        _: VerifiedActor,
-        _: domain::MachineExecutionWorkspaceQuery,
-    ) -> Result<domain::MachineExecutionWorkspace, Error> {
-        Ok(domain::MachineExecutionWorkspace {
-            worker_id: self.authority.worker_id.clone(),
-            worker_boot_id: self.authority.boot_id.clone(),
-            execution_workspace_id: self.workspace_id(),
-        })
-    }
-    fn get(
-        &self,
-        actor: VerifiedActor,
-        query: domain::MachineExecutionQuery,
-    ) -> Result<domain::MachineExecutionState, Error> {
-        self.state(&self.query(actor, query)?)
-    }
-    fn execution_ms(
-        &self,
-        actor: VerifiedActor,
-        query: domain::MachineExecutionQuery,
-    ) -> Result<u64, Error> {
-        Ok(self.query(actor, query)?.executed_ms)
-    }
-    fn memo(
-        &self,
-        actor: VerifiedActor,
-        query: domain::MachineExecutionQuery,
-    ) -> Result<crate::journal::CallMemo, Error> {
-        Ok(self.query(actor, query)?.memo)
-    }
-    fn measurements(
-        &self,
-        actor: VerifiedActor,
-        query: domain::MachineExecutionQuery,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        let record = self.query(actor, query)?;
-        self.service
-            .engine
-            .with_journal(|journal| journal.measurements(&record.id))
-            .map_err(problem)
-    }
-    fn events(
-        &self,
-        actor: VerifiedActor,
-        request: domain::MachineExecutionEventsQuery,
-    ) -> Result<domain::MachineExecutionEventPage, Error> {
-        let query = request
-            .execution
-            .ok_or_else(|| Error::validation("invalid_request", "execution query absent"))?;
-        let mut record = self.query(actor, query.clone())?;
-        if request.wait && !record.state.terminal() && record.revision <= request.after {
+    /// Up to 256 of the run's stored events after `after`, waiting up to 30 s for one.
+    fn log_page(&self, actor: VerifiedActor, id: &str, after: u64) -> Result<stored::LogPage, Error> {
+        let mut record = self.record(actor, id)?;
+        if !record.state.terminal() && record.revision <= after {
             let epoch = self.service.engine.activity_epoch();
-            record = self.query(actor, query.clone())?;
-            if !record.state.terminal() && record.revision <= request.after {
+            record = self.record(actor, id)?;
+            if !record.state.terminal() && record.revision <= after {
                 self.service
                     .engine
                     .wait_activity(epoch, Some(Duration::from_secs(30)));
-                record = self.query(actor, query)?;
+                record = self.record(actor, id)?;
             }
         }
         if record.state.terminal() {
             let mut page = self.terminal(&record)?;
-            page.events.retain(|event| event.sequence > request.after);
-            page.events.truncate(if request.limit == 0 {
-                256
-            } else {
-                request.limit.min(256)
-            } as usize);
-            page.next_after = page
-                .events
-                .last()
-                .map(|e| e.sequence)
-                .unwrap_or(request.after);
+            page.events.retain(|event| event.sequence > after);
+            page.events.truncate(256);
+            page.next_after = page.events.last().map(|e| e.sequence).unwrap_or(after);
             return Ok(page);
         }
         // The Python worker's live kinds: `running` once, then the latest `progress`.
@@ -831,8 +676,8 @@ impl MachineBackend for NativeBackend {
         let event = |sequence: u64,
                      kind: &str,
                      body: &Value|
-         -> Result<domain::MachineExecutionEvent, Error> {
-            Ok(domain::MachineExecutionEvent {
+         -> Result<stored::LogEvent, Error> {
+            Ok(stored::LogEvent {
                 sequence,
                 attempt_ordinal: attempt,
                 at_ms: now_ms(),
@@ -844,9 +689,9 @@ impl MachineBackend for NativeBackend {
         // Published products keep their journaled sequences; see `products.rs`.
         let mut events = self.product_events(&record)?;
         let published = events.last().map_or(0, |event| event.sequence);
-        events.retain(|event| event.sequence > request.after);
+        events.retain(|event| event.sequence > after);
         let running = record.state == State::Running && record.running_revision > 0;
-        if running && record.running_revision > request.after {
+        if running && record.running_revision > after {
             let mut started = event(
                 record.running_revision,
                 "running",
@@ -855,9 +700,7 @@ impl MachineBackend for NativeBackend {
             started.at_ms = record.started_at_ms;
             events.push(started);
         }
-        let floor = request
-            .after
-            .max(if running { record.running_revision } else { 0 });
+        let floor = after.max(if running { record.running_revision } else { 0 });
         if record.revision > floor && record.revision > published {
             // A run preparing inside itself (`runs`) shows its stage and bytes as progress.
             let preparing = record.state == State::Queued
@@ -884,92 +727,31 @@ impl MachineBackend for NativeBackend {
             } else {
                 // Every cursor up to the head is answered, or a waiting client would spin.
                 let waiting = waiting.or_else(|| record.waiting_reason.clone());
-                events.push(event(record.revision, "state", &json!({"state":self.state(&record)?.state,"completed_units":record.completed_units,"waiting_reason":waiting}))?);
+                events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting}))?);
             }
         }
         events.sort_by_key(|event| event.sequence);
-        events.truncate(if request.limit == 0 {
-            256
-        } else {
-            request.limit.min(256)
-        } as usize);
-        Ok(domain::MachineExecutionEventPage {
-            next_after: events.last().map(|e| e.sequence).unwrap_or(request.after),
+        events.truncate(256);
+        Ok(stored::LogPage {
+            next_after: events.last().map(|e| e.sequence).unwrap_or(after),
             events,
             head_sequence: record.revision,
             compacted_through: record.revision.saturating_sub(1),
         })
     }
-    fn control(
-        &self,
-        actor: VerifiedActor,
-        request: domain::MachineExecutionControl,
-    ) -> Result<domain::MachineExecutionState, Error> {
-        let query = request.execution
-            .ok_or_else(|| Error::validation("invalid_request", "execution query absent"))?;
-        if request.action == domain::MachineExecutionAction::Cancel as i32 {
-            if query.expected_execution_workspace_id != self.workspace_id() {
-                return Err(refusal("execution_workspace_changed", "the requested execution journal is not this workspace"));
-            }
-            let canceled = self.service.engine.cancel_run(&actor_id(actor), &query.request_id)
-                .map_err(|error| match error.kind() {
-                    std::io::ErrorKind::Unsupported => refusal("update_control_unsupported", &error.to_string()),
-                    std::io::ErrorKind::ResourceBusy => refusal("cancel_unavailable", &error.to_string()),
-                    _ => problem(error),
-                })?;
-            if let Some(calls) = self.service.calls() {
-                calls.canceled(&canceled);
-            }
-            return self.state(&canceled);
-        }
-        Err(Error::validation("invalid_request", "control names an action"))
-    }
-    fn list(
-        &self,
-        actor: VerifiedActor,
-        request: domain::MachineExecutionListQuery,
-    ) -> Result<domain::MachineExecutionList, Error> {
-        let actor = reader(actor);
-        let head_number = self.service.engine.actor_head(actor.as_deref()).map_err(problem)?;
-        let records = self
-            .service
-            .engine
-            .actor_page(
-                actor.as_deref(),
-                if request.newest_first {
-                    0
-                } else {
-                    request.after_number
-                },
-                if request.newest_first {
-                    request.before_number
-                } else {
-                    0
-                },
-                request.newest_first,
-                &request.states,
-                if request.limit == 0 {
-                    64
-                } else {
-                    request.limit.min(256)
-                } as usize,
-            )
-            .map_err(problem)?;
-        let executions = records
-            .iter()
-            .map(|r| self.state(r))
-            .collect::<Result<Vec<_>, _>>()?;
-        if request.wait {
-            return Err(Error::not_found("capability_unavailable",
-                "list wait is not qualified by this build",
-            ));
-        }
-        Ok(domain::MachineExecutionList {
-            executions,
-            head_number,
-            execution_workspace_id: self.workspace_id(),
-        })
-    }
+}
+/// Printable ASCII only, bounded to its head and tail: a reason is shown to the client verbatim.
+fn safe(text: &str, limit: usize) -> String {
+    crate::triage::ends(text, limit)
+        .chars()
+        .map(|c| if (' '..='~').contains(&c) { c } else { ' ' })
+        .collect()
+}
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 pub(crate) fn actor_id(actor: VerifiedActor) -> String {
     sha256::hex(&actor.public_key)
@@ -1019,25 +801,22 @@ fn problem(error: io::Error) -> Error {
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::conflict("precondition_failed", format!("native custody: {error}"))
 }
-fn refusal(code: &str, detail: &str) -> Error {
-    crate::api::refused(code, detail)
-}
 type AssetSources = std::collections::HashMap<
     String,
     (
         crate::journal::Artifact,
         String,
-        domain::NativeByteRetentionRequest,
+        stored::NativeByteRetentionRequest,
     ),
 >;
 fn rewrite_assets(
     value: &mut Value,
     schema: &Value,
     path: &str,
-    op: domain::RunProductOp,
+    op: stored::RunProductOp,
     index: u32,
     sources: &AssetSources,
-    products: &mut Vec<domain::RunProduct>,
+    products: &mut Vec<stored::RunProduct>,
 ) -> Result<(), Error> {
     if value.is_null() {
         return Ok(());
@@ -1059,11 +838,11 @@ fn rewrite_assets(
                 "digest".into(),
                 json!(format!("sha256:{}", artifact.sha256)),
             );
-            products.push(domain::RunProduct {
+            products.push(stored::RunProduct {
                 output: path.into(),
                 op: op as i32,
                 index,
-                content: Some(domain::Ref {
+                content: Some(stored::Ref {
                     digest: digest_bytes(&format!("sha256:{}", artifact.sha256))?,
                     length: artifact.length,
                 }),
@@ -1112,7 +891,7 @@ fn rewrite_assets(
                     child,
                     element,
                     path,
-                    domain::RunProductOp::Append,
+                    stored::RunProductOp::Append,
                     position.try_into().map_err(|_| {
                         Error::validation("out_of_range", "list output index is outside deployed protocol")
                     })?,
@@ -1134,19 +913,19 @@ fn rewrite_assets(
     }
     Ok(())
 }
-fn product_document(product: &domain::RunProduct) -> Result<Vec<u8>, Error> {
+fn product_document(product: &stored::RunProduct) -> Result<Vec<u8>, Error> {
     canonical(
         &crate::products::document(product)
             .map_err(|_| Error::internal("custody_corrupt", "product reference absent"))?,
     )
 }
 
-fn output_entries(products: &[domain::RunProduct]) -> Result<Vec<Value>, Error> {
+fn output_entries(products: &[stored::RunProduct]) -> Result<Vec<Value>, Error> {
     let mut entries = std::collections::BTreeMap::new();
     for product in products {
         let document: Value = serde_json::from_slice(&product_document(product)?)
             .map_err(|_| Error::internal("internal", "product document is invalid"))?;
-        let output_id = if product.op == domain::RunProductOp::Append as i32 {
+        let output_id = if product.op == stored::RunProductOp::Append as i32 {
             format!("{}[{}]", product.output, product.index)
         } else {
             product.output.clone()
@@ -1165,4 +944,255 @@ fn output_entries(products: &[domain::RunProduct]) -> Result<Vec<Value>, Error> 
         }
     }
     Ok(entries.into_values().collect())
+}
+
+/// The outcome document's adjustment rows, as TensorD kept them.
+fn adjustments(rows: &Value) -> Vec<v1::Adjustment> {
+    let rows: Vec<crate::journal::Adjustment> = serde_json::from_value(rows.clone()).unwrap_or_default();
+    rows.into_iter()
+        .map(|row| v1::Adjustment {
+            field: row.field,
+            kind: row.kind.as_str().into(),
+            requested: row.requested,
+            applied: row.applied,
+            reason: row.reason,
+            source: row.source,
+        })
+        .collect()
+}
+
+fn spell(bytes: &[u8]) -> String {
+    format!("sha256:{}", tensorfs::sha256::hex(bytes))
+}
+
+/// Canonical JSON bytes as the wire's raw JSON; none when empty or not JSON.
+fn raw(bytes: Vec<u8>) -> Option<v1::Json> {
+    String::from_utf8(bytes).ok().and_then(|text| v1::Json::parse(text).ok())
+}
+
+/// The current outcome carries a stable code and a plain detail separately.
+fn reason(body: &Value) -> v1::Reason {
+    let origin = match body["cause"]["origin"].as_u64() {
+        Some(1) => "author",
+        Some(2) => "runtime",
+        Some(6) => "request",
+        _ => "machine",
+    };
+    let mut reason = message_reason(
+        body["error_code"].as_str().unwrap_or_default(),
+        body["safe_message"].as_str().unwrap_or_default(),
+        origin,
+    );
+    reason.detail = body["failure_detail"].as_str().unwrap_or_default().into();
+    reason
+}
+
+fn message_reason(code: &str, message: &str, origin: &str) -> v1::Reason {
+    if code.is_empty() {
+        return v1::Reason {
+            code: "failure_record_invalid".into(),
+            message: "the recorded failure has no structured error code".into(),
+            origin: "machine".into(),
+            ..Default::default()
+        };
+    }
+    v1::Reason {
+        code: code.into(),
+        message: message.into(),
+        origin: origin.into(),
+        ..Default::default()
+    }
+}
+
+/// One revision's parts: (digest, length) each.
+type Parts = Vec<(Vec<u8>, u64)>;
+
+/// A reader's place in a run's log. It is read from its start, so a reattach numbers each output's
+/// revisions and lists the outcome's outputs as the run made them.
+#[derive(Default)]
+pub(crate) struct Log {
+    /// The last stored event read.
+    after: u64,
+    revisions: HashMap<(String, u32), u64>,
+    products: Vec<v1::Product>,
+    /// Each item's latest revision as parts (digest, length): a revision whose parts extend
+    /// them appends.
+    parts: HashMap<(String, u32), Parts>,
+}
+impl Log {
+    fn event(&mut self, event: stored::LogEvent) -> Option<v1::RunEvent> {
+        let body: Value =
+            serde_json::from_slice(&event.body_canonical_bytes).unwrap_or(Value::Null);
+        let kind = match event.kind.as_str() {
+            "state" | "running" => {
+                let state = body["state"].as_str().unwrap_or("running").replace("starting", "queued");
+                v1::Event::State(v1::RunState {
+                    // Running from this event: its time counts from here.
+                    started_at_ms: if state == "running" { event.at_ms } else { 0 },
+                    state,
+                    sequence: event.sequence,
+                    attempt: event.attempt_ordinal as u32,
+                    waiting: body["waiting_reason"].as_str().unwrap_or_default().into(),
+                    ..Default::default()
+                })
+            }
+            "progress" => {
+                let payload = &body["payload"];
+                v1::Event::Progress(v1::Progress {
+                    step_ms: payload["step_ms"].as_f64().unwrap_or(0.0),
+                    step_steady_ms: payload["step_steady_ms"].as_f64().unwrap_or(0.0),
+                    stage: payload["stage"].as_str().unwrap_or_default().into(),
+                    fraction: payload["overall_fraction"].as_f64().unwrap_or(-1.0),
+                    completed: payload["position"].as_u64().unwrap_or(0),
+                    total: payload["total"].as_u64().unwrap_or(0),
+                    bytes_done: payload["bytes_done"].as_u64().unwrap_or(0),
+                    bytes_total: payload["bytes_total"].as_u64().unwrap_or(0),
+                    stage_fraction: payload["stage_fraction"].as_f64(),
+                })
+            }
+            "call" => v1::Event::Call(v1::Call {
+                run: body["request"].as_str().unwrap_or_default().into(),
+                index: body["index"].as_u64().unwrap_or_default() as u32,
+                function: body["export"].as_str().unwrap_or_default().into(),
+                label: body["label"].as_str().unwrap_or_default().into(),
+                status: body["status"].as_str().unwrap_or_default().into(),
+                called_at_ms: body["called_unix_ms"].as_i64().unwrap_or_default(),
+                finished_at_ms: body["finished_unix_ms"].as_i64().unwrap_or_default(),
+                measurements: match &body["measurements"] {
+                    Value::Null => None,
+                    measured => raw(crate::boundary_json::exact(measured)),
+                },
+                memoized: body["memoized"].as_bool().unwrap_or_default(),
+                computation_digest: body["computation_digest"].as_str().unwrap_or_default().into(),
+                unmemoized: body["unmemoized"].as_str().unwrap_or_default().into(),
+                memo_basis: body["memo_basis"].as_str().unwrap_or_default().into(),
+                reason: (!body["error_code"].as_str().unwrap_or_default().is_empty()
+                    || matches!(
+                        body["status"].as_str(),
+                        Some("failed" | "canceled" | "refused")
+                    ))
+                .then(|| {
+                    message_reason(
+                        body["error_code"].as_str().unwrap_or_default(),
+                        body["error"].as_str().unwrap_or_default(),
+                        "runtime",
+                    )
+                }),
+            }),
+            "log" => match body.get("gpu") {
+                Some(gpu) => v1::Event::Gpu(v1::GpuAllocation {
+                    state: gpu["state"].as_str().unwrap_or_default().into(),
+                    gpus: gpu["gpus"].as_array().into_iter().flatten().filter_map(|g| g.as_u64()).map(|g| g as u32).collect(),
+                    width: gpu["width"].as_u64().unwrap_or_default() as u32,
+                    behind: gpu["behind"].as_str().unwrap_or_default().into(),
+                }),
+                None => v1::Event::Log(v1::LogLine {
+                    level: body["level"].as_str().unwrap_or("info").into(),
+                    text: body["text"].as_str().unwrap_or_default().into(),
+                }),
+            },
+            "product" => {
+                let product = event.product?;
+                let list = product.op == stored::RunProductOp::Append as i32;
+                let index = if list { product.index + 1 } else { 0 };
+                let rev = self
+                    .revisions
+                    .entry((product.output.clone(), index))
+                    .or_default();
+                *rev += 1;
+                let (length, digest) = product.content.as_ref()
+                    .map(|content| (content.length, spell(&content.digest)))
+                    .unwrap_or_default();
+                let parts: Parts = product
+                    .parts
+                    .iter()
+                    .filter_map(|p| p.content.as_ref().map(|c| (c.digest.clone(), c.length)))
+                    .collect();
+                let previous = self
+                    .parts
+                    .insert((product.output.clone(), index), parts.clone());
+                let appended_from = previous
+                    .filter(|before| {
+                        !before.is_empty()
+                            && before.len() <= parts.len()
+                            && parts.starts_with(before)
+                    })
+                    .map(|before| before.iter().map(|(_, length)| length).sum());
+                let converted = v1::Product {
+                    output: product.output,
+                    checkpoint: product.checkpoint,
+                    index,
+                    rev: *rev,
+                    length,
+                    digest,
+                    media_type: product.media_type,
+                    label: product.label,
+                    duration_us: product.parts.iter().map(|p| p.duration_us).sum(),
+                    appended_from,
+                };
+                self.products.retain(|p| {
+                    (p.output.as_str(), p.index) != (converted.output.as_str(), converted.index)
+                });
+                self.products.push(converted.clone());
+                v1::Event::Product(converted)
+            }
+            "outcome" => {
+                let outcome = event.outcome?;
+                let body: Value =
+                    serde_json::from_slice(&outcome.outcome_canonical_bytes).unwrap_or(Value::Null);
+                let status = match body["status"].as_u64() {
+                    Some(1) => "succeeded",
+                    Some(4) => "canceled",
+                    _ => "failed",
+                };
+                let result = body["result"]["inline_result"]
+                    .as_str()
+                    .and_then(|encoded| STANDARD.decode(encoded).ok())
+                    .and_then(raw);
+                v1::Event::Outcome(v1::Outcome {
+                    status: status.into(),
+                    reason: (status != "succeeded").then(|| reason(&body)),
+                    result,
+                    outputs: self.products.clone(),
+                    adjustments: adjustments(&body["adjustments"]),
+                    // `Runs::read` adds the measurements, the execution time and the memo.
+                    ..Default::default()
+                })
+            }
+            _ => return None,
+        };
+        Some(v1::RunEvent {
+            sequence: event.sequence,
+            at_ms: event.at_ms as i64,
+            event: kind,
+        })
+    }
+}
+
+impl Runs {
+    /// The next events of `actor`'s run `id` after those `log` has read (`api::machine`), waiting
+    /// up to 30 s for one. Its outcome ends it.
+    pub(crate) fn read(&self, actor: VerifiedActor, id: &str, log: &mut Log) -> Result<Vec<v1::RunEvent>, Error> {
+        let page = self.log_page(actor, id, log.after)?;
+        let mut events = vec![];
+        for event in page.events {
+            log.after = log.after.max(event.sequence);
+            let Some(mut event) = log.event(event) else { continue };
+            if let v1::Event::Outcome(outcome) = &mut event.event {
+                let record = self.record(actor, id)?;
+                let measured = (self.service.engine)
+                    .with_journal(|journal| journal.measurements(&record.id))
+                    .map_err(problem)?;
+                outcome.measurements = measured.and_then(raw);
+                // Its own time running its callable, every attempt summed (0: unknown).
+                outcome.execution_ms = record.executed_ms;
+                let memo = record.memo;
+                (outcome.computation_digest, outcome.memoized, outcome.unmemoized, outcome.memo_basis) =
+                    (memo.computation, memo.memoized, memo.unmemoized, memo.basis);
+            }
+            events.push(event);
+        }
+        log.after = log.after.max(page.next_after);
+        Ok(events)
+    }
 }

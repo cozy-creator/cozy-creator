@@ -256,7 +256,9 @@ impl Machine {
     /// The ranges of the object (`sha256:<hex>`) the machine holds for this signer; a stored
     /// object is held whole.
     pub(crate) async fn held(&self, digest: &str) -> Result<Ranges, Error> {
-        held(&send(self.request(Method::HEAD, path::OBJECT, &[digest])).await?)
+        let held = self.held_many(&[digest.to_owned()]).await?;
+        (held.into_iter().next().map(|object| object.ranges))
+            .ok_or_else(|| Error::Answer("the machine answered for no object".into()))
     }
 
     /// What the machine holds of the object (`sha256:<hex>`, `length` bytes) as its upload lands,

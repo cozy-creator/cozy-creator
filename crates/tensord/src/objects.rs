@@ -484,3 +484,22 @@ fn hex(digest: &str) -> Option<String> {
         .filter(|h| h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
         .map(String::from)
 }
+
+/// A typed refusal of the run layer (`runs`, `objects`) as the error its code names.
+pub(crate) fn refusal(code: &str, message: impl Into<String>) -> api::error::Error {
+    match code {
+        "run_id_conflict" => api::error::Error::conflict(code, message),
+        "machine_disk_full" => api::error::Error::capacity(code, message),
+        "object_storage_failed" | "machine_released" | "machine_updating" => {
+            api::error::Error::unavailable(code, message)
+        }
+        c if c.starts_with("invalid") || c.starts_with("object_") => api::error::Error::validation(code, message),
+        _ => api::error::Error::conflict(code, message),
+    }
+}
+
+impl From<Refused> for api::error::Error {
+    fn from(refused: Refused) -> Self {
+        refusal(refused.code, refused.message)
+    }
+}

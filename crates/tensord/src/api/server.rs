@@ -1,4 +1,4 @@
-use super::{auth::Authority, backend::MachineBackend};
+use super::auth::Authority;
 use crate::machine::receipt::{self, Readiness};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
@@ -11,54 +11,27 @@ use std::{
 };
 use tokio_rustls::{rustls, TlsAcceptor};
 
-pub(crate) struct MachineIdentity {
+/// Who the machine is, from its first moment: what it answers with while it starts (`booting`).
+pub(crate) struct Leaf {
     pub authority: Authority,
     pub cert_pem: String,
     pub key_pem: String,
     pub cert_der: Vec<u8>,
     pub readiness: Arc<Readiness>,
     pub started_at_ms: u64,
-    /// A rental's idle ledger; None on development front doors.
-    pub lifecycle: Option<Arc<crate::machine::lifecycle::Lifecycle>>,
-    /// The Hubs this machine is registered with: (origin, worker id there).
-    pub hubs: Vec<(String, String)>,
-    /// `runtime-update/1`; None on development front doors.
-    pub updates: Option<Arc<crate::machine::update::Updates>>,
-    /// The WebRTC listener: `cozy/1` for browsers (ICE-TCP).
-    pub webrtc: Option<std::net::TcpListener>,
-    /// Where browsers reach it; Status reports it with the port `serve` bound.
-    pub player: crate::machine::player::Reach,
-    pub(crate) webrtc_port: Option<u16>,
-    /// The store's directory; Status reports its filesystem. None on development front doors.
-    pub store: Option<std::path::PathBuf>,
-    /// The GPUs this boot measured, which its readiness receipt names.
-    pub gpus: Vec<receipt::Gpu>,
-    /// Why a GPU of this computer is not among them.
-    pub gpu_problems: Vec<String>,
-    /// The most memory each of them offers (`machine.gpu_memory_limit`).
-    pub gpu_memory_limit: Option<u64>,
-    /// `shared` or `dedicated` (`machine.mode`, else by its lifetime).
-    pub mode: &'static str,
-    /// Where its PyTorch layer comes from; None on development front doors.
-    pub torch: Option<crate::published::layer::Torch>,
 }
 
-impl MachineIdentity {
+impl Leaf {
     /// The pod or computer machine: its lifetime files under the machine root, keys from its
     /// grant (a rental's Hub answer replaces them) and this boot's readiness receipt.
     pub(crate) fn machine(
         worker_id: String,
         keys: super::auth::Keys,
         lifetime: crate::machine::identity::Lifetime,
-        readiness: std::sync::Arc<crate::machine::receipt::Readiness>,
+        readiness: Arc<Readiness>,
     ) -> std::io::Result<Self> {
-        let authority = Authority {
-            worker_id,
-            boot_id: lifetime.boot_id,
-            keys,
-        };
         Ok(Self {
-            authority,
+            authority: Authority { worker_id, boot_id: lifetime.boot_id, keys },
             cert_pem: lifetime.cert_pem,
             key_pem: lifetime.key_pem,
             cert_der: lifetime.cert_der,
@@ -67,26 +40,49 @@ impl MachineIdentity {
                 .duration_since(UNIX_EPOCH)
                 .map_err(std::io::Error::other)?
                 .as_millis() as u64,
-            lifecycle: None,
-            hubs: vec![],
-            updates: None,
-            store: None,
-            gpus: vec![],
-            gpu_problems: vec![],
-            gpu_memory_limit: None,
-            mode: "",
-            torch: None,
-            webrtc: None,
-            player: Default::default(),
-            webrtc_port: None,
         })
     }
 }
 
-pub(crate) async fn serve<B: MachineBackend>(
+/// The machine as its API serves it.
+pub(crate) struct MachineIdentity {
+    pub authority: Authority,
+    pub cert_pem: String,
+    pub key_pem: String,
+    pub cert_der: Vec<u8>,
+    pub readiness: Arc<Readiness>,
+    pub started_at_ms: u64,
+    /// Its idle ledger.
+    pub lifecycle: Arc<crate::machine::lifecycle::Lifecycle>,
+    /// The Hubs this machine is registered with: (origin, worker id there).
+    pub hubs: Vec<(String, String)>,
+    pub updates: Arc<crate::machine::update::Updates>,
+    /// The WebRTC listener: `cozy/1` for browsers (ICE-TCP).
+    pub webrtc: Option<std::net::TcpListener>,
+    /// Where browsers reach it; Status reports it with the port `serve` bound.
+    pub player: crate::machine::player::Reach,
+    pub(crate) webrtc_port: Option<u16>,
+    /// The store's directory; Status reports its filesystem.
+    pub store: std::path::PathBuf,
+    /// Where the store's logs rotate, and where TensorD's own log rolls.
+    pub store_logs: std::path::PathBuf,
+    pub logs: std::path::PathBuf,
+    /// The GPUs this boot measured, which its readiness receipt names.
+    pub gpus: Vec<receipt::Gpu>,
+    /// Why a GPU of this computer is not among them.
+    pub gpu_problems: Vec<String>,
+    /// The most memory each of them offers (`machine.gpu_memory_limit`).
+    pub gpu_memory_limit: Option<u64>,
+    /// `shared` or `dedicated` (`machine.mode`, else by its lifetime).
+    pub mode: &'static str,
+    /// Where its PyTorch layer comes from.
+    pub torch: crate::published::layer::Torch,
+}
+
+pub(crate) async fn serve(
     listener: tokio::net::TcpListener,
     mut identity: MachineIdentity,
-    backend: Arc<B>,
+    runs: Arc<crate::runs::Runs>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let port = listener.local_addr()?.port();
     let readiness = identity.readiness.clone();
@@ -104,13 +100,13 @@ pub(crate) async fn serve<B: MachineBackend>(
     let mut measured = MeasuredIdentity::of(&identity);
     measured.webrtc_port = identity.webrtc_port;
     tokio::spawn(prove_readiness(port, readiness, measured));
-    let tls = TlsAcceptor::from(Arc::new(tls(&identity)?));
+    let tls = TlsAcceptor::from(Arc::new(tls(&identity.key_pem, &identity.cert_der)?));
     let identity = Arc::new(identity);
     if let Some(listener) = webrtc {
-        let media = super::cozy1::Media::new(identity.clone(), backend.clone())?;
+        let media = super::cozy1::Media::new(identity.clone(), runs.clone())?;
         tokio::spawn(super::cozy1::serve(media, listener));
     }
-    let service = TowerToHyperService::new(super::http::router(identity, backend));
+    let service = TowerToHyperService::new(super::http::router(identity, runs));
     // No HTTP/2 PING judges a client: one this busy machine answers late is not dead. TCP
     // keepalive (`live`) keeps NAT mappings open through a quiet run and ends a connection whose
     // client's host is gone (its runs go on; a client attaches again).
@@ -168,11 +164,11 @@ impl Boot {
 /// silence.
 pub(crate) fn booting(
     listener: std::net::TcpListener,
-    identity: &MachineIdentity,
+    identity: &Leaf,
     boot: Arc<Boot>,
 ) -> std::io::Result<impl std::future::Future<Output = std::io::Result<()>> + Send + 'static> {
     use axum::{http::StatusCode, routing::get, Json, Router};
-    let tls = TlsAcceptor::from(Arc::new(tls(identity)?));
+    let tls = TlsAcceptor::from(Arc::new(tls(&identity.key_pem, &identity.cert_der)?));
     let frame = super::v1::StatusFrame {
         worker_id: identity.authority.worker_id.clone(),
         boot_id: identity.authority.boot_id.clone(),
@@ -215,11 +211,11 @@ pub(crate) fn booting(
 }
 
 /// The machine's leaf, offering HTTP/2 for control and HTTP/1.1 for bulk lanes.
-fn tls(identity: &MachineIdentity) -> std::io::Result<rustls::ServerConfig> {
+fn tls(key_pem: &str, cert_der: &[u8]) -> std::io::Result<rustls::ServerConfig> {
     use rustls::pki_types::{pem::PemObject, PrivateKeyDer};
-    let key = PrivateKeyDer::from_pem_slice(identity.key_pem.as_bytes())
+    let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
         .map_err(|e| std::io::Error::other(format!("the machine leaf's private key: {e}")))?;
-    let leaf = rustls::pki_types::CertificateDer::from(identity.cert_der.clone());
+    let leaf = rustls::pki_types::CertificateDer::from(cert_der.to_vec());
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let mut config = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -264,7 +260,6 @@ struct MeasuredIdentity {
     boot_id: String,
     cert_der: Vec<u8>,
     webrtc_port: Option<u16>,
-    capabilities: Vec<String>,
     gpus: Vec<receipt::Gpu>,
 }
 impl MeasuredIdentity {
@@ -274,7 +269,6 @@ impl MeasuredIdentity {
             boot_id: identity.authority.boot_id.clone(),
             cert_der: identity.cert_der.clone(),
             webrtc_port: None,
-            capabilities: super::machine_status::capabilities(identity),
             gpus: identity.gpus.clone(),
         }
     }
@@ -298,7 +292,6 @@ async fn prove_readiness(port: u16, readiness: Arc<Readiness>, id: MeasuredIdent
             gpus,
             listener_bound,
             foreign_credential_refused,
-            capabilities: id.capabilities,
             webrtc_port: id.webrtc_port,
         }
         .payload(),

@@ -717,7 +717,7 @@ fn module_interface(interface: &Value, module: &str) -> Value {
 fn serving_call(
     call: &Value,
     entrypoint: &str,
-) -> Result<(Value, Vec<crate::api::domain::ModelChoice>), (&'static str, String)> {
+) -> Result<(Value, Vec<crate::stored::ModelChoice>), (&'static str, String)> {
     let refuse = |why: &str| ("child_call_refused", format!("serving call {why}"));
     let request = call.get("payload").filter(|p| p.is_object()).ok_or_else(|| refuse("has no request object"))?;
     Ok((request.clone(), model_choices(&call["models"], entrypoint)?))
@@ -731,7 +731,7 @@ fn serving_call(
 fn model_choices(
     models: &Value,
     entrypoint: &str,
-) -> Result<Vec<crate::api::domain::ModelChoice>, (&'static str, String)> {
+) -> Result<Vec<crate::stored::ModelChoice>, (&'static str, String)> {
     use api::model_ref::{self, ModelRef};
     let refuse = |why: String| ("child_call_refused", format!("model choices {why}"));
     if !models.is_null() && !models.is_object() {
@@ -772,7 +772,7 @@ fn model_choices(
         }
         choices.push(choice);
     }
-    crate::api::machine_runs::choices(choices).map_err(|error| refuse(error.message))
+    crate::runs::choices(choices).map_err(|error| refuse(error.message))
 }
 
 /// The child's file inputs: every string of its request naming a file the parent holds (its

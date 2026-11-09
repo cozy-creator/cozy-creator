@@ -1,7 +1,8 @@
 //! Status (G/API.md, D2). Anyone who reaches the machine gets one identity frame with the sealed
 //! readiness receipt; a machine-scope cap gets the whole picture, sent again whenever it changes.
 //! An open stream is not activity: only `keepalive` resets the idle deadline, once.
-use super::{auth::VerifiedActor, backend::MachineBackend, domain, http::blocking, v1, MachineIdentity};
+use super::{auth::VerifiedActor, http::blocking, v1, MachineIdentity};
+use crate::runs::Runs;
 use api::error::Error;
 use std::{
     sync::{Arc, Mutex},
@@ -9,48 +10,14 @@ use std::{
 };
 use futures_util::{future::ready, Stream, StreamExt};
 
-/// What this machine serves, for clients that adapt to it.
-/// `run-gpus/1`: a run may request an exact GPU group, inherited and reserved by its calls.
-/// `warm/1`: a warm run with no entrypoint installs its code and makes its model choices
-/// present. `warm/2`: a warm run's `set` replaces the caller's warm set, and Status reports the
-/// set and each environment's level. `upload/1`: a warm run of one provider source puts it in
-/// its weights destination. `remove/1`: a remove run drops the caller's installations and
-/// deletes their environments once nothing holds them; Status names each one's Hub.
-/// `live-source/1`: a local source's manifest names a live project file by file, by content,
-/// installed editable in a tree per manifest and an environment per what it is built from;
-/// and a slot a run names no model for takes its declared default. `live-source/2`: that
-/// manifest may also name the uv indexes its project's sources use without declaring them and the
-/// local path dependencies its lock installs, and a locked project installs whatever indexes
-/// they name.
-/// `estimate/1`: `POST /v1/estimate` quotes jobs packed with the queue. `run-batch/1`:
-/// `POST /v1/runs/batch` admits runs as one, which the machine packs together as it quoted them.
-pub(crate) const CAPABILITIES: &[&str] = &[
-    "status/1",
-    "run/1",
-    "run-gpus/1",
-    "control/1",
-    "read/1",
-    "warm/1",
-    "warm/2",
-    "upload/1",
-    "local-models/1",
-    "remove/1",
-    "live-source/1",
-    "live-source/2",
-    "estimate/1",
-    "run-batch/1",
-];
-
-const LIVE: [&str; 3] = ["queued", "starting", "running"];
-
 /// The whole picture, sent again whenever it changes, until the caller leaves. What the engine
 /// records (runs, environments, the warm set, models) is read again only after engine activity;
 /// each tick otherwise reads what the process holds in memory and the disk's free space, so an
 /// idle machine watched does next to nothing. Every read is on the blocking pool: a disk the
 /// machine's run saturates slows its Status, never the API's own threads.
-pub(super) fn watch<B: MachineBackend>(
+pub(super) fn watch(
     identity: Arc<MachineIdentity>,
-    backend: Arc<B>,
+    runs: Arc<Runs>,
     actor: VerifiedActor,
 ) -> impl Stream<Item = Result<v1::StatusFrame, Error>> + Send {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -59,22 +26,20 @@ pub(super) fn watch<B: MachineBackend>(
     let read: Arc<Mutex<Option<(u64, Held)>>> = Arc::default();
     futures_util::stream::poll_fn(move |cx| tick.poll_tick(cx).map(Some))
         .then(move |_| {
-            let (identity, backend, read) = (identity.clone(), backend.clone(), read.clone());
+            let (identity, runs, read) = (identity.clone(), runs.clone(), read.clone());
             async move {
                 // Read before the records: activity meanwhile is read again at the next tick.
-                let epoch = backend.activity();
+                let epoch = runs.service.engine.activity_epoch();
                 let kept = read.lock().unwrap().clone();
-                let held = match kept.filter(|(at, _)| Some(*at) == epoch) {
+                let held = match kept.filter(|(at, _)| *at == epoch) {
                     Some((_, held)) => held,
                     None => {
-                        let held = held_now(&identity, &backend, actor).await?;
-                        if let Some(epoch) = epoch {
-                            *read.lock().unwrap() = Some((epoch, held.clone()));
-                        }
+                        let held = held_now(&identity, &runs, actor).await?;
+                        *read.lock().unwrap() = Some((epoch, held.clone()));
                         held
                     }
                 };
-                pictured(identity, &backend, held).await
+                pictured(identity, &runs, held).await
             }
         })
         .filter_map(move |next| {
@@ -110,22 +75,11 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
         boot_id: identity.authority.boot_id.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
         commit: api::COMMIT.into(),
-        dev: identity.updates.as_ref().is_some_and(|u| u.dev()),
-        capabilities: capabilities(identity),
+        dev: identity.updates.dev(),
         workload_key: crate::hub::workload_key().thumbprint().into(),
         receipt: identity.readiness.envelope().unwrap_or_default(),
         ..Default::default()
     }
-}
-
-pub(super) fn capabilities(identity: &MachineIdentity) -> Vec<String> {
-    let update = identity.updates.as_ref().map(|_| "update/1");
-    CAPABILITIES
-        .iter()
-        .copied()
-        .chain(update)
-        .map(str::to_string)
-        .collect()
 }
 
 /// What the engine records for the caller: its live runs, environments, warm set and models.
@@ -139,53 +93,44 @@ struct Held {
     memory: std::collections::BTreeMap<String, v1::GpuMemory>,
 }
 
-async fn held_now<B: MachineBackend>(
-    identity: &Arc<MachineIdentity>,
-    backend: &Arc<B>,
-    actor: VerifiedActor,
-) -> Result<Held, Error> {
+async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: VerifiedActor) -> Result<Held, Error> {
     let store = identity.store.clone();
-    blocking(backend, move |backend| {
-        let models = store.as_deref().map(crate::held_models::listing);
-        let (runs, environments) = held(backend, actor)?;
-        Ok(Held { runs, environments, warm: backend.warm_set(actor)?, models: models.unwrap_or_default(), memory: backend.memory() })
+    blocking(runs, move |runs| {
+        Ok(Held {
+            runs: runs.live(actor)?,
+            environments: runs.environments(actor)?,
+            warm: runs.warm(actor)?,
+            models: crate::held_models::listing(&store),
+            memory: runs.memory(),
+        })
     })
     .await
 }
 
-pub(super) async fn frame<B: MachineBackend>(
-    identity: &Arc<MachineIdentity>,
-    backend: &Arc<B>,
-    actor: VerifiedActor,
-) -> Result<v1::StatusFrame, Error> {
-    pictured(identity.clone(), backend, held_now(identity, backend, actor).await?).await
+pub(super) async fn frame(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: VerifiedActor) -> Result<v1::StatusFrame, Error> {
+    pictured(identity.clone(), runs, held_now(identity, runs, actor).await?).await
 }
 
 /// `picture` on the blocking pool: it reads the disk (the store's space, the installed software,
 /// the kernels' verdicts) and `/proc`.
-async fn pictured<B: MachineBackend>(identity: Arc<MachineIdentity>, backend: &Arc<B>, held: Held) -> Result<v1::StatusFrame, Error> {
-    blocking(backend, move |_| Ok(picture(&identity, held))).await
+async fn pictured(identity: Arc<MachineIdentity>, runs: &Arc<Runs>, held: Held) -> Result<v1::StatusFrame, Error> {
+    blocking(runs, move |_| Ok(picture(&identity, held))).await
 }
 
 fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
     let Held { runs, environments, warm, models, mut memory } = held;
-    let software = identity
-        .updates
-        .as_ref()
-        .map(|updates| updates.software())
-        .unwrap_or_default();
-    let lifecycle = identity.lifecycle.as_ref();
+    let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
+    let software = updates.software();
     let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id));
     v1::StatusFrame {
-        idle_deadline_unix_ms: lifecycle.map_or(0, |l| l.deadline_ms()),
+        idle_deadline_unix_ms: lifecycle.deadline_ms(),
         runs,
         activity,
-        update: (identity.updates.as_ref().and_then(|updates| updates.current()))
-            .map(|update| super::machine_update::state(&update.operation, &update)),
-        phase: match lifecycle {
-            Some(l) if l.released() => "releasing",
-            _ if !identity.readiness.proved() => "booting",
-            _ => "ready",
+        update: updates.current().map(|update| super::machine_update::state(&update.operation, &update)),
+        phase: match (lifecycle.released(), identity.readiness.proved()) {
+            (true, _) => "releasing",
+            (false, false) => "booting",
+            (false, true) => "ready",
         }
         .into(),
         platform: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
@@ -219,10 +164,10 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
             .collect(),
         runtime: software.runtime,
         tensorfs: software.tensorfs,
-        torch: identity.torch.as_ref().map(|torch| torch.version()).unwrap_or_default(),
+        torch: identity.torch.version(),
         environments,
         warm,
-        disk: identity.store.as_deref().and_then(disk),
+        disk: disk(&identity.store),
         models: models.models,
         models_bytes: models.bytes,
         webrtc: identity.webrtc_port.map(|port| {
@@ -234,62 +179,14 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
             false => platform::gpu::DRIVER_FLOOR.into(),
         },
         gpu_problems: identity.gpu_problems.clone(),
-        toolchain: identity.updates.as_ref().map(|u| u.toolchain()).unwrap_or_default(),
-        kernels: identity.updates.as_ref().map(|u| u.kernels()).unwrap_or_default(),
+        toolchain: updates.toolchain(),
+        kernels: updates.kernels(),
         tensord_pid: std::process::id(),
         stuck: platform::contain::stuck()
             .into_iter()
             .map(|s| v1::StuckProcess { pid: s.pid, command: s.command, wchan: s.wchan, since_unix_ms: s.since_unix_ms })
             .collect(),
         ..identity_frame(identity)
-    }
-}
-
-fn held(
-    backend: &impl MachineBackend,
-    actor: VerifiedActor,
-) -> Result<(Vec<v1::RunState>, Vec<v1::Environment>), Error> {
-    let query = domain::MachineExecutionListQuery {
-        limit: 256,
-        states: LIVE.map(String::from).to_vec(),
-        ..Default::default()
-    };
-    let runs = held_or_none(backend.list(actor, query).map(|l| l.executions))?
-        .iter()
-        .map(|run| super::machine_runs::state(&run.request_id, run))
-        .collect();
-    let packages = held_or_none(
-        backend
-            .list_packages(actor, domain::PackageListQuery::default())
-            .map(|l| l.packages),
-    )?;
-    let levels = backend.levels(actor)?;
-    let environments = packages
-        .into_iter()
-        .map(|p| v1::Environment {
-            level: levels.get(&p.installation_id).copied().unwrap_or_default().into(),
-            installation: p.installation_id,
-            package: p.package,
-            release: p.release,
-            entrypoints: p.entrypoints,
-            runtime: p
-                .sdk
-                .into_iter()
-                .find(|d| d.distribution == "cozy-runtime")
-                .map(|d| d.version)
-                .unwrap_or_default(),
-            warning: p.warning,
-            hub: p.origin,
-        })
-        .collect();
-    Ok((runs, environments))
-}
-
-/// A backend that keeps no such record holds none.
-fn held_or_none<T>(listed: Result<Vec<T>, Error>) -> Result<Vec<T>, Error> {
-    match listed {
-        Err(error) if error.code == "capability_unavailable" => Ok(vec![]),
-        other => other,
     }
 }
 

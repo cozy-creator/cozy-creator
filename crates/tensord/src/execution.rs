@@ -487,9 +487,6 @@ impl Engine {
     ) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.actor_page(actor, after, before, newest, states, limit))
     }
-    pub(crate) fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
-        self.journal.lock().unwrap().actor_head(actor)
-    }
     /// See `Journal::jobs`.
     pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
         self.journal.lock().unwrap().jobs(since)
