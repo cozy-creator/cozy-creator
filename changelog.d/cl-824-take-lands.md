@@ -1,0 +1,1 @@
+A render's take is measured as it lands, so its size and length show the moment its file is in the project, not when its whole render ends, and a video's preview is made then too; the run's record takes the same measure. `cozy project render` ends on its own render's end: one asked just as another render ended no longer exits before its take is made (cl-824).

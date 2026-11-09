@@ -36,6 +36,8 @@ pub(super) struct Rendering {
     said: Vec<Said>,
     /// What failed that is no asset's.
     errors: Vec<Error>,
+    /// The `Idempotency-Key` this render was asked under, whose walk's end is its end; None follows whatever walk is going to its end.
+    key: Option<String>,
     ended: Option<(Option<Error>, Option<Rendered>)>,
 }
 
@@ -50,8 +52,8 @@ struct Said {
 }
 
 impl Rendering {
-    pub(super) fn new(dir: PathBuf, board: Board) -> Self {
-        Self { dir, board, warnings: vec![], said: vec![], errors: vec![], ended: None }
+    pub(super) fn new(dir: PathBuf, board: Board, key: Option<String>) -> Self {
+        Self { dir, board, warnings: vec![], said: vec![], errors: vec![], key, ended: None }
     }
 
     /// Takes in `event`; what it newly is for a person to read.
@@ -109,7 +111,8 @@ impl Rendering {
                     Fresh::Failed(error)
                 }
             },
-            Event::Ended { error, rendered } => {
+            // Another walk's end, one ending as this was asked, isn't this render's.
+            Event::Ended { error, rendered, keys } if self.key.as_ref().is_none_or(|key| keys.contains(key)) => {
                 self.ended = Some((error, rendered));
                 Fresh::Ended
             }

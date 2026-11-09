@@ -157,7 +157,7 @@ pub struct File {
 }
 
 /// What is measured of a file, kept apart from project.lock, as ffprobe can always say it again.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(super) struct Measured {
     #[serde(default, skip_serializing_if = "is_zero")]
     width: u64,
@@ -171,6 +171,12 @@ pub(super) struct Measured {
     alpha: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
     duration_ms: u64,
+}
+
+impl Measured {
+    fn of(file: &File) -> Self {
+        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms }
+    }
 }
 
 impl File {
@@ -1123,11 +1129,13 @@ impl Folder {
         let _turn = self.turn(LOCK);
         let moved = std::cell::RefCell::new(None);
         let wrote = std::cell::RefCell::new(None);
-        // What this wrote it needn't read back.
+        // What this wrote it needn't read back. Stamped before it's filled: a file that comes to `files/` between moves the stamp, so a read
+        // never keeps the table as it was under the stamp after.
         let held = || {
             if let Some(mut lock) = wrote.take() {
+                let stamp = self.stamp();
                 self.fill(&mut lock);
-                *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.stamp(), lock));
+                *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((stamp, lock));
             }
         };
         self.rewrite_held(&self.dir.join(LOCK), |_| {
@@ -1210,14 +1218,21 @@ impl Folder {
         Ok(sha256)
     }
 
-    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. Listed as
-    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path, and why it
-    /// isn't listed: paid-for bytes are kept whatever the project can say of them.
-    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<(PathBuf, Option<Error>), Error> {
+    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. In this order: what's
+    /// `measured` of it, its file in `files/`, then its run's listing, in place of what an earlier revision of that output was, which goes if
+    /// nothing else names it. So a read that finds the file here finds it measured. Answers its path, and why it isn't listed: paid-for bytes
+    /// are kept whatever the project can say of them, measured or not.
+    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
+            // What's measured is a cache a read can make again: one that can't be written leaves the file for the walk's measure.
+            if let Some(measured) = measured
+                && let Err(error) = self.record_measured(&BTreeMap::from([(digest.to_owned(), measured.clone())]))
+            {
+                warn!("{}: what's measured of {digest} isn't kept: {}", self.dir.display(), error.message);
+            }
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
@@ -1227,6 +1242,10 @@ impl Folder {
                         durable::soon(&at);
                     }
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
+                }
+                // A video that landed: the page plays its preview on a hover.
+                if let Some(measured) = measured.filter(|measured| measured.fps > 0.0 && measured.width > 0) {
+                    super::thumbs::landed(at.clone(), digest, measured.lasts_ms() as f64 / 1000.0);
                 }
             }
             let old = std::cell::RefCell::new(vec![]);
@@ -1385,11 +1404,17 @@ impl Folder {
                 }
             }
         }
+        self.record_measured(&measured)
+    }
+
+    /// What's `measured` of these files by hash, kept with what's measured of the rest in one write, unless it is so already.
+    fn record_measured(&self, measured: &BTreeMap<String, File>) -> Result<(), Error> {
         self.rewrite(&self.dir.join(MEASURED), |text| {
             let mut held: BTreeMap<String, Measured> = serde_json::from_str(text).unwrap_or_default();
-            for (sha256, file) in &measured {
-                held.insert(sha256.clone(), Measured { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms });
+            if measured.iter().all(|(sha256, file)| held.get(sha256) == Some(&Measured::of(file))) {
+                return Ok(text.to_owned());
             }
+            held.extend(measured.iter().map(|(sha256, file)| (sha256.clone(), Measured::of(file))));
             Ok(serde_json::to_string(&held).expect("what is measured serializes"))
         })
         .map(drop)
@@ -1450,6 +1475,15 @@ impl Folder {
             let _ = std::fs::remove_file(&at);
         }
         let unused: Vec<&String> = sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())).collect();
+        // What was measured of an earlier revision goes with it.
+        self.rewrite(&self.dir.join(MEASURED), |text| {
+            let mut held: BTreeMap<String, Measured> = serde_json::from_str(text).unwrap_or_default();
+            if !unused.iter().any(|sha256| held.contains_key(*sha256)) {
+                return Ok(text.to_owned());
+            }
+            held.retain(|sha256, _| !unused.contains(&sha256));
+            Ok(serde_json::to_string(&held).expect("what is measured serializes"))
+        })?;
         self.update_lock(|lock| lock.files.retain(|sha256, _| !unused.contains(&sha256)))
     }
 }

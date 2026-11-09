@@ -347,13 +347,25 @@ impl Holding {
     }
 }
 
-/// What a project's run landed: which run, of what, and its bytes' digest.
+/// What a project's run landed: which run, of what, its bytes' digest, and what's measured of them.
 pub(crate) struct Landed<'a> {
     pub run: u64,
     pub target: &'a str,
     pub output: &'a str,
     pub index: u32,
     pub digest: &'a str,
+    pub measured: Option<&'a Facts>,
+}
+
+/// What's measured of a file: a picture's or video's size, a video's rate and frames, a picture's alpha, a sound's length.
+pub(crate) use folder::File as Facts;
+
+/// What's measured of the picture, video or sound at `path`, as a project measures its files, with ffprobe (and ffmpeg, for a picture's
+/// alpha) from `tools`, else PATH's. None of anything else, or with no ffprobe here.
+pub(crate) fn measured(tools: &FsPath, path: &FsPath, media_type: &str) -> Option<Facts> {
+    let field = ["image", "video", "audio"].into_iter().find(|field| media_type.strip_prefix(field).is_some_and(|rest| rest.starts_with('/')))?;
+    let (found, ffprobe) = platform::tools::ffmpeg(tools, &crate::tools::path())?;
+    tools::measured(&found.path, &ffprobe, path, field)
 }
 
 /// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
@@ -368,7 +380,7 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         Ok(said) => (said, None),
         Err(why) => (vec![], Some(why)),
     };
-    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
+    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
     let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
@@ -450,20 +462,28 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
         let error = match walk.go().await {
             Ok(first) => first.map(|first| walk.last_word(first)),
             Err(error) => {
-                *walk.project.walking.lock().expect("walking lock") = false;
+                let mut walking = walk.project.walking.lock().expect("walking lock");
+                *walking = false;
+                // What it was asked stays owed for the next walk; for whoever follows those renders, this one stopped. Read before
+                // `walking` goes, so a render asked after is the next walk's.
+                if let Ok(owed) = walk.folder().walk_now() {
+                    walk.ends(owed.walk.asked.into_keys());
+                }
+                drop(walking);
                 walk.project.unsent.lock().expect("unsent lock").push(error.clone());
                 Some(error)
             }
         };
         remember(&api);
-        // What landed last is measured here, or no later walk says how long a take lasts, which New take from here needs.
+        // A take is measured as it lands. What this walk made here (a cut, a frame), or what landed before ffprobe was here, is measured now.
         if let Err(error) = walk.measure() {
             warn!("measuring a project's files: {}", error.message);
         }
         crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
-        walk.say(Event::Ended { error, rendered: walk.rendered() });
+        let keys = std::mem::take(&mut *walk.ended.lock().expect("ended lock"));
+        walk.say(Event::Ended { error, rendered: walk.rendered(), keys });
     });
 }
 
@@ -2418,6 +2438,8 @@ struct Walk {
     stopped: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// That this computer's first need of ffprobe was met: it measures what a function reads of a file.
     measuring: AtomicBool,
+    /// The `Idempotency-Key`s of the renders it ended, which its end names.
+    ended: Mutex<Vec<String>>,
 }
 
 /// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
@@ -2511,6 +2533,7 @@ impl Walk {
             faults: Mutex::default(),
             stopped: Mutex::default(),
             measuring: AtomicBool::new(false),
+            ended: Mutex::default(),
         }
     }
 
@@ -2664,12 +2687,26 @@ impl Walk {
                 self.folder().drop_text(digest);
             }
         }
+        let done = std::cell::RefCell::new(vec![]);
         self.folder().update_walk(|walk| {
             walk.walk.asks.retain(|ask| ask.id != id);
+            // Every render asked of it is done: its end names them.
             if walk.walk.asks.is_empty() {
-                walk.walk.asked.clear();
+                *done.borrow_mut() = std::mem::take(&mut walk.walk.asked).into_keys().collect();
             }
-        })
+        })?;
+        self.ends(done.into_inner());
+        Ok(())
+    }
+
+    /// The renders asked under `keys` end with this walk.
+    fn ends(&self, keys: impl IntoIterator<Item = String>) {
+        let mut ended = self.ended.lock().expect("ended lock");
+        for key in keys {
+            if !ended.contains(&key) {
+                ended.push(key);
+            }
+        }
     }
 
     /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked
@@ -3451,11 +3488,15 @@ impl Walk {
             })?;
         }
         if !*walking {
+            let joined = std::cell::RefCell::new(vec![]);
             self.folder().update_walk(|walk| {
                 walk.walk.runs.clear();
                 walk.walk.landing.clear();
                 walk.walk.numbered.clear();
+                // A render that joined it with nothing to add ends with it.
+                *joined.borrow_mut() = std::mem::take(&mut walk.walk.asked).into_keys().collect();
             })?;
+            self.ends(joined.into_inner());
             *self.project.walker.lock().expect("walker lock") = Walker::default();
             self.folder().drop_texts();
         }
