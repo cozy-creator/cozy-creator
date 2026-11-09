@@ -17,7 +17,7 @@ impl Pressure {
         Err(Error::unsupported(Seam::Pressure))
     }
 
-    pub fn how(&self) -> &str {
+    pub(crate) fn how(&self) -> &str {
         ""
     }
 

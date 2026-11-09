@@ -3,7 +3,7 @@
 //! sha2 only, so it builds without the `store` feature.
 
 mod cbor;
-pub mod compose;
+pub(crate) mod compose;
 pub mod decode;
 mod doc;
 mod dtype;
@@ -25,18 +25,18 @@ pub(crate) use doc::{is_digest, segment};
 pub(crate) use repo::{check_file, repo_name};
 pub use dtype::Dtype;
 pub use encode::{GlobalScale, NibbleOrder};
-pub use doc::{Pipeline, CONFIG_FILE};
+pub(crate) use doc::{Pipeline, CONFIG_FILE};
 pub use value::{Config, ConfigValue, Value};
 
-pub const HEADER_FORMAT: &str = "cozytensors/1";
-pub const REPO_FORMAT: &str = "cozytensors.repo/1";
+pub(crate) const HEADER_FORMAT: &str = "cozytensors/1";
+pub(crate) const REPO_FORMAT: &str = "cozytensors.repo/1";
 /// The path a writer gives a commit's header.
-pub const HEADER_PATH: &str = "model.cozytensors";
+pub(crate) const HEADER_PATH: &str = "model.cozytensors";
 /// A commit: `{format, lane, files: {path: object}}`.
-pub const TREE_FORMAT: &str = "cozytensors.tree/1";
+pub(crate) const TREE_FORMAT: &str = "cozytensors.tree/1";
 
 /// Whether a tree's file at `path` is a header (spec §3): a `.cozytensors` file, at any depth.
-pub fn is_header(path: &str) -> bool {
+pub(crate) fn is_header(path: &str) -> bool {
     path.rsplit('/').next().is_some_and(|name| name.ends_with(".cozytensors"))
 }
 
@@ -63,7 +63,7 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
             Error::Invalid(_) => "invalid",
             Error::Format { .. } => "format",
@@ -74,7 +74,7 @@ impl Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) fn invalid<T>(detail: impl Into<String>) -> Result<T> {
     Err(Error::Invalid(detail.into()))

@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 /// The address classes no downloader in this tree connects to — the port of
 /// `egress._CLASSES`, same names, same order. Returns why `address` is not fetchable, or
 /// `""` for a public routable address.
-pub fn blocked(address: IpAddr) -> String {
+pub(crate) fn blocked(address: IpAddr) -> String {
     let mut named: Vec<&'static str> = Vec::new();
     match canonical(address) {
         IpAddr::V4(v4) => {
@@ -133,7 +133,7 @@ fn v6_link_local(v6: Ipv6Addr) -> bool {
 /// EVERY answer for `host`, through one resolver call. A caller that resolved for itself
 /// could check a different answer set than it connects over; here the returned addresses
 /// are both the checked set and the connect set.
-pub fn resolve(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+pub(crate) fn resolve(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
@@ -142,7 +142,7 @@ pub fn resolve(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
 
 /// One URL, checked: the exact origin the socket may open, and nothing else about it.
 #[derive(Debug, Clone)]
-pub struct CheckedUrl {
+pub(crate) struct CheckedUrl {
     pub https: bool,
     pub host: String,
     pub port: u16,
@@ -154,7 +154,7 @@ pub struct CheckedUrl {
 
 impl CheckedUrl {
     /// The URL this check admitted, as a string a later ask can start from.
-    pub fn url(&self) -> String {
+    pub(crate) fn url(&self) -> String {
         let scheme = if self.https { "https" } else { "http" };
         let host = if self.host.contains(':') {
             format!("[{}]", self.host)
@@ -221,13 +221,13 @@ impl Resolved {
     }
 
     /// Answers no connection could use: the next lookup asks the resolver again.
-    pub fn forget(&self, host: &str) {
+    pub(crate) fn forget(&self, host: &str) {
         self.0.lock().unwrap().remove(host);
     }
 }
 
 impl SourcePolicy {
-    pub fn allows_host(&self, host: &str) -> bool {
+    pub(crate) fn allows_host(&self, host: &str) -> bool {
         if self.any_host {
             return true;
         }
@@ -249,7 +249,7 @@ impl SourcePolicy {
     /// The whole front door: scheme, shape, allowlist, resolution, and the class check on
     /// every answer. Everything this module fetches or pushes passes here first, and every
     /// redirect hop passes here again.
-    pub fn check(&self, url: &str) -> Result<CheckedUrl> {
+    pub(crate) fn check(&self, url: &str) -> Result<CheckedUrl> {
         let (https, host, port, target) = self.admit(url)?;
         let port = port.unwrap_or(if https { 443 } else { 80 });
         self.resolve_checked(https, host, port, target)
@@ -257,7 +257,7 @@ impl SourcePolicy {
 
     /// Everything [`check`](Self::check) refuses before resolving: shape, scheme and allowlist.
     /// Returns whether the URL is https, its host, port and target.
-    pub fn admit(&self, url: &str) -> Result<(bool, String, Option<u16>, String)> {
+    pub(crate) fn admit(&self, url: &str) -> Result<(bool, String, Option<u16>, String)> {
         let (scheme, host, port, target) = split_url(url)?;
         let https = scheme == "https";
         if !https && !self.allow_local && !self.plaintext {
@@ -349,7 +349,7 @@ pub fn is_loopback_origin(url: &str) -> bool {
 
 /// The host a base URL names — what a caller scopes a credential to, and what naming a
 /// hub base declares.
-pub fn base_host(url: &str) -> Result<String> {
+pub(crate) fn base_host(url: &str) -> Result<String> {
     split_url(url).map(|(_, host, _, _)| host)
 }
 

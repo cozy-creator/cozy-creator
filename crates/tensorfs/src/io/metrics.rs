@@ -12,7 +12,7 @@ use super::probe;
 #[cfg(feature = "cuda")]
 mod gpu;
 #[cfg(feature = "cuda")]
-pub use gpu::{device_link, h2d};
+pub(crate) use gpu::{device_link, h2d};
 #[cfg(feature = "cuda")]
 pub(crate) use gpu::pci_address;
 #[cfg(feature = "cuda")]
@@ -23,7 +23,7 @@ const LOG_KEEP: usize = 256;
 /// One run of copies: a GPU's copy stream busy from its first job to its last landing
 /// (`h2d`), or a host layout filled from a store's files (`disk`).
 #[derive(Debug, Clone, Default)]
-pub struct Copy {
+pub(crate) struct Copy {
     pub kind: &'static str,
     /// -1 for a disk fill.
     pub gpu: i32,
@@ -54,7 +54,7 @@ pub(crate) fn record(c: Copy) {
 }
 
 /// Every copy run since the last call.
-pub fn take() -> Vec<Copy> {
+pub(crate) fn take() -> Vec<Copy> {
     std::mem::take(&mut LOG.lock().unwrap())
 }
 
@@ -106,7 +106,7 @@ fn volume(dev: u64) -> u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Link {
+pub(crate) struct Link {
     pub gen: u32,
     pub width: u32,
     pub max_gen: u32,
@@ -125,7 +125,7 @@ impl std::fmt::Display for Link {
 
 /// The link of PCI device `pci` (`0000:65:00.0`) from sysfs. An idle GPU trains its link down,
 /// so read it right after a copy.
-pub fn link(pci: &str) -> Option<Link> {
+pub(crate) fn link(pci: &str) -> Option<Link> {
     let read = |f: &str| std::fs::read_to_string(format!("/sys/bus/pci/devices/{pci}/{f}")).ok();
     let gen = |f: &str| -> Option<u32> {
         let gts: f64 = read(f)?.split_whitespace().next()?.parse().ok()?;

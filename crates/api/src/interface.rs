@@ -43,7 +43,7 @@ pub fn request(document: &Value, name: &str) -> Value {
 }
 
 /// Its declared quantize recipes.
-pub fn recipes(document: &Value) -> impl Iterator<Item = &Value> {
+pub(crate) fn recipes(document: &Value) -> impl Iterator<Item = &Value> {
     document["recipes"].as_array().into_iter().flatten()
 }
 
@@ -120,7 +120,7 @@ impl Slot {
 }
 
 /// A member written as `null` reads as absent: a Go writer spells an empty list that way.
-pub fn or_default<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
+pub(crate) fn or_default<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
     Option::<T>::deserialize(d).map(Option::unwrap_or_default)
 }
 
@@ -473,7 +473,7 @@ impl Interface {
     }
 
     /// Whether `callable` is a CPU tool that composes calls.
-    pub fn composes(&self, callable: &Callable) -> bool {
+    pub(crate) fn composes(&self, callable: &Callable) -> bool {
         callable.accelerator == Some(false) && callable.calls.iter().any(Call::gpu)
     }
 
@@ -530,7 +530,7 @@ impl Type {
     }
 
     /// Whether it may be absent: `T | None`.
-    pub fn optional(&self) -> bool {
+    pub(crate) fn optional(&self) -> bool {
         matches!(self, Type::Union { branches, .. } if branches.contains(&Type::Null))
     }
 

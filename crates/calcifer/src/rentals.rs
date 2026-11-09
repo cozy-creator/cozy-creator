@@ -182,14 +182,14 @@ impl Hubs {
 impl Machines {
     /// The Hub's price for renting `sku` at `hub` in `shape`, exactly as a rent would ask it.
     /// Nothing is recorded or kept.
-    pub async fn quote(&self, hub: &str, sku: &str, shape: Shape) -> Result<Quote, Error> {
+    pub(crate) async fn quote(&self, hub: &str, sku: &str, shape: Shape) -> Result<Quote, Error> {
         let origin = config::Origin::parse(hub)?;
         let (request, ..) = request(sku, shape);
         Ok(quote_of(&self.quoted(&origin, &request).await?))
     }
 
     /// What `hub` has for rent now, cheapest first by its fewest GPUs.
-    pub async fn rental_skus(&self, hub: &str) -> Result<RentalSkus, Error> {
+    pub(crate) async fn rental_skus(&self, hub: &str) -> Result<RentalSkus, Error> {
         let reader = self.hubs.anonymous(hub)?;
         let mut skus = reader.list_rental_skus().await.map_err(|e| hub_refusal(hub, e))?;
         skus.retain(|sku| !sku.widths.is_empty());
@@ -213,7 +213,7 @@ impl Machines {
     /// An explicit ask for `gpus` of `sku` is honoured or refused, never widened to another card
     /// or count; the refusal names which absence it hit. A product the Hub cannot sell, for
     /// whatever reason, reads as out of stock.
-    pub async fn admit_sku(&self, hub: &str, sku: &str, gpus: u32) -> Result<(), Error> {
+    pub(crate) async fn admit_sku(&self, hub: &str, sku: &str, gpus: u32) -> Result<(), Error> {
         let reader = self.hubs.anonymous(hub)?;
         let status = reader.get_rental_sku_status(sku, gpus).await.map_err(|e| hub_refusal(hub, e))?;
         match status.known && status.offered {
@@ -225,7 +225,7 @@ impl Machines {
     /// Every rental of this account at `hub` started at or after `since_ms`, newest first, with
     /// what each cost and the sums per UTC day and in all. An operator's Hub also says what the
     /// providers billed; a renter's never does.
-    pub async fn history(&self, hub: &str, since_ms: Option<i64>) -> Result<RentalHistory, Error> {
+    pub(crate) async fn history(&self, hub: &str, since_ms: Option<i64>) -> Result<RentalHistory, Error> {
         let listing = self.hubs.client(hub)?.list_rentals("all").await.map_err(|e| hub_refusal(hub, e))?;
         let now = crate::store::now_ms();
         let instant = |at: &str| {
@@ -269,7 +269,7 @@ impl Machines {
     }
 
     /// Rents a machine at `hub` under `key`: the same key again answers the same rental.
-    pub async fn rent(
+    pub(crate) async fn rent(
         self: &Arc<Self>,
         key: &str,
         hub: &str,
@@ -821,7 +821,7 @@ impl Machines {
     }
 
     /// What a `new` run would rent and its price, as `rent_for` would ask it: nothing is rented.
-    pub async fn run_quote(&self, submit: &SubmitRun) -> Result<RunQuote, Error> {
+    pub(crate) async fn run_quote(&self, submit: &SubmitRun) -> Result<RunQuote, Error> {
         let On::New(sku) = &submit.on else {
             return Err(Error::new(Kind::Usage, "quote_needs_new", "only a run with `--on new` rents"));
         };
@@ -1675,7 +1675,7 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
 
 /// The machine a rent asks for, beyond its SKU, and the most its renter agreed to pay.
 #[derive(Default)]
-pub struct Shape {
+pub(crate) struct Shape {
     pub gpus: Option<u32>,
     pub disk_gb: Option<u32>,
     pub image: Option<String>,

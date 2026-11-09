@@ -126,7 +126,7 @@ impl Checkpoint {
     /// The plain folder `dir` (or a header file): its one header, and its chunks and assets from
     /// `dir/chunks/`, else from `cache`. Lengths are checked; digests are checked where bytes
     /// enter a store ([`Store::admit_folder`]).
-    pub fn folder(dir: &Path, cache: Option<&Store>) -> Result<Checkpoint> {
+    pub(crate) fn folder(dir: &Path, cache: Option<&Store>) -> Result<Checkpoint> {
         // No collection runs between reading the header and holding what it names.
         let _fence = cache.map(retention::acquire).transpose()?;
         if dir.is_file() {
@@ -184,7 +184,7 @@ impl Checkpoint {
     }
 
     /// A plain folder view of this checkpoint, sharing its admitted object files.
-    pub fn path(&self) -> Result<PathBuf> {
+    pub(crate) fn path(&self) -> Result<PathBuf> {
         match &self.objects {
             Objects::Folder { dir, .. } => Ok(dir.clone()),
             Objects::Memory { .. } => Err(Error::Invalid { path: PathBuf::new(), why: format!("{} is held in memory and has no folder", self.id.id()) }),
@@ -201,7 +201,7 @@ impl Checkpoint {
     /// Export only a component's config and support files to `dir`, each replaced atomically.
     /// Missing assets refuse before any directory is created; this never downloads weights.
     /// The caller classifies `dir` for the cache.
-    pub fn export_component_files(&self, name: &str, dir: &Path) -> Result<PathBuf> {
+    pub(crate) fn export_component_files(&self, name: &str, dir: &Path) -> Result<PathBuf> {
         let component = self.component(name)?;
         for object in component.assets.values() {
             if !self.holds(object)? {
@@ -245,7 +245,7 @@ impl Checkpoint {
             .clone()
     }
 
-    pub fn pipeline(&self) -> Option<&Pipeline> {
+    pub(crate) fn pipeline(&self) -> Option<&Pipeline> {
         self.header.pipeline()
     }
 
@@ -254,7 +254,7 @@ impl Checkpoint {
         self.header.components()
     }
 
-    pub fn component(&self, name: &str) -> Result<&Component> {
+    pub(crate) fn component(&self, name: &str) -> Result<&Component> {
         self.header.component(name).ok_or_else(|| {
             let has: Vec<&str> = self.components().iter().map(|c| c.name.as_str()).collect();
             format::Error::Invalid(format!("no component {name:?} (has {has:?})")).into()
@@ -262,7 +262,7 @@ impl Checkpoint {
     }
 
     /// Chunk `i`'s file (`i` indexes `Header::chunks`).
-    pub fn chunk(&self, i: usize) -> Result<File> {
+    pub(crate) fn chunk(&self, i: usize) -> Result<File> {
         match self.header.chunks.get(i) {
             Some(chunk) => self.object(chunk),
             None => Err(format::Error::Invalid(format!("no chunk {i}")).into()),
@@ -270,7 +270,7 @@ impl Checkpoint {
     }
 
     /// Where chunk `i` is read: the folder's copy when it has one, else the store's.
-    pub fn chunk_path(&self, i: usize) -> PathBuf {
+    pub(crate) fn chunk_path(&self, i: usize) -> PathBuf {
         let sha256 = &self.header.chunks[i].sha256;
         match &self.objects {
             Objects::Store(store) | Objects::Memory { store, .. } => store.object_path(sha256),
@@ -285,7 +285,7 @@ impl Checkpoint {
     }
 
     /// Any object of its closure (a chunk, an asset), opened to read.
-    pub fn object(&self, object: &ObjectRef) -> Result<File> {
+    pub(crate) fn object(&self, object: &ObjectRef) -> Result<File> {
         match &self.objects {
             Objects::Store(store) => store.file(object),
             Objects::Memory { store, own } => match own.get(&object.sha256) {
@@ -303,7 +303,7 @@ impl Checkpoint {
     }
 
     /// True when `object` can be read here.
-    pub fn holds(&self, object: &ObjectRef) -> Result<bool> {
+    pub(crate) fn holds(&self, object: &ObjectRef) -> Result<bool> {
         match &self.objects {
             Objects::Store(store) => store.reuse(object),
             Objects::Memory { store, own } => Ok(own.contains_key(&object.sha256) || store.reuse(object)?),
@@ -321,7 +321,7 @@ impl Checkpoint {
     }
 
     /// Asset `name` of `component`.
-    pub fn asset(&self, component: &str, name: &str) -> Result<Vec<u8>> {
+    pub(crate) fn asset(&self, component: &str, name: &str) -> Result<Vec<u8>> {
         let Some(object) = self.component(component)?.assets.get(name) else {
             return Err(format::Error::Invalid(format!("{component} has no asset {name:?}")).into());
         };
@@ -336,7 +336,7 @@ impl Checkpoint {
     }
 
     /// The chunks and assets of `components` (all when `None`) that cannot be read here.
-    pub fn missing(&self, components: Option<&[String]>) -> Result<Vec<ObjectRef>> {
+    pub(crate) fn missing(&self, components: Option<&[String]>) -> Result<Vec<ObjectRef>> {
         let mut out = Vec::new();
         for object in wanted(&self.header, components)? {
             if !self.holds(&object)? {
@@ -347,18 +347,18 @@ impl Checkpoint {
     }
 
     /// Every tensor with its component's name, in header (construction) order.
-    pub fn tensors(&self) -> impl Iterator<Item = (&str, &Tensor)> {
+    pub(crate) fn tensors(&self) -> impl Iterator<Item = (&str, &Tensor)> {
         self.header.tensors()
     }
 
-    pub fn tensor(&self, component: &str, key: &str) -> Result<&Tensor> {
+    pub(crate) fn tensor(&self, component: &str, key: &str) -> Result<&Tensor> {
         self.header
             .tensor(component, key)
             .ok_or_else(|| absent(component, key))
     }
 
     /// The stored bytes at `at` (a plain tensor's data or one part) into `buf`.
-    pub fn bytes_into(&self, at: &Location, buf: &mut [u8]) -> Result<()> {
+    pub(crate) fn bytes_into(&self, at: &Location, buf: &mut [u8]) -> Result<()> {
         if buf.len() as u64 != at.length {
             return Err(format::Error::Invalid(format!(
                 "a {} byte buffer for {} bytes",

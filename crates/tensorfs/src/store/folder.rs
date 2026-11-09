@@ -52,7 +52,7 @@ impl Store {
 
     /// The commit `tree` as a plain folder in `dir`: its files, and its header's objects this
     /// store holds.
-    pub fn snapshot(&self, tree: &ObjectRef, dir: &Path) -> Result<()> {
+    pub(crate) fn snapshot(&self, tree: &ObjectRef, dir: &Path) -> Result<()> {
         let tree = self.tree(tree)?;
         let mut payload = Vec::new();
         for object in Header::from_cbor(&self.read(tree.header()?.1)?)?.objects() {
@@ -65,7 +65,7 @@ impl Store {
 
     /// The commit `tree` as a plain folder in `dir`: its repo files, `payload` under `chunks/`,
     /// then its header last, so a folder never has a header without what it names.
-    pub fn write_folder(&self, tree: &Tree, dir: &Path, payload: &[ObjectRef]) -> Result<()> {
+    pub(crate) fn write_folder(&self, tree: &Tree, dir: &Path, payload: &[ObjectRef]) -> Result<()> {
         let chunks = dir.join(CHUNKS_DIR);
         fs::create_dir_all(&chunks).map_err(fail("create", &chunks))?;
         for (path, object) in tree.repo_files() {
@@ -81,7 +81,7 @@ impl Store {
     /// `object` at `dest`, the one store-to-folder writer: inside this store a hard link of its
     /// blob; in a folder its caller owns a checked copy, where an edit must not reach the stored
     /// object. A file already there stays only when it holds exactly these bytes.
-    pub fn materialize(&self, object: &ObjectRef, dest: &Path) -> Result<()> {
+    pub(crate) fn materialize(&self, object: &ObjectRef, dest: &Path) -> Result<()> {
         let src = self.path(object)?;
         if dest.starts_with(self.root()) {
             if FileId::at(dest).ok().is_some_and(|at| FileId::at(&src).is_ok_and(|blob| blob == at)) {

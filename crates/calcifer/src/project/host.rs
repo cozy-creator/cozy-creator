@@ -32,7 +32,7 @@ use crate::{
 /// A package as the Hub has it (the release its machine holds, else its newest, or the one `@release` names), or local code on this computer (`with: ./dir`,
 /// from the project's folder).
 #[derive(Clone)]
-pub struct Package {
+pub(crate) struct Package {
     pub name: String,
     /// For local code, its source's digest.
     pub release: String,
@@ -47,17 +47,17 @@ pub struct Package {
 
 impl Package {
     /// Its interface, as its card or its source says.
-    pub fn document(&self) -> &Value {
+    pub(crate) fn document(&self) -> &Value {
         &self.document
     }
 
     /// The function its tool names, as a run of it is sent. None: it names none.
-    pub fn maker(&self) -> Result<Option<Renderer>, Error> {
+    pub(crate) fn maker(&self) -> Result<Option<Renderer>, Error> {
         self.named.as_deref().map(|function| self.function(function)).transpose()
     }
 
     /// The function a job of `kind` will most likely call: the one named, else the first public one that makes it.
-    pub fn first_making(&self, kind: &str) -> Option<Renderer> {
+    pub(crate) fn first_making(&self, kind: &str) -> Option<Renderer> {
         if let Some(function) = &self.named {
             return self.function(function).ok();
         }
@@ -69,7 +69,7 @@ impl Package {
 
     /// The widths `function` runs at, smallest first: what it loads declares, one for all. A tool that composes calls runs each where its
     /// GPUs are; while a render lands on one machine, that's the widths of its first call that takes a GPU. Empty: it needs no GPU.
-    pub fn widths(&self, function: &str) -> Vec<u32> {
+    pub(crate) fn widths(&self, function: &str) -> Vec<u32> {
         let document = &self.document;
         let Some(entry) = interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)) else { return vec![] };
         if interface::cpu(entry) {
@@ -91,14 +91,14 @@ impl Package {
     }
 
     /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
-    pub fn named_kind(&self) -> Option<String> {
+    pub(crate) fn named_kind(&self) -> Option<String> {
         let interface = self.interface();
         let callable = interface.callables.iter().find(|callable| Some(&callable.name) == self.named.as_ref())?;
         tool::output_kind(callable).map(str::to_owned)
     }
 
     /// The typed inputs of `function`.
-    pub fn callable(&self, function: &str) -> Option<api::interface::Callable> {
+    pub(crate) fn callable(&self, function: &str) -> Option<api::interface::Callable> {
         self.interface().callables.into_iter().find(|callable| callable.name == function)
     }
 
@@ -107,21 +107,21 @@ impl Package {
     }
 
     /// The tags of the function its tool names (`@app.tool(reserved=…)`): in a text they are text.
-    pub fn reserved(&self) -> Vec<String> {
+    pub(crate) fn reserved(&self) -> Vec<String> {
         let mut tags = self.named.as_deref().and_then(|function| self.callable(function)?.tool).map(|tool| tool.reserved).unwrap_or_default();
         tags.sort_unstable();
         tags
     }
 
     /// `function` of it.
-    pub fn function(&self, function: &str) -> Result<Renderer, Error> {
+    pub(crate) fn function(&self, function: &str) -> Result<Renderer, Error> {
         Renderer::read(&self.name, function, self.release.clone(), &self.document, self.local.clone())
     }
 }
 
 /// One function of a package, as a run of it is sent.
 #[derive(Clone)]
-pub struct Renderer {
+pub(crate) struct Renderer {
     pub package: String,
     pub function: String,
     /// For local code, its source's digest.
@@ -167,12 +167,12 @@ impl Renderer {
     }
 
     /// The model slots of the calls it makes.
-    pub fn call_slots(&self) -> Vec<&Slot> {
+    pub(crate) fn call_slots(&self) -> Vec<&Slot> {
         self.calls.iter().flat_map(|call| &call.models).collect()
     }
 
     /// Its run's name for people: `org/package/function@release`, or `local/<name>/function`.
-    pub fn target(&self) -> String {
+    pub(crate) fn target(&self) -> String {
         match self.local {
             None => format!("{}/{}@{}", self.package, self.function, self.release),
             Some(_) => format!("{}/{}", self.package, self.function),
@@ -182,7 +182,7 @@ impl Renderer {
 
 /// What a run measured.
 #[derive(Clone, Copy, Debug)]
-pub struct Measured {
+pub(crate) struct Measured {
     pub busy_s: f64,
     pub width: u32,
     pub exchange_share: f64,
@@ -210,7 +210,7 @@ impl Measured {
     }
 }
 
-pub struct Host {
+pub(crate) struct Host {
     api: Arc<Api>,
     /// Read once a walk, by Hub, `with` and machine.
     packages: Mutex<HashMap<(String, String, String), Package>>,
@@ -222,31 +222,31 @@ pub struct Host {
 }
 
 impl Host {
-    pub fn new(api: &Arc<Api>) -> Self {
+    pub(crate) fn new(api: &Arc<Api>) -> Self {
         let mut walk = [0u8; 8];
         getrandom::fill(&mut walk).expect("the OS has randomness");
         Self { api: api.clone(), packages: Mutex::default(), walk: hex::encode(walk), events: None }
     }
 
     /// A host for a walk, whose listeners on `events` hear what it does.
-    pub fn telling(api: &Arc<Api>, events: broadcast::Sender<Event>) -> Self {
+    pub(crate) fn telling(api: &Arc<Api>, events: broadcast::Sender<Event>) -> Self {
         Self { events: Some(events), ..Self::new(api) }
     }
 
     /// What it runs in, for what outlives one of its calls.
-    pub fn api(&self) -> Arc<Api> {
+    pub(crate) fn api(&self) -> Arc<Api> {
         self.api.clone()
     }
 
     /// What local code at `path` going `on` a machine is keyed under (`local_code::prepare`).
-    pub fn key(&self, path: &Path, on: &On) -> String {
+    pub(crate) fn key(&self, path: &Path, on: &On) -> String {
         let at = Sha256::digest(format!("{}\n{on:?}", path.display()));
         format!("project-local-{}-{}", self.walk, &hex::encode(at)[..16])
     }
 
     /// The project's local code at `path` made ready `on` a machine for a call, an install waited for: read into a copy as a
     /// client's is sent.
-    pub async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
+    pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
         let code = local_code::own(self.api.machines.hubs.home(), path)?;
         local_code::ready(&self.api, &code, on, hub, &self.key(path, on), &|message| self.tell(message)).await
     }
@@ -259,7 +259,7 @@ impl Host {
     }
 
     /// A release's first run on a machine older than this Calcifer waits for its install (`update::release_first`).
-    pub async fn release_ready(&self, machine: &str, package: &str, release: &str, hub: &str) -> Result<(), Error> {
+    pub(crate) async fn release_ready(&self, machine: &str, package: &str, release: &str, hub: &str) -> Result<(), Error> {
         let at = Sha256::digest(format!("{package}@{release}\n{machine}"));
         let key = format!("project-release-{}-{}", self.walk, &hex::encode(at)[..16]);
         while let Some(run) = crate::update::release_first(&self.api, &key, machine, hub, package, release).await? {
@@ -271,7 +271,7 @@ impl Host {
 
     /// The package `with` names: local code (`./dir` from the project's `folder`, `~/…`, an absolute path), described on the first of
     /// `on`'s machines; else `[org/]package[@release]` as `hub` (empty: the default one) has it.
-    pub async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
+    pub(crate) async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
         if let Some(found) = local_code::target(with, Some(folder), &home) {
             let (path, named) = found?;
@@ -291,7 +291,7 @@ impl Host {
     /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
     /// walk's first; another installs the release); none: as this computer knows it, for a read
     /// that runs nothing.
-    pub async fn published(&self, hub: &str, with: &str, on: Option<&On>) -> Result<Package, Error> {
+    pub(crate) async fn published(&self, hub: &str, with: &str, on: Option<&On>) -> Result<Package, Error> {
         let at = (hub.to_owned(), with.to_owned(), on.map(On::to_string).unwrap_or_default());
         if let Some(found) = self.packages.lock().expect("packages lock").get(&at) {
             return Ok(found.clone());
@@ -307,18 +307,18 @@ impl Host {
     }
 
     /// How many GPUs a machine has, as it last said. One that hasn't said is taken as wide: a job's width is a cap, which its machine brings down to what there is.
-    pub fn gpus(&self, on: &On) -> u32 {
+    pub(crate) fn gpus(&self, on: &On) -> u32 {
         let On::Machine(name) = on else { return 64 };
         self.api.machines.frame(name).map_or(64, |frame| (frame.gpus.len() as u32).max(1))
     }
 
     /// The card a machine has, as it last said: its first GPU's name. None: it hasn't said, or has none.
-    pub fn card(&self, machine: &str) -> Option<String> {
+    pub(crate) fn card(&self, machine: &str) -> Option<String> {
         self.api.machines.frame(machine)?.gpus.first().map(|gpu| gpu.name.clone())
     }
 
     /// What run `number` measured: its time on GPUs and in what it did itself, the width it had, and the share of it spent exchanging between GPUs.
-    pub fn measured(&self, number: u64) -> Option<Measured> {
+    pub(crate) fn measured(&self, number: u64) -> Option<Measured> {
         let store = self.api.calcifer.store();
         let row = store.run_by_number(number).ok()??;
         let run = store.detail(&row).ok()?;
@@ -327,7 +327,7 @@ impl Host {
 
     /// What the newest finished run of `target` on `machine` measured.
     /// What the newest finished runs of `target` on `machine` measured, the newest at each width.
-    pub fn last_measured(&self, target: &str, machine: &str) -> Vec<Measured> {
+    pub(crate) fn last_measured(&self, target: &str, machine: &str) -> Vec<Measured> {
         let store = self.api.calcifer.store();
         let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
         let Ok((rows, ..)) = store.runs(&filter) else { return vec![] };
@@ -344,35 +344,35 @@ impl Host {
     }
 
     /// Stops a run fetching ahead, however far it got. Nothing depends on it.
-    pub fn cancel_ahead(&self, run: &RunId) {
+    pub(crate) fn cancel_ahead(&self, run: &RunId) {
         let _ = self.api.calcifer.cancel(run);
     }
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.
-    pub async fn submit(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
+    pub(crate) async fn submit(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
         Ok(self.api.calcifer.submit(key, run).await.map_err(refused)?.run)
     }
 
     /// The run sent under `key`, if one was.
-    pub fn sent(&self, key: &str) -> Result<Option<Run>, Error> {
+    pub(crate) fn sent(&self, key: &str) -> Result<Option<Run>, Error> {
         let calcifer = &self.api.calcifer;
         let row = calcifer.store().keyed(key).map_err(|e| refused(e.into()))?;
         row.map(|row| calcifer.record(&row).map_err(refused)).transpose()
     }
 
     /// Run `number`, as its record says now.
-    pub fn numbered(&self, number: u64) -> Option<Run> {
+    pub(crate) fn numbered(&self, number: u64) -> Option<Run> {
         let calcifer = &self.api.calcifer;
         calcifer.record(&calcifer.store().run_by_number(number).ok()??).ok()
     }
 
     /// The run once it ended and each output landed here or failed to.
-    pub async fn wait(&self, id: &RunId) -> Result<Run, Error> {
+    pub(crate) async fn wait(&self, id: &RunId) -> Result<Run, Error> {
         self.until(id, |run| !run.output.iter().any(OutputItem::owed)).await
     }
 
     /// The run once it ended on its machine, whatever of its outputs is still on its way here.
-    pub async fn ended(&self, id: &RunId) -> Result<Run, Error> {
+    pub(crate) async fn ended(&self, id: &RunId) -> Result<Run, Error> {
         self.until(id, |_| true).await
     }
 
@@ -396,7 +396,7 @@ impl Host {
 
     /// Whether this computer reaches the Hub at all: a connect, no call, so the Hub learns nothing. With no network here, what didn't
     /// answer says nothing of itself.
-    pub async fn online(&self) -> bool {
+    pub(crate) async fn online(&self) -> bool {
         // A connect gives no other word of a path that swallows it: the one signal-less wait here, and it only delays the next look.
         const CONNECT: Duration = Duration::from_secs(10);
         let Ok(hub) = reqwest::Url::parse(self.api.machines.hubs.hub.as_str()) else { return true };
@@ -405,7 +405,7 @@ impl Host {
     }
 
     /// The machine among `on` that already holds these bytes for this computer.
-    pub async fn holding(&self, sha256: &str, length: u64, on: &[On]) -> Option<On> {
+    pub(crate) async fn holding(&self, sha256: &str, length: u64, on: &[On]) -> Option<On> {
         let digest: Digest = sha256.parse().ok()?;
         for machine in on {
             let On::Machine(text) = machine else { continue };
@@ -422,7 +422,7 @@ impl Host {
     }
 
     /// Whether `machine` is there to fetch `sha256` from: it hasn't ended, its Hub doesn't call it offline, and it hasn't evicted them.
-    pub async fn fetchable(&self, sha256: &str, machine: &str) -> bool {
+    pub(crate) async fn fetchable(&self, sha256: &str, machine: &str) -> bool {
         let machines = &self.api.machines;
         machines.named(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
             && machines.offline(machine).is_none()
@@ -430,7 +430,7 @@ impl Host {
     }
 
     /// `sha256`, which `machine` keeps, brought here now as an export brings an output: into its project's `files/`. Err: why not.
-    pub async fn fetch(&self, sha256: &str, machine: &str) -> Result<(), String> {
+    pub(crate) async fn fetch(&self, sha256: &str, machine: &str) -> Result<(), String> {
         self.api.calcifer.bring(sha256, machine).await
     }
 
@@ -440,7 +440,7 @@ impl Host {
     }
 
     /// Cancels run `number` on `machine` if it has not begun.
-    pub fn cancel_unstarted(&self, number: u64, machine: &str) {
+    pub(crate) fn cancel_unstarted(&self, number: u64, machine: &str) {
         let calcifer = &self.api.calcifer;
         let Ok(Some(row)) = calcifer.store().run_by_number(number) else { return };
         if row.machine.as_deref() == Some(machine) && row.started_at_ms.is_none() && row.state != crate::store::State::Settled {
@@ -451,7 +451,7 @@ impl Host {
     /// Where a run of `renderer` goes among `on`: one is where it goes; of several, the machine
     /// with the fewest runs queued or running, one without the renderer's models counting one
     /// more, a warm one first among equals, then the first listed.
-    pub fn place(&self, on: &[On], renderer: &Renderer) -> On {
+    pub(crate) fn place(&self, on: &[On], renderer: &Renderer) -> On {
         if let [one] = on {
             return one.clone();
         }
@@ -477,17 +477,17 @@ impl Host {
     }
 
     /// cozy's home.
-    pub fn home(&self) -> &platform::paths::Home {
+    pub(crate) fn home(&self) -> &platform::paths::Home {
         self.api.machines.hubs.home()
     }
 
     /// cozy's cache folder for this user (`platform::paths::cache`), else one in its home.
-    pub fn cache(&self) -> std::path::PathBuf {
+    pub(crate) fn cache(&self) -> std::path::PathBuf {
         platform::paths::cache().unwrap_or_else(|| self.api.machines.hubs.home().root().join("cache"))
     }
 
     /// cozy's ffmpeg and ffprobe: the pinned build `cozy` fetched, else PATH's.
-    pub async fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
+    pub(crate) async fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
         let home = self.api.machines.hubs.home();
         let found = crate::tools::ffmpeg(home, &|line| tracing::info!("{line}")).await?;
         Ok((found.ffmpeg, found.ffprobe))

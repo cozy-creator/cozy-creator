@@ -262,13 +262,13 @@ impl DeviceBuffer {
     pub fn len(&self) -> usize {
         self.len
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
     pub fn device(&self) -> i32 {
         self.engine.device
     }
-    pub fn context(&self) -> CUcontext {
+    pub(crate) fn context(&self) -> CUcontext {
         self.engine.ctx
     }
     /// Free a completed native-owned allocation, checking the driver result.
@@ -277,7 +277,7 @@ impl DeviceBuffer {
     /// Every producer and consumer is checked complete; no alias may access the pointer.
     /// The caller excludes actual CUDA capture. On error retain this owner until process
     /// retirement; an ambiguous free must not be retried, including by Drop.
-    pub unsafe fn release_completed(&mut self) -> cuda::Result<()> {
+    pub(crate) unsafe fn release_completed(&mut self) -> cuda::Result<()> {
         if self.release_failed {
             return Err(cuda::Error::CudaUnavailable(
                 "allocation release was already unproven".into(),

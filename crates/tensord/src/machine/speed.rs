@@ -25,7 +25,7 @@ struct Reporter {
 static REPORTER: OnceLock<Reporter> = OnceLock::new();
 
 /// Reports for this rental from now on, on the current runtime; `origin` is its one downloader.
-pub fn serve(hub: Arc<Hub>, state: PathBuf, origin: Arc<crate::origin::Machine>) {
+pub(crate) fn serve(hub: Arc<Hub>, state: PathBuf, origin: Arc<crate::origin::Machine>) {
     let runtime = tokio::runtime::Handle::current();
     if REPORTER
         .set(Reporter {
@@ -57,7 +57,7 @@ pub fn serve(hub: Arc<Hub>, state: PathBuf, origin: Arc<crate::origin::Machine>)
 /// its launch to Hello, which imports the interpreter's Runtime and with it torch, plus its Start's
 /// `torch_import` leg where torch is imported there. The same work on every host of an image,
 /// before any package is imported.
-pub fn imported(hello: Duration, stages: &[(String, f64)]) {
+pub(crate) fn imported(hello: Duration, stages: &[(String, f64)]) {
     if REPORTER.get().is_none() || reported("cpu") {
         return;
     }

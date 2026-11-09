@@ -6,6 +6,7 @@
 //!
 //! The workspace's FFI lives here: only its boundary files allow `unsafe`.
 #![deny(unsafe_code, clippy::undocumented_unsafe_blocks)]
+#![deny(unreachable_pub)]
 use std::{fmt, io, path::PathBuf};
 
 pub mod contain;
@@ -25,7 +26,7 @@ pub mod release;
 pub mod service;
 pub mod tail;
 pub mod tools;
-pub mod watch;
+mod watch;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -57,7 +58,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    pub fn unsupported(seam: Seam) -> Self {
+    pub(crate) fn unsupported(seam: Seam) -> Self {
         Self::Unsupported {
             seam,
             os: Os::CURRENT,

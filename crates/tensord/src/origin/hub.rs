@@ -29,14 +29,14 @@ fn endpoint(machine: &Machine, source: &hub::Source) -> Result<(Endpoint, Key)> 
 
 /// Where the objects of `source`'s Hub are read. Nothing is asked of the Hub until a fetch
 /// needs it.
-pub fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> {
+pub(crate) fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> {
     let (endpoint, (trust, local)) = endpoint(machine, source)?;
     Ok(Remote { origin: Arc::new(endpoint), trust, local })
 }
 
 /// `repository`'s commit at `source`'s Hub: of `release` (empty: the newest) in `lane` (empty:
 /// the one `hardware` runs best).
-pub fn resolve(machine: &Machine, source: &hub::Source, repository: &str, release: &str, lane: &str, hardware: &Hardware) -> Result<Resolved> {
+pub(crate) fn resolve(machine: &Machine, source: &hub::Source, repository: &str, release: &str, lane: &str, hardware: &Hardware) -> Result<Resolved> {
     let (endpoint, _) = endpoint(machine, source)?;
     let (repository, release, lane, hardware) = (repository.to_string(), release.to_string(), lane.to_string(), hardware.clone());
     machine.block(&Stop::default(), async move {
@@ -46,7 +46,7 @@ pub fn resolve(machine: &Machine, source: &hub::Source, repository: &str, releas
 }
 
 /// The object `sha256` at `source`'s Hub, with its length, as the request may read it.
-pub fn object(machine: &Machine, source: &hub::Source, sha256: &str) -> Result<ObjectRef> {
+pub(crate) fn object(machine: &Machine, source: &hub::Source, sha256: &str) -> Result<ObjectRef> {
     let (endpoint, _) = endpoint(machine, source)?;
     let sha256 = sha256.to_string();
     machine.block(&Stop::default(), async move {

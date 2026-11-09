@@ -13,15 +13,15 @@ use std::{path::Path, time::Duration};
 mod imp;
 
 /// A directory whose files' changes (written, created, renamed in, removed) wake [`DirWatch::wait`].
-pub struct DirWatch(imp::Watch);
+pub(crate) struct DirWatch(imp::Watch);
 
 impl DirWatch {
-    pub fn new(dir: &Path) -> Result<Self> {
+    pub(crate) fn new(dir: &Path) -> Result<Self> {
         imp::Watch::new(dir).map(Self)
     }
 
     /// Waits until a file changes or `most` passes; true when one changed since the last wait.
-    pub fn wait(&mut self, most: Duration) -> Result<bool> {
+    pub(crate) fn wait(&mut self, most: Duration) -> Result<bool> {
         self.0.wait(most)
     }
 }

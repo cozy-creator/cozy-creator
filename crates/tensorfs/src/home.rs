@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::err::{refuse, Code, Result};
 
-pub const ENV: &str = "TENSORFS_HOME";
+pub(crate) const ENV: &str = "TENSORFS_HOME";
 
 /// Where a resolved root came from. `Named` roots were asked for; `Fallback` is a guess.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub fn resolve(explicit: Option<&Path>) -> Result<PathBuf> {
 /// may bring it into existence. The `$HOME/.cache/tensorfs` fallback is accepted only for a Store that
 /// ALREADY exists: with nothing named and nothing there, every command refuses instead of
 /// materializing a database nobody asked for.
-pub fn store_root(explicit: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn store_root(explicit: Option<&Path>) -> Result<PathBuf> {
     let (root, origin) = resolve_env(explicit)?;
     if origin == Origin::Named || root.is_dir() {
         return Ok(root);

@@ -94,7 +94,7 @@ fn failed(op: &'static str, hr: i32) -> Error {
 
 /// One DXGI adapter: its name, its LUID as `cuDeviceGetLuid` writes it, its dedicated memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Adapter {
+pub(crate) struct Adapter {
     pub name: String,
     pub luid: [u8; 8],
     pub dedicated: u64,
@@ -146,13 +146,13 @@ fn each(factory: &Com) -> Result<Vec<(Adapter, Com)>> {
 }
 
 /// Every adapter DXGI names (the GPUs, and Microsoft's software adapter).
-pub fn adapters() -> Result<Vec<Adapter>> {
+pub(crate) fn adapters() -> Result<Vec<Adapter>> {
     let (_dxgi, factory) = factory()?;
     Ok(each(&factory)?.into_iter().map(|(a, _)| a).collect())
 }
 
 /// This process's budget on one adapter, and its change event.
-pub struct Budget {
+pub(crate) struct Budget {
     adapter: Com,
     cookie: u32,
     changed: OwnedHandle,
@@ -178,7 +178,7 @@ fn event(manual: bool) -> Result<OwnedHandle> {
 
 impl Budget {
     /// The budget on the adapter whose LUID is `luid`; `None` when DXGI names no such adapter.
-    pub fn open(luid: [u8; 8]) -> Result<Option<Budget>> {
+    pub(crate) fn open(luid: [u8; 8]) -> Result<Option<Budget>> {
         let (dxgi, factory) = factory()?;
         let Some((_, adapter)) = each(&factory)?.into_iter().find(|(a, _)| a.luid == luid) else { return Ok(None) };
         let mut third = std::ptr::null_mut();
@@ -199,7 +199,7 @@ impl Budget {
     }
 
     /// This process's budget and usage on the adapter's own memory, bytes.
-    pub fn read(&self) -> Result<(u64, u64)> {
+    pub(crate) fn read(&self) -> Result<(u64, u64)> {
         let mut info = VideoMemoryInfo::default();
         // SAFETY: a live IDXGIAdapter3, node 0, and an info of the documented layout.
         let hr = unsafe { method::<QueryVideoMemoryInfo>(self.adapter.0, QUERY_VIDEO_MEMORY_INFO)(self.adapter.0, 0, LOCAL, &mut info) };
@@ -211,13 +211,13 @@ impl Budget {
 
     /// Blocks until the budget or usage changed (true) or [`Budget::close`] was called (false);
     /// once closed, always false (the lowest signalled index wins, so `closed` comes first).
-    pub fn wait(&self) -> bool {
+    pub(crate) fn wait(&self) -> bool {
         let handles = [self.closed.as_raw_handle() as HANDLE, self.changed.as_raw_handle() as HANDLE];
         // SAFETY: live events this value holds.
         unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) == WAIT_OBJECT_0 + 1 }
     }
 
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         // SAFETY: an event this value holds.
         unsafe { SetEvent(self.closed.as_raw_handle() as HANDLE) };
     }

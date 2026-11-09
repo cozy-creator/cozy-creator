@@ -25,13 +25,13 @@ use tokio_rustls::{
 };
 
 /// True when a TLS handshake on the listener presents exactly `leaf`.
-pub async fn presents_leaf(port: u16, leaf: &[u8]) -> bool {
+pub(crate) async fn presents_leaf(port: u16, leaf: &[u8]) -> bool {
     connect(port, leaf).await.is_some()
 }
 
 /// True when the listener refuses a call whose Cozy-Cap is well formed, names this machine and
 /// is unexpired, but is signed by a key made for this one probe.
-pub async fn refuses_foreign_capability(port: u16, leaf: &[u8], worker_id: &str) -> bool {
+pub(crate) async fn refuses_foreign_capability(port: u16, leaf: &[u8], worker_id: &str) -> bool {
     match super::identity::random::<32>() {
         Ok(seed) => {
             let foreign = ed25519_dalek::SigningKey::from_bytes(&seed);
@@ -44,7 +44,7 @@ pub async fn refuses_foreign_capability(port: u16, leaf: &[u8], worker_id: &str)
 /// True when `GET /v1/status` carrying a machine-scope Cozy-Cap signed by `key` is refused as a
 /// credential while the same call with no capability answers: the refusal is the credential's,
 /// not a closed door.
-pub async fn refuses_capability_of(
+pub(crate) async fn refuses_capability_of(
     port: u16,
     leaf: &[u8],
     worker_id: &str,

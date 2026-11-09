@@ -29,7 +29,7 @@ use std::{
 
 mod model_folder;
 
-pub enum Source {
+pub(crate) enum Source {
     /// A published release by name (th-245); empty: the Hub's newest.
     Release { package: String, release: String },
     /// An installation this machine already holds for the signer.
@@ -44,7 +44,7 @@ pub enum Source {
 type Published = (String, String);
 
 /// One member of the warm set a warm run carries (`RunSpec.set`).
-pub struct SetItem {
+pub(crate) struct SetItem {
     pub source: Source,
     pub entrypoint: String,
     pub models: Vec<domain::ModelChoice>,
@@ -56,7 +56,7 @@ pub struct SetItem {
     pub sent: Vec<u8>,
 }
 
-pub struct Spec {
+pub(crate) struct Spec {
     /// Prepare only (`kind: warm`): install and download, then succeed.
     pub warm: bool,
     /// `kind: remove`: the caller's installations of the source leave the machine.
@@ -95,7 +95,7 @@ pub struct Spec {
     pub journaled: Vec<u8>,
 }
 
-pub struct Runs {
+pub(crate) struct Runs {
     pub service: Arc<Service>,
     pub objects: Arc<Objects>,
     /// The one resolver of a run's code and models.
@@ -111,7 +111,7 @@ pub struct Runs {
 /// What a run's children prepare with: its installation, Hub access, owner, catalog revision,
 /// attention pin, lane and the model choices addressed to its callables (`<entrypoint>.models.<p>`).
 #[derive(Clone, Default)]
-pub struct RunContext {
+pub(crate) struct RunContext {
     pub(crate) installation: String,
     pub(crate) hub: Option<hub::Source>,
     pub(crate) providers: Providers,
@@ -314,7 +314,7 @@ impl Runs {
 
     /// Accepts the run (or answers the one this id already names) and starts its preparation.
     /// An accepted run is answered before its inputs are checked: they may be gone since.
-    pub fn submit(self: &Arc<Self>, actor: &str, id: &str, spec: Spec) -> Result<Execution, Refused> {
+    pub(crate) fn submit(self: &Arc<Self>, actor: &str, id: &str, spec: Spec) -> Result<Execution, Refused> {
         if let Some(run) = self.existing(actor, id, &spec.digest)? {
             return Ok(run);
         }
@@ -1287,7 +1287,7 @@ impl Runs {
     /// idempotent on `intent`, preparing inside itself with its parent's context and the
     /// choices addressed to its callable.
     #[allow(clippy::too_many_arguments)]
-    pub fn child(
+    pub(crate) fn child(
         self: &Arc<Self>,
         parent: &Execution,
         request: &str,
@@ -1423,7 +1423,7 @@ impl Runs {
     /// `model_prefetch`: an acknowledged hint about a future child call. TensorD resolves
     /// its models, downloading behind every download a call waits on, and asks the GPU pool
     /// to prewarm a Runtime construction when admitted.
-    pub fn prefetch(
+    pub(crate) fn prefetch(
         self: &Arc<Self>, parent: &Execution, application: &str, entrypoint: &str,
         passed: Vec<domain::ModelChoice>,
     ) -> Result<(), Refused> {
@@ -1481,7 +1481,7 @@ impl Runs {
     }
 
     /// The fetches a run's preparation started, for its call to end once its executor asks.
-    pub fn ahead(&self, id: &str) -> Option<Arc<crate::access::Fetch>> {
+    pub(crate) fn ahead(&self, id: &str) -> Option<Arc<crate::access::Fetch>> {
         self.contexts.lock().unwrap().get_mut(id).and_then(|context| context.ahead.take())
     }
 
@@ -1529,13 +1529,13 @@ impl Runs {
     }
 
     /// The Hub a run reads and writes: its own access, else the machine's.
-    pub fn hub(&self, id: &str) -> Option<hub::Source> {
+    pub(crate) fn hub(&self, id: &str) -> Option<hub::Source> {
         let context = self.contexts.lock().unwrap().get(id).and_then(|c| c.hub.clone());
         context.or_else(|| self.own_hub.clone())
     }
 
     /// A run ended: its children prepare no more, and its access is forgotten.
-    pub fn end(&self, id: &str) {
+    pub(crate) fn end(&self, id: &str) {
         self.contexts.lock().unwrap().remove(id);
     }
 }

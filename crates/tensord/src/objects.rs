@@ -27,9 +27,9 @@ use tensorfs::{format::ObjectRef, sha256};
 const MEMO_RESULT_BYTES: usize = 48 << 10;
 
 /// Byte ranges `[start, end)`, sorted and apart.
-pub type Ranges = Vec<(u64, u64)>;
+pub(crate) type Ranges = Vec<(u64, u64)>;
 
-pub struct Objects {
+pub(crate) struct Objects {
     root: PathBuf,
     cas: Cas,
     engine: Arc<Engine>,
@@ -58,7 +58,7 @@ impl From<io::Error> for Refused {
 }
 
 /// One object's upload, shared by the writes that carry its ranges.
-pub struct Upload {
+pub(crate) struct Upload {
     actor: String,
     object: ObjectRef,
     part: PathBuf,
@@ -74,7 +74,7 @@ pub struct Upload {
 
 impl Upload {
     /// Lands `data` at `offset`.
-    pub fn write_at(&self, offset: u64, data: &[u8]) -> Result<(), Refused> {
+    pub(crate) fn write_at(&self, offset: u64, data: &[u8]) -> Result<(), Refused> {
         let end = offset + data.len() as u64;
         if end > self.object.length {
             return Err(refused(
@@ -93,12 +93,12 @@ impl Upload {
     }
 
     /// The bytes held, now and as more land.
-    pub fn follow(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub(crate) fn follow(&self) -> tokio::sync::watch::Receiver<u64> {
         self.landed.subscribe()
     }
 
     /// What has landed, synced or not.
-    pub fn held(&self) -> Ranges {
+    pub(crate) fn held(&self) -> Ranges {
         self.held.lock().unwrap().clone()
     }
 }
@@ -145,7 +145,7 @@ fn write_held(part: &Path, length: u64, held: &Ranges) -> io::Result<()> {
 }
 
 impl Objects {
-    pub fn new(root: &Path, engine: Arc<Engine>, store: Arc<tensorfs::store::Store>) -> io::Result<Self> {
+    pub(crate) fn new(root: &Path, engine: Arc<Engine>, store: Arc<tensorfs::store::Store>) -> io::Result<Self> {
         fs::create_dir_all(root)?;
         Ok(Self {
             root: root.to_path_buf(),
@@ -157,7 +157,7 @@ impl Objects {
     }
 
     /// The store the objects are held in.
-    pub fn cas(&self) -> &Cas {
+    pub(crate) fn cas(&self) -> &Cas {
         &self.cas
     }
 
@@ -177,7 +177,7 @@ impl Objects {
 
     /// Removes objects no unfinished run names and nothing used for the TTL, or for `IDLE`
     /// while the disk is low, and held outputs unused for the TTL: how many, and their bytes.
-    pub fn sweep(&self) -> io::Result<(usize, u64)> {
+    pub(crate) fn sweep(&self) -> io::Result<(usize, u64)> {
         let held = self.evict_outputs(crate::reclaim::TTL, u64::MAX)?;
         let unheld = self.release(match Disk::measure(&self.engine.root)?.short() {
             Some(_) => crate::reclaim::IDLE,
@@ -187,7 +187,7 @@ impl Objects {
     }
 
     /// A disk still low after every cache: held outputs nothing used for `IDLE`, least recently used first, until it isn't.
-    pub fn make_room(&self) -> io::Result<(usize, u64)> {
+    pub(crate) fn make_room(&self) -> io::Result<(usize, u64)> {
         // What the caches just freed shows a moment later.
         std::thread::sleep(Duration::from_secs(1));
         match Disk::measure(&self.engine.root)?.short() {
@@ -209,7 +209,7 @@ impl Objects {
 
     /// `sweep` over objects unused for `unused`. One written just before a crash has no journal
     /// row yet: it ages from its own last use.
-    pub fn release(&self, unused: Duration) -> io::Result<(usize, u64)> {
+    pub(crate) fn release(&self, unused: Duration) -> io::Result<(usize, u64)> {
         let _custody = self.guard();
         let before = SystemTime::now().checked_sub(unused).unwrap_or(UNIX_EPOCH);
         let since = before.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
@@ -222,7 +222,7 @@ impl Objects {
     }
 
     /// The stored object this signer wrote, or None.
-    pub fn path(&self, actor: &str, digest: &str) -> io::Result<Option<(PathBuf, u64)>> {
+    pub(crate) fn path(&self, actor: &str, digest: &str) -> io::Result<Option<(PathBuf, u64)>> {
         let Some(hex) = hex(digest) else {
             return Ok(None);
         };
@@ -236,7 +236,7 @@ impl Objects {
     /// The success a memoized computation left for this signer, its files linked into `run`'s
     /// custody as that run's own result; None when there is none or a file is gone (the memo
     /// goes with it).
-    pub fn recall(&self, actor: &str, computation: &str, run: &str) -> io::Result<Option<ResultRecord>> {
+    pub(crate) fn recall(&self, actor: &str, computation: &str, run: &str) -> io::Result<Option<ResultRecord>> {
         let _custody = self.guard();
         let Some(raw) = self.engine.with_journal(|j| j.held_memo(actor, computation))? else {
             return Ok(None);
@@ -268,7 +268,7 @@ impl Objects {
     /// A memoizable run's success `result`, its files kept for its signer, to hold under its
     /// computation while this machine holds every file it names. A tree's members are not held
     /// as one result, nor is a record over `MEMO_RESULT_BYTES`.
-    pub fn keep(&self, record: &Execution, result: &ResultRecord) -> io::Result<Option<HeldMemo>> {
+    pub(crate) fn keep(&self, record: &Execution, result: &ResultRecord) -> io::Result<Option<HeldMemo>> {
         let Some(submission) = &record.submission else {
             return Ok(None);
         };
@@ -304,7 +304,7 @@ impl Objects {
 
     /// A file this machine produced for the signer (a child run's result) as its object, so a
     /// later run of that signer may be handed it.
-    pub fn adopt(&self, actor: &str, parent: &str, file: &Path, object: &ObjectRef) -> io::Result<()> {
+    pub(crate) fn adopt(&self, actor: &str, parent: &str, file: &Path, object: &ObjectRef) -> io::Result<()> {
         let _custody = self.guard();
         if !self.cas.reuse(object)? {
             self.cas.put(File::open(file)?, Some(object))?;
@@ -337,7 +337,7 @@ impl Objects {
     /// The ranges of `digest` (`sha256:<hex>`) this signer holds: all of it once stored, else
     /// what its upload has landed. An upload whose ranges cover it is settled first, so whole
     /// always means stored; bytes that differ from the digest are dropped, and held no more.
-    pub fn held(&self, actor: &str, digest: &str) -> Result<Ranges, Refused> {
+    pub(crate) fn held(&self, actor: &str, digest: &str) -> Result<Ranges, Refused> {
         let hex = valid(digest)?;
         let part = self.part(actor, &hex);
         // Under custody a settle of this part has not begun or has stored the object (`upload`).
@@ -362,7 +362,7 @@ impl Objects {
 
     /// The upload of `digest`, `length` bytes, for this signer: joined while under way, else
     /// resumed from the ranges an earlier one synced. None once the object is stored.
-    pub fn upload(&self, actor: &str, digest: &str, length: u64) -> Result<Option<Arc<Upload>>, Refused> {
+    pub(crate) fn upload(&self, actor: &str, digest: &str, length: u64) -> Result<Option<Arc<Upload>>, Refused> {
         match self.open_upload(actor, digest, length, false) {
             // Short: what the machine can free goes first (no lock held: a sweep takes custody),
             // and then it may use the reserve, since this is what the caller asked to put here.
@@ -433,7 +433,7 @@ impl Objects {
     /// Records what `upload` landed, durably. Once it holds every byte, the object is verified
     /// against its digest and stored for its signer; bytes that differ are dropped. Answers the
     /// ranges held.
-    pub fn settle(&self, upload: &Upload) -> Result<Ranges, Refused> {
+    pub(crate) fn settle(&self, upload: &Upload) -> Result<Ranges, Refused> {
         let digest = format!("sha256:{}", upload.object.sha256);
         let length = upload.object.length;
         let _settling = upload.settling.lock().unwrap();

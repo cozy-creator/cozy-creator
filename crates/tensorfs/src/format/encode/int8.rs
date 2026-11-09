@@ -3,9 +3,9 @@ use crate::format::{Dtype, Encoding, Error, Result};
 
 /// Production Runtime's deterministic rowwise H256/16 quantizer. The revision is
 /// provenance, not an extra encoding parameter: decoders only need the rotation.
-pub const CONVROT_STRATEGY: &str = "int8-convrot256/1";
+pub(crate) const CONVROT_STRATEGY: &str = "int8-convrot256/1";
 
-pub const CONVROT: Encoder = Encoder {
+pub(crate) const CONVROT: Encoder = Encoder {
     scheme: "int8.convrot",
     quantize: Some(convrot),
     pack: None,
@@ -18,7 +18,7 @@ impl Encoding {
     pub fn int8_rowwise() -> Encoding {
         encoding("int8.rowwise", &[])
     }
-    pub fn int8_columnwise() -> Encoding {
+    pub(crate) fn int8_columnwise() -> Encoding {
         encoding("int8.columnwise", &[])
     }
     pub fn int8_convrot(rotation_size: u64) -> Encoding {

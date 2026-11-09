@@ -61,7 +61,7 @@ use crate::{
     store::{AskKind, Endpoint, MachineRow, RunRow, Store},
 };
 
-pub struct Machines {
+pub(crate) struct Machines {
     pub(crate) calcifer: Arc<Calcifer>,
     pub(crate) home: Home,
     /// This user's home: what `~` in a request's path means.
@@ -107,7 +107,7 @@ impl Machines {
     /// a Hub and was not answered, and places unplaced runs. The config names the Hub listed (a
     /// rental's own Hub is always read), this computer's machine root and the model-source
     /// tokens runs carry.
-    pub fn start(
+    pub(crate) fn start(
         calcifer: Arc<Calcifer>,
         home: Home,
         user_home: &Path,
@@ -190,14 +190,14 @@ impl Machines {
     }
 
     /// The machine's latest Status, once one has arrived.
-    pub fn frame(&self, name: &str) -> Option<v1::StatusFrame> {
+    pub(crate) fn frame(&self, name: &str) -> Option<v1::StatusFrame> {
         lock(&self.seen)
             .get(name)
             .and_then(|seen| seen.frame.clone())
     }
 
     /// Stops every task where it stands, as if the process ended.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         lock(&self.tasks).abort_all();
     }
 
@@ -214,7 +214,7 @@ impl Machines {
     /// Every machine: this computer's, those added, and every live rental of this account, ordered
     /// here or by another of its clients. `refresh` lists every Hub again first; otherwise the
     /// Hubs' last word is answered.
-    pub async fn list(self: &Arc<Self>, refresh: bool) -> Result<MachineList, Error> {
+    pub(crate) async fn list(self: &Arc<Self>, refresh: bool) -> Result<MachineList, Error> {
         if refresh {
             self.list_hubs().await;
         }
@@ -243,7 +243,7 @@ impl Machines {
 
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
-    pub async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
+    pub(crate) async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
         if let Some(order) = self.order_named(text)? {
             return Ok(self.order(&order));
         }
@@ -299,7 +299,7 @@ impl Machines {
 
     /// Adds another computer's machine: it must present the leaf `fingerprint` names and admit
     /// this controller's key before anything is recorded.
-    pub async fn add(
+    pub(crate) async fn add(
         self: &Arc<Self>,
         name: &str,
         address: &str,
@@ -529,7 +529,7 @@ impl Machines {
     /// at once and carried out then (`end_here`). `force` ends it now and names the outputs given
     /// up. `local` is this computer's and never ended, unless this computer is a rental: then it
     /// asks its own machine to release itself (`release_here`).
-    pub async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
+    pub(crate) async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
         if text.eq_ignore_ascii_case("local") {
             return self.release_here().await;
         }
@@ -572,7 +572,7 @@ impl Machines {
     }
 
     /// Starts a rental's 15-minute idle clock over, once the machine acknowledges it.
-    pub async fn keepalive(&self, text: &str) -> Result<Keepalive, Error> {
+    pub(crate) async fn keepalive(&self, text: &str) -> Result<Keepalive, Error> {
         let (row, link) = self.linked(text)?;
         let frame = link
             .keepalive()
@@ -588,7 +588,7 @@ impl Machines {
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
     /// A machine that cannot answer (ended, lost, unreachable) answers the copy Calcifer kept.
-    pub async fn logs(&self, text: &str, log: MachineLog, lines: u64) -> Result<Vec<u8>, Error> {
+    pub(crate) async fn logs(&self, text: &str, log: MachineLog, lines: u64) -> Result<Vec<u8>, Error> {
         let read = match self.linked(text) {
             Ok((row, link)) => link.read_log(log_name(log), lines).await.map_err(|e| log_refusal(&row.name, log, e)),
             Err(error) => Err(error),
@@ -609,7 +609,7 @@ impl Machines {
 
     /// As `logs`, or the lines after `after` (a batch's place), then each batch as the machine
     /// appends it.
-    pub async fn follow_logs(
+    pub(crate) async fn follow_logs(
         &self,
         text: &str,
         log: MachineLog,
@@ -1182,7 +1182,7 @@ impl Machines {
     }
 
     /// The owner key's public half, as `cozy machine authorize` takes it.
-    pub fn controller_key(&self) -> Result<String, Error> {
+    pub(crate) fn controller_key(&self) -> Result<String, Error> {
         let key = signer(&self.owner_key()?)?;
         Ok(URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes()))
     }
@@ -1601,7 +1601,7 @@ fn usage(message: String) -> Error {
 }
 
 /// How to reach the TensorD whose `api-ready.json` is at `path`.
-pub fn endpoint_of(path: &Path) -> Result<Endpoint, Error> {
+pub(crate) fn endpoint_of(path: &Path) -> Result<Endpoint, Error> {
     #[derive(serde::Deserialize)]
     struct Ready {
         address: String,

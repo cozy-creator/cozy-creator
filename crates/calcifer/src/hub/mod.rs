@@ -34,7 +34,7 @@ pub(crate) use account::Codes;
 pub(crate) use packages::release_install;
 pub(crate) use work::Works;
 
-pub fn routes() -> Router<Arc<Api>> {
+pub(crate) fn routes() -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/account", get(account::show).delete(account::sign_out))
         .route("/v1/account/codes", post(account::send_code))

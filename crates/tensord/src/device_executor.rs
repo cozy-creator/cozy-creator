@@ -6,7 +6,7 @@ use crate::{
     process::{reap_group, tail},
     seam,
 };
-pub use executor_api::{
+pub(crate) use executor_api::{
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
     Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,
@@ -31,7 +31,7 @@ use std::{
 use std::os::{fd::AsRawFd, unix::process::ExitStatusExt};
 
 #[derive(Clone, Debug)]
-pub struct ExecutorConfig {
+pub(crate) struct ExecutorConfig {
     pub python: PathBuf,
     pub root: PathBuf,
     pub socket: PathBuf,
@@ -45,7 +45,7 @@ pub struct ExecutorConfig {
 }
 
 /// A refusal of one executor request, its detail bounded.
-pub fn refused(seq: u64, code: &str, detail: impl Into<String>) -> Answer {
+pub(crate) fn refused(seq: u64, code: &str, detail: impl Into<String>) -> Answer {
     Answer::refused(seq, code, crate::triage::ends(&detail.into(), 1024))
 }
 
@@ -60,7 +60,7 @@ fn spool(command: &Command) -> Option<(&str, &Path)> {
 
 
 
-pub trait Services {
+pub(crate) trait Services {
     fn progress(&mut self, _: &Frame) {}
     fn request(
         &mut self,
@@ -72,23 +72,23 @@ pub trait Services {
     }
 }
 
-pub struct Baseline;
+pub(crate) struct Baseline;
 impl Services for Baseline {}
 
 /// The executor's seam for frames sent outside any command's exchange, under the lock every
 /// command and answer is written with. Gone with the executor.
 #[derive(Clone)]
-pub struct Line(std::sync::Weak<Mutex<LocalStream>>);
+pub(crate) struct Line(std::sync::Weak<Mutex<LocalStream>>);
 impl Line {
     /// Sends `command`, answered by nothing; false once the executor is gone.
-    pub fn send(&self, command: &Command) -> bool {
+    pub(crate) fn send(&self, command: &Command) -> bool {
         let Some(writer) = self.0.upgrade() else {
             return false;
         };
         let bytes = command_bytes(command);
         bytes.and_then(|bytes| seam::write_body(&mut writer.lock().unwrap(), &bytes)).is_ok()
     }
-    pub fn same(&self, other: &Line) -> bool {
+    pub(crate) fn same(&self, other: &Line) -> bool {
         self.0.ptr_eq(&other.0)
     }
 }
@@ -109,34 +109,34 @@ struct LookaheadState {
 
 /// One actual next request on this exact executor. The existing exchange remains its only reader.
 #[derive(Clone)]
-pub struct Lookahead {
+pub(crate) struct Lookahead {
     line: Line,
     state: Arc<Mutex<LookaheadState>>,
 }
 
 impl Lookahead {
-    pub fn current(&self) -> String {
+    pub(crate) fn current(&self) -> String {
         self.state.lock().unwrap().current.clone()
     }
 
-    pub fn pending(&self, request: &str) -> bool {
+    pub(crate) fn pending(&self, request: &str) -> bool {
         let state = self.state.lock().unwrap();
         !state.retire && state.queued.as_ref().is_some_and(|q|
             !q.canceled && !q.promoted && q.command.request_id == request)
     }
 
-    pub fn queued(&self) -> Option<String> {
+    pub(crate) fn queued(&self) -> Option<String> {
         self.state.lock().unwrap().queued.as_ref()
             .filter(|q| !q.canceled).map(|q| q.command.request_id.clone())
     }
 
-    pub fn active(&self) -> bool {
+    pub(crate) fn active(&self) -> bool {
         let state = self.state.lock().unwrap();
         !state.retire && !state.current.is_empty()
     }
 
     /// Update the queue's one assignment. No GPU work or Invoke is sent here.
-    pub fn offer(&self, command: Option<PrepareRequest>, current: &str, public_run: Option<&str>) {
+    pub(crate) fn offer(&self, command: Option<PrepareRequest>, current: &str, public_run: Option<&str>) {
         let mut state = self.state.lock().unwrap();
         if state.retire || state.current != current {
             return; // The exact executor has advanced to another invocation since the offer.
@@ -177,13 +177,13 @@ impl Lookahead {
         }
     }
 
-    pub fn invoking(&self, request: &str) -> Invoking {
+    pub(crate) fn invoking(&self, request: &str) -> Invoking {
         self.state.lock().unwrap().current = request.into();
         Invoking(self.state.clone())
     }
 }
 
-pub struct Invoking(Arc<Mutex<LookaheadState>>);
+pub(crate) struct Invoking(Arc<Mutex<LookaheadState>>);
 impl Drop for Invoking {
     fn drop(&mut self) {
         self.0.lock().unwrap().current.clear();
@@ -192,7 +192,7 @@ impl Drop for Invoking {
 
 /// Reusing this idle process would wait for an abandoned preparation. Nothing was invoked.
 #[derive(Debug)]
-pub struct AbandonedPreparation;
+pub(crate) struct AbandonedPreparation;
 impl std::fmt::Display for AbandonedPreparation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("idle executor has an abandoned queued preparation")
@@ -220,7 +220,7 @@ fn command_bytes(command: &Command) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub struct DeviceExecutor {
+pub(crate) struct DeviceExecutor {
     child: Option<Child>,
     /// Forked from an import-only executor (`fork/1`), which is its parent and reaps it.
     forked: bool,
@@ -246,7 +246,7 @@ pub struct DeviceExecutor {
 /// waited on to stop by itself. Its locally owned GPU weights are released on process exit;
 /// a replacement executor reloads them. A cancel for a call it no longer serves does nothing.
 #[derive(Clone)]
-pub struct Cancellation {
+pub(crate) struct Cancellation {
     /// One invocation only. Disabling waits for an in-flight delivery before session reuse.
     enabled: Arc<Mutex<bool>>,
     exact: Arc<Exact>,
@@ -255,12 +255,12 @@ pub struct Cancellation {
 }
 impl Cancellation {
     /// It serves `request` from now on ("": none); false once a cancel killed it.
-    pub fn serve(&self, request: &str) -> bool {
+    pub(crate) fn serve(&self, request: &str) -> bool {
         let mut serving = self.serving.lock().unwrap();
         serving.0 = request.into();
         !serving.1
     }
-    pub fn cancel(&self, request: &str) -> io::Result<()> {
+    pub(crate) fn cancel(&self, request: &str) -> io::Result<()> {
         let enabled = self.enabled.lock().unwrap_or_else(|error| error.into_inner());
         if !*enabled { return Ok(()); }
         let mut serving = self.serving.lock().unwrap();
@@ -272,12 +272,12 @@ impl Cancellation {
     }
 
     /// No clone of this invocation can kill this executor after it returns to the pool.
-    pub fn disable(&self) {
+    pub(crate) fn disable(&self) {
         *self.enabled.lock().unwrap_or_else(|error| error.into_inner()) = false;
     }
 }
 
-pub enum Forked {
+pub(crate) enum Forked {
     Ready(Box<DeviceExecutor>),
     /// No process was made; the configuration is free for a spawn.
     Refused(Box<ExecutorConfig>, String),
@@ -326,7 +326,7 @@ fn endpoint(config: &ExecutorConfig) -> io::Result<(LocalListener, BTreeMap<Stri
 /// (`sun_path`: 104 bytes on macOS); past it, the socket lives in this user's private directory
 /// under /tmp, named by the hash of the path it stands for. A Windows pipe takes any path.
 #[cfg(not(target_os = "linux"))]
-pub fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
+pub(crate) fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
     let natural = root.join(name);
     #[cfg(unix)]
     if natural.as_os_str().len() > 100 {
@@ -364,7 +364,7 @@ fn parent_of(pid: u32) -> io::Result<u32> {
 }
 
 /// The executor's end of the channel is gone: a write broke or no reply came.
-pub fn channel_lost(error: &io::Error) -> bool {
+pub(crate) fn channel_lost(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof
@@ -374,7 +374,7 @@ pub fn channel_lost(error: &io::Error) -> bool {
 /// The executor exited before it connected: no authored code ran. Deterministic causes
 /// (an SDK without this module, a broken environment) fail the run with this evidence.
 #[derive(Debug)]
-pub struct EndedBeforeStart {
+pub(crate) struct EndedBeforeStart {
     pub status: ExitStatus,
     pub stderr_tail: String,
 }
@@ -386,10 +386,10 @@ impl std::fmt::Display for EndedBeforeStart {
 impl std::error::Error for EndedBeforeStart {}
 
 /// How an executor ended: its status, and the descendants killed after it.
-pub type Ended = crate::process::Reaped;
+pub(crate) type Ended = crate::process::Reaped;
 
 #[derive(Clone)]
-pub struct CodecConfig {
+pub(crate) struct CodecConfig {
     pub python: PathBuf,
     pub environment: BTreeMap<String, String>,
     pub generation_hold: Option<Arc<File>>,
@@ -398,7 +398,7 @@ pub struct CodecConfig {
 /// The selected SDK's encoder for codecs this machine does not encode itself (audio,
 /// video): one reusable helper per executor. Owned output work retains it after the executor
 /// returns or exits; machine death closes its stdin. Its generation and log outlive the helper.
-pub struct Codec {
+pub(crate) struct Codec {
     config: CodecConfig,
     log: PathBuf,
     /// Opened before the executor is returned; its directory may disappear afterward.
@@ -417,7 +417,7 @@ impl Drop for CodecHelper {
     }
 }
 impl Codec {
-    pub fn new(config: CodecConfig, log: PathBuf) -> Self {
+    pub(crate) fn new(config: CodecConfig, log: PathBuf) -> Self {
         Self {
             config,
             log,
@@ -427,7 +427,7 @@ impl Codec {
     }
     /// Start the helper now if none runs, so a call's first output does not wait for its
     /// interpreter and imports (0.4-0.6 s on a pod); `encode` starts one if this could not.
-    pub fn prestart(&self) {
+    pub(crate) fn prestart(&self) {
         let mut helper = self.helper.lock().unwrap();
         if helper.is_none() {
             match self.spawn() {
@@ -437,7 +437,7 @@ impl Codec {
         }
     }
     /// Retain the log inode before an idle executor can be ended or its root removed.
-    pub fn retain_log(&self) -> io::Result<()> {
+    pub(crate) fn retain_log(&self) -> io::Result<()> {
         let mut stderr = self.stderr.lock().unwrap();
         if stderr.is_none() {
             *stderr = Some(OpenOptions::new().create(true).read(true).append(true)
@@ -555,7 +555,7 @@ impl Drop for Codec {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AssetBinding {
+pub(crate) struct AssetBinding {
     pub output_id: String,
     pub asset_ref: String,
     pub name: String,
@@ -570,7 +570,7 @@ const MAX_ADJUSTMENT_TEXT: usize = 512;
 
 /// The invoke reply's adjustment rows. They are advisory: a malformed row is skipped with a
 /// warning and never fails the run.
-pub fn adjustments(id: &str, reply: &Frame) -> Vec<crate::journal::Adjustment> {
+pub(crate) fn adjustments(id: &str, reply: &Frame) -> Vec<crate::journal::Adjustment> {
     let rows = match &reply.adjustments {
         Value::Null => return vec![],
         Value::Array(rows) => rows,
@@ -602,7 +602,7 @@ pub fn adjustments(id: &str, reply: &Frame) -> Vec<crate::journal::Adjustment> {
         .collect()
 }
 
-pub fn postprocess(
+pub(crate) fn postprocess(
     codec: &Codec,
     spool: &Path,
     reply: &Frame,
@@ -755,7 +755,7 @@ fn bind(spool: &Path, reply: &Frame, media: &BTreeMap<String, String>) -> io::Re
 
 impl DeviceExecutor {
 
-    pub fn spawn_owned(
+    pub(crate) fn spawn_owned(
         config: ExecutorConfig,
         launcher: &crate::child_launcher::ChildLauncher,
         on_birth: impl FnOnce(&Birth, &Cancellation) -> io::Result<()>,
@@ -821,7 +821,7 @@ impl DeviceExecutor {
     /// An executor forked from this import-only one (`fork/1`), its imports done. It dials
     /// its own seam and is checked exactly as a spawned one is, with this process as its
     /// parent. Refused (no process exists) gives the configuration back for a spawn.
-    pub fn fork(
+    pub(crate) fn fork(
         &mut self,
         config: ExecutorConfig,
         on_birth: impl FnOnce(&Birth, &Cancellation) -> io::Result<()>,
@@ -980,59 +980,59 @@ impl DeviceExecutor {
         executor.hello = hello.hello;
         Ok(executor)
     }
-    pub fn codec(&self) -> Arc<Codec> {
+    pub(crate) fn codec(&self) -> Arc<Codec> {
         self.codec.clone()
     }
     /// The machine tier this executor's memoized stages look up and store in.
-    pub fn keep_memo(&mut self, memo: Arc<crate::memo::Memo>) {
+    pub(crate) fn keep_memo(&mut self, memo: Arc<crate::memo::Memo>) {
         self.memo = Some(memo);
     }
-    pub fn root_path(&self) -> &Path {
+    pub(crate) fn root_path(&self) -> &Path {
         &self.root
     }
     /// A request begins: an executor serves many submitters, so a failure quotes only the
     /// stderr written from here on.
-    pub fn begin_request(&mut self) {
+    pub(crate) fn begin_request(&mut self) {
         self.log_from = fs::metadata(self.root.join("stderr.log")).map_or(0, |m| m.len());
     }
     /// The end of the stderr of the request it serves (its whole life before the first), as
     /// much as its triage bundle keeps.
-    pub fn stderr_tail(&self) -> String {
+    pub(crate) fn stderr_tail(&self) -> String {
         crate::process::tail_from(&self.root.join("stderr.log"), self.log_from, crate::triage::MAX_STDERR)
     }
-    pub fn line(&self) -> Line {
+    pub(crate) fn line(&self) -> Line {
         Line(Arc::downgrade(&self.writer))
     }
-    pub fn lookahead(&self) -> Lookahead {
+    pub(crate) fn lookahead(&self) -> Lookahead {
         Lookahead { line: self.line(), state: self.lookahead.clone() }
     }
-    pub fn abandoned_lookahead(&self) -> bool {
+    pub(crate) fn abandoned_lookahead(&self) -> bool {
         self.lookahead.lock().unwrap().retire
     }
-    pub fn preparing_lookahead(&self) -> bool {
+    pub(crate) fn preparing_lookahead(&self) -> bool {
         self.lookahead.lock().unwrap().queued.as_ref().is_some_and(|q| q.reply.is_none())
     }
-    pub fn cancellation(&self) -> Cancellation {
+    pub(crate) fn cancellation(&self) -> Cancellation {
         Cancellation { enabled: Arc::new(Mutex::new(true)), ..self.cancellation.clone() }
     }
     /// It goes back to its pool, serving no call; false when a cancel killed it meanwhile.
-    pub fn idle(&self) -> bool {
+    pub(crate) fn idle(&self) -> bool {
         self.cancellation.serve("")
     }
 
-    pub fn observer_pidfd(&self) -> io::Result<File> {
+    pub(crate) fn observer_pidfd(&self) -> io::Result<File> {
         Ok(self.exact.try_clone()?.into_file())
     }
 
     /// Retain a source/resource until this exact receiver exits, including owner-handle loss.
     /// Observer lifetimes must never own the DeviceExecutor handle.
-    pub fn retain_until_exit(&mut self, resource: impl Send + 'static) {
+    pub(crate) fn retain_until_exit(&mut self, resource: impl Send + 'static) {
         self.retained.push(Box::new(resource));
     }
 
     /// One command, answered: it ends with its reply, or when the executor ends (a cancel kills
     /// it, which closes the channel).
-    pub fn command(
+    pub(crate) fn command(
         &mut self,
         command: &Command,
         services: &mut impl Services,
@@ -1155,18 +1155,18 @@ impl DeviceExecutor {
     }
 
     /// Its Start's `memo`: the tiers its stage memo serves, when this machine memoizes.
-    pub fn memo_settings(&self) -> Option<MemoSettings> {
+    pub(crate) fn memo_settings(&self) -> Option<MemoSettings> {
         self.memo.as_ref().map(|_| MemoSettings { process_bytes: -1, entry_bytes: crate::memo::ENTRY_BYTES })
     }
 
     /// Kills the executor now; its reap follows (`terminate`), on this thread or another.
-    pub fn kill(&self) -> io::Result<()> {
+    pub(crate) fn kill(&self) -> io::Result<()> {
         self.exact.kill().map_err(io::Error::from)
     }
 
     /// Ends the executor: closes its channel, kills it (nothing waits on it to stop by itself),
     /// reaps it and releases what it held. Blocks until it is gone.
-    pub fn terminate(mut self) -> io::Result<Ended> {
+    pub(crate) fn terminate(mut self) -> io::Result<Ended> {
         let parts = self.parts();
         parts.end()
     }
@@ -1298,7 +1298,7 @@ impl Drop for DeviceExecutor {
     }
 }
 
-pub fn read_result(spool: &Path, reply: &Frame) -> io::Result<Value> {
+pub(crate) fn read_result(spool: &Path, reply: &Frame) -> io::Result<Value> {
     if !reply.ok
         || reply
             .outcome
@@ -1339,7 +1339,7 @@ fn write_frame(
     seam::write_body(stream, &serde_json::to_vec(&value)?)
 }
 /// SDK control framing shared with the CPU source-qualification receiver.
-pub fn read_frame(stream: &mut LocalStream) -> io::Result<Option<Frame>> {
+pub(crate) fn read_frame(stream: &mut LocalStream) -> io::Result<Option<Frame>> {
     seam::read_body(stream)?.map(|bytes| decode_frame(&bytes)).transpose()
 }
 

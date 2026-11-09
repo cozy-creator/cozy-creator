@@ -29,7 +29,7 @@ pub struct Span {
     pub source: ItemSource,
 }
 
-pub struct StoredPart {
+pub(crate) struct StoredPart {
     pub component: String,
     pub key: String,
     pub role: String,

@@ -59,7 +59,7 @@ fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::PathBuf, Erro
     Ok(path)
 }
 
-pub async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
+pub(crate) async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
     let (dir, code) = sent(ctx, path).await?;
     let ask = LockAsk { hub: Some(ctx.hub().to_string()), code, root, upgrade: upgrade.to_vec() };
     let done = authored(ctx, "/v1/package-locks", &ask).await?;
@@ -79,7 +79,7 @@ pub async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[St
     Ok(ExitCode::SUCCESS)
 }
 
-pub async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode, Error> {
+pub(crate) async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode, Error> {
     let (dir, code) = sent(ctx, None).await?;
     let ask = PublishAsk { hub: Some(ctx.hub().to_string()), code, root, yanked };
     let done = authored(ctx, "/v1/package-publications", &ask).await?;
@@ -109,7 +109,7 @@ pub async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode
     Ok(ExitCode::SUCCESS)
 }
 
-pub async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<ExitCode, Error> {
+pub(crate) async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<ExitCode, Error> {
     let Some(release) = &package.release else {
         return Err(Error::new(
             Kind::Usage,
@@ -160,7 +160,7 @@ pub async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<Exi
 }
 
 /// Never prompts: `--yes` is the confirmation, and without it nothing is sent.
-pub async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
+pub(crate) async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
     if package.release.is_some() {
         return Err(Error::new(
             Kind::Usage,

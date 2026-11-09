@@ -94,16 +94,16 @@ impl<'a> From<Cow<'a, [u8]>> for Bytes<'a> {
     }
 }
 impl Bytes<'_> {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match &self.0 {
             Data::Host(bytes) => bytes.len(),
             Data::Slot { len, .. } => *len,
         }
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    pub fn host(&self) -> Result<&[u8]> {
+    pub(crate) fn host(&self) -> Result<&[u8]> {
         match &self.0 {
             Data::Host(bytes) => Ok(bytes),
             Data::Slot { .. } => Err(Error::Decode(
@@ -131,7 +131,7 @@ pub enum RequantPacking {
 }
 
 impl RequantPacking {
-    pub fn bits(self) -> usize {
+    pub(crate) fn bits(self) -> usize {
         match self {
             Self::Nibbles => 4,
             Self::SplitSix => 6,
@@ -140,7 +140,7 @@ impl RequantPacking {
 
     /// The checked schemes use whole four-column blocks. Divide before multiplying so
     /// even a zero-sized tensor's large column metadata does not overflow needlessly.
-    pub fn row_bytes(self, cols: usize) -> usize {
+    pub(crate) fn row_bytes(self, cols: usize) -> usize {
         match self {
             Self::Nibbles => cols / 2,
             Self::SplitSix => (cols / 4) * 3,
@@ -210,21 +210,21 @@ impl RequantCodes<'_> {
 }
 
 impl<'a> Elems<'a> {
-    pub fn part(p: PartBytes<'a>) -> Elems<'a> {
+    pub(crate) fn part(p: PartBytes<'a>) -> Elems<'a> {
         Elems {
             dtype: p.dtype.clone(),
             bytes: p.bytes.into(),
         }
     }
 
-    pub fn f32(v: f32) -> Elems<'static> {
+    pub(crate) fn f32(v: f32) -> Elems<'static> {
         Elems {
             dtype: Dtype::F32,
             bytes: v.to_le_bytes().to_vec().into(),
         }
     }
 
-    pub fn floats(&self) -> Result<Vec<f32>> {
+    pub(crate) fn floats(&self) -> Result<Vec<f32>> {
         Ok(elem::floats(&self.dtype, self.bytes.host()?))
     }
 }
@@ -259,7 +259,7 @@ pub struct Codes<'a> {
 
 impl<'a> Codes<'a> {
     /// `× s` of `scale` on `grid`, nothing else.
-    pub fn new(
+    pub(crate) fn new(
         bytes: impl Into<Bytes<'a>>,
         packing: Packing<'a>,
         scale: impl Into<Elems<'a>>,
@@ -278,14 +278,14 @@ impl<'a> Codes<'a> {
     }
 
     /// An 8-bit element format's codes, each its table entry, `× s`.
-    pub fn elements(weight: PartBytes<'a>, scale: PartBytes<'a>, grid: Grid) -> Codes<'a> {
+    pub(crate) fn elements(weight: PartBytes<'a>, scale: PartBytes<'a>, grid: Grid) -> Codes<'a> {
         Codes {
             table: elem::table(weight.dtype),
             ..Codes::new(weight.bytes, BYTES, scale, grid)
         }
     }
 
-    pub fn unpack(&self, rows: usize, cols: usize) -> Result<Vec<i32>> {
+    pub(crate) fn unpack(&self, rows: usize, cols: usize) -> Result<Vec<i32>> {
         match self.flat {
             true => self.packing.unpack(self.bytes.host()?, 1, rows * cols),
             false => self.packing.unpack(self.bytes.host()?, rows, cols),
@@ -351,7 +351,7 @@ impl<'a> From<Codes<'a>> for Plan<'a> {
 
 impl Plan<'_> {
     /// The `[R, C]` view's values, row-major; `height` rows to a matrix.
-    pub fn values(self, rows: usize, cols: usize, height: usize) -> Result<Vec<f32>> {
+    pub(crate) fn values(self, rows: usize, cols: usize, height: usize) -> Result<Vec<f32>> {
         let mut v = match self.core {
             Core::Codes(c) => c.values(&c.unpack(rows, cols)?, rows, cols, height)?,
             Core::Rotated { codes, block } => {
@@ -490,7 +490,7 @@ fn rotated_correction(
 /// In place, `x · H_B` for `H_B = H₄ ⊗ … ⊗ H₄` (`kron_regular_h4`: H₄ the regular Hadamard of spec
 /// Appendix A.1, unnormalized), x.len() a power of 4: each quad `(a, b, c, d)` at a stride
 /// becomes `sum − 2·(d, c, b, a)`.
-pub fn kron_regular_h4(x: &mut [i32]) {
+pub(crate) fn kron_regular_h4(x: &mut [i32]) {
     let mut stride = 1;
     while stride < x.len() {
         for base in (0..x.len()).filter(|i| (i / stride) % 4 == 0) {

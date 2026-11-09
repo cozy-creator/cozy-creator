@@ -641,7 +641,7 @@ pub struct RentalQuote {
 }
 
 /// The catalog: Calcifer answers it as the Hub does.
-pub use api::calcifer::{RentalPriceEstimate, RentalPythonInterpreter, RentalSku, RentalSkuWidth};
+pub(crate) use api::calcifer::{RentalPriceEstimate, RentalPythonInterpreter, RentalSku, RentalSkuWidth};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]

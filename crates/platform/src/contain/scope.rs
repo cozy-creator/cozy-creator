@@ -155,7 +155,7 @@ impl Scope {
     }
 
     /// Live processes in the scope.
-    pub fn processes(&self) -> crate::Result<usize> {
+    pub(crate) fn processes(&self) -> crate::Result<usize> {
         match &self.0 {
             Backend::Cgroup { relative, inode } => Ok(procs(&Self::path(relative, *inode)?)?.len()),
             Backend::Tree { token } => {
@@ -178,7 +178,7 @@ impl Scope {
         }
     }
 
-    pub fn kill(&self) -> crate::Result<()> {
+    pub(crate) fn kill(&self) -> crate::Result<()> {
         match &self.0 {
             Backend::Cgroup { relative, inode } => Ok(OpenOptions::new()
                 .write(true)

@@ -18,20 +18,20 @@ macro_rules! encoder {
     };
 }
 
-pub const Q4_0: Encoder = encoder!("q4_0");
-pub const Q4_1: Encoder = encoder!("q4_1");
-pub const Q5_0: Encoder = encoder!("q5_0");
-pub const Q5_1: Encoder = encoder!("q5_1");
-pub const Q8_0: Encoder = encoder!("q8_0");
-pub const Q2_K: Encoder = encoder!("q2_k");
-pub const Q3_K: Encoder = encoder!("q3_k");
-pub const Q4_K: Encoder = encoder!("q4_k");
-pub const Q5_K: Encoder = encoder!("q5_k");
-pub const Q6_K: Encoder = encoder!("q6_k");
-pub const MXFP4: Encoder = encoder!("mxfp4");
-pub const NVFP4: Encoder = encoder!("nvfp4");
-pub const Q1_0: Encoder = encoder!("q1_0");
-pub const Q2_0: Encoder = encoder!("q2_0");
+pub(crate) const Q4_0: Encoder = encoder!("q4_0");
+pub(crate) const Q4_1: Encoder = encoder!("q4_1");
+pub(crate) const Q5_0: Encoder = encoder!("q5_0");
+pub(crate) const Q5_1: Encoder = encoder!("q5_1");
+pub(crate) const Q8_0: Encoder = encoder!("q8_0");
+pub(crate) const Q2_K: Encoder = encoder!("q2_k");
+pub(crate) const Q3_K: Encoder = encoder!("q3_k");
+pub(crate) const Q4_K: Encoder = encoder!("q4_k");
+pub(crate) const Q5_K: Encoder = encoder!("q5_k");
+pub(crate) const Q6_K: Encoder = encoder!("q6_k");
+pub(crate) const MXFP4: Encoder = encoder!("mxfp4");
+pub(crate) const NVFP4: Encoder = encoder!("nvfp4");
+pub(crate) const Q1_0: Encoder = encoder!("q1_0");
+pub(crate) const Q2_0: Encoder = encoder!("q2_0");
 
 /// `blocks` from `arrays["values"]` (`F32`, the logical shape), each struct as ggml's reference
 /// quantizer writes it. Non-finite values are refused: ggml's result for them depends on the

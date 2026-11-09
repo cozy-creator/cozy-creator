@@ -9,7 +9,7 @@ use std::{
 use api::machine as v1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
+pub(crate) enum Kind {
     Download,
     Install,
 }
@@ -51,13 +51,13 @@ fn operations() -> MutexGuard<'static, BTreeMap<String, Operation>> {
 }
 
 /// One run's wait on one operation, which is listed while any wait on it is open.
-pub struct Waiting {
+pub(crate) struct Waiting {
     id: String,
     run: String,
 }
 
 /// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one.
-pub fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
+pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
     let id = format!("{} {subject}", kind.word());
     let mut listed = operations();
     let operation = listed.entry(id.clone()).or_insert_with(|| Operation {
@@ -83,14 +83,14 @@ pub fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
 
 impl Waiting {
     /// What of it was here already: a download's bytes are only those it fetches.
-    pub fn here(&self, bytes: u64) {
+    pub(crate) fn here(&self, bytes: u64) {
         if let Some(operation) = operations().get_mut(&self.id) {
             operation.here = bytes;
         }
     }
 
     /// Where it is: in words, and a download by its bytes fetched of those it fetches.
-    pub fn moved(&self, stage: &str, done: u64, total: u64) {
+    pub(crate) fn moved(&self, stage: &str, done: u64, total: u64) {
         let mut listed = operations();
         let Some(operation) = listed.get_mut(&self.id) else { return };
         if operation.stage != stage {
@@ -136,19 +136,19 @@ impl Drop for Waiting {
 
 /// A provider's source imported for a run: the machine's download while it is fetched, and no longer once it is converted and committed,
 /// which is its run's own work. A file of this computer's (`input://`) is no download.
-pub struct Import {
+pub(crate) struct Import {
     subject: String,
     run: String,
     held: Mutex<Option<Waiting>>,
 }
 
 impl Import {
-    pub fn new(source: &str, run: &str) -> Self {
+    pub(crate) fn new(source: &str, run: &str) -> Self {
         Import { subject: source.to_owned(), run: run.to_owned(), held: Mutex::default() }
     }
 
     /// TensorFS's import stage, and its bytes.
-    pub fn moved(&self, stage: &str, done: u64, total: u64) {
+    pub(crate) fn moved(&self, stage: &str, done: u64, total: u64) {
         if self.subject.starts_with("input://") {
             return;
         }
@@ -163,7 +163,7 @@ impl Import {
 }
 
 /// What the runs `mine` admits wait on, each with only those runs. One that ended unlisted is listed this once.
-pub fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
+pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
     let mut operations = operations();
     let listed = operations
         .iter_mut()

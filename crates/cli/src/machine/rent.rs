@@ -14,7 +14,7 @@ use super::{Following, list::state_cell, usd};
 use crate::{Context, calcifer_client::Client, output};
 
 #[derive(clap::Args, Debug)]
-pub struct Rent {
+pub(crate) struct Rent {
     /// A product from the catalog.
     sku: Option<String>,
     /// GPUs on the machine: any count the catalog lists.
@@ -62,7 +62,7 @@ impl Rent {
     }
 }
 
-pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let provider = rent.provider();
     let Some(sku) = rent.sku else {

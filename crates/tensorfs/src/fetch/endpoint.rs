@@ -267,7 +267,7 @@ impl Endpoint {
     }
 
     /// A small object (a tree) read whole, following redirects, and verified.
-    pub async fn document(&self, object: &ObjectRef) -> Result<Vec<u8>> {
+    pub(crate) async fn document(&self, object: &ObjectRef) -> Result<Vec<u8>> {
         if object.length > DOCUMENT_BYTES as u64 {
             return refuse(Code::SIZE_CAP, format!("{}: {} B is not a document", object.id(), object.length));
         }
@@ -322,7 +322,7 @@ impl Endpoint {
     }
 
     /// Whether the endpoint holds `object`.
-    pub async fn has(&self, object: &ObjectRef) -> Result<bool> {
+    pub(crate) async fn has(&self, object: &ObjectRef) -> Result<bool> {
         match &self.at {
             At::Dir(..) => self.store()?.reuse(object).map_err(crate::store::Error::refusal),
             At::Http(base) => {
@@ -618,7 +618,7 @@ impl std::fmt::Debug for Stream {
 const IN_FLIGHT: usize = 4;
 
 impl Stream {
-    pub fn new(endpoint: Arc<Endpoint>, runtime: tokio::runtime::Handle) -> Stream {
+    pub(crate) fn new(endpoint: Arc<Endpoint>, runtime: tokio::runtime::Handle) -> Stream {
         Stream {
             endpoint,
             runtime,
@@ -630,12 +630,12 @@ impl Stream {
     }
 
     /// Whether `object` was given to [`Stream::put`].
-    pub fn has(&self, object: &ObjectRef) -> bool {
+    pub(crate) fn has(&self, object: &ObjectRef) -> bool {
         self.sent.lock().unwrap().contains(object)
     }
 
     /// Sends `bytes` as an object, once; its ref at once.
-    pub fn put(&self, bytes: Vec<u8>) -> Result<ObjectRef> {
+    pub(crate) fn put(&self, bytes: Vec<u8>) -> Result<ObjectRef> {
         let object = ObjectRef::of(&bytes);
         let bytes = Bytes::from(bytes);
         self.send(&object, move || Ok(Payload::Bytes(bytes.clone())))?;
@@ -673,7 +673,7 @@ impl Stream {
     }
 
     /// Waits for every object put so far: the first failure.
-    pub fn flush(&self) -> Result<()> {
+    pub(crate) fn flush(&self) -> Result<()> {
         let tasks = std::mem::take(&mut *self.sending.lock().unwrap());
         let mut first = self.failed.lock().unwrap().clone().map_or(Ok(()), Err);
         for task in tasks {
@@ -693,7 +693,7 @@ impl Stream {
 
     /// A writer's commit: its `header`, sent after what it cites, in lane `lane` beside `files`,
     /// recorded as one of model `name`'s commits: its tree.
-    pub fn commit(&self, name: &str, lane: &str, header: Vec<u8>, files: &BTreeMap<String, ObjectRef>) -> Result<(ObjectRef, Tree)> {
+    pub(crate) fn commit(&self, name: &str, lane: &str, header: Vec<u8>, files: &BTreeMap<String, ObjectRef>) -> Result<(ObjectRef, Tree)> {
         self.flush()?;
         let header = self.put(header)?;
         let tree = Tree::of(lane, header, files).map_err(|e| Refusal { code: Code::KEY_GRAMMAR, detail: e.to_string() })?;

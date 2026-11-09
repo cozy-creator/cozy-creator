@@ -10,7 +10,7 @@ use crate::format::Result;
 
 const FACTORS: Dtypes = &["BF16", "F16", "F32"];
 
-pub static SVDQ_NVFP4: Scheme = Scheme {
+pub(crate) static SVDQ_NVFP4: Scheme = Scheme {
     name: "svdq.nvfp4",
     view: View::Matrix,
     params: PARAMS,

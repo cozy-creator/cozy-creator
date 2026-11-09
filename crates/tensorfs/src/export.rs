@@ -41,7 +41,7 @@ use crate::import::{FILE_METADATA, PIPELINE_FILE, ROOT_COMPONENT};
 use crate::store::Checkpoint;
 
 /// The largest shard, as Diffusers and Transformers write them (20 GB).
-pub const SHARD: u64 = 20_000_000_000;
+pub(crate) const SHARD: u64 = 20_000_000_000;
 
 /// Complete portable native folder. Open every required source before creating any output;
 /// the exact source header is atomically published last, after its bounded file copies.
@@ -117,7 +117,7 @@ fn part_name(key: &str, role: &str) -> String {
 /// Writes `ck` into `dir` as a Diffusers/Transformers folder, with the repo files `repo` (path →
 /// local file; a commit's files other than its header); the paths written, relative. `decode`
 /// writes each encoded tensor in its logical dtype.
-pub fn safetensors(
+pub(crate) fn safetensors(
     ck: &Checkpoint,
     repo: &BTreeMap<String, PathBuf>,
     dir: &Path,
@@ -302,7 +302,7 @@ fn copy(from: &mut File, dest: &Path) -> Result<()> {
 
 /// A config as the Diffusers and Transformers writers write one, `json.dumps(config, indent=2,
 /// sort_keys=True) + "\n"`, with Python's float spelling (`1e-05`, `1.0`).
-pub fn config_json(config: &Config) -> Vec<u8> {
+pub(crate) fn config_json(config: &Config) -> Vec<u8> {
     let mut out = String::new();
     map(&mut out, config, 0);
     out.push('\n');

@@ -30,7 +30,7 @@ impl Checkpoint {
     ///
     /// # Safety
     /// As [`super::read`].
-    pub unsafe fn read_into(&self, targets: &[Target], opts: &ReadOpts) -> Result<ReadStats> {
+    pub(crate) unsafe fn read_into(&self, targets: &[Target], opts: &ReadOpts) -> Result<ReadStats> {
         let mut spans: Vec<(usize, u64, Dst)> = Vec::new();
         for t in targets {
             let at = stored(self.tensor(t.component, t.key)?, t)?;

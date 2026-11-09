@@ -1,6 +1,7 @@
 //! The page's types: the records of Calcifer's API the page reads and sends, and each type they name, once, as
 //! ts-rs declares them. `scripts/web-types.sh` writes them to web/app/src/api/calcifer.ts and checks that the file
 //! holds them. A JSON value is `unknown`: the page reads it as it finds it.
+#![deny(unreachable_pub)]
 use std::{
     any::TypeId,
     collections::{BTreeMap, HashSet},

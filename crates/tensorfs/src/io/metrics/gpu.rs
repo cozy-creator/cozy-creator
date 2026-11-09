@@ -10,7 +10,7 @@ use cuda::Result;
 const H2D_PROBE: usize = 128 << 20;
 
 /// The current PCIe link of CUDA device `device`, without creating a second context.
-pub fn device_link(device: i32) -> Option<Link> {
+pub(crate) fn device_link(device: i32) -> Option<Link> {
     link(&pci_address(device)?)
 }
 
@@ -31,7 +31,7 @@ pub(crate) fn pci_address(device: i32) -> Option<String> {
 
 /// Pinned host→device GB/s on CUDA device `device`, and the streams that reached it: kept this
 /// boot, else measured on its primary context.
-pub fn h2d(device: i32) -> Option<(f64, u32)> {
+pub(crate) fn h2d(device: i32) -> Option<(f64, u32)> {
     let key = h2d_key(device)?;
     if let Some(&[gbps, streams]) = probe::known(&key).as_deref() {
         return Some((gbps, streams as u32));

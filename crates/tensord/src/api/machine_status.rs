@@ -22,7 +22,7 @@ use tokio_stream::{wrappers::IntervalStream, Stream, StreamExt};
 /// manifest may also name the uv indexes its project's sources use without declaring them and the
 /// local path dependencies its lock installs, and a locked project installs whatever indexes
 /// they name.
-pub const CAPABILITIES: &[&str] = &[
+pub(crate) const CAPABILITIES: &[&str] = &[
     "status/1",
     "run/1",
     "run-gpus/1",

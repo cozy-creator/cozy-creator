@@ -7,7 +7,7 @@ use super::{encoding, Encoder, Input, OwnedPart};
 use crate::format::decode::swap_last_two;
 use crate::format::{Dtype, Encoding, Error, Result, Value};
 
-pub const ENCODER: Encoder = Encoder {
+pub(crate) const ENCODER: Encoder = Encoder {
     scheme: "mxfp4",
     quantize: Some(quantize),
     pack: None,
@@ -16,7 +16,7 @@ pub const ENCODER: Encoder = Encoder {
 impl Encoding {
     /// `transposed`: the parts hold the logical tensor with its last two axes swapped (gpt-oss's
     /// `[E, out, in]` for transformers' `[E, in, out]`).
-    pub fn mxfp4(transposed: bool) -> Encoding {
+    pub(crate) fn mxfp4(transposed: bool) -> Encoding {
         encoding(
             "mxfp4",
             &[

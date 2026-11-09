@@ -28,14 +28,14 @@ use api::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use api::code::source_files;
+pub(crate) use api::code::source_files;
 
 use crate::{api::Api, update::BroughtUp};
 
 /// The uv index name a project's sources use for its own account's packages.
-pub const INDEX: &str = "tensorhub";
+pub(crate) const INDEX: &str = "tensorhub";
 
-pub fn refuse(code: &str, detail: impl Display) -> Error {
+pub(crate) fn refuse(code: &str, detail: impl Display) -> Error {
     Error::new(Kind::Validation, code, detail.to_string())
 }
 
@@ -44,14 +44,14 @@ fn hub_refusal(error: hub_client::Error) -> Error {
 }
 
 /// The account `client` is signed in as.
-pub async fn account(client: &hub_client::Client) -> Result<String, Error> {
+pub(crate) async fn account(client: &hub_client::Client) -> Result<String, Error> {
     Ok(client.get_current_account().await.map_err(hub_refusal)?.name)
 }
 
 /// Local code as a run names it: its source (the manifest's digest), the files Calcifer stages for
 /// it (the manifest, kept in Calcifer's home, and the source files a machine elsewhere is sent),
 /// and the `local/<name>` package it is.
-pub struct Source {
+pub(crate) struct Source {
     pub package: String,
     pub source: v1::LocalSource,
     pub inputs: Vec<StagedInput>,
@@ -62,7 +62,7 @@ pub struct Source {
 
 /// What an install answered: the code's interface, the machine's name for the installation, and
 /// the machine it is on.
-pub struct Installed {
+pub(crate) struct Installed {
     pub interface: Value,
     pub installation: Option<String>,
     pub machine: Option<String>,
@@ -88,12 +88,12 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
     Ok(path)
 }
 
-pub use api::target::{local, spelled, written_as_path};
+pub(crate) use api::target::{local, spelled, written_as_path};
 
 /// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path): a folder of
 /// Calcifer's own computer, as the project is, and the function it names. None: `text` is not written as a path (a published
 /// name). A client's own code comes by content instead (`copied`).
-pub fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
+pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
     let raw = text.trim();
     let path = local(raw, cwd.unwrap_or(Path::new("")), home)?;
     if !path.is_absolute() {
@@ -116,7 +116,7 @@ const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The package `code` names, in Calcifer's copy of its tree: made once from the files it holds (`PUT /v1/files`), and only read
 /// after. A script's copy holds the package it is beside its tree. Its project's folder.
-pub fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
+pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
     let dir = copies(home).join(hex(&code.tree));
     if !dir.join("tree").is_dir() {
         let held = |digest: &Digest| Some(home.calcifer().join("files").join(hex(digest).as_str())).filter(|path| path.is_file());
@@ -139,7 +139,7 @@ pub fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
 /// client's is, so the one path from here on is the copy's.
-pub fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
+pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
     let staged = shared::stage(path, Some(&home.root().join("cache").join("digests")))?;
     if !staged.left.is_empty() {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
@@ -230,7 +230,7 @@ fn sweep(root: &Path) {
 }
 
 /// A package project, as its pyproject.toml says.
-pub struct Project {
+pub(crate) struct Project {
     pub root: PathBuf,
     pub name: String,
     pub version: String,
@@ -243,7 +243,7 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn read(root: PathBuf) -> Result<Self, Error> {
+    pub(crate) fn read(root: PathBuf) -> Result<Self, Error> {
         let table = |file: &str| -> Result<toml::Table, Error> {
             let text = fs::read_to_string(root.join(file)).map_err(|e| {
                 Error::new(
@@ -327,7 +327,7 @@ impl Project {
 /// The account's index on `hub` at the origin the Hub advertises (RFC 9728 `resource`): the one
 /// its publish check holds a uv.lock to, wherever this computer reaches the Hub. A Hub that
 /// advertises none takes no publication, and its configured origin stands.
-pub async fn index_url(
+pub(crate) async fn index_url(
     client: &hub_client::Client,
     hub: &Origin,
     account: &str,
@@ -378,7 +378,7 @@ struct Member {
 /// `code` as a machine installs it: its manifest and every file of Calcifer's copy, sent by content. A project whose sources name
 /// the `tensorhub` index takes the namespace its lock was made for (`_` for a first-party checkout), read through `hub`'s reader:
 /// anonymous when this computer is signed out.
-pub async fn source(home: &Home, code: &LocalCode, (reader, hub): (&hub_client::Client, &Origin)) -> Result<Source, Error> {
+pub(crate) async fn source(home: &Home, code: &LocalCode, (reader, hub): (&hub_client::Client, &Origin)) -> Result<Source, Error> {
     let project_dir = copied(home, code)?;
     let project = Project::read(project_dir.clone())?;
     let locals = shared::path_dependencies(&project_dir)?;
@@ -666,14 +666,14 @@ fn file(home: &Home, filed: &Filed, runtime: &str) -> PathBuf {
 /// What a kept interface is filed under: its package, its source's manifest and its environment's inputs. An install's step
 /// (`hub::after::After::Keep`) carries it, so whatever asked for the install, a run or `cozy package install`, keeps the same.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Filed {
+pub(crate) struct Filed {
     pub package: String,
     pub manifest: String,
     pub environment: Digest,
 }
 
 impl Source {
-    pub fn filed(&self) -> Filed {
+    pub(crate) fn filed(&self) -> Filed {
         Filed { package: self.package.clone(), manifest: self.source.manifest.clone(), environment: self.environment }
     }
 }
@@ -683,7 +683,7 @@ fn hex(digest: &Digest) -> String {
 }
 
 /// The interface kept for this exact source, as `runtime` described it.
-pub fn kept(home: &Home, filed: &Filed, runtime: &str) -> Option<Value> {
+pub(crate) fn kept(home: &Home, filed: &Filed, runtime: &str) -> Option<Value> {
     let document: Value = serde_json::from_slice(&fs::read(file(home, filed, runtime)).ok()?).ok()?;
     interface(&document).then_some(document)
 }
@@ -697,7 +697,7 @@ fn synced(home: &Home, filed: &Filed) -> bool {
 }
 
 /// Keeps `interface` for this source as `runtime` described it, and only the package's newest 16.
-pub fn keep(home: &Home, filed: &Filed, runtime: &str, interface: &Value) {
+pub(crate) fn keep(home: &Home, filed: &Filed, runtime: &str, interface: &Value) {
     const KEPT: usize = 16;
     if !self::interface(interface) {
         return;
@@ -723,7 +723,7 @@ fn interface(document: &Value) -> bool {
 /// The run that installs local code `on` a machine: a WARM run naming no function. It is named
 /// for what the machine does: an install when the environment's inputs (metadata, lock, path
 /// dependencies) are new here, else a sync of the changed source.
-pub fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> SubmitRun {
+pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> SubmitRun {
     let target = match synced(home, &source.filed()) {
         true => format!("sync {} (source changed)", source.package),
         false => format!("install {}", source.package),
@@ -749,7 +749,7 @@ pub fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> SubmitRun
 }
 
 /// What a settled install answered, or why it installed nothing.
-pub fn installed(run: Run) -> Result<Installed, Error> {
+pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
     if run.status != Status::Completed {
         let (code, message, next) = run.reason.map_or_else(
             || ("local_install_unfinished".to_owned(), format!("its install is {:?}", run.status).to_lowercase(), vec![]),
@@ -776,7 +776,7 @@ pub fn installed(run: Run) -> Result<Installed, Error> {
 /// Local code made callable `on` a machine: its source and the files a call stages, and its
 /// interface (kept for this source and Runtime, or what its install answered). While an install
 /// it asked for is going, `install` is that run and `interface` is None: follow it, then ask again.
-pub struct Prepared {
+pub(crate) struct Prepared {
     pub package: String,
     pub source: v1::LocalSource,
     pub files: Vec<StagedInput>,
@@ -792,7 +792,7 @@ pub struct Prepared {
 /// needs is sent under `{key}/install` and returned, and once it has settled the same `key` finds
 /// its answer. `warm` installs again whatever is kept: a warm set names the machine's
 /// installation, which only an install answers.
-pub async fn prepare(
+pub(crate) async fn prepare(
     api: &Arc<Api>,
     local: &LocalCode,
     on: &On,
@@ -874,7 +874,7 @@ pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&cr
 
 /// `prepare`, waiting out the install it needs: what Calcifer's own callers (a project's render
 /// blocks) use. What it says while it does (a machine brought up) goes to `say`.
-pub async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, key: &str, say: &(dyn Fn(String) + Sync)) -> Result<Prepared, Error> {
+pub(crate) async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, key: &str, say: &(dyn Fn(String) + Sync)) -> Result<Prepared, Error> {
     loop {
         let prepared = prepare(api, code, on, hub, false, key, None).await?;
         let Some(run) = &prepared.install else { return Ok(prepared) };
@@ -904,14 +904,14 @@ async fn runtime(api: &Arc<Api>, on: &On) -> Option<String> {
 }
 
 /// `uv` (cozy's pinned uv, else PATH's: `tools::uv`) in `dir`, quiet and colorless.
-pub fn uv(uv: &Path, dir: &Path) -> Command {
+pub(crate) fn uv(uv: &Path, dir: &Path) -> Command {
     let mut command = Command::new(uv);
     command.current_dir(dir).env("NO_COLOR", "1");
     command
 }
 
 /// Runs `command`; a failure is refused as `code` with the tool's own last words.
-pub fn run(command: &mut Command, code: &str) -> Result<String, Error> {
+pub(crate) fn run(command: &mut Command, code: &str) -> Result<String, Error> {
     let out = command.output().map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => Error::new(
             Kind::Unavailable,
@@ -936,7 +936,7 @@ pub fn run(command: &mut Command, code: &str) -> Result<String, Error> {
 
 /// The Python a release of `project` runs on: `.python-version`, else requires-python's floor;
 /// its exact version as uv finds it (installing a managed one when none is here).
-pub fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
+pub(crate) fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
         let pinned = fs::read_to_string(project.root.join(".python-version")).ok();
         let floor = project.requires_python.split(',').find_map(|clause| {
             let version = clause
@@ -988,7 +988,7 @@ pub fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
     }
 
 /// The Python a release runs on.
-pub struct Python {
+pub(crate) struct Python {
     /// What uv is asked for (`3.12`).
     pub request: String,
     /// The exact version a release records (`3.12.12`).
@@ -996,7 +996,7 @@ pub struct Python {
 }
 
 /// The cozy-runtime release `root`'s uv.lock holds, if it holds one.
-pub fn locked_runtime(root: &Path) -> Option<String> {
+pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     #[derive(Deserialize)]
     struct Lock {
         #[serde(default)]
@@ -1014,7 +1014,7 @@ pub fn locked_runtime(root: &Path) -> Option<String> {
 
 /// The Tensorhub namespace the uv.lock in `root` takes `tensorhub` sources from: the account its
 /// `…/v1/index/<account>/` URLs name (`_`, the root, for first-party packages).
-pub fn locked_namespace(root: &Path) -> Option<String> {
+pub(crate) fn locked_namespace(root: &Path) -> Option<String> {
     let lock = fs::read_to_string(root.join("uv.lock")).ok()?;
     let at = lock.find("/v1/index/")? + "/v1/index/".len();
     let namespace = lock[at..].split(['/', '"']).next()?;
@@ -1024,7 +1024,7 @@ pub fn locked_namespace(root: &Path) -> Option<String> {
 /// What Runtime's static describer reads from the source at `dir`, with `runtime`'s release (else
 /// the newest) on `python`: its exact words and the document they are. Nothing installs, and none
 /// of the code runs.
-pub fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<(String, Value), Error> {
+pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<(String, Value), Error> {
     let from = match runtime {
         Some(version) => format!("cozy-runtime=={version}"),
         // `@latest`: a bare name would take whatever cozy-runtime `uv tool install` left here.
@@ -1062,7 +1062,7 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
 /// `code` as a run `on` its machine reads it: `local/<name>` and its interface. What that machine's Runtime said installing this
 /// very source, else Runtime's static describer, on the Python and Runtime release its project names, or PyPI's newest. That can
 /// be older than the machine's, and refuse what the machine runs. Nothing installs, and no machine is asked.
-pub async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
+pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
     let held = DESCRIBED.lock().expect("described lock").entry((code.clone(), runtime.clone())).or_default().clone();
     let mut held = held.lock().await;

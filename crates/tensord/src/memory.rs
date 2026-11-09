@@ -12,7 +12,7 @@ use std::{collections::BTreeMap, fs::{self, OpenOptions}, io::{self, Write}, pat
 const ROTATE_BYTES: u64 = 4 << 20;
 
 /// The measurements of one physical GPU. Allocation stays in each executor.
-pub struct Gpu {
+pub(crate) struct Gpu {
     pub figures: Figures,
     pub model: String,
     pub uuid: String,
@@ -21,7 +21,7 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub fn create(entry: &str, inventory: &[receipt::Gpu], limit: Option<u64>, peaks: &Peaks, log: &MemoryLog) -> Option<Self> {
+    pub(crate) fn create(entry: &str, inventory: &[receipt::Gpu], limit: Option<u64>, peaks: &Peaks, log: &MemoryLog) -> Option<Self> {
         let row = row(entry, inventory)?;
         let figures = Figures::new().map_err(|error| log.note(serde_json::json!({"event": "gpu_figures_unavailable", "gpu": entry, "why": error.to_string()}))).ok()?;
         let absent = limit.map_or(0, |limit| row.memory_bytes.saturating_sub(limit));
@@ -33,12 +33,12 @@ impl Gpu {
 
     /// A current driver reading, never a reservation or permission to allocate; under a
     /// development `gpu_memory_limit`, a card of that size's.
-    pub fn free(&self) -> Option<u64> {
+    pub(crate) fn free(&self) -> Option<u64> {
         platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.free()).ok().map(|free| free.saturating_sub(self.absent))
     }
 
     /// Driver-attributed process usage. Missing pid accounting is unknown, not zero.
-    pub fn status(&self, tenants: &Tenants) -> Option<api::machine::GpuMemory> {
+    pub(crate) fn status(&self, tenants: &Tenants) -> Option<api::machine::GpuMemory> {
         let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
         let processes = read.processes?;
         let book = tenants.lock().unwrap_or_else(|e| e.into_inner());
@@ -59,23 +59,23 @@ impl Gpu {
 }
 
 /// Inventory identity, as CUDA_VISIBLE_DEVICES names it.
-pub fn row<'a>(entry: &str, inventory: &'a [receipt::Gpu]) -> Option<&'a receipt::Gpu> {
+pub(crate) fn row<'a>(entry: &str, inventory: &'a [receipt::Gpu]) -> Option<&'a receipt::Gpu> {
     inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)
 }
 
-pub struct Tenant {
+pub(crate) struct Tenant {
     pub plan: String,
     pub start: usize,
     pub exact: Exact,
 }
 
-pub type Tenants = Arc<Registry>;
+pub(crate) type Tenants = Arc<Registry>;
 /// Executors by their pid here.
 #[derive(Default)]
-pub struct Registry(Mutex<BTreeMap<u32, Tenant>>);
+pub(crate) struct Registry(Mutex<BTreeMap<u32, Tenant>>);
 impl Registry {
-    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, BTreeMap<u32, Tenant>>> { self.0.lock() }
-    pub fn register(&self, tenants: impl IntoIterator<Item = (u32, Tenant)>) {
+    pub(crate) fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, BTreeMap<u32, Tenant>>> { self.0.lock() }
+    pub(crate) fn register(&self, tenants: impl IntoIterator<Item = (u32, Tenant)>) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).extend(tenants);
     }
 }
@@ -87,26 +87,26 @@ struct Book {
 }
 
 /// Each `<package>|<shape>`'s measured anonymous host high-water.
-pub struct Figures {
+pub(crate) struct Figures {
     book: Mutex<Book>,
     changed: Signal,
 }
 
 impl Figures {
     fn new() -> io::Result<Self> { Ok(Self { book: Mutex::default(), changed: Signal::new().map_err(io::Error::other)? }) }
-    pub fn dispatch(&self, request: &str, package: &str, shape: &str) {
+    pub(crate) fn dispatch(&self, request: &str, package: &str, shape: &str) {
         self.book.lock().unwrap_or_else(|e| e.into_inner()).dispatched.insert(request.into(), format!("{package}|{shape}"));
     }
-    pub fn undispatch(&self, request: &str) {
+    pub(crate) fn undispatch(&self, request: &str) {
         self.book.lock().unwrap_or_else(|e| e.into_inner()).dispatched.remove(request);
     }
-    pub fn record_request(&self, request: &str, host: u64) {
+    pub(crate) fn record_request(&self, request: &str, host: u64) {
         let mut book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let Some(key) = book.dispatched.get(request).cloned() else { return };
         larger(&mut book.values, key, host);
         self.changed.set();
     }
-    pub fn host_peak(&self, package: &str, shape: &str) -> Option<u64> {
+    pub(crate) fn host_peak(&self, package: &str, shape: &str) -> Option<u64> {
         let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let key = format!("{package}|{shape}");
         if shape.is_empty() {
@@ -129,14 +129,14 @@ fn larger(figures: &mut BTreeMap<String, u64>, key: String, bytes: u64) {
 /// A request's anonymous host high-water at `<package>|<shape>`, as TensorD persists it per GPU
 /// model.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Peak {
+pub(crate) struct Peak {
     key: String,
     bytes: u64,
 }
 
 impl Peak {
     /// The largest of each key, in key order: what every GPU of one model persists.
-    pub fn merge(peaks: impl IntoIterator<Item = Peak>) -> Vec<Peak> {
+    pub(crate) fn merge(peaks: impl IntoIterator<Item = Peak>) -> Vec<Peak> {
         let mut figures = BTreeMap::new();
         for peak in peaks {
             larger(&mut figures, peak.key, peak.bytes);
@@ -148,14 +148,14 @@ impl Peak {
 /// Measured peaks, persisted per GPU model as `<dir>/<model>.json`: the largest of each key across
 /// every GPU of the model. A key names its package release (`<construction>|<shape>`), so one file
 /// holds every release's. Each restore and each saved change is a memory-log note.
-pub struct Peaks {
+pub(crate) struct Peaks {
     dir: PathBuf,
     saved: Mutex<BTreeMap<String, Vec<Peak>>>,
     log: MemoryLog,
 }
 
 impl Peaks {
-    pub fn at(dir: PathBuf, log: MemoryLog) -> Self {
+    pub(crate) fn at(dir: PathBuf, log: MemoryLog) -> Self {
         Self { dir, saved: Mutex::default(), log }
     }
 
@@ -176,7 +176,7 @@ impl Peaks {
 
     /// Saves what the GPUs of `model`, each holding what was restored into it, now
     /// hold, when it changed.
-    pub fn save<'a>(&self, model: &str, figures: impl Iterator<Item = &'a Figures>) {
+    pub(crate) fn save<'a>(&self, model: &str, figures: impl Iterator<Item = &'a Figures>) {
         let mut saved = self.saved.lock().unwrap();
         let held = Peak::merge(figures.flat_map(Figures::peaks));
         let before = saved.get(model).map_or(&[][..], Vec::as_slice);
@@ -199,25 +199,25 @@ impl Peaks {
 
 /// One process on a call's GPU. A single process may own several GPUs; a group has one per rank.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rank {
+pub(crate) struct Rank {
     pub pid: u32,
     pub gpu: String,
 }
 
 /// One call running on the machine's GPUs: every participant and its `<package>|<shape>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Call {
+pub(crate) struct Call {
     pub ranks: Vec<Rank>,
     pub package: String,
     pub shape: String,
 }
 
 /// TensorD's calls running until they end, including each follower the host rule must watch.
-pub type Running = Arc<Mutex<BTreeMap<String, Call>>>;
+pub(crate) type Running = Arc<Mutex<BTreeMap<String, Call>>>;
 
 /// A process running calls: measured anonymous peak, anonymous bytes now, and call count.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct HostCall {
+pub(crate) struct HostCall {
     pub pid: u32,
     pub peak: Option<u64>,
     pub anon: u64,
@@ -227,7 +227,7 @@ pub struct HostCall {
 /// Every process of every call (each rank of a group), with the host peak its own GPU measured.
 /// One process on several GPUs is one row at the largest of their figures; the host rule
 /// deduplicates a process shared by calls. File-backed model pages remain in the OS budget.
-pub fn host_calls(running: &Running, gpus: &[Arc<Gpu>]) -> Vec<HostCall> {
+pub(crate) fn host_calls(running: &Running, gpus: &[Arc<Gpu>]) -> Vec<HostCall> {
     let calls: Vec<Call> = running.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
     let mut rows = vec![];
     for call in calls {
@@ -248,8 +248,8 @@ pub fn host_calls(running: &Running, gpus: &[Arc<Gpu>]) -> Vec<HostCall> {
 
 /// Memory observations wake the host rule and persistence, never page reclamation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Woke { Gpu, HostShort }
-pub enum Source { Gpu(Arc<Gpu>), Host(Arc<Host>) }
+pub(crate) enum Woke { Gpu, HostShort }
+pub(crate) enum Source { Gpu(Arc<Gpu>), Host(Arc<Host>) }
 impl Source {
     fn waitable(&self) -> Waitable<'_> {
         match self { Source::Gpu(gpu) => gpu.figures.changed.waitable(), Source::Host(host) => host.short.waitable() }
@@ -265,7 +265,7 @@ impl Source {
 /// Blocks on every source until the returned guard drops; `wake` runs once per wake with what
 /// woke it. Every ready source is cleared on each wake, so none starves; one that broke (hung up,
 /// failed) is dropped, never spun on. It never times out.
-pub fn react(sources: Vec<Source>, wake: impl Fn(Woke) + Send + 'static) -> io::Result<Reacting> {
+pub(crate) fn react(sources: Vec<Source>, wake: impl Fn(Woke) + Send + 'static) -> io::Result<Reacting> {
     let stop = Arc::new(Signal::new().map_err(io::Error::other)?);
     let stopped = stop.clone();
     std::thread::Builder::new().name("memory-events".into()).spawn(move || {
@@ -295,7 +295,7 @@ pub fn react(sources: Vec<Source>, wake: impl Fn(Woke) + Send + 'static) -> io::
 }
 
 /// The events thread's life: dropped, it ends.
-pub struct Reacting(Arc<Signal>);
+pub(crate) struct Reacting(Arc<Signal>);
 
 impl Drop for Reacting {
     fn drop(&mut self) {
@@ -311,7 +311,7 @@ impl Drop for Reacting {
 /// the next event looks again. Another is ended only once the last end measurably raised the
 /// budget: when ending cannot help (a growing call alone exceeds the host), the call meets its
 /// own limit and the idle processes stay. A look that is not short starts over. No timer.
-pub struct Host {
+pub(crate) struct Host {
     short: Arc<Signal>,
     nudge: Nudge,
     /// Looks begun and made so far, and a signal for each made.
@@ -321,7 +321,7 @@ pub struct Host {
 impl Host {
     /// Watches while the process lives; None (a memory-log note says why) where the platform
     /// gives no pressure events.
-    pub fn watch(mode: HostMode, gpus: Vec<Arc<Gpu>>, running: Running, log: &MemoryLog) -> Option<Arc<Host>> {
+    pub(crate) fn watch(mode: HostMode, gpus: Vec<Arc<Gpu>>, running: Running, log: &MemoryLog) -> Option<Arc<Host>> {
         let armed = host_pressure::Pressure::arm(mode).and_then(|pressure| Ok((pressure, Arc::new(Signal::new()?))));
         let (mut pressure, short) = armed
             .inspect_err(|error| log.note(serde_json::json!({"event": "host_unwatched", "mode": format!("{mode:?}"), "why": error.to_string()})))
@@ -362,24 +362,24 @@ impl Host {
     }
 
     /// Something happened (a call began, an executor's frame came): the watcher looks.
-    pub fn nudge(&self) {
+    pub(crate) fn nudge(&self) {
         self.nudge.send();
     }
 
     /// Nudges the watcher and blocks until a look begun since has been made.
-    pub fn look(&self) {
+    pub(crate) fn look(&self) {
         let begun = self.looks.0.lock().unwrap_or_else(|e| e.into_inner()).0;
         self.nudge();
         self.await_look(begun);
     }
 
     /// Looks made so far.
-    pub fn looks(&self) -> u64 {
+    pub(crate) fn looks(&self) -> u64 {
         self.looks.0.lock().unwrap_or_else(|e| e.into_inner()).1
     }
 
     /// Blocks until more than `made` looks have been made.
-    pub fn await_look(&self, made: u64) {
+    pub(crate) fn await_look(&self, made: u64) {
         let (count, signal) = &*self.looks;
         let mut looks = count.lock().unwrap_or_else(|e| e.into_inner());
         while looks.1 <= made {
@@ -388,7 +388,7 @@ impl Host {
     }
 
     /// Whether a look found the host short since this was last asked (the events thread asks).
-    pub fn short(&self) -> bool {
+    pub(crate) fn short(&self) -> bool {
         self.short.clear()
     }
 }
@@ -442,10 +442,10 @@ fn now_ms() -> u128 {
 /// Where one machine's memory events go: `memory.log` in its store's `logs`, beside TensorFS's
 /// transport log, read by `cozy machine logs --memory`. None logs to tracing.
 #[derive(Clone, Debug, Default)]
-pub struct MemoryLog(Option<Arc<PathBuf>>);
+pub(crate) struct MemoryLog(Option<Arc<PathBuf>>);
 
 impl MemoryLog {
-    pub fn at(dir: PathBuf) -> Self {
+    pub(crate) fn at(dir: PathBuf) -> Self {
         Self(Some(Arc::new(dir)))
     }
 

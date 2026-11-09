@@ -14,7 +14,7 @@ use tensorfs::{Checkpoint, CheckpointFile, Failure};
 use crate::store::{invalid, OrRaise};
 
 #[pyclass(name = "_CheckpointFile", module = "tensorfs._ext", frozen)]
-pub struct PyCheckpointFile(Mutex<Option<CheckpointFile>>);
+pub(crate) struct PyCheckpointFile(Mutex<Option<CheckpointFile>>);
 
 /// `checkpoint.open_file()`: a `tensorfs.CheckpointFile` holding what it may read until closed.
 pub(crate) fn open<'py>(py: Python<'py>, checkpoint: Checkpoint) -> PyResult<Bound<'py, PyAny>> {

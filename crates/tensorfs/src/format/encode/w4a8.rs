@@ -7,7 +7,7 @@ use super::{
 };
 use crate::format::{Dtype, Encoding, Error, Result};
 
-pub const W4A8_STRATEGY: &str = "w4a8-convrot256-fixed/1";
+pub(crate) const W4A8_STRATEGY: &str = "w4a8-convrot256-fixed/1";
 
 // NumPy's contiguous length-16 F64 reduction: eight lanes, then the same balanced tree.
 // No fused multiply/add: the producer materializes products before this reduction.

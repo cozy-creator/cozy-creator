@@ -13,7 +13,7 @@ const BLOCKS: Grid = Grid::Blocks {
     index: None,
 };
 
-pub const MXFP4: Scheme = Scheme {
+pub(crate) const MXFP4: Scheme = Scheme {
     name: "mxfp4",
     view: View::Matrix,
     params: &[

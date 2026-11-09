@@ -26,8 +26,8 @@ use std::sync::OnceLock;
 use super::super::{OwnedPart, QuantizationStats, elem, nvfp4};
 use crate::format::{Dtype, Error, Result};
 
-pub const SVDQ_FIT_STRATEGY: &str = "svdq-nvfp4-r32-faer/1";
-pub const SVDQ_NUMERICAL_IDENTITY: &str = concat!(
+pub(crate) const SVDQ_FIT_STRATEGY: &str = "svdq-nvfp4-r32-faer/1";
+pub(crate) const SVDQ_NUMERICAL_IDENTITY: &str = concat!(
     "faer=0.24.4;tensorfs-householder-block1/1;f32;seq;qr-bidiag-threshold128;",
     "rank32;oversample16;power4;alpha0,.2,.3,.4,.5,.6,.7,.8;",
     "rand=0.9.5;rand_chacha=0.9.0;ChaCha20Rng::seed_from_u64;",
@@ -41,7 +41,7 @@ const TILE: usize = 16;
 const LEVELS: f32 = 2688.0;
 const ALPHAS: [f32; 8] = [0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
 
-pub struct SvdqFitted {
+pub(crate) struct SvdqFitted {
     pub parts: Vec<OwnedPart>,
     /// The whole logical weight, separate from the residual encoder's tripwire.
     pub stats: QuantizationStats,
@@ -144,7 +144,7 @@ fn padded(rows: usize, cols: usize) -> Result<usize> {
     mul(rows.div_ceil(TILE) * TILE, cols.div_ceil(TILE) * TILE)
 }
 
-pub fn svdq_fit_workspace(rows: usize, cols: usize, samples: usize) -> Result<usize> {
+pub(crate) fn svdq_fit_workspace(rows: usize, cols: usize, samples: usize) -> Result<usize> {
     add(shared_workspace(rows, cols, samples)?, alpha_workspace(rows, cols, samples)?)
 }
 
@@ -1027,7 +1027,7 @@ fn float_bytes(values: &[f32], bf16: bool) -> Result<Vec<u8>> {
 /// the pool's workers. A single faer QR/SVD call is not internally cancellable; every
 /// surrounding pass, input/output tile and alpha observes the caller's native control.
 #[allow(clippy::too_many_arguments)]
-pub fn svdq_fit(
+pub(crate) fn svdq_fit(
     weight: &[f32],
     xmax: &[f32],
     calibration: &[f32],

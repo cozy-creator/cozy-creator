@@ -275,7 +275,7 @@ pub fn output_text(callable: &Callable, result: &Value) -> Option<String> {
 }
 
 /// What a box of `callable` is: its result's first picture, video or sound, else `text` for a result with words.
-pub fn makes(callable: &Callable) -> Option<&str> {
+pub(crate) fn makes(callable: &Callable) -> Option<&str> {
     let text = || callable.result.fields.iter().any(|field| field.name != "warnings" && *field.ty.plain() == Type::Str).then_some("text");
     output_kind(callable).or_else(text)
 }
@@ -316,7 +316,7 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
 }
 
 /// The frames a pickup of `request` may land on, when it takes one.
-pub fn pickup(request: &Struct) -> Option<Snap> {
+pub(crate) fn pickup(request: &Struct) -> Option<Snap> {
     let field = request.fields.iter().find(|field| matches!(field.ty.plain(), Type::Pickup(_)))?;
     Some(field.extra.get("snap").and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default())
 }
@@ -339,7 +339,7 @@ pub fn first_of(word: &str) -> String {
 }
 
 /// A package in words, its last part's: `qwen-image-2` is `Qwen Image 2`, and a word with no vowel is upper case, `sdxl` SDXL and `h3` H3.
-pub fn title(package: &str) -> String {
+pub(crate) fn title(package: &str) -> String {
     let words = package_word(package).split(['-', '_']).filter(|word| !word.is_empty());
     let word = |word: &str| match word.chars().any(|c| "aeiouAEIOU".contains(c)) {
         true => capitalized(word),

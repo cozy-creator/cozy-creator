@@ -8,16 +8,16 @@ use super::plan::{self, Elems, Term};
 use super::{Allowed, Ctx, Dtypes, Param, Part, Plan, Scheme, Shape, View};
 use crate::format::{Dtype, Result, Value};
 
-pub const INT2: Scheme = scheme("gptq.int2");
-pub const INT3: Scheme = scheme("gptq.int3");
-pub const INT4: Scheme = scheme("gptq.int4");
-pub const INT8: Scheme = scheme("gptq.int8");
+pub(crate) const INT2: Scheme = scheme("gptq.int2");
+pub(crate) const INT3: Scheme = scheme("gptq.int3");
+pub(crate) const INT4: Scheme = scheme("gptq.int4");
+pub(crate) const INT8: Scheme = scheme("gptq.int8");
 
-pub const I32: Dtypes = &["I32"];
-pub const HALF: Dtypes = &["F16", "BF16"];
+pub(crate) const I32: Dtypes = &["I32"];
+pub(crate) const HALF: Dtypes = &["F16", "BF16"];
 
 /// `group_size`: a positive integer, or `-1` for one group per row.
-pub const GROUP_SIZE: Param = Param {
+pub(crate) const GROUP_SIZE: Param = Param {
     key: "group_size",
     allowed: Allowed::Check(
         |v| matches!(v, Value::Int(n) if *n == -1 || (1..=1 << 31).contains(n)),
@@ -63,13 +63,13 @@ const PARTS: &[Part] = &[
 ];
 
 /// The variant's code width: the digits after `int`.
-pub fn bits(c: &Ctx) -> u32 {
+pub(crate) fn bits(c: &Ctx) -> u32 {
     let digits = c.scheme.rsplit_once(".int").expect("an intB variant").1;
     digits.parse().expect("an intB variant")
 }
 
 /// The group size `g` along a row; `-1` is the whole row.
-pub fn group(c: &Ctx) -> usize {
+pub(crate) fn group(c: &Ctx) -> usize {
     match c.param("group_size") {
         Value::Int(-1) => c.cols.max(1),
         v => v.as_u64().expect("checked against the row") as usize,
@@ -77,7 +77,7 @@ pub fn group(c: &Ctx) -> usize {
 }
 
 /// `W`: groups to a row.
-pub fn groups(c: &Ctx) -> usize {
+pub(crate) fn groups(c: &Ctx) -> usize {
     c.cols.div_ceil(group(c))
 }
 
@@ -90,7 +90,7 @@ fn blocks(c: &Ctx, index: Option<Vec<u32>>) -> Grid {
 }
 
 /// `qweight`: the view stored transposed (`[K, N]`), a dense stream along K.
-pub fn qweight(bits: u32) -> Packing<'static> {
+pub(crate) fn qweight(bits: u32) -> Packing<'static> {
     Packing {
         bits,
         word: 32,
@@ -103,7 +103,7 @@ pub fn qweight(bits: u32) -> Packing<'static> {
 }
 
 /// `qzeros`: `[W, N]` stored as is, a dense stream along N.
-pub fn qzeros(bits: u32) -> Packing<'static> {
+pub(crate) fn qzeros(bits: u32) -> Packing<'static> {
     Packing {
         axis: 1,
         transposed: false,
@@ -112,7 +112,7 @@ pub fn qzeros(bits: u32) -> Packing<'static> {
 }
 
 /// Little-endian `I32` elements.
-pub fn ints(b: &[u8]) -> Vec<i32> {
+pub(crate) fn ints(b: &[u8]) -> Vec<i32> {
     b.as_chunks::<4>()
         .0
         .iter()
@@ -121,7 +121,7 @@ pub fn ints(b: &[u8]) -> Vec<i32> {
 }
 
 /// Zero codes as `U8` elements of a plan.
-pub fn zeros(z: Vec<i32>) -> Elems<'static> {
+pub(crate) fn zeros(z: Vec<i32>) -> Elems<'static> {
     Elems {
         dtype: Dtype::U8,
         bytes: z.into_iter().map(|z| z as u8).collect::<Vec<u8>>().into(),

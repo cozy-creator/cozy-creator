@@ -42,7 +42,7 @@ pub struct Tensor {
 }
 
 /// splitmix64's output for state `x`.
-pub fn splitmix64(x: u64) -> u64 {
+pub(crate) fn splitmix64(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -50,7 +50,7 @@ pub fn splitmix64(x: u64) -> u64 {
 }
 
 /// `n` signs at `seed`: element `j` is −1 when the top bit of `splitmix64(seed·2³² + j)` is set.
-pub fn signs(seed: u64, n: usize) -> Vec<f64> {
+pub(crate) fn signs(seed: u64, n: usize) -> Vec<f64> {
     (0..n as u64)
         .map(|j| if splitmix64((seed << 32).wrapping_add(j)) >> 63 == 1 { -1.0 } else { 1.0 })
         .collect()
@@ -58,7 +58,7 @@ pub fn signs(seed: u64, n: usize) -> Vec<f64> {
 
 impl Probe {
     /// The sketch of one block, its rows row-major (`rows × cols` values).
-    pub fn sketch(&self, block: &[f64], cols: usize) -> Vec<f64> {
+    pub(crate) fn sketch(&self, block: &[f64], cols: usize) -> Vec<f64> {
         let r = signs(self.seed, cols);
         let y: Vec<f64> = block.chunks_exact(cols).map(|row| row.iter().zip(&r).map(|(w, s)| w * s).sum()).collect();
         let p = signs(self.seed + 1, self.dims * y.len());
@@ -66,14 +66,14 @@ impl Probe {
     }
 
     /// The probed tensors of a canonical component.
-    pub fn of<'a>(&'a self, component: &'a str) -> impl Iterator<Item = &'a Tensor> + 'a {
+    pub(crate) fn of<'a>(&'a self, component: &'a str) -> impl Iterator<Item = &'a Tensor> + 'a {
         self.tensors.iter().filter(move |t| t.component == component)
     }
 }
 
 impl Tensor {
     /// A variant's sketches, one `dims`-vector per block.
-    pub fn sketches(&self, variant: &str, dims: usize) -> Option<Vec<Vec<f64>>> {
+    pub(crate) fn sketches(&self, variant: &str, dims: usize) -> Option<Vec<Vec<f64>>> {
         let bytes = base64::engine::general_purpose::STANDARD.decode(self.sketch.get(variant)?).ok()?;
         let values: Vec<f64> = (bytes.chunks_exact(2))
             .map(|b| crate::format::decode::elem::f16(u16::from_le_bytes([b[0], b[1]])) as f64)
@@ -82,7 +82,7 @@ impl Tensor {
     }
 }
 
-pub fn cosine(a: &[f64], b: &[f64]) -> f64 {
+pub(crate) fn cosine(a: &[f64], b: &[f64]) -> f64 {
     let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
     match norm(a) * norm(b) {
@@ -94,7 +94,7 @@ pub fn cosine(a: &[f64], b: &[f64]) -> f64 {
 /// One probed tensor's agreement with one variant: its worst block, that block's cosine, and the
 /// mean distance (1 − cosine) over its blocks.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Agreement {
+pub(crate) struct Agreement {
     pub variant: String,
     pub worst_block: u64,
     pub worst: f64,
@@ -102,7 +102,7 @@ pub struct Agreement {
 }
 
 /// Each variant's agreement with `sketches` (the converted tensor's, one per probed block).
-pub fn agreements(probe: &Probe, tensor: &Tensor, sketches: &[Vec<f64>]) -> Vec<Agreement> {
+pub(crate) fn agreements(probe: &Probe, tensor: &Tensor, sketches: &[Vec<f64>]) -> Vec<Agreement> {
     let mut out = Vec::new();
     for variant in tensor.sketch.keys() {
         let Some(reference) = tensor.sketches(variant, probe.dims) else { continue };

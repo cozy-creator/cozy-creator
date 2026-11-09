@@ -134,7 +134,7 @@ pub trait RangeWrite: Send {
 
 /// Where an object came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
+pub(crate) enum Tier {
     Local,
     Volume,
     Origin,
@@ -289,12 +289,12 @@ impl Fetcher {
     }
 
     /// Resolves once nothing is queued, downloading or being written back to the volume.
-    pub async fn settled(&self) {
+    pub(crate) async fn settled(&self) {
         self.shared.settled().await
     }
 
     /// The commit `tree`: its repo files, and its header with the components `want` selects.
-    pub async fn pull_tree(&self, origin: &Arc<dyn Origin>, tree: &ObjectRef, want: &Want<'_>) -> Result<Pulled> {
+    pub(crate) async fn pull_tree(&self, origin: &Arc<dyn Origin>, tree: &ObjectRef, want: &Want<'_>) -> Result<Pulled> {
         let mut landed = self.objects(origin, std::slice::from_ref(tree), want).await?;
         let parsed = Tree::from_json(&self.read(tree).await?).map_err(|e| invalid(tree, e))?;
         let header = parsed.header().map_err(|e| invalid(tree, e))?.1.clone();

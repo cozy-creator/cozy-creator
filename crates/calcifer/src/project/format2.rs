@@ -35,7 +35,7 @@ const SOUNDS: [&str; 6] = ["wav", "mp3", "flac", "ogg", "m4a", "aac"];
 /// project.lock of format 2: what decides a state.
 #[derive(Default, Deserialize)]
 #[serde(default)]
-pub struct Lock {
+pub(crate) struct Lock {
     files: BTreeMap<String, File>,
     assets: BTreeMap<String, Held>,
     reserved: BTreeMap<String, Vec<String>>,
@@ -180,7 +180,7 @@ struct ReadNow {
 }
 
 /// project.yaml of format 2 as 0.19 read it.
-pub struct Doc {
+pub(crate) struct Doc {
     assets: Vec<Asset>,
     index: HashMap<String, usize>,
     order: Vec<usize>,
@@ -190,7 +190,7 @@ pub struct Doc {
 
 impl Doc {
     /// `top`, `text` read, with `lock`, in project folder `dir`.
-    pub fn read(dir: &Path, text: &str, top: &Map<String, Value>, lock: &Lock) -> Self {
+    pub(crate) fn read(dir: &Path, text: &str, top: &Map<String, Value>, lock: &Lock) -> Self {
         let empty = Map::new();
         let defaults: Map<String, Value> = (top.get("defaults").and_then(Value::as_object).unwrap_or(&empty).iter())
             .filter(|(section, _)| PINS.contains(&section.as_str()))
@@ -221,7 +221,7 @@ impl Doc {
     }
 
     /// Each asset's row as `cozy project status --json` gave it: its name, `standing`, and the version that is its state.
-    pub fn rows(&self, lock: &Lock) -> Vec<Value> {
+    pub(crate) fn rows(&self, lock: &Lock) -> Vec<Value> {
         let stood = self.stand(lock);
         let rows = self.assets.iter().zip(&stood).filter(|(asset, _)| asset.links.is_none()).map(|(asset, stood)| {
             let (standing, version) = match stood.state {
@@ -237,19 +237,19 @@ impl Doc {
     }
 
     /// The shot one of whose beats wrote what `mention` names: format 3 has no such thing.
-    pub fn beat_of(&self, mention: &str) -> Option<&str> {
+    pub(crate) fn beat_of(&self, mention: &str) -> Option<&str> {
         let i = self.find(mention)?;
         Some(&self.assets[self.assets[i].beat_of?].name)
     }
 
     /// Each free frame a beat wrote: its name, the shot it is of, and when, in seconds into the shot.
-    pub fn frames(&self) -> Vec<(String, String, f64)> {
+    pub(crate) fn frames(&self) -> Vec<(String, String, f64)> {
         let frame = |asset: &Asset| Some((asset.name.clone(), self.assets[asset.beat_of?].name.clone(), asset.body.get("at")?.as_f64()?));
         self.assets.iter().filter(|asset| asset.frame).filter_map(frame).collect()
     }
 
     /// What `mention` meant.
-    pub fn meant(&self, mention: &str) -> String {
+    pub(crate) fn meant(&self, mention: &str) -> String {
         match (self.find(mention), self.beat_of(mention)) {
             (_, Some(shot)) => format!("was what a beat of {shot} wrote"),
             (Some(i), None) => format!("named {}", self.assets[i].name),

@@ -21,7 +21,7 @@ use crate::storage::Store;
 use tensorfs::{format::ObjectRef, sha256};
 use api::error::Error;
 
-pub struct NativeBackend {
+pub(crate) struct NativeBackend {
     pub service: Arc<Service>,
     pub authority: Authority,
     pub store: Arc<Store>,
@@ -35,7 +35,7 @@ pub struct NativeBackend {
     projection: Mutex<()>,
 }
 impl NativeBackend {
-    pub fn new(
+    pub(crate) fn new(
         service: Arc<Service>,
         authority: Authority,
         store: Arc<Store>,
@@ -970,7 +970,7 @@ impl MachineBackend for NativeBackend {
         })
     }
 }
-pub fn actor_id(actor: VerifiedActor) -> String {
+pub(crate) fn actor_id(actor: VerifiedActor) -> String {
     sha256::hex(&actor.public_key)
 }
 /// Whose runs `actor` reads: its own, or, for a rental's owner, every client's (none named).

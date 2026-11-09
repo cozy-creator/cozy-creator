@@ -35,7 +35,7 @@ fn directory(held: &HeldGeneration) -> Option<&Path> {
 }
 
 /// What `held`'s record asks: its bytes; 0 when none is recorded.
-pub fn recorded(held: &HeldGeneration) -> u64 {
+pub(crate) fn recorded(held: &HeldGeneration) -> u64 {
     read(held).map_or(0, |pages| pages.bytes)
 }
 
@@ -46,7 +46,7 @@ fn read(held: &HeldGeneration) -> Option<Pages> {
 
 /// Right after `held`'s parent (`parent`) imported: what of its environment and interpreter it
 /// read, unless an earlier import recorded it. Off the caller's thread.
-pub fn record_later(held: &HeldGeneration, parent: platform::process::Birth) {
+pub(crate) fn record_later(held: &HeldGeneration, parent: platform::process::Birth) {
     let Some(path) = file(held) else { return };
     if path.exists() {
         return;
@@ -98,7 +98,7 @@ fn record(held: &HeldGeneration, parent: &platform::process::Birth, path: &Path)
 
 /// `held`'s recorded pages, asked of the kernel at the lowest CPU and I/O priority, off the
 /// caller's thread.
-pub fn read_ahead_later(held: Vec<HeldGeneration>) {
+pub(crate) fn read_ahead_later(held: Vec<HeldGeneration>) {
     if held.is_empty() {
         return;
     }

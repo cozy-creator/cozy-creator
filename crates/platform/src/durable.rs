@@ -66,7 +66,7 @@ pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 /// whole. Where the filesystem orders a rename over a file after its data (`renames_after_data`)
 /// nothing waits; else these bytes alone are written first (`ordered`). `soon` makes it durable
 /// after; a crash before then keeps the old.
-pub fn replace_soon(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+pub(crate) fn replace_soon(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let flush = match path.exists() && renames_after_data(dir) {
         true => Flush::Not,
@@ -161,7 +161,7 @@ pub struct Paced {
 }
 
 impl Paced {
-    pub const WINDOW: u64 = 8 << 20;
+    pub(crate) const WINDOW: u64 = 8 << 20;
 
     /// `len` bytes were just written to `file` at `offset`.
     pub fn wrote(&mut self, file: &File, offset: u64, len: u64) {
@@ -350,7 +350,7 @@ pub fn mode(metadata: &Metadata) -> Option<u32> {
 
 /// Who a file belongs to: uid and gid on Unix; on Windows every file is the profile's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Owner {
+pub(crate) struct Owner {
     #[cfg(unix)]
     uid: u32,
     #[cfg(unix)]
@@ -358,7 +358,7 @@ pub struct Owner {
 }
 
 impl Owner {
-    pub fn of(metadata: &Metadata) -> Owner {
+    pub(crate) fn of(metadata: &Metadata) -> Owner {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -374,7 +374,7 @@ impl Owner {
         }
     }
 
-    pub fn assign(self, file: &File) -> Result<()> {
+    pub(crate) fn assign(self, file: &File) -> Result<()> {
         #[cfg(unix)]
         std::os::unix::fs::fchown(file, Some(self.uid), Some(self.gid))?;
         #[cfg(windows)]
@@ -467,7 +467,7 @@ pub fn device(path: &Path) -> Result<u64> {
 
 /// Sizes `file` to `len` as a hole: writes fill it in any order and only what they write takes
 /// disk. Unix files are sparse already; NTFS allocates a grown file whole unless marked sparse.
-pub fn set_sparse_len(file: &File, len: u64) -> Result<()> {
+pub(crate) fn set_sparse_len(file: &File, len: u64) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -666,7 +666,7 @@ fn keep_cursor(
 
 /// Makes a file's bytes survive a crash, by name. Unix syncs through any descriptor; Windows'
 /// `FlushFileBuffers` needs a writable handle.
-pub fn sync_file(path: &Path) -> Result<()> {
+pub(crate) fn sync_file(path: &Path) -> Result<()> {
     #[cfg(unix)]
     File::open(path)?.sync_data()?;
     // A directory has nothing to flush on Windows: NTFS journals its entries.
@@ -681,7 +681,7 @@ pub fn sync_file(path: &Path) -> Result<()> {
 /// answers an open that races a rename or a delete with access denied: the open is asked
 /// again while the name keeps changing, and a refusal of an unchanged name stands; a name that
 /// no longer identifies is gone.
-pub fn open_racing(path: &Path) -> io::Result<File> {
+pub(crate) fn open_racing(path: &Path) -> io::Result<File> {
     let mut refused: Option<FileId> = None;
     loop {
         match File::open(path) {

@@ -170,11 +170,11 @@ pub(crate) struct Waiter {
 }
 
 impl Waiter {
-    pub fn task(&self) -> Arc<Task> {
+    pub(crate) fn task(&self) -> Arc<Task> {
         Arc::clone(&self.task)
     }
 
-    pub async fn wait(mut self) -> Result<Tier> {
+    pub(crate) async fn wait(mut self) -> Result<Tier> {
         let answer = self.answer.wait_for(Option::is_some).await;
         match answer.as_deref() {
             Ok(Some(answer)) => answer.clone(),
@@ -479,7 +479,7 @@ impl Drop for Slot {
 }
 
 impl Shared {
-    pub fn new(store: Arc<dyn ObjectStore>, client: Client, volume: Option<VolumeOrigin>, requests: usize) -> Shared {
+    pub(crate) fn new(store: Arc<dyn ObjectStore>, client: Client, volume: Option<VolumeOrigin>, requests: usize) -> Shared {
         Shared {
             store,
             client,
@@ -500,7 +500,7 @@ impl Shared {
     }
 
     /// Stops the dispatcher and every transfer.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.closing.notify_waiters();
         self.queued.notify_waiters();
@@ -519,7 +519,7 @@ impl Shared {
     }
 
     /// Resolves once no task or write-back is left.
-    pub async fn settled(&self) {
+    pub(crate) async fn settled(&self) {
         loop {
             let notified = self.settle.notified();
             tokio::pin!(notified);
@@ -541,7 +541,7 @@ impl Shared {
     }
 
     /// The ramp, once a window: more requests while the bytes received grow, back to `START` when idle.
-    pub async fn pace(self: Arc<Self>) {
+    pub(crate) async fn pace(self: Arc<Self>) {
         loop {
             tokio::select! {
                 () = tokio::time::sleep(WINDOW) => {}
@@ -647,7 +647,7 @@ impl Shared {
     }
 
     /// A place in line for `object`, joining its task when one is open.
-    pub fn want(&self, object: &ObjectRef, origin: &Arc<dyn Origin>, priority: u64) -> Waiter {
+    pub(crate) fn want(&self, object: &ObjectRef, origin: &Arc<dyn Origin>, priority: u64) -> Waiter {
         let mut queue = lock(&self.queue);
         let task = match queue.tasks.get(&object.sha256).cloned() {
             Some(task) => {
@@ -714,7 +714,7 @@ impl Shared {
     }
 
     /// `object`'s task as its waiters see it; None when none is open (landed, failed or unwanted).
-    pub fn fetching(&self, object: &ObjectRef) -> Option<Fetching> {
+    pub(crate) fn fetching(&self, object: &ObjectRef) -> Option<Fetching> {
         let task = lock(&self.queue).tasks.get(&object.sha256).cloned()?;
         Some(Fetching {
             phase: Phase::of(task.phase.load(Ordering::Acquire)),
@@ -745,7 +745,7 @@ impl Shared {
     }
 
     /// Starts tasks as requests come free, most urgent first: the request it was started with is its first.
-    pub async fn dispatch(self: Arc<Self>) {
+    pub(crate) async fn dispatch(self: Arc<Self>) {
         loop {
             let permit = tokio::select! {
                 slot = self.slots.take() => slot,

@@ -1495,7 +1495,7 @@ impl LiveRentals {
 
 /// The weaker of two cost bases (`settled` is the known one: `charged`, or `provider_billed`): an
 /// estimate is weaker than anything known, unmetered than charged.
-pub fn weakest(held: &str, next: &str, settled: &str) -> String {
+pub(crate) fn weakest(held: &str, next: &str, settled: &str) -> String {
     let rank = |basis: &str| match basis {
         "" => 0,
         b if b == settled => 1,
@@ -1806,7 +1806,7 @@ pub struct RentalPriceEstimate {
 }
 
 /// A JSON `null` read as the type's empty value.
-pub fn null_is_empty<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(
+pub(crate) fn null_is_empty<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(
     deserializer: D,
 ) -> Result<T, D::Error> {
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())

@@ -13,14 +13,14 @@ use super::{invalid, Body, Component, Header, Metadata, Result};
 use crate::family::{self, Record};
 
 /// `component` of `header` becomes the composition's `name`.
-pub struct Supply<'h> {
+pub(crate) struct Supply<'h> {
     pub name: String,
     pub header: &'h Header,
     pub component: String,
 }
 
 /// `base` with `supplies`, carrying `metadata`.
-pub fn compose(base: &Header, supplies: &[Supply<'_>], mut metadata: Metadata) -> Result<Header> {
+pub(crate) fn compose(base: &Header, supplies: &[Supply<'_>], mut metadata: Metadata) -> Result<Header> {
     // Sources: the base, then each distinct supplying header.
     let mut sources: Vec<&Header> = vec![base];
     let mut supplied: BTreeMap<&str, (usize, &Component)> = BTreeMap::new();

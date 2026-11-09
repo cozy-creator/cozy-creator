@@ -18,7 +18,7 @@ use crate::{Context, output};
 /// A run not yet settled is followed to its end in every mode (Ctrl-C stops following, never the
 /// run): with `--json`, Calcifer's events as NDJSON, then the run's record as the last line.
 /// `once`: a snapshot instead. The exit code is the run's: 1 when it failed or was canceled.
-pub async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&std::path::Path>) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&std::path::Path>) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     // `--full`: what it measured, its calls and what it was asked; a person's view and `--json` hold the rest.
     let detail: &[(&str, &str)] = if ctx.full { &[("detail", "full")] } else { &[] };

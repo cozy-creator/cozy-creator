@@ -40,7 +40,7 @@ const PROBE: Duration = Duration::from_secs(20);
 const PROBES: u32 = 3;
 
 #[derive(Clone, Debug, thiserror::Error)]
-pub enum Error {
+pub(crate) enum Error {
     /// The machine refused: its HTTP status and envelope.
     #[error("the machine refused it ({}): {}", .error.code, .error.message)]
     Refused {
@@ -61,27 +61,27 @@ pub enum Error {
 
 impl Error {
     /// The HTTP status of a refusal.
-    pub fn status(&self) -> Option<u16> {
+    pub(crate) fn status(&self) -> Option<u16> {
         match self {
             Error::Refused { status, .. } => Some(*status),
             _ => None,
         }
     }
     /// The refusal's stable code.
-    pub fn code(&self) -> Option<&str> {
+    pub(crate) fn code(&self) -> Option<&str> {
         match self {
             Error::Refused { error, .. } => Some(&error.code),
             _ => None,
         }
     }
-    pub fn is_not_found(&self) -> bool {
+    pub(crate) fn is_not_found(&self) -> bool {
         self.status() == Some(404)
     }
 }
 
 /// How each request is authorized.
 #[derive(Clone)]
-pub enum Auth {
+pub(crate) enum Auth {
     /// Nothing: `status` answers identity and the readiness receipt only.
     None,
     /// A fresh machine-scope cap for every request, signed by `key` for the machine `worker`.
@@ -114,7 +114,7 @@ impl Auth {
 
 /// One machine, reached at `address` (`host:port`) through its pinned leaf.
 #[derive(Clone)]
-pub struct Machine {
+pub(crate) struct Machine {
     origin: Url,
     pin: [u8; 32],
     auth: Auth,
@@ -123,7 +123,7 @@ pub struct Machine {
 
 /// What a ranged `GET` of an output answered: the revision, the output's whole length, the
 /// range its body carries (`[first, end)`), and the bytes.
-pub struct Output {
+pub(crate) struct Output {
     pub rev: u64,
     pub length: u64,
     pub range: (u64, u64),
@@ -132,7 +132,7 @@ pub struct Output {
 }
 
 impl Machine {
-    pub fn new(address: &str, pin: [u8; 32], auth: Auth) -> Result<Self, Error> {
+    pub(crate) fn new(address: &str, pin: [u8; 32], auth: Auth) -> Result<Self, Error> {
         let origin = Url::parse(&format!("https://{address}/"))
             .map_err(|e| Error::Unreachable(format!("the machine's address {address}: {e}")))?;
         let control = builder(pin, &[b"h2"]).build().map_err(transport)?;
@@ -145,7 +145,7 @@ impl Machine {
     }
 
     /// A bulk lane: HTTP/1.1 connections of its own. Dropping it closes them.
-    pub fn bulk(&self) -> Result<Bulk, Error> {
+    pub(crate) fn bulk(&self) -> Result<Bulk, Error> {
         let client = builder(self.pin, &[])
             .http1_only()
             .build()
@@ -157,13 +157,13 @@ impl Machine {
     }
 
     /// The machine's frame. Without a credential: identity, version, capabilities and receipt.
-    pub async fn status(&self) -> Result<StatusFrame, Error> {
+    pub(crate) async fn status(&self) -> Result<StatusFrame, Error> {
         let request = self.request(Method::GET, path::STATUS, &[]);
         json(send(request.header(header::ACCEPT, "application/json")).await?).await
     }
 
     /// The machine's frame, then again whenever it changes.
-    pub async fn watch(
+    pub(crate) async fn watch(
         &self,
     ) -> Result<impl Stream<Item = Result<StatusFrame, Error>> + Send + 'static, Error> {
         let request = self.request(Method::GET, path::STATUS, &[]);
@@ -178,29 +178,29 @@ impl Machine {
     }
 
     /// Starts a rental's idle clock over; answers the frame with the new deadline.
-    pub async fn keepalive(&self) -> Result<StatusFrame, Error> {
+    pub(crate) async fn keepalive(&self) -> Result<StatusFrame, Error> {
         json(send(self.request(Method::POST, path::KEEPALIVE, &[])).await?).await
     }
 
     /// Asks a rental to release itself now; refused while it works.
-    pub async fn release(&self) -> Result<(), Error> {
+    pub(crate) async fn release(&self) -> Result<(), Error> {
         send(self.request(Method::POST, path::RELEASE, &[])).await.map(drop)
     }
 
     /// Submits a run; its state, also when it was accepted before.
-    pub async fn submit(&self, run: &RunRequest) -> Result<RunState, Error> {
+    pub(crate) async fn submit(&self, run: &RunRequest) -> Result<RunState, Error> {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
-    pub async fn runs(&self, before: u64, limit: u32) -> Result<RunList, Error> {
+    pub(crate) async fn runs(&self, before: u64, limit: u32) -> Result<RunList, Error> {
         let request = self.request(Method::GET, path::RUNS, &[]).query(&[("before", before), ("limit", u64::from(limit))]);
         json(send(request).await?).await
     }
 
     /// The run's log after `after`: its state first, then its events until its outcome. A run
     /// the machine does not have is a 404 refusal.
-    pub async fn events(
+    pub(crate) async fn events(
         &self,
         id: &str,
         after: u64,
@@ -223,19 +223,19 @@ impl Machine {
     }
 
     /// Cancels the run; an id the machine never received is recorded canceled.
-    pub async fn cancel(&self, id: &str) -> Result<RunState, Error> {
+    pub(crate) async fn cancel(&self, id: &str) -> Result<RunState, Error> {
         json(send(self.request(Method::POST, path::CANCEL, &[id])).await?).await
     }
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    pub async fn log(&self, name: &str, lines: u64) -> Result<Bytes, Error> {
+    pub(crate) async fn log(&self, name: &str, lines: u64) -> Result<Bytes, Error> {
         let request = self.request(Method::GET, path::LOG, &[name]);
         bytes(send(request.query(&[("lines", lines)])).await?).await
     }
 
     /// A log's lines as [`Self::log`] reads them, or those after `after` (a batch's place), then
     /// each batch as the machine appends it.
-    pub async fn follow_log(
+    pub(crate) async fn follow_log(
         &self,
         name: &str,
         lines: u64,
@@ -258,13 +258,13 @@ impl Machine {
 
     /// The ranges of the object (`sha256:<hex>`) the machine holds for this signer; a stored
     /// object is held whole.
-    pub async fn held(&self, digest: &str) -> Result<Ranges, Error> {
+    pub(crate) async fn held(&self, digest: &str) -> Result<Ranges, Error> {
         held(&send(self.request(Method::HEAD, path::OBJECT, &[digest])).await?)
     }
 
     /// What the machine holds of the object (`sha256:<hex>`, `length` bytes) as its upload lands,
     /// until it holds all of it.
-    pub async fn follow_held(
+    pub(crate) async fn follow_held(
         &self,
         digest: &str,
         length: u64,
@@ -284,7 +284,7 @@ impl Machine {
     }
 
     /// What the machine holds of each of `digests`, in one request, in the order asked.
-    pub async fn held_many(&self, digests: &[String]) -> Result<Vec<HeldObject>, Error> {
+    pub(crate) async fn held_many(&self, digests: &[String]) -> Result<Vec<HeldObject>, Error> {
         let ask = HeldRequest {
             digests: digests.to_vec(),
         };
@@ -321,7 +321,7 @@ impl Machine {
 
 /// HTTP/1.1 connections of one bulk lane.
 #[derive(Clone)]
-pub struct Bulk {
+pub(crate) struct Bulk {
     machine: Machine,
     client: reqwest::Client,
 }
@@ -329,7 +329,7 @@ pub struct Bulk {
 impl Bulk {
     /// Lands `[first, first + length)` of the object (`sha256:<hex>`, `total` bytes) from `body`;
     /// answers the ranges held after it.
-    pub async fn put(
+    pub(crate) async fn put(
         &self,
         digest: &str,
         (first, length, total): (u64, u64, u64),
@@ -352,7 +352,7 @@ impl Bulk {
 
     /// `range` (`[first, end)`; an empty one: all of it) of an output at revision `rev` (0: its
     /// newest). A moved revision is a 412 refusal, a range past its end a 416.
-    pub async fn get(
+    pub(crate) async fn get(
         &self,
         target: &OutputTarget,
         (first, end): (u64, u64),
@@ -412,7 +412,7 @@ impl Bulk {
     /// One request through the machine's door to its Calcifer (`path::CALCIFER`): `target` is the
     /// path and query there. Whatever it answers is the answer, refusals too, with both bodies
     /// streaming; only a request that failed is an error.
-    pub async fn forward(
+    pub(crate) async fn forward(
         &self,
         method: Method,
         target: &str,
@@ -567,7 +567,7 @@ fn transport(error: reqwest::Error) -> Error {
 
 /// The TLS leaf (DER) the machine at `address` presents, whatever it is. Nothing is sent: the
 /// handshake is refused once the leaf is seen.
-pub async fn presented_leaf(address: &str) -> Result<Vec<u8>, Error> {
+pub(crate) async fn presented_leaf(address: &str) -> Result<Vec<u8>, Error> {
     let unreachable = |e: std::io::Error| Error::Unreachable(format!("{address}: {e}"));
     let pinned = Arc::new(Pinned::new([0; 32]));
     let tcp = tokio::net::TcpStream::connect(address)

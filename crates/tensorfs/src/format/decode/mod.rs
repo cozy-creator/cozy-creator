@@ -10,13 +10,13 @@ use std::collections::BTreeMap;
 use std::fmt::Display;
 
 use super::{Dtype, Encoding, Error, Result, Value};
-pub use plan::Plan;
+pub(crate) use plan::Plan;
 
-pub mod affine;
-pub mod blocks;
-pub mod elem;
-pub mod grid;
-pub mod plan;
+pub(crate) mod affine;
+pub(crate) mod blocks;
+pub(crate) mod elem;
+pub(crate) mod grid;
+pub(crate) mod plan;
 
 mod fp8;
 mod int8;
@@ -143,7 +143,7 @@ pub struct Part {
 }
 
 impl Part {
-    pub const fn req(role: &'static str, dtypes: Dtypes, shape: fn(&Ctx) -> Result<Shape>) -> Part {
+    pub(crate) const fn req(role: &'static str, dtypes: Dtypes, shape: fn(&Ctx) -> Result<Shape>) -> Part {
         Part {
             role,
             required: true,
@@ -151,7 +151,7 @@ impl Part {
             shape,
         }
     }
-    pub const fn opt(role: &'static str, dtypes: Dtypes, shape: fn(&Ctx) -> Result<Shape>) -> Part {
+    pub(crate) const fn opt(role: &'static str, dtypes: Dtypes, shape: fn(&Ctx) -> Result<Shape>) -> Part {
         Part {
             role,
             required: false,
@@ -162,7 +162,7 @@ impl Part {
 }
 
 /// A part's allowed dtypes, by name: the part's own dtype is authoritative.
-pub type Dtypes = &'static [&'static str];
+pub(crate) type Dtypes = &'static [&'static str];
 
 /// A part's required stored shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,12 +173,12 @@ pub enum Shape {
 }
 
 /// The logical shape.
-pub fn logical(c: &Ctx) -> Result<Shape> {
+pub(crate) fn logical(c: &Ctx) -> Result<Shape> {
     Ok(Shape::Exact(c.shape.to_vec()))
 }
 
 /// One element, any shape.
-pub fn one(_: &Ctx) -> Result<Shape> {
+pub(crate) fn one(_: &Ctx) -> Result<Shape> {
     Ok(Shape::Count(1))
 }
 
@@ -215,29 +215,29 @@ pub struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     /// A refusal; `decode` prefixes the scheme's name.
-    pub fn fail(&self, detail: impl Display) -> Error {
+    pub(crate) fn fail(&self, detail: impl Display) -> Error {
         Error::Decode(detail.to_string())
     }
     /// A text param of the row (checked before the decode runs).
-    pub fn text(&self, key: &str) -> &'a str {
+    pub(crate) fn text(&self, key: &str) -> &'a str {
         self.params[key].as_str().expect("checked against the row")
     }
-    pub fn uint(&self, key: &str) -> usize {
+    pub(crate) fn uint(&self, key: &str) -> usize {
         self.params[key].as_u64().expect("checked against the row") as usize
     }
     /// A param of the row as stored, for params of no text or integer kind (checked before the
     /// decode runs).
-    pub fn param(&self, key: &str) -> &'a Value {
+    pub(crate) fn param(&self, key: &str) -> &'a Value {
         &self.params[key]
     }
-    pub fn flag(&self, key: &str) -> bool {
+    pub(crate) fn flag(&self, key: &str) -> bool {
         matches!(self.params[key], Value::Bool(true))
     }
-    pub fn has(&self, role: &str) -> bool {
+    pub(crate) fn has(&self, role: &str) -> bool {
         self.parts.contains_key(role)
     }
     /// A present part (dtype and shape checked against the row).
-    pub fn part(&self, role: &str) -> PartBytes<'a> {
+    pub(crate) fn part(&self, role: &str) -> PartBytes<'a> {
         self.parts[role]
     }
     /// The SAME checked scheme mapping can refer to an engine-bound input slot.
@@ -254,16 +254,16 @@ impl<'a> Ctx<'a> {
         }
     }
     /// A present part's elements as f32 (`elem::floats`).
-    pub fn floats(&self, role: &str) -> Vec<f32> {
+    pub(crate) fn floats(&self, role: &str) -> Vec<f32> {
         let p = self.part(role);
         elem::floats(p.dtype, p.bytes)
     }
     /// The logical shape without its last extent.
-    pub fn lead(&self) -> &'a [u64] {
+    pub(crate) fn lead(&self) -> &'a [u64] {
         &self.shape[..self.shape.len().saturating_sub(1)]
     }
     /// The rows of one matrix: the second-last extent of a matrix view, else `R`.
-    pub fn height(&self) -> usize {
+    pub(crate) fn height(&self) -> usize {
         match self.shape {
             [.., n, _] if self.cols > 0 && self.rows > 0 && self.shape.len() >= 2 => *n as usize,
             _ => self.rows,
@@ -276,7 +276,7 @@ impl<'a> Ctx<'a> {
 /// hold the logical tensor with its last two axes swapped (`transposed: true`), so the values are
 /// swapped back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Geometry {
+pub(crate) struct Geometry {
     pub rows: usize,
     pub cols: usize,
     pub height: usize,
@@ -313,7 +313,7 @@ pub fn check(
 
 /// `f` with the tensor's checked plan (built when `read`, else `Values` of nothing) and its
 /// geometry; a refusal names the scheme.
-pub fn planned<R>(
+pub(crate) fn planned<R>(
     dtype: &Dtype,
     shape: &[u64],
     encoding: &Encoding,
@@ -341,7 +341,7 @@ pub fn planned<R>(
 }
 
 /// Metadata preflight using the existing registry; no data is read or device initialized.
-pub fn check_metadata(
+pub(crate) fn check_metadata(
     dtype: &Dtype,
     shape: &[u64],
     encoding: &Encoding,
@@ -535,7 +535,7 @@ fn run<R>(
 }
 
 /// Values of matrices of `r × c`, row-major, as `c × r`.
-pub fn swap_last_two(x: &[f32], r: usize, c: usize) -> Vec<f32> {
+pub(crate) fn swap_last_two(x: &[f32], r: usize, c: usize) -> Vec<f32> {
     if r * c == 0 {
         return x.to_vec();
     }
@@ -581,7 +581,7 @@ pub(crate) fn round(dtype: &Dtype, xs: &[f32]) -> Vec<u8> {
     }
 }
 
-pub fn bf16(x: f32) -> u16 {
+pub(crate) fn bf16(x: f32) -> u16 {
     if x.is_nan() {
         return 0x7fc0;
     }
@@ -589,7 +589,7 @@ pub fn bf16(x: f32) -> u16 {
     ((b + 0x7fff + ((b >> 16) & 1)) >> 16) as u16
 }
 
-pub fn f16(x: f32) -> u16 {
+pub(crate) fn f16(x: f32) -> u16 {
     if x.is_nan() {
         return 0x7e00;
     }

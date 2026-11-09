@@ -20,7 +20,7 @@ mod nunchaku;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum Producer {
+pub(crate) enum Producer {
     Modelopt,
     CompressedTensors,
     Comfy,
@@ -43,7 +43,7 @@ pub enum Producer {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Carrier {
+pub(crate) struct Carrier {
     pub producer: Producer,
     /// The producer's names for the format: ComfyUI's `format`, ModelOpt's `quant_algo`,
     /// compressed-tensors' `format`.
@@ -83,7 +83,7 @@ pub struct Carrier {
 /// A carrier's logical shape.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Logical {
+pub(crate) enum Logical {
     /// The data part's shape, its last extent counted in the stored dtype's elements.
     #[default]
     Data,
@@ -98,7 +98,7 @@ pub enum Logical {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PartRule {
+pub(crate) struct PartRule {
     pub suffix: String,
     pub role: String,
     /// What the producer stores.
@@ -117,7 +117,7 @@ pub struct PartRule {
 /// A part's shape against the logical `[*lead, C]`, with `R = Π lead`.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Geometry {
+pub(crate) enum Geometry {
     /// The logical shape: the data part (packed sub-byte elements along the last axis).
     Logical,
     /// One element.
@@ -151,7 +151,7 @@ pub enum Geometry {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Table {
+pub(crate) struct Table {
     /// Declarations beside the weights that name their producer.
     pub declarations: Vec<Declaration>,
     /// Quantization parts no scheme reads yet: refused wherever they appear.
@@ -163,7 +163,7 @@ pub struct Table {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Declaration {
+pub(crate) struct Declaration {
     /// A file beside the weights (its own `quant_method`, if it states one, names the producer),
     /// or a safetensors metadata key prefix (the keys without it are the config).
     #[serde(default)]
@@ -181,21 +181,21 @@ pub struct Declaration {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Companions {
+pub(crate) struct Companions {
     pub producer: String,
     /// Key patterns: `*` at either end matches any text.
     pub keys: Vec<String>,
 }
 
 /// The reviewed table, parsed once.
-pub fn table() -> &'static Table {
+pub(crate) fn table() -> &'static Table {
     static PARSED: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
     PARSED.get_or_init(|| {
         serde_json::from_str(include_str!("carriers.json")).expect("the carrier table")
     })
 }
 
-pub fn carriers() -> &'static [Carrier] {
+pub(crate) fn carriers() -> &'static [Carrier] {
     &table().carriers
 }
 
@@ -211,7 +211,7 @@ fn matches(pattern: &str, key: &str) -> bool {
 
 /// One folded tensor: its encoding and each part's role, dtype, shape and source bytes.
 #[derive(Debug, Clone)]
-pub struct Folded {
+pub(crate) struct Folded {
     pub encoding: Encoding,
     /// The logical shape (before a `transposed` encoding's swap).
     pub shape: Vec<u64>,
@@ -219,7 +219,7 @@ pub struct Folded {
 }
 
 #[derive(Debug, Clone)]
-pub struct FoldedPart {
+pub(crate) struct FoldedPart {
     pub role: String,
     pub dtype: Dtype,
     pub shape: Vec<u64>,
@@ -1041,7 +1041,7 @@ fn ct_weights(d: &Declared) -> std::result::Result<serde_json::Map<String, Json>
 
 /// The code width and params a producer's quantization config states (compressed-tensors'
 /// `channel` leaves `group_size` to each module's row length), or why it cannot be read.
-pub type Configured = (i64, Vec<(&'static str, Value)>);
+pub(crate) type Configured = (i64, Vec<(&'static str, Value)>);
 
 fn producer_params(producer: Producer, d: &Declared) -> std::result::Result<Configured, String> {
     let int = |v: Option<&Json>, what: &str| {
@@ -1238,7 +1238,7 @@ fn joiner(c: &Carrier) -> char {
 
 /// Folds every quantized carrier in `set` into encoded tensors under the module's `.weight` (or,
 /// for `bare` rows, the module's own name).
-pub fn fold(set: &mut SourceSet) -> Result<()> {
+pub(crate) fn fold(set: &mut SourceSet) -> Result<()> {
     for g in 0..set.groups.len() {
         let group = &set.groups[g];
         let Some(d) = declared(set, group)? else {

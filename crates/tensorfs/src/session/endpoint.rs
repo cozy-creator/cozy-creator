@@ -18,7 +18,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    pub fn new(url: &str, token: Option<Arc<dyn TokenProvider>>) -> Result<Self> {
+    pub(crate) fn new(url: &str, token: Option<Arc<dyn TokenProvider>>) -> Result<Self> {
         let mut config = Config::from_env();
         config.token = token;
         Self::with_config(url, &config)

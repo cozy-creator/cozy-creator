@@ -10,14 +10,14 @@ use crate::format::decode::ct::words;
 use crate::format::decode::{bf16, elem, f16};
 use crate::format::{Dtype, Encoding, Error, Result, Value};
 
-pub const INT1: Encoder = row("ct.int1");
-pub const INT2: Encoder = row("ct.int2");
-pub const INT3: Encoder = row("ct.int3");
-pub const INT4: Encoder = row("ct.int4");
-pub const INT5: Encoder = row("ct.int5");
-pub const INT6: Encoder = row("ct.int6");
-pub const INT7: Encoder = row("ct.int7");
-pub const INT8: Encoder = row("ct.int8");
+pub(crate) const INT1: Encoder = row("ct.int1");
+pub(crate) const INT2: Encoder = row("ct.int2");
+pub(crate) const INT3: Encoder = row("ct.int3");
+pub(crate) const INT4: Encoder = row("ct.int4");
+pub(crate) const INT5: Encoder = row("ct.int5");
+pub(crate) const INT6: Encoder = row("ct.int6");
+pub(crate) const INT7: Encoder = row("ct.int7");
+pub(crate) const INT8: Encoder = row("ct.int8");
 
 const fn row(scheme: &'static str) -> Encoder {
     Encoder {
@@ -30,7 +30,7 @@ const fn row(scheme: &'static str) -> Encoder {
 impl Encoding {
     /// `strategy` `channel` takes `group_size` = the row length; `packing` `dense` is
     /// compressed-tensors' since 0.17, `word` before.
-    pub fn ct(
+    pub(crate) fn ct(
         bits: u32,
         group_size: u64,
         strategy: &str,

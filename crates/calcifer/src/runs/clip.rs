@@ -28,21 +28,21 @@ const UNUSED: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Where clips are kept, and the cozy home whose ffmpeg cuts them.
 #[derive(Debug)]
-pub struct Clips {
+pub(crate) struct Clips {
     pub dir: PathBuf,
     pub home: platform::paths::Home,
 }
 
 /// Seconds into the source; no end: the source's.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Range {
+pub(crate) struct Range {
     pub start: f64,
     pub end: Option<f64>,
 }
 
 /// A clip sent in its source's place.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Cut {
+pub(crate) struct Cut {
     pub field: String,
     pub source: PathBuf,
     pub range: Range,
@@ -72,7 +72,7 @@ impl fmt::Display for Cut {
 impl Clips {
     /// `range` of `source` as a clip: the one cut before for this version of the file, else cut
     /// now. What it did is said in `notes`.
-    pub async fn cut(&self, field: &str, source: &Path, range: Range, notes: &mut Vec<Note>) -> Result<Cut, Error> {
+    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, notes: &mut Vec<Note>) -> Result<Cut, Error> {
         fn say(notes: &mut Vec<Note>, message: String) {
             notes.push(Note { level: NoteLevel::Info, message });
         }

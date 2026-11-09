@@ -9,7 +9,7 @@ use crate::{api::domain::ModelChoice, catalog::Generation, gpu_service::Plan, jo
 use serde_json::{json, Value};
 use tensorfs::sha256;
 
-pub enum Memo {
+pub(crate) enum Memo {
     /// Not memoizable: not declared so, or nothing identifies its code or environment.
     Off,
     /// Memoizable, but the request does not meet its author's condition: why.
@@ -20,7 +20,7 @@ pub enum Memo {
 
 /// What keys a memoized function's code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Basis {
+pub(crate) enum Basis {
     /// Its own package's function: its module and the modules of its package it imports.
     Closure,
     /// Its package's whole source, which a closure could not be read for.
@@ -30,7 +30,7 @@ pub enum Basis {
 }
 
 impl Basis {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Basis::Closure => "closure",
             Basis::Package => "package",
@@ -40,7 +40,7 @@ impl Basis {
 }
 
 /// The memo of a call of `invocable` (its declaration) in App `application` of `generation`.
-pub fn of(
+pub(crate) fn of(
     generation: &Generation,
     application: &str,
     invocable: &Value,
@@ -95,7 +95,7 @@ fn checkpoints(value: &Value) -> Value {
 
 /// The models a call runs with: each slot's checkpoints and adapters once resolved (its raw
 /// sources too), else the choices it carries.
-pub fn models(plan: Option<&Plan>, choices: &[ModelChoice]) -> Value {
+pub(crate) fn models(plan: Option<&Plan>, choices: &[ModelChoice]) -> Value {
     match plan {
         Some(plan) => plan
             .slots

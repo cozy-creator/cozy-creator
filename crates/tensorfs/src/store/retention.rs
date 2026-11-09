@@ -25,7 +25,7 @@ use super::{fail, invalid, is_digest, platform, Result, Store};
 use crate::format::{Header, ObjectRef, Repo};
 
 /// How long a use keeps what it names.
-pub const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How often maintenance expires uses.
 const SWEEP: Duration = Duration::from_secs(10 * 60);
 

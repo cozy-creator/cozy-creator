@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use super::decode::PartBytes;
 use super::{Dtype, Encoding, Error, Result, Value};
 
-pub mod affine;
-pub mod elem;
+pub(crate) mod affine;
+pub(crate) mod elem;
 
 mod fp8;
 mod int8;
@@ -41,20 +41,20 @@ mod bnb;
 // comfy
 mod comfy;
 
-pub use comfy::{Kitchen, quantize_with};
-pub use fp8::FP8_ROWWISE_STRATEGY;
-pub use fp8_blockwise::quantize_fp8_blockwise;
-pub use int8::CONVROT_STRATEGY;
-pub use nvfp4::MIN_SSE_STRATEGY;
+pub(crate) use comfy::{Kitchen, quantize_with};
+pub(crate) use fp8::FP8_ROWWISE_STRATEGY;
+pub(crate) use fp8_blockwise::quantize_fp8_blockwise;
+pub(crate) use int8::CONVROT_STRATEGY;
+pub(crate) use nvfp4::MIN_SSE_STRATEGY;
 pub use nvfp4::{GlobalScale, NibbleOrder};
 #[cfg(feature = "quantize")]
-pub use svdq::{
+pub(crate) use svdq::{
     SVDQ_FIT_STRATEGY, SVDQ_NUMERICAL_IDENTITY, SvdqFitted, svdq_fit, svdq_fit_workspace,
 };
-pub use w4a8::W4A8_STRATEGY;
+pub(crate) use w4a8::W4A8_STRATEGY;
 
 /// Every scheme's encoders, one row each.
-pub static ENCODERS: &[&Encoder] = &[
+pub(crate) static ENCODERS: &[&Encoder] = &[
     &fp8::ROWWISE,
     &int8::CONVROT,
     &nvfp4::NVFP4,
@@ -103,9 +103,9 @@ pub static ENCODERS: &[&Encoder] = &[
 ];
 
 /// An encoder: the parts of `input.encoding`, in the scheme's part order.
-pub type Encode = fn(&Input) -> Result<Vec<OwnedPart>>;
+pub(crate) type Encode = fn(&Input) -> Result<Vec<OwnedPart>>;
 
-pub struct Encoder {
+pub(crate) struct Encoder {
     pub scheme: &'static str,
     /// From the logical values: `arrays["values"]`, `F32` in the logical shape.
     pub quantize: Option<Encode>,
@@ -124,7 +124,7 @@ pub struct Input<'a> {
 
 impl Input<'_> {
     /// `arrays["values"]`: the logical values, `F32` in the logical shape, all finite.
-    pub fn values(&self) -> Result<Vec<f32>> {
+    pub(crate) fn values(&self) -> Result<Vec<f32>> {
         let fail = |d: &str| Error::Encode(format!("{}: {d}", self.encoding.scheme));
         let v = (self.arrays.get("values")).ok_or_else(|| fail("no values"))?;
         if *v.dtype != Dtype::F32 || v.shape != self.shape {
@@ -183,7 +183,7 @@ impl QuantizationStats {
         );
     }
 
-    pub fn merge(&mut self, other: &Self) {
+    pub(crate) fn merge(&mut self, other: &Self) {
         self.amax = self.amax.max(other.amax);
         self.max_abs_error = self.max_abs_error.max(other.max_abs_error);
         Self::accumulate(&mut self.sse, &mut self.sse_correction, other.sse);
@@ -199,7 +199,7 @@ pub struct Quantized {
 
 /// A development build must not resume output from different numerical code under
 /// an unchanged package version. Production memoization still names its immutable wheel.
-pub fn implementation() -> String {
+pub(crate) fn implementation() -> String {
     let mut hash = crate::sha256::Sha256::new();
     for source in [
         include_str!("mod.rs"),
@@ -239,7 +239,7 @@ fn run(input: &Input, f: Option<Encode>, what: &str) -> Result<Vec<OwnedPart>> {
 }
 
 /// The parts of `input.encoding` from the logical values (closed form).
-pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
+pub(crate) fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
     if input.encoding.scheme == "int8.convrot" {
         return Err(Error::Encode(format!(
             "int8.convrot requires explicit quantizer strategy {CONVROT_STRATEGY}"
@@ -250,7 +250,7 @@ pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
 
 /// A producer with an explicit numerical revision, distinct from its stored encoding.
 /// Other legacy encoders keep their existing API and cannot be selected accidentally.
-pub fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
+pub(crate) fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
     Ok(quantize_measured(input, strategy)?.parts)
 }
 
@@ -316,7 +316,7 @@ fn reserve<T>(length: usize, label: &str) -> Result<Vec<T>> {
 }
 
 /// The parts of `input.encoding` from a calibrated producer's arrays.
-pub fn pack(input: &Input) -> Result<Vec<OwnedPart>> {
+pub(crate) fn pack(input: &Input) -> Result<Vec<OwnedPart>> {
     run(input, row(&input.encoding.scheme)?.pack, "pack")
 }
 

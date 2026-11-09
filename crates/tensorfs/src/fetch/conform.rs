@@ -19,7 +19,7 @@ use crate::sha256::hex_digest;
 use crate::store::Store;
 use crate::writer::{Data, Source};
 
-pub const FIXTURE: &str = "conformance/endpoint";
+pub(crate) const FIXTURE: &str = "conformance/endpoint";
 
 /// One case's outcome.
 #[derive(Debug, Clone)]

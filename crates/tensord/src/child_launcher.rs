@@ -9,12 +9,12 @@ struct Request {
     command: Command,
     reply: mpsc::SyncSender<io::Result<Child>>,
 }
-pub struct ChildLauncher {
+pub(crate) struct ChildLauncher {
     requests: Option<mpsc::Sender<Request>>,
     owner: Option<thread::JoinHandle<()>>,
 }
 impl ChildLauncher {
-    pub fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         let (requests, receiver) = mpsc::channel::<Request>();
         let owner = thread::Builder::new()
             .name("machine-child-launcher".into())
@@ -38,7 +38,7 @@ impl ChildLauncher {
             owner: Some(owner),
         })
     }
-    pub fn spawn(&self, command: Command) -> io::Result<Child> {
+    pub(crate) fn spawn(&self, command: Command) -> io::Result<Child> {
         let (reply, result) = mpsc::sync_channel(1);
         self.requests
             .as_ref()

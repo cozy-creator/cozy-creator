@@ -65,7 +65,7 @@ impl Pressure {
     }
 
     /// What it is armed on, for the record.
-    pub fn how(&self) -> &str {
+    pub(crate) fn how(&self) -> &str {
         &self.how
     }
 

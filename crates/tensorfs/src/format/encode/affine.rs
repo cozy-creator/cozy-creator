@@ -10,7 +10,7 @@ pub(super) fn nibble_pair(low: u8, high: u8) -> u8 {
 }
 
 /// The packed bytes of the `[R, C]` codes `q` (row-major); unused bits are zero.
-pub fn pack(p: &Packing, q: &[i32], rows: usize, cols: usize) -> Result<Vec<u8>> {
+pub(crate) fn pack(p: &Packing, q: &[i32], rows: usize, cols: usize) -> Result<Vec<u8>> {
     let fail = |d: String| Error::Encode(d);
     let (b, w) = (p.bits as usize, p.word as usize);
     let per = w / b;

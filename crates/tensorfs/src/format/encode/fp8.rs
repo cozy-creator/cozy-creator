@@ -2,9 +2,9 @@ use super::{Encoder, Input, QuantizationStats, Quantized, elem, encoding, part};
 use crate::format::{Dtype, Encoding, Error, Result};
 
 /// Runtime's F32 row scale, floor 1e-12, saturating E4M3 round-to-nearest-even.
-pub const FP8_ROWWISE_STRATEGY: &str = "fp8-rowwise-rne/1";
+pub(crate) const FP8_ROWWISE_STRATEGY: &str = "fp8-rowwise-rne/1";
 
-pub const ROWWISE: Encoder = Encoder {
+pub(crate) const ROWWISE: Encoder = Encoder {
     scheme: "fp8.rowwise",
     quantize: None,
     pack: None,
@@ -20,7 +20,7 @@ impl Encoding {
         encoding("fp8.rowwise", &[])
     }
     /// A scale per column.
-    pub fn fp8_columnwise() -> Encoding {
+    pub(crate) fn fp8_columnwise() -> Encoding {
         encoding("fp8.columnwise", &[])
     }
 }

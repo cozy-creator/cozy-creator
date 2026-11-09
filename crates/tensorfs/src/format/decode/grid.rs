@@ -17,14 +17,14 @@ pub enum ScaleLayout {
 }
 
 impl ScaleLayout {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             ScaleLayout::RowMajor => "row_major",
             ScaleLayout::Transposed => "transposed",
             ScaleLayout::Cublas128x4 => "cublas_128x4",
         }
     }
-    pub fn parse(name: &str) -> Option<ScaleLayout> {
+    pub(crate) fn parse(name: &str) -> Option<ScaleLayout> {
         [Self::RowMajor, Self::Transposed, Self::Cublas128x4]
             .into_iter()
             .find(|l| l.name() == name)
@@ -54,7 +54,7 @@ pub enum Grid {
 
 impl Grid {
     /// The stored shape of a part on this grid for the context's view.
-    pub fn shape(&self, c: &Ctx) -> Result<Shape> {
+    pub(crate) fn shape(&self, c: &Ctx) -> Result<Shape> {
         Ok(match *self {
             Grid::Tensor => Shape::Count(1),
             Grid::Row => Shape::Count(c.rows as u64),
@@ -80,7 +80,7 @@ impl Grid {
 
     /// The index of `s(i, j)` in the stored part, for a view of `rows × cols` whose matrices have
     /// `height` rows each (`cublas_128x4` and tiles restart with each matrix).
-    pub fn at(&self, rows: usize, cols: usize, height: usize, i: usize, j: usize) -> usize {
+    pub(crate) fn at(&self, rows: usize, cols: usize, height: usize, i: usize, j: usize) -> usize {
         let (m, r) = (i / height, i % height);
         match self {
             Grid::Tensor => 0,
@@ -110,7 +110,7 @@ impl Grid {
     }
 
     /// A `g_idx` fits: one block index per column, each below `W`.
-    pub fn check(&self, c: &Ctx) -> Result<()> {
+    pub(crate) fn check(&self, c: &Ctx) -> Result<()> {
         if let Grid::Blocks {
             size,
             index: Some(g),

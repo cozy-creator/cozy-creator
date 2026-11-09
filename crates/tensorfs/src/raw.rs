@@ -10,7 +10,7 @@ use crate::{Failure, Result};
 #[cfg(feature = "cuda")]
 pub use crate::io::decode::{DeviceDecode, Output as DecodeOutput, Part as DecodePart};
 #[cfg(feature = "cuda")]
-pub use crate::io::decode::device_scratch_bytes as decode_device_scratch_bytes;
+pub(crate) use crate::io::decode::device_scratch_bytes as decode_device_scratch_bytes;
 pub use crate::session::PartData;
 
 /// Check encoded-part descriptors through the shared format registry without reading data.
@@ -53,7 +53,7 @@ pub unsafe fn decode_into(
 /// input/output owner through both decoder and dependent consumer completion.
 #[cfg(feature = "cuda")]
 #[allow(unsafe_code)]
-pub unsafe fn prepare_device_decode(
+pub(crate) unsafe fn prepare_device_decode(
     encoding: &crate::format::Encoding,
     dtype: &crate::format::Dtype,
     shape: &[u64],
@@ -65,7 +65,7 @@ pub unsafe fn prepare_device_decode(
 }
 
 /// Download exactly these objects after checking that they belong to the checkpoint.
-pub async fn fetch_objects(
+pub(crate) async fn fetch_objects(
     checkpoint: &crate::Checkpoint,
     objects: &[crate::format::ObjectRef],
     want: &crate::Download<'_>,
@@ -119,7 +119,7 @@ pub(crate) fn runtime() -> Result<Arc<tokio::runtime::Runtime>> {
 /// tensors): the work and the result cover just those tensors and the ones sharing a chunk with
 /// them, never the rest of the checkpoint. A selection of whole boundaries gets the regions the
 /// full call gives its tensors.
-pub fn regions(header: &Header, max_bytes: u64, boundaries: &[String], only: &[String]) -> Vec<Vec<String>> {
+pub(crate) fn regions(header: &Header, max_bytes: u64, boundaries: &[String], only: &[String]) -> Vec<Vec<String>> {
     let split = |paths: &[String]| -> Vec<(String, String)> {
         let pairs = paths.iter().filter_map(|b| b.split_once('/'));
         pairs.map(|(c, p)| (c.to_owned(), p.to_owned())).collect()

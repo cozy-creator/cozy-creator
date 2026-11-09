@@ -11,9 +11,9 @@ pub mod decode;
 mod device;
 mod host;
 #[cfg(unix)]
-pub mod metrics;
+pub(crate) mod metrics;
 #[cfg(feature = "cuda")]
-pub mod pins;
+pub(crate) mod pins;
 mod plan;
 mod probe;
 pub mod source;
@@ -25,7 +25,7 @@ pub use device::DeviceBuffer;
 pub use plan::Target;
 pub use probe::{ceiling, disk, keep_ceilings_in, Ceiling};
 #[cfg(feature = "store")]
-pub use view::{Span, StoredPart};
+pub(crate) use view::{Span, StoredPart};
 
 /// `[ptr, ptr + len)` registered with this device's context: a copy from it is one DMA.
 ///
@@ -117,7 +117,7 @@ impl Dst {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -167,7 +167,7 @@ impl Dst {
 
 /// Told once all of a copy's device work is issued: its index and the engine streams it went on.
 /// Its bytes land in order there, so an event the caller records on each completes after them.
-pub type Issued<'a> = &'a (dyn Fn(usize, &[usize]) + Sync);
+pub(crate) type Issued<'a> = &'a (dyn Fn(usize, &[usize]) + Sync);
 
 /// `copies` in order, each one whose source and destination both continue the previous copy's
 /// merged into it: a fill reads one run per contiguous range, not one copy per tensor (v7's
@@ -235,7 +235,7 @@ pub struct ReadControl {
 
 impl ReadControl {
     pub fn cancel(&self) { self.cancel.store(true, std::sync::atomic::Ordering::Release); }
-    pub fn canceled(&self) -> bool { self.cancel.load(std::sync::atomic::Ordering::Acquire) }
+    pub(crate) fn canceled(&self) -> bool { self.cancel.load(std::sync::atomic::Ordering::Acquire) }
     pub(crate) fn issue(&self, bytes: usize) {
         self.issued.fetch_add(bytes as u64, std::sync::atomic::Ordering::Release);
     }
@@ -290,7 +290,7 @@ pub struct ReadStats {
 }
 
 impl ReadStats {
-    pub fn gbps(&self) -> f64 {
+    pub(crate) fn gbps(&self) -> f64 {
         self.bytes as f64 / self.ns.max(1) as f64
     }
 }
@@ -306,7 +306,7 @@ pub struct Error {
 
 #[cfg(feature = "cuda")]
 impl Error {
-    pub fn cuda(&self) -> Option<&cuda::Error> {
+    pub(crate) fn cuda(&self) -> Option<&cuda::Error> {
         self.source.get_ref()?.downcast_ref()
     }
 }

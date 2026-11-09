@@ -7,6 +7,7 @@
 //! A crate of its own so the tensorfs wheel builds it alone: as `api::executor` the wheel took 20 more crates and
 //! built 31% longer, for a library 0.7% larger (cl-829).
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1089,7 +1090,7 @@ fn max_output_bytes() -> u64 {
 pub struct Json(pub Value);
 
 #[cfg(feature = "python")]
-pub use python::value as to_python;
+use python::value as to_python;
 
 #[cfg(feature = "python")]
 mod python {
@@ -1104,7 +1105,7 @@ mod python {
     use super::*;
 
     /// A JSON value as plain Python dicts, lists and scalars.
-    pub fn value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+    pub(crate) fn value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
         Ok(match value {
             Value::Null => py.None().into_bound(py),
             Value::Bool(b) => b.into_bound_py_any(py)?,

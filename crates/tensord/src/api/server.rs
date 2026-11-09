@@ -11,7 +11,7 @@ use std::{
 };
 use tokio_rustls::{rustls, TlsAcceptor};
 
-pub struct MachineIdentity {
+pub(crate) struct MachineIdentity {
     pub authority: Authority,
     pub cert_pem: String,
     pub key_pem: String,
@@ -48,7 +48,7 @@ pub struct MachineIdentity {
 impl MachineIdentity {
     /// The pod or computer machine: its lifetime files under the machine root, keys from its
     /// grant (a rental's Hub answer replaces them) and this boot's readiness receipt.
-    pub fn machine(
+    pub(crate) fn machine(
         worker_id: String,
         keys: super::auth::Keys,
         lifetime: crate::machine::identity::Lifetime,
@@ -86,7 +86,7 @@ impl MachineIdentity {
     }
 }
 
-pub async fn serve<B: MachineBackend>(
+pub(crate) async fn serve<B: MachineBackend>(
     listener: tokio::net::TcpListener,
     mut identity: MachineIdentity,
     backend: Arc<B>,
@@ -141,18 +141,18 @@ pub async fn serve<B: MachineBackend>(
 const LIVENESS: Duration = Duration::from_secs(20);
 
 /// A starting machine's step, which `booting` answers until the API serves.
-pub struct Boot {
+pub(crate) struct Boot {
     step: std::sync::Mutex<&'static str>,
     progress: std::sync::atomic::AtomicU64,
 }
 
 impl Boot {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self { step: std::sync::Mutex::new("starting"), progress: Default::default() })
     }
 
     /// The machine moved on to `step`: progress, whatever the step.
-    pub fn at(&self, step: &'static str) {
+    pub(crate) fn at(&self, step: &'static str) {
         *self.step.lock().unwrap() = step;
         self.progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -169,7 +169,7 @@ impl Boot {
 /// everything else `machine_booting`, until the caller aborts it and `serve` takes the listener:
 /// the machine answers before it does anything slow, so a watcher hears a slow start, never
 /// silence.
-pub fn booting(
+pub(crate) fn booting(
     listener: std::net::TcpListener,
     identity: &MachineIdentity,
     boot: Arc<Boot>,

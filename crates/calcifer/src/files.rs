@@ -14,10 +14,10 @@ use tokio::io::AsyncReadExt as _;
 
 /// `Cache-Control` for what's named by its own hash: a browser never needs to ask again. Everything
 /// else is the guard's `no-store`.
-pub const IMMUTABLE: &str = "private, max-age=31536000, immutable";
+pub(crate) const IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
 /// `file` (`len` bytes of `media_type`, its revision `etag`, quoted) as `headers` ask for it.
-pub fn send(
+pub(crate) fn send(
     mut file: std::fs::File,
     len: u64,
     media_type: &str,

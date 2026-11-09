@@ -22,13 +22,13 @@ use std::{
 use api::error::Error;
 
 /// The idle window, `RentalIdleTimeoutSeconds` in the CLI.
-pub const IDLE_GRACE_MS: i64 = 900_000;
+pub(crate) const IDLE_GRACE_MS: i64 = 900_000;
 /// This computer's machine's executors exit after this part of its idle window (5 minutes).
 const EXECUTORS_PART: i64 = 3;
 
 /// The journal's jobs: one queued or running, and when the last one stopped.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Jobs {
+pub(crate) struct Jobs {
     pub working: bool,
     pub ended_ms: i64,
 }
@@ -52,7 +52,7 @@ struct State {
     activating: bool,
 }
 
-pub struct Lifecycle {
+pub(crate) struct Lifecycle {
     rental: bool,
     /// The idle window: `IDLE_GRACE_MS` unless the grant names another.
     pub(super) grace: i64,
@@ -74,10 +74,10 @@ pub struct Lifecycle {
 }
 
 /// Holds the release while a call that may queue a job is in flight.
-pub struct Admission(Arc<Lifecycle>);
+pub(crate) struct Admission(Arc<Lifecycle>);
 
 /// Holds the release while a client follows a run's events or a log.
-pub struct Follow(Arc<Lifecycle>);
+pub(crate) struct Follow(Arc<Lifecycle>);
 impl Drop for Follow {
     fn drop(&mut self) {
         self.0.following.fetch_sub(1, Ordering::AcqRel);
@@ -86,7 +86,7 @@ impl Drop for Follow {
 }
 
 /// Holds the idle clock while an update runs; its end starts the clock again.
-pub struct Updating(Arc<Lifecycle>);
+pub(crate) struct Updating(Arc<Lifecycle>);
 impl Drop for Updating {
     fn drop(&mut self) {
         self.0.updating.fetch_sub(1, Ordering::AcqRel);
@@ -97,11 +97,11 @@ impl Drop for Updating {
 
 /// Holds new runs (accepted, queued) while an update waits for the runs in flight, then closes
 /// admission while it replaces the service. Dropping it (a failed activation) lets them start.
-pub struct Activation(Arc<Lifecycle>);
+pub(crate) struct Activation(Arc<Lifecycle>);
 impl Activation {
     /// Closes admission under the lock `admit` takes: a call is either admitted (and counted)
     /// before this or refused after it, never accepted while the service exits.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         self.0.state.lock().unwrap().activating = true;
         self.0.changed();
     }
@@ -121,7 +121,7 @@ impl Drop for Admission {
     }
 }
 
-pub fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -132,7 +132,7 @@ impl Lifecycle {
     /// `fresh` starts this root's first idle clock; a rental's restart keeps the persisted
     /// ledger. Each start of this computer's machine is a use: its clock starts again, and an
     /// exit it took is over.
-    pub fn open(path: PathBuf, rental: bool, fresh: bool, grace: i64) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(path: PathBuf, rental: bool, fresh: bool, grace: i64) -> io::Result<Arc<Self>> {
         let fresh = fresh || !rental;
         let mut ledger: Ledger = match std::fs::read(&path) {
             // Unreadable, the idle clock starts over: at worst a rental waits one more grace.
@@ -178,7 +178,7 @@ impl Lifecycle {
     /// An output read, an object upload or files through the door to Calcifer moved bytes: the
     /// rental is in use, and its idle clock starts again now. A transfer that stalls moves nothing,
     /// so it never holds the rental past one window.
-    pub fn transferred(&self) {
+    pub(crate) fn transferred(&self) {
         self.transferred.fetch_max(now_ms(), Ordering::AcqRel);
     }
 
@@ -213,12 +213,12 @@ impl Lifecycle {
     }
 
     /// A client follows a run's events or a log: the machine is in use until it lets go.
-    pub fn follow(self: &Arc<Self>) -> Follow {
+    pub(crate) fn follow(self: &Arc<Self>) -> Follow {
         self.following.fetch_add(1, Ordering::AcqRel);
         Follow(self.clone())
     }
 
-    pub fn admit(self: &Arc<Self>) -> Result<Admission, Error> {
+    pub(crate) fn admit(self: &Arc<Self>) -> Result<Admission, Error> {
         let state = self.state.lock().unwrap();
         if state.activating {
             return Err(Error::unavailable(
@@ -240,7 +240,7 @@ impl Lifecycle {
 
     /// An update is a job: it holds the idle clock from its request to its end. Refused as `admit`
     /// refuses; the admission it takes holds the clock until the update's own hold does.
-    pub fn update(self: &Arc<Self>) -> Result<Updating, Error> {
+    pub(crate) fn update(self: &Arc<Self>) -> Result<Updating, Error> {
         let admission = self.admit()?;
         self.updating.fetch_add(1, Ordering::AcqRel);
         drop(admission);
@@ -249,7 +249,7 @@ impl Lifecycle {
 
     /// Work that is not in the journal ended (an update, or its activation): the idle clock starts
     /// again now, durably, so the service an update restarts counts its window from here.
-    pub fn used(&self) {
+    pub(crate) fn used(&self) {
         let mut state = self.state.lock().unwrap();
         if state.ledger.released {
             return;
@@ -264,7 +264,7 @@ impl Lifecycle {
 
     /// An update begins to activate: new runs are held (accepted, queued) until it restarts the
     /// service or fails (`Activation`).
-    pub fn hold(self: &Arc<Self>) -> Result<Activation, Error> {
+    pub(crate) fn hold(self: &Arc<Self>) -> Result<Activation, Error> {
         let mut state = self.state.lock().unwrap();
         if state.holding || state.ledger.released {
             return Err(Error::unavailable(
@@ -279,10 +279,10 @@ impl Lifecycle {
     }
 
     /// An update holds new runs: none starts until it restarts the service or fails.
-    pub fn holding(&self) -> bool {
+    pub(crate) fn holding(&self) -> bool {
         self.state.lock().unwrap().holding
     }
-    pub fn on_change(&self, changed: impl Fn() + Send + Sync + 'static) {
+    pub(crate) fn on_change(&self, changed: impl Fn() + Send + Sync + 'static) {
         let _ = self.changed.set(Box::new(changed));
     }
     fn changed(&self) {
@@ -292,24 +292,24 @@ impl Lifecycle {
     }
 
     /// The admission epoch, read before the journal is.
-    pub fn epoch(&self) -> u64 {
+    pub(crate) fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::Acquire)
     }
 
     /// The journal's jobs as read after admission epoch `epoch`.
-    pub fn observe(&self, jobs: Jobs, epoch: u64) {
+    pub(crate) fn observe(&self, jobs: Jobs, epoch: u64) {
         let mut state = self.state.lock().unwrap();
         state.jobs = jobs;
         state.sampled = epoch;
     }
 
     /// The last job end this lifecycle has read.
-    pub fn ended_ms(&self) -> i64 {
+    pub(crate) fn ended_ms(&self) -> i64 {
         self.state.lock().unwrap().jobs.ended_ms
     }
 
     /// `POST /v1/keepalive`: restarts the idle clock once; answers the new deadline.
-    pub fn renew(&self) -> Result<i64, Error> {
+    pub(crate) fn renew(&self) -> Result<i64, Error> {
         if !self.rental {
             return Ok(0);
         }
@@ -331,20 +331,20 @@ impl Lifecycle {
     }
 
     /// Calls that may start work, in flight now.
-    pub fn admitted(&self) -> usize {
+    pub(crate) fn admitted(&self) -> usize {
         self.admissions.load(Ordering::Acquire)
     }
 
     /// When this machine releases itself or exits if no job comes first. 0: no deadline,
     /// because it is working, or because another computer's controller keeps it up.
-    pub fn deadline_ms(&self) -> i64 {
+    pub(crate) fn deadline_ms(&self) -> i64 {
         match self.kept.load(Ordering::Acquire) {
             true => 0,
             false => self.deadline(&self.state.lock().unwrap()),
         }
     }
 
-    pub fn released(&self) -> bool {
+    pub(crate) fn released(&self) -> bool {
         self.state.lock().unwrap().ledger.released
     }
 
@@ -356,7 +356,7 @@ impl Lifecycle {
     /// `POST /v1/release`: a rental's release now, whatever its idle clock says, which
     /// `release_when_idle` carries to the Hub at its next reading. Never while it works, and never on
     /// this computer's machine, which has no Hub to tell.
-    pub fn release_now(&self) -> Result<(), Error> {
+    pub(crate) fn release_now(&self) -> Result<(), Error> {
         if !self.rental {
             return Err(Error::conflict("machine_not_rented", "this machine is no rental"));
         }
@@ -398,7 +398,7 @@ impl Lifecycle {
 /// Hub cannot answer the keys stay as they were, and it is asked again when it said, else after
 /// 1 s, doubling to a minute; so while it denies this attempt. A rental the Hub says has ended is
 /// asked no more: nothing it says will change that, and it holds no key.
-pub async fn keep_authority(hub: Arc<Hub>, keys: Keys) {
+pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys) {
     const FIRST: Duration = Duration::from_secs(1);
     const NOT_READY: Duration = Duration::from_secs(5);
     const MOST: Duration = Duration::from_secs(60);
@@ -440,7 +440,7 @@ pub async fn keep_authority(hub: Arc<Hub>, keys: Keys) {
 /// none. Returns when the Hub accepted the release, or when the rental ended itself: idle past
 /// its deadline with no answer from the Hub through that whole idle window, the Hub cannot end
 /// it, so it ends itself at its provider (`provider`, else by stopping) and billing stops.
-pub async fn release_when_idle(
+pub(crate) async fn release_when_idle(
     lifecycle: Arc<Lifecycle>,
     hub: Arc<Hub>,
     provider: Option<super::provider::ProviderSelf>,
@@ -501,7 +501,7 @@ pub async fn release_when_idle(
 /// computer's controller is authorized to use it, or a warm set member is held here) it stays up,
 /// and at the whole window its import-only parents outside the warm sets go instead
 /// (`release_parents`). It sleeps until activity or the next deadline.
-pub fn exit_when_idle(
+pub(crate) fn exit_when_idle(
     lifecycle: Arc<Lifecycle>,
     engine: Arc<crate::execution::Engine>,
     release: impl Fn(),

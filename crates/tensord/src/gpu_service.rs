@@ -48,7 +48,7 @@ fn views(binding: &Binding) -> BTreeMap<String, executor_api::View> {
 
 /// A slot's model as the run's preparation resolved it (`published`).
 #[derive(Clone, Debug)]
-pub struct ModelGrant {
+pub(crate) struct ModelGrant {
     pub package: String,
     pub slot: String,
     pub repository: String,
@@ -62,7 +62,7 @@ pub struct ModelGrant {
 
 /// A slot's adapter view as the run's record names it: the base model and each LoRA on it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Adapted {
+pub(crate) struct Adapted {
     /// The base model the view adapts (org/name).
     pub repository: String,
     pub adapters: Vec<Applied>,
@@ -70,7 +70,7 @@ pub struct Adapted {
 
 /// One LoRA as the run named it, its strength, and the base components it adapts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Applied {
+pub(crate) struct Applied {
     pub model: String,
     pub strength: f64,
     pub components: Vec<String>,
@@ -109,7 +109,7 @@ pub(crate) fn prepared_uses(
 
 /// How the machine shares its host and GPUs.
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct HostOptions {
+pub(crate) struct HostOptions {
     /// `shared` (the default): a guest that gives memory back whenever anything on the host
     /// stalls on it; `dedicated` (a rented pod's image or grant): only when this cgroup does.
     #[serde(default)]
@@ -118,7 +118,7 @@ pub struct HostOptions {
 
 /// Root-sealed configuration, never peer-controlled paths or environment logic switches.
 #[derive(Clone, Debug, Deserialize)]
-pub struct GpuConfig {
+pub(crate) struct GpuConfig {
     /// The GPU envelope, `"0"` or `"0,1,..."`: a degree-K plan occupies K contiguous devices.
     pub devices: String,
     /// The receipt's inventory (NVML): each GPU's UUID, model, compute capability and memory,
@@ -152,13 +152,13 @@ pub struct GpuConfig {
     pub image_kernels: Option<ImageKernels>,
 }
 #[derive(Clone, Debug, Deserialize)]
-pub struct ImageKernels {
+pub(crate) struct ImageKernels {
     pub python: PathBuf,
     pub runtime_wheel: PathBuf,
 }
 impl GpuConfig {
     /// The config, refused when its GPU scope repeats a device.
-    pub fn checked(self) -> io::Result<Self> {
+    pub(crate) fn checked(self) -> io::Result<Self> {
         let envelope = self.envelope();
         let unique: std::collections::BTreeSet<_> = envelope.iter().collect();
         if unique.len() != envelope.len() {
@@ -170,7 +170,7 @@ impl GpuConfig {
         Ok(self)
     }
     /// The configured devices in order (`CUDA_VISIBLE_DEVICES` entries); none on a CPU machine.
-    pub fn envelope(&self) -> Vec<String> {
+    pub(crate) fn envelope(&self) -> Vec<String> {
         self.devices
             .split(',')
             .map(|d| d.trim().to_string())
@@ -181,7 +181,7 @@ impl GpuConfig {
 
 /// One declared model slot of a plan and its bound checkpoint.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PlanSlot {
+pub(crate) struct PlanSlot {
     pub binding: Binding,
     /// The Hub lane its checkpoint was resolved in (`run show`); empty for one held here.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -210,7 +210,7 @@ pub struct PlanSlot {
 /// One `Weights[M]` argument: the checkpoint a call reads raw (never constructed), and the
 /// Hub checkpoint it was resolved as (none for one this machine holds).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct PlanSource {
+pub(crate) struct PlanSource {
     pub parameter: String,
     pub manifest: String,
     pub length: u64,
@@ -230,7 +230,7 @@ pub struct PlanSource {
 /// lane (several deviceless), a request at a time each, which hold each construction they served.
 /// What an actor may run is its own journal rows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Plan {
+pub(crate) struct Plan {
     /// The preparation: the construction, entrypoint and sources.
     pub id: String,
     /// What it builds, not which entrypoint names it, so entrypoints building the same models share
@@ -254,7 +254,7 @@ pub struct Plan {
 }
 impl Plan {
     /// A call that constructs nothing: deviceless, or one GPU (`degree`).
-    pub fn weightless(generation: &str, application: &str, entrypoint: &str, degree: u32) -> Self {
+    pub(crate) fn weightless(generation: &str, application: &str, entrypoint: &str, degree: u32) -> Self {
         let digest = |semantic: serde_json::Value| tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&semantic));
         let construction = format!("plan-{}", digest(serde_json::json!({"generation": generation,
             "application": application, "slots": [], "degree": degree})));
@@ -271,7 +271,7 @@ impl Plan {
         }
     }
     /// The plan a journaled preparation binds.
-    pub fn of(preparation: &Preparation) -> io::Result<Self> {
+    pub(crate) fn of(preparation: &Preparation) -> io::Result<Self> {
         let mut plan: Plan =
             serde_json::from_slice(&preparation.document).map_err(io::Error::other)?;
         if plan.id != preparation.id || plan.installation != preparation.installation {
@@ -295,14 +295,14 @@ impl Plan {
     /// The request's weight precision (`PrepareRequest::bits`): its main model's lane width, the
     /// first slot built up front (the one `--lane` names). At 16 the Runtime attends exactly. Read
     /// from the slot's precision family, which a plan journaled by an earlier TensorD carries too.
-    pub fn bits(&self) -> u32 {
+    pub(crate) fn bits(&self) -> u32 {
         self.slots.iter().find(|slot| !slot.on_demand).map_or(0, |slot| crate::precision::bits(&slot.precision))
     }
-    pub fn selections(&self) -> Vec<SelectedManifest> {
+    pub(crate) fn selections(&self) -> Vec<SelectedManifest> {
         merged(&self.slots)
     }
     /// Each model it runs as the machine resolved it, constructed or raw (`run show`).
-    pub fn models(&self) -> Vec<serde_json::Value> {
+    pub(crate) fn models(&self) -> Vec<serde_json::Value> {
         let row = |slot: &str, model: (&str, &str), lane: (&str, &str), manifest: &str| {
             let mut row = serde_json::json!({"slot": slot, "repository": model.0, "release": model.1, "lane": lane.0, "manifest": manifest});
             if !lane.1.is_empty() {
@@ -324,15 +324,15 @@ impl Plan {
     }
     /// What a call reads before its function runs: every slot's components but an on-demand
     /// one's.
-    pub fn upfront(&self) -> Vec<(String, Vec<String>)> {
+    pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
     /// What it reads only once a stage first uses an on-demand slot: fetched behind `upfront`.
-    pub fn on_demand(&self) -> Vec<(String, Vec<String>)> {
+    pub(crate) fn on_demand(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds.
-    pub fn read(&self) -> Vec<(String, Vec<String>)> {
+    pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
         merged(&self.slots).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
 }
@@ -358,7 +358,7 @@ fn selected_bytes(store: &Store, manifest: &str, components: &[String]) -> io::R
 
 /// A checkpoint a plan reads, and the components of it its slots read.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SelectedManifest {
+pub(crate) struct SelectedManifest {
     pub manifest: String,
     pub components: Vec<String>,
 }
@@ -385,14 +385,14 @@ fn merged<'a>(slots: impl IntoIterator<Item = &'a PlanSlot>) -> Vec<SelectedMani
 }
 
 /// A model row of an interface entry that is constructed: not a `Weights[M]` argument.
-pub fn constructed(model: &serde_json::Value) -> bool {
+pub(crate) fn constructed(model: &serde_json::Value) -> bool {
     model.get("weights").and_then(serde_json::Value::as_bool) != Some(true)
 }
 
 /// The widest group every constructed slot declares (`sequence_parallel.degrees`, one always)
 /// within `available` GPUs and, when one is asked for, `wanted`; Runtime `machine_lanes.widths`.
 /// A count asked for is a cap, never a refusal: a caller's `--gpus 2` gives its one-GPU children one.
-pub fn group_degree(models: &[serde_json::Value], wanted: u32, available: usize) -> u32 {
+pub(crate) fn group_degree(models: &[serde_json::Value], wanted: u32, available: usize) -> u32 {
     let cap = match wanted {
         0 => available,
         wanted => available.min(wanted as usize),
@@ -414,7 +414,7 @@ pub fn group_degree(models: &[serde_json::Value], wanted: u32, available: usize)
 /// How far a function is prepared on this machine: a warm set member's `level`, and what
 /// Status says a member or an installation `holds`. Each level includes the ones before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Level {
+pub(crate) enum Level {
     Installed,
     Downloaded,
     /// A process with its imports done: no device, no VRAM.
@@ -425,14 +425,14 @@ pub enum Level {
     Gpu,
 }
 impl Level {
-    pub const ALL: [Level; 5] = [
+    pub(crate) const ALL: [Level; 5] = [
         Level::Installed,
         Level::Downloaded,
         Level::Imported,
         Level::Host,
         Level::Gpu,
     ];
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Level::Installed => "installed",
             Level::Downloaded => "downloaded",
@@ -441,7 +441,7 @@ impl Level {
             Level::Gpu => "gpu",
         }
     }
-    pub fn named(name: &str) -> Option<Self> {
+    pub(crate) fn named(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|level| level.name() == name)
     }
 }
@@ -449,7 +449,7 @@ impl Level {
 /// A warm set member as the journal keeps it: enough to bring it back after a restart, and
 /// to show it in Status as its caller sent it.
 #[derive(Serialize, Deserialize)]
-pub struct KeptMember {
+pub(crate) struct KeptMember {
     pub installation: String,
     pub level: String,
     /// Its function's bound preparation; empty when it binds no model on a GPU.
@@ -462,12 +462,12 @@ pub struct KeptMember {
 const UNBOUND: &str = "its function binds no model on a GPU, or the store let its weights go";
 /// What a member holds on a machine with no GPU: its code (a function that binds a model is
 /// refused there).
-pub fn without_gpus(asked: Level) -> (Level, &'static str) {
+pub(crate) fn without_gpus(asked: Level) -> (Level, &'static str) {
     (Level::Installed, if asked > Level::Installed { UNBOUND } else { "" })
 }
 
 /// One member of a caller's warm set, as the pool keeps it.
-pub struct Member {
+pub(crate) struct Member {
     pub held: HeldGeneration,
     /// The models its function binds. None: it binds none on a GPU, or the store let them go.
     pub plan: Option<Plan>,
@@ -485,7 +485,7 @@ pub struct Member {
     fetch: Option<Arc<crate::access::Fetch>>,
 }
 impl Member {
-    pub fn new(held: HeldGeneration, plan: Option<Plan>, level: Level, fetch: Option<Arc<crate::access::Fetch>>, payload: Option<api::machine::Json>) -> Arc<Self> {
+    pub(crate) fn new(held: HeldGeneration, plan: Option<Plan>, level: Level, fetch: Option<Arc<crate::access::Fetch>>, payload: Option<api::machine::Json>) -> Arc<Self> {
         Arc::new(Self {
             held,
             plan,
@@ -798,7 +798,7 @@ impl Drop for ServingHold {
     }
 }
 
-pub struct Pool {
+pub(crate) struct Pool {
     root: PathBuf,
     serving: Arc<Serving>,
     /// Scopes JIT caches to this machine run; earlier runs' scopes are removed at start.
@@ -962,7 +962,7 @@ fn gpu_request_queued(engine: &Engine, root: Option<u64>) -> bool {
 }
 
 impl Pool {
-    pub fn new(root: &Path, config: GpuConfig, store: Arc<Store>) -> io::Result<Arc<Self>> {
+    pub(crate) fn new(root: &Path, config: GpuConfig, store: Arc<Store>) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         let notes = MemoryLog::at(store.root().join("logs"));
         // Weight sources and output transport can retain many descriptors; executors inherit
@@ -1050,7 +1050,7 @@ impl Pool {
         }))
     }
     /// Current driver-attributed process usage. TensorD owns no GPU allocations.
-    pub fn memory(&self) -> BTreeMap<String, api::machine::GpuMemory> {
+    pub(crate) fn memory(&self) -> BTreeMap<String, api::machine::GpuMemory> {
         self.devices.iter().filter_map(|device| {
             let gpu = device.memory.as_ref()?;
             Some((gpu.uuid.clone(), gpu.status(&self.tenants)?))
@@ -1166,15 +1166,15 @@ impl Pool {
         self.ended(&plan, start);
         true
     }
-    pub fn memo(&self) -> &crate::memo::Memo {
+    pub(crate) fn memo(&self) -> &crate::memo::Memo {
         &self.memo
     }
 
-    pub fn config(&self) -> &GpuConfig {
+    pub(crate) fn config(&self) -> &GpuConfig {
         &self.config
     }
     /// The manifests this pool's live executors read (`Serving`).
-    pub fn serving(&self) -> Vec<String> {
+    pub(crate) fn serving(&self) -> Vec<String> {
         let held = self.serving.held.lock().unwrap();
         let mut manifests: Vec<String> = held.values().flatten().cloned().collect();
         manifests.sort();
@@ -1182,29 +1182,29 @@ impl Pool {
         manifests
     }
     /// The kernel store; live executors and kernel boots hold their namespace's lock.
-    pub fn kernel_caches(&self) -> crate::reclaim::KernelCaches {
+    pub(crate) fn kernel_caches(&self) -> crate::reclaim::KernelCaches {
         crate::reclaim::KernelCaches {
             root: self.root.join("kernels"),
         }
     }
     /// GPUs this machine may group.
-    pub fn width(&self) -> usize {
+    pub(crate) fn width(&self) -> usize {
         self.devices.len()
     }
     /// The first `degree` GPUs as the lane rule reads them; one the inventory does not name
     /// runs no native format.
-    pub fn gpus(&self, degree: u32) -> crate::precision::Gpus {
+    pub(crate) fn gpus(&self, degree: u32) -> crate::precision::Gpus {
         let ccs: Vec<&str> = self.devices.iter().take(degree as usize)
             .map(|d| self.inventory(&d.entry).map_or("", |g| g.compute_cap.as_str())).collect();
         crate::precision::Gpus::of(&ccs)
     }
     /// Why a GPU of this computer is not used: each run on it is told.
-    pub fn problems(&self) -> Vec<String> {
+    pub(crate) fn problems(&self) -> Vec<String> {
         self.config.problems.clone()
     }
     /// The first `degree` GPUs' current capability and free bytes, counting what idle peers hold:
     /// they give it back when asked, so it is room a new model can plan on.
-    pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
+    pub(crate) fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
@@ -1278,14 +1278,14 @@ impl Pool {
         }
     }
     /// Wake the engine on memory events and after every GPU allocation change that frees.
-    pub fn wake_on_freed(&self, engine: &Arc<Engine>) {
+    pub(crate) fn wake_on_freed(&self, engine: &Arc<Engine>) {
         let _ = self.engine.set(Arc::downgrade(engine));
         let engine = Arc::downgrade(engine);
         self.allocations.wake_with(move || if let Some(engine) = engine.upgrade() { engine.notify_activity() });
     }
 
     /// A driver fault on one of its GPUs fails every run with an executor there at once.
-    pub fn watch_faults(self: &Arc<Self>) {
+    pub(crate) fn watch_faults(self: &Arc<Self>) {
         let pool = Arc::downgrade(self);
         platform::gpu::watch_faults(Arc::new(move |fault| {
             if let Some(pool) = pool.upgrade() {
@@ -1319,7 +1319,7 @@ impl Pool {
 
     /// Replace `actor`'s warm set; `keep` then brings its members up. A member dropped from
     /// it becomes an ordinary tenant: it stays as it is until its memory is needed.
-    pub fn set_members(&self, actor: &str, members: Vec<Arc<Member>>) {
+    pub(crate) fn set_members(&self, actor: &str, members: Vec<Arc<Member>>) {
         let mut sets = self.members.lock().unwrap();
         match members.is_empty() {
             true => drop(sets.remove(actor)),
@@ -1327,7 +1327,7 @@ impl Pool {
         }
     }
     /// `actor`'s warm set without the members of removed `generations`.
-    pub fn drop_members(&self, actor: &str, generations: &std::collections::BTreeSet<String>) {
+    pub(crate) fn drop_members(&self, actor: &str, generations: &std::collections::BTreeSet<String>) {
         let mut kept = self.warm_set(actor);
         let before = kept.len();
         kept.retain(|member| !generations.contains(&member.held.record.identity));
@@ -1339,7 +1339,7 @@ impl Pool {
     /// call slots are free, then its import-only parent once childless, then the GPU weights no
     /// installed generation read. One in a call ends with the call's tenancy, as any idle
     /// executor does.
-    pub fn end_generation(&self, identity: &str) {
+    pub(crate) fn end_generation(&self, identity: &str) {
         self.end_idle_of(|generation| generation == identity);
     }
     /// This computer's machine idle a while: every idle executor outside the warm sets ends, so
@@ -1347,7 +1347,7 @@ impl Pool {
     /// under memory pressure as ever). Import-only parents (host memory, no GPU) stay the whole
     /// idle window (`release_parents`, or the exit), so a package used in the last quarter hour
     /// forks without importing.
-    pub fn release_idle(&self) {
+    pub(crate) fn release_idle(&self) {
         let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter(|member| member.level >= Level::Host)
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
@@ -1355,13 +1355,13 @@ impl Pool {
     }
     /// A warm set keeps something in memory here (a member at `imported` or above that binds a
     /// model), so this computer's machine stays up for it instead of exiting idle.
-    pub fn keeps_warm(&self) -> bool {
+    pub(crate) fn keeps_warm(&self) -> bool {
         self.members.lock().unwrap().values().flatten().any(|member| member.level >= Level::Imported && member.plan.is_some())
     }
     /// This computer's machine idle its whole window but kept up (its controllers, a warm set): a
     /// shared machine's childless parents outside the warm sets end as they would with the process
     /// (a dedicated one keeps them).
-    pub fn release_parents(&self) {
+    pub(crate) fn release_parents(&self) {
         if self.config.host.mode == HostMode::Shared {
             let members: std::collections::BTreeSet<App> = self.members.lock().unwrap().values().flatten()
                 .filter(|member| member.level >= Level::Imported && member.plan.is_some())
@@ -1431,11 +1431,11 @@ impl Pool {
     }
     /// One pass over `actor`'s warm set: each member is brought as far toward its level as
     /// it can. It keeps the reason when it stops short.
-    pub fn keep(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str) {
+    pub(crate) fn keep(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str) {
         self.keep_with(engine, actor, None);
     }
 
-    pub fn keep_preparing(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str, preparation: &Stoppable) {
+    pub(crate) fn keep_preparing(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str, preparation: &Stoppable) {
         self.keep_with(engine, actor, Some(preparation));
     }
 
@@ -1468,7 +1468,7 @@ impl Pool {
     }
     /// Every warm set's pass, off the caller's thread: after a call ends, when room may
     /// have come back for a member a request pushed down.
-    pub fn keep_all(self: &Arc<Self>, engine: &Arc<Engine>) {
+    pub(crate) fn keep_all(self: &Arc<Self>, engine: &Arc<Engine>) {
         let actors: Vec<String> = self.members.lock().unwrap().keys().cloned().collect();
         if actors.is_empty() {
             return;
@@ -1611,7 +1611,7 @@ impl Pool {
         Ok("mapped")
     }
     /// What each of `actor`'s members holds now, and why that is lower than it asked.
-    pub fn members(&self, actor: &str) -> Vec<(Level, &'static str)> {
+    pub(crate) fn members(&self, actor: &str) -> Vec<(Level, &'static str)> {
         let holds = |member: &Arc<Member>| {
             let (holds, held_back) = (self.holding(member), *member.held_back.lock().unwrap());
             match (holds < member.level, holds, held_back) {
@@ -1623,7 +1623,7 @@ impl Pool {
         self.warm_set(actor).iter().map(holds).collect()
     }
     /// Last explicit factory outcomes, not reservations or current graph-validity claims.
-    pub fn prepared_members(&self, actor: &str) -> Vec<Option<bool>> {
+    pub(crate) fn prepared_members(&self, actor: &str) -> Vec<Option<bool>> {
         self.warm_set(actor).iter().map(|member| *member.prepared.lock().unwrap()).collect()
     }
     /// The highest level an executor of `plan` holds, on any GPU.
@@ -1759,21 +1759,21 @@ impl Pool {
         engine.finish_pending(id)
     }
 
-    pub fn store(&self) -> &Arc<Store> {
+    pub(crate) fn store(&self) -> &Arc<Store> {
         &self.store
     }
     /// Whether the store holds the structure of every model `plan` binds.
-    pub fn holds(&self, plan: &Plan) -> bool {
+    pub(crate) fn holds(&self, plan: &Plan) -> bool {
         plan.selections().iter().all(|selected| crate::storage::held(&self.store, &selected.manifest).is_ok())
     }
     /// Every object its calls may read is here, on-demand slots' too: `downloaded`.
-    pub fn downloaded(&self, plan: &Plan) -> bool {
+    pub(crate) fn downloaded(&self, plan: &Plan) -> bool {
         plan.read().iter().all(|(manifest, components)| crate::access::whole(&self.store, manifest, components))
     }
     /// The highest level each App of each generation holds now (keyed `(generation,
     /// application)`): an import-only parent, or an executor. A callee's executors in a
     /// caller's environment are its own, never the caller's.
-    pub fn levels(&self) -> BTreeMap<App, Level> {
+    pub(crate) fn levels(&self) -> BTreeMap<App, Level> {
         let parents: Vec<_> = self.zygotes.lock().unwrap().clone().into_iter().collect();
         let mut highest: BTreeMap<App, Level> = parents
             .into_iter()
@@ -1789,7 +1789,7 @@ impl Pool {
     /// Whether `held` imports, as a warm install asks once it holds the code: its import-only
     /// parent's first import, waited for. Its refusal's code and line; None where nothing imports
     /// ahead for it (no fork, it binds no model, the host has no room): its first call says then.
-    pub fn import_verdict(self: &Arc<Self>, held: &HeldGeneration, stop: &crate::stop::Stop) -> Option<(&'static str, String)> {
+    pub(crate) fn import_verdict(self: &Arc<Self>, held: &HeldGeneration, stop: &crate::stop::Stop) -> Option<(&'static str, String)> {
         self.prespawn(held.clone());
         let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
         // Package code runs here, and may not end: the install's cancel still does.
@@ -1859,7 +1859,7 @@ impl Pool {
     /// A call's degree as its declaration and this machine set it: 0 for `accelerator=False`
     /// or a machine with no GPU, else its constructed slots' group, or the GPUs a call that
     /// constructs nothing asks for (one by default), up to what the machine has.
-    pub fn degree(&self, entry: &serde_json::Value, wanted: u32) -> u32 {
+    pub(crate) fn degree(&self, entry: &serde_json::Value, wanted: u32) -> u32 {
         let models = entry.get("models").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
         let constructed: Vec<_> = models.into_iter().filter(constructed).collect();
         match entry.get("accelerator").and_then(serde_json::Value::as_bool) {
@@ -1881,7 +1881,7 @@ impl Pool {
     /// a constructed slot becomes the plan's construction, a `Weights[M]` one its source.
     /// `degree` 0 takes the widest group every constructed slot declares on this machine. No
     /// model code executes during description/preparation.
-    pub fn prepare_root(
+    pub(crate) fn prepare_root(
         &self,
         installed: &crate::journal::Installation,
         entrypoint: &str,
@@ -2067,7 +2067,7 @@ impl Pool {
         })
     }
     /// `preparation`'s plan, each adapter view it reads kept in memory (composed again if lost).
-    pub fn plan(&self, preparation: &Preparation) -> io::Result<Plan> {
+    pub(crate) fn plan(&self, preparation: &Preparation) -> io::Result<Plan> {
         let plan = Plan::of(preparation)?;
         for slot in &plan.slots {
             if let Some(recipe) = &slot.view {
@@ -2167,7 +2167,7 @@ impl Pool {
     /// The GPUs with an executor of `plan`'s environment now, by envelope index (a lane's first),
     /// each with whether it loaded `plan`'s construction; those that did first.
     /// Whether an executor holds `plan`'s construction loaded: its call reads no weights.
-    pub fn loaded(&self, plan: &Plan) -> bool {
+    pub(crate) fn loaded(&self, plan: &Plan) -> bool {
         self.hosting(plan).iter().any(|(_, loaded)| *loaded)
     }
 
@@ -2254,7 +2254,7 @@ impl Pool {
     /// registers its lane for its children's GPU steps while it runs; a GPU call runs on the
     /// GPUs `place` gives it, inside its root's lane when that root holds one.
     #[allow(clippy::too_many_arguments)]
-    pub fn dispatch(
+    pub(crate) fn dispatch(
         self: &Arc<Self>,
         engine: &Arc<Engine>,
         record: &Execution,
@@ -2409,7 +2409,7 @@ impl Pool {
     /// without waiting for the parent's own run to end.
     /// It takes the GPU's call slot like any call, so a child call in flight finishes first, and
     /// loads only inside its root's lane: once bound, until released.
-    pub fn prefetch(self: &Arc<Self>, engine: &Arc<Engine>, held: HeldGeneration, plan: Plan, (root, family): (u64, Option<String>), owner: String, fetch: Arc<crate::access::Fetch>) {
+    pub(crate) fn prefetch(self: &Arc<Self>, engine: &Arc<Engine>, held: HeldGeneration, plan: Plan, (root, family): (u64, Option<String>), owner: String, fetch: Arc<crate::access::Fetch>) {
         let (pool, engine) = (self.clone(), engine.clone());
         let started = std::thread::Builder::new()
             .name("executor-prefetch".into())
@@ -2576,7 +2576,7 @@ impl Pool {
         }
     }
 
-    pub fn stop(&self) -> io::Result<()> {
+    pub(crate) fn stop(&self) -> io::Result<()> {
         let sessions = {
             let mut sessions = self.sessions.lock().unwrap();
             self.stopped.store(true, Ordering::Release);
@@ -2606,7 +2606,7 @@ impl Pool {
     /// a kernel already in the store is not built again. Once per environment and machine
     /// run. It opens no device; its builds are niced and share the host. An executor that
     /// needs a kernel still compiling waits for it.
-    pub fn kernel_boot(self: &Arc<Self>, held: HeldGeneration) {
+    pub(crate) fn kernel_boot(self: &Arc<Self>, held: HeldGeneration) {
         if binds_models(&held.record.interface) {
             // Once per environment: a local package's generations share theirs.
             let environment = tensorfs::sha256::hex_digest(held.record.python.as_os_str().as_encoded_bytes());
@@ -2617,7 +2617,7 @@ impl Pool {
     /// The same compile at machine start, before any install: the image's Runtime
     /// interpreter (its torch and toolkit, which package environments install from the same
     /// seed) running the executors' Runtime, unpacked from its wheel, so its keys are theirs.
-    pub fn image_kernel_boot(self: &Arc<Self>) {
+    pub(crate) fn image_kernel_boot(self: &Arc<Self>) {
         let Some(image) = self.config.image_kernels.clone() else {
             return;
         };
@@ -2755,7 +2755,7 @@ impl Pool {
     /// both modes: the host keeps half its memory free with it ([`room_for_parent`]), and a shared
     /// machine holds at most one parent imported ahead of its request. Past it, only its import
     /// pages are read ahead; its parent starts when its call does.
-    pub fn prespawn(self: &Arc<Self>, held: HeldGeneration) {
+    pub(crate) fn prespawn(self: &Arc<Self>, held: HeldGeneration) {
         {
             let zygotes = self.zygotes.lock().unwrap();
             if zygotes.contains_key(&parent_app(&held)) {
@@ -2788,7 +2788,7 @@ impl Pool {
     /// A shared machine keeps one parent imported ahead of a request: this one replaces any other
     /// that never served one (Paul, 10-29: a laptop must not hold half its RAM for packages it
     /// is not using). A parent a request used stays until the machine's idle exit.
-    pub fn installed(self: &Arc<Self>, held: HeldGeneration) {
+    pub(crate) fn installed(self: &Arc<Self>, held: HeldGeneration) {
         self.kernel_boot(held.clone());
         if self.config.host.mode == HostMode::Shared {
             let key = parent_app(&held);
@@ -2829,7 +2829,7 @@ impl Pool {
     /// (`host_short`), as ever. A shared machine imports none: it starts because a command ran, and
     /// that command imports what it needs; it reads ahead its few most recently used environments'
     /// pages ([`SHARED_READ_AHEAD`]), for that command's import and the next ones.
-    pub fn import_recent(self: &Arc<Self>, held: Vec<HeldGeneration>) {
+    pub(crate) fn import_recent(self: &Arc<Self>, held: Vec<HeldGeneration>) {
         if self.config.host.mode == HostMode::Shared {
             self.read_ahead(held, SHARED_READ_AHEAD);
             return;

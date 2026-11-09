@@ -23,14 +23,14 @@
 //! A GGUF file is one component of its own (`gguf`).
 
 pub mod base;
-pub mod carriers;
+pub(crate) mod carriers;
 pub mod engine;
 pub mod gguf;
-pub mod lora;
-pub mod order;
+pub(crate) mod lora;
+pub(crate) mod order;
 pub mod remote;
-pub mod source;
-pub mod verify;
+pub(crate) mod source;
+pub(crate) mod verify;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -45,12 +45,12 @@ use crate::format::{
 use crate::store::Error;
 use crate::writer::{Data, PartData, Source, Writer};
 
-pub use engine::{tables, Table, AS_IS};
-pub use order::{constructor_order, Ordered};
+pub(crate) use engine::{tables, Table, AS_IS};
+pub(crate) use order::{constructor_order, Ordered};
 pub use remote::Access;
 
 /// One stored part of an output tensor, `data` yielding exactly its bytes.
-pub struct Part<'a> {
+pub(crate) struct Part<'a> {
     /// `""` for a plain tensor's one part.
     pub role: &'a str,
     pub dtype: &'a Dtype,
@@ -59,7 +59,7 @@ pub struct Part<'a> {
 }
 
 /// Where a convert's output goes: the writer, or anything that takes a D10 model.
-pub trait Sink {
+pub(crate) trait Sink {
     /// The pipeline, each component's class, config and assets, and the repo files; before any
     /// tensor.
     fn begin(&mut self, layout: &Layout) -> Result<()>;
@@ -136,7 +136,7 @@ impl Sink for Writer {
 
 /// What a component's folder held besides weights.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct Folder {
+pub(crate) struct Folder {
     pub name: String,
     pub class: ClassRef,
     pub config: Config,
@@ -148,7 +148,7 @@ pub struct Folder {
 
 /// A source's non-weight files in the D10 layout.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct Layout {
+pub(crate) struct Layout {
     pub pipeline: Option<Pipeline>,
     /// Header order: components with tensors in construction order, then the rest by name.
     pub components: Vec<Folder>,
@@ -157,11 +157,11 @@ pub struct Layout {
 }
 
 /// What `model_index.json` holds: the pipeline.
-pub const PIPELINE_FILE: &str = "model_index.json";
+pub(crate) const PIPELINE_FILE: &str = "model_index.json";
 /// A Diffusers modular pipeline's index: a repo file whose entries name component folders.
-pub const MODULAR_INDEX: &str = "modular_model_index.json";
+pub(crate) const MODULAR_INDEX: &str = "modular_model_index.json";
 /// The component of a model without a pipeline, whose folder is the root.
-pub const ROOT_COMPONENT: &str = "model";
+pub(crate) const ROOT_COMPONENT: &str = "model";
 /// A folder's config file: the first of these it holds.
 const CONFIGS: [&str; 5] = [
     CONFIG_FILE,
@@ -172,14 +172,14 @@ const CONFIGS: [&str; 5] = [
 ];
 
 /// Header metadata: the pinned source (a list when there are several).
-pub const SOURCE: &str = "source";
+pub(crate) const SOURCE: &str = "source";
 /// Header metadata: run data a pinned reference supplied, `{from, files, note}`.
-pub const FILLED: &str = "filled";
+pub(crate) const FILLED: &str = "filled";
 /// Header metadata: how the source's layout was read ([`SourceFormat`]).
-pub const SOURCE_FORMAT: &str = "source_format";
+pub(crate) const SOURCE_FORMAT: &str = "source_format";
 /// The header metadata key of each component's source safetensors `__metadata__`
 /// (`{component: {key: value}}`), which export writes back.
-pub const FILE_METADATA: &str = "safetensors_metadata";
+pub(crate) const FILE_METADATA: &str = "safetensors_metadata";
 
 /// `__metadata__` keys that declare a quantized carrier, which the encodings now state.
 const DECLARATIONS: [&str; 2] = ["_quantization_metadata", "quantization_config"];
@@ -244,7 +244,7 @@ impl std::fmt::Display for SourceFormat {
 
 /// What a convert reports; the header's metadata comes from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Imported {
+pub(crate) struct Imported {
     pub format: SourceFormat,
     /// The pinned sources.
     pub sources: Vec<String>,
@@ -265,7 +265,7 @@ pub struct Imported {
 impl Imported {
     /// The header's loading metadata: `source`, `source_format`, `filled`, each component's
     /// `__metadata__`, and the verified `family` and `adapter`s.
-    pub fn metadata(&self) -> Metadata {
+    pub(crate) fn metadata(&self) -> Metadata {
         let text = |s: &str| Value::Str(s.to_owned());
         let texts = |l: &[String]| Value::List(l.iter().map(|s| text(s)).collect());
         let one = |mut l: Vec<Value>| match l.len() {
@@ -453,7 +453,7 @@ fn is_gguf(path: &str) -> bool {
 }
 
 /// Library versions by library, as configs record them.
-pub type Versions = BTreeMap<String, String>;
+pub(crate) type Versions = BTreeMap<String, String>;
 
 /// Lands `docs` (a pinned reference's) and adds each at `into/<path>` where `files` has none;
 /// the paths added. Every library version a landed config records joins `versions`.
@@ -596,7 +596,7 @@ fn documents(
 /// - In a component's folder, the first of [`CONFIGS`] is its config, and the other run files
 ///   ([`run_data`]) its assets.
 /// - Every other file is a repo file. A component with no tensors, config or assets is none.
-pub fn layout(
+pub(crate) fn layout(
     mut files: BTreeMap<String, Vec<u8>>,
     tensored: &[String],
     reference: &Versions,
@@ -704,7 +704,7 @@ pub fn layout(
 /// not installed (`diffusers`, `transformers`, or one `versions` holds) is a Diffusers pipeline
 /// module (`stable_diffusion`, `kandinsky`), so `diffusers`. Any other source keeps its library
 /// as written: an unknown library never becomes `diffusers`.
-pub fn class_of(library: &str, name: &str, versions: &Versions, model_index: bool) -> ClassRef {
+pub(crate) fn class_of(library: &str, name: &str, versions: &Versions, model_index: bool) -> ClassRef {
     let installed = matches!(library, "diffusers" | "transformers") || versions.contains_key(library);
     let library = match (model_index, library.split_once('.')) {
         _ if library.is_empty() => return ClassRef::default(),
@@ -727,7 +727,7 @@ fn recorded(config: &Config) -> impl Iterator<Item = (String, String)> + '_ {
 
 /// The lane an import is labelled: its main dtype or scheme by stored bytes (`bf16`,
 /// `fp8.rowwise`), `files` when it has no tensors.
-pub fn main_lane<'a>(
+pub(crate) fn main_lane<'a>(
     tensors: impl Iterator<Item = (&'a Dtype, Option<&'a Encoding>, u64)>,
 ) -> String {
     let mut bytes: BTreeMap<String, u64> = BTreeMap::new();
@@ -772,7 +772,7 @@ fn config_class(file: &str, config: &Config) -> ClassRef {
     }
 }
 
-pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
+pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     let progress = req.progress;
     stopped(req)?;
     progress("resolving", 0, 0);

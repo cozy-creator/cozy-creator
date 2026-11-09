@@ -8,33 +8,34 @@
 //! A Calcifer that stops leaves accepted work running; the next one resumes each run from the
 //! cursor.
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 mod access;
-pub mod api;
+mod api;
 mod authorized;
 mod door;
-pub mod eta;
-pub mod events;
+mod eta;
+mod events;
 mod files;
 mod hub;
 mod kept;
 mod lanes;
-pub mod link;
+mod link;
 mod local;
-pub mod local_code;
-pub mod tools;
-pub mod machines;
+mod local_code;
+mod tools;
+mod machines;
 mod machine_client;
-pub mod outputs;
+mod outputs;
 mod others;
 mod page;
-pub mod play;
-pub mod project;
+mod play;
+mod project;
 mod rentals;
-pub mod runs;
+mod runs;
 pub mod serve;
 mod sessions;
 mod state;
-pub mod store;
+mod store;
 mod tool_ui;
 mod toolbox;
 mod update;
@@ -63,12 +64,12 @@ use tokio::{
 use futures_util::{Stream, StreamExt as _};
 use tracing::warn;
 
-pub use link::{Link, LinkError};
-pub use rentals::Shape;
+use link::{Link, LinkError};
+use rentals::Shape;
 use store::{Acceptance, Batch, MachineRow, NewRun, RunRow, State, Store, StoreError};
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error("{0}")]
@@ -80,7 +81,7 @@ pub enum Error {
     Refused(::api::error::Error),
 }
 
-pub struct Calcifer {
+pub(crate) struct Calcifer {
     store: Store,
     inputs: PathBuf,
     outputs: PathBuf,
@@ -182,7 +183,7 @@ impl From<StoreError> for Stop {
 impl Calcifer {
     /// Opens Calcifer's home (`~/.cozy/calcifer`) and resumes every run it owes. `outputs` holds
     /// each package's folder, where a run's outputs land unless it names its own directory.
-    pub fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
+    pub(crate) fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
         state::import(&store, home);
         let inputs = home.join("inputs");
@@ -213,7 +214,7 @@ impl Calcifer {
 
     /// Takes up what an earlier Calcifer left: follows every unsettled run and exports every
     /// output still owed. Each goes on in its own task.
-    pub fn resume(self: &Arc<Self>) -> Result<usize, Error> {
+    pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Error> {
         let unsettled = self.store.unsettled()?;
         let resumed = unsettled.len();
         for id in unsettled {
@@ -224,7 +225,7 @@ impl Calcifer {
     }
 
     /// Stops every driver where it stands, as if the process ended. Machines keep their runs.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         lock(&self.tasks).abort_all();
     }
 
@@ -242,14 +243,14 @@ impl Calcifer {
         }
     }
 
-    pub fn store(&self) -> &Store {
+    pub(crate) fn store(&self) -> &Store {
         &self.store
     }
 
     /// What Calcifer still owes, which a next Calcifer would resume: every unsettled run's id,
     /// each run with an output still to land, and every ask of a Hub not yet answered. A store it
     /// cannot read owes its error.
-    pub fn owed(&self) -> Vec<String> {
+    pub(crate) fn owed(&self) -> Vec<String> {
         let owed = self.store.unsettled().and_then(|ids| {
             let outputs = self.store.exports_owed()?.into_iter();
             let outputs = outputs.map(|(_, number)| format!("outputs of run {number}"));
@@ -266,12 +267,12 @@ impl Calcifer {
     }
 
     /// Every event of every run, as it happens.
-    pub fn subscribe(&self) -> broadcast::Receiver<(RunId, Event)> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<(RunId, Event)> {
         self.events.subscribe()
     }
 
     /// Told each time a machine's row, Status, boot or Hub listing may have changed.
-    pub fn machines_changed(&self) -> watch::Receiver<()> {
+    pub(crate) fn machines_changed(&self) -> watch::Receiver<()> {
         self.machines_changed.subscribe()
     }
 
@@ -287,7 +288,7 @@ impl Calcifer {
 
     /// Records a prebuilt run under `key` and starts it; the same key again answers the recorded
     /// run.
-    pub async fn submit(self: &Arc<Self>, key: &str, submit: SubmitRun) -> Result<Submitted, Error> {
+    pub(crate) async fn submit(self: &Arc<Self>, key: &str, submit: SubmitRun) -> Result<Submitted, Error> {
         // The same run asked again is the same submission whatever price it was quoted since.
         let asked = SubmitRun { agreed: None, ..submit.clone() };
         let digest = format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))));
@@ -296,7 +297,7 @@ impl Calcifer {
 
     /// Records `submit` under `key` as the ask `digest` names and starts it; the same key again
     /// answers the recorded run, and another ask under it is a conflict.
-    pub async fn submit_under(
+    pub(crate) async fn submit_under(
         self: &Arc<Self>,
         key: &str,
         digest: &str,
@@ -378,7 +379,7 @@ impl Calcifer {
     }
 
     /// Asks for the run's cancellation: unsent, it ends here; sent, its machine ends it.
-    pub fn cancel(&self, id: &RunId) -> Result<Option<Run>, Error> {
+    pub(crate) fn cancel(&self, id: &RunId) -> Result<Option<Run>, Error> {
         let events = self.store.request_cancel(id.as_str())?;
         self.publish(id, events);
         self.wake(id);
@@ -389,7 +390,7 @@ impl Calcifer {
     }
 
     /// The run as the API answers it, with what it is doing now.
-    pub fn record(&self, row: &RunRow) -> Result<Run, Error> {
+    pub(crate) fn record(&self, row: &RunRow) -> Result<Run, Error> {
         let mut run = self.store.record(row)?;
         if let Some(dir) = project::of_landing(&row.out_dir) {
             let (id, name) = project::identity(dir);
@@ -463,7 +464,7 @@ impl Calcifer {
     }
 
     /// The live events a stream opening now starts with.
-    pub fn live(&self, id: &RunId) -> Vec<Event> {
+    pub(crate) fn live(&self, id: &RunId) -> Vec<Event> {
         let live = lock(&self.live);
         let Some(live) = live.get(id) else {
             return vec![];
@@ -477,7 +478,7 @@ impl Calcifer {
     }
 
     /// Records or updates a machine and wakes the runs waiting on it.
-    pub fn put_machine(&self, machine: &MachineRow) -> Result<(), Error> {
+    pub(crate) fn put_machine(&self, machine: &MachineRow) -> Result<(), Error> {
         self.store.put_machine(machine)?;
         self.touch(&machine.name);
         self.machine_changed();
@@ -503,7 +504,7 @@ impl Calcifer {
 
     /// Records the machine as gone for good: its unconfirmed runs return to the outbox or fail,
     /// its accepted ones fail.
-    pub fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
+    pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
         let events = self.store.machine_ended(name, reason)?;
         let mut woken = HashSet::new();
         for (id, event) in events {
@@ -523,7 +524,7 @@ impl Calcifer {
 
     /// Renames a machine that has not served (its Hub named it); its runs move with it, and the
     /// old name stays its alias.
-    pub fn rename_machine(&self, old: &str, new: &str) -> Result<bool, Error> {
+    pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool, Error> {
         let renamed = self.store.rename_machine(old, new)?;
         if renamed {
             let mut machines = lock(&self.machines);
@@ -538,7 +539,7 @@ impl Calcifer {
     }
 
     /// Adds a warning to an unsettled run.
-    pub fn warn(&self, id: &RunId, warning: &::api::calcifer::Warning) -> Result<(), Error> {
+    pub(crate) fn warn(&self, id: &RunId, warning: &::api::calcifer::Warning) -> Result<(), Error> {
         let events = self.store.warn(id.as_str(), warning)?;
         self.publish(id, events);
         Ok(())
@@ -565,7 +566,7 @@ impl Calcifer {
     }
 
     /// Ends a run no machine took, with `reason`.
-    pub fn fail(&self, id: &RunId, reason: Reason) -> Result<(), Error> {
+    pub(crate) fn fail(&self, id: &RunId, reason: Reason) -> Result<(), Error> {
         let events = self.store.fail(id.as_str(), reason)?;
         self.publish(id, events);
         self.wake(id);
@@ -573,17 +574,17 @@ impl Calcifer {
     }
 
     /// The machine's connection, shared with its runs' drivers; none while it has no endpoint.
-    pub fn link(&self, name: &str) -> Result<Option<Link>, String> {
+    pub(crate) fn link(&self, name: &str) -> Result<Option<Link>, String> {
         self.machine(name).map(|(_, link, _, _)| link)
     }
 
     /// Records the warm set the machine reported, which a warm run's item is merged into.
-    pub fn observe_warm(&self, machine: &str, items: Vec<v1::WarmItem>) {
+    pub(crate) fn observe_warm(&self, machine: &str, items: Vec<v1::WarmItem>) {
         lock(&self.warm).insert(machine.to_owned(), items);
     }
 
     /// Places an unplaced run on `machine`.
-    pub fn place(&self, id: &RunId, machine: &str) -> Result<bool, Error> {
+    pub(crate) fn place(&self, id: &RunId, machine: &str) -> Result<bool, Error> {
         let placed = self.store.place(id.as_str(), machine)?;
         self.wake(id);
         Ok(placed)
@@ -687,7 +688,7 @@ impl Calcifer {
     }
 
     /// What a run of `target` on `machine` would take, before it is sent (`GET /v1/estimate`).
-    pub fn estimate(&self, target: &str, machine: &str, megapixels: Option<f64>, steps: Option<u64>) -> ::api::calcifer::Estimate {
+    pub(crate) fn estimate(&self, target: &str, machine: &str, megapixels: Option<f64>, steps: Option<u64>) -> ::api::calcifer::Estimate {
         let prior = eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels);
         eta::before(prior.as_ref(), steps)
     }

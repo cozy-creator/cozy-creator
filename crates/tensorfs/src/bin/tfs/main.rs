@@ -1,5 +1,6 @@
 //! `tfs`: the Python verbs on the command line (`import`, `download`, `upload`, `export`,
 //! `inspect`, `verify`), plus `ceiling`, `conform endpoint`, `dev ckpt` and `version`.
+#![deny(unreachable_pub)]
 
 mod dev;
 

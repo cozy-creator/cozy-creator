@@ -9,7 +9,7 @@ use tensorfs::format::ClassRef;
 /// unknown model; `version` is `""` when nothing records it.
 #[pyclass(name = "ClassRef", module = "tensorfs", frozen, eq, hash, get_all, skip_from_py_object)]
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct PyClassRef {
+pub(crate) struct PyClassRef {
     library: String,
     version: String,
     name: String,

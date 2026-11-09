@@ -21,10 +21,10 @@ use std::{
 use tensorfs::sha256;
 
 /// The largest result the tier takes: worth storing is costly to produce and small.
-pub const ENTRY_BYTES: u64 = 512 << 10;
+pub(crate) const ENTRY_BYTES: u64 = 512 << 10;
 const STORE_BYTES: u64 = 2 << 30;
 
-pub struct Memo {
+pub(crate) struct Memo {
     root: PathBuf,
     state: Mutex<State>,
     settled: Condvar,
@@ -68,7 +68,7 @@ fn key_ok(key: &str) -> bool {
 }
 
 impl Memo {
-    pub fn open(root: PathBuf) -> io::Result<Self> {
+    pub(crate) fn open(root: PathBuf) -> io::Result<Self> {
         fs::create_dir_all(&root)?;
         Ok(Self {
             root,
@@ -94,7 +94,7 @@ impl Memo {
 
     /// Answers a memo request (`seq`) of `run`, whose executor reads and writes `spool`; any
     /// other request is not this memo's.
-    pub fn answer(&self, run: &str, spool: &Path, seq: u64, request: &Request) -> Answer {
+    pub(crate) fn answer(&self, run: &str, spool: &Path, seq: u64, request: &Request) -> Answer {
         let (key, scope) = match request {
             Request::StageMemoLookup(r) => (&r.key, (r.stage.clone(), r.numerics.clone())),
             Request::StageMemoStore(r) => (&r.key, (r.stage.clone(), r.numerics.clone())),
@@ -228,7 +228,7 @@ impl Memo {
     }
 
     /// The run ended: whatever it was computing, its waiters compute themselves.
-    pub fn release(&self, run: &str) {
+    pub(crate) fn release(&self, run: &str) {
         let mut state = self.state.lock().unwrap();
         let before = state.claims.len();
         state.claims.retain(|_, owner| owner != run);
@@ -238,7 +238,7 @@ impl Memo {
     }
 
     /// Entries' homes, for a low disk's plan.
-    pub fn homes(&self) -> Vec<PathBuf> {
+    pub(crate) fn homes(&self) -> Vec<PathBuf> {
         let homes = fs::read_dir(&self.root).into_iter().flatten().flatten();
         homes
             .filter(|home| {
@@ -252,7 +252,7 @@ impl Memo {
 
     /// The TTL, then the cap; the least recently used go first. Answers how many went, and
     /// their bytes.
-    pub fn sweep(&self) -> (usize, u64) {
+    pub(crate) fn sweep(&self) -> (usize, u64) {
         let Ok(homes) = fs::read_dir(&self.root) else {
             return (0, 0);
         };

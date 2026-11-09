@@ -51,7 +51,7 @@ pub(crate) fn adopt(ctx: &Context) -> Result<Adopted, Error> {
 /// (it moves there once idle), stays up, and Calcifer starts it with itself at login; this prints
 /// where other computers add it. `--remove` takes a key back (`DELETE`): its next call is refused,
 /// its open streams end, and runs it started finish.
-pub async fn authorize(ctx: &Context, key: &str, remove: bool) -> Result<ExitCode, Error> {
+pub(crate) async fn authorize(ctx: &Context, key: &str, remove: bool) -> Result<ExitCode, Error> {
     api::calcifer::local_usable("local")?;
     let key = key.trim();
     let path = crate::calcifer_client::path(&["v1", "machines", "local", "authorized-keys", key]);

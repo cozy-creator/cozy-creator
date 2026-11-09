@@ -50,12 +50,12 @@ impl Services {
 
     /// Whether a user service manager answers at all, whatever the home: a home without one
     /// (`available` false) is then another home than the login's, not a session without one.
-    pub fn reachable(&self) -> bool {
+    pub(crate) fn reachable(&self) -> bool {
         sys::available()
     }
 
     /// Writes the definition and enables it at login, without starting it.
-    pub fn install(&self, spec: &ServiceSpec) -> Result<()> {
+    pub(crate) fn install(&self, spec: &ServiceSpec) -> Result<()> {
         sys::install(&self.dir, spec)
     }
 
@@ -87,7 +87,7 @@ impl Services {
     }
 
     /// Ends it; nothing starts it again before `start` or the next login.
-    pub fn stop(&self, name: &str) -> Result<()> {
+    pub(crate) fn stop(&self, name: &str) -> Result<()> {
         sys::stop(&self.dir, name)
     }
 

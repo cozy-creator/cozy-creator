@@ -88,7 +88,7 @@ impl Dtype {
     }
 
     /// Bits per element; `None` for an unknown dtype.
-    pub fn bits(&self) -> Option<u64> {
+    pub(crate) fn bits(&self) -> Option<u64> {
         KNOWN.iter().find(|(_, d, _)| d == self).map(|(_, _, b)| *b)
     }
 

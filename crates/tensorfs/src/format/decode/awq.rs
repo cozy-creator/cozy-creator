@@ -8,7 +8,7 @@ use super::plan::{self, Term};
 use super::{Ctx, Part, Plan, Scheme, View};
 use crate::format::Result;
 
-pub const INT4: Scheme = Scheme {
+pub(crate) const INT4: Scheme = Scheme {
     name: "awq.int4",
     view: View::Matrix,
     params: &[GROUP_SIZE],
@@ -23,10 +23,10 @@ pub const INT4: Scheme = Scheme {
 };
 
 /// The slot each of a word's eight codes sits in.
-pub const ORDER: [u8; 8] = [0, 2, 4, 6, 1, 3, 5, 7];
+pub(crate) const ORDER: [u8; 8] = [0, 2, 4, 6, 1, 3, 5, 7];
 
 /// `qweight`: the view stored transposed (`[K, N]`), eight codes to a word along N.
-pub const CODES: Packing = Packing {
+pub(crate) const CODES: Packing = Packing {
     bits: 4,
     word: 32,
     transposed: true,
@@ -37,7 +37,7 @@ pub const CODES: Packing = Packing {
 };
 
 /// `qzeros`: `[W, N]` stored as is, packed like `qweight`.
-pub const ZEROS: Packing = Packing {
+pub(crate) const ZEROS: Packing = Packing {
     transposed: false,
     ..CODES
 };

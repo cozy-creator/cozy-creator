@@ -22,7 +22,7 @@ pub enum HostMode {
 /// The trigger's window: the shortest an unprivileged process may arm (a multiple of 2 s on
 /// Linux 6.x and 7.0). The threshold is the smallest measurable stall, so an event means
 /// "something stalled on memory in the last window".
-pub const WINDOW: Duration = Duration::from_secs(2);
+pub(crate) const WINDOW: Duration = Duration::from_secs(2);
 
 /// The most the live calls grew their anonymous bytes beyond what was measured to come, between
 /// two looks: what can arrive before the next look answers, so it stays free. An unmeasured
@@ -53,7 +53,7 @@ impl Growth {
         self.seen = 0;
     }
 
-    pub fn most(&self) -> u64 {
+    pub(crate) fn most(&self) -> u64 {
         self.most
     }
 }

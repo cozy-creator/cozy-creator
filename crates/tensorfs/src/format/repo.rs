@@ -166,11 +166,11 @@ impl Repo {
     pub fn new(name: &str) -> Repo {
         Repo { name: name.into(), ..Repo::default() }
     }
-    pub fn from_json(bytes: &[u8]) -> Result<Repo> {
+    pub(crate) fn from_json(bytes: &[u8]) -> Result<Repo> {
         json::read(bytes, REPO_FORMAT)
     }
     /// The canonical bytes; refuses a document a reader would refuse.
-    pub fn to_json(&self) -> Result<Vec<u8>> {
+    pub(crate) fn to_json(&self) -> Result<Vec<u8>> {
         self.check()?;
         json::write(self)
     }
@@ -187,7 +187,7 @@ impl Repo {
     }
 
     /// Release `version`.
-    pub fn release(&self, version: &str) -> Option<&Release> {
+    pub(crate) fn release(&self, version: &str) -> Option<&Release> {
         self.releases.iter().find(|r| r.version == version)
     }
 
@@ -213,7 +213,7 @@ impl Repo {
     /// The commit `release` (none: the newest) names in `lane` (none: its only lane), as
     /// (release, lane, commit). A repo without releases (a machine's own model) answers its newest
     /// commit, in no release. Refused naming what the repo has.
-    pub fn resolve(&self, release: Option<&str>, lane: Option<&str>) -> Result<(String, Option<String>, ObjectRef)> {
+    pub(crate) fn resolve(&self, release: Option<&str>, lane: Option<&str>) -> Result<(String, Option<String>, ObjectRef)> {
         if self.releases.is_empty() && release.is_none() {
             return match self.commits.last() {
                 Some(commit) => Ok((String::new(), lane.map(str::to_owned), commit.clone())),
@@ -244,7 +244,7 @@ impl Repo {
     }
 
     /// Every commit the repo keeps alive, each once.
-    pub fn roots(&self) -> Vec<&ObjectRef> {
+    pub(crate) fn roots(&self) -> Vec<&ObjectRef> {
         let mut roots: Vec<&ObjectRef> = self.releases.iter().flat_map(|r| r.lanes.values()).chain(&self.commits).collect();
         roots.sort();
         roots.dedup();

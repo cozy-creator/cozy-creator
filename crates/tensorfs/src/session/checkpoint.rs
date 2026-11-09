@@ -143,7 +143,7 @@ impl Checkpoint {
     pub fn metadata(&self) -> &format::Metadata {
         &self.header().metadata
     }
-    pub fn chunks(&self) -> &[ObjectRef] {
+    pub(crate) fn chunks(&self) -> &[ObjectRef] {
         &self.header().chunks
     }
     /// The lane of the commit it was opened from.
@@ -153,10 +153,10 @@ impl Checkpoint {
     pub fn named(&self) -> Option<&Ref> {
         self.data.named.as_ref()
     }
-    pub fn pipeline(&self) -> Option<&format::Pipeline> {
+    pub(crate) fn pipeline(&self) -> Option<&format::Pipeline> {
         self.data.raw.pipeline()
     }
-    pub fn components(&self) -> &[Component] {
+    pub(crate) fn components(&self) -> &[Component] {
         &self.components
     }
 
@@ -409,7 +409,7 @@ impl Checkpoint {
     }
 
     /// The stored dtype and shape of the part `component/key#role` (`#value`: plain data).
-    pub fn stored_part(&self, name: &str) -> Option<crate::io::StoredPart> {
+    pub(crate) fn stored_part(&self, name: &str) -> Option<crate::io::StoredPart> {
         crate::io::view::part(self.header(), name)
     }
 
@@ -487,29 +487,29 @@ impl Component {
         &self.data.raw
     }
 
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         &self.name
     }
-    pub fn cls(&self) -> &format::ClassRef {
+    pub(crate) fn cls(&self) -> &format::ClassRef {
         &self.metadata().class
     }
-    pub fn config(&self) -> &format::Config {
+    pub(crate) fn config(&self) -> &format::Config {
         &self.metadata().config
     }
     /// The file name the config exports as: `config.json` unless the writer named another.
-    pub fn config_file(&self) -> &str {
+    pub(crate) fn config_file(&self) -> &str {
         self.metadata().config_name()
     }
-    pub fn tensors(&self) -> &[format::Tensor] {
+    pub(crate) fn tensors(&self) -> &[format::Tensor] {
         &self.metadata().tensors
     }
-    pub fn assets(&self) -> &BTreeMap<String, ObjectRef> {
+    pub(crate) fn assets(&self) -> &BTreeMap<String, ObjectRef> {
         &self.metadata().assets
     }
 
     /// A tensor's stored bytes, as Python's `read(decode=False)`: a plain tensor's data, or an
     /// encoded tensor's parts by role with its encoding. Download the payload first.
-    pub fn read(&self, key: &str) -> Result<Read> {
+    pub(crate) fn read(&self, key: &str) -> Result<Read> {
         let tensor = self.data.raw.tensor(&self.name, key)?;
         let part = |role: &str, length: u64| {
             let mut bytes = vec![0; length as usize];
@@ -531,7 +531,7 @@ impl Component {
 
     /// A tensor's logical bytes in its dtype, as Python's `read(decode=True)`: an encoded
     /// tensor goes through its scheme's reference decode.
-    pub fn read_decoded(&self, key: &str) -> Result<Vec<u8>> {
+    pub(crate) fn read_decoded(&self, key: &str) -> Result<Vec<u8>> {
         let tensor = self.data.raw.tensor(&self.name, key)?;
         let (encoding, parts) = match (self.read(key)?, &tensor.body) {
             (Read::Plain(bytes), _) => return Ok(bytes),
@@ -557,7 +557,7 @@ impl Component {
     /// `out.len()` bytes of `key` from `offset`, as Python's `read_into`: a plain tensor's data,
     /// one stored part (`role`), or with `decode` an encoded tensor's logical bytes. An encoded
     /// tensor with neither is `Invalid`, naming its roles. Download the payload first.
-    pub fn read_into(&self, key: &str, out: &mut [u8], options: &ReadInto<'_>) -> Result<()> {
+    pub(crate) fn read_into(&self, key: &str, out: &mut [u8], options: &ReadInto<'_>) -> Result<()> {
         let tensor = self.data.raw.tensor(&self.name, key)?;
         let role = match (options.role, &tensor.body) {
             (Some(_), _) if options.decode => {

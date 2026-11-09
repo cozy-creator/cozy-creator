@@ -1,5 +1,6 @@
 //! The `cozy` binary dispatches to its roles: CLI verbs, `calcifer` and `machine serve`.
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 
 /// mimalloc gives back what any thread freed, on every OS. glibc's malloc kept each thread's frees in that thread's arena: in one
 /// Calcifer, web-scale's 5,000-asset project three times left 2,389 MB resident after its last delete, 62 MB of it in use (cl-822).

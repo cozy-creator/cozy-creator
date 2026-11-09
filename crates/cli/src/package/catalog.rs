@@ -14,7 +14,7 @@ use crate::{
     output::{self, Table},
 };
 
-pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, Error> {
+pub(crate) async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let query = query.trim();
     let mut ask = vec![("hub", hub.to_string()), ("limit", limit.to_string())];
@@ -49,7 +49,7 @@ pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, 
     Ok(ExitCode::SUCCESS)
 }
 
-pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
+pub(crate) async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let mut ask = vec![("hub", hub.to_string())];
     ask.extend(package.release.clone().map(|release| ("release", release)));

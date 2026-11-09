@@ -9,14 +9,14 @@ use crate::format::decode::awq::{CODES, ZEROS};
 use crate::format::decode::{elem, f16};
 use crate::format::{Dtype, Encoding, Error, Result};
 
-pub const INT4: Encoder = Encoder {
+pub(crate) const INT4: Encoder = Encoder {
     scheme: "awq.int4",
     quantize: Some(quantize),
     pack: Some(pack),
 };
 
 impl Encoding {
-    pub fn awq_int4(group_size: i64) -> Encoding {
+    pub(crate) fn awq_int4(group_size: i64) -> Encoding {
         encoding("awq.int4", &[("group_size", group_size.into())])
     }
 }

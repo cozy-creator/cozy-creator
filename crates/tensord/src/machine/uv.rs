@@ -12,7 +12,7 @@ use std::{
 };
 
 #[derive(Clone, Debug)]
-pub struct Uv {
+pub(crate) struct Uv {
     path: PathBuf,
     cache: Cache,
     pythons: PathBuf,
@@ -32,7 +32,7 @@ enum Cache {
 
 impl Uv {
     /// The machine at `root` with its engine directory `engine`.
-    pub fn of(root: &Path, engine: &Path, rental: bool) -> Self {
+    pub(crate) fn of(root: &Path, engine: &Path, rental: bool) -> Self {
         let image = root.join("usr/local/bin").join(platform::paths::exe("uv"));
         let home = std::env::home_dir().unwrap_or_else(|| root.into());
         let path = match rental && image.is_file() {
@@ -49,7 +49,7 @@ impl Uv {
 
     /// A uv command: the machine's environment without credentials or names the executor seal
     /// owns (a proxy and its certificates hold), over this machine's cache and Pythons.
-    pub fn command(&self) -> io::Result<Command> {
+    pub(crate) fn command(&self) -> io::Result<Command> {
         self.fetched()?;
         let mut command = Command::new(&self.path);
         command.env_clear().envs(crate::launch_identity::inherited()).env("UV_PYTHON_INSTALL_DIR", &self.pythons);
@@ -61,14 +61,14 @@ impl Uv {
     }
 
     /// The cache the machine manages: its own or an image's.
-    pub fn cache(&self) -> &Path {
+    pub(crate) fn cache(&self) -> &Path {
         match &self.cache {
             Cache::Machine(cache) | Cache::Seeded(cache) => cache,
         }
     }
 
     /// Whether installs link into an image's seeded cache.
-    pub fn seeded(&self) -> bool {
+    pub(crate) fn seeded(&self) -> bool {
         matches!(self.cache, Cache::Seeded(_))
     }
 

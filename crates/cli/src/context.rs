@@ -11,7 +11,7 @@ use api::{
 use crate::{calcifer_client::Client, output::Term};
 
 #[derive(Debug)]
-pub struct Context {
+pub(crate) struct Context {
     pub json: bool,
     /// `--full`: the whole record, where a view shows part of it.
     pub full: bool,
@@ -25,7 +25,7 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new(json: bool, full: bool, yes: bool, loaded: Loaded, term: Term) -> Self {
+    pub(crate) fn new(json: bool, full: bool, yes: bool, loaded: Loaded, term: Term) -> Self {
         Self {
             json,
             full,
@@ -38,17 +38,17 @@ impl Context {
     }
 
     /// The Hub: `COZY_HUB_URL`, else config.toml's `hub_url`, else tensorhub.com.
-    pub fn hub(&self) -> &Origin {
+    pub(crate) fn hub(&self) -> &Origin {
         &self.config.hub_url
     }
 
     /// `origin` when it names a Hub other than this one: a record left from another.
-    pub fn other_hub<'a>(&self, origin: &'a str) -> Option<&'a str> {
+    pub(crate) fn other_hub<'a>(&self, origin: &'a str) -> Option<&'a str> {
         Origin::parse(origin).is_ok_and(|o| o != *self.hub()).then_some(origin)
     }
 
     /// Calcifer, started if none runs.
-    pub async fn calcifer(&self) -> Result<Client, Error> {
+    pub(crate) async fn calcifer(&self) -> Result<Client, Error> {
         Client::connect(self).await
     }
 }

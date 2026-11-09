@@ -70,12 +70,12 @@ impl Birth {
 /// thread of it is running or waiting on a disk now (Linux `R`/`D`, macOS running threads;
 /// Windows cannot say, so false).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Usage {
+pub(crate) struct Usage {
     pub cpu: u64,
     pub running: bool,
 }
 
-pub fn usage(pid: u32) -> Result<Usage> {
+pub(crate) fn usage(pid: u32) -> Result<Usage> {
     sys::usage(pid).map_err(Error::os("read a process's usage"))
 }
 
@@ -88,7 +88,7 @@ pub fn in_kernel(pid: u32) -> Option<String> {
 
 /// Its threads' names, states and wait channels, alike ones counted (`"call_0 S futex_wait_queue"`
 /// ×N): why a process makes no progress. Empty where the OS cannot say (macOS, Windows).
-pub fn threads(pid: u32) -> Vec<(String, usize)> {
+pub(crate) fn threads(pid: u32) -> Vec<(String, usize)> {
     sys::threads(pid)
 }
 
@@ -98,7 +98,7 @@ pub fn boot_id() -> Result<String> {
 }
 
 /// This process's peak resident memory, in bytes.
-pub fn peak_resident() -> Result<u64> {
+pub(crate) fn peak_resident() -> Result<u64> {
     sys::peak_resident().map_err(Error::os("read peak resident memory"))
 }
 
@@ -118,7 +118,7 @@ pub fn fd_limit() -> Option<u64> {
 }
 
 /// Descriptors this process has open now.
-pub fn open_fds() -> Result<u64> {
+pub(crate) fn open_fds() -> Result<u64> {
     let dir = if cfg!(target_os = "linux") {
         "/proc/self/fd"
     } else if cfg!(target_vendor = "apple") {
@@ -265,7 +265,7 @@ pub fn parent_of(pid: u32) -> Result<u32> {
 
 /// Every process descended from `pid` (children, theirs, and so on), read now. Empty where
 /// nothing could be read.
-pub fn descendants(pid: u32) -> Vec<u32> {
+pub(crate) fn descendants(pid: u32) -> Vec<u32> {
     let table = sys::parents();
     let mut tree = vec![pid];
     let mut at = 0;
@@ -356,7 +356,7 @@ pub fn take_handed(value: u64) -> Result<std::os::windows::io::OwnedHandle> {
 /// Descriptors a process hands itself across an exec (Unix): the slots [`hand_on_exec`] fills
 /// and [`take_handed`] reads. After [`reserve_handed`] no owner in this process holds one.
 #[cfg(unix)]
-pub const HANDED: std::ops::RangeInclusive<std::os::fd::RawFd> = 3..=5;
+pub(crate) const HANDED: std::ops::RangeInclusive<std::os::fd::RawFd> = 3..=5;
 
 /// First thing in a process that hands descriptors on (Unix): every closed [`HANDED`] slot is
 /// held on `/dev/null`, so no file this process opens lands on one. Refused once a second
@@ -415,7 +415,7 @@ pub fn glibc_version() -> String {
 }
 
 /// An OS shortage that may clear by itself; nothing else justifies requeueing a launch.
-pub fn transient(error: &io::Error) -> bool {
+pub(crate) fn transient(error: &io::Error) -> bool {
     sys::transient(error)
 }
 
@@ -447,7 +447,7 @@ pub fn own_group(command: &mut Command) -> &mut Command {
 
 /// Whether a process handle kept as a file (a pidfd, a kqueue on its exit) shows its exit now.
 #[cfg(unix)]
-pub fn ended(handle: &impl std::os::fd::AsFd) -> bool {
+pub(crate) fn ended(handle: &impl std::os::fd::AsFd) -> bool {
     matches!(
         unix::readable(handle.as_fd(), Some(Duration::ZERO)),
         Ok(true)
@@ -512,7 +512,7 @@ impl Tree {
         self.child.id()
     }
 
-    pub fn stdout(&mut self) -> Option<ChildStdout> {
+    pub(crate) fn stdout(&mut self) -> Option<ChildStdout> {
         self.child.stdout.take()
     }
 
@@ -533,7 +533,7 @@ impl Tree {
         Ok(status)
     }
 
-    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+    pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         let status = self
             .child
             .try_wait()

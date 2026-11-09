@@ -19,7 +19,7 @@ use crate::store::{
 
 /// A component's tensors: a mapping of key to `TensorMetadata`, with the reads.
 #[pyclass(name = "Tensors", module = "tensorfs", frozen, mapping)]
-pub struct PyTensors {
+pub(crate) struct PyTensors {
     component: String,
     infos: Py<PyDict>,
     ck: Option<Arc<CheckpointAccess>>,
@@ -28,7 +28,7 @@ pub struct PyTensors {
 /// An encoded tensor as stored (`decode=False`): its logical dtype and shape, its scheme and
 /// params, and each part.
 #[pyclass(name = "Encoded", module = "tensorfs", frozen, get_all)]
-pub struct PyEncoded {
+pub(crate) struct PyEncoded {
     dtype: String,
     shape: Py<PyTuple>,
     scheme: String,

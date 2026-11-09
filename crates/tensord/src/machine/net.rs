@@ -9,7 +9,7 @@ use tokio::{net::TcpStream, task::JoinSet};
 
 /// A listener on `port`, or with none, on the port `saved` names, else a free one that `saved`
 /// then names: this computer's machine keeps its ports across restarts.
-pub fn kept_listener(saved: &Path, host: IpAddr, port: Option<u16>) -> io::Result<TcpListener> {
+pub(crate) fn kept_listener(saved: &Path, host: IpAddr, port: Option<u16>) -> io::Result<TcpListener> {
     if let Some(port) = port {
         return TcpListener::bind((host, port));
     }
@@ -28,7 +28,7 @@ pub fn kept_listener(saved: &Path, host: IpAddr, port: Option<u16>) -> io::Resul
 /// Connects to host:port over whichever of its addresses answers first. A host whose IPv6
 /// is unroutable otherwise stalls each connect for the kernel's SYN retries (about two
 /// minutes) before trying IPv4.
-pub async fn connect(host: &str, port: u16) -> io::Result<TcpStream> {
+pub(crate) async fn connect(host: &str, port: u16) -> io::Result<TcpStream> {
     connect_any(tokio::net::lookup_host((host, port)).await?).await
 }
 

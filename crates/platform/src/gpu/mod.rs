@@ -9,7 +9,7 @@ mod cuda;
 mod faults;
 
 #[cfg(windows)]
-pub use budget::{Adapter, Budget, adapters};
+pub(crate) use budget::{Adapter, Budget, adapters};
 pub use cuda::memory_classes;
 pub use faults::{Fault, watch_faults};
 
@@ -180,7 +180,7 @@ impl Device {
     }
 
     /// `<GPU UUID>/<driver version>`: what a learned context is valid for.
-    pub fn key(&self) -> &str {
+    pub(crate) fn key(&self) -> &str {
         &self.key
     }
 
@@ -234,7 +234,7 @@ impl Device {
 
     /// Its bytes in use now, every process's, as `nvidia-smi` shows them (not the driver's reserve;
     /// an integrated GPU's: total less free).
-    pub fn used(&self) -> Result<u64> {
+    pub(crate) fn used(&self) -> Result<u64> {
         let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
         match device.memory_info() {
             Ok(info) => Ok(info.used),
@@ -245,7 +245,7 @@ impl Device {
     /// Whether its compute mode admits one context at a time (exclusive-process) or none
     /// (prohibited): a second process holding a context locks every other out. A driver that
     /// does not say shares it.
-    pub fn exclusive(&self) -> Result<bool> {
+    pub(crate) fn exclusive(&self) -> Result<bool> {
         match self.nvml.device_by_index(self.index).and_then(|device| device.compute_mode()) {
             Ok(mode) => Ok(mode != ComputeMode::Default),
             Err(NvmlError::NotSupported) => Ok(false),

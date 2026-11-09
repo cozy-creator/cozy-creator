@@ -166,7 +166,7 @@ pub fn warn_once(name: &str) -> Option<String> {
 }
 
 /// What a missing tool's warning says.
-pub fn warning(tool: &Tool) -> String {
+pub(crate) fn warning(tool: &Tool) -> String {
     format!("{} not found: {}; see `cozy doctor`", tool.name, tool.cost)
 }
 
@@ -191,7 +191,7 @@ pub struct Archive {
 
 /// Copies `member`, a path inside a `.zip` or `.tar.gz` `archive`, into `out`.
 #[cfg(feature = "fetch")]
-pub fn unpack(
+pub(crate) fn unpack(
     mut archive: impl std::io::Read + std::io::Seek,
     member: &str,
     out: &mut impl std::io::Write,
@@ -300,7 +300,7 @@ pub fn uv(tools: &Path, path: &[PathBuf]) -> Option<Found> {
 
 /// ffmpeg's pinned static build, one per OS/CPU: each archive held to its sha256, nothing else
 /// trusted at download. Every one has libx264 and the native aac encoder, and ships ffprobe.
-pub const FFMPEG_VERSION: &str = "9.0.2";
+pub(crate) const FFMPEG_VERSION: &str = "9.0.2";
 
 /// This OS/CPU's archives, or none where no build is pinned.
 pub fn ffmpeg_build() -> &'static [Archive] {

@@ -25,7 +25,7 @@ pub(crate) use live::Following;
 pub(crate) use rent::{Followed, Notices, agree, follow as until_ready};
 
 #[derive(clap::Args, Debug)]
-pub struct Args {
+pub(crate) struct Args {
     #[command(subcommand)]
     verb: Verb,
 }
@@ -133,7 +133,7 @@ enum Verb {
     },
 }
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Ls { history, since } if history || since.is_some() => history::list(ctx, since).await,
         Verb::Ls { .. } => list::list(ctx).await,

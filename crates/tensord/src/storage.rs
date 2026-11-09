@@ -14,11 +14,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub use tensorfs::store::Store;
+pub(crate) use tensorfs::store::Store;
 use tensorfs::format::{ObjectRef, Repo, Tree};
 
 /// Opens (or creates) the machine store at `root`; one in an older format is refused.
-pub fn open(root: &Path) -> io::Result<Arc<Store>> {
+pub(crate) fn open(root: &Path) -> io::Result<Arc<Store>> {
     Store::open(root).map(Arc::new).map_err(io_error)
 }
 
@@ -26,7 +26,7 @@ pub fn open(root: &Path) -> io::Result<Arc<Store>> {
 /// (without waiting) for as long as the returned file lives; the OS releases it when the machine
 /// exits. A second machine on the same store, by any path, is refused. Readers (`tfs`, the
 /// library) never take it.
-pub fn claim(root: &Path) -> io::Result<std::fs::File> {
+pub(crate) fn claim(root: &Path) -> io::Result<std::fs::File> {
     let real = std::fs::canonicalize(root)?;
     let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(real.join(OWNER_LOCK))?;
     match platform::lock::try_claim(&file)? {
@@ -47,7 +47,7 @@ const TRANSPORT_ROTATE: u64 = 4 << 20;
 /// One line of the store's transport log (`cozy machine logs <m> tensorfs`): what a download or
 /// import did, or why it failed: `<unix seconds> <kind> <subject> <detail>`, one per completed
 /// fetch, never per object. Never fatal.
-pub fn transport(store: &Store, kind: &str, subject: &str, detail: &str) {
+pub(crate) fn transport(store: &Store, kind: &str, subject: &str, detail: &str) {
     let dir = store.root().join("logs");
     let path = dir.join("transport.log");
     let _ = std::fs::create_dir_all(&dir);
@@ -62,7 +62,7 @@ pub fn transport(store: &Store, kind: &str, subject: &str, detail: &str) {
     }
 }
 
-pub fn io_error(error: tensorfs::store::Error) -> io::Error {
+pub(crate) fn io_error(error: tensorfs::store::Error) -> io::Error {
     let kind = match &error {
         tensorfs::store::Error::Full { .. } => io::ErrorKind::StorageFull,
         tensorfs::store::Error::Absent(_) => io::ErrorKind::NotFound,
@@ -74,14 +74,14 @@ pub fn io_error(error: tensorfs::store::Error) -> io::Error {
 
 /// A local model: its commit (tree), that commit's lane and header.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Local {
+pub(crate) struct Local {
     pub tree: ObjectRef,
     pub lane: String,
     pub header: ObjectRef,
 }
 
 /// The local model `repo` (`local/<name>`): its newest commit; None when the name holds nothing.
-pub fn local(store: &Store, repo: &str) -> io::Result<Option<Local>> {
+pub(crate) fn local(store: &Store, repo: &str) -> io::Result<Option<Local>> {
     let Some(tree) = store.get_ref(repo).map_err(io_error)?.and_then(|named| named.commits.last().cloned()) else {
         return Ok(None);
     };
@@ -92,7 +92,7 @@ pub fn local(store: &Store, repo: &str) -> io::Result<Option<Local>> {
 
 /// Names `header` (with its source's repo `files`, in lane `lane`) the local model
 /// `local/<name>`: a new commit, replacing what the name held.
-pub fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap<String, ObjectRef>, lane: &str) -> io::Result<ObjectRef> {
+pub(crate) fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap<String, ObjectRef>, lane: &str) -> io::Result<ObjectRef> {
     let tree = Tree::of(lane, header.clone(), files).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     let tree = store.put_tree(&tree).map_err(io_error)?;
     let repo = format!("local/{name}");
@@ -103,14 +103,14 @@ pub fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap
 }
 
 /// An unlabelled commit of `header` alone.
-pub fn tree_of(store: &Store, header: &ObjectRef) -> io::Result<ObjectRef> {
+pub(crate) fn tree_of(store: &Store, header: &ObjectRef) -> io::Result<ObjectRef> {
     let tree = Tree::of("", header.clone(), &BTreeMap::new()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     store.put_tree(&tree).map_err(io_error)
 }
 
 /// The held object `object` read by its format: a tree (a commit), else a cozytensors header
 /// (`None`); refused when it is neither.
-pub fn tree_or_header(store: &Store, object: &ObjectRef) -> io::Result<Option<Tree>> {
+pub(crate) fn tree_or_header(store: &Store, object: &ObjectRef) -> io::Result<Option<Tree>> {
     let bytes = store.read(object).map_err(io_error)?;
     if let Ok(tree) = Tree::from_json(&bytes) {
         return Ok(Some(tree));
@@ -123,7 +123,7 @@ pub fn tree_or_header(store: &Store, object: &ObjectRef) -> io::Result<Option<Tr
 /// A header composed in memory, the objects it cites that no store holds (its graph), and what
 /// composes it again.
 #[derive(Debug)]
-pub struct View {
+pub(crate) struct View {
     pub header: Vec<u8>,
     pub own: Vec<Vec<u8>>,
     pub recipe: crate::adapter::Recipe,
@@ -139,7 +139,7 @@ fn views() -> &'static Mutex<VecDeque<(String, Arc<View>)>> {
 }
 
 /// Keeps `header` (and `own`) as a view in memory, open over `store`; nothing is written.
-pub fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>, recipe: crate::adapter::Recipe) -> io::Result<tensorfs::store::Checkpoint> {
+pub(crate) fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>, recipe: crate::adapter::Recipe) -> io::Result<tensorfs::store::Checkpoint> {
     let checkpoint = store.view(&header, &own).map_err(io_error)?;
     let sha256 = checkpoint.id().sha256.clone();
     let mut views = views().lock().unwrap();
@@ -153,14 +153,14 @@ pub fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>, recipe: crat
 }
 
 /// The view `id` (`sha256:<hex>` or bare hex) this process keeps.
-pub fn view(id: &str) -> Option<Arc<View>> {
+pub(crate) fn view(id: &str) -> Option<Arc<View>> {
     let sha256 = id.trim_start_matches("sha256:");
     views().lock().unwrap().iter().find(|(id, _)| id == sha256).map(|(_, v)| v.clone())
 }
 
 /// The object `id` (`sha256:<hex>` or bare hex) as the store holds it, its length read off disk;
 /// a view by its header's length.
-pub fn held(store: &Store, id: &str) -> io::Result<ObjectRef> {
+pub(crate) fn held(store: &Store, id: &str) -> io::Result<ObjectRef> {
     let sha256 = id.trim_start_matches("sha256:").to_string();
     if let Some(view) = view(&sha256) {
         return Ok(ObjectRef { sha256, length: view.header.len() as u64 });
@@ -172,7 +172,7 @@ pub fn held(store: &Store, id: &str) -> io::Result<ObjectRef> {
 
 /// The checkpoint `id` names, held here (its structure; chunks may be absent): a header, a
 /// commit's (a run's checkpoint output names its commit), or a view this process keeps.
-pub fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkpoint> {
+pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkpoint> {
     if let Some(view) = view(id) {
         return store.view(&view.header, &view.own).map_err(io_error);
     }
@@ -187,14 +187,14 @@ pub fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkp
 /// The chunks and assets `components` read (all components when empty), each once, that the
 /// store holds or fetches: never a view's own objects (its graph), which live in memory. None
 /// when it names a component the checkpoint lacks.
-pub fn chunks(checkpoint: &tensorfs::store::Checkpoint, components: &[String]) -> Vec<ObjectRef> {
+pub(crate) fn chunks(checkpoint: &tensorfs::store::Checkpoint, components: &[String]) -> Vec<ObjectRef> {
     let own: Vec<String> = view(&checkpoint.id().sha256).map(|v| v.own.iter().map(|o| ObjectRef::of(o).sha256).collect()).unwrap_or_default();
     let wanted = tensorfs::fetch::wanted(checkpoint.header(), (!components.is_empty()).then_some(components)).unwrap_or_default();
     wanted.into_iter().filter(|o| !own.contains(&o.sha256)).collect()
 }
 
 /// `text` is 64 lowercase hex digits (a bare sha256), or `sha256:` and them when `prefixed`.
-pub fn check_digest(what: &str, text: &str, prefixed: bool) -> io::Result<()> {
+pub(crate) fn check_digest(what: &str, text: &str, prefixed: bool) -> io::Result<()> {
     let hex = match prefixed {
         true => text.strip_prefix("sha256:"),
         false => Some(text),

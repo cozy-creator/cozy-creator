@@ -4,7 +4,7 @@
 
 /// One job to place.
 #[derive(Clone, Debug)]
-pub struct Work {
+pub(crate) struct Work {
     /// Those of the list it waits for, each before it.
     pub needs: Vec<usize>,
     /// How long it takes on one GPU of each of its machines, in their order: at a width, by `Scaling`. None: nothing it is like has run on that
@@ -21,16 +21,16 @@ pub struct Work {
 
 /// How a function goes faster with GPUs: the share of it that doesn't.
 #[derive(Clone, Copy, Debug)]
-pub struct Scaling {
+pub(crate) struct Scaling {
     pub serial: f64,
 }
 
 impl Scaling {
     /// Until a width has run here: 2 GPUs near 1.8×, 4 near 3×, about what fast-linked cards do.
-    pub const PRIOR: Scaling = Scaling { serial: 0.1 };
+    pub(crate) const PRIOR: Scaling = Scaling { serial: 0.1 };
 
     /// What a run at `width` that spent `exchange_share` of its time exchanging between GPUs says: the rest went `width` times faster than one GPU would.
-    pub fn from_exchange(width: u32, exchange_share: f64) -> Self {
+    pub(crate) fn from_exchange(width: u32, exchange_share: f64) -> Self {
         if width <= 1 {
             return Self::PRIOR;
         }
@@ -43,21 +43,21 @@ impl Scaling {
         Scaling { serial: ((1.0 / one) - 1.0 / d) / (1.0 - 1.0 / d) }
     }
 
-    pub fn at(self, width: u32) -> f64 {
+    pub(crate) fn at(self, width: u32) -> f64 {
         self.serial + (1.0 - self.serial) / f64::from(width.max(1))
     }
 }
 
 /// What runs of one function on one machine took, per unit of what they made (a second of a shot, or one of anything else), by width.
 #[derive(Clone, Debug, Default)]
-pub struct Learned {
+pub(crate) struct Learned {
     by_width: std::collections::BTreeMap<u32, f64>,
     /// What the newest run at a width above one spent exchanging between its GPUs, and at which.
     exchange: Option<(u32, f64)>,
 }
 
 impl Learned {
-    pub fn took(&mut self, width: u32, per_unit_s: f64, exchange_share: f64) {
+    pub(crate) fn took(&mut self, width: u32, per_unit_s: f64, exchange_share: f64) {
         self.by_width.insert(width.max(1), per_unit_s);
         if width > 1 && exchange_share > 0.0 {
             self.exchange = Some((width, exchange_share));
@@ -65,7 +65,7 @@ impl Learned {
     }
 
     /// How it scales: two widths measured say it outright; else one run's exchange; else the prior.
-    pub fn scaling(&self) -> Scaling {
+    pub(crate) fn scaling(&self) -> Scaling {
         let mut widths = self.by_width.iter();
         if let (Some((&a, &at_a)), Some((&b, &at_b))) = (widths.next(), widths.next_back())
             && a != b
@@ -80,7 +80,7 @@ impl Learned {
     }
 
     /// One unit's time on one GPU, if anything ran.
-    pub fn one_gpu_s(&self) -> Option<f64> {
+    pub(crate) fn one_gpu_s(&self) -> Option<f64> {
         let (&width, &took) = self.by_width.iter().next()?;
         Some(took / self.scaling().at(width))
     }
@@ -88,7 +88,7 @@ impl Learned {
 
 /// Where a job goes in the plan chosen.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Placed {
+pub(crate) struct Placed {
     pub machine: usize,
     pub width: u32,
     pub start_s: f64,
@@ -96,7 +96,7 @@ pub struct Placed {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Plan {
+pub(crate) struct Plan {
     pub placed: Vec<Placed>,
     pub end_s: f64,
 }
@@ -105,7 +105,7 @@ pub struct Plan {
 const TIE: f64 = 0.02;
 
 /// The plan that ends soonest of those capping every job at one width, as what's left shrinks the widest wins: a lone job gets every GPU.
-pub fn plan(works: &[Work], gpus: &[u32]) -> Plan {
+pub(crate) fn plan(works: &[Work], gpus: &[u32]) -> Plan {
     let mut caps: Vec<u32> = works.iter().flat_map(|work| work.widths.iter().copied()).collect();
     caps.sort_unstable();
     caps.dedup();

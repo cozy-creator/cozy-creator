@@ -302,7 +302,7 @@ fn model_of(slot: &Slot) -> String {
 }
 
 /// What a function runs when that's one model, by its main slot: what `models:` and a LoRA naming no slot go on.
-pub fn main_model<'s>(own: &'s [Slot], calls: &[&'s Slot]) -> Option<&'s Slot> {
+pub(crate) fn main_model<'s>(own: &'s [Slot], calls: &[&'s Slot]) -> Option<&'s Slot> {
     let mains = main_models(own, calls);
     let (_, first) = mains.first()?;
     mains.iter().all(|(_, slot)| model_of(slot) == model_of(first) && slot.param == first.param).then_some(*first)

@@ -8,10 +8,10 @@ use crate::format::decode::gptq::{qweight, qzeros};
 use crate::format::decode::{elem, f16};
 use crate::format::{Dtype, Encoding, Error, Result, Value};
 
-pub const INT2: Encoder = row("gptq.int2");
-pub const INT3: Encoder = row("gptq.int3");
-pub const INT4: Encoder = row("gptq.int4");
-pub const INT8: Encoder = row("gptq.int8");
+pub(crate) const INT2: Encoder = row("gptq.int2");
+pub(crate) const INT3: Encoder = row("gptq.int3");
+pub(crate) const INT4: Encoder = row("gptq.int4");
+pub(crate) const INT8: Encoder = row("gptq.int8");
 
 const fn row(scheme: &'static str) -> Encoder {
     Encoder {
@@ -23,7 +23,7 @@ const fn row(scheme: &'static str) -> Encoder {
 
 impl Encoding {
     /// `group_size` `-1` is one group per row; `zero_offset` 1 is GPTQ's v1 zeros, 0 its v2.
-    pub fn gptq(
+    pub(crate) fn gptq(
         bits: u32,
         group_size: i64,
         symmetric: bool,

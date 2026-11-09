@@ -13,7 +13,7 @@ use axum::{
 use std::{net::Ipv4Addr, sync::Mutex};
 
 /// The gateway's origin, serving from its first use.
-pub fn url() -> std::io::Result<String> {
+pub(crate) fn url() -> std::io::Result<String> {
     static URL: Mutex<Option<String>> = Mutex::new(None);
     let mut url = URL.lock().unwrap();
     if let Some(url) = url.as_ref() {

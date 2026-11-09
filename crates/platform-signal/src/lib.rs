@@ -1,5 +1,6 @@
 //! A local event one process sets and its own threads wait on, alongside other handles.
 #![deny(unsafe_code, clippy::undocumented_unsafe_blocks)]
+#![deny(unreachable_pub)]
 use std::{fmt, io};
 
 /// The OS operation and its original error, with errno preserved through conversions.
@@ -8,7 +9,7 @@ pub enum Error {
     Os { op: &'static str, source: io::Error },
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
     pub(crate) fn os(op: &'static str) -> impl FnOnce(io::Error) -> Self {

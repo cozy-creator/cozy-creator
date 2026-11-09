@@ -4,7 +4,7 @@ use super::grid::{Grid, ScaleLayout};
 use super::plan::Codes;
 use super::{logical, Allowed, Ctx, Param, Part, Scheme, View};
 
-pub const MXFP8: Scheme = Scheme {
+pub(crate) const MXFP8: Scheme = Scheme {
     name: "mxfp8",
     view: View::Matrix,
     params: &[
@@ -22,13 +22,13 @@ pub const MXFP8: Scheme = Scheme {
 };
 
 /// `scale_layout`: row-major, or ComfyUI's cuBLAS tiles.
-pub const SCALE_LAYOUT: Param = Param {
+pub(crate) const SCALE_LAYOUT: Param = Param {
     key: "scale_layout",
     allowed: Allowed::Text(&["row_major", "cublas_128x4"]),
 };
 
 /// Row blocks of `block_size`, stored as `scale_layout` says.
-pub fn blocks(c: &Ctx) -> Grid {
+pub(crate) fn blocks(c: &Ctx) -> Grid {
     Grid::Blocks {
         size: c.uint("block_size"),
         layout: ScaleLayout::parse(c.text("scale_layout")).expect("checked against the row"),

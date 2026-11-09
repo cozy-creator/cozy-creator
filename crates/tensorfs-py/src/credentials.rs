@@ -131,7 +131,7 @@ pub(crate) fn provider(
 }
 
 #[pyclass(name = "Endpoint", module = "tensorfs", frozen)]
-pub struct PyEndpoint {
+pub(crate) struct PyEndpoint {
     endpoint: Endpoint,
 }
 
@@ -173,6 +173,6 @@ impl PyEndpoint {
     }
 }
 
-pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEndpoint>()
 }

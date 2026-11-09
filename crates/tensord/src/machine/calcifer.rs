@@ -27,7 +27,7 @@ const MOST: Duration = Duration::from_secs(60);
 /// How often the door looks at a start it waits for.
 const SAMPLE: Duration = Duration::from_millis(100);
 
-pub struct Calcifer {
+pub(crate) struct Calcifer {
     home: Home,
     services: Services,
     program: PathBuf,
@@ -42,7 +42,7 @@ pub struct Calcifer {
 
 impl Calcifer {
     /// None in a process that never recorded its launch path: it has nothing to start.
-    pub fn new(home: &Home, rental: bool) -> Option<Arc<Self>> {
+    pub(crate) fn new(home: &Home, rental: bool) -> Option<Arc<Self>> {
         let user_home = home.root().parent().unwrap_or(home.root());
         let http = reqwest::Client::builder()
             .no_proxy()
@@ -82,7 +82,7 @@ impl Calcifer {
     }
 
     /// A rental's: a thread that keeps one Calcifer running for as long as this service lives.
-    pub fn keep(self: &Arc<Self>) -> std::io::Result<()> {
+    pub(crate) fn keep(self: &Arc<Self>) -> std::io::Result<()> {
         let me = self.clone();
         std::thread::Builder::new().name("keep-calcifer".into()).spawn(move || me.keeping()).map(drop)
     }
@@ -121,7 +121,7 @@ impl Calcifer {
 
     /// The Calcifer to reach: as last read unless `fresh`, else as its record says now. On a rental
     /// `keep` starts one, so no record means none yet. Elsewhere the first use starts it.
-    pub async fn holder(&self, fresh: bool) -> Option<Holder> {
+    pub(crate) async fn holder(&self, fresh: bool) -> Option<Holder> {
         if !fresh {
             if let Some(holder) = self.holder.lock().unwrap().clone() {
                 return Some(holder);

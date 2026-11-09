@@ -17,7 +17,7 @@ pub(crate) mod live;
 mod machine;
 
 #[derive(clap::Args, Debug)]
-pub struct Args {
+pub(crate) struct Args {
     #[command(subcommand)]
     command: Command,
 }
@@ -108,7 +108,7 @@ enum Command {
     },
 }
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.command {
         Command::Ls { query, limit, on } => match on {
             Some(on) => machine::list(ctx, (on != "all").then(|| on.into()), &query).await,
@@ -155,7 +155,7 @@ pub(crate) struct PackageRef {
 impl PackageRef {
     /// A package target without a function (`run::target`'s grammar): `x/y` is account x's
     /// package y.
-    pub fn parse(text: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(text: &str) -> Result<Self, Error> {
         let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("{text:?} is not [org/]name[@release]")).next("cozy package ls");
         let (package, release) = match Published::parse(text.trim()).map_err(|_| invalid())? {
             Published { package, function: None, release, .. } => (package, release),
@@ -166,7 +166,7 @@ impl PackageRef {
         Ok(Self { org: org.into(), name: name.into(), release })
     }
 
-    pub fn package(&self) -> String {
+    pub(crate) fn package(&self) -> String {
         format!("{}/{}", self.org, self.name)
     }
 }

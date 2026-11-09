@@ -132,6 +132,9 @@ strip = true
 # allow it only in their boundary files. A crate whose every unsafe block
 # carries its SAFETY note denies clippy::undocumented_unsafe_blocks at its root.
 [workspace.lints.rust]
+# `pub` means exported (cl-832). Warn here, not deny, only while varena's crates still carry
+# unreachable `pub`s; every other crate root denies it.
+unreachable_pub = "warn"
 unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]

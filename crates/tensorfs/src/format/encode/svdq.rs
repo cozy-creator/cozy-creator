@@ -12,11 +12,11 @@ use crate::format::{Error, Result};
 #[path = "svdq_fit.rs"]
 mod fit;
 #[cfg(feature = "quantize")]
-pub use fit::{
+pub(crate) use fit::{
     SVDQ_FIT_STRATEGY, SVDQ_NUMERICAL_IDENTITY, SvdqFitted, svdq_fit, svdq_fit_workspace,
 };
 
-pub const SVDQ_NVFP4: Encoder = Encoder {
+pub(crate) const SVDQ_NVFP4: Encoder = Encoder {
     scheme: "svdq.nvfp4",
     quantize: None,
     pack: Some(pack),

@@ -22,7 +22,7 @@ pub(super) const ROTATION_SIZE: Param = Param {
     allowed: Allowed::Uint(&[4, 16, 64, 256, 1024, 4096, 16384, 65536]),
 };
 
-pub const TENSORWISE: Scheme = Scheme {
+pub(crate) const TENSORWISE: Scheme = Scheme {
     name: "int8.tensorwise",
     view: View::Flat,
     params: &[],
@@ -34,7 +34,7 @@ pub const TENSORWISE: Scheme = Scheme {
     decode: |c| Ok(scaled(c, Grid::Tensor).into()),
 };
 
-pub const ROWWISE: Scheme = Scheme {
+pub(crate) const ROWWISE: Scheme = Scheme {
     name: "int8.rowwise",
     view: View::Matrix,
     params: &[],
@@ -45,7 +45,7 @@ pub const ROWWISE: Scheme = Scheme {
     decode: |c| Ok(scaled(c, Grid::Row).into()),
 };
 
-pub const COLUMNWISE: Scheme = Scheme {
+pub(crate) const COLUMNWISE: Scheme = Scheme {
     name: "int8.columnwise",
     view: View::Matrix,
     params: &[],
@@ -56,7 +56,7 @@ pub const COLUMNWISE: Scheme = Scheme {
     decode: |c| Ok(scaled(c, Grid::Col).into()),
 };
 
-pub const CONVROT: Scheme = Scheme {
+pub(crate) const CONVROT: Scheme = Scheme {
     name: "int8.convrot",
     view: View::Matrix,
     params: &[ROTATION, ROTATION_SIZE],

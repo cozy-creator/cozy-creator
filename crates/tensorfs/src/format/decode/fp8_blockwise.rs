@@ -7,7 +7,7 @@ use super::plan::Codes;
 use super::{logical, Allowed, Ctx, Param, Part, Scheme, View};
 use crate::format::Value;
 
-pub const BLOCKWISE: Scheme = Scheme {
+pub(crate) const BLOCKWISE: Scheme = Scheme {
     name: "fp8.blockwise",
     view: View::Matrix,
     params: &[

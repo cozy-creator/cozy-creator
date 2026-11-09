@@ -13,7 +13,7 @@ use std::{
 use tensorfs::format::{ObjectRef, Repo};
 
 #[derive(Clone, Default, PartialEq, Debug)]
-pub struct Listing {
+pub(crate) struct Listing {
     pub models: Vec<v1::Model>,
     /// Every held model's bytes together, shared content counted once.
     pub bytes: u64,
@@ -22,7 +22,7 @@ pub struct Listing {
 /// A Hub commit this machine pulled: `tree`, `repository`'s `release` in `lane` (an empty
 /// release: a commit by hash). The store's ref of the repository records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pulled {
+pub(crate) struct Pulled {
     pub repository: String,
     pub release: String,
     pub lane: String,
@@ -32,7 +32,7 @@ pub struct Pulled {
 impl Pulled {
     /// Names the pull in the store: `repository`'s ref, a cache TensorFS may expire. The tree
     /// must be here. One the ref already names writes nothing.
-    pub fn record(&self, store: &Store) -> io::Result<()> {
+    pub(crate) fn record(&self, store: &Store) -> io::Result<()> {
         let held = store.get_ref(&self.repository).map_err(storage::io_error)?;
         if held.as_ref().is_some_and(|repo| entries(repo).any(|(release, _, tree)| release == self.release && *tree == self.tree)) {
             return Ok(());
@@ -52,7 +52,7 @@ impl Pulled {
 
     /// The Hub commit whose header is `header`, as this machine pulled it; None for one never
     /// pulled.
-    pub fn of(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
+    pub(crate) fn of(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
         for repo in store.refs().map_err(storage::io_error)? {
             if repo.name.starts_with("local/") {
                 continue;
@@ -89,7 +89,7 @@ fn moved(root: &Path) -> u64 {
 }
 
 /// The store at `root`'s held models; none while it cannot be read.
-pub fn listing(root: &Path) -> Listing {
+pub(crate) fn listing(root: &Path) -> Listing {
     if !root.join("format").is_file() {
         return Listing::default();
     }

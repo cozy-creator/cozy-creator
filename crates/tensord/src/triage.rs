@@ -17,10 +17,10 @@ const MAX_TRACEBACK: usize = 256 << 10;
 const MAX_TEXT: usize = 16 << 10;
 /// Enough executor stderr to hold a crash's faulthandler stacks past the extension-module list
 /// Python prints after them.
-pub const MAX_STDERR: u64 = 64 << 10;
+pub(crate) const MAX_STDERR: u64 = 64 << 10;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct TriageRef {
+pub(crate) struct TriageRef {
     pub subject_id: String,
     /// Hex SHA-256 of the bundle's canonical bytes.
     pub sha256: String,
@@ -28,7 +28,7 @@ pub struct TriageRef {
 }
 
 /// What the machine knows of one failed attempt.
-pub struct Facts<'a> {
+pub(crate) struct Facts<'a> {
     pub request_id: &'a str,
     pub attempt: u32,
     pub terminal: &'a str,
@@ -45,7 +45,7 @@ pub struct Facts<'a> {
 
 /// `text` within `limit` chars: whole, or its head and its tail around a marker. A failure's
 /// first line names the operation and its last lines the cause (uv's error after its progress).
-pub fn ends(text: &str, limit: usize) -> String {
+pub(crate) fn ends(text: &str, limit: usize) -> String {
     const MARK: &str = " [...] ";
     let count = text.chars().count();
     if count <= limit {
@@ -57,7 +57,7 @@ pub fn ends(text: &str, limit: usize) -> String {
 }
 
 /// `scheme://user:secret@host` becomes `scheme://***@host`.
-pub fn masked(text: &str) -> String {
+pub(crate) fn masked(text: &str) -> String {
     let (mut out, mut rest) = (String::new(), text);
     while let Some(at) = rest.find("://") {
         let (head, after) = rest.split_at(at + 3);
@@ -76,7 +76,7 @@ pub fn masked(text: &str) -> String {
 
 /// What travels with a failed run (`Reason.detail`, and a failed child's answer to its caller): its
 /// raising traceback, else the end of its executor's stderr with repeats collapsed, secrets masked.
-pub fn detail(bundle: &[u8]) -> Option<String> {
+pub(crate) fn detail(bundle: &[u8]) -> Option<String> {
     const TRACEBACK_LINES: usize = 30;
     const STDERR_LINES: usize = 12;
     const DETAIL_BYTES: usize = 8 << 10;
@@ -124,7 +124,7 @@ fn capped(text: &str, limit: usize) -> &str {
 
 /// Write the bundle under `root/triage/` and return the reference the terminal carries; it
 /// names this TensorD and, once an executor said hello, the Runtime and TensorFS it ran.
-pub fn write(
+pub(crate) fn write(
     root: &Path,
     facts: &Facts,
     executor: Option<&crate::journal::ExecutorFacts>,
@@ -173,7 +173,7 @@ pub fn write(
 }
 
 /// The bundle's bytes, checked against the reference its terminal carries.
-pub fn read(root: &Path, triage: &TriageRef) -> io::Result<Vec<u8>> {
+pub(crate) fn read(root: &Path, triage: &TriageRef) -> io::Result<Vec<u8>> {
     if !triage
         .subject_id
         .bytes()

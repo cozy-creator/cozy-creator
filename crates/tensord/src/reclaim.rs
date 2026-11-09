@@ -30,10 +30,10 @@ use std::{
 };
 use platform::durable::{self, FileId};
 
-pub const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Installed or used within one sweep period counts as in use, even on a low disk: an
 /// install is never evicted between its creation and its first run or binding.
-pub const IDLE: Duration = Duration::from_secs(10 * 60);
+pub(crate) const IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// 1/50 of the filesystem, at least 1 GiB and at most 10 GiB.
 const RESERVE_BYTES: (u64, u64) = (1 << 30, 10 << 30);
@@ -42,7 +42,7 @@ const RESERVE_INODES: u64 = 32;
 
 /// One filesystem: its size and what is free on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Disk {
+pub(crate) struct Disk {
     pub capacity: u64,
     pub available: u64,
     /// Zero when the filesystem has no inode limit.
@@ -51,7 +51,7 @@ pub struct Disk {
 }
 
 impl Disk {
-    pub fn measure(root: &Path) -> io::Result<Disk> {
+    pub(crate) fn measure(root: &Path) -> io::Result<Disk> {
         let space = platform::durable::space(root).map_err(|error| {
             io::Error::other(format!("cannot measure the filesystem under {}: {error}", root.display()))
         })?;
@@ -64,36 +64,36 @@ impl Disk {
     }
 
     /// Never written into by an optional cache.
-    pub fn reserve(&self) -> u64 {
+    pub(crate) fn reserve(&self) -> u64 {
         (self.capacity / RESERVE_DIVISOR).clamp(RESERVE_BYTES.0, RESERVE_BYTES.1)
     }
 
     /// A low disk has no more than its reserve free: the bytes to free before it has more.
-    pub fn short(&self) -> Option<u64> {
+    pub(crate) fn short(&self) -> Option<u64> {
         let low = self.available <= self.reserve()
             || (self.inodes > 0 && self.available_inodes <= RESERVE_INODES);
         low.then(|| (self.reserve() + 1).saturating_sub(self.available).max(1))
     }
     /// What a write may still take: what is free past the reserve.
-    pub fn free(&self) -> u64 {
+    pub(crate) fn free(&self) -> u64 {
         self.available.saturating_sub(self.reserve())
     }
 }
 
 /// The filesystem under `path`, now.
-pub fn measure(path: &Path) -> io::Result<Disk> {
+pub(crate) fn measure(path: &Path) -> io::Result<Disk> {
     Disk::measure(path)
 }
 
 /// What one sweep removed: entries and bytes by kind, and the package environments by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Swept {
+pub(crate) struct Swept {
     kinds: BTreeMap<Kind, (usize, u64)>,
     environments: Vec<String>,
 }
 
 impl Swept {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.kinds.is_empty()
     }
 
@@ -117,7 +117,7 @@ impl std::fmt::Display for Swept {
 }
 
 /// Bytes for people: MiB to a tenth below a GiB, else GiB to a hundredth.
-pub fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     match bytes < 1 << 30 {
         true => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
         false => format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64),
@@ -127,12 +127,12 @@ pub fn size(bytes: u64) -> String {
 /// The persistent compiled-kernel store (`Seal::prepare`'s `<root>/u<uid>/`). Every executor
 /// and kernel boot holds its namespace's lock (`kernel_hold`) shared until it exits; a sweep
 /// touches a namespace only while it holds that lock exclusively.
-pub struct KernelCaches {
+pub(crate) struct KernelCaches {
     pub root: PathBuf,
 }
 
 /// The lock of one kernel namespace, beside it where its identity cannot reach.
-pub fn kernel_hold(kernels: &Path, namespace: &str) -> io::Result<File> {
+pub(crate) fn kernel_hold(kernels: &Path, namespace: &str) -> io::Result<File> {
     File::options()
         .create(true)
         .truncate(false)
@@ -141,7 +141,7 @@ pub fn kernel_hold(kernels: &Path, namespace: &str) -> io::Result<File> {
 }
 
 /// Everything one sweep looks at.
-pub struct Caches<'a> {
+pub(crate) struct Caches<'a> {
     pub engine: &'a Engine,
     pub catalog: &'a Catalog,
     /// Generations installations or configured packages still name.
@@ -251,7 +251,7 @@ impl Entry {
 /// Delete generation `identity` under `generations` now (a removed installation's), unless a
 /// process holds it: renamed first, so no resolve finds it. The bytes it freed, or None when
 /// it is held (an executor of it still runs); reclaim removes it once nothing names it.
-pub fn remove_generation(generations: &Path, identity: &str) -> io::Result<Option<u64>> {
+pub(crate) fn remove_generation(generations: &Path, identity: &str) -> io::Result<Option<u64>> {
     let path = generations.join(identity);
     let Ok(filesystem) = FileId::at(&path).map(|id| id.dev) else {
         return Ok(Some(0));
@@ -313,7 +313,7 @@ fn remove(path: &Path) -> bool {
 }
 
 /// Bytes unlinking `path` would free now (`releasable`), for a removal's log line.
-pub fn freeable(path: &Path) -> u64 {
+pub(crate) fn freeable(path: &Path) -> u64 {
     FileId::at(path).ok().and_then(|id| releasable(path, id.dev, &open_files())).unwrap_or(0)
 }
 
@@ -580,7 +580,7 @@ fn unlinked_since(path: &Path) -> Option<SystemTime> {
 }
 
 /// TTL always; on a low disk, least recently used first until it is not (`Kind`'s order).
-pub fn sweep(caches: &Caches) -> io::Result<Swept> {
+pub(crate) fn sweep(caches: &Caches) -> io::Result<Swept> {
     // One at a time: the reclaim thread's and a store admit's (`Service::reclaim_for`).
     static SWEEPING: Mutex<()> = Mutex::new(());
     let _one = SWEEPING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -807,7 +807,7 @@ fn label(generation: &Path) -> String {
 
 /// What fills the machine's disk, by kind, as last measured (`measure_usage`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Usage {
+pub(crate) struct Usage {
     pub models: u64,
     pub environments: u64,
     pub runtime: u64,
@@ -817,7 +817,7 @@ pub struct Usage {
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
 
 /// The last measure of what fills the disk; none before the first.
-pub fn usage() -> Option<Usage> {
+pub(crate) fn usage() -> Option<Usage> {
     *USAGE.lock().unwrap()
 }
 
@@ -825,7 +825,7 @@ pub fn usage() -> Option<Usage> {
 /// `engine` (generations, editable ones: their own files, `own`) and the entries this machine
 /// added to `uv_cache` that no environment hard-links; its runs' files (inputs and outputs); the rest of
 /// `engine` (the Runtime pair, kernels, the toolchain, Pythons).
-pub fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>) {
+pub(crate) fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>) {
     let generations = engine.join("generations");
     let editable = engine.join("editable");
     let skip: Vec<PathBuf> = [generations.clone(), editable.clone(), engine.join("execution")].into_iter().chain(uv_cache.map(Path::to_path_buf)).collect();
@@ -869,7 +869,7 @@ fn du(path: &Path, skip: &[PathBuf]) -> u64 {
 
 /// A refusal's account of the disk under `path`: what fills it and the `--disk-gb` that would
 /// also hold `missing` bytes more.
-pub fn advice(path: &Path, missing: u64) -> String {
+pub(crate) fn advice(path: &Path, missing: u64) -> String {
     let Ok(disk) = measure(path) else {
         return String::new();
     };

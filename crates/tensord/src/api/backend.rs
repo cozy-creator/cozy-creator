@@ -3,7 +3,7 @@ use super::{auth::VerifiedActor, domain, v1};
 use std::collections::BTreeMap;
 use api::error::Error;
 
-pub trait MachineBackend: Send + Sync + 'static {
+pub(crate) trait MachineBackend: Send + Sync + 'static {
     /// A count that moves whenever what the engine records may have changed (runs,
     /// installations, warm sets, held models); None when unknown: then read it all each time.
     fn activity(&self) -> Option<u64> {
@@ -124,7 +124,7 @@ pub trait MachineBackend: Send + Sync + 'static {
     }
 }
 /// One consistent view of an output's current bytes: its parts in order.
-pub struct OutputSnapshot {
+pub(crate) struct OutputSnapshot {
     pub parts: Vec<(std::fs::File, u64)>,
     pub length: u64,
     /// The 1-based ordinal of this (output, index)'s products in the run's log.

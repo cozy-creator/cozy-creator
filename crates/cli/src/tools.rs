@@ -87,7 +87,7 @@ fn path() -> Vec<PathBuf> {
 
 /// The refusal a feature gives when an essential tool is missing: what its absence costs, what
 /// installs it, and `cozy doctor`.
-pub fn missing(ctx: &Context, name: &str) -> Error {
+pub(crate) fn missing(ctx: &Context, name: &str) -> Error {
     let tool = tools::tool(name);
     Error::new(
         Kind::Unavailable,

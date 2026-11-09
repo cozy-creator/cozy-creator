@@ -11,7 +11,7 @@ use sigstore_verify::{
     types::{Artifact, Bundle, Sha256Hash},
 };
 
-pub const RELEASES: &str = "https://github.com/cozy-creator/cozy-creator/releases";
+pub(crate) const RELEASES: &str = "https://github.com/cozy-creator/cozy-creator/releases";
 const ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// This repo's GitHub id, which a rename keeps.
 const REPOSITORY_ID: &str = "1345607976";

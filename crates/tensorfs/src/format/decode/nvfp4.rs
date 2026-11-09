@@ -10,7 +10,7 @@ use crate::format::Result;
 
 const F32: Dtypes = &["F32"];
 
-pub const NVFP4: Scheme = Scheme {
+pub(crate) const NVFP4: Scheme = Scheme {
     name: "nvfp4",
     view: View::Matrix,
     params: PARAMS,

@@ -13,7 +13,7 @@ use std::{
 };
 use platform::durable::Mode;
 
-pub struct Lifetime {
+pub(crate) struct Lifetime {
     pub boot_id: String,
     pub cert_pem: String,
     pub key_pem: String,
@@ -25,7 +25,7 @@ pub struct Lifetime {
 /// killed predecessor's service holds it a moment longer, exiting (perhaps in uninterruptible
 /// sleep, its descriptors already closed): a live holder refuses the root, and a lock only
 /// dying processes or none hold is waited out until the kernel releases it.
-pub fn hold(layout: &Layout) -> io::Result<()> {
+pub(crate) fn hold(layout: &Layout) -> io::Result<()> {
     fs::create_dir_all(&layout.state)?;
     let lock = LockFile::new(layout.state.join("agent.lock"));
     let held = match lock.try_lock(Kind::Exclusive)? {
@@ -47,7 +47,7 @@ pub fn hold(layout: &Layout) -> io::Result<()> {
 }
 
 /// Mints or reopens this root's lifetime.
-pub fn open(layout: &Layout) -> io::Result<Lifetime> {
+pub(crate) fn open(layout: &Layout) -> io::Result<Lifetime> {
     for dir in [&layout.bootstrap, &layout.state] {
         fs::create_dir_all(dir)?;
     }
@@ -117,13 +117,13 @@ fn mint_leaf() -> io::Result<(String, String)> {
     Ok((cert.pem(), key.serialize_pem()))
 }
 
-pub fn random<const N: usize>() -> io::Result<[u8; N]> {
+pub(crate) fn random<const N: usize>() -> io::Result<[u8; N]> {
     let mut out = [0; N];
     getrandom::fill(&mut out).map_err(|error| io::Error::other(error.to_string()))?;
     Ok(out)
 }
 
-pub fn write_atomic(target: &Path, data: &[u8], mode: u32) -> io::Result<()> {
+pub(crate) fn write_atomic(target: &Path, data: &[u8], mode: u32) -> io::Result<()> {
     let dir = target
         .parent()
         .ok_or_else(|| invalid("a target needs a directory"))?;

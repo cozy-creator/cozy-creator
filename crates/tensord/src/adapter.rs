@@ -19,18 +19,18 @@ use tensorfs::store::{Checkpoint, Store};
 
 use crate::storage;
 
-pub const FORMAT: &str = "cozy.model.lora/1";
+pub(crate) const FORMAT: &str = "cozy.model.lora/1";
 /// A graph with a DoRA layer: a Runtime that reads only [`FORMAT`] refuses it, never applies it as a LoRA.
-pub const DORA_FORMAT: &str = "cozy.model.lora/2";
+pub(crate) const DORA_FORMAT: &str = "cozy.model.lora/2";
 /// The graph's asset in each adapted component of the view.
-pub const GRAPH_FILE: &str = "model_adapters.json";
+pub(crate) const GRAPH_FILE: &str = "model_adapters.json";
 
 /// One caller adapter, in order. With neither component named, each of the adapter's factor
 /// components adapts the base component named like it, else the one its layers fit, of those the
 /// call `runs` (empty: all); a named `source_component` alone adapts the one it fits; a named
 /// `component` takes the factor component named like it, else `adapter`, else the only one.
 #[derive(Clone, Debug)]
-pub struct Selection {
+pub(crate) struct Selection {
     pub checkpoint: ObjectRef,
     pub component: String,
     pub source_component: String,
@@ -41,14 +41,14 @@ pub struct Selection {
 /// What composes a view again, by id: a plan keeps it, since a view lives only in memory (a
 /// restart, or the registry's cap, loses it).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Recipe {
+pub(crate) struct Recipe {
     pub base: String,
     pub selections: Vec<Chosen>,
 }
 
 /// One [`Selection`] by its checkpoint's id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Chosen {
+pub(crate) struct Chosen {
     pub checkpoint: String,
     pub component: String,
     pub source_component: String,
@@ -58,7 +58,7 @@ pub struct Chosen {
 }
 
 /// The view `id`, composed again from `recipe` when this process no longer keeps it.
-pub fn ensure(store: &Store, id: &str, recipe: &Recipe) -> io::Result<()> {
+pub(crate) fn ensure(store: &Store, id: &str, recipe: &Recipe) -> io::Result<()> {
     if storage::view(id).is_some() {
         return Ok(());
     }
@@ -81,7 +81,7 @@ pub fn ensure(store: &Store, id: &str, recipe: &Recipe) -> io::Result<()> {
 /// The composed view, `view-<composition>`, open in memory (`storage::view`): it holds the base's
 /// and the factors' objects while the caller holds it.
 #[derive(Clone, Debug)]
-pub struct Composed {
+pub(crate) struct Composed {
     pub name: String,
     pub checkpoint: Checkpoint,
     /// The base components each selection adapts, in order.
@@ -430,7 +430,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
 
 /// The adapter view of `base` with `selections`, composed by reference (the same bytes, so the
 /// same id, each time) and kept in this process's memory, never the store.
-pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io::Result<Composed> {
+pub(crate) fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io::Result<Composed> {
     let checkpoint = |header: &ObjectRef| store.checkpoint(header).map_err(storage::io_error);
     let base_ref = base;
     let base = checkpoint(base)?;

@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-pub const DOMAIN: &[u8] = b"cozy.pod-readiness/1\0";
+pub(crate) const DOMAIN: &[u8] = b"cozy.pod-readiness/1\0";
 const MAX_ENVELOPE_BYTES: usize = 64 << 10;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -24,7 +24,7 @@ struct Envelope {
 /// This boot's one envelope. A retained envelope is verified with a replayed key and served
 /// byte for byte: a provider restart may verify what was sealed, never sign again.
 /// An unsigned local envelope may refresh GPU discovery while retaining its identity.
-pub struct Readiness {
+pub(crate) struct Readiness {
     path: Option<PathBuf>,
     /// A rental's envelope is signed for its Hub; this computer's is not signed.
     required: bool,
@@ -42,7 +42,7 @@ struct State {
 impl Readiness {
     /// `path` None keeps the envelope in memory (development front doors). `required` is a
     /// rental: with neither a key nor a retained envelope the boot cannot prove itself.
-    pub fn open(
+    pub(crate) fn open(
         path: Option<PathBuf>,
         key: Option<Vec<u8>>,
         required: bool,
@@ -86,23 +86,23 @@ impl Readiness {
 
     /// A persisted receipt belongs to a real machine, which measures its GPUs. Development
     /// front doors report none rather than query the driver of the computer they run on.
-    pub fn measures_gpus(&self) -> bool {
+    pub(crate) fn measures_gpus(&self) -> bool {
         self.path.is_some()
     }
 
     /// The sealed envelope, or None before readiness.
-    pub fn envelope(&self) -> Option<Vec<u8>> {
+    pub(crate) fn envelope(&self) -> Option<Vec<u8>> {
         self.state.lock().unwrap().sealed.clone()
     }
 
     /// The payload a retained envelope or this boot's seal attested.
-    pub fn attested(&self) -> Option<Vec<u8>> {
+    pub(crate) fn attested(&self) -> Option<Vec<u8>> {
         self.state.lock().unwrap().retained.clone()
     }
 
     /// True when this call publishes an envelope. Signed rentals retain the same boot, leaf
     /// and GPU set. An unsigned local restart may update discovery, never its identity.
-    pub fn seal(&self, payload: Vec<u8>) -> io::Result<bool> {
+    pub(crate) fn seal(&self, payload: Vec<u8>) -> io::Result<bool> {
         let mut state = self.state.lock().unwrap();
         if let Some(retained) = &state.retained {
             let unsigned_local = !self.required
@@ -150,12 +150,12 @@ impl Readiness {
         Ok(true)
     }
 
-    pub fn proved(&self) -> bool {
+    pub(crate) fn proved(&self) -> bool {
         self.state.lock().unwrap().proved
     }
 
     /// Blocks until this process has proved readiness (sealed, or matched the retained seal).
-    pub fn wait_proved(&self) {
+    pub(crate) fn wait_proved(&self) {
         let state = self.state.lock().unwrap();
         drop(self.proved.wait_while(state, |s| !s.proved).unwrap());
     }
@@ -163,7 +163,7 @@ impl Readiness {
 
 /// One accelerator as the Runtime and Hub name it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Gpu {
+pub(crate) struct Gpu {
     pub device_index: u32,
     pub device_name: String,
     pub device_uuid: String,
@@ -182,7 +182,7 @@ pub struct Gpu {
 /// The driver's inventory (NVML) and each GPU's memory class (CUDA's device attributes). It
 /// initializes CUDA here: call it once, in the service, which forks nothing without exec after.
 /// No NVIDIA driver is a CPU machine.
-pub fn gpus(visible: Option<&str>) -> (Vec<Gpu>, Vec<String>) {
+pub(crate) fn gpus(visible: Option<&str>) -> (Vec<Gpu>, Vec<String>) {
     let (mut probed, mut problems) = platform::gpu::probe(visible);
     platform::gpu::memory_classes(&mut probed);
     let gpus = (probed.into_iter())
@@ -226,7 +226,7 @@ fn row(g: platform::gpu::Gpu) -> Result<Gpu, String> {
 
 /// The facts the Hub's readiness reader requires of a machine image, as measured here on
 /// `cozy.machine.v1`, the one protocol this listener serves.
-pub struct Measured<'a> {
+pub(crate) struct Measured<'a> {
     pub boot_id: &'a str,
     pub worker_port: u16,
     pub cert_der: &'a [u8],
@@ -239,7 +239,7 @@ pub struct Measured<'a> {
     pub webrtc_port: Option<u16>,
 }
 impl Measured<'_> {
-    pub fn payload(&self) -> Vec<u8> {
+    pub(crate) fn payload(&self) -> Vec<u8> {
         let mut value = serde_json::json!({
             "pod_boot_id": self.boot_id,
             "worker_internal_port": self.worker_port,
@@ -332,7 +332,7 @@ fn mac(key: &[u8], payload: &[u8]) -> String {
 }
 
 /// The boot id the payload names.
-pub fn boot_id(payload: &[u8]) -> Option<String> {
+pub(crate) fn boot_id(payload: &[u8]) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct Boot {
         pod_boot_id: String,
@@ -344,10 +344,10 @@ pub fn boot_id(payload: &[u8]) -> Option<String> {
 
 mod standard_base64 {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    pub fn serialize<S: serde::Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: serde::Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&STANDARD.encode(bytes))
     }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let text: String = serde::Deserialize::deserialize(d)?;
         STANDARD.decode(text).map_err(serde::de::Error::custom)
     }

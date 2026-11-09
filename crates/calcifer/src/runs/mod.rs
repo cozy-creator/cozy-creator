@@ -30,7 +30,7 @@ pub(crate) mod clip;
 pub(crate) mod files;
 pub(crate) mod report;
 pub(crate) mod spec;
-pub mod target;
+pub(crate) mod target;
 
 use bind::Terms;
 use target::Resolved;
@@ -132,7 +132,7 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
 /// binding anything again, and another ask under it is a conflict. Local code not yet made ready
 /// answers the run that makes it ready (`preparing`): its client follows that, then asks again.
 /// The files it's given join its project, so asking it again still finds them once what held them is gone.
-pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
+pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
     let digest = digest(&ask);
     let calcifer = &api.calcifer;
     if let Some((row, recorded)) = calcifer.store().recorded(key).map_err(store)? {

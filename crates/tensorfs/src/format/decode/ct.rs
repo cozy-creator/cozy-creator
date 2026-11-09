@@ -9,14 +9,14 @@ use super::plan::{self, Elems, Term};
 use super::{Allowed, Ctx, Param, Part, Plan, Scheme, Shape, View};
 use crate::format::{Dtype, Result};
 
-pub const INT1: Scheme = scheme("ct.int1");
-pub const INT2: Scheme = scheme("ct.int2");
-pub const INT3: Scheme = scheme("ct.int3");
-pub const INT4: Scheme = scheme("ct.int4");
-pub const INT5: Scheme = scheme("ct.int5");
-pub const INT6: Scheme = scheme("ct.int6");
-pub const INT7: Scheme = scheme("ct.int7");
-pub const INT8: Scheme = scheme("ct.int8");
+pub(crate) const INT1: Scheme = scheme("ct.int1");
+pub(crate) const INT2: Scheme = scheme("ct.int2");
+pub(crate) const INT3: Scheme = scheme("ct.int3");
+pub(crate) const INT4: Scheme = scheme("ct.int4");
+pub(crate) const INT5: Scheme = scheme("ct.int5");
+pub(crate) const INT6: Scheme = scheme("ct.int6");
+pub(crate) const INT7: Scheme = scheme("ct.int7");
+pub(crate) const INT8: Scheme = scheme("ct.int8");
 
 const fn scheme(name: &'static str) -> Scheme {
     Scheme {
@@ -91,7 +91,7 @@ fn packing(c: &Ctx, axis: usize) -> Packing<'static> {
 }
 
 /// Codes `q + 2^(b−1)` along `axis` of a `[R, C]` array stored as is.
-pub fn words(bits: u32, fill: Fill, axis: usize) -> Packing<'static> {
+pub(crate) fn words(bits: u32, fill: Fill, axis: usize) -> Packing<'static> {
     Packing {
         bits,
         word: 32,

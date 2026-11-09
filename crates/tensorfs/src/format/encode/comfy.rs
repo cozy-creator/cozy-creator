@@ -12,47 +12,47 @@ use super::{Encoder, Input, OwnedPart, elem, encoding};
 use crate::format::decode::{SCHEMES, bf16, check, f16};
 use crate::format::{Dtype, Encoding, Error, Result, Value};
 
-pub const ASYM_W4A8_INT8: Encoder = Encoder {
+pub(crate) const ASYM_W4A8_INT8: Encoder = Encoder {
     scheme: "comfy.asym_w4a8_int8",
     quantize: Some(|i| quantize_with(i, &Kitchen::default())),
     pack: None,
 };
 
-pub const W4A8_CONVROT: Encoder = Encoder {
+pub(crate) const W4A8_CONVROT: Encoder = Encoder {
     scheme: "w4a8.convrot",
     quantize: Some(|i| quantize_with(i, &Kitchen::default())),
     pack: None,
 };
 
-pub const W6A8_INT8: Encoder = Encoder {
+pub(crate) const W6A8_INT8: Encoder = Encoder {
     scheme: "comfy.w6a8_int8",
     quantize: Some(|i| quantize_with(i, &Kitchen::default())),
     pack: None,
 };
 
-pub const INT4_CONVROT: Encoder = Encoder {
+pub(crate) const INT4_CONVROT: Encoder = Encoder {
     scheme: "int4.convrot",
     quantize: Some(|i| quantize_with(i, &Kitchen::default())),
     pack: None,
 };
 
 impl Encoding {
-    pub fn comfy_asym_w4a8_int8(group_size: u64, rotation_size: u64) -> Encoding {
+    pub(crate) fn comfy_asym_w4a8_int8(group_size: u64, rotation_size: u64) -> Encoding {
         encoding(
             "comfy.asym_w4a8_int8",
             &grouped_params(group_size, rotation_size),
         )
     }
-    pub fn w4a8_convrot(rotation_size: u64) -> Encoding {
+    pub(crate) fn w4a8_convrot(rotation_size: u64) -> Encoding {
         encoding("w4a8.convrot", &grouped_params(16, rotation_size))
     }
-    pub fn comfy_w6a8_int8(group_size: u64, rotation_size: u64) -> Encoding {
+    pub(crate) fn comfy_w6a8_int8(group_size: u64, rotation_size: u64) -> Encoding {
         encoding(
             "comfy.w6a8_int8",
             &grouped_params(group_size, rotation_size),
         )
     }
-    pub fn int4_convrot(rotation_size: u64) -> Encoding {
+    pub(crate) fn int4_convrot(rotation_size: u64) -> Encoding {
         let p = [
             ("rotation", "kron_regular_h4".into()),
             ("rotation_size", rotation_size.into()),
@@ -72,7 +72,7 @@ fn grouped_params(group_size: u64, rotation_size: u64) -> [(&'static str, Value)
 /// Kitchen's quantizer options beside the encoding's params; `default()` is what ComfyUI
 /// writes (a codebook, symmetric, `F8_E4M3` group scales, W6A8's scale search).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Kitchen {
+pub(crate) struct Kitchen {
     /// 4-bit: a Lloyd-Max codebook (`codebook`); else uniform `q − 8`.
     pub codebook: bool,
     /// 4-bit: `false` is kitchen's asymmetric min/max grid with a `correction`.
@@ -103,7 +103,7 @@ pub(super) const LUT: [f32; 16] = [
 
 /// The parts of `input.encoding` from its values with kitchen's `options` (ignored by
 /// `int4.convrot`, which has none).
-pub fn quantize_with(input: &Input, options: &Kitchen) -> Result<Vec<OwnedPart>> {
+pub(crate) fn quantize_with(input: &Input, options: &Kitchen) -> Result<Vec<OwnedPart>> {
     let scheme = input.encoding.scheme.as_str();
     let fail = |d: String| Error::Encode(format!("{scheme}: {d}"));
     if !matches!(

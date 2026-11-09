@@ -63,11 +63,11 @@ impl Checkpoint {
 
 impl CheckpointFile {
     /// Its length in bytes: the last object's end.
-    pub fn len(&self) -> u64 {
+    pub(crate) fn len(&self) -> u64 {
         self.len
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
 

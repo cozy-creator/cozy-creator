@@ -53,7 +53,7 @@ pub struct Packing<'a> {
 }
 
 /// One code per byte: unsigned (an 8-bit element format's code, a `U8` index), or `I8`.
-pub const BYTES: Packing = Packing {
+pub(crate) const BYTES: Packing = Packing {
     bits: 8,
     word: 8,
     transposed: false,
@@ -62,7 +62,7 @@ pub const BYTES: Packing = Packing {
     order: Order::LowFirst,
     codes: Codes::Unsigned(0),
 };
-pub const SIGNED_BYTES: Packing = Packing {
+pub(crate) const SIGNED_BYTES: Packing = Packing {
     codes: Codes::Signed,
     ..BYTES
 };
@@ -77,7 +77,7 @@ impl Packing<'_> {
     }
 
     /// Words in a lane of `n` codes.
-    pub fn words(&self, n: usize) -> Result<usize> {
+    pub(crate) fn words(&self, n: usize) -> Result<usize> {
         match self.fill {
             Fill::Word => Ok(n.div_ceil(self.per())),
             Fill::Dense => Ok((n * self.bits as usize).div_ceil(self.word as usize)),
@@ -100,7 +100,7 @@ impl Packing<'_> {
 
     /// The packed part's shape: the stored array with its pack axis counted in words. A view
     /// stored as is and packed along its rows' last axis keeps its leading extents.
-    pub fn shape(&self, lead: &[u64], rows: usize, cols: usize) -> Result<Shape> {
+    pub(crate) fn shape(&self, lead: &[u64], rows: usize, cols: usize) -> Result<Shape> {
         let (a, b) = self.stored(rows, cols);
         Ok(Shape::Exact(match (self.transposed, self.axis) {
             (false, 1) => [lead, &[self.words(b)? as u64]].concat(),
@@ -159,7 +159,7 @@ impl Packing<'_> {
     }
 
     /// The codes `q[i, j]` of the `[R, C]` view, row-major, from the packed bytes.
-    pub fn unpack(&self, bytes: &[u8], rows: usize, cols: usize) -> Result<Vec<i32>> {
+    pub(crate) fn unpack(&self, bytes: &[u8], rows: usize, cols: usize) -> Result<Vec<i32>> {
         let slots = self.slots()?;
         let (a, b) = self.stored(rows, cols);
         let (n, along) = if self.axis == 0 { (a, b) } else { (b, a) };
@@ -191,7 +191,7 @@ impl Packing<'_> {
     }
 
     /// The `n` codes of one lane: `bytes` is its words (a block struct's field, say).
-    pub fn lane(&self, bytes: &[u8], n: usize) -> Result<Vec<i32>> {
+    pub(crate) fn lane(&self, bytes: &[u8], n: usize) -> Result<Vec<i32>> {
         let slots = self.slots()?;
         let nw = self.words(n)?;
         let wb = self.word as usize / 8;

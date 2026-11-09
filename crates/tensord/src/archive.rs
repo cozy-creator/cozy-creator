@@ -12,32 +12,32 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
     serde_json::from_slice(bytes)
 }
 
-pub fn encode_machine_execution_event_page(value: &domain::MachineExecutionEventPage) -> Vec<u8> {
+pub(crate) fn encode_machine_execution_event_page(value: &domain::MachineExecutionEventPage) -> Vec<u8> {
     encode(value)
 }
 
-pub fn decode_machine_execution_event_page(
+pub(crate) fn decode_machine_execution_event_page(
     bytes: &[u8],
 ) -> Result<domain::MachineExecutionEventPage, serde_json::Error> {
     decode(bytes)
 }
 
-pub fn encode_model_choice(value: &domain::ModelChoice) -> Vec<u8> {
+pub(crate) fn encode_model_choice(value: &domain::ModelChoice) -> Vec<u8> {
     encode(value)
 }
 
-pub fn encode_native_byte_retention_request(value: &domain::NativeByteRetentionRequest) -> Vec<u8> {
+pub(crate) fn encode_native_byte_retention_request(value: &domain::NativeByteRetentionRequest) -> Vec<u8> {
     encode(value)
 }
 
-pub fn encode_run_product(value: &domain::RunProduct) -> Vec<u8> {
+pub(crate) fn encode_run_product(value: &domain::RunProduct) -> Vec<u8> {
     encode(value)
 }
 
-pub fn decode_run_product(bytes: &[u8]) -> Result<domain::RunProduct, serde_json::Error> {
+pub(crate) fn decode_run_product(bytes: &[u8]) -> Result<domain::RunProduct, serde_json::Error> {
     decode(bytes)
 }
 
-pub fn encode_attempt_outcome(value: &domain::AttemptOutcome) -> Vec<u8> {
+pub(crate) fn encode_attempt_outcome(value: &domain::AttemptOutcome) -> Vec<u8> {
     encode(value)
 }

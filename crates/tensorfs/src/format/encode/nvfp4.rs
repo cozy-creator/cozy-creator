@@ -29,7 +29,7 @@ pub enum GlobalScale {
 }
 
 impl NibbleOrder {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             NibbleOrder::LowFirst => "low_first",
             NibbleOrder::HighFirst => "high_first",
@@ -38,7 +38,7 @@ impl NibbleOrder {
 }
 
 impl GlobalScale {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             GlobalScale::Multiply => "multiply",
             GlobalScale::Divide => "divide",
@@ -58,14 +58,14 @@ impl Encoding {
     }
 }
 
-pub const NVFP4: Encoder = Encoder {
+pub(crate) const NVFP4: Encoder = Encoder {
     scheme: "nvfp4",
     quantize: Some(quantize),
     pack: Some(pack),
 };
 
 /// Runtime's three-candidate minimum-error producer; distinct from the stored scheme.
-pub const MIN_SSE_STRATEGY: &str = "nvfp4-min-sse/1";
+pub(crate) const MIN_SSE_STRATEGY: &str = "nvfp4-min-sse/1";
 
 const E2M1_MAX: f32 = 6.0;
 const E4M3_MAX: f32 = 448.0;

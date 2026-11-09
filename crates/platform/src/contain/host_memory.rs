@@ -32,7 +32,7 @@ pub struct HostMemory {
 }
 
 /// Physical memory; -1 when unreadable.
-pub fn total() -> i64 {
+pub(crate) fn total() -> i64 {
     sys::total()
 }
 
@@ -83,13 +83,13 @@ pub fn resident(pid: u32) -> io::Result<Resident> {
 }
 
 /// Starts `pid`'s high-water over from its use now.
-pub fn reset_peak(pid: u32) -> io::Result<()> {
+pub(crate) fn reset_peak(pid: u32) -> io::Result<()> {
     sys::reset_peak(pid)
 }
 
 /// Private bytes (PSS less shared pages) of `pid` and every process descended from it: what a
 /// process tree holds that no one else counts.
-pub fn tree_private(pid: u32) -> u64 {
+pub(crate) fn tree_private(pid: u32) -> u64 {
     std::iter::once(pid)
         .chain(crate::process::descendants(pid))
         .filter_map(|pid| process(pid).ok())

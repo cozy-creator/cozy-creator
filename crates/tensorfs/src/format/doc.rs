@@ -58,7 +58,7 @@ impl ObjectRef {
     }
 
     /// The object's key in a store or static origin.
-    pub fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         let h = &self.sha256;
         format!("blobs/{}/{}/{h}", &h[..2], &h[2..4])
     }
@@ -143,7 +143,7 @@ impl ClassRef {
     }
 
     /// An unknown model's class, `["", "", ""]`.
-    pub fn is_unknown(&self) -> bool {
+    pub(crate) fn is_unknown(&self) -> bool {
         self.library.is_empty()
     }
 
@@ -184,7 +184,7 @@ impl Component {
 }
 
 /// A component config's file name unless `config_file` says otherwise.
-pub const CONFIG_FILE: &str = "config.json";
+pub(crate) const CONFIG_FILE: &str = "config.json";
 
 /// A tensor: its key, logical dtype and shape, and either its bytes or its encoded parts.
 #[derive(Debug, Clone, PartialEq)]
@@ -208,7 +208,7 @@ pub enum Body {
 
 impl Tensor {
     /// An encoded tensor's part by role.
-    pub fn part(&self, role: &str) -> Option<&Part> {
+    pub(crate) fn part(&self, role: &str) -> Option<&Part> {
         match &self.body {
             Body::Encoded { parts, .. } => parts.iter().find(|p| p.role == role),
             Body::Data(_) => None,
@@ -247,7 +247,7 @@ pub struct Part {
 }
 
 impl Part {
-    pub fn at(&self) -> Location {
+    pub(crate) fn at(&self) -> Location {
         Location {
             chunk: self.chunk,
             offset: self.offset,
@@ -382,7 +382,7 @@ impl Header {
     }
 
     /// The recipe that wrote this lane, when one did.
-    pub fn provenance(&self) -> Option<&Provenance> {
+    pub(crate) fn provenance(&self) -> Option<&Provenance> {
         self.provenance.as_ref()
     }
 
@@ -397,19 +397,19 @@ impl Header {
     }
 
     /// Every component's assets: (component, asset path, object).
-    pub fn assets(&self) -> impl Iterator<Item = (&str, &str, &ObjectRef)> {
+    pub(crate) fn assets(&self) -> impl Iterator<Item = (&str, &str, &ObjectRef)> {
         self.components.iter().flat_map(|c| {
             (c.assets.iter()).map(move |(path, r)| (c.name.as_str(), path.as_str(), r))
         })
     }
 
     /// The header's closure besides itself: its chunks, then every component's assets.
-    pub fn objects(&self) -> impl Iterator<Item = &ObjectRef> {
+    pub(crate) fn objects(&self) -> impl Iterator<Item = &ObjectRef> {
         self.chunks.iter().chain(self.assets().map(|(_, _, r)| r))
     }
 
     /// The distinct encodings, in order of first citation by the tensors (the header's table).
-    pub fn encodings(&self) -> Vec<&Encoding> {
+    pub(crate) fn encodings(&self) -> Vec<&Encoding> {
         let mut out: Vec<&Encoding> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (_, t) in self.tensors() {
@@ -432,13 +432,13 @@ impl Header {
     }
 
     /// Where a tensor is in construction order: (its component's index, its index there).
-    pub fn position(&self, component: &str, key: &str) -> Option<(usize, usize)> {
+    pub(crate) fn position(&self, component: &str, key: &str) -> Option<(usize, usize)> {
         let (ci, keys) = self.index.get(component)?;
         Some((*ci, *keys.get(key)?))
     }
 
     /// Every tensor with its component's name, in construction order.
-    pub fn tensors(&self) -> impl Iterator<Item = (&str, &Tensor)> {
+    pub(crate) fn tensors(&self) -> impl Iterator<Item = (&str, &Tensor)> {
         self.components
             .iter()
             .flat_map(|c| c.tensors.iter().map(move |t| (c.name.as_str(), t)))
@@ -461,7 +461,7 @@ impl Header {
     }
 
     /// A location's bytes, gathered from whole chunks that `chunk` supplies by index.
-    pub fn bytes<B: AsRef<[u8]>>(
+    pub(crate) fn bytes<B: AsRef<[u8]>>(
         &self,
         at: &Location,
         mut chunk: impl FnMut(usize) -> Result<B>,
@@ -484,7 +484,7 @@ impl Header {
     }
 
     /// A tensor's logical bytes: a plain tensor's data, or its parts through the reference decode.
-    pub fn read<B: AsRef<[u8]>>(
+    pub(crate) fn read<B: AsRef<[u8]>>(
         &self,
         component: &str,
         key: &str,

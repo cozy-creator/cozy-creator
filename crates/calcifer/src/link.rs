@@ -34,7 +34,7 @@ const PART: u64 = 64 << 20;
 const FRAME: usize = 64 << 10;
 
 #[derive(Clone, Debug, thiserror::Error)]
-pub enum LinkError {
+pub(crate) enum LinkError {
     /// The machine answered that it has no record of the run (`run_not_found`).
     #[error("the machine has no record of the run")]
     NoRun,
@@ -97,10 +97,10 @@ impl From<Error> for LinkError {
 }
 
 /// What a machine streams: a run's events after its cursor, or its Status frames.
-pub type Live<T> = Pin<Box<dyn Stream<Item = Result<T, LinkError>> + Send>>;
+pub(crate) type Live<T> = Pin<Box<dyn Stream<Item = Result<T, LinkError>> + Send>>;
 
 #[derive(Clone)]
-pub struct Link {
+pub(crate) struct Link {
     machine: Machine,
     /// The bulk lanes, kept across transfers: a project's many small files reuse connections.
     lanes: Arc<Mutex<Vec<Option<Bulk>>>>,
@@ -108,7 +108,7 @@ pub struct Link {
 
 impl Link {
     /// The machine at `endpoint`, connected on first use and again whenever it breaks.
-    pub fn new(endpoint: &store::Endpoint, key: SigningKey) -> Result<Self, LinkError> {
+    pub(crate) fn new(endpoint: &store::Endpoint, key: SigningKey) -> Result<Self, LinkError> {
         let auth = Auth::Key {
             key: Arc::new(key),
             worker: endpoint.worker_id.clone(),
@@ -120,7 +120,7 @@ impl Link {
     }
 
     /// A bulk lane of its own: HTTP/1.1 connections apart from the control one.
-    pub fn bulk(&self) -> Result<Bulk, LinkError> {
+    pub(crate) fn bulk(&self) -> Result<Bulk, LinkError> {
         Ok(self.machine.bulk()?)
     }
 
@@ -135,7 +135,7 @@ impl Link {
 
     /// Sends the run: its state, the machine's acceptance. The same id and spec again answer the
     /// run as it is; another spec is `run_id_conflict`.
-    pub async fn submit(&self, id: &str, spec: v1::RunSpec) -> Result<v1::RunState, LinkError> {
+    pub(crate) async fn submit(&self, id: &str, spec: v1::RunSpec) -> Result<v1::RunState, LinkError> {
         let request = v1::RunRequest {
             id: id.into(),
             spec,
@@ -145,18 +145,18 @@ impl Link {
 
     /// The run's log after `after`: its state first, then its events until its outcome. Closing
     /// it never cancels.
-    pub async fn events(&self, id: &str, after: u64) -> Result<Live<v1::RunEvent>, LinkError> {
+    pub(crate) async fn events(&self, id: &str, after: u64) -> Result<Live<v1::RunEvent>, LinkError> {
         Ok(Box::pin(self.machine.events(id, after).await?.map_err(LinkError::from)))
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
-    pub async fn runs(&self, before: u64, limit: u32) -> Result<v1::RunList, LinkError> {
+    pub(crate) async fn runs(&self, before: u64, limit: u32) -> Result<v1::RunList, LinkError> {
         Ok(self.machine.runs(before, limit).await?)
     }
 
     /// Attaches to the run: its state, and its events after `after`. `NoRun` when the machine
     /// never received it.
-    pub async fn attach(
+    pub(crate) async fn attach(
         &self,
         id: &str,
         after: u64,
@@ -175,28 +175,28 @@ impl Link {
     }
 
     /// The machine's whole picture now.
-    pub async fn status(&self) -> Result<v1::StatusFrame, LinkError> {
+    pub(crate) async fn status(&self) -> Result<v1::StatusFrame, LinkError> {
         Ok(self.machine.status().await?)
     }
 
     /// The machine's picture, then again whenever it changes.
-    pub async fn watch(&self) -> Result<Live<v1::StatusFrame>, LinkError> {
+    pub(crate) async fn watch(&self) -> Result<Live<v1::StatusFrame>, LinkError> {
         Ok(Box::pin(self.machine.watch().await?.map_err(LinkError::from)))
     }
 
     /// Starts a rental's idle clock over; answers the picture with its new deadline.
-    pub async fn keepalive(&self) -> Result<v1::StatusFrame, LinkError> {
+    pub(crate) async fn keepalive(&self) -> Result<v1::StatusFrame, LinkError> {
         Ok(self.machine.keepalive().await?)
     }
 
     /// Asks a rental to release itself now, which it refuses while it works.
-    pub async fn release(&self) -> Result<(), LinkError> {
+    pub(crate) async fn release(&self) -> Result<(), LinkError> {
         Ok(self.machine.release().await?)
     }
 
     /// One request to the machine's own Calcifer, through its door: the one way one Calcifer speaks
     /// to another. `target` is the path and query there. Its answer is the answer, refusals too.
-    pub async fn forward(
+    pub(crate) async fn forward(
         &self,
         method: reqwest::Method,
         target: &str,
@@ -210,18 +210,18 @@ impl Link {
 
     /// The identity frame the machine at `address` gives anyone who reaches it: its worker id,
     /// boot and version.
-    pub async fn identity(address: &str, pin: [u8; 32]) -> Result<v1::StatusFrame, LinkError> {
+    pub(crate) async fn identity(address: &str, pin: [u8; 32]) -> Result<v1::StatusFrame, LinkError> {
         Ok(Machine::new(address, pin, Auth::None)?.status().await?)
     }
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    pub async fn read_log(&self, log: &str, lines: u64) -> Result<Vec<u8>, LinkError> {
+    pub(crate) async fn read_log(&self, log: &str, lines: u64) -> Result<Vec<u8>, LinkError> {
         Ok(self.machine.log(log, lines).await?.to_vec())
     }
 
     /// A log's lines as `read_log` reads them, or those after `after` (a batch's place), then
     /// each batch as the machine appends it.
-    pub async fn follow_log(
+    pub(crate) async fn follow_log(
         &self,
         log: &str,
         lines: u64,
@@ -233,18 +233,18 @@ impl Link {
 
     /// Asks the machine to cancel the run. A machine that never received it records it canceled,
     /// so a late send of it is answered with that.
-    pub async fn cancel(&self, id: &str) -> Result<v1::RunState, LinkError> {
+    pub(crate) async fn cancel(&self, id: &str) -> Result<v1::RunState, LinkError> {
         Ok(self.machine.cancel(id).await?)
     }
 
     /// How many bytes of the object the machine holds for this signer.
-    pub async fn held(&self, digest: &Digest, length: u64) -> Result<u64, LinkError> {
+    pub(crate) async fn held(&self, digest: &Digest, length: u64) -> Result<u64, LinkError> {
         let held = self.machine.held(&digest.to_string()).await?;
         Ok(v1::held_bytes(&held).min(length))
     }
 
     /// What the machine holds of each of `digests`, asked in one round trip.
-    pub async fn held_many(&self, digests: &[Digest]) -> Result<Vec<v1::Ranges>, LinkError> {
+    pub(crate) async fn held_many(&self, digests: &[Digest]) -> Result<Vec<v1::Ranges>, LinkError> {
         let names: Vec<String> = digests.iter().map(Digest::to_string).collect();
         let held = self.machine.held_many(&names).await?;
         if held.len() != names.len() || held.iter().zip(&names).any(|(h, n)| h.digest != *n) {
@@ -260,7 +260,7 @@ impl Link {
     /// and `progress` hears nothing. A failed or stalled part resumes on a fresh connection; the
     /// upload gives up only when every lane has failed since a byte last moved, or a whole pass
     /// landed nothing.
-    pub async fn write(
+    pub(crate) async fn write(
         &self,
         digest: &Digest,
         length: u64,
@@ -385,6 +385,6 @@ async fn put(
 }
 
 /// The TLS leaf (DER) the machine at `address` presents, whatever it is.
-pub async fn presented_leaf(address: &str) -> Result<Vec<u8>, LinkError> {
+pub(crate) async fn presented_leaf(address: &str) -> Result<Vec<u8>, LinkError> {
     Ok(crate::machine_client::presented_leaf(address).await?)
 }

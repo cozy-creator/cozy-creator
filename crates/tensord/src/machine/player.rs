@@ -12,7 +12,7 @@ use std::{
 /// launcher's) mapping of its port, or a mapping that could not be read, which stops playback
 /// alone.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub enum Reach {
+pub(crate) enum Reach {
     #[default]
     Interfaces,
     Mapped(SocketAddr),
@@ -22,7 +22,7 @@ pub enum Reach {
 /// The listener on every interface: its capability is bound to the viewer's DTLS certificate,
 /// while the control API stays where the grant puts it. A rental listens on its granted port;
 /// this computer's machine keeps the port it first took, so a play link survives restarts.
-pub fn listen(state: &Path, granted: Option<u16>, local: bool) -> io::Result<Option<TcpListener>> {
+pub(crate) fn listen(state: &Path, granted: Option<u16>, local: bool) -> io::Result<Option<TcpListener>> {
     if granted.is_none() && !local {
         return Ok(None);
     }
@@ -31,7 +31,7 @@ pub fn listen(state: &Path, granted: Option<u16>, local: bool) -> io::Result<Opt
 
 /// The launch environment's mapping of a granted port: `COZY_WEBRTC_PUBLIC_ADDRESS`, else
 /// RunPod's or vast.ai's public IP and external port for it.
-pub fn reach(granted: Option<u16>, env: &BTreeMap<String, String>) -> Reach {
+pub(crate) fn reach(granted: Option<u16>, env: &BTreeMap<String, String>) -> Reach {
     let ipv4 = |address: SocketAddr, what: &str| match address.is_ipv4() && address.port() != 0 {
         true => Reach::Mapped(address),
         false => Reach::Invalid(format!("{what} must name an IPv4 address and a nonzero port")),
@@ -56,7 +56,7 @@ pub fn reach(granted: Option<u16>, env: &BTreeMap<String, String>) -> Reach {
 
 /// Status's player endpoint: the listener's port, where it is reached, and the fingerprint of
 /// the certificate its DTLS presents.
-pub fn endpoint(port: u16, reach: &Reach, cert_der: &[u8]) -> v1::WebRtc {
+pub(crate) fn endpoint(port: u16, reach: &Reach, cert_der: &[u8]) -> v1::WebRtc {
     let (addresses, unavailable_reason) = match reach {
         Reach::Mapped(address) => (vec![address.to_string()], String::new()),
         Reach::Invalid(reason) => (vec![], reason.clone()),

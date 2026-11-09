@@ -62,7 +62,7 @@ impl Lane<'_> {
     /// keeps (`count`: how many lanes keep each). A reader of another checkpoint holds the objects
     /// the two share, and those stay, but not this lane: H3's renders held what it shares with
     /// Qwen-Image, so neither could go (valentino, 11-05).
-    pub fn held_by(&self, digest: &str, count: &HashMap<&str, u32>) -> bool {
+    pub(crate) fn held_by(&self, digest: &str, count: &HashMap<&str, u32>) -> bool {
         self.uses.iter().any(|u| u.name == digest) || (self.digests.contains(digest) && count.get(digest) == Some(&1))
     }
 }
@@ -208,14 +208,14 @@ impl Store {
     }
 
     /// Sweeps what neither a root nor a use keeps and is older than the grace.
-    pub fn gc(&self) -> Result<Collected> {
+    pub(crate) fn gc(&self) -> Result<Collected> {
         self.collect(0, Duration::MAX)
     }
 
     /// Drops the uses unused for `older_than`, least recently used first, until `need` bytes
     /// would be free (`u64::MAX`: every one), then sweeps. Roots are never dropped. Skips while
     /// another process reads metadata to hold it.
-    pub fn collect(&self, need: u64, older_than: Duration) -> Result<Collected> {
+    pub(crate) fn collect(&self, need: u64, older_than: Duration) -> Result<Collected> {
         let Some(_gc) = retention::try_collect(self)? else {
             return Ok(Collected::default());
         };

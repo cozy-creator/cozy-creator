@@ -7,8 +7,8 @@ use crate::format::decode::plan::{Bytes, Core, Elems, Plan, Post, Term};
 use crate::format::decode::{round, Geometry};
 use crate::format::{Dtype, Error, Result};
 
-pub const FAMILIES: [u32; 6] = [80, 86, 89, 90, 100, 120];
-pub const CORE_KINDS: [&str; 7] = [
+pub(crate) const FAMILIES: [u32; 6] = [80, 86, 89, 90, 100, 120];
+pub(crate) const CORE_KINDS: [&str; 7] = [
     "codes",
     "unpack",
     "regular_h4",
@@ -37,9 +37,9 @@ const _: () = assert!(
 );
 
 /// Schemes whose plans no device core runs: `prepare` gives their values from the host.
-pub const HOST_SCHEMES: [&str; 1] = ["svdq.nvfp4"];
+pub(crate) const HOST_SCHEMES: [&str; 1] = ["svdq.nvfp4"];
 
-pub enum Prepared<'a> {
+pub(crate) enum Prepared<'a> {
     Kernel(Box<Launch<'a>>),
     /// A scheme with a host-only plan: rounded bytes, ready for the engine's host source.
     Host(Vec<u8>),
@@ -49,7 +49,7 @@ pub enum Prepared<'a> {
 /// index, error (one zeroed i32), params. Factors are f32; words retain their stored bits.
 /// `grouped_rotated`: scale=relative group scales, global=channel scales,
 /// term=optional transposed correction, table=optional levels, post=unit factor.
-pub struct Launch<'a> {
+pub(crate) struct Launch<'a> {
     pub kind: &'static str,
     pub dtype: Dtype,
     pub words: Bytes<'a>,
@@ -65,7 +65,7 @@ pub struct Launch<'a> {
 
 /// Float kernel arguments are either normalized Host values or a typed external input.
 /// A slot carries no pointer; the read engine binds it and casts metadata on the device.
-pub enum Factors {
+pub(crate) enum Factors {
     Host(Vec<f32>),
     Slot {
         index: usize,
@@ -102,13 +102,13 @@ impl TryFrom<Elems<'_>> for Factors {
     }
 }
 impl Factors {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Host(v) => v.len(),
             Self::Slot { count, .. } => *count,
         }
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
     fn host(&self) -> Result<&[f32]> {
@@ -122,27 +122,27 @@ impl Factors {
 }
 
 impl Launch<'_> {
-    pub fn binary(&self, family: u32) -> Option<&'static Binary> {
+    pub(crate) fn binary(&self, family: u32) -> Option<&'static Binary> {
         self.stage_binary(family, self.kind)
     }
 
     /// A rotated plan first unpacks to i32, runs `regular_h4` (H₄ along one base-4 digit) once
     /// per stride 1, 4, … < B (`params[31]`), alternating two i32 buffers, which together apply
     /// `kron_regular_h4`; then runs `rotated` to scale and round.
-    pub fn stage_binary(&self, family: u32, stage: &str) -> Option<&'static Binary> {
+    pub(crate) fn stage_binary(&self, family: u32, stage: &str) -> Option<&'static Binary> {
         BINARIES
             .iter()
             .find(|b| b.family == family && b.kind == stage && b.dtype == self.dtype.name())
     }
 
-    pub fn blocks(&self) -> u64 {
+    pub(crate) fn blocks(&self) -> u64 {
         self.params[5].div_ceil(256)
     }
 }
 
 /// `count` logical elements beginning at `begin`. The plan and geometry come from `planned`;
 /// this layer chooses a core, never a scheme. No driver or framework is touched here.
-pub fn prepare<'a>(
+pub(crate) fn prepare<'a>(
     plan: Plan<'a>,
     g: Geometry,
     dtype: &Dtype,

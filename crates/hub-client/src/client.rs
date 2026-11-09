@@ -84,7 +84,7 @@ impl Client {
         Self::connect(&self.origin, self.http.clone(), Credential::Anonymous)
     }
 
-    pub fn origin(&self) -> &str {
+    pub(crate) fn origin(&self) -> &str {
         &self.origin
     }
 

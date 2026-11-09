@@ -25,7 +25,7 @@ impl Scope {
         vec!["--scope-backend".into(), "inherit".into()]
     }
 
-    pub fn processes(&self) -> Result<usize> {
+    pub(crate) fn processes(&self) -> Result<usize> {
         Err(Error::unsupported(Seam::Containment))
     }
 
@@ -33,7 +33,7 @@ impl Scope {
         Err(Error::unsupported(Seam::Containment))
     }
 
-    pub fn kill(&self) -> Result<()> {
+    pub(crate) fn kill(&self) -> Result<()> {
         Err(Error::unsupported(Seam::Containment))
     }
 

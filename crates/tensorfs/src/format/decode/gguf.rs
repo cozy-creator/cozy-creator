@@ -8,7 +8,7 @@ use crate::format::{Encoding, Result};
 
 /// A ggml type: id, name, elements per block, bytes per block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Type {
+pub(crate) struct Type {
     pub id: u32,
     pub name: &'static str,
     pub block: u64,
@@ -25,7 +25,7 @@ const fn t(id: u32, name: &'static str, block: u64, size: u64) -> Type {
 }
 
 /// ggml's types (`ggml.h`, `ggml.c` type traits) at llama.cpp ff5a233.
-pub const TYPES: [Type; 35] = [
+pub(crate) const TYPES: [Type; 35] = [
     t(0, "f32", 1, 4),
     t(1, "f16", 1, 2),
     t(2, "q4_0", 32, 18),
@@ -64,23 +64,23 @@ pub const TYPES: [Type; 35] = [
 ];
 
 impl Type {
-    pub fn by_id(id: u32) -> Option<Type> {
+    pub(crate) fn by_id(id: u32) -> Option<Type> {
         TYPES.into_iter().find(|t| t.id == id)
     }
 
-    pub fn by_name(name: &str) -> Option<Type> {
+    pub(crate) fn by_name(name: &str) -> Option<Type> {
         TYPES.into_iter().find(|t| t.name == name)
     }
 
     /// `numel` elements' bytes, if they are whole blocks.
-    pub fn bytes(self, numel: u64) -> Option<u64> {
+    pub(crate) fn bytes(self, numel: u64) -> Option<u64> {
         numel
             .is_multiple_of(self.block)
             .then(|| (numel / self.block).checked_mul(self.size))?
     }
 
     /// `gguf.<type> {block_size}`.
-    pub fn encoding(self) -> Encoding {
+    pub(crate) fn encoding(self) -> Encoding {
         super::super::encode::encoding(
             &format!("gguf.{}", self.name),
             &[("block_size", self.block.into())],
@@ -90,7 +90,7 @@ impl Type {
 
 /// The `blocks` part's shape for logical `shape`: `[lead…, C/n, S]`, or `[N/n, S]` when the last
 /// extent is not whole blocks. Structs follow the row-major element order either way.
-pub fn blocks_shape(ty: Type, shape: &[u64]) -> Option<Vec<u64>> {
+pub(crate) fn blocks_shape(ty: Type, shape: &[u64]) -> Option<Vec<u64>> {
     let numel = shape.iter().try_fold(1u64, |a, b| a.checked_mul(*b))?;
     if !numel.is_multiple_of(ty.block) {
         return None;
@@ -102,7 +102,7 @@ pub fn blocks_shape(ty: Type, shape: &[u64]) -> Option<Vec<u64>> {
 }
 
 /// ggml's `kvalues_fp4`: E2M1 doubled (spec Appendix A.2).
-pub const K: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
+pub(crate) const K: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
 
 const BLOCKS: Part = Part::req("blocks", &["U8"], shape);
 
@@ -124,18 +124,18 @@ macro_rules! scheme {
     };
 }
 
-pub const Q4_0: Scheme = scheme!("q4_0", 32);
-pub const Q4_1: Scheme = scheme!("q4_1", 32);
-pub const Q5_0: Scheme = scheme!("q5_0", 32);
-pub const Q5_1: Scheme = scheme!("q5_1", 32);
-pub const Q8_0: Scheme = scheme!("q8_0", 32);
-pub const Q2_K: Scheme = scheme!("q2_k", 256);
-pub const Q3_K: Scheme = scheme!("q3_k", 256);
-pub const Q4_K: Scheme = scheme!("q4_k", 256);
-pub const Q5_K: Scheme = scheme!("q5_k", 256);
-pub const Q6_K: Scheme = scheme!("q6_k", 256);
-pub const MXFP4: Scheme = scheme!("mxfp4", 32);
-pub const NVFP4: Scheme = scheme!(
+pub(crate) const Q4_0: Scheme = scheme!("q4_0", 32);
+pub(crate) const Q4_1: Scheme = scheme!("q4_1", 32);
+pub(crate) const Q5_0: Scheme = scheme!("q5_0", 32);
+pub(crate) const Q5_1: Scheme = scheme!("q5_1", 32);
+pub(crate) const Q8_0: Scheme = scheme!("q8_0", 32);
+pub(crate) const Q2_K: Scheme = scheme!("q2_k", 256);
+pub(crate) const Q3_K: Scheme = scheme!("q3_k", 256);
+pub(crate) const Q4_K: Scheme = scheme!("q4_k", 256);
+pub(crate) const Q5_K: Scheme = scheme!("q5_k", 256);
+pub(crate) const Q6_K: Scheme = scheme!("q6_k", 256);
+pub(crate) const MXFP4: Scheme = scheme!("mxfp4", 32);
+pub(crate) const NVFP4: Scheme = scheme!(
     "nvfp4",
     64,
     &[
@@ -144,8 +144,8 @@ pub const NVFP4: Scheme = scheme!(
         Part::opt("input_scale", &["F32"], one),
     ]
 );
-pub const Q1_0: Scheme = scheme!("q1_0", 128);
-pub const Q2_0: Scheme = scheme!("q2_0", 64);
+pub(crate) const Q1_0: Scheme = scheme!("q1_0", 128);
+pub(crate) const Q2_0: Scheme = scheme!("q2_0", 64);
 
 fn ty(c: &Ctx) -> Type {
     Type::by_name(&c.scheme["gguf.".len()..]).expect("every row names a ggml type")
@@ -160,7 +160,7 @@ fn shape(c: &Ctx) -> Result<Shape> {
 }
 
 /// The struct types a scheme decodes, in the GPU kernels' order (`tensorfs/kernels.py` `STRUCTS`).
-pub static STRUCTS: [Struct; 14] = [
+pub(crate) static STRUCTS: [Struct; 14] = [
     st("q4_0", 32, 18, q4_0),
     st("q4_1", 32, 20, q4_1),
     st("q5_0", 32, 22, q5_0),

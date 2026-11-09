@@ -2,6 +2,7 @@
 //! from `tensorfs`. Framework tensors cross as DLPack; optional Varena owns CUDA weight pages.
 
 #![deny(unsafe_code)]
+#![deny(unreachable_pub)]
 
 mod ceiling;
 #[allow(unsafe_code)]

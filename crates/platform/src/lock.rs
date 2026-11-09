@@ -40,7 +40,7 @@ impl LockFile {
         Self { path: path.into() }
     }
 
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
@@ -157,7 +157,7 @@ pub fn share(file: &std::fs::File) -> Result<()> {
 }
 
 /// Other processes holding a write lock on any byte of `path`; empty when `path` is absent.
-pub fn posix_writers(path: &Path) -> Result<Vec<u32>> {
+pub(crate) fn posix_writers(path: &Path) -> Result<Vec<u32>> {
     sys::posix_writers(path)
 }
 

@@ -35,7 +35,7 @@ use crate::{
 
 /// Why `serve` returned.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Stopped {
+pub(crate) enum Stopped {
     /// Another Calcifer holds this home.
     AnotherHolds,
     /// `POST /v1/down`.
@@ -111,7 +111,7 @@ async fn listen(asked: Option<u16>) -> std::io::Result<TcpListener> {
 }
 
 /// Serves `loaded.home` on `127.0.0.1`, at [`listen`]'s port, until `POST /v1/down`.
-pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
+pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let (home, port) = (&loaded.home, loaded.config.calcifer.port);
     let (began, mut steps) = (Instant::now(), Steps(Instant::now()));
     let failed = |error| refuse(home, error);

@@ -62,7 +62,7 @@ pub(crate) enum Lock {
 
 /// One command's connection to Calcifer. Cheap to clone; clones share the connection.
 #[derive(Clone)]
-pub struct Client(Arc<Inner>);
+pub(crate) struct Client(Arc<Inner>);
 
 struct Inner {
     http: reqwest::Client,
@@ -74,14 +74,14 @@ struct Inner {
 
 impl Client {
     /// Calcifer, started if none runs.
-    pub async fn connect(ctx: &Context) -> Result<Self, Error> {
+    pub(crate) async fn connect(ctx: &Context) -> Result<Self, Error> {
         let client = Self::new(ctx)?;
         client.ready().await?;
         Ok(client)
     }
 
     /// The running Calcifer, or `None`: never starts one.
-    pub async fn running(ctx: &Context) -> Result<Option<Self>, Error> {
+    pub(crate) async fn running(ctx: &Context) -> Result<Option<Self>, Error> {
         let client = Self::new(ctx)?;
         Ok(client.live().await.map(|holder| {
             client.remember(Some(holder));
@@ -144,15 +144,15 @@ impl Client {
     }
 
     /// The record of the Calcifer this client last reached.
-    pub fn holder(&self) -> Option<Holder> {
+    pub(crate) fn holder(&self) -> Option<Holder> {
         self.0.holder.lock().expect("holder").clone()
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+    pub(crate) async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         self.asked_again(Error::hub_transient, || self.exchange(false, |c, base| c.get(format!("{base}{path}")))).await
     }
 
-    pub async fn get_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
+    pub(crate) async fn get_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
     where
         Q: Serialize + ?Sized,
         T: DeserializeOwned,
@@ -164,7 +164,7 @@ impl Client {
     /// nothing. A machine that answers no connect, or a Hub that doesn't answer, records nothing and is
     /// asked again under that key, each attempt said (Paul, 11-03); one its Hub says stopped or ended
     /// is refused otherwise, and at once.
-    pub async fn post<B, T>(&self, path: &str, body: &B, key: Option<&str>) -> Result<T, Error>
+    pub(crate) async fn post<B, T>(&self, path: &str, body: &B, key: Option<&str>) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
@@ -207,7 +207,7 @@ impl Client {
     }
 
     /// A PUT: idempotent by its path, and under its call's key too.
-    pub async fn put<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
+    pub(crate) async fn put<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
@@ -216,12 +216,12 @@ impl Client {
         self.exchange(true, |c, base| c.put(format!("{base}{path}")).json(body).header(KEY, &key)).await
     }
 
-    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+    pub(crate) async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         let key = write_key();
         self.exchange(true, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key)).await
     }
 
-    pub async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
+    pub(crate) async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
     where
         Q: Serialize + ?Sized,
         T: DeserializeOwned,
@@ -231,7 +231,7 @@ impl Client {
     }
 
     /// A PATCH: the fields `body` names, changed, under its call's key.
-    pub async fn patch<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
+    pub(crate) async fn patch<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
@@ -241,13 +241,13 @@ impl Client {
     }
 
     /// A text body PUT, as an export read back, under its call's key; its answer's body isn't read.
-    pub async fn put_text(&self, path: &str, body: &str) -> Result<(), Error> {
+    pub(crate) async fn put_text(&self, path: &str, body: &str) -> Result<(), Error> {
         let key = write_key();
         self.opened(|c, base| c.put(format!("{base}{path}")).header(reqwest::header::CONTENT_TYPE, "application/yaml").header(KEY, &key).body(body.to_owned())).await.map(drop)
     }
 
     /// What Calcifer holds of the file `digest` names: all of it (`None`), else the ranges held.
-    pub async fn held(&self, digest: &Digest) -> Result<Option<Ranges>, Error> {
+    pub(crate) async fn held(&self, digest: &Digest) -> Result<Option<Ranges>, Error> {
         let path = format!("/v1/files/{digest}");
         let answer = self.send(&|c: &reqwest::Client, base: &str| c.head(format!("{base}{path}"))).await?;
         let ranges = || answer.headers().get(HELD).and_then(|v| v.to_str().ok()).and_then(parse_held).unwrap_or_default();
@@ -259,7 +259,7 @@ impl Client {
     }
 
     /// `part`, the bytes of `digest` from `start`, of a file of `length` bytes. Whether the file is now whole.
-    pub async fn put_part(&self, digest: &Digest, part: bytes::Bytes, start: u64, length: u64) -> Result<bool, Error> {
+    pub(crate) async fn put_part(&self, digest: &Digest, part: bytes::Bytes, start: u64, length: u64) -> Result<bool, Error> {
         let path = format!("/v1/files/{digest}");
         let range = match part.is_empty() {
             true => None,
@@ -280,13 +280,13 @@ impl Client {
     }
 
     /// A plain-text answer, such as a log.
-    pub async fn text(&self, path: &str) -> Result<String, Error> {
+    pub(crate) async fn text(&self, path: &str) -> Result<String, Error> {
         let answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
         answer.text().await.map_err(unreachable)
     }
 
     /// A file Calcifer serves (an output, one file of a folder output), written to `to` as it comes: what it wrote.
-    pub async fn download(&self, path: &str, to: &std::path::Path) -> Result<u64, Error> {
+    pub(crate) async fn download(&self, path: &str, to: &std::path::Path) -> Result<u64, Error> {
         let mut answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
         let unwritable = |e: std::io::Error| Error::new(Kind::Unavailable, "download_unwritable", format!("{}: {e}", to.display()));
         let mut file = std::fs::File::create(to).map_err(unwritable)?;
@@ -417,28 +417,28 @@ impl Client {
     }
 
     /// A run by its id or number.
-    pub async fn run(&self, id: &str) -> Result<Run, Error> {
+    pub(crate) async fn run(&self, id: &str) -> Result<Run, Error> {
         self.get(&path(&["v1", "runs", id])).await
     }
 
     /// Runs, newest first; `query` is the route's filters.
-    pub async fn runs<Q: Serialize + ?Sized>(&self, query: &Q) -> Result<RunList, Error> {
+    pub(crate) async fn runs<Q: Serialize + ?Sized>(&self, query: &Q) -> Result<RunList, Error> {
         self.get_query("/v1/runs", query).await
     }
 
     /// Asks for a run's cancel; its machine's own outcome ends it.
-    pub async fn cancel(&self, id: &str) -> Result<Run, Error> {
+    pub(crate) async fn cancel(&self, id: &str) -> Result<Run, Error> {
         let path = path(&["v1", "runs", id, "cancel"]);
         self.post(&path, &serde_json::json!({}), None).await
     }
 
-    pub async fn machines(&self) -> Result<MachineList, Error> {
+    pub(crate) async fn machines(&self) -> Result<MachineList, Error> {
         self.get("/v1/machines").await
     }
 
     /// A machine log's newest `lines` whole lines (0: all) at `path`, then each batch as the
     /// machine appends it.
-    pub fn follow_log(&self, path: &str, lines: u64) -> LogFollow {
+    pub(crate) fn follow_log(&self, path: &str, lines: u64) -> LogFollow {
         LogFollow {
             client: self.clone(),
             path: path.to_owned(),
@@ -452,7 +452,7 @@ impl Client {
     }
 
     /// A run's events after `starting_after`, to its terminal one.
-    pub fn events(&self, id: &str, starting_after: u64) -> Events {
+    pub(crate) fn events(&self, id: &str, starting_after: u64) -> Events {
         Events {
             client: self.clone(),
             path: path(&["v1", "runs", id, "events"]),
@@ -471,7 +471,7 @@ impl Client {
 
     /// A run's events after `starting_after` past its terminal one, until Calcifer ends the
     /// stream: once each output's last revision landed or failed (or Calcifer stopped).
-    pub fn events_until_landed(&self, id: &str, starting_after: u64) -> Events {
+    pub(crate) fn events_until_landed(&self, id: &str, starting_after: u64) -> Events {
         Events {
             landing: true,
             ..self.events(id, starting_after)
@@ -480,12 +480,12 @@ impl Client {
 
     /// `GET /v1/events`, subscribed once this answers: it carries no backlog, so a caller reads what
     /// it holds after it, and reads it with [`Watch::change`].
-    pub async fn changes(&self) -> Result<Watch<StreamEvent>, Error> {
+    pub(crate) async fn changes(&self) -> Result<Watch<StreamEvent>, Error> {
         self.watch("/v1/events").await
     }
 
     /// A stream with no place to resume from, subscribed once this answers.
-    pub async fn watch<T: DeserializeOwned>(&self, path: &str) -> Result<Watch<T>, Error> {
+    pub(crate) async fn watch<T: DeserializeOwned>(&self, path: &str) -> Result<Watch<T>, Error> {
         let answer = self.opened(|c, base| {
             c.get(format!("{base}{path}"))
                 .header(header::ACCEPT, "text/event-stream")
@@ -503,7 +503,7 @@ impl Client {
 
     /// Asks Calcifer to stop and waits until that process has let go of the home. Runs on
     /// machines continue; the next Calcifer resumes what it owed.
-    pub async fn stop(&self) -> Result<Down, Error> {
+    pub(crate) async fn stop(&self) -> Result<Down, Error> {
         let holder = self.endpoint().await?;
         let down = self.down(&holder).await?;
         self.remember(None);
@@ -532,7 +532,7 @@ impl Client {
     }
 
     /// Reaches Calcifer, starting it if none runs.
-    pub async fn ready(&self) -> Result<Holder, Error> {
+    pub(crate) async fn ready(&self) -> Result<Holder, Error> {
         self.endpoint().await
     }
 
@@ -798,7 +798,7 @@ pub(crate) fn unanswered(pid: u32, waited: Duration) -> String {
 
 /// A run's events, resumed from the last durable one whenever the connection closes before the
 /// terminal event, across a Calcifer restart too. Dropping it cancels nothing.
-pub struct Events {
+pub(crate) struct Events {
     client: Client,
     path: String,
     cursor: u64,
@@ -822,20 +822,20 @@ pub struct Events {
 impl Events {
     /// Reads on after `None` from where it stopped: a landing follower whose run still owes an
     /// output (its Calcifer stopped) waits again.
-    pub fn again(&mut self) {
+    pub(crate) fn again(&mut self) {
         self.done = false;
     }
 
     /// Whether the stream was resumed on a Calcifer that restarted since it was last read; asked
     /// once.
-    pub fn restarted(&mut self) -> bool {
+    pub(crate) fn restarted(&mut self) -> bool {
         std::mem::take(&mut self.restarted)
     }
 
     /// The next event; `None` after the terminal one, or for a landing stream once Calcifer ends
     /// it after that. Cancel-safe: a dropped call loses nothing
     /// a later one would not read again.
-    pub async fn next(&mut self) -> Option<Result<Event, Error>> {
+    pub(crate) async fn next(&mut self) -> Option<Result<Event, Error>> {
         while !self.done {
             if let Some(event) = self.parsed() {
                 if let Some(n) = event.sequence_number() {
@@ -920,7 +920,7 @@ impl Events {
 }
 
 /// One list-level stream (`Client::watch`).
-pub struct Watch<T> {
+pub(crate) struct Watch<T> {
     client: Client,
     stream: Response,
     sse: Sse,
@@ -936,7 +936,7 @@ pub struct Watch<T> {
 impl<T: DeserializeOwned> Watch<T> {
     /// The next item, skipping types this build does not read; `None` once the stream closed.
     /// Cancel-safe.
-    pub async fn next(&mut self) -> Option<T> {
+    pub(crate) async fn next(&mut self) -> Option<T> {
         loop {
             while let Some(data) = self.sse.next() {
                 if let Ok(item) = serde_json::from_str(&data) {
@@ -960,12 +960,12 @@ impl<T: DeserializeOwned> Watch<T> {
         }
     }
 
-    pub fn quiet(self) -> Self {
+    pub(crate) fn quiet(self) -> Self {
         Self { quiet: true, ..self }
     }
 
     /// Calcifer not answering on this stream past two keepalives, said for a view's title.
-    pub fn silence(&self) -> Option<String> {
+    pub(crate) fn silence(&self) -> Option<String> {
         let waited = self.heard.elapsed();
         (waited >= 2 * KEEPALIVE).then(|| unanswered(self.client.pid(), waited))
     }
@@ -975,7 +975,7 @@ impl Watch<StreamEvent> {
     /// The next change; `None` once the stream closed or fell behind, and from then on: either way
     /// something may have been missed, so the caller subscribes and reads again. Cancel-safe: a
     /// `resync` read just before a call was dropped still counts.
-    pub async fn change(&mut self) -> Option<StreamEvent> {
+    pub(crate) async fn change(&mut self) -> Option<StreamEvent> {
         if self.behind {
             return None;
         }
@@ -987,7 +987,7 @@ impl Watch<StreamEvent> {
 
 /// A followed machine log. A closed stream is opened again after the last batch's place, across
 /// a Calcifer restart too, so no line arrives twice.
-pub struct LogFollow {
+pub(crate) struct LogFollow {
     client: Client,
     path: String,
     lines: u64,
@@ -1001,7 +1001,7 @@ pub struct LogFollow {
 }
 
 impl LogFollow {
-    pub async fn next(&mut self) -> Result<LogLines, Error> {
+    pub(crate) async fn next(&mut self) -> Result<LogLines, Error> {
         loop {
             if let Some(data) = self.sse.next() {
                 if let Ok(LogEvent::Lines { after, text }) = serde_json::from_str(&data) {
@@ -1086,7 +1086,7 @@ fn spawn(spec: &ServiceSpec) -> platform::Result<Detached> {
     process::detach(&spec.program, &spec.args, spec.log.as_deref())
 }
 
-pub fn path(segments: &[&str]) -> String {
+pub(crate) fn path(segments: &[&str]) -> String {
     let mut url = url::Url::parse("http://calcifer/").expect("a base URL");
     url.path_segments_mut()
         .expect("a base URL")

@@ -13,19 +13,19 @@ use crate::format::decode::bnb::{FP4_MAP, NESTED, NF4_MAP};
 use crate::format::decode::{elem, f16};
 use crate::format::{Dtype, Error, Result, Value};
 
-pub const NF4: Encoder = Encoder {
+pub(crate) const NF4: Encoder = Encoder {
     scheme: "bnb.nf4",
     quantize: Some(|i| four_bit(i, &NF4_MAP)),
     pack: None,
 };
 
-pub const FP4: Encoder = Encoder {
+pub(crate) const FP4: Encoder = Encoder {
     scheme: "bnb.fp4",
     quantize: Some(|i| four_bit(i, &FP4_MAP)),
     pack: None,
 };
 
-pub const INT8: Encoder = Encoder {
+pub(crate) const INT8: Encoder = Encoder {
     scheme: "bnb.int8",
     quantize: Some(int8),
     pack: None,

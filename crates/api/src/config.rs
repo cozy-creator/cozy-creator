@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::error::{Error, Kind};
 
-pub const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
+pub(crate) const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
 
 /// Every environment variable the load reads, with its key: credentials for model sources, by the
 /// names their own tools use; the Hub (dev and CI point one command elsewhere with it); where

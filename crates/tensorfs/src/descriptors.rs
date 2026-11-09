@@ -9,17 +9,17 @@ use std::sync::Once;
 
 /// Descriptors one request in flight may hold: its socket and an idle one, its object's temp
 /// file, and that object's admission.
-pub const PER_REQUEST: u64 = 4;
+pub(crate) const PER_REQUEST: u64 = 4;
 
 /// Descriptors kept back for what is not a transfer: stdio, the Store's own locks, the hub
 /// calls, the progress channel and whatever the caller opens next.
-pub const MARGIN: u64 = 64;
+pub(crate) const MARGIN: u64 = 64;
 
 static RAISE: Once = Once::new();
 
 /// Raise the soft RLIMIT_NOFILE to the hard limit, once per process. Idempotent; a refused
 /// raise leaves the limit where it was and the budget below measures that.
-pub fn raise() {
+pub(crate) fn raise() {
     RAISE.call_once(platform::process::raise_fd_limit);
 }
 
@@ -29,7 +29,7 @@ fn full(error: &std::io::Error) -> bool {
 
 /// Requests in flight the raised descriptor limit holds, at most `wanted`: a budget sized once
 /// from the limit, not from what happens to be free.
-pub fn requests(wanted: usize) -> usize {
+pub(crate) fn requests(wanted: usize) -> usize {
     raise();
     platform::process::fd_limit().map_or(wanted, |soft| {
         usize::try_from(soft.saturating_sub(MARGIN) / PER_REQUEST).unwrap_or(usize::MAX)
@@ -39,7 +39,7 @@ pub fn requests(wanted: usize) -> usize {
 
 /// Whether `error` is the descriptor table being full. Call it
 /// where an open, socket or resolution fails, before the error loses its errno.
-pub fn exhausted(error: &std::io::Error) -> bool {
+pub(crate) fn exhausted(error: &std::io::Error) -> bool {
     full(error)
 }
 

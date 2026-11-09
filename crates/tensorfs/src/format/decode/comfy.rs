@@ -15,7 +15,7 @@ const I8: Dtypes = &["I8"];
 const F32: Dtypes = &["F32"];
 const S_REL: Dtypes = &["F8_E4M3", "F32"];
 
-pub static ASYM_W4A8_INT8: Scheme = Scheme {
+pub(crate) static ASYM_W4A8_INT8: Scheme = Scheme {
     name: "comfy.asym_w4a8_int8",
     view: View::Matrix,
     params: &[
@@ -38,7 +38,7 @@ pub static ASYM_W4A8_INT8: Scheme = Scheme {
 
 /// `comfy.asym_w4a8_int8`'s parts and decode under Cozy's own name, at 16-input groups with E4M3
 /// group scales and no correction: the w4a8 lane's scheme (spec §6, §7).
-pub static W4A8_CONVROT: Scheme = Scheme {
+pub(crate) static W4A8_CONVROT: Scheme = Scheme {
     name: "w4a8.convrot",
     view: View::Matrix,
     params: &[
@@ -58,7 +58,7 @@ pub static W4A8_CONVROT: Scheme = Scheme {
     decode: |c| grouped(c, 4),
 };
 
-pub static W6A8_INT8: Scheme = Scheme {
+pub(crate) static W6A8_INT8: Scheme = Scheme {
     name: "comfy.w6a8_int8",
     view: View::Matrix,
     params: &[
@@ -77,7 +77,7 @@ pub static W6A8_INT8: Scheme = Scheme {
     decode: |c| grouped(c, 6),
 };
 
-pub static INT4_CONVROT: Scheme = Scheme {
+pub(crate) static INT4_CONVROT: Scheme = Scheme {
     name: "int4.convrot",
     view: View::Matrix,
     params: &[ROTATION, ROTATION_SIZE],

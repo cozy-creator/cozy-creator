@@ -21,7 +21,7 @@ use super::{
 };
 
 /// The name `cozy project render all` means.
-pub const ALL: &str = "all";
+pub(crate) const ALL: &str = "all";
 pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
 const PLATFORM: [&str; 5] = ["tool", "approved", "description", "models", "lora"];
@@ -42,7 +42,7 @@ pub(super) const LEADS: [&str; 2] = ["summary", INSTRUCTIONS];
 const TOOL_INPUTS: [&str; 6] = ["tracks", "fps", "aspect_ratio", "resolution", "video", "at"];
 
 /// Whether `tool` names what Calcifer makes itself: a function of the package `cozy`.
-pub fn made_here(tool: &str) -> bool {
+pub(crate) fn made_here(tool: &str) -> bool {
     let tool = tool.trim();
     let path = api::target::written_as_path(tool) || tool.ends_with(".py");
     !path && tool.split(['@', '/']).find(|part| *part != "_") == Some(COZY)
@@ -58,7 +58,7 @@ fn kind_made_here(plain: &str) -> Option<&'static str> {
 }
 
 /// A new project's project.yaml: a short film that renders as it stands.
-pub fn starter() -> String {
+pub(crate) fn starter() -> String {
     r#"# A short film, ready to render: cozy project render all --on <machine>
 # Change anything. Each box says what makes it; `<name>` in any text reads that box.
 version: 4
@@ -139,7 +139,7 @@ assets:
 }
 
 /// One asset as the file says it, after defaults.
-pub struct Asset {
+pub(crate) struct Asset {
     pub name: String,
     /// What its file is: what it holds or last made, else what its tool's interface last said, else a picture. No more than what to call it.
     pub kind: String,
@@ -173,7 +173,7 @@ pub struct Asset {
 
 /// One thing a text reads.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Reading {
+pub(crate) struct Reading {
     pub asset: usize,
     /// One version of it, which nothing moves: `<abr.2>`, `<self.1>`. None: whatever it stands on, and what reads it waits for that.
     pub number: Option<u32>,
@@ -195,13 +195,13 @@ fn parsed(text: &str) -> Result<(Value, Vec<String>), Error> {
 
 /// A function Calcifer runs itself, free, with no machine.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Tool {
+pub(crate) enum Tool {
     Cut,
     Frame,
 }
 
 /// project.yaml as Calcifer reads it.
-pub struct Doc {
+pub(crate) struct Doc {
     pub assets: Vec<Asset>,
     /// What each reads.
     pub upstream: Vec<Vec<usize>>,
@@ -235,7 +235,7 @@ const THREE_ONLY: [&str; 3] = ["asset_type", "voice", "kind"];
 
 /// Why an asset has the state it has, or none.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub enum State {
+pub(crate) enum State {
     /// A hash in the file: the version it is, if one, with its whole file set, and what changed since it was made.
     Pinned { version: Option<u32>, changed: Vec<String> },
     /// This version has these inputs.
@@ -252,7 +252,7 @@ pub enum State {
 
 /// An asset's state now, and the memo key it stands on.
 #[derive(Clone, Default)]
-pub struct Standing {
+pub(crate) struct Standing {
     pub state: State,
     /// Its files; None is no state.
     pub files: Option<Files>,
@@ -263,7 +263,7 @@ pub struct Standing {
 
 impl Standing {
     /// The version that is its state, if one is.
-    pub fn version(&self) -> Option<u32> {
+    pub(crate) fn version(&self) -> Option<u32> {
         match self.state {
             State::Pinned { version, .. } => version,
             State::Current(version) => Some(version),
@@ -274,7 +274,7 @@ impl Standing {
 
 /// What an operation reads now.
 #[derive(Clone)]
-pub struct ReadNow {
+pub(crate) struct ReadNow {
     pub name: String,
     pub asset: usize,
     pub files: Files,
@@ -286,13 +286,13 @@ pub struct ReadNow {
 
 impl Doc {
     /// The project as its rows say now.
-    pub fn load(folder: &Folder) -> Result<Self, Error> {
+    pub(crate) fn load(folder: &Folder) -> Result<Self, Error> {
         let lock = folder.lock()?;
         folder.reading_boxes(|written| Self::of(folder, written, &lock))?
     }
 
     /// The project `text` says, a YAML export: what a render was asked with. Only a file of no format, or another, is refused.
-    pub fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
+    pub(crate) fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
         Self::of_text(folder, text, &folder.lock()?)
     }
 
@@ -588,7 +588,7 @@ impl Doc {
         self.dotted.get(&name_key(mention)).copied()
     }
 
-    pub fn find(&self, name: &str) -> Option<usize> {
+    pub(crate) fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
     }
 
@@ -607,14 +607,14 @@ impl Doc {
     }
 
     /// Asset `i`'s inputs as its function is given them: a `|` text's last newline is the file's, not anyone's words.
-    pub fn inputs_of(&self, i: usize) -> Map<String, Value> {
+    pub(crate) fn inputs_of(&self, i: usize) -> Map<String, Value> {
         let mut inputs = self.assets[i].inputs.clone();
         inputs.values_mut().for_each(end_trimmed);
         inputs
     }
 
     /// What asset `i` says, flat, by each control's `field`: its inputs, defaults too, and the platform's words. An edit's tracks are the wire's `timeline`.
-    pub fn flat_fields(&self, i: usize) -> Map<String, Value> {
+    pub(crate) fn flat_fields(&self, i: usize) -> Map<String, Value> {
         let asset = &self.assets[i];
         let mut flat = asset.written.clone().unwrap_or_else(|| self.inputs_of(i));
         flat.values_mut().for_each(end_trimmed);
@@ -631,7 +631,7 @@ impl Doc {
     }
 
     /// What asset `i` reads by a mention, each with the places its text says so and what it sends now (`now`, as `stamped` read it).
-    pub fn reads_of(&self, i: usize, now: &[ReadNow]) -> Vec<Read> {
+    pub(crate) fn reads_of(&self, i: usize, now: &[ReadNow]) -> Vec<Read> {
         let asset = &self.assets[i];
         let mut said = vec![];
         for (field, value) in asset.inputs.iter().chain(asset.written.iter().flatten()) {
@@ -659,13 +659,13 @@ impl Doc {
     }
 
     /// The assets whose text fixes version `number` of asset `i`, itself aside: what a person deleting it is told.
-    pub fn read_by(&self, i: usize, number: u32) -> Vec<String> {
+    pub(crate) fn read_by(&self, i: usize, number: u32) -> Vec<String> {
         let names = (0..self.assets.len()).filter(|&j| j != i && self.assets[j].reads.iter().any(|read| read.asset == i && read.number == Some(number)));
         names.map(|j| self.assets[j].name.clone()).collect()
     }
 
     /// Each version a text names, by its asset's name key: a deleted asset's too, as `reclaim` keeps what they'd bring back.
-    pub fn versions_named(&self) -> BTreeMap<String, BTreeSet<u32>> {
+    pub(crate) fn versions_named(&self) -> BTreeMap<String, BTreeSet<u32>> {
         let fixed = self.assets.iter().flat_map(|asset| &asset.reads).filter_map(|read| Some((name_key(&self.assets[read.asset].name), read.number?)));
         let gone = self.unread.iter().filter_map(|(_, mention)| version_of(mention).map(|(name, number)| (name_key(name), number)));
         let mut named: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
@@ -676,7 +676,7 @@ impl Doc {
     }
 
     /// The tags of the function that makes asset `i`, once it has been read.
-    pub fn tags(&self, i: usize) -> Option<&Vec<String>> {
+    pub(crate) fn tags(&self, i: usize) -> Option<&Vec<String>> {
         self.reserved.get(self.assets[i].tool.as_deref().unwrap_or_default())
     }
 
@@ -699,7 +699,7 @@ impl Doc {
 
     /// Why asset `i` can't run, given its package's `tags`: each `<name>` in its text that names nothing and is no tag. Running it would
     /// send its words to a model with no picture, and charge for that. None: it can.
-    pub fn missing_inputs(&self, i: usize, tags: &[String], lock: &Lock) -> Option<String> {
+    pub(crate) fn missing_inputs(&self, i: usize, tags: &[String], lock: &Lock) -> Option<String> {
         let mut said: Vec<String> = vec![];
         let nothing = self.mentions_of_nothing(i, tags).map(|mention| self.no_longer(mention, tags));
         nothing.chain(self.versions_gone(i, lock).into_iter().map(|(_, why)| why)).for_each(|line| if !said.contains(&line) { said.push(line) });
@@ -707,7 +707,7 @@ impl Doc {
     }
 
     /// The names in `missing_inputs`, each once.
-    pub fn missing_names(&self, i: usize, tags: &[String], lock: &Lock) -> Vec<String> {
+    pub(crate) fn missing_names(&self, i: usize, tags: &[String], lock: &Lock) -> Vec<String> {
         let mut names: Vec<String> = vec![];
         let gone = self.versions_gone(i, lock);
         self.mentions_of_nothing(i, tags).chain(gone.iter().map(|(mention, _)| *mention)).for_each(|name| if !names.iter().any(|there| there == name) { names.push(name.to_owned()) });
@@ -715,7 +715,7 @@ impl Doc {
     }
 
     /// The versions asset `i`'s text fixes that a render can't read: known with no package read.
-    pub fn versions_missing(&self, i: usize, lock: &Lock) -> Vec<String> {
+    pub(crate) fn versions_missing(&self, i: usize, lock: &Lock) -> Vec<String> {
         self.versions_gone(i, lock).into_iter().map(|(mention, _)| mention.to_owned()).collect()
     }
 
@@ -747,13 +747,13 @@ impl Doc {
     }
 
     /// What is said ahead of a run of asset `i`, given its package's `tags`. A pin runs nothing, so it says nothing, whatever its text says.
-    pub fn said_once_read(&self, i: usize, tags: &[String], lock: &Lock) -> Option<Warning> {
+    pub(crate) fn said_once_read(&self, i: usize, tags: &[String], lock: &Lock) -> Option<Warning> {
         let said = self.missing_inputs(i, tags, lock).filter(|_| self.assets[i].pin.is_none())?;
         Some(Warning::of(&self.assets[i].name, said))
     }
 
     /// `said_once_read` of each asset whose package project.lock knows.
-    pub fn said_of_known(&self, lock: &Lock) -> Vec<Warning> {
+    pub(crate) fn said_of_known(&self, lock: &Lock) -> Vec<Warning> {
         (0..self.assets.len()).filter(|&i| self.makes(i) && self.tool(i).is_none()).filter_map(|i| self.said_once_read(i, self.tags(i)?, lock)).collect()
     }
 
@@ -767,12 +767,12 @@ impl Doc {
     }
 
     /// The function that makes asset `i`, as the file writes it.
-    pub fn target(&self, i: usize) -> String {
+    pub(crate) fn target(&self, i: usize) -> String {
         self.assets[i].target.clone()
     }
 
     /// Asset `i`'s operation when Calcifer runs it itself: a function of the reserved package `cozy`.
-    pub fn tool(&self, i: usize) -> Option<Tool> {
+    pub(crate) fn tool(&self, i: usize) -> Option<Tool> {
         match self.assets[i].tool.as_deref()? {
             EDIT => Some(Tool::Cut),
             FRAME => Some(Tool::Frame),
@@ -781,7 +781,7 @@ impl Doc {
     }
 
     /// The one line that says why asset `i` has no operation.
-    pub fn nothing_to_make(&self, i: usize) -> String {
+    pub(crate) fn nothing_to_make(&self, i: usize) -> String {
         let asset = &self.assets[i];
         match asset.tool.as_deref() {
             None if asset.own.is_empty() => format!("{} says nothing: it has nothing to make", asset.name),
@@ -791,17 +791,17 @@ impl Doc {
     }
 
     /// Whether asset `i` has an operation that can make it.
-    pub fn makes(&self, i: usize) -> bool {
+    pub(crate) fn makes(&self, i: usize) -> bool {
         !self.assets[i].hollow
     }
 
     /// Every asset's state, in the file's terms.
     /// Whether this was read with the package tags `lock` knows now.
-    pub fn knows_tags_of(&self, lock: &Lock) -> bool {
+    pub(crate) fn knows_tags_of(&self, lock: &Lock) -> bool {
         self.reserved == lock.reserved && self.makes == lock.makes
     }
 
-    pub fn stand(&self, lock: &Lock) -> Vec<Standing> {
+    pub(crate) fn stand(&self, lock: &Lock) -> Vec<Standing> {
         let mut done = vec![Standing::default(); self.assets.len()];
         for &i in &self.order {
             done[i] = self.standing(i, lock, &done);
@@ -828,7 +828,7 @@ impl Doc {
 
     /// The hash in the file, else its newest version for these inputs, else none. A hash that is a version's main file brings
     /// the version's whole file set; one that is none's is just that file.
-    pub fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
+    pub(crate) fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
         let asset = &self.assets[i];
         let held = lock.asset(&asset.name);
         let reads = self.reading(i, lock, done);
@@ -1064,7 +1064,7 @@ impl Doc {
     }
 
     /// The words asset `i` is made from, its text assets' in them, what leads first, as a version keeps them. Calcifer's own tools have none.
-    pub fn text(&self, i: usize) -> Option<String> {
+    pub(crate) fn text(&self, i: usize) -> Option<String> {
         if self.tool(i).is_some() {
             return None;
         }
@@ -1090,7 +1090,7 @@ fn words_in<'a>(value: &'a Value, words: &mut Vec<&'a str>) {
 
 /// `tool` as the key holds it: no release, no root namespace, and local code by its directory's name, with the function it names, so moving
 /// from a checkout to the published package puts nothing out of date.
-pub fn plain_tool(tool: &str, folder: &Folder) -> String {
+pub(crate) fn plain_tool(tool: &str, folder: &Folder) -> String {
     let with = tool.trim();
     if api::target::written_as_path(with) || with.ends_with(".py") {
         let dir_name = |path: &str| {
@@ -1136,7 +1136,7 @@ fn text_of(value: Option<&Value>) -> String {
 }
 
 /// `name`, refused unless it can be a name: the file is wrong, and nothing is rendered from it.
-pub fn named(name: &str) -> Result<(), Error> {
+pub(crate) fn named(name: &str) -> Result<(), Error> {
     if is_name(name) {
         return Ok(());
     }
@@ -1149,7 +1149,7 @@ pub fn named(name: &str) -> Result<(), Error> {
 }
 
 /// Whether something new can go by `name`, a person having typed it.
-pub fn new_name(name: &str) -> Result<(), Error> {
+pub(crate) fn new_name(name: &str) -> Result<(), Error> {
     named(name)?;
     match can_take(name) {
         true => Ok(()),
@@ -1196,13 +1196,13 @@ pub(super) fn names_a_file(path: &[&str]) -> bool {
 }
 
 /// `text` as it calls something new, if it can: through `as_name`, so a `.` is `_`.
-pub fn plain_name(text: &str) -> Option<String> {
+pub(crate) fn plain_name(text: &str) -> Option<String> {
     let name = as_name(text);
     (!name_key(&name).is_empty()).then_some(name)
 }
 
 /// `wanted`, or counting up if something in the project goes by it, or versions wait in project.lock for it: `hero_2`, and `shot_1` is `shot_2`.
-pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
+pub(crate) fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
     free_of(|name| doc.find(name).is_some(), lock, wanted)
 }
 
@@ -1218,13 +1218,13 @@ pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -
 }
 
 /// What a person who typed `name` is told when the project has it.
-pub fn name_taken(doc: &Doc, name: &str) -> Error {
+pub(crate) fn name_taken(doc: &Doc, name: &str) -> Error {
     let there = doc.find(name).map_or(name, |i| doc.assets[i].name.as_str());
     Error::new(Kind::Conflict, "asset_exists", format!("{there} is in the project already")).remedy(format!("use another name, or change it: cozy project set {there}"))
 }
 
 /// Whether a text asset can go by `name`: not a tag of a package this project uses.
-pub fn refuse_tag(lock: &Lock, name: &str) -> Result<(), Error> {
+pub(crate) fn refuse_tag(lock: &Lock, name: &str) -> Result<(), Error> {
     match lock.reserved.iter().find(|(_, tags)| is_tag(tags, name)) {
         Some((tool, _)) => Err(Error::new(Kind::Validation, "asset_name_reserved", format!("{name} is a tag of {tool}: <{name}> in a prompt means that")).remedy("call it something else")),
         None => Ok(()),
@@ -1232,7 +1232,7 @@ pub fn refuse_tag(lock: &Lock, name: &str) -> Result<(), Error> {
 }
 
 /// `name` as a key of a mapping: quoted where YAML in general would read it as something other than this text.
-pub fn yaml_key(name: &str) -> String {
+pub(crate) fn yaml_key(name: &str) -> String {
     match api::yaml::to_json(name) {
         Ok(Value::String(read)) if read == name && name.parse::<f64>().is_err() => name.to_owned(),
         _ => format!("\"{name}\""),

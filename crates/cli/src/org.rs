@@ -11,7 +11,7 @@ use crate::calcifer_client::path;
 use crate::output::{self, Record};
 
 #[derive(clap::Args, Debug)]
-pub struct Args {
+pub(crate) struct Args {
     #[command(subcommand)]
     verb: Verb,
 }
@@ -27,7 +27,7 @@ enum Verb {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct Edit {
+pub(crate) struct Edit {
     /// The org, e.g. stabilityai.
     org: String,
     /// Its author's display name.
@@ -42,12 +42,12 @@ pub struct Edit {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct Claim {
+pub(crate) struct Claim {
     /// The org, e.g. black-forest-labs.
     org: String,
 }
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Claim(args) => claim(ctx, args).await,
         Verb::Edit(args) => edit(ctx, args).await,

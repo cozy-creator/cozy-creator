@@ -63,7 +63,7 @@ pub enum Refusal {
 }
 
 /// A public key's compact name: base64url of the first 16 bytes of its SHA-256.
-pub fn key_id(key: &VerifyingKey) -> String {
+pub(crate) fn key_id(key: &VerifyingKey) -> String {
     URL_SAFE_NO_PAD.encode(&Sha256::digest(key.as_bytes())[..16])
 }
 
@@ -122,7 +122,7 @@ pub fn verify(
 }
 
 /// The token of an `authorization` value, when it carries one.
-pub fn from_authorization(value: &str) -> Option<&str> {
+pub(crate) fn from_authorization(value: &str) -> Option<&str> {
     value.strip_prefix(SCHEME)
 }
 

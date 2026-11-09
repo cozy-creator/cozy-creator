@@ -44,7 +44,7 @@ const INSIDE: [&str; 10] = ["duration", "description", "video", "image", "in", "
 
 /// What became of a project.
 #[derive(Serialize)]
-pub struct Upgraded {
+pub(crate) struct Upgraded {
     pub assets: Vec<Row>,
     /// What it couldn't carry over by itself, and what the file says now.
     pub said: Vec<String>,
@@ -54,7 +54,7 @@ pub struct Upgraded {
 
 /// An asset before and after: `current`, `out_of_date`, `missing`; `new` for what had no row.
 #[derive(Serialize)]
-pub struct Row {
+pub(crate) struct Row {
     pub name: String,
     pub was: String,
     pub before: String,
@@ -975,7 +975,7 @@ const H3_EDITS: [(&str, &str, &str); 5] = [
 
 /// `dir`'s project, format 3, as format 4 (design/tools.md): each box's state as format 3 read it carried over, so nothing goes out of
 /// date and nothing runs, and what format 4 reads another way said once. The old files stay beside it.
-pub fn tools(dir: &Path) -> Result<Upgraded, Error> {
+pub(crate) fn tools(dir: &Path) -> Result<Upgraded, Error> {
     four(dir, &BTreeMap::new())
 }
 

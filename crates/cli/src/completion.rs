@@ -30,7 +30,7 @@ const VAR: &str = "COMPLETE";
 const PATH: char = '\u{1}';
 
 #[derive(clap::Args, Debug)]
-pub struct Args {
+pub(crate) struct Args {
     shell: Shell,
 }
 
@@ -42,7 +42,7 @@ enum Shell {
     Powershell,
 }
 
-pub async fn exec(_ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(_ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     args.shell
         .write_registration(VAR, "cozy", "cozy", "cozy", &mut io::stdout())
         .map_err(|e| Error::new(Kind::Internal, "stdout", e.to_string()))?;
@@ -50,7 +50,7 @@ pub async fn exec(_ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 }
 
 /// Answers a shell's completion request and exits; returns at once on any other run.
-pub fn answer(command: fn() -> clap::Command) {
+pub(crate) fn answer(command: fn() -> clap::Command) {
     CompleteEnv::with_factory(move || paths(command()))
         .var(VAR)
         .shells(Shells(&[
@@ -94,7 +94,7 @@ fn path(current: &OsStr, kind: &str) -> Vec<CompletionCandidate> {
 }
 
 /// A reference or local code: a path only when written as one (`./`, `/`, `~`).
-pub fn local(current: &OsStr) -> Vec<CompletionCandidate> {
+pub(crate) fn local(current: &OsStr) -> Vec<CompletionCandidate> {
     match api::target::written_as_path(&current.to_string_lossy()) {
         true => path(current, "files"),
         false => vec![],
@@ -309,7 +309,7 @@ fn stubs(user_home: &Path) -> [(PathBuf, &'static str); 2] {
 
 /// Puts the stubs in place of any older cozy completion there: bash's, and fish's where fish
 /// keeps a config.
-pub fn install(user_home: &Path) -> io::Result<()> {
+pub(crate) fn install(user_home: &Path) -> io::Result<()> {
     if cfg!(windows) {
         return Ok(());
     }

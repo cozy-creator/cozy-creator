@@ -27,10 +27,10 @@ mod records;
 pub(crate) mod retention;
 
 pub use checkpoint::{wanted, Checkpoint};
-pub use gc::{Collected, Evicted};
-pub use retention::{Room, RoomLane};
+pub(crate) use gc::{Collected, Evicted};
+pub(crate) use retention::{Room, RoomLane};
 pub(crate) use records::is_name;
-pub use retention::TTL;
+pub(crate) use retention::TTL;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -48,14 +48,14 @@ use crate::sha256::{hex, Sha256};
 
 /// [`crate::STORE_FORMAT`] as the store's `format` record.
 /// The store format this TensorFS reads and writes (its `format` record).
-pub const FORMAT: &str = "tensorfs.store/3";
+pub(crate) const FORMAT: &str = "tensorfs.store/3";
 const LAYOUT: [&str; 6] = ["blobs", "refs", "holds", "files", "uses", "tmp"];
 
 /// How long an unreferenced object outlives its last write or reuse.
-pub const GRACE: Duration = Duration::from_secs(3600);
+pub(crate) const GRACE: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Durability {
+pub(crate) enum Durability {
     /// Each object and record is flushed before it is named (local machines).
     Durable,
     /// Nothing is flushed until one `syncfs`, which runs before a record names objects this
@@ -65,7 +65,7 @@ pub enum Durability {
 
 impl Durability {
     /// What the filesystem under `path` calls for: ephemeral on tmpfs and overlay, else durable.
-    pub fn of(path: &Path) -> Durability {
+    pub(crate) fn of(path: &Path) -> Durability {
         match DiskClass::of(path) {
             DiskClass::Ephemeral => Durability::Ephemeral.supported(),
             _ => Durability::Durable,
@@ -104,7 +104,7 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
             Error::Io { .. } => "io",
             Error::Full { .. } => "full",
@@ -139,7 +139,7 @@ impl Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) fn fail(op: &'static str, path: impl Into<PathBuf>) -> impl FnOnce(io::Error) -> Error {
     let path = path.into();
@@ -271,17 +271,17 @@ impl Store {
 
     /// This store as an origin, a directory endpoint's: nothing it holds is cache, so its writes
     /// never expire or evict anything (`maintain`).
-    pub fn origin(mut self) -> Store {
+    pub(crate) fn origin(mut self) -> Store {
         self.cache = false;
         self
     }
 
-    pub fn with_durability(mut self, durability: Durability) -> Store {
+    pub(crate) fn with_durability(mut self, durability: Durability) -> Store {
         self.durability = durability.supported();
         self
     }
 
-    pub fn with_grace(mut self, grace: Duration) -> Store {
+    pub(crate) fn with_grace(mut self, grace: Duration) -> Store {
         self.grace = grace;
         self
     }
@@ -290,12 +290,12 @@ impl Store {
         &self.root
     }
 
-    pub fn durability(&self) -> Durability {
+    pub(crate) fn durability(&self) -> Durability {
         self.durability
     }
 
     /// How long an unreferenced object outlives its last write or reuse.
-    pub fn grace(&self) -> Duration {
+    pub(crate) fn grace(&self) -> Duration {
         self.grace
     }
 
@@ -321,7 +321,7 @@ impl Store {
 
     /// The one door. Bytes written to the [`Admission`] become an object at
     /// [`Admission::finish`]; with `expect`, any other bytes are refused.
-    pub fn admit(&self, expect: Option<&ObjectRef>) -> Result<Admission> {
+    pub(crate) fn admit(&self, expect: Option<&ObjectRef>) -> Result<Admission> {
         if let Some(expect) = expect {
             self.path(expect)?;
         }
@@ -370,7 +370,7 @@ impl Store {
 
     /// Admits everything `src` yields. With `expect`, an object already here is reused without
     /// reading `src`.
-    pub fn put(&self, mut src: impl Read, expect: Option<&ObjectRef>) -> Result<ObjectRef> {
+    pub(crate) fn put(&self, mut src: impl Read, expect: Option<&ObjectRef>) -> Result<ObjectRef> {
         if let Some(expect) = expect {
             if self.reuse(expect)? {
                 return Ok(expect.clone());
@@ -392,7 +392,7 @@ impl Store {
         admission.finish()
     }
 
-    pub fn put_bytes(&self, bytes: &[u8]) -> Result<ObjectRef> {
+    pub(crate) fn put_bytes(&self, bytes: &[u8]) -> Result<ObjectRef> {
         self.put(bytes, None)
     }
 
@@ -405,7 +405,7 @@ impl Store {
     /// an object this process did not just put. The one presence check (offline reads, the
     /// Fetcher, admission): a blob of another length is damaged, so it is removed and reads as
     /// absent, and the next admission of the object replaces it.
-    pub fn reuse(&self, object: &ObjectRef) -> Result<bool> {
+    pub(crate) fn reuse(&self, object: &ObjectRef) -> Result<bool> {
         let Some(file) = self.young(&object.sha256)? else {
             return Ok(false);
         };
@@ -422,7 +422,7 @@ impl Store {
     }
 
     /// Opens `object` to read. Its bytes were verified when admitted.
-    pub fn file(&self, object: &ObjectRef) -> Result<File> {
+    pub(crate) fn file(&self, object: &ObjectRef) -> Result<File> {
         let path = self.path(object)?;
         // One a sweep is moving right now still reads, from GC's trash.
         let opened = File::open(&path)
@@ -457,7 +457,7 @@ impl Store {
 
     /// Makes every object this handle admitted durable. Ephemeral: one `syncfs`, which the
     /// next record commit also runs. Durable objects already are.
-    pub fn sync(&self) -> Result<()> {
+    pub(crate) fn sync(&self) -> Result<()> {
         if !self.unsynced.swap(false, Ordering::SeqCst) {
             return Ok(());
         }
@@ -622,7 +622,7 @@ fn partial(path: &Path) -> Option<(File, bool)> {
 }
 
 /// Bytes on their way into the store. Dropped unfinished, it leaves nothing behind.
-pub struct Admission {
+pub(crate) struct Admission {
     store: Store,
     expect: Option<ObjectRef>,
     temp: PathBuf,
@@ -635,7 +635,7 @@ pub struct Admission {
 
 impl Admission {
     /// Hashes, checks, flushes and names the bytes written. Whatever the end, they stay nowhere else.
-    pub fn finish(mut self) -> Result<ObjectRef> {
+    pub(crate) fn finish(mut self) -> Result<ObjectRef> {
         let got = ObjectRef {
             length: self.length,
             sha256: hex(&std::mem::take(&mut self.hash).finish()),

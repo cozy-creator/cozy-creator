@@ -31,7 +31,7 @@ pub struct Output<'a> {
 
 /// Validate declared roles, dtypes, shapes, lengths and params without reading data or
 /// initializing CUDA. The ordinary format registry remains the only scheme schema.
-pub fn check(
+pub(crate) fn check(
     encoding: &Encoding,
     dtype: &Dtype,
     shape: &[u64],
@@ -47,7 +47,7 @@ fn invalid<T>(detail: impl Into<String>) -> Result<T> {
 /// Check the existing resident plan/catalog before source I/O, and bound the bytes
 /// requested by its private CUDA allocations. Excludes the output, supplied parts,
 /// shared read staging, driver/module memory and allocation-granularity overhead.
-pub fn device_scratch_bytes(
+pub(crate) fn device_scratch_bytes(
     device: i32,
     encoding: &Encoding,
     dtype: &Dtype,
@@ -184,7 +184,7 @@ fn alignment(dtype: &Dtype) -> usize {
 /// (including PTDS). On error callers must retain ALL parts/output owners until io::drain for
 /// that device AND their producer streams report checked completion; failure is not proof of
 /// quiescence. This includes owners shared through DLPack and views of larger allocations.
-pub unsafe fn into(
+pub(crate) unsafe fn into(
     encoding: &Encoding,
     dtype: &Dtype,
     shape: &[u64],
@@ -322,7 +322,7 @@ fn validate_into<'a>(
 /// Parts and output satisfy `into`'s span contract and remain retained through the decoder
 /// AND every dependent consumer. Enqueue supplies native producer streams or a prior proof
 /// of completion; this object never owns the caller's input/output allocations.
-pub unsafe fn prepare_into(
+pub(crate) unsafe fn prepare_into(
     encoding: &Encoding,
     dtype: &Dtype,
     shape: &[u64],
@@ -415,7 +415,7 @@ fn idle_streams() -> &'static Mutex<BTreeMap<i32, Vec<cuda::Stream>>> {
 static STREAMS_CREATED: AtomicU64 = AtomicU64::new(0);
 
 /// Decode streams this process has created: flat once each concurrent decode has one.
-pub fn streams_created() -> u64 {
+pub(crate) fn streams_created() -> u64 {
     STREAMS_CREATED.load(Ordering::Relaxed)
 }
 
@@ -775,7 +775,7 @@ impl DeviceDecode {
     /// `streams` names every producer of the retained external spans; each is an explicit
     /// native stream in this device's primary context. Empty means already checked complete.
     /// Retain this instance AND external owners through dependent consumer completion.
-    pub unsafe fn enqueue_after(&mut self, streams: &[usize]) -> Result<(usize, u64)> {
+    pub(crate) unsafe fn enqueue_after(&mut self, streams: &[usize]) -> Result<(usize, u64)> {
         if self.submitted
             || self.released
             || streams.len() > self.dependencies.len()
@@ -800,7 +800,7 @@ impl DeviceDecode {
         }
         Ok((stream.raw(), self.error))
     }
-    pub fn submitted(&self) -> bool {
+    pub(crate) fn submitted(&self) -> bool {
         self.submitted
     }
     /// Release only this decoder's private owners after checked composed completion.
@@ -809,7 +809,7 @@ impl DeviceDecode {
     /// Every dependent consumer is checked complete and actual capture is excluded.
     /// On failure retain this instance until process retirement; partially released
     /// handles are inert and an ambiguous driver release must never be retried.
-    pub unsafe fn release_completed(&mut self) -> Result<()> {
+    pub(crate) unsafe fn release_completed(&mut self) -> Result<()> {
         if self.release_failed {
             return crate::failure::fail(Kind::Io, "decoder release was already unproven");
         }
@@ -841,7 +841,7 @@ impl DeviceDecode {
         Ok(())
     }
     /// Check decoder completion and values. This does not certify a dependent consumer.
-    pub fn finish(&mut self) -> Result<()> {
+    pub(crate) fn finish(&mut self) -> Result<()> {
         if !self.submitted {
             return invalid("enqueue prepared decode before finish");
         }

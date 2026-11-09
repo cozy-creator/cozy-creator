@@ -1,10 +1,11 @@
 //! TensorFS: the cozytensors format, its store, fetch and convert, and the read engine.
+#![deny(unreachable_pub)]
 
 // Unsafe code lives only in platform, the OS seam.
 #![deny(unsafe_code)]
 
 #[cfg(feature = "store")]
-pub(crate) mod descriptors;
+mod descriptors;
 pub mod err;
 #[cfg(feature = "store")]
 pub mod export;
@@ -52,7 +53,7 @@ pub use session::{
 };
 
 /// This TensorFS's release version.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The on-disk store this build reads and writes, shared by every process on a machine. A
 /// change an older build would misread bumps it (`tensorfs.store/3`: trees and D10 headers).

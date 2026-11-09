@@ -33,7 +33,7 @@ pub(crate) fn egid() -> u32 {
 /// OOM score. Every child gets its own process group, so a kill
 /// reaches the descendants that stayed in it and a terminal signal to the machine does not.
 #[cfg(unix)]
-pub fn trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
+pub(crate) fn trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
     let mut command = Command::new(python);
     platform::process::inherit_nothing(&mut command);
     command
@@ -61,13 +61,13 @@ pub fn trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io
 /// the executor a stranger's child: the interpreter starts itself, told its venv as the launcher
 /// tells it ([`interpreter_environment`]).
 #[cfg(windows)]
-pub fn trampoline(python: &Path, _scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
+pub(crate) fn trampoline(python: &Path, _scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
     interpreter(python)
 }
 
 /// `python` with no seal, for the machine's own work in an environment (its bytecode), which a
 /// PyTorch base with no Runtime does too. On Windows, the interpreter `trampoline` starts.
-pub fn interpreter(python: &Path) -> io::Result<Command> {
+pub(crate) fn interpreter(python: &Path) -> io::Result<Command> {
     #[cfg(windows)]
     let mut command = Command::new(venv_home(python)?.map_or_else(|| python.into(), |home| home.join("python.exe")));
     #[cfg(unix)]
@@ -78,7 +78,7 @@ pub fn interpreter(python: &Path) -> io::Result<Command> {
 
 /// The environment `trampoline`'s interpreter needs beside the executor's own: on Windows, the
 /// venv python it stands in for (`__PYVENV_LAUNCHER__`, CPython's own handoff). None elsewhere.
-pub fn interpreter_environment(python: &Path) -> io::Result<Option<(&'static str, PathBuf)>> {
+pub(crate) fn interpreter_environment(python: &Path) -> io::Result<Option<(&'static str, PathBuf)>> {
     #[cfg(windows)]
     if venv_home(python)?.is_some() {
         return Ok(Some(("__PYVENV_LAUNCHER__", python.to_path_buf())));
@@ -129,7 +129,7 @@ const ERASED_PREFIXES: [&str; 18] = [
     "TENSORFS_",
 ];
 
-pub fn credential_name(name: &str) -> bool {
+pub(crate) fn credential_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     [
         "TOKEN",
@@ -145,7 +145,7 @@ pub fn credential_name(name: &str) -> bool {
 
 /// The process environment every machine-launched package process starts from: the
 /// machine's own environment without credentials or names the seal owns.
-pub fn inherited() -> BTreeMap<String, String> {
+pub(crate) fn inherited() -> BTreeMap<String, String> {
     api::config::environment()
         .iter()
         .filter(|(name, _)| {
@@ -159,7 +159,7 @@ pub fn inherited() -> BTreeMap<String, String> {
 /// `Worker.imposed` plus its JIT/kernel scopes). The executor reports what it received in
 /// Hello and the machine compares every name both know.
 #[derive(Clone, Debug)]
-pub struct Seal {
+pub(crate) struct Seal {
     /// `CUDA_VISIBLE_DEVICES`; empty means no GPU.
     pub devices: String,
     /// The shared TensorFS store, separate from the executor's home.
@@ -181,11 +181,11 @@ pub struct Seal {
 /// The launched process keeps these shared locks open (not close-on-exec) until it exits.
 /// Windows inherits none: there the holds last while the machine does.
 #[cfg(windows)]
-pub fn inherit(_: &mut Command, _: &[Option<&Arc<File>>]) {}
+pub(crate) fn inherit(_: &mut Command, _: &[Option<&Arc<File>>]) {}
 
 /// The launched process keeps these shared locks open (not close-on-exec) until it exits.
 #[cfg(unix)]
-pub fn inherit(command: &mut Command, holds: &[Option<&Arc<File>>]) {
+pub(crate) fn inherit(command: &mut Command, holds: &[Option<&Arc<File>>]) {
     platform::process::keep_open(command, holds.iter().flatten().map(|hold| hold.as_raw_fd()).collect());
 }
 
@@ -194,7 +194,7 @@ const THREADS: u32 = 4;
 
 impl Seal {
     /// Create the owner's directories under `root` for one generation.
-    pub fn prepare(
+    pub(crate) fn prepare(
         root: &Path,
         incarnation: &str,
         generation: &str,
@@ -247,7 +247,7 @@ impl Seal {
         })
     }
 
-    pub fn imposed(&self) -> BTreeMap<String, String> {
+    pub(crate) fn imposed(&self) -> BTreeMap<String, String> {
         let path = |path: PathBuf| path.to_string_lossy().into_owned();
         let mut imposed = BTreeMap::from([
             ("CUDA_VISIBLE_DEVICES".to_string(), self.devices.clone()),
@@ -294,7 +294,7 @@ impl Seal {
     }
 
     /// Inherited, then explicitly configured locations, then the seal, which always wins.
-    pub fn environment(&self, configured: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    pub(crate) fn environment(&self, configured: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut environment = inherited();
         environment.extend(
             configured
@@ -308,7 +308,7 @@ impl Seal {
 
     /// Imposed names the executor reported receiving differently, and those it did not report: a
     /// Runtime older than this binary does not know a newer name, which is no reason to refuse it.
-    pub fn mismatches(&self, reported: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
+    pub(crate) fn mismatches(&self, reported: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
         let mut differ = vec![];
         let mut unreported = vec![];
         for (name, value) in self.imposed() {
@@ -324,7 +324,7 @@ impl Seal {
 
 /// JIT scopes belong to one machine run (Runtime: one worker boot); the executors of
 /// earlier runs are gone before a new one starts, so their scopes are unowned.
-pub fn remove_stale_jit(root: &Path, incarnation: &str) {
+pub(crate) fn remove_stale_jit(root: &Path, incarnation: &str) {
     let Ok(entries) = fs::read_dir(root.join("jit")) else {
         return;
     };

@@ -14,7 +14,7 @@ use std::{
 /// A bounded transport budget per call, never a limit on any work.
 const CALL_BUDGET: Duration = Duration::from_secs(30);
 
-pub struct Hub {
+pub(crate) struct Hub {
     grant: HubGrant,
     client: hub_client::Client,
     /// When the Hub last answered anything (0: never in this process).
@@ -22,7 +22,7 @@ pub struct Hub {
 }
 
 #[derive(Debug)]
-pub enum Refusal {
+pub(crate) enum Refusal {
     /// 401 `worker.ended`: the rental behind this pod is over, for good.
     Ended,
     /// Any other 401/403: the Hub denies this attempt's authority now.
@@ -35,7 +35,7 @@ pub enum Refusal {
 }
 
 impl Hub {
-    pub fn new(grant: HubGrant) -> io::Result<Self> {
+    pub(crate) fn new(grant: HubGrant) -> io::Result<Self> {
         let http = crate::hub::http(grant.ca_der.as_deref()).map_err(|e| io::Error::other(e.0))?;
         let credential = Credential::Worker {
             id: grant.worker_id.clone(),
@@ -49,7 +49,7 @@ impl Hub {
     }
 
     /// When the Hub itself last answered this machine, whatever it said; 0: never in this process.
-    pub fn contact_ms(&self) -> i64 {
+    pub(crate) fn contact_ms(&self) -> i64 {
         self.contact_ms.load(Ordering::Acquire)
     }
 
@@ -94,7 +94,7 @@ impl Hub {
     }
 
     /// The rental's current authorized keys and their lease.
-    pub async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration), Refusal> {
+    pub(crate) async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration), Refusal> {
         let answer = self.call(self.client.get_worker_authorized_keys()).await;
         let document = self.heard(answer)?;
         let invalid = || Refusal::Transport("rental authority metadata is invalid".into(), None);
@@ -116,7 +116,7 @@ impl Hub {
     }
 
     /// Tells the Hub where this booting machine listens.
-    pub async fn report_endpoint(
+    pub(crate) async fn report_endpoint(
         &self,
         endpoint: &super::endpoint::Endpoint,
     ) -> Result<(), Refusal> {
@@ -135,7 +135,7 @@ impl Hub {
 
     /// What this machine measured of its host (`machine::speed`). A Hub from before the route
     /// answers 404, which is no refusal.
-    pub async fn report_speed(
+    pub(crate) async fn report_speed(
         &self,
         download: Option<types::WorkerDownload>,
         cpu: Option<types::WorkerProbe>,
@@ -148,7 +148,7 @@ impl Hub {
     }
 
     /// Ends this rental's allocation; acceptance is the Hub's 204.
-    pub async fn release(&self) -> Result<(), Refusal> {
+    pub(crate) async fn release(&self) -> Result<(), Refusal> {
         let answer = self.call(self.client.release_worker_rental(&self.grant.worker_id)).await;
         self.heard(answer)
     }

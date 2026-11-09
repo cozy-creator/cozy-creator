@@ -74,7 +74,7 @@ impl Default for Access {
 
 impl Access {
     /// Provider credentials as the environment holds them for each provider's host.
-    pub fn from_env() -> Access {
+    pub(crate) fn from_env() -> Access {
         let access = Access::default();
         let bearer = |base: &str| {
             crate::fetch::token::env_token(base).map_or_else(String::new, |t| format!("bearer {t}"))
@@ -683,7 +683,7 @@ const OTHER_WEIGHTS: [&str; 11] = [
 ];
 
 /// A safetensors weights file, or its index.
-pub fn weights(path: &str) -> bool {
+pub(crate) fn weights(path: &str) -> bool {
     path.contains(".safetensors")
 }
 
@@ -705,7 +705,7 @@ fn config(path: &str) -> bool {
 
 /// What `select` keeps besides the weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Files {
+pub(crate) enum Files {
     /// Every other file of the source, byte-exact: configs, tokenizers, README, LICENSE, code,
     /// assets. Only other serializations of the weights are dropped.
     All,
@@ -827,7 +827,7 @@ pub(crate) fn index_folders(doc: &[u8]) -> Result<Vec<String>> {
 /// What the import takes: the named file, else the weights of the layout under the root (a
 /// Diffusers pipeline's indexed components, a Transformers model's root files, or every weights
 /// file), one variant per folder, and the other files `files` asks for.
-pub fn select(
+pub(crate) fn select(
     listing: Listing,
     variant: Option<&str>,
     files: Files,
@@ -900,7 +900,7 @@ pub fn select(
 
 /// Lands `m` at `dest`: resumes a partial file, then checks length and sha256 when the
 /// provider states them. A local member is read where it is.
-pub fn land(m: &Member, dest: &Path, access: &Access) -> Result<PathBuf> {
+pub(crate) fn land(m: &Member, dest: &Path, access: &Access) -> Result<PathBuf> {
     land_in(m, dest, &Scope::new(access, None), &mut |_| {})
 }
 
@@ -993,7 +993,7 @@ fn prefix(path: &Path, upto: u64, verify: bool, access: &Scope<'_>, landed: &mut
 }
 
 /// Bytes `from..to` of a remote member.
-pub fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Result<Vec<u8>> {
+pub(crate) fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Result<Vec<u8>> {
     let At::Remote { url, provider } = &m.at else {
         return refuse(
             Code::SOURCE_NOT_ALLOWED,
@@ -1016,7 +1016,7 @@ pub fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Result<Vec
 }
 
 /// A document of `m`, whole (an index or a config, never weights).
-pub fn read_small(m: &Member, access: &Access) -> Result<Vec<u8>> {
+pub(crate) fn read_small(m: &Member, access: &Access) -> Result<Vec<u8>> {
     read_small_in(m, &Scope::new(access, None))
 }
 

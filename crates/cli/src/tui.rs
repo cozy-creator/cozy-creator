@@ -388,7 +388,7 @@ fn drawing(e: io::Error) -> Error {
 
 /// For product tests: the live views drawn on ratatui's `TestBackend`, fed by a real Calcifer.
 #[doc(hidden)]
-pub mod testing {
+pub(crate) mod testing {
     use std::path::Path;
 
     use platform::paths::Home;
@@ -402,7 +402,7 @@ pub mod testing {
     use crate::{Context, output::Term, package, run};
 
     /// A live view the product tests draw.
-    pub enum View {
+    pub(crate) enum View {
         /// `cozy run ls`
         Runs,
         /// `cozy package ls --on all`
@@ -412,7 +412,7 @@ pub mod testing {
     /// Draws `view` of the Calcifer serving the cozy home `root` (a `~/.cozy`, whose Calcifer
     /// already runs), handing each frame's text to `frame` until it answers true. A frame is
     /// drawn only when Calcifer says something the view shows changed.
-    pub async fn draw(
+    pub(crate) async fn draw(
         root: &Path,
         view: View,
         mut frame: impl FnMut(&str) -> bool,

@@ -4,10 +4,10 @@ use platform::ipc::LocalStream;
 /// Not a size rule: the most one length prefix may make a reader allocate, on this socket
 /// and the executor seam alike (Runtime's `seam.MAX_FRAME`). Load replies grow with their
 /// checkpoint and stay far below it, so it refuses only a corrupt or hostile prefix.
-pub const MAX_FRAME: usize = 256 << 20;
+pub(crate) const MAX_FRAME: usize = 256 << 20;
 /// One frame's body, read as it arrives: a prefix is never trusted with an allocation. EOF is
 /// clean only between frames.
-pub fn read_body(stream: &mut LocalStream) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_body(stream: &mut LocalStream) -> io::Result<Option<Vec<u8>>> {
     let mut header = [0; 4];
     if stream.read(&mut header[..1])? == 0 {
         return Ok(None);
@@ -27,7 +27,7 @@ pub fn read_body(stream: &mut LocalStream) -> io::Result<Option<Vec<u8>>> {
     }
     Ok(Some(bytes))
 }
-pub fn write_body(stream: &mut LocalStream, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_body(stream: &mut LocalStream, bytes: &[u8]) -> io::Result<()> {
     if bytes.len() > MAX_FRAME {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

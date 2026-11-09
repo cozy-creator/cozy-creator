@@ -36,7 +36,7 @@ pub(super) fn since(text: &str) -> Result<SignedDuration, String> {
     Ok(SignedDuration::from_secs(count.saturating_mul(unit)))
 }
 
-pub async fn list(ctx: &Context, since: Option<SignedDuration>) -> Result<ExitCode, Error> {
+pub(crate) async fn list(ctx: &Context, since: Option<SignedDuration>) -> Result<ExitCode, Error> {
     let mut query = vec![("hub", ctx.hub().to_string())];
     if let Some(window) = since {
         let at = Timestamp::now().saturating_sub(window).unwrap_or_default();

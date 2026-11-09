@@ -21,7 +21,7 @@ pub enum Lifetime {
 
 /// One Hub's worker registration of this machine.
 #[derive(Clone, Debug)]
-pub struct HubGrant {
+pub(crate) struct HubGrant {
     pub origin: String,
     pub worker_id: String,
     pub worker_token: String,
@@ -29,7 +29,7 @@ pub struct HubGrant {
     pub object_hosts: Vec<String>,
 }
 
-pub struct Grant {
+pub(crate) struct Grant {
     pub lifetime: Lifetime,
     pub layout: Layout,
     pub listen_host: IpAddr,
@@ -64,7 +64,7 @@ const STORE: &str = "var/lib/tensorfs";
 /// The image's filesystem, rooted: "/" on a pod, a directory on an owned machine. The paths
 /// preserve the machine's identity across software updates.
 #[derive(Clone, Debug)]
-pub struct Layout {
+pub(crate) struct Layout {
     pub root: PathBuf,
     pub bootstrap: PathBuf,
     pub state: PathBuf,
@@ -77,7 +77,7 @@ pub struct Layout {
     pub cache: Option<PathBuf>,
 }
 impl Layout {
-    pub fn new(root: &Path, store: Option<PathBuf>) -> Self {
+    pub(crate) fn new(root: &Path, store: Option<PathBuf>) -> Self {
         Self {
             root: root.into(),
             bootstrap: root.join("run/cozy/bootstrap"),
@@ -87,13 +87,13 @@ impl Layout {
         }
     }
     /// This service's execution journal and package generations.
-    pub fn engine(&self) -> PathBuf {
+    pub(crate) fn engine(&self) -> PathBuf {
         self.root.join("var/lib/cozy/tensord")
     }
 }
 
 impl Grant {
-    pub fn new(lifetime: Lifetime, raw: &MachineConfig, webrtc_reach: super::player::Reach, home: &Home) -> io::Result<Self> {
+    pub(crate) fn new(lifetime: Lifetime, raw: &MachineConfig, webrtc_reach: super::player::Reach, home: &Home) -> io::Result<Self> {
         fn get(text: &Option<String>) -> Option<&str> {
             text.as_deref().filter(|v| !v.is_empty())
         }
@@ -195,7 +195,7 @@ impl Grant {
     /// The keys this machine admits: the grant's (on a rental, replaced by the Hub's lease once
     /// it is read) and its home's, read again when a signer is unknown: a pod's own shell and the
     /// controllers it authorizes use it as a laptop's do.
-    pub fn keys(&self) -> io::Result<crate::api::auth::Keys> {
+    pub(crate) fn keys(&self) -> io::Result<crate::api::auth::Keys> {
         let (home, stamped) = (self.home.clone(), self.home.clone());
         crate::api::auth::Keys::read(self.authorized.clone(), move || home_keys(&home), move || home_stamp(&stamped))
     }
@@ -211,7 +211,7 @@ fn home_stamp(home: &Home) -> [Option<std::time::SystemTime>; 2] {
 /// key (`keys/owner.pem`, this computer's Calcifer's signer) and one unpadded base64url Ed25519
 /// key per line of `keys/authorized` (`cozy machine authorize`; `#` starts a comment). Either
 /// may be absent.
-pub fn home_keys(home: &Home) -> io::Result<Vec<VerifyingKey>> {
+pub(crate) fn home_keys(home: &Home) -> io::Result<Vec<VerifyingKey>> {
     use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey};
     let owner = home.keys().join("owner.pem");
     let mut keys = match fs::read_to_string(&owner) {
@@ -238,7 +238,7 @@ fn authorized_keys(home: &Home) -> io::Result<Vec<VerifyingKey>> {
 
 /// Whether another computer's controller is authorized to use this computer's machine, which
 /// then stays up when idle. An unreadable file authorizes nobody.
-pub fn authorized(home: &Home) -> bool {
+pub(crate) fn authorized(home: &Home) -> bool {
     authorized_keys(home).is_ok_and(|keys| !keys.is_empty())
 }
 

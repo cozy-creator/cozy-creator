@@ -15,7 +15,7 @@ struct Inner {
     regions: Vec<State>,
     guards: BTreeMap<u64, HostPin>,
 }
-pub struct PinnedRanges {
+pub(crate) struct PinnedRanges {
     ptr: usize,
     len: usize,
     read_only: bool,
@@ -26,7 +26,7 @@ impl PinnedRanges {
     /// # Safety
     /// The mapping stays valid until all guards are cleared, and a registered range is never
     /// unmapped or punched before `unpin_region`/`clear` returns.
-    pub unsafe fn new(ptr: *mut u8, len: usize, regions: usize, read_only: bool) -> Self {
+    pub(crate) unsafe fn new(ptr: *mut u8, len: usize, regions: usize, read_only: bool) -> Self {
         Self {
             ptr: ptr as usize,
             len,
@@ -57,11 +57,11 @@ impl PinnedRanges {
         inner.guards.insert(off, guard);
         Ok(())
     }
-    pub fn register(&self, off: u64, len: u64) -> cuda::Result<()> {
+    pub(crate) fn register(&self, off: u64, len: u64) -> cuda::Result<()> {
         self.register_into(&mut self.inner.lock().unwrap(), off, len)
     }
     /// Stage the first copy. Reuse pays registration once; refused ranges stay staged.
-    pub fn pin_region(&self, region: u32, off: u64, len: u64) -> bool {
+    pub(crate) fn pin_region(&self, region: u32, off: u64, len: u64) -> bool {
         let mut inner = self.inner.lock().unwrap();
         let Some(state) = inner.regions.get(region as usize).copied() else {
             return false;
@@ -99,7 +99,7 @@ impl PinnedRanges {
         inner.guards.remove(&off);
         Ok(())
     }
-    pub fn unpin_region(&self, region: u32, off: u64) -> cuda::Result<()> {
+    pub(crate) fn unpin_region(&self, region: u32, off: u64) -> cuda::Result<()> {
         let mut inner = self.inner.lock().unwrap();
         Self::release(&mut inner, off)?;
         if let Some(state) = inner.regions.get_mut(region as usize) {
@@ -107,10 +107,10 @@ impl PinnedRanges {
         }
         Ok(())
     }
-    pub fn unregister(&self, off: u64) -> cuda::Result<()> {
+    pub(crate) fn unregister(&self, off: u64) -> cuda::Result<()> {
         Self::release(&mut self.inner.lock().unwrap(), off)
     }
-    pub fn clear(&self) -> cuda::Result<()> {
+    pub(crate) fn clear(&self) -> cuda::Result<()> {
         let mut inner = self.inner.lock().unwrap();
         let offsets = inner.guards.keys().copied().collect::<Vec<_>>();
         for off in offsets {

@@ -31,7 +31,7 @@ use v1::path;
 
 /// A refusal as its envelope, at the status its kind names unless the protocol names another.
 #[derive(Debug)]
-pub struct Refusal(pub Error, Option<StatusCode>);
+pub(crate) struct Refusal(pub Error, Option<StatusCode>);
 impl From<Error> for Refusal {
     fn from(error: Error) -> Self {
         Self(error, None)

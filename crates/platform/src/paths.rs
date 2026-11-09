@@ -29,7 +29,7 @@ impl Home {
         &self.root
     }
 
-    pub fn bin(&self) -> PathBuf {
+    pub(crate) fn bin(&self) -> PathBuf {
         self.root.join("bin")
     }
 
@@ -75,7 +75,7 @@ impl Home {
         self.root.join("calcifer")
     }
 
-    pub fn calcifer_db(&self) -> PathBuf {
+    pub(crate) fn calcifer_db(&self) -> PathBuf {
         self.calcifer().join("state.db")
     }
 
@@ -98,7 +98,7 @@ impl Home {
     }
 
     /// Service definitions this home installed, and on Windows the birth of each one it started.
-    pub fn services(&self) -> PathBuf {
+    pub(crate) fn services(&self) -> PathBuf {
         self.root.join("services")
     }
 
@@ -124,7 +124,7 @@ pub fn venv_python(venv: &Path) -> PathBuf {
 }
 
 /// A console script inside a venv, spelled for this OS.
-pub fn venv_tool(venv: &Path, name: &str) -> PathBuf {
+pub(crate) fn venv_tool(venv: &Path, name: &str) -> PathBuf {
     let dir = if cfg!(windows) { "Scripts" } else { "bin" };
     venv.join(dir).join(exe(name))
 }
@@ -163,7 +163,7 @@ pub fn cache() -> Option<PathBuf> {
 }
 
 /// Whether `user_home` is this OS user's own home.
-pub fn is_login_home(user_home: &Path) -> bool {
+pub(crate) fn is_login_home(user_home: &Path) -> bool {
     let canonical =
         |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     login_home().is_some_and(|login| canonical(&login) == canonical(user_home))

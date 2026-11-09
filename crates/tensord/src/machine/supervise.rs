@@ -31,7 +31,7 @@ use super::{provider::ProviderSelf, update::Recovered};
 /// handle its stable parent handed it. Without one this is the parent, which starts the service
 /// and exits with its final status. Windows rents nothing, so it hands on no provider credential.
 #[cfg(windows)]
-pub fn supervise(
+pub(crate) fn supervise(
     paths: &super::update::Paths,
     _provider: Option<ProviderSelf>,
     service_ready: Option<u64>,
@@ -87,7 +87,7 @@ pub fn supervise(
 /// on; the parent exits with the service's final status, or execs an activated binary, handing
 /// on a rental's `provider` credential.
 #[cfg(unix)]
-pub fn supervise(paths: &super::update::Paths, provider: Option<ProviderSelf>) -> io::Result<Ready> {
+pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderSelf>) -> io::Result<Ready> {
     let signals = SupervisorSignals::new();
     platform::process::keep_sigchld()?;
     signals.block()?;
@@ -204,9 +204,9 @@ fn wait_service(child: Pid, signals: &SupervisorSignals) -> io::Result<(WaitStat
 }
 
 /// The service's readiness report to its parent: written once, when this boot has proved itself.
-pub struct Ready(Option<File>);
+pub(crate) struct Ready(Option<File>);
 impl Ready {
-    pub fn report(&mut self) {
+    pub(crate) fn report(&mut self) {
         if let Some(mut pipe) = self.0.take() {
             let _ = pipe.write_all(b"r");
         }

@@ -13,7 +13,7 @@ use super::update::Coded;
 use crate::{origin::Machine, stop::Stop};
 
 /// cozy `version`'s binary for this machine, unpacked into `dir`.
-pub fn cozy(version: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
+pub(crate) fn cozy(version: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
     let refused = |e: release::Refused| io::Error::other(Coded { code: e.code, message: e.message });
     let base = release::dir(Some(version)).map_err(refused)?;
     let manifest = text(machine, stop, format!("{base}/dist-manifest.json"))?;

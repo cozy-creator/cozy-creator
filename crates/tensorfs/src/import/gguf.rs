@@ -30,7 +30,7 @@ use crate::format::{Dtype, Encoding};
 use super::remote::{self, Access, Member};
 
 /// The dtype of an unblocked ggml type, stored as a plain tensor.
-pub fn plain(ty: Type) -> Option<Dtype> {
+pub(crate) fn plain(ty: Type) -> Option<Dtype> {
     Some(match ty.name {
         "f32" => Dtype::F32,
         "f16" => Dtype::F16,
@@ -49,7 +49,7 @@ pub fn plain(ty: Type) -> Option<Dtype> {
 /// One KV entry as the record holds it: key, GGUF type and value. An array's value is
 /// `[element type, [items]]`; a float is its shortest decimal that reads back to its bits, or
 /// those bits as `"0x…"` when it is not finite.
-pub type Kv = (String, String, Json);
+pub(crate) type Kv = (String, String, Json);
 
 const KINDS: [&str; 13] = [
     "u8", "i8", "u16", "i16", "u32", "i32", "f32", "bool", "string", "array", "u64", "i64", "f64",
@@ -159,7 +159,7 @@ fn string(s: &str, out: &mut Vec<u8>) {
 // ------------------------------------------------------------------------------ the container
 
 /// Bytes read by offset: a local file, or a remote one by HTTP range.
-pub trait At {
+pub(crate) trait At {
     fn size(&self) -> u64;
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
 }
@@ -175,7 +175,7 @@ impl At for File {
 }
 
 /// A remote member read by range, its length as listed.
-pub struct Remote<'a> {
+pub(crate) struct Remote<'a> {
     pub member: &'a Member,
     pub access: &'a Access,
 }
@@ -198,7 +198,7 @@ impl At for Remote<'_> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Info {
+pub(crate) struct Info {
     pub name: String,
     pub ne: Vec<u64>,
     pub ty: Type,
@@ -208,7 +208,7 @@ pub struct Info {
 }
 
 #[derive(Debug, Clone)]
-pub struct Gguf {
+pub(crate) struct Gguf {
     pub version: u32,
     pub kv: Vec<Kv>,
     pub tensors: Vec<Info>,
@@ -218,7 +218,7 @@ pub struct Gguf {
 }
 
 impl Gguf {
-    pub fn get(&self, key: &str) -> Option<&Json> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Json> {
         self.kv.iter().find(|(k, ..)| k == key).map(|(.., v)| v)
     }
 }
@@ -226,7 +226,7 @@ impl Gguf {
 /// The header may be this large (a 256 k-token vocabulary is ~10 MB).
 const HEADER_CAP: u64 = 1 << 30;
 const CHUNK: u64 = 1 << 20;
-pub const DEFAULT_ALIGNMENT: u64 = 32;
+pub(crate) const DEFAULT_ALIGNMENT: u64 = 32;
 /// ggml's `GGML_MAX_DIMS`.
 const MAX_DIMS: u32 = 4;
 
@@ -330,7 +330,7 @@ fn pad(n: u64, alignment: u64) -> u64 {
 /// The header of the GGUF in `src`: KV, tensor infos and where the data section starts. Every
 /// tensor must lie in the file at the offset llama.cpp's own reader requires (each one after the
 /// last, padded to the alignment).
-pub fn read(src: &dyn At) -> Result<Gguf> {
+pub(crate) fn read(src: &dyn At) -> Result<Gguf> {
     let mut c = Cursor {
         src,
         len: src.size(),
@@ -430,7 +430,7 @@ pub fn read(src: &dyn At) -> Result<Gguf> {
 }
 
 /// `general.alignment` (a power of two, `u32`), else ggml's default.
-pub fn alignment(kv: &[Kv]) -> Result<u64> {
+pub(crate) fn alignment(kv: &[Kv]) -> Result<u64> {
     match kv.iter().find(|(k, ..)| k == "general.alignment") {
         None => Ok(DEFAULT_ALIGNMENT),
         Some((_, kind, v)) => match v.as_u64() {
@@ -446,7 +446,7 @@ pub fn alignment(kv: &[Kv]) -> Result<u64> {
 /// The GGUF header for `kv` and `tensors` (name, ne, type), padded to the alignment: what
 /// llama.cpp and gguf-py write before the data section. Each tensor's offset follows the last,
 /// padded to the alignment.
-pub fn header(version: u32, kv: &[Kv], tensors: &[(String, Vec<u64>, Type)]) -> Result<Vec<u8>> {
+pub(crate) fn header(version: u32, kv: &[Kv], tensors: &[(String, Vec<u64>, Type)]) -> Result<Vec<u8>> {
     let alignment = alignment(kv)?;
     let mut out = b"GGUF".to_vec();
     out.extend(version.to_le_bytes());
@@ -478,7 +478,7 @@ pub fn header(version: u32, kv: &[Kv], tensors: &[(String, Vec<u64>, Type)]) -> 
 /// `<file>.json`: everything of a GGUF but its tensor bytes, and where each tensor went.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Meta {
+pub(crate) struct Meta {
     pub version: u32,
     /// `[key, type, value]`, in the file's order.
     pub kv: Vec<Kv>,
@@ -489,7 +489,7 @@ pub struct Meta {
 /// `permute` names llama's head count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Row {
+pub(crate) struct Row {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: String,
@@ -540,7 +540,7 @@ fn template(base: &str) -> (String, Option<&str>) {
 
 /// One part's bytes: absolute ranges of the file, concatenated.
 #[derive(Debug, Clone)]
-pub struct OutPart {
+pub(crate) struct OutPart {
     pub role: &'static str,
     pub dtype: Dtype,
     pub shape: Vec<u64>,
@@ -548,7 +548,7 @@ pub struct OutPart {
 }
 
 #[derive(Debug, Clone)]
-pub struct Out {
+pub(crate) struct Out {
     pub key: String,
     pub dtype: Dtype,
     pub shape: Vec<u64>,
@@ -557,7 +557,7 @@ pub struct Out {
 }
 
 #[derive(Debug)]
-pub struct Planned {
+pub(crate) struct Planned {
     pub tensors: Vec<Out>,
     pub meta: Meta,
     /// The arch whose name map renamed the tensors, and its Transformers class.
@@ -614,7 +614,7 @@ pub(crate) fn permuted(rows: u64, heads: u64, upstream: u64) -> u64 {
 
 /// Plans `g`'s tensors into `component`: renamed by its arch's name map, split, un-permuted
 /// and folded.
-pub fn plan(g: &Gguf, component: &str) -> Result<Planned> {
+pub(crate) fn plan(g: &Gguf, component: &str) -> Result<Planned> {
     let arch_name = g.get("general.architecture").and_then(Json::as_str);
     let arch = arch_name.and_then(|a| arches().get(a).map(|m| (a, m)));
     let by_name: HashMap<&str, &Info> = g.tensors.iter().map(|t| (t.name.as_str(), t)).collect();
@@ -810,7 +810,7 @@ fn huggingface(url: &str) -> Option<String> {
 }
 
 /// Reads a part's ranges of `file` in order.
-pub struct Ranges<'f> {
+pub(crate) struct Ranges<'f> {
     file: &'f File,
     ranges: &'f [(u64, u64)],
     at: usize,
@@ -818,7 +818,7 @@ pub struct Ranges<'f> {
 }
 
 impl<'f> Ranges<'f> {
-    pub fn new(file: &'f File, ranges: &'f [(u64, u64)]) -> Ranges<'f> {
+    pub(crate) fn new(file: &'f File, ranges: &'f [(u64, u64)]) -> Ranges<'f> {
         Ranges {
             file,
             ranges,

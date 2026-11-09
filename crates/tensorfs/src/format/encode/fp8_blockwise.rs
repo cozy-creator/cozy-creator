@@ -7,7 +7,7 @@ use super::{elem, encoding, Encoder, Input, OwnedPart};
 use crate::format::decode::{bf16, elem as exact, f16};
 use crate::format::{Dtype, Encoding, Error, Result, Value};
 
-pub const ENCODER: Encoder = Encoder {
+pub(crate) const ENCODER: Encoder = Encoder {
     scheme: "fp8.blockwise",
     quantize: Some(|i| quantize_fp8_blockwise(i, &Dtype::F32)),
     pack: None,
@@ -15,7 +15,7 @@ pub const ENCODER: Encoder = Encoder {
 
 impl Encoding {
     /// Tiles of `rows × cols`; the scale part is `F32`, `BF16`, `F16` or `F8_E8M0`.
-    pub fn fp8_blockwise(rows: u64, cols: u64) -> Encoding {
+    pub(crate) fn fp8_blockwise(rows: u64, cols: u64) -> Encoding {
         let size = Value::List(vec![rows.into(), cols.into()]);
         encoding("fp8.blockwise", &[("block_size", size)])
     }
@@ -79,7 +79,7 @@ fn tile(dtype: &Dtype, x: &[f32]) -> (Vec<u8>, Vec<u8>) {
 }
 
 /// The parts of `input.encoding` with the scale stored as `scale`, by that dtype's producer.
-pub fn quantize_fp8_blockwise(input: &Input, scale: &Dtype) -> Result<Vec<OwnedPart>> {
+pub(crate) fn quantize_fp8_blockwise(input: &Input, scale: &Dtype) -> Result<Vec<OwnedPart>> {
     let fail = |d: String| Error::Encode(format!("fp8.blockwise: {d}"));
     let p = &input.encoding.params;
     let size = match p.get("block_size") {

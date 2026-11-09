@@ -11,13 +11,13 @@ use tensorfs::format::{ClassRef, Dtype, Encoding, GlobalScale, NibbleOrder, Obje
 use tensorfs::store::Store;
 use tensorfs::writer::{Data, PartData, Source};
 
-pub struct Noise {
+pub(crate) struct Noise {
     state: u64,
     left: u64,
 }
 
 impl Noise {
-    pub fn new(seed: &str, len: u64) -> Noise {
+    pub(crate) fn new(seed: &str, len: u64) -> Noise {
         // FNV-1a of the seed.
         let state = seed.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
             (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
@@ -232,7 +232,7 @@ const CONFIGS: [(&str, [&str; 3], &str); 2] = [
 ];
 
 /// Writes the cozytensors; its header, pinned under its digest.
-pub fn ckpt(store: &Store, blocks: u64, scale: u64, plain: bool, files: bool) -> Result<ObjectRef> {
+pub(crate) fn ckpt(store: &Store, blocks: u64, scale: u64, plain: bool, files: bool) -> Result<ObjectRef> {
     let mut w = store.writer(None, None)?;
     if files {
         for (component, [library, version, name], config) in CONFIGS {

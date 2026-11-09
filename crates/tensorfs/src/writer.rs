@@ -291,7 +291,7 @@ impl Store {
     /// A writer whose objects go to `stream` as they seal and whose commit (the header with its
     /// repo files, in lane `lane`) becomes one of repo `name`'s there. The local checkpoint
     /// commits first and remains available when the upload fails. With `key`, it resumes.
-    pub fn streaming_writer(&self, stream: Arc<Stream>, name: &str, lane: &str, base: Option<&Checkpoint>, key: Option<&str>) -> Result<Writer> {
+    pub(crate) fn streaming_writer(&self, stream: Arc<Stream>, name: &str, lane: &str, base: Option<&Checkpoint>, key: Option<&str>) -> Result<Writer> {
         if !format::label(lane) {
             return Err(bad(format!("lane {lane:?} is not a label")));
         }
@@ -303,7 +303,7 @@ impl Store {
 
     /// Removes the directories of writers no process holds and nothing touched for `older_than`
     /// (`tmp/writers/<key>`), and of imports as idle (`tmp/import/<id>`): the number removed.
-    pub fn sweep_writers(&self, older_than: std::time::Duration) -> Result<usize> {
+    pub(crate) fn sweep_writers(&self, older_than: std::time::Duration) -> Result<usize> {
         let cutoff = std::time::SystemTime::now()
             .checked_sub(older_than)
             .unwrap_or(std::time::UNIX_EPOCH);
@@ -361,7 +361,7 @@ impl Writer {
     /// A writer into the plain folder `path` (created when absent), starting from `base` when
     /// given; objects `base`'s store holds are referenced, not copied. With `resume`, it takes
     /// back what an interrupted writer there journaled.
-    pub fn folder(path: &Path, base: Option<&Checkpoint>, resume: bool) -> Result<Writer> {
+    pub(crate) fn folder(path: &Path, base: Option<&Checkpoint>, resume: bool) -> Result<Writer> {
         let chunks = path.join(CHUNKS_DIR);
         fs::create_dir_all(&chunks).map_err(fail("create", &chunks))?;
         let dir = chunks.join(WRITING).join(HEADER_PATH);
@@ -419,7 +419,7 @@ impl Writer {
     }
 
     /// What `model_index.json` held: the pipeline's class and config.
-    pub fn pipeline(&mut self, class: ClassRef, config: Config) {
+    pub(crate) fn pipeline(&mut self, class: ClassRef, config: Config) {
         unversioned("the pipeline", &class);
         self.pipeline = Some(Pipeline { class, config });
     }
@@ -514,14 +514,14 @@ impl Writer {
     }
 
     /// A header metadata field; it overrides the base's.
-    pub fn set_metadata(&mut self, key: &str, value: Value) {
+    pub(crate) fn set_metadata(&mut self, key: &str, value: Value) {
         self.metadata.insert(key.to_owned(), value);
     }
 
     /// The header order when the producer's calls are not it (a resumed migration): these
     /// tensors first, in this order, then the rest in recorded order; components in order of
     /// their first tensor here. Given before `commit`.
-    pub fn set_order(&mut self, tensors: &[(&str, &str)]) {
+    pub(crate) fn set_order(&mut self, tensors: &[(&str, &str)]) {
         self.order = (tensors.iter().enumerate())
             .map(|(i, (c, k))| (((*c).to_owned(), (*k).to_owned()), i))
             .collect();
@@ -529,24 +529,24 @@ impl Writer {
     }
 
     /// Written (or journaled by an interrupted writer of this key); base tensors don't count.
-    pub fn has(&self, component: &str, key: &str) -> bool {
+    pub(crate) fn has(&self, component: &str, key: &str) -> bool {
         self.tensors.index.contains_key(&(component.to_owned(), key.to_owned()))
     }
 
     /// The header, once committed.
-    pub fn committed(&self) -> Option<&ObjectRef> {
+    pub(crate) fn committed(&self) -> Option<&ObjectRef> {
         self.committed.as_ref()
     }
 
     /// This writer's exact tree, once its endpoint's conditional repo update succeeded.
-    pub fn published(&self) -> Option<&ObjectRef> {
+    pub(crate) fn published(&self) -> Option<&ObjectRef> {
         self.published.as_ref()
     }
 
     /// A repo file (README, LICENSE): never inside the cozytensors. Into the store it is an
     /// object listed by [`Writer::repo_files`] and kept with the header; into a folder, a
     /// file at its path.
-    pub fn repo_file(&mut self, path: &str, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn repo_file(&mut self, path: &str, bytes: &[u8]) -> Result<()> {
         self.live()?;
         format::check_file(path)?;
         if format::is_header(path) {
@@ -575,7 +575,7 @@ impl Writer {
     }
 
     /// The repo files given to [`Writer::repo_file`].
-    pub fn repo_files(&self) -> &BTreeMap<String, ObjectRef> {
+    pub(crate) fn repo_files(&self) -> &BTreeMap<String, ObjectRef> {
         &self.repo
     }
 
@@ -588,7 +588,7 @@ impl Writer {
 
     /// [`Writer::commit`], telling `progress(done, total)` the spooled bytes packed into chunks so
     /// far: packing a model of many small tensors copies most of its bytes.
-    pub fn commit_with(&mut self, progress: &dyn Fn(u64, u64)) -> Result<ObjectRef> {
+    pub(crate) fn commit_with(&mut self, progress: &dyn Fn(u64, u64)) -> Result<ObjectRef> {
         self.live()?;
         let base = self.base.take();
         let built = self.assemble(base.as_ref());
@@ -720,7 +720,7 @@ impl Writer {
     }
 
     /// Ends the writer without a header: its journal and spool go.
-    pub fn abandon(mut self) {
+    pub(crate) fn abandon(mut self) {
         self.close();
     }
 
@@ -887,7 +887,7 @@ impl Writer {
     /// The base objects `commit` carries over: the chunks of every base tensor not written
     /// again, and the base's assets. A lazily opened base holds only what was read, so the
     /// session fetches the absent ones before it commits.
-    pub fn carried(&self) -> Result<Vec<ObjectRef>> {
+    pub(crate) fn carried(&self) -> Result<Vec<ObjectRef>> {
         let Some(base) = &self.base else { return Ok(Vec::new()) };
         let header = base.header();
         let mut out = Vec::new();
@@ -1168,7 +1168,7 @@ impl Drop for Writer {
 }
 
 impl ComponentWriter<'_> {
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         &self.name
     }
 
@@ -1225,7 +1225,7 @@ impl ComponentWriter<'_> {
     }
 
     /// Takes `from_component/from_key` from `from` as `key`.
-    pub fn copy_as(&mut self, key: &str, from: &Checkpoint, from_component: &str, from_key: &str) -> Result<()> {
+    pub(crate) fn copy_as(&mut self, key: &str, from: &Checkpoint, from_component: &str, from_key: &str) -> Result<()> {
         self.w.ready(&self.name, key)?;
         let mut entry = self.w.adopt(from_component, from_key, from)?;
         (entry.component, entry.key) = (self.name.clone(), key.to_owned());
@@ -1242,7 +1242,7 @@ impl ComponentWriter<'_> {
     }
 
     /// An asset already stored as `object` elsewhere: referenced, not copied or required here.
-    pub fn reuse_asset(&mut self, name: &str, object: &ObjectRef) -> Result<()> {
+    pub(crate) fn reuse_asset(&mut self, name: &str, object: &ObjectRef) -> Result<()> {
         self.w.live()?;
         asset_name(&self.name, name)?;
         self.add_asset(name, object.clone(), true, 0)
@@ -1260,7 +1260,7 @@ impl ComponentWriter<'_> {
 
     /// The component's tensor order when the producer's calls are not it: these keys first, in
     /// this order, then the rest in recorded order.
-    pub fn set_order(&mut self, keys: &[&str]) {
+    pub(crate) fn set_order(&mut self, keys: &[&str]) {
         let order = &mut self.w.order;
         order.retain(|(c, _), _| *c != self.name);
         for (i, k) in keys.iter().enumerate() {
@@ -1269,7 +1269,7 @@ impl ComponentWriter<'_> {
     }
 
     /// Written (or journaled by an interrupted writer of this key); base tensors don't count.
-    pub fn has(&self, key: &str) -> bool {
+    pub(crate) fn has(&self, key: &str) -> bool {
         self.w.has(&self.name, key)
     }
 }

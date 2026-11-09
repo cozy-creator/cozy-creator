@@ -56,7 +56,7 @@ const ABANDONED: u8 = 2;
 
 impl VolumeOrigin {
     /// The directory at `root`; an unused blob stays at least `ttl`.
-    pub fn new(root: impl Into<PathBuf>, ttl: Duration) -> VolumeOrigin {
+    pub(crate) fn new(root: impl Into<PathBuf>, ttl: Duration) -> VolumeOrigin {
         VolumeOrigin(Arc::new(Inner {
             root: root.into(),
             ttl,
@@ -73,7 +73,7 @@ impl VolumeOrigin {
         (device(&root)? != device(root.parent()?)?).then(|| VolumeOrigin::new(root, ttl))
     }
 
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.0.root
     }
 

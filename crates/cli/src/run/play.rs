@@ -7,7 +7,7 @@ use api::{calcifer::Play, error::Error};
 
 use crate::{Context, output};
 
-pub async fn exec(
+pub(crate) async fn exec(
     ctx: &Context,
     run: &str,
     output: &str,

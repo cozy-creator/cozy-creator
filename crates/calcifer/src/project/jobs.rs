@@ -16,7 +16,7 @@ use tokio::sync::{broadcast, watch};
 use super::graph::name_key;
 
 /// A version a run is making or about to: what project.lock's pending entry says of it.
-pub struct Going {
+pub(crate) struct Going {
     /// The job it is, as the board knows it.
     pub job: String,
     pub asset: String,
@@ -33,7 +33,7 @@ pub struct Going {
     pub gpus: Option<u32>,
 }
 
-pub struct Jobs {
+pub(crate) struct Jobs {
     held: Mutex<Held>,
     /// The board. A client hears of it when it begins and ends, and of each job as that one changes.
     board: watch::Sender<Board>,
@@ -77,36 +77,36 @@ struct Live {
 }
 
 impl Jobs {
-    pub fn new(project: String, events: broadcast::Sender<Event>) -> Self {
+    pub(crate) fn new(project: String, events: broadcast::Sender<Event>) -> Self {
         Self { held: Mutex::default(), board: watch::Sender::new(Board::default()), project, events }
     }
 
-    pub fn board(&self) -> Board {
+    pub(crate) fn board(&self) -> Board {
         let mut board = self.board.borrow().clone();
         board.ahead = self.held.lock().expect("jobs lock").ahead.iter().map(|(.., row)| row.clone()).collect();
         board
     }
 
-    pub fn subscribe(&self) -> watch::Receiver<Board> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Board> {
         self.board.subscribe()
     }
 
     /// The board an earlier walk ended on, as project.db kept it: what this shows until a walk begins.
-    pub fn ended_on(&self, board: Board) {
+    pub(crate) fn ended_on(&self, board: Board) {
         let mut held = self.held.lock().expect("jobs lock");
         held.seq = held.seq.max(board.seq);
         self.board.send_replace(board);
     }
 
     /// A walk begins: the board starts empty, its `seq` still rising.
-    pub fn begin(&self) {
+    pub(crate) fn begin(&self) {
         let mut held = self.held.lock().expect("jobs lock");
         *held = Held { seq: held.seq, began_at_ms: crate::store::now_ms(), ..Held::default() };
         self.publish(&mut held);
     }
 
     /// The walk is over: nothing more changes. A cut no version of it came with is what a render ends on: the film that stands.
-    pub fn end(&self, elapsed_ms: u64) {
+    pub(crate) fn end(&self, elapsed_ms: u64) {
         let mut held = self.held.lock().expect("jobs lock");
         held.elapsed_ms = Some(elapsed_ms);
         // What it fetched ahead goes no further: nothing here hears of it now.
@@ -127,7 +127,7 @@ impl Jobs {
 
     /// The board as project.lock stands: what it sends and what it still owes, each `coming` with whether it makes a shot. A run it
     /// holds no row of is read by `run`.
-    pub fn sync(&self, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
+    pub(crate) fn sync(&self, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
         let mut held = self.held.lock().expect("jobs lock");
         for machine in on {
             if !held.on.contains(&machine) {
@@ -154,7 +154,7 @@ impl Jobs {
     }
 
     /// What the walk said.
-    pub fn told(&self, event: &Event) {
+    pub(crate) fn told(&self, event: &Event) {
         let mut held = self.held.lock().expect("jobs lock");
         match event {
             Event::Landed { name, noun, number, path, execution_ms, .. } => {
@@ -202,7 +202,7 @@ impl Jobs {
     }
 
     /// What ended with no file of its own: `name` stands as it is, it came with another's take, or it was never sent.
-    pub fn ended(&self, job: Job) {
+    pub(crate) fn ended(&self, job: Job) {
         let mut held = self.held.lock().expect("jobs lock");
         if job.state == JobState::NotSent && held.ended.iter().any(|ended| ended.state == JobState::NotSent && ended.asset == job.asset) {
             return;
@@ -215,7 +215,7 @@ impl Jobs {
     }
 
     /// Job `id` of `asset` ended with no version: done, if nothing else was said of it.
-    pub fn ended_if_open(&self, id: &str, asset: &str) {
+    pub(crate) fn ended_if_open(&self, id: &str, asset: &str) {
         let mut held = self.held.lock().expect("jobs lock");
         if !held.coming.iter().any(|job| job.id == id) {
             return;
@@ -232,7 +232,7 @@ impl Jobs {
     }
 
     /// Says what came of a version already landed.
-    pub fn why(&self, asset: &str, number: u32, why: String) {
+    pub(crate) fn why(&self, asset: &str, number: u32, why: String) {
         let mut held = self.held.lock().expect("jobs lock");
         if let Some(job) = held.ended.iter_mut().find(|job| job.asset == asset && job.number == Some(number)) {
             job.why = Some(why);
@@ -241,7 +241,7 @@ impl Jobs {
     }
 
     /// The files of a version listed before they landed came, or never will: it's no version then, and its failure says so.
-    pub fn arrived(&self, asset: &str, number: u32, came: bool) {
+    pub(crate) fn arrived(&self, asset: &str, number: u32, came: bool) {
         let mut held = self.held.lock().expect("jobs lock");
         let mine = |job: &Job| job.asset == asset && job.number == Some(number);
         match came {
@@ -252,7 +252,7 @@ impl Jobs {
     }
 
     /// `from` is called `to` now: the board says so, of what's going and what has ended.
-    pub fn renamed(&self, from: &str, to: &str) {
+    pub(crate) fn renamed(&self, from: &str, to: &str) {
         let mut held = self.held.lock().expect("jobs lock");
         let held = &mut *held;
         let key = name_key(from);
@@ -268,12 +268,12 @@ impl Jobs {
     }
 
     /// Whether `asset` has said `message` already; it has now.
-    pub fn warned(&self, asset: &str, message: &str) -> bool {
+    pub(crate) fn warned(&self, asset: &str, message: &str) -> bool {
         !self.held.lock().expect("jobs lock").warned.insert((asset.to_owned(), message.to_owned()))
     }
 
     /// A machine began fetching ahead, as run `id`.
-    pub fn ahead(&self, id: RunId, with: String, function: String, machine: String, run: u64) {
+    pub(crate) fn ahead(&self, id: RunId, with: String, function: String, machine: String, run: u64) {
         let mut held = self.held.lock().expect("jobs lock");
         let row = Ahead { function, machine, run, stage: Some("asked".into()), ..Ahead::default() };
         crate::events::ahead_updated(&self.project, &row);
@@ -313,13 +313,13 @@ impl Jobs {
     }
 
     /// The runs fetching ahead that nothing it names waits for now.
-    pub fn ahead_going(&self) -> Vec<(String, String, RunId)> {
+    pub(crate) fn ahead_going(&self) -> Vec<(String, String, RunId)> {
         let held = self.held.lock().expect("jobs lock");
         held.ahead.iter().filter(|(.., row)| row.stage.is_some()).map(|(id, with, row)| (with.clone(), row.machine.clone(), id.clone())).collect()
     }
 
     /// What run `id` did, when it is one of this board's, under `dir`; `Some`: a warning it gave for the first time, and whose it is.
-    pub fn ran(&self, id: &RunId, event: &RunEvent, dir: &Path) -> Option<(String, String)> {
+    pub(crate) fn ran(&self, id: &RunId, event: &RunEvent, dir: &Path) -> Option<(String, String)> {
         let mut held = self.held.lock().expect("jobs lock");
         if self.ahead_ran(&mut held, id, event) {
             return None;
@@ -400,7 +400,7 @@ impl Jobs {
 }
 
 /// What a job says that found its state standing at its turn.
-pub const STANDS: &str = "it stands";
+pub(crate) const STANDS: &str = "it stands";
 
 /// Why a job canceled reads so in its row until it fails.
 const CANCELED: &str = "canceled";

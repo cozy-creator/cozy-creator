@@ -113,7 +113,7 @@ impl Machines {
 
     /// Starts the update `ask` of the machine `text` names under `key`: the same key again answers
     /// the run it made.
-    pub async fn update(self: &Arc<Self>, key: &str, text: &str, ask: MachineUpdate) -> Result<(Updating, bool), Error> {
+    pub(crate) async fn update(self: &Arc<Self>, key: &str, text: &str, ask: MachineUpdate) -> Result<(Updating, bool), Error> {
         wire::local_usable(text)?;
         if let Some(row) = self.store().keyed(key).map_err(internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;

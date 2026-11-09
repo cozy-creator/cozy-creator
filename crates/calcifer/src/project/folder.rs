@@ -35,12 +35,12 @@ const UPGRADED: &str = "upgraded";
 const BOARD: &str = "board";
 
 /// What a project was before `project.db`, imported once on its first open and deleted (`legacy`).
-pub const PROJECT: &str = "project.yaml";
-pub const LOCK: &str = "project.lock";
+pub(crate) const PROJECT: &str = "project.yaml";
+pub(crate) const LOCK: &str = "project.lock";
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
-pub const FILES: &str = "files";
+pub(crate) const FILES: &str = "files";
 /// Where a run's outputs land before they are kept in `files/`.
-pub const RUNS: &str = ".runs";
+pub(crate) const RUNS: &str = ".runs";
 /// What marks a row whose name the file has lost: no name can hold it.
 pub(super) const TOMBSTONE: char = '#';
 /// The lock's format, as `project.lock` wrote it.
@@ -52,7 +52,7 @@ const URL_MOST: usize = 64 << 20;
 /// byte at a time for ever, so this is the last resort, and it leaves room for `URL_MOST` over a slow line.
 const URL_LONGEST: Duration = Duration::from_secs(300);
 /// What an import kept: its file, and the field that names one of its type (`image`, `video`, `audio`).
-pub struct Kept {
+pub(crate) struct Kept {
     pub file: File,
     pub field: &'static str,
     /// Its bytes were in `files/` already, so nothing was copied.
@@ -106,7 +106,7 @@ const MEDIA: [(&str, &str, &str); 40] = [
     ("ape", "audio/x-ape", "audio"),
 ];
 /// The media type and field of an extension, in any case, if it is a picture, video or sound.
-pub fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
+pub(crate) fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
     let extension = extension.to_ascii_lowercase();
     MEDIA.iter().find(|(known, ..)| *known == extension).map(|(_, media, field)| (*media, *field))
 }
@@ -115,7 +115,7 @@ pub fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
 /// size, a video's rate and frames, a picture's alpha (the share of it fully transparent). Project.lock holds only what can't be read again
 /// from a file here (`Folder::fill`): where it stays, and its parts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct File {
+pub(crate) struct File {
     /// It was in `files/` when this was read, listed once for all of them: a stat each is seconds, on Windows, across a project's thousands.
     #[serde(skip)]
     pub here: bool,
@@ -152,7 +152,7 @@ pub struct File {
 
 /// What is measured of a file, kept apart from its row, as ffprobe can always say it again.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Measured {
+pub(crate) struct Measured {
     #[serde(default, skip_serializing_if = "is_zero")]
     width: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -185,22 +185,22 @@ impl File {
     }
 
     /// What it is, `image`, `video` or `audio`, if its name says.
-    pub fn media(&self) -> Option<&'static str> {
+    pub(crate) fn media(&self) -> Option<&'static str> {
         media_of(&self.extension()).map(|(_, field)| field)
     }
 
     /// The role that pins it, by what it is.
-    pub fn field(&self) -> &'static str {
+    pub(crate) fn field(&self) -> &'static str {
         media_of(&self.extension()).map_or(if self.fps > 0.0 { "video" } else { "image" }, |(_, field)| field)
     }
 
     /// Whether a machine was left keeping it.
-    pub fn stays(&self) -> bool {
+    pub(crate) fn stays(&self) -> bool {
         !self.machine.is_empty()
     }
 
     /// How long it lasts, if it does and that is measured.
-    pub fn lasts_ms(&self) -> u64 {
+    pub(crate) fn lasts_ms(&self) -> u64 {
         match self.fps > 0.0 {
             true => (self.frames as f64 / self.fps * 1000.0).round() as u64,
             false => self.duration_ms,
@@ -208,7 +208,7 @@ impl File {
     }
 
     /// Not measured yet, and one that can be.
-    pub fn unmeasured(&self) -> bool {
+    pub(crate) fn unmeasured(&self) -> bool {
         match media_of(&self.extension()) {
             Some((_, "audio")) => self.duration_ms == 0,
             Some(_) => self.width == 0,
@@ -218,11 +218,11 @@ impl File {
 }
 
 /// A version's files: by output name, each one's sha256.
-pub type Files = BTreeMap<String, String>;
+pub(crate) type Files = BTreeMap<String, String>;
 
 /// One result of a tool: its number, its files and the key it was made under.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Version {
+pub(crate) struct Version {
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
@@ -263,19 +263,19 @@ pub struct Version {
 
 impl Version {
     /// The file people mean by it: its video, else its picture, else its sound, else its first.
-    pub fn main(&self) -> Option<&String> {
+    pub(crate) fn main(&self) -> Option<&String> {
         main_of(&self.files)
     }
 }
 
 /// The file people mean by a set of files.
-pub fn main_of(files: &Files) -> Option<&String> {
+pub(crate) fn main_of(files: &Files) -> Option<&String> {
     ["video", "image", "audio"].iter().find_map(|name| files.get(*name)).or_else(|| files.values().next())
 }
 
 /// A piece a cut was made without, and why.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Without {
+pub(crate) struct Without {
     pub piece: String,
     pub why: String,
     /// Its file wasn't on this computer: once it is, that version isn't its cut's state.
@@ -285,7 +285,7 @@ pub struct Without {
 
 impl Without {
     /// As a film says it: `segment_3: no version yet`.
-    pub fn said(&self) -> String {
+    pub(crate) fn said(&self) -> String {
         format!("{}: {}", self.piece, self.why)
     }
 }
@@ -293,7 +293,7 @@ impl Without {
 /// A run making a version, recorded before it is sent (under its idempotency key) and followed
 /// until it lands: whatever stops the walk, the next one follows it and never sends it again.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Pending {
+pub(crate) struct Pending {
     /// What its asset is, as its version is listed when it lands.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
@@ -326,7 +326,7 @@ pub struct Pending {
 /// An asset's versions by number, the last number given (numbers are never given again), and the seed of a run that failed,
 /// kept for the next try on those inputs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Asset {
+pub(crate) struct Asset {
     /// Its name as the file wrote it when it was made.
     #[serde(default)]
     pub name: String,
@@ -347,7 +347,7 @@ pub struct Asset {
 
 /// What stopped the last try at it, on `inputs`: kept until a version lands or it's tried again, so a reader who wasn't watching hears it too.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Failed {
+pub(crate) struct Failed {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<String>,
     pub error: Error,
@@ -355,23 +355,23 @@ pub struct Failed {
 
 /// The seed last sent for `inputs`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Tried {
+pub(crate) struct Tried {
     pub inputs: String,
     pub seed: u64,
 }
 
 impl Asset {
-    pub fn version(&self, number: u32) -> Option<&Version> {
+    pub(crate) fn version(&self, number: u32) -> Option<&Version> {
         self.versions.iter().find(|version| version.number == number)
     }
 
     /// Its versions and those discarded.
-    pub fn on_record(&self) -> impl Iterator<Item = &Version> {
+    pub(crate) fn on_record(&self) -> impl Iterator<Item = &Version> {
         self.versions.iter().chain(&self.discarded)
     }
 
     /// The words version `number` was made from: its own, else those of the latest before it that holds any.
-    pub fn text_of(&self, number: u32) -> Option<&str> {
+    pub(crate) fn text_of(&self, number: u32) -> Option<&str> {
         self.on_record().filter(|version| version.number <= number && version.text.is_some()).max_by_key(|version| version.number)?.text.as_deref()
     }
 
@@ -393,7 +393,7 @@ impl Asset {
     }
 
     /// `version` on the list in its place, in place of one of that number.
-    pub fn list(&mut self, mut version: Version) {
+    pub(crate) fn list(&mut self, mut version: Version) {
         let mut texts = self.texts();
         texts.extend(version.text.take().map(|text| (version.number, text)));
         self.versions.retain(|held| held.number != version.number);
@@ -403,14 +403,14 @@ impl Asset {
     }
 
     /// What's discarded gone for good but `read`, which a text names: what comes after it keeps its words.
-    pub fn clear_discarded(&mut self, read: Option<&BTreeSet<u32>>) {
+    pub(crate) fn clear_discarded(&mut self, read: Option<&BTreeSet<u32>>) {
         let texts = self.texts();
         self.discarded.retain(|version| read.is_some_and(|read| read.contains(&version.number)));
         self.keep_texts(texts);
     }
 
     /// Only `read` left of what's on record: what a text still names of a deleted asset.
-    pub fn keep_only(&mut self, read: &BTreeSet<u32>) {
+    pub(crate) fn keep_only(&mut self, read: &BTreeSet<u32>) {
         let texts = self.texts();
         self.versions.retain(|version| read.contains(&version.number));
         self.discarded.retain(|version| read.contains(&version.number));
@@ -418,7 +418,7 @@ impl Asset {
     }
 
     /// Version `number` off the list and on record.
-    pub fn discard(&mut self, number: u32) {
+    pub(crate) fn discard(&mut self, number: u32) {
         self.numbered = self.numbered.max(number);
         if let Some(at) = self.versions.iter().position(|version| version.number == number) {
             self.discarded.push(self.versions.remove(at));
@@ -427,7 +427,7 @@ impl Asset {
     }
 
     /// What `discard` set aside of `number`, back in its place.
-    pub fn undiscard(&mut self, number: u32) {
+    pub(crate) fn undiscard(&mut self, number: u32) {
         if let Some(at) = self.discarded.iter().position(|version| version.number == number) {
             self.versions.push(self.discarded.remove(at));
             self.versions.sort_by_key(|version| version.number);
@@ -436,7 +436,7 @@ impl Asset {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Lock {
+pub(crate) struct Lock {
     pub format: u32,
     /// Every file, by sha256.
     #[serde(default)]
@@ -464,7 +464,7 @@ pub struct Lock {
 
 /// One file a `cozy run` left in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RunFile {
+pub(crate) struct RunFile {
     pub run: u64,
     pub function: String,
     pub output: String,
@@ -479,7 +479,7 @@ impl Default for Lock {
 
 /// What a render asked that the project's walk has not sent yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Owed {
+pub(crate) struct Owed {
     /// Each render not done, in the order asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<Ask>,
@@ -502,7 +502,7 @@ pub struct Owed {
 
 /// What a walk owes: what it sent and what its renders asked. Kept apart from the project, so it changes as often as it likes.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct WalkFile {
+pub(crate) struct WalkFile {
     /// The project and Calcifer it is of: a copy of the project, which has its own id, or another Calcifer, doesn't go on with paid
     /// work. A moved folder is the same project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -514,7 +514,7 @@ pub struct WalkFile {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Bound {
+pub(crate) struct Bound {
     /// The project's id; empty in a walk from before projects kept one, which goes on where it is.
     #[serde(default)]
     pub project: String,
@@ -525,7 +525,7 @@ pub struct Bound {
 static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Reads this Calcifer's id from `dir`, or makes it. Before any project is read.
-pub fn bind_calcifer(dir: &Path) -> Result<(), Error> {
+pub(crate) fn bind_calcifer(dir: &Path) -> Result<(), Error> {
     let path = dir.join("id");
     let id = match std::fs::read_to_string(&path) {
         Ok(id) if !id.trim().is_empty() => id.trim().to_owned(),
@@ -540,14 +540,14 @@ pub fn bind_calcifer(dir: &Path) -> Result<(), Error> {
 }
 
 impl WalkFile {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.pending.is_empty() && self.walk.is_empty()
     }
 }
 
 impl Pending {
     /// The job it is of, under the key `key` it is sent with.
-    pub fn job_of<'a>(&'a self, key: &'a str) -> &'a str {
+    pub(crate) fn job_of<'a>(&'a self, key: &'a str) -> &'a str {
         if self.job.is_empty() { key } else { &self.job }
     }
 }
@@ -555,7 +555,7 @@ impl Pending {
 /// One render: project.yaml as it was when asked, and what it owes. It plans on that text alone, so an edit after it touches nothing
 /// of it, and a restart resumes it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Ask {
+pub(crate) struct Ask {
     pub id: String,
     /// Only in a walk from before its text was kept apart (`Folder::text_of`).
     #[serde(default, skip_serializing)]
@@ -590,14 +590,14 @@ fn is_zero_f(n: &f64) -> bool {
 }
 
 impl Owed {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.asks.is_empty() && self.asked.is_empty() && self.renames.is_empty() && self.runs.is_empty()
     }
 }
 
 /// A version listed before its files have landed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Coming {
+pub(crate) struct Coming {
     pub name: String,
     pub number: u32,
     pub take: bool,
@@ -605,14 +605,14 @@ pub struct Coming {
 
 /// The machines a version may be made on, and the Hub its function is read from.
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Target {
+pub(crate) struct Target {
     pub on: Vec<On>,
     pub hub: String,
 }
 
 /// One new version of `asset`, sent under `key`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Take {
+pub(crate) struct Take {
     pub key: String,
     pub asset: String,
     #[serde(flatten)]
@@ -630,22 +630,22 @@ pub struct Take {
 
 impl Lock {
     /// The files whose hash starts with `prefix`.
-    pub fn matching(&self, prefix: &str) -> Vec<&File> {
+    pub(crate) fn matching(&self, prefix: &str) -> Vec<&File> {
         let from = format!("sha256:{prefix}");
         self.files.range(from.clone()..).take_while(|(sha256, _)| sha256.starts_with(&from)).map(|(_, file)| file).collect()
     }
 
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.
-    pub fn owes(&self) -> bool {
+    pub(crate) fn owes(&self) -> bool {
         !self.walk.asks.is_empty() || !self.pending.is_empty() || !self.walk.renames.is_empty() || !self.walk.runs.is_empty()
     }
 
     /// The number the next version of `name` would take, as far as what's listed says.
-    pub fn listed_number(&self, name: &str) -> u32 {
+    pub(crate) fn listed_number(&self, name: &str) -> u32 {
         self.asset(name).map_or(0, |held| held.numbered.max(held.versions.iter().map(|version| version.number).max().unwrap_or(0)))
     }
 
-    pub fn asset(&self, name: &str) -> Option<&Asset> {
+    pub(crate) fn asset(&self, name: &str) -> Option<&Asset> {
         self.assets.get(&self.row_of(name))
     }
 
@@ -659,7 +659,7 @@ impl Lock {
     }
 
     /// `from` is called `to` now, and what still says `from` finds it. A name taken again is what took it.
-    pub fn called(&mut self, from: &str, to: &str) {
+    pub(crate) fn called(&mut self, from: &str, to: &str) {
         let (key, new) = (name_key(from), name_key(to));
         if key == new {
             return;
@@ -669,7 +669,7 @@ impl Lock {
         self.walk.renames.push((from.to_owned(), to.to_owned()));
     }
 
-    pub fn asset_mut(&mut self, name: &str, kind: &str) -> &mut Asset {
+    pub(crate) fn asset_mut(&mut self, name: &str, kind: &str) -> &mut Asset {
         let key = self.row_of(name);
         let own = key == name_key(name);
         let asset = self.assets.entry(key).or_default();
@@ -683,7 +683,7 @@ impl Lock {
     }
 
     /// `name`'s next number, given now: one past every number it gave.
-    pub fn number(&mut self, name: &str, kind: &str) -> u32 {
+    pub(crate) fn number(&mut self, name: &str, kind: &str) -> u32 {
         let asset = self.asset_mut(name, kind);
         asset.numbered = asset.numbered.max(asset.versions.iter().map(|version| version.number).max().unwrap_or(0)) + 1;
         asset.numbered
@@ -691,7 +691,7 @@ impl Lock {
 
     /// `files` as `name`'s next version, unless a version holds that file already: its number, and whether it did. It made none of it, so it never reads as
     /// current, and it says no words.
-    pub fn joined(&mut self, name: &str, kind: &str, files: Files) -> (u32, bool) {
+    pub(crate) fn joined(&mut self, name: &str, kind: &str, files: Files) -> (u32, bool) {
         if let Some(held) = self.asset(name).and_then(|held| held.versions.iter().find(|version| version.main() == main_of(&files))) {
             return (held.number, true);
         }
@@ -701,14 +701,14 @@ impl Lock {
     }
 
     /// The rows of a name key, and those `tombstone` set aside of it.
-    pub fn rows_of<'a>(&'a self, key: &str) -> impl Iterator<Item = (&'a String, &'a Asset)> {
+    pub(crate) fn rows_of<'a>(&'a self, key: &str) -> impl Iterator<Item = (&'a String, &'a Asset)> {
         let (key, buried) = (key.to_owned(), format!("{key}{TOMBSTONE}"));
         self.assets.iter().filter(move |(at, _)| **at == key || at.starts_with(&buried))
     }
 
     /// The lock as it's written. A file holds a row only for what can't be read again from a file here: where it stays, its parts, or, with nothing
     /// else naming it, its whole hash, which `project.yaml` holds only the start of.
-    pub fn written(&self) -> String {
+    pub(crate) fn written(&self) -> String {
         let named = self.recorded();
         let mut value = serde_json::to_value(self).expect("a lock serializes");
         if let Some(files) = value["files"].as_object_mut() {
@@ -719,7 +719,7 @@ impl Lock {
 
     /// Each asset whose name the file has lost and with nothing on its way, set aside under a key no name can be, so that a later asset of that
     /// name starts with no versions. It stays an orphan until `reclaim`, and `cozy project rename` still finds it.
-    pub fn tombstone(&mut self, named: impl Fn(&str) -> bool) {
+    pub(crate) fn tombstone(&mut self, named: impl Fn(&str) -> bool) {
         let going: BTreeSet<String> = (self.pending.values().map(|pending| name_key(&pending.asset)))
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
             .collect();
@@ -728,7 +728,7 @@ impl Lock {
     }
 
     /// The row under `key` set aside: its versions stay, an orphan's, and that name starts with none.
-    pub fn bury(&mut self, key: &str) {
+    pub(crate) fn bury(&mut self, key: &str) {
         let Some(mut held) = self.assets.remove(key).filter(|held| held.on_record().next().is_some()) else { return };
         if held.name.is_empty() {
             held.name = key.to_owned();
@@ -738,13 +738,13 @@ impl Lock {
     }
 
     /// Every sha256 a version or a run has on record here, of any asset, discarded too: all `reclaim` may delete, once nothing uses it.
-    pub fn recorded(&self) -> BTreeSet<String> {
+    pub(crate) fn recorded(&self) -> BTreeSet<String> {
         let discarded = self.assets.values().flat_map(|held| &held.discarded).flat_map(|version| version.files.values()).map(String::as_str);
         self.named(|_| true).into_iter().chain(discarded).chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
     }
 
     /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that. Whether one came back.
-    pub fn untombstone(&mut self, name: &str) -> bool {
+    pub(crate) fn untombstone(&mut self, name: &str) -> bool {
         let key = name_key(name);
         if self.assets.contains_key(&key) {
             return false;
@@ -757,7 +757,7 @@ impl Lock {
     }
 
     /// `sha256` is on `machine`, and not here: for good, or with `name`, on its way here as the file that makes.
-    pub fn away(&mut self, sha256: &str, machine: &str, length: u64, name: Option<&str>) {
+    pub(crate) fn away(&mut self, sha256: &str, machine: &str, length: u64, name: Option<&str>) {
         let path = file_of(sha256, Path::new(name.unwrap_or_default()));
         let ext = path.rsplit_once('.').map(|(_, ext)| format!(".{ext}")).unwrap_or_default();
         let held = self.files.entry(sha256.to_owned()).or_default();
@@ -775,7 +775,7 @@ impl Lock {
     }
 
     /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
-    pub fn named(&self, keep: impl Fn(&str) -> bool) -> BTreeSet<&str> {
+    pub(crate) fn named(&self, keep: impl Fn(&str) -> bool) -> BTreeSet<&str> {
         let versions = (self.assets.iter().filter(|(key, _)| keep(key))).flat_map(|(_, asset)| &asset.versions);
         let pending = self.pending.values().map(|pending| &pending.version);
         versions.chain(pending).flat_map(|version| version.files.values()).map(String::as_str).collect()
@@ -931,7 +931,7 @@ pub(super) enum Made {
     Change(super::history::Change),
 }
 
-pub struct Folder {
+pub(crate) struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
@@ -943,7 +943,7 @@ pub struct Folder {
 impl Folder {
     /// `stamp` of the project in `dir` while anything holds it. Of one nothing does, its transactions' count, read with nothing opened:
     /// another than any it had open, and it moves with each commit.
-    pub fn stamp_at(dir: &Path) -> String {
+    pub(crate) fn stamp_at(dir: &Path) -> String {
         let canonical = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
         let held = SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(&canonical).and_then(std::sync::Weak::upgrade);
         match held {
@@ -953,13 +953,13 @@ impl Folder {
     }
 
     /// The project in `dir` as Calcifer holds it, else opened for as long as this lives: for what lands from outside a walk.
-    pub fn at(dir: &Path) -> Self {
+    pub(crate) fn at(dir: &Path) -> Self {
         Self { dir: dir.to_owned(), tools: PathBuf::new(), shared: shared(dir), unsaved: Mutex::default() }
     }
 
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's). A folder of the files before
     /// `project.db` is imported now, once, and they're deleted (cl-803).
-    pub fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
+    pub(crate) fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
         let folder = Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() };
         drop(folder.held()?);
         super::legacy::leftovers(dir);
@@ -968,7 +968,7 @@ impl Folder {
     }
 
     /// What the first open's upgrade said and nothing has said yet: once. project.db keeps it until then, whatever closes between.
-    pub fn upgraded(&self) -> Vec<String> {
+    pub(crate) fn upgraded(&self) -> Vec<String> {
         let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(held) = self.held() else { return vec![] };
         let Some(held) = held.as_ref() else { return vec![] };
@@ -980,13 +980,13 @@ impl Folder {
     }
 
     /// The board the last render here ended on, as project.db keeps it.
-    pub fn last_board(&self) -> Option<api::calcifer::project::Board> {
+    pub(crate) fn last_board(&self) -> Option<api::calcifer::project::Board> {
         let held = self.held().ok()?;
         db::meta(&held.as_ref()?.conn, BOARD).and_then(|board| serde_json::from_str(&board).ok())
     }
 
     /// Keeps the board a render ended on, for a read after this project has closed and opened again.
-    pub fn keep_board(&self, board: &api::calcifer::project::Board) -> Result<(), Error> {
+    pub(crate) fn keep_board(&self, board: &api::calcifer::project::Board) -> Result<(), Error> {
         let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
         let held = self.held()?;
         let held = held.as_ref().expect("held");
@@ -994,7 +994,7 @@ impl Folder {
     }
 
     /// The project folder `dir` is, if it is one: `project.db`, or the files a first open imports.
-    pub fn is_project(dir: &Path) -> bool {
+    pub(crate) fn is_project(dir: &Path) -> bool {
         dir.join(db::DB).is_file() || dir.join(PROJECT).is_file() || super::legacy::pending(dir)
     }
 
@@ -1007,7 +1007,7 @@ impl Folder {
         self.shared.book.get_or_init(|| Arc::new(read())).clone()
     }
 
-    pub fn db(&self) -> PathBuf {
+    pub(crate) fn db(&self) -> PathBuf {
         self.dir.join(db::DB)
     }
 
@@ -1051,19 +1051,19 @@ impl Folder {
     }
 
     /// The revision: one more with each commit.
-    pub fn seq(&self) -> u64 {
+    pub(crate) fn seq(&self) -> u64 {
         self.held().ok().and_then(|held| held.as_ref().map(|held| held.stored.seq)).unwrap_or(0)
     }
 
     /// What moves with each commit, this Calcifer's or another connection's that it read again, and with each act that changed what a
     /// read shows and committed nothing.
-    pub fn stamp(&self) -> String {
+    pub(crate) fn stamp(&self) -> String {
         self.held().ok().and_then(|held| held.as_ref().map(|held| format!("{}.{}.{}", held.stored.seq, held.seen, held.shown))).unwrap_or_default()
     }
 
     /// `change` as one transaction: every write it makes to this project, its history entry and its request's key commit together, or
     /// nothing does. Inside another act of this project, it is part of that one.
-    pub fn act<R>(&self, change: impl FnOnce() -> Result<R, Error>) -> Result<R, Error> {
+    pub(crate) fn act<R>(&self, change: impl FnOnce() -> Result<R, Error>) -> Result<R, Error> {
         let id = self.id();
         if acting(id).is_some() {
             return change();
@@ -1208,28 +1208,28 @@ impl Folder {
     }
 
     /// A copy of `project.db` whole, for an archive.
-    pub fn snapshot(&self, to: &Path) -> Result<(), Error> {
+    pub(crate) fn snapshot(&self, to: &Path) -> Result<(), Error> {
         let held = self.held()?;
         db::snapshot(&held.as_ref().expect("held").conn, to, &self.db())
     }
 
     /// What the project says: its boxes, as rows.
-    pub fn written(&self) -> Result<Written, Error> {
+    pub(crate) fn written(&self) -> Result<Written, Error> {
         self.reading_written(Written::clone)
     }
 
     /// `seen` of its boxes, with no copy made.
-    pub fn reading_boxes<R>(&self, seen: impl FnOnce(&Written) -> R) -> Result<R, Error> {
+    pub(crate) fn reading_boxes<R>(&self, seen: impl FnOnce(&Written) -> R) -> Result<R, Error> {
         self.reading_written(seen)
     }
 
     /// The project as YAML, format 4: its export, and what a render keeps of what it was asked.
-    pub fn text(&self) -> Result<String, Error> {
+    pub(crate) fn text(&self) -> Result<String, Error> {
         self.reading_written(Written::to_yaml)
     }
 
     /// One change to its boxes. The history hears what it was and is.
-    pub fn edit<R>(&self, change: impl FnOnce(&mut Written) -> Result<R, Error>) -> Result<R, Error> {
+    pub(crate) fn edit<R>(&self, change: impl FnOnce(&mut Written) -> Result<R, Error>) -> Result<R, Error> {
         self.act(|| {
             let before = self.written()?;
             let answer = self.writing_written(change)?;
@@ -1242,23 +1242,23 @@ impl Folder {
     }
 
     /// Its canvas rows, by name key.
-    pub fn canvas(&self) -> Result<BTreeMap<String, CardRow>, Error> {
+    pub(crate) fn canvas(&self) -> Result<BTreeMap<String, CardRow>, Error> {
         self.reading_canvas(BTreeMap::clone)
     }
 
     /// Its canvas rows and the revision they're of, read at once.
-    pub fn canvas_at(&self) -> Result<(u64, BTreeMap<String, CardRow>), Error> {
+    pub(crate) fn canvas_at(&self) -> Result<(u64, BTreeMap<String, CardRow>), Error> {
         let held = self.held()?;
         let stored = &held.as_ref().expect("held").stored;
         Ok((stored.seq, (*stored.canvas).clone()))
     }
 
-    pub fn edit_canvas<R>(&self, change: impl FnOnce(&mut BTreeMap<String, CardRow>) -> Result<R, Error>) -> Result<R, Error> {
+    pub(crate) fn edit_canvas<R>(&self, change: impl FnOnce(&mut BTreeMap<String, CardRow>) -> Result<R, Error>) -> Result<R, Error> {
         self.writing_canvas(change)
     }
 
     /// The history: this and `update_lock` are the one way to it, whatever holds it. What the walk owes is in it.
-    pub fn lock(&self) -> Result<Lock, Error> {
+    pub(crate) fn lock(&self) -> Result<Lock, Error> {
         let mut lock = self.reading_bare_lock(Lock::clone)?;
         let walk = self.reading_walk(WalkFile::clone)?;
         (lock.pending, lock.walk) = (walk.pending, walk.walk);
@@ -1266,12 +1266,12 @@ impl Folder {
     }
 
     /// `seen` of the lock, with no copy made. What the walk owes isn't in it.
-    pub fn reading_lock<R>(&self, seen: impl FnOnce(&Lock) -> R) -> Result<R, Error> {
+    pub(crate) fn reading_lock<R>(&self, seen: impl FnOnce(&Lock) -> R) -> Result<R, Error> {
         self.reading_bare_lock(seen)
     }
 
     /// Applies `change` to the lock as it is now, what the walk owes among it.
-    pub fn update_lock(&self, change: impl FnOnce(&mut Lock)) -> Result<(), Error> {
+    pub(crate) fn update_lock(&self, change: impl FnOnce(&mut Lock)) -> Result<(), Error> {
         self.act(|| {
             let walk = self.reading_walk(WalkFile::clone)?;
             let moved = self.writing_bare_lock(|lock| {
@@ -1294,12 +1294,12 @@ impl Folder {
     }
 
     /// What the walk owes, with no need to read the rest.
-    pub fn walk_now(&self) -> Result<WalkFile, Error> {
+    pub(crate) fn walk_now(&self) -> Result<WalkFile, Error> {
         self.reading_walk(WalkFile::clone)
     }
 
     /// Applies `change` to what the walk owes, touching nothing of what the project is.
-    pub fn update_walk(&self, change: impl FnOnce(&mut WalkFile)) -> Result<(), Error> {
+    pub(crate) fn update_walk(&self, change: impl FnOnce(&mut WalkFile)) -> Result<(), Error> {
         let bound = self.bound();
         self.writing_walk(|walk| {
             change(walk);
@@ -1334,7 +1334,7 @@ impl Folder {
     }
 
     /// The text render `ask` was asked with: kept apart, so what the walk owes stays small.
-    pub fn text_of(&self, ask: &Ask) -> Result<String, Error> {
+    pub(crate) fn text_of(&self, ask: &Ask) -> Result<String, Error> {
         if !ask.text.is_empty() {
             return Ok(ask.text.clone());
         }
@@ -1347,16 +1347,16 @@ impl Folder {
         db::asked(&held.as_ref().expect("held").conn, &ask.digest).ok_or_else(|| Error::new(Kind::NotFound, "ask_text_missing", format!("the text render {} was asked with is gone", ask.id)))
     }
 
-    pub fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
+    pub(crate) fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
         self.extra(|extra| extra.asked.push((digest.to_owned(), Some(text.to_owned()))))
     }
 
-    pub fn drop_text(&self, digest: &str) {
+    pub(crate) fn drop_text(&self, digest: &str) {
         let _ = self.extra(|extra| extra.asked.push((digest.to_owned(), None)));
     }
 
     /// No render holds any.
-    pub fn drop_texts(&self) {
+    pub(crate) fn drop_texts(&self) {
         let _ = self.extra(|extra| {
             extra.asked.clear();
             extra.asked_cleared = true;
@@ -1371,17 +1371,17 @@ impl Folder {
     }
 
     /// What says a landing couldn't be listed yet.
-    pub fn unsaved(&self) -> Option<String> {
+    pub(crate) fn unsaved(&self) -> Option<String> {
         self.unsaved.lock().expect("unsaved lock").clone()
     }
 
-    pub fn set_unsaved(&self, why: Option<String>) {
+    pub(crate) fn set_unsaved(&self, why: Option<String>) {
         *self.unsaved.lock().expect("unsaved lock") = why;
     }
 
     /// Why the files `named` leaves out may be all that's left of this project's takes, not what's done with: the lock lists no version or
     /// run while `files/` holds what nothing names. `reclaim --yes` deletes none of them.
-    pub fn history_lost(&self, lock: &Lock, named: &BTreeSet<String>) -> Option<String> {
+    pub(crate) fn history_lost(&self, lock: &Lock, named: &BTreeSet<String>) -> Option<String> {
         let unnamed = lock.files.values().filter(|file| !named.contains(&file.sha256) && self.path(&file.path).is_file()).count();
         if unnamed == 0 || !lock.runs.is_empty() || lock.assets.values().any(|held| held.on_record().next().is_some()) {
             return None;
@@ -1422,7 +1422,7 @@ impl Folder {
         }
     }
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
-    pub fn keep(&self, source: &Path) -> Result<String, Error> {
+    pub(crate) fn keep(&self, source: &Path) -> Result<String, Error> {
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
@@ -1432,7 +1432,7 @@ impl Folder {
 
     /// A file a run is given, of `sha256`, kept in `files/` unless it's here, and in the lock's table, under what its bytes say it is
     /// else its own extension: a hard link with `link`, else a copy.
-    pub fn keep_given(&self, source: &Path, sha256: &str, link: bool) -> Result<(), Error> {
+    pub(crate) fn keep_given(&self, source: &Path, sha256: &str, link: bool) -> Result<(), Error> {
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         if self.lock()?.files.get(sha256).is_some_and(|file| self.path(&file.path).is_file()) {
             return Ok(());
@@ -1448,7 +1448,7 @@ impl Folder {
     }
 
     /// `source`, a file Calcifer made beside the project, moved into `files/` under its hash, and in the lock's table.
-    pub fn take(&self, source: &Path) -> Result<String, Error> {
+    pub(crate) fn take(&self, source: &Path) -> Result<String, Error> {
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
@@ -1463,7 +1463,7 @@ impl Folder {
     /// of that output was, which goes if nothing else names it. So a file here is a file measured. Answers its path, and why it isn't listed:
     /// paid-for bytes are kept whatever the project can say of them. One that can't take what's measured (one that can't convert has no
     /// project.db, so nothing reads it) keeps the file unmeasured and unlisted, and that is why.
-    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
+    pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
@@ -1523,18 +1523,18 @@ impl Folder {
     }
 
     /// An output its machine keeps, in the lock's table: its hash, which machine, and no file.
-    pub fn stays(&self, sha256: &str, machine: &str, length: u64) -> Result<(), Error> {
+    pub(crate) fn stays(&self, sha256: &str, machine: &str, length: u64) -> Result<(), Error> {
         self.update_lock(|lock| lock.away(sha256, machine, length, None))
     }
 
     /// The file `sha256` as the project has it, here or kept by a machine: nothing need come for it.
-    pub fn own(&self, sha256: &str) -> Option<Kept> {
+    pub(crate) fn own(&self, sha256: &str) -> Option<Kept> {
         let file = self.lock().ok()?.files.remove(sha256)?;
         (file.stays() || self.path(&file.path).is_file()).then(|| Kept { field: file.field(), file, already: true })
     }
 
     /// The held file at `at`, of `sha256`, moved into `files/` and recorded in project.lock. Err: why not.
-    pub fn take_held(&self, at: &Path, sha256: &str) -> Result<Kept, String> {
+    pub(crate) fn take_held(&self, at: &Path, sha256: &str) -> Result<Kept, String> {
         let mut head = Vec::new();
         std::fs::File::open(at).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
         let (kind, field) = media(infer::get(&head))?;
@@ -1548,7 +1548,7 @@ impl Folder {
 
     /// The `http(s)` URL `source`, fetched into `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock.
     /// Err: why not. A client's own file comes held (`PUT /v1/files`), never by its path.
-    pub async fn import(&self, source: &str) -> Result<Kept, String> {
+    pub(crate) async fn import(&self, source: &str) -> Result<Kept, String> {
         if !is_url(source) {
             return Err("it is neither a held file's sha256:<hex>, a file of the project's nor an http(s) URL".into());
         }
@@ -1592,23 +1592,23 @@ impl Folder {
     }
 
     /// A file's path, as the lock writes it, on this computer.
-    pub fn path(&self, file: &str) -> PathBuf {
+    pub(crate) fn path(&self, file: &str) -> PathBuf {
         self.dir.join(file)
     }
 
     /// Whether a file the lock names should be here and isn't, so a pull is what it needs: what stays on a machine isn't.
-    pub fn missing(&self, file: &File) -> bool {
+    pub(crate) fn missing(&self, file: &File) -> bool {
         !file.stays() && !file.here
     }
 
     /// Whether files wait to be measured with no ffprobe here to do it: a walk fetches one first.
-    pub fn wants_ffprobe(&self, lock: &Lock) -> bool {
+    pub(crate) fn wants_ffprobe(&self, lock: &Lock) -> bool {
         lock.files.values().any(File::unmeasured) && platform::tools::ffmpeg(&self.tools, &crate::tools::path()).is_none()
     }
 
     /// How many frames the film at `path` holds, by its file; None with no file there, or no ffprobe to read it. Asked of ffprobe once for
     /// each size and time it has, since a read of a project asks this.
-    pub fn film_frames(&self, path: &Path) -> Option<u64> {
+    pub(crate) fn film_frames(&self, path: &Path) -> Option<u64> {
         let meta = std::fs::metadata(path).ok()?;
         let held = (meta.len(), meta.modified().ok()?);
         if let Some((known, frames)) = self.shared.films.lock().expect("films lock").get(path)
@@ -1624,7 +1624,7 @@ impl Folder {
 
     /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in
     /// project.lock. With no ffprobe here yet they wait for the next read, or a cut, which fetches one first.
-    pub fn measure(&self, lock: &mut Lock) -> Result<(), Error> {
+    pub(crate) fn measure(&self, lock: &mut Lock) -> Result<(), Error> {
         if !lock.files.values().any(File::unmeasured) {
             return Ok(());
         }
@@ -1679,7 +1679,7 @@ impl Folder {
     /// of them nothing has a record of. With `delete` those on record go, from disk and from the table: what `reclaim --yes` frees. One with no
     /// record may be all that's left of a take, so it's said and it stays. What a run left in `.runs/` goes only if what stays in `files/`
     /// holds every byte of it, by sha256: else it may be an output's only copy (one `files/` couldn't take, or a folder), and stays, unheld.
-    pub fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
+    pub(crate) fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
         let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
@@ -1746,12 +1746,12 @@ impl Folder {
     }
 
     /// Bytes on disk of `sha256`, if here.
-    pub fn size(&self, lock: &Lock, sha256: &str) -> u64 {
+    pub(crate) fn size(&self, lock: &Lock, sha256: &str) -> u64 {
         lock.files.get(sha256).and_then(|file| std::fs::metadata(self.path(&file.path)).ok()).map_or(0, |meta| meta.len())
     }
 
     /// Deletes those of `sha256s` nothing in the lock names any more: a tool's old version, free to make again.
-    pub fn drop_unused(&self, sha256s: &[String]) -> Result<(), Error> {
+    pub(crate) fn drop_unused(&self, sha256s: &[String]) -> Result<(), Error> {
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
         let named = lock.recorded();
@@ -1816,17 +1816,17 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Whether `source` is a URL, not a path.
-pub fn is_url(source: &str) -> bool {
+pub(crate) fn is_url(source: &str) -> bool {
     source.split_once("://").is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
 }
 
 /// `sha256` with no scheme.
-pub fn hex_of(sha256: &str) -> &str {
+pub(crate) fn hex_of(sha256: &str) -> &str {
     sha256.trim_start_matches("sha256:")
 }
 
 /// What cozy prints of `sha256` for project.yaml.
-pub fn prefix_of(sha256: &str) -> &str {
+pub(crate) fn prefix_of(sha256: &str) -> &str {
     let hex = hex_of(sha256);
     &hex[..PREFIX.min(hex.len())]
 }
@@ -1876,7 +1876,7 @@ pub(super) fn sealed(path: &Path) {
     }
 }
 
-pub fn hash(path: &Path) -> Result<String, Error> {
+pub(crate) fn hash(path: &Path) -> Result<String, Error> {
     let mut file = std::fs::File::open(path).map_err(|e| io_at(path, e))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 1 << 20];

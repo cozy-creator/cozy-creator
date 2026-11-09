@@ -57,7 +57,7 @@ fn decode_answer(data: &[u8]) -> PyResult<Answer> {
     decode(data)
 }
 
-pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = parent.py();
     let m = PyModule::new(py, "executor")?;
     m.add_class::<HelloCommand>()?;

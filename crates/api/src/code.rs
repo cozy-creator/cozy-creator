@@ -169,7 +169,7 @@ pub fn path_dependencies(project: &Path) -> Result<Vec<PathBuf>, Error> {
 }
 
 /// The local path dependencies a script's `# /// script` block names, beside it.
-pub fn script_dependencies(script: &Path) -> Result<Vec<PathBuf>, Error> {
+pub(crate) fn script_dependencies(script: &Path) -> Result<Vec<PathBuf>, Error> {
     let raw = fs::read(script).map_err(|e| refuse("script_unreadable", e))?;
     let block = pep723(&String::from_utf8_lossy(&raw))?;
     sourced(script.parent().unwrap_or(script), block.get("tool"))

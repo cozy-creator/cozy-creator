@@ -18,13 +18,13 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn as_u64(&self) -> Option<u64> {
+    pub(crate) fn as_u64(&self) -> Option<u64> {
         match self {
             Value::Int(i) => u64::try_from(*i).ok(),
             _ => None,
         }
     }
-    pub fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
             _ => None,

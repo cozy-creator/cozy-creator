@@ -6,7 +6,7 @@ use super::{elem, Ctx, Shape};
 use crate::format::Result;
 
 /// The part's shape for structs of `n` elements in `size` bytes; `C` must be whole structs.
-pub fn shape(c: &Ctx, n: usize, size: usize) -> Result<Shape> {
+pub(crate) fn shape(c: &Ctx, n: usize, size: usize) -> Result<Shape> {
     if !c.cols.is_multiple_of(n) {
         return Err(c.fail(format!("{} columns are not whole blocks of {n}", c.cols)));
     }
@@ -17,7 +17,7 @@ pub fn shape(c: &Ctx, n: usize, size: usize) -> Result<Shape> {
 
 /// The `[R, C]` values (`R·C` of them) from structs of `size` bytes in row-major order:
 /// `f(block, out)` writes the `n` elements of each.
-pub fn walk(
+pub(crate) fn walk(
     rows: usize,
     cols: usize,
     bytes: &[u8],
@@ -32,15 +32,15 @@ pub fn walk(
     Ok(out)
 }
 
-pub fn u16_at(b: &[u8], at: usize) -> u16 {
+pub(crate) fn u16_at(b: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([b[at], b[at + 1]])
 }
 
-pub fn u32_at(b: &[u8], at: usize) -> u32 {
+pub(crate) fn u32_at(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
 }
 
 /// The `F16` at byte `at`, exactly.
-pub fn f16_at(b: &[u8], at: usize) -> f32 {
+pub(crate) fn f16_at(b: &[u8], at: usize) -> f32 {
     elem::f16(u16_at(b, at))
 }

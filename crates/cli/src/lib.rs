@@ -1,5 +1,6 @@
 //! The `cozy` command line. One module per verb group; each owns its clap arguments and handler.
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -10,25 +11,25 @@ use api::{
 
 mod account;
 mod ask;
-pub mod calcifer_client;
+mod calcifer_client;
 mod completion;
-pub mod context;
+mod context;
 mod daemon;
 mod doctor;
 mod machine;
 mod model;
 mod open;
 mod org;
-pub mod output;
+mod output;
 mod package;
 mod project;
 mod run;
 mod send;
-pub mod tools;
-pub mod tui;
+mod tools;
+mod tui;
 mod update;
 
-pub use context::Context;
+use context::Context;
 
 /// `cozy --help`'s last words: what each exit means, the same for every verb.
 const EXITS: &str = "Exit codes:
