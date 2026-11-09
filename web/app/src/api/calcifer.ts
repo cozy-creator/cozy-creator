@@ -403,11 +403,7 @@ signed_in: boolean,
  * Bytes Calcifer's code has allocated and not freed: what it holds, which its resident memory also counts with what its
  * allocator keeps of what was freed.
  */
-heap_bytes: number, 
-/**
- * This computer is a rental: which, and when it releases itself.
- */
-rental?: StatusRental | null, };
+heap_bytes: number, };
 
 /**
  * One settled call of a run (the run's own function or a child call).
@@ -2563,15 +2559,6 @@ export type Stalled = { since_ms: number, machine: string, usd_micros_per_hour?:
  * How an asset stands, for a client that shows it rather than says it (`status` says it).
  */
 export type Standing = "current" | "out_of_date" | "making" | "missing";
-
-/**
- * `GET /v1/status` on a rental: a pod has no rental id of its own, so its Hub's worker id names it.
- */
-export type StatusRental = { machine_id: string, 
-/**
- * None while a job is queued or running there.
- */
-idle_deadline_ms?: number | null, };
 
 /**
  * One plan step of a GPU: the free bytes at its start, the bytes its binds found mapped (hit),

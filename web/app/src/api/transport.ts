@@ -15,17 +15,14 @@ export interface Transport {
   play(path: string, el: HTMLMediaElement): Playback
 }
 
-/**
- * This origin's Calcifer. `base` reaches another one through it (`/v1/machines/<name>/calcifer`). A remote Calcifer's answers are
- * hostile, so only a relative API path under `base` is ever followed.
- */
 /** This tab, as a project's history says who made an edit. */
 export const TAB = crypto.randomUUID().slice(0, 4)
 
-export function sameOrigin(session: () => BrowserSession | null, base = ""): Transport {
+/** This origin's Calcifer. Only a relative API path is ever followed. */
+export function sameOrigin(session: () => BrowserSession | null): Transport {
   const resolve = (path: string) => {
-    const url = new URL(base + path, location.origin)
-    if (url.origin !== location.origin || !url.pathname.startsWith(`${base}/v1/`)) throw new Error(`Not an API path: ${path}`)
+    const url = new URL(path, location.origin)
+    if (url.origin !== location.origin || !url.pathname.startsWith("/v1/")) throw new Error(`Not an API path: ${path}`)
     return url
   }
   const media = (path: string) => {

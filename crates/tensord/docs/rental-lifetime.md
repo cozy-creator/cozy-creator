@@ -15,12 +15,8 @@ job it's going to work on."
   Updates and paused jobs are idle time.
 - The clock starts when the last job ends (or pauses), or at the rental's first boot, or at an
   explicit `cozy machine keepalive`, which restarts it once. Files moving restart it too: an output
-  read, an object upload, or files through the door to the rental's Calcifer, so a rescue download
-  isn't lost to it. Each moved chunk restarts it, so a stalled transfer holds nothing past one window.
-- An open page holds nothing: nothing through the door counts but files, whatever a stream or a
-  JSON call carries or however often. A Calcifer running on the rental is not a job either.
-- `POST /v1/release` takes the release now, on a current reading, refused `machine_working` while a
-  job is queued or running. The lifecycle tells the Hub within a second, as at the clock's end.
+  read or an object upload, so a rescue download isn't lost to it. Each moved chunk restarts it, so a
+  stalled transfer holds nothing past one window.
 - The clock is durable: the journal's last job end and the ledger's idle start (`idle.json`). A
   restart or update neither shortens nor extends it; a job a restart interrupts ends at the restart.
 - Status reports a deadline only once the rental is idle: the clock's end. While a job is queued

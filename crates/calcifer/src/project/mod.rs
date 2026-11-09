@@ -5,7 +5,6 @@
 //! `project.db` (cl-803), which holds all a project says and has made, one transaction per action. The reserved package `cozy` runs
 //! here, free. One walker per project takes every render asked of it, and what it owes is kept in `project.db` too, so a restarted
 //! Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
-mod archive;
 mod assets;
 mod canvas;
 mod db;
@@ -176,7 +175,6 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard).put(assets::undiscard))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
-        .route("/v1/projects/{id}/archive", get(archive::archive))
         .route("/v1/projects/{id}/history", get(history::list))
         .route("/v1/projects/{id}/history/undo", post(history::undo))
         .route("/v1/projects/{id}/history/redo", post(history::redo))

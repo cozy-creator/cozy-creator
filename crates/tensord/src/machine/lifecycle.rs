@@ -3,7 +3,7 @@
 //! call, a job, a warm-up, an upload, an update); an explicit keepalive restarts that clock once.
 //! The clock is durable state, never a sample held in memory: the journal's last job end and the
 //! ledger's idle start (this rental's first boot, a keepalive, or an update's activation or end),
-//! so restarts and updates neither shorten nor lose it. `POST /v1/release` takes the release early, never while working. This computer's machine counts the same clock from its start: after 5 minutes its
+//! so restarts and updates neither shorten nor lose it. This computer's machine counts the same clock from its start: after 5 minutes its
 //! executors outside the warm sets exit and give back every byte they held, after 15 it exits
 //! itself (Calcifer starts it again when something uses it), unless another computer's controller
 //! is authorized to use it or a warm set keeps a member in memory (`cozy run <fn> --warm`). A client following a run or a log, reading an output or uploading an object, holds either
@@ -175,9 +175,9 @@ impl Lifecycle {
         state.ledger.idle_since_ms.max(used) + self.grace
     }
 
-    /// An output read, an object upload or files through the door to Calcifer moved bytes: the
-    /// rental is in use, and its idle clock starts again now. A transfer that stalls moves nothing,
-    /// so it never holds the rental past one window.
+    /// An output read or an object upload moved bytes: the rental is in use, and its idle clock
+    /// starts again now. A transfer that stalls moves nothing, so it never holds the rental past one
+    /// window.
     pub(crate) fn transferred(&self) {
         self.transferred.fetch_max(now_ms(), Ordering::AcqRel);
     }
@@ -351,23 +351,6 @@ impl Lifecycle {
     /// Work came between this computer's machine's claim and its stop: it serves on.
     fn reopen(&self) {
         self.state.lock().unwrap().ledger.released = false;
-    }
-
-    /// `POST /v1/release`: a rental's release now, whatever its idle clock says, which
-    /// `release_when_idle` carries to the Hub at its next reading. Never while it works, and never on
-    /// this computer's machine, which has no Hub to tell.
-    pub(crate) fn release_now(&self) -> Result<(), Error> {
-        if !self.rental {
-            return Err(Error::conflict("machine_not_rented", "this machine is no rental"));
-        }
-        match self.release(false) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(Error::conflict(
-                "machine_working",
-                "this rental is working (a job queued or running, or an update), so it stays: cancel its runs and ask again, or `cozy machine end <name> --force` on the computer that rented it",
-            )),
-            Err(e) => Err(Error::unavailable("idle_ledger_unwritable", format!("the idle ledger could not be written: {e}"))),
-        }
     }
 
     /// Takes the release once the idle clock ran out on a current reading. Irreversible but for

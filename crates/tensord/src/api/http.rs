@@ -80,8 +80,6 @@ pub(super) fn router<B: MachineBackend>(identity: Arc<MachineIdentity>, backend:
     Router::new()
         .route(path::STATUS, get(status::<B>))
         .route(path::KEEPALIVE, post(keepalive::<B>))
-        .route(path::RELEASE, post(release::<B>))
-        .route(path::CALCIFER, get(calcifer::<B>).head(calcifer::<B>).post(calcifer::<B>).put(calcifer::<B>).patch(calcifer::<B>).delete(calcifer::<B>))
         .route(path::RUNS, post(submit::<B>).layer(DefaultBodyLimit::max(16 << 20)).get(runs::<B>))
         .route(path::RUNS_BATCH, post(submit_batch::<B>).layer(DefaultBodyLimit::max(64 << 20)))
         .route(path::EVENTS, get(events::<B>))
@@ -107,7 +105,7 @@ pub(super) struct Caller {
     grant: Grant,
 }
 impl Caller {
-    pub(super) fn machine(&self) -> Result<(), Error> {
+    fn machine(&self) -> Result<(), Error> {
         match self.grant.action == capability::MACHINE {
             true => Ok(()),
             false => Err(Error::forbidden("capability_scope", "this call needs a machine-scope Cozy-Cap")),
@@ -248,34 +246,6 @@ async fn keepalive<B: MachineBackend>(State(m): State<Machine<B>>, headers: Head
     m.call(move |_| lifecycle.renew()).await?;
     let frame = super::machine_status::frame(&m.identity, &m.backend, caller.actor).await?;
     Ok(json(StatusCode::OK, &frame))
-}
-
-/// `POST /v1/release`: a rental releases itself now, on a current reading of its jobs, and its
-/// lifecycle tells the Hub within a second. Refused while it works.
-async fn release<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap) -> Answer {
-    let caller = m.caller(&headers)?;
-    caller.machine()?;
-    let lifecycle = (m.identity.lifecycle.clone())
-        .ok_or_else(|| Error::conflict("machine_not_rented", "this machine is no rental"))?;
-    let runs = m.backend.runs();
-    m.call(move |_| {
-        if let Some(runs) = runs {
-            let epoch = lifecycle.epoch();
-            let (working, ended_ms) = runs.service.engine.jobs(lifecycle.ended_ms())
-                .map_err(|e| Error::internal("journal_unreadable", e.to_string()))?;
-            lifecycle.observe(crate::machine::lifecycle::Jobs { working, ended_ms }, epoch);
-        }
-        lifecycle.release_now()
-    })
-    .await?;
-    Ok(StatusCode::ACCEPTED.into_response())
-}
-
-/// `ANY /v1/calcifer/{*path}`: `forward`'s, behind this machine's cap.
-async fn calcifer<B: MachineBackend>(State(m): State<Machine<B>>, request: axum::extract::Request) -> Answer {
-    let caller = m.caller(request.headers())?;
-    let (calcifer, lifecycle) = (m.identity.calcifer.as_deref(), m.identity.lifecycle.as_ref());
-    Ok(super::forward::forward(calcifer, lifecycle, &caller, &m.authority(&caller), request).await?)
 }
 
 fn run_id(id: &str) -> Result<(), Error> {

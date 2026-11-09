@@ -1943,19 +1943,6 @@ pub struct CalciferStatus {
     /// allocator keeps of what was freed.
     #[serde(default)]
     pub heap_bytes: u64,
-    /// This computer is a rental: which, and when it releases itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rental: Option<StatusRental>,
-}
-
-/// `GET /v1/status` on a rental: a pod has no rental id of its own, so its Hub's worker id names it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct StatusRental {
-    pub machine_id: String,
-    /// None while a job is queued or running there.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_deadline_ms: Option<i64>,
 }
 
 /// `POST /v1/session-codes`: a code a browser trades once for a session.

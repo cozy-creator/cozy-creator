@@ -164,11 +164,6 @@ impl Machine {
         json(send(self.request(Method::POST, path::KEEPALIVE, &[])).await?).await
     }
 
-    /// Asks a rental to release itself now; refused while it works.
-    pub(crate) async fn release(&self) -> Result<(), Error> {
-        send(self.request(Method::POST, path::RELEASE, &[])).await.map(drop)
-    }
-
     /// Submits a run; its state, also when it was accepted before.
     pub(crate) async fn submit(&self, run: &RunRequest) -> Result<RunState, Error> {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await
@@ -409,29 +404,6 @@ impl Bulk {
             media_type,
             body: Box::pin(body),
         })
-    }
-
-    /// One request through the machine's door to its Calcifer (`path::CALCIFER`): `target` is the
-    /// path and query there. Whatever it answers is the answer, refusals too, with both bodies
-    /// streaming; only a request that failed is an error.
-    pub(crate) async fn forward(
-        &self,
-        method: Method,
-        target: &str,
-        headers: header::HeaderMap,
-        body: Option<reqwest::Body>,
-    ) -> Result<Response, Error> {
-        let (path, query) = target.split_once('?').map_or((target, None), |(p, q)| (p, Some(q)));
-        let mut url = self.machine.origin.clone();
-        url.set_path(&format!("{}{path}", path::CALCIFER.trim_end_matches("/{*path}")));
-        url.set_query(query);
-        let request = self.client.request(method, url).headers(headers);
-        let request = authorized(request, &self.machine.auth);
-        let request = match body {
-            Some(body) => request.body(body),
-            None => request,
-        };
-        request.send().await.map_err(transport)
     }
 
     fn request(&self, method: Method, template: &str, args: &[&str]) -> RequestBuilder {

@@ -10,8 +10,7 @@ control and SSE over HTTP/2, bulk bytes over HTTP/1.1. The routes, bodies and ev
 onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
 
 - `GET /v1/status` (identity and readiness receipt without a cap; the whole picture, as SSE on
-  change, with one), `POST /v1/keepalive`, `POST /v1/release`;
-- `ANY /v1/calcifer/{*path}`: the door to [this machine's own Calcifer](#its-own-calcifer);
+  change, with one), `POST /v1/keepalive`;
 - `POST /v1/runs` (idempotent on id per signer), `POST /v1/runs/batch` (`run-batch/1`: runs admitted
   as one, `POST /v1/runs` being a batch of one), `GET /v1/runs/{id}/events` (SSE after
   `Last-Event-ID`; closing it never cancels), `POST /v1/runs/{id}/cancel`;
@@ -114,36 +113,9 @@ warning each). A model-only upload's lane labels the commit it makes.
 finished memoized calls are answered from the memo (`DURABLE-EXECUTION.md`).
 
 **Activity** (a rental's idle release, `rental-lifetime.md`) is a run queued or running (warm-ups
-included), and an explicit keepalive restarts the clock once. An output read, an object upload or
-files through the door restart it as their bytes move, so a stalled one never holds a rental. Open
-streams, status and every other call are not activity: a Calcifer that holds a stream must not bill
-forever.
-
-## Its own Calcifer
-
-A rental's TensorD starts one `cozy calcifer` at boot, once its boot id and `api-ready.json` are
-written, with the same home, and without the worker credential. It is detached, so a TensorD restart
-or update leaves it running, on the binary it started on until it next exits. TensorD starts it again
-when it exits, immediately after a clean exit and after 1 s, doubling to a minute, after a failed one.
-`calcifer.lock` keeps it to one, whoever starts it: a shell's `cozy` uses this one. A laptop or added
-machine keeps Calcifer's login service, and there the door starts one only when none runs.
-
-**The door** `ANY /v1/calcifer/{*path}` carries a request there and its answer back, in one function
-(`api/forward.rs`) for whatever carries it. Calcifer stays on loopback.
-
-- **Machine scope only.** A key not admitted answers `capability_invalid`, a play link's run-scope cap
-  `capability_scope`. An admitted key already runs code here, so this adds no power, and the answer's
-  streams end when its key stops authorizing.
-- **Refused, `calcifer_path_refused`:** a path outside `/v1/`, any empty, `.` or `..` segment (percent-
-  decoded), `/v1/down`, and writes to `/v1/account*`: a machine never gets a device key.
-- **Sent on with** `Host` the holder's address, `Authorization: Bearer <its token>`, and `Cozy-Via` the
-  signer's key. **Without** `Origin`, `Cookie`, `Sec-Fetch-*` and hop-by-hop headers, and `Set-Cookie` on
-  the way back.
-- **The token** is `calcifer.lock.holder`, kept until a refusal or a failed connection reads it again and
-  tries once more, unless the first try read some of the body: a body is sent to the record as it stands
-  then. Otherwise `503 calcifer_down`. An open stream breaks when Calcifer restarts, and is opened again.
-- **The idle clock** moves only with files: a body neither JSON nor text. Nothing here takes an
-  admission or a follow, so a job's accounting is its own, and a page held open does nothing.
+included), and an explicit keepalive restarts the clock once. An output read or an object upload
+restarts it as its bytes move, so a stalled one never holds a rental. Open streams, status and every
+other call are not activity: a Calcifer that holds a stream must not bill forever.
 
 ## What a machine and a package can reach
 

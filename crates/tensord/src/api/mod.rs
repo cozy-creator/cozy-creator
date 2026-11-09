@@ -2,7 +2,6 @@ pub(crate) mod auth;
 pub(crate) mod backend;
 pub(crate) mod domain;
 mod cozy1;
-mod forward;
 mod http;
 pub(crate) mod machine_runs;
 mod machine_status;

@@ -1306,12 +1306,6 @@ impl Folder {
         self.write_past(|conn| db::keep_answer(conn, key, digest, status, content_type, body).map_err(|e| Error::new(Kind::Unavailable, "project_db", e.to_string())))
     }
 
-    /// A copy of `project.db` whole, for an archive, on a connection of its own: no read waits on it.
-    pub(crate) fn snapshot(&self, to: &Path) -> Result<(), Error> {
-        drop(self.held()?);
-        db::snapshot(&db::open(&self.db())?, to, &self.db())
-    }
-
     /// What the project says: its boxes, as rows.
     pub(crate) fn written(&self) -> Result<Written, Error> {
         self.reading_written(Written::clone)

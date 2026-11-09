@@ -115,9 +115,6 @@ renews its own run capability while its runs live, cl-675). `sessions/<script>.s
 `step`, the guard at `cap` USD and the trap that ends the rental by its own id); its header lists its `params`.
 Without `rent=true` it stops after the $0 pre-flight. Dispatched from `rc/<x>`, or with `runtime_ref`, it has that Runtime's wheel in `RUNTIME_WHEEL`. `model-ingest` puts a first-party model on the root (xs-104);
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
-`door` (cl-749, cl-774 Part D) proves a rental's own Calcifer and the door to it, its hostile-pod red arms first at no cost on the
-runner with a second user as an added machine; `part` is `idle`, which ends with a page held open while the pod releases itself,
-or `release`, End through the door.
 `tool-functions` (cl-774) takes `qwen-image-2/generate_turbo`, `birefnet/remove_background`, `minimax-h3/generate_turbo` and `minimax-h3/upscale` from dropping the tool to accepting its output on one 4090, a shape like `lab`'s beside them, and a Caption, from a `packages_refs` checkout `pk`, keeping frames to judge.
 `render-placement` (cl-774) is `cozy project render` with no `--on` on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `run-no-on` (tools.md) is `cozy run` with no `--on` on a runner with no GPU and one rental: a weightless still and a function that orchestrates a GPU model go to the rental, as a render does, and nothing warns; `e2e/cli/project.sh`'s `run_no_on` is the case with no rental.

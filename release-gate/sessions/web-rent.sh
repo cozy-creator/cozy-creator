@@ -1,8 +1,8 @@
 # web-rent (cl-774 Part C, decision 2): Rent and End through the page, in a real Chrome, on this runner's Calcifer (sessions/fixtures/web-rent/rent.js).
-# At $0, whichever `rent` says: the page serves, the SKU list, a quote through the page with its stated price and no order, this cozy's door, and
+# At $0, whichever `rent` says: the page serves, the SKU list, a quote through the page with its stated price and no order, and
 # the guard's arithmetic. With `rent`: one click on that price buys one pod with SSH; the page shows it boot; it's used: the idle clock and Keep up,
-# what's installed, a log, a real run from the terminal live in the page to its end, then its own Calcifer through the switcher, on the session's cozy
-# sent with `--tensord`; End through the page, followed until the Hub affirms the pod gone, which `machine ls` then agrees with. The guard
+# what's installed, a log, a real run from the terminal live in the page to its end; End through the page, followed until the Hub affirms the
+# pod gone, which `machine ls` then agrees with. The guard
 # starts before the click. Whatever fails, the trap ends what this runner's Calcifer ordered. It takes no params.
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/web-rent" && pwd) || fail "no fixtures"
@@ -32,8 +32,6 @@ ADDR=$(jq -r .address < "$lock") TOKEN=$(jq -r .token < "$lock")
 [ -n "$TOKEN" ] || fail "this runner's Calcifer has no record"
 page=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "http://$ADDR/")
 [ "$page" = 200 ] || fail "this cozy serves no page: GET / answers $page"
-door=$(curl -sS --max-time 30 -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/machines/no-such-pod/calcifer/v1/status" | jq -r '.error.code // empty')
-[ "$door" = machine_not_found ] || fail "this cozy's Calcifer has no door: a door to nothing answers '$door'"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 
 # link: a fresh sign-in link, which works once.

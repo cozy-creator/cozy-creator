@@ -516,9 +516,3 @@ pub(crate) fn checkpoint(path: &Path) {
         tracing::warn!("{}: checkpoint: {error}", path.display());
     }
 }
-
-/// A copy of the database as it stands, whole in one file: what an archive carries.
-pub(crate) fn snapshot(conn: &Connection, to: &Path, at: &Path) -> Result<(), Error> {
-    let _ = std::fs::remove_file(to);
-    conn.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(drop).map_err(|e| sql(at, e))
-}

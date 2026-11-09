@@ -1,7 +1,6 @@
 //! The machine role on a pod or this computer: its launch grant, lifetime identity,
 //! readiness receipt and rental lifecycle. Its contracts are the Hub's.
 pub(crate) mod binary;
-pub(crate) mod calcifer;
 pub(crate) mod uv;
 pub(crate) mod endpoint;
 pub(crate) mod grant;

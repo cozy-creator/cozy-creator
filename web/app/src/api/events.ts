@@ -53,8 +53,6 @@ export class EventStream {
   private channel: BroadcastChannel
   private holding = false
   private client: Client
-  private scope: string
-  private remote: boolean
   private tab = crypto.randomUUID()
   /** Once this tab holds its own lock: what it says it shows is said after. */
   private alive: Promise<void>
@@ -66,11 +64,9 @@ export class EventStream {
   private told: string | null = null
   private telling = false
 
-  constructor(client: Client, scope: string, remote: boolean) {
+  constructor(client: Client) {
     this.client = client
-    this.scope = scope
-    this.remote = remote
-    this.channel = new BroadcastChannel(`cozy-events:${scope}`)
+    this.channel = new BroadcastChannel("cozy-events")
     this.channel.onmessage = ({ data }: MessageEvent<Shared>) => {
       if ("event" in data) this.dispatch(data.event)
       else if ("health" in data) this.health.set(data.health)
@@ -79,7 +75,7 @@ export class EventStream {
       else if (this.holding) this.channel.postMessage({ health: this.health.get() } satisfies Shared)
     }
     this.alive = new Promise((held) => {
-      void navigator.locks.request(`cozy-tab:${scope}:${this.tab}`, () => {
+      void navigator.locks.request(`cozy-tab:${this.tab}`, () => {
         held()
         return new Promise<void>(() => {})
       })
@@ -101,7 +97,7 @@ export class EventStream {
   private heard(tab: string, project: string | null) {
     if (!this.holding) return
     if (tab !== this.tab && !this.shown.has(tab)) {
-      void navigator.locks.request(`cozy-tab:${this.scope}:${tab}`, () => {
+      void navigator.locks.request(`cozy-tab:${tab}`, () => {
         this.shown.delete(tab)
         void this.tell()
       })
@@ -134,7 +130,7 @@ export class EventStream {
 
   start() {
     this.channel.postMessage({ ask: true } satisfies Shared)
-    void navigator.locks.request(`cozy-events:${this.scope}`, () => this.hold())
+    void navigator.locks.request("cozy-events", () => this.hold())
   }
 
   private dispatch(event: StreamEvent) {
@@ -160,11 +156,8 @@ export class EventStream {
       try {
         if (await this.follow()) attempt = 1
       } catch {
-        if (!this.remote) {
-          this.say({ state: "signed_out" })
-          return
-        }
-        this.client.unauthorized()
+        this.say({ state: "signed_out" })
+        return
       }
       this.say({ state: "reconnecting", attempt })
       await new Promise((done) => setTimeout(done, Math.min(5000, 250 * 2 ** (attempt - 1))))

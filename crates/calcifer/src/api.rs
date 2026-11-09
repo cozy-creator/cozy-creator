@@ -17,7 +17,7 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, KeepAliveStream, Sse},
     },
-    routing::{any, delete, get, post, put},
+    routing::{delete, get, post, put},
 };
 use api::{
     calcifer::{CalciferStatus, Down, Event, MachineKind, MachineState, Run, RunList, Status},
@@ -148,7 +148,6 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
             get(machines::show).delete(machines::end),
         )
         .route("/v1/machines/{name}/keepalive", post(machines::keepalive))
-        .route("/v1/machines/{name}/calcifer/{*path}", any(crate::door::forward))
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
         .route("/v1/machines/{name}/packages", get(machines::packages))
         .route("/v1/machines/{name}/models", get(machines::models))
@@ -355,12 +354,10 @@ pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
 fn media_secret(request: &Request) -> Option<&str> {
     let reads = matches!(*request.method(), Method::GET | Method::HEAD);
     let path: Vec<&str> = request.uri().path().split('/').collect();
-    // The same reads of another machine's Calcifer, through its door.
-    let asked = match path[..] {
-        ["", "v1", "machines", _, "calcifer", ref rest @ ..] => rest,
-        ref whole => &whole[1..],
-    };
-    let file = matches!(asked, ["v1", "runs", _, "outputs", _] | ["v1", "projects", _, "files" | "cuts" | "thumbs", _]);
+    let file = matches!(
+        path[..],
+        ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
+    );
     if !reads || !file {
         return None;
     }
@@ -378,9 +375,7 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
         let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
-    // Through the door a mutation commits nothing here, and a long upload must not hold up a stop.
-    let path = request.uri().path();
-    if request.method() == Method::GET || path == "/v1/down" || crate::door::is_door(path) {
+    if request.method() == Method::GET || request.uri().path() == "/v1/down" {
         return next.run(request).await;
     }
     let stopping = api.stopping.read().await;
@@ -590,7 +585,6 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         local_usable: platform::Os::CURRENT.local_inference(),
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
         heap_bytes: platform::heap::held(),
-        rental: api.machines.rental_here(),
     }))
 }
 

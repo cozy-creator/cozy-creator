@@ -27,12 +27,12 @@ export function useTo() {
   return (rest = "") => (id ? `/projects/${id}${rest && `/${rest}`}` : `/${rest}`)
 }
 
-/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. A pod's Calcifer is its own. */
+/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. */
 const SAYS_HOW = 5
 
 /** Whether Calcifer answers, and what's waiting for it: said, and nothing waits on it. Gone once all of it is saved. */
 function Connectivity() {
-  const { stream, attempt, bridge, remote, outbox } = useConnection()
+  const { stream, attempt, bridge, outbox } = useConnection()
   const health = useSignal(stream.health)
   const trying = useSignal(attempt)
   const owed = useSignal(outbox.owed)
@@ -43,7 +43,7 @@ function Connectivity() {
       {health.state === "reconnecting" ? (
         <span className="pill warn" role="status">
           Calcifer offline{owed.count > 0 && `: ${changes} waiting`}
-          {!remote && health.attempt >= SAYS_HOW && (
+          {health.attempt >= SAYS_HOW && (
             <>
               {" "}
               · run <code>cozy open</code>
@@ -232,7 +232,7 @@ function MainMenu({ id }: { id: string | null }) {
 }
 
 export function Shell() {
-  const { remote, stream } = useConnection()
+  const { stream } = useConnection()
   const id = useProjectId()
   // Calcifer holds the project open while a tab shows it.
   useEffect(() => stream.show(id), [stream, id])
@@ -276,11 +276,6 @@ export function Shell() {
       <header className="top">
         <span className="history-controls" ref={setHistory} />
         <ProjectTabs id={id} room={room} />
-        {remote && (
-          <Link className="pill warn" to={to("machines")}>
-            On {remote}
-          </Link>
-        )}
         <Connectivity />
         <span className="gap" ref={setRoom} />
         <MachineTabs to={to} projectId={id} />
