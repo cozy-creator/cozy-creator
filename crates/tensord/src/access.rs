@@ -197,8 +197,9 @@ impl Fetch {
     /// executor reads them, in Runtime's Start-pass order: the smallest component first; then
     /// `later`'s (its on-demand models, built when a stage first uses one) the same way, right
     /// behind them. Held until the call ends. Its run's progress waits on `selected` only. For a
-    /// `cold` call (no executor holds its construction) the chunks already on disk are read into
-    /// the page cache in the same order meanwhile (`read_ahead`).
+    /// `cold` call (no executor holds its construction) `selected`'s chunks already on disk are
+    /// read into the page cache meanwhile (`read_ahead`); `later`'s are not, as the call may
+    /// never build them.
     /// `room` is asked for the bytes absent of both, else of `selected` alone, before any is
     /// wanted: it frees them on the disk or refuses, and a refusal fails the call before it
     /// downloads or starts.
@@ -207,7 +208,7 @@ impl Fetch {
         engine: &Arc<Engine>, room: &dyn Fn(u64) -> Result<(), String>,
     ) -> io::Result<()> {
         if cold {
-            self.read_ahead(selected, later);
+            self.read_ahead(selected);
         }
         let mut wanted = match self.components(selected, true) {
             Ok(wanted) => wanted,
@@ -280,12 +281,14 @@ impl Fetch {
         Ok(())
     }
 
-    /// The page cache takes `selected`'s and then `later`'s chunks on disk, the smallest component
-    /// first, while the call's executor forks, imports and opens its GPU: its Start pass and first
-    /// phase then read memory, not the disk (a cold Qwen-Image text encoder is 8.4 GB). Read on
-    /// threads of their own, a chunk the cache holds skipped, within half of the host's available
-    /// memory, ending with the call.
-    fn read_ahead(self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)]) {
+    /// The page cache takes `selected`'s chunks on disk, the smallest component first, while the
+    /// call's executor forks, imports and opens its GPU: its Start pass and first phase then read
+    /// memory, not the disk (a cold Qwen-Image text encoder is 8.4 GB). Read on threads of their
+    /// own, a chunk the cache holds skipped, within half of the host's available memory, ending
+    /// with the call. Never its on-demand models: a cold Qwen-Image 2.1 call with its enhancer off
+    /// read its two 11 GiB enhancers behind its own 16.8 GB, 32.9 GB from disk in all against
+    /// ComfyUI's 16.0, the disk and the cache taken from its own first step (kosmos 43140, 43200).
+    fn read_ahead(self: &Arc<Self>, selected: &[(String, Vec<String>)]) {
         let store = self.store().clone();
         let ordered = |groups: &[(String, Vec<String>)]| {
             let mut components: Vec<(u64, Vec<ObjectRef>)> = groups.iter()
@@ -298,8 +301,7 @@ impl Fetch {
             components.sort_by_key(|(bytes, _)| *bytes);
             components.into_iter().flat_map(|(_, objects)| objects).collect::<Vec<_>>()
         };
-        let chunks: Vec<ObjectRef> = ordered(selected).into_iter().chain(ordered(later))
-            .filter(|o| store.holds(o)).collect();
+        let chunks: Vec<ObjectRef> = ordered(selected).into_iter().filter(|o| store.holds(o)).collect();
         if chunks.is_empty() {
             return;
         }
