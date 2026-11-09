@@ -154,6 +154,8 @@ fn stream_fill(fill: varena::Fill, consumer: u64, copies: &[Part], holds: Box<dy
 struct Job {
     retained: Weak<Retained>,
     pin: varena::Pin,
+    /// The stream that wrote it: a copy refused for room is asked again behind it.
+    stream: u64,
     /// Recorded on the writer's stream after its copies.
     ready: usize,
     /// Told once the copy landed or failed: an ask waits for its spills.
@@ -276,7 +278,7 @@ fn queue(retained: &Weak<Retained>, pin: varena::Pin, stream: u64, done: Option<
             return false;
         }
     };
-    let sent = lock(&spiller.jobs).send(Job { retained: retained.clone(), pin, ready, done });
+    let sent = lock(&spiller.jobs).send(Job { retained: retained.clone(), pin, stream, ready, done });
     if let Err(mpsc::SendError(job)) = sent {
         keep(&job.retained, job.pin, "the spill worker is gone");
         return false;
@@ -312,7 +314,7 @@ fn run(device: i32, context: usize, jobs: mpsc::Receiver<Job>) {
             unsafe { (driver.event_destroy)(job.ready as cuda::CUevent) };
         }
         match copied {
-            Ok(page) => {
+            Ok(Some(page)) => {
                 match job.retained.upgrade() {
                     Some(retained) => *lock(&retained.host) = Some(Arc::new(page)),
                     None => drop(page),
@@ -320,6 +322,15 @@ fn run(device: i32, context: usize, jobs: mpsc::Receiver<Job>) {
                 // SAFETY: the writer finished before the copy began, and the copy has completed.
                 release_region(unsafe { job.pin.into_completed_region() });
             }
+            // No host room now, idle peers asked: it stays on the card and spillable, so the
+            // core's next ask tries again (Paul 11-07: keep trying while any lever can make it fit).
+            Ok(None) => match job.retained.upgrade() {
+                Some(retained) => {
+                    *lock(&retained.held) = Some((job.pin, Some(job.stream)));
+                    on_card(&retained, device);
+                }
+                None => drop(job.pin),
+            },
             Err(error) => keep(&job.retained, job.pin, &error),
         }
         if let Some(done) = job.done {
@@ -328,11 +339,12 @@ fn run(device: i32, context: usize, jobs: mpsc::Receiver<Job>) {
     }
 }
 
-/// The region's bytes into a registered host page, after its writer, window by window.
-fn copy(job: &Job, stream: &cuda::Stream, context: usize) -> Result<Page, String> {
+/// The region's bytes into a registered host page, after its writer, window by window. None: no
+/// host room for it now.
+fn copy(job: &Job, stream: &cuda::Stream, context: usize) -> Result<Option<Page>, String> {
     let len = job.pin.len();
     let tier = job.retained.upgrade().map(|retained| retained.tier.clone()).ok_or("its owner went")?;
-    let page = tier.retained_page(len)?;
+    let Some(page) = tier.retained_page(len)? else { return Ok(None) };
     let copied = (|| -> cuda::Result<()> {
         let driver = cuda::driver()?;
         let _context = cuda::CtxGuard::enter(context as cuda::CUcontext)?;
@@ -348,7 +360,7 @@ fn copy(job: &Job, stream: &cuda::Stream, context: usize) -> Result<Page, String
         stream.drain()
     })();
     match copied {
-        Ok(()) => Ok(page),
+        Ok(()) => Ok(Some(page)),
         Err(error) => {
             // Unproven: the driver may still write the page, so it is never freed.
             std::mem::forget(page);

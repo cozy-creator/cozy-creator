@@ -120,9 +120,9 @@ impl Inner {
     pub(super) fn set(&self) -> &str {
         &self.set
     }
-    /// Its derive's bytes are kept: none are known to be the stored ones.
+    /// Its bytes are kept on the fill path: a derive's, or the stored ones once landed.
     pub(super) fn keeps(&self) -> bool {
-        self.page.is_some() && self.derive.is_some() && !self.plain.load(Ordering::Acquire)
+        self.page.is_some() && (self.derive.is_some() || self.stored.is_some())
     }
     pub(super) fn region(&self) -> Weak<varena::Region> {
         self.region.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -173,7 +173,7 @@ impl Inner {
 
     fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>) -> PyResult<()> {
         let began = Instant::now();
-        let page = py.detach(|| self.tier.reserve(key, self.bytes))?;
+        let page = py.detach(|| self.tier.reserve(key, &self.set, self.bytes))?;
         self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let Some(page) = page else { return Ok(()) };
         // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
@@ -193,6 +193,28 @@ impl Inner {
         Ok(())
     }
 
+    /// Its stored bytes, just landed on the card, copied into a host page now if the tier admits
+    /// one (made ahead by `expect`). Left for an idle pin, every refill read them from the store
+    /// again meanwhile: SDXL's second call 2 GB, Klein's upsampler 550 GiB a call (kesshouban,
+    /// runs 42714, 42716). Whether it is kept.
+    fn keep_landed(&self, key: &str, fill: &varena::Fill) -> bool {
+        let began = Instant::now();
+        let Ok(Some(page)) = self.tier.reserve(key, &self.set, self.bytes) else { return false };
+        let copies: Vec<_> = page.windows().map(|(at, len)| io::Copy {
+            src: Src::Device { device: fill.device(), ptr: fill.ptr() + at as u64, stream: 0 },
+            // SAFETY: `at..at + len` lies inside the page.
+            dst: Dst::Host { ptr: unsafe { page.ptr().add(at) }, len },
+        }).collect();
+        // SAFETY: the Fill is exclusive and its read returned, so every byte landed; the page is
+        // this call's alone until `insert`.
+        if unsafe { io::read(&copies, &ReadOpts::default()) }.is_err() {
+            return false;
+        }
+        self.tier.insert(key, &self.set, page);
+        self.tier.keep_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        true
+    }
+
     /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor.
     fn derive(&self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>) -> varena::Result<varena::Pin> {
         let device = fill.device();
@@ -204,10 +226,9 @@ impl Inner {
                 let used = Py::new(py, PyUse::filling(fill, consumers))?;
                 let view = py.import("torch")?.call_method1("from_dlpack", (used.clone_ref(py),))?;
                 let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
-                if changed || self.stored.is_none() {
-                    if let Some(key) = &self.page {
-                        self.keep(key, py, &view)?;
-                    }
+                // Derived or, unchanged, the stored bytes: a refill never reads the store again.
+                if let Some(key) = &self.page {
+                    self.keep(key, py, &view)?;
                 }
                 let pin = used.borrow(py).finish(py)?;
                 Ok((changed, pin))
@@ -216,8 +237,10 @@ impl Inner {
                 Ok((changed, pin)) => {
                     if !changed && self.stored.is_some() {
                         self.plain.store(true, Ordering::Release);
-                        if let Some(key) = &self.page {
-                            py.detach(|| self.tier.unreserve(key));
+                    }
+                    if let Some(key) = self.page.as_ref().filter(|key| !self.tier.holds(key)) {
+                        py.detach(|| self.tier.unreserve(key));
+                        if !changed && self.stored.is_some() {
                             self.tier.want(key, &self.set, this, region);
                         }
                     }
@@ -272,8 +295,11 @@ impl varena::Source for PageSource {
         let this = &self.0;
         let began = Instant::now();
         let ahead = consumer.is_none();
-        let kept = this.page.as_ref().and_then(|key| this.tier.take(key, fill.len(), true));
+        // A fill ahead counts once it goes on: one its caller makes again counts there.
+        let kept = this.page.as_ref().and_then(|key| this.tier.take(key, &this.set, fill.len(), !ahead));
+        let count = || if let (true, Some(key)) = (ahead, &this.page) { this.tier.count(key, &this.set) };
         if let Some(page) = kept {
+            count();
             if let Err(error) = this.from_page(&fill, &page) {
                 if ahead { this.tier.failed(); }
                 let failure = tensorfs::Failure::from(error.source);
@@ -289,7 +315,8 @@ impl varena::Source for PageSource {
             decline(fill); // Its page went since the core asked: this one needs its caller.
             return Err(varena::Error::Busy);
         }
-        if let (Some(key), Some(_)) = (&this.page, derive) {
+        count();
+        if let Some(key) = this.page.as_ref().filter(|_| derive.is_some() || this.stored.is_some()) {
             this.tier.expect(key.clone(), this);
         }
         if let Some(stored) = &this.stored {
@@ -319,7 +346,10 @@ impl varena::Source for PageSource {
             return this.derive(derive, fill, consumer, weak).map(Some);
         }
         if let Some(key) = &this.page {
-            this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
+            if this.stored.is_none() || !this.keep_landed(key, &fill) {
+                this.tier.unreserve(key);
+                this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
+            }
         }
         publish(fill, consumer)
     }
@@ -398,7 +428,7 @@ impl PySource {
         let buffer = pyo3::buffer::PyBuffer::<u8>::get(&view.call_method1("cast", ("B",))?)?;
         let (ptr, len) = (buffer.buf_ptr() as usize, buffer.len_bytes());
         let this = &self.inner;
-        let page = this.page.as_ref().filter(|_| !stored).and_then(|key| this.tier.take(key, len, false));
+        let page = this.page.as_ref().filter(|_| !stored).and_then(|key| this.tier.take(key, &this.set, len, false));
         if let Some(page) = page {
             // SAFETY: both hold `len` bytes, and the exporter keeps `out` alive through this.
             py.detach(|| unsafe { std::ptr::copy_nonoverlapping(page.ptr(), ptr as *mut u8, len) });
