@@ -266,6 +266,12 @@ impl Table {
         let _ = row.running.try_update(AcqRel, Acquire, |running| running.checked_sub(1));
     }
 
+    /// Bytes idle in every row but `row`.
+    pub fn idle_elsewhere(&self, row: Row) -> u64 {
+        self.page.rows.iter().enumerate().filter(|(index, words)| *index != row.0 && words.pid.load(Acquire) != 0)
+            .map(|(_, words)| words.idle.load(Acquire)).sum()
+    }
+
     /// Bytes idle on this GPU, across every row.
     pub fn idle(&self) -> u64 {
         self.page.rows.iter().filter(|row| row.pid.load(Acquire) != 0).map(|row| row.idle.load(Acquire)).sum()

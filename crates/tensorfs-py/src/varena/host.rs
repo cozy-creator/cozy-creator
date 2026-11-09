@@ -144,16 +144,27 @@ mod imp {
         }
     }
 
-    pub(super) fn short(bytes: u64) {
-        let Some(host) = host() else { return };
+    pub(super) fn short(bytes: u64) -> u64 {
+        let Some(host) = host() else { return 0 };
         if !host.table.running(host.row) {
-            return;
+            return 0;
         }
         let mut ask = host.asking.lock().unwrap_or_else(|error| error.into_inner());
-        if !ask.refused {
-            ask.bytes = ask.bytes.max(bytes);
-            host.ask.notify_one();
+        if ask.refused {
+            return 0;
         }
+        ask.bytes = ask.bytes.max(bytes);
+        host.ask.notify_one();
+        host.table.idle_elsewhere(host.row)
+    }
+
+    pub(super) fn ask_idle(bytes: u64) -> bool {
+        let Some(host) = host() else { return false };
+        let gave = host.table.ask_idle_peers(host.row, bytes, Instant::now() + PEER_WAIT);
+        for tier in host.tiers() {
+            tier.relook();
+        }
+        gave
     }
 
     pub(super) fn peers_running() -> bool {
@@ -178,12 +189,28 @@ pub(super) fn boundary(begin: bool) {
 }
 
 /// A tier of a process in a request is `bytes` short: idle peers give pages back, then TensorD
-/// ends an idle process. Never waits: the asking thread does, and the tiers look again after.
-pub(super) fn short(bytes: u64) {
+/// ends an idle process. Never waits: the asking thread does, and the tiers look again after. What
+/// idle peers hold that the ask may bring back: 0 out of a request, or once an ask came back final.
+pub(super) fn short(bytes: u64) -> u64 {
     #[cfg(target_os = "linux")]
-    imp::short(bytes);
+    return imp::short(bytes);
     #[cfg(not(target_os = "linux"))]
-    let _ = bytes;
+    {
+        let _ = bytes;
+        0
+    }
+}
+
+/// Ask idle peers for `bytes` and wait for their answers (a few seconds at most): whether any came
+/// back. For a copy that cannot wait for the asking thread, a retained region's.
+pub(super) fn ask_idle(bytes: u64) -> bool {
+    #[cfg(target_os = "linux")]
+    return imp::ask_idle(bytes);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bytes;
+        false
+    }
 }
 
 /// Another process on this machine is in a request: an idle tier pins nothing meanwhile.
