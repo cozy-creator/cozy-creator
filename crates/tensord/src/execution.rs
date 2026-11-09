@@ -350,6 +350,10 @@ impl Engine {
         Ok(())
     }
     /// A root's GPU allocation changed: a `gpu` entry in its log (`gpu_service::note_gpus`).
+    /// See `Journal::fetched`.
+    pub fn fetched(&self, id: &str, from: u64, to: u64) -> io::Result<()> {
+        self.journal.lock().unwrap().fetched(id, from, to)
+    }
     pub fn append_gpu(&self, id: &str, entry: &serde_json::Value) -> io::Result<u64> {
         let line = serde_json::to_vec(entry)?;
         let progress = self.progress.lock().unwrap();

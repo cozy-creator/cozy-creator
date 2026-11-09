@@ -557,6 +557,7 @@ pub fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
         return;
     }
     let (store, fetch, began) = (fetch.store().clone(), Arc::downgrade(fetch), std::time::Instant::now());
+    let began_ms = crate::machine::lifecycle::now_ms() as u64;
     let started = std::thread::Builder::new().name("weights-meter".into()).spawn(move || {
         let (mut last, mut said, mut shown) = (None, String::new(), None::<String>);
         // What its run waits on, as this machine lists it (`activity`), by repository.
@@ -595,6 +596,10 @@ pub fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                 if let (Some(Weights { models, total, behind: false, .. }), true) = (last, live.is_some()) {
                     let waited = format!("bytes={total} seconds={:.1} run={id}", began.elapsed().as_secs_f64());
                     storage::transport(&store, "arrived", &models, &waited);
+                    // Its time waiting on them is no part of its compute (`journal::Ran`).
+                    if let Err(error) = engine.fetched(&id, began_ms, crate::machine::lifecycle::now_ms() as u64) {
+                        tracing::warn!("run {id}: when its weights arrived: {error}");
+                    }
                 }
                 return;
             }

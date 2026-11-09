@@ -308,6 +308,9 @@ pub struct Execution {
     /// The cursor at which the attempt started running: its `running` event.
     #[serde(default)]
     pub running_revision: u64,
+    /// When the attempt was claimed to start: its executor's start, or one kept, runs until `started_at_ms`.
+    #[serde(default)]
+    pub starting_at_ms: u64,
     /// When the attempt started running (wall clock), and on which executor.
     #[serde(default)]
     pub started_at_ms: u64,
@@ -317,6 +320,9 @@ pub struct Execution {
     /// The GPUs it took as it started: its plan's degree, or a deviceless root's lane.
     #[serde(default)]
     pub width: u32,
+    /// When it waited for its weights to download (Unix ms), as its meter saw them arrive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched: Option<(u64, u64)>,
     #[serde(default)]
     pub executor: Option<ExecutorFacts>,
     pub result: Option<ResultRecord>,
@@ -383,10 +389,12 @@ pub struct RunTime {
 }
 
 /// What a completed root did with its time, by its own and its calls' records and measurements
-/// (cl-816, release owner 11-09). `compute_ms`: its time running less what it spent waiting on a
-/// call (its weights' download, a GPU, its executor's start) and building weights onto the GPUs
-/// while no other call computed. `load_ms`: those executor starts and builds, which a machine
-/// without its weights quotes again.
+/// (cl-816, release owner 11-09). `compute_ms`: its time running less what it spent, while no call
+/// computed, waiting for a GPU lane (its `gpu` log), for its calls' weights to download (`fetched`),
+/// on their executors' start (claimed to running), and building weights onto the GPUs. What recurs
+/// warm (a call's own preparation, its dispatch, a kept executor) is compute. `load_ms`: its own and
+/// its calls' executor starts and builds, which a machine without its weights quotes again with their
+/// download.
 struct Ran {
     compute_ms: u64,
     load_ms: u64,
@@ -406,49 +414,67 @@ impl Ran {
             .query_row("SELECT measurements FROM run_measurements WHERE execution=?1", [&root.id], |row| row.get(0))
             .optional()
             .map_err(db_error)?;
-        let (mut waits, mut running, mut builds, mut loads) = (vec![], vec![], vec![], vec![]);
-        let mut spent = |measured: Option<&[u8]>| {
-            let (start, build) = spans(measured);
+        let (mut idle, mut running, mut builds, mut loads) = (lane_waits(tx, &root.id)?, vec![], vec![], vec![]);
+        let mut spent = |record: &Execution, measured: Option<&[u8]>, idle: &mut Vec<Span>| {
+            let start = (record.starting_at_ms > 0).then_some((record.starting_at_ms, record.started_at_ms));
+            let build = built(measured);
             builds.extend(build);
+            idle.extend(start.into_iter().chain(build));
             loads.extend(start.into_iter().chain(build));
         };
-        spent(own.as_deref());
+        spent(root, own.as_deref(), &mut idle);
         for (call, measured) in &calls {
             let call: Execution = serde_json::from_str(call).map_err(db_error)?;
             // A call answered without running (memoized, refused) took no time of its own.
             if call.started_at_ms == 0 {
                 continue;
             }
-            waits.push((call.accepted_at_ms, call.started_at_ms));
             running.push((call.started_at_ms, call.finished_at_ms.max(call.started_at_ms)));
-            spent(measured.as_deref());
+            idle.extend(call.fetched);
+            spent(&call, measured.as_deref(), &mut idle);
         }
         let within = |spans: &[Span], (from, to): Span| -> Vec<Span> {
             spans.iter().map(|&(a, b)| (a.max(from), b.min(to))).collect()
         };
         let window = (root.started_at_ms, root.finished_at_ms);
-        let (waits, running, builds) = (within(&waits, window), within(&running, window), within(&builds, window));
-        let idle = covered(&[&waits[..], &builds[..], &running[..]].concat()) - covered(&[&running[..], &builds[..]].concat()) + covered(&builds);
+        let (idle, running, builds) = (within(&idle, window), within(&running, window), within(&builds, window));
+        // What of `idle` no call spent computing: builds count as idle even inside a call's run.
+        let lost = covered(&[&idle[..], &running[..]].concat()) - covered(&[&running[..], &builds[..]].concat()) + covered(&builds);
         Ok(Ran {
-            compute_ms: root.executed_ms.saturating_sub(idle),
+            compute_ms: root.executed_ms.saturating_sub(lost),
             load_ms: covered(&within(&loads, (root.accepted_at_ms, root.finished_at_ms))),
         })
     }
 }
 
-/// An executor's start and a construction's build, as its measurements say (`execution.executor`,
-/// `execution.construction`), Unix ms. An executor serving several calls carries both: a caller
-/// keeps what falls in its own time.
-fn spans(measured: Option<&[u8]>) -> (Option<Span>, Option<Span>) {
-    let Some(measured) = measured.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok()) else { return (None, None) };
-    let (executor, construction) = (&measured["execution"]["executor"], &measured["execution"]["construction"]);
-    let legs: f64 = executor["legs_ms"].as_object().into_iter().flatten().filter_map(|(_, ms)| ms.as_f64()).sum();
-    let start = executor["started_unix_ms"].as_f64().map(|at| (at as u64, (at + legs) as u64));
-    let build = match (construction["prepare_ms"].as_f64(), construction["prepared_unix_ms"].as_f64()) {
+/// When root `id` waited for a GPU lane, as its `gpu` log says: from each `wait` to the `grant` after it.
+fn lane_waits(tx: &rusqlite::Transaction<'_>, id: &str) -> io::Result<Vec<Span>> {
+    let mut statement = tx.prepare("SELECT at_ms,record FROM run_logs WHERE execution=?1 ORDER BY sequence").map_err(db_error)?;
+    let rows = statement
+        .query_map([id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)))
+        .map_err(db_error)?;
+    let (mut waits, mut since) = (vec![], None);
+    for row in rows {
+        let (at, record) = row.map_err(db_error)?;
+        let Ok(entry) = serde_json::from_slice::<Value>(&record) else { continue };
+        match entry["gpu"]["state"].as_str() {
+            Some("wait") => since = since.or(Some(at.max(0) as u64)),
+            Some("grant") => waits.extend(since.take().map(|from| (from, at.max(0) as u64))),
+            _ => {}
+        }
+    }
+    Ok(waits)
+}
+
+/// A construction's build onto the GPUs, as its measurements say (`execution.construction`), Unix ms.
+/// An executor serving several calls carries its build: a caller keeps what falls in its own time.
+fn built(measured: Option<&[u8]>) -> Option<Span> {
+    let measured: Value = serde_json::from_slice(measured?).ok()?;
+    let construction = &measured["execution"]["construction"];
+    match (construction["prepare_ms"].as_f64(), construction["prepared_unix_ms"].as_f64()) {
         (Some(ms), Some(end)) if ms > 0.0 => Some(((end - ms).max(0.0) as u64, end as u64)),
         _ => None,
-    };
-    (start, build)
+    }
 }
 
 /// From, to: Unix ms.
@@ -1450,9 +1476,11 @@ fn insert(
         progress: None,
         progress_at_ms: 0,
         running_revision: 0,
+        starting_at_ms: 0,
         started_at_ms: 0,
         executed_ms: 0,
         width: 0,
+        fetched: None,
         executor: None,
         result: None,
         pending_completion: None,
@@ -1991,6 +2019,7 @@ impl Journal {
                 return Ok(false);
             }
             record.state = State::Starting;
+            record.starting_at_ms = timestamp().max(0) as u64;
             record.width = width;
             record.attempt += 1;
             record.waiting_reason = None;
@@ -2050,6 +2079,7 @@ impl Journal {
             }
             record.process = None;
             record.executor = None;
+            record.starting_at_ms = timestamp().max(0) as u64;
             record.started_at_ms = 0;
             record.state = if record.cancel_actor.is_some() {
                 State::Canceled
@@ -2058,6 +2088,18 @@ impl Journal {
             };
             Ok(true)
         })
+    }
+
+    /// Its weights downloaded from `from` to `to` (Unix ms) while it waited on them (`access::meter`).
+    pub fn fetched(&mut self, id: &str, from: u64, to: u64) -> io::Result<()> {
+        self.update(id, |record| {
+            if record.state.terminal() {
+                return Ok(false);
+            }
+            record.fetched = Some((from, to));
+            Ok(true)
+        })
+        .map(drop)
     }
 
     /// Called once the attempt's executor exists, before its Invoke.

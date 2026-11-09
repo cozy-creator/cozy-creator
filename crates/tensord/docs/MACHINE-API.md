@@ -32,9 +32,10 @@ Unknown fields are ignored.
 the packing of the whole queue (`pack.rs`) that `POST /v1/estimate` quotes from. A width it has not
 measured gains nothing, so a job runs on one GPU until a run at a wider width (one sent with that
 `gpus`) measured that width faster; on a tie the narrower wins. Each completed root keeps its compute
-(its time running less what it waited on its calls for and spent building weights onto GPUs) and its
-load (executor starts and builds); a quote is compute, plus, while its weights aren't here, their
-download at the measured link and that load. A job that builds a model on a GPU (`gpu`) can't run on a machine with
+(its time running less its waits for a GPU lane, for its calls' weights to download and their executors
+to start, and building weights onto GPUs, while no call computed) and its load (executor starts and
+builds); a quote is compute, plus, while its weights aren't here, their download at the measured link
+and that load. A job that builds a model on a GPU (`gpu`) can't run on a machine with
 none: its quote has `fits: false`, `no_gpu`, and no times, as does one whose weights the disk can't hold.
 Jobs a caller places together it sends together, as one batch: every new run of a batch is journaled in
 one transaction before any prepares, so the scheduler packs them as the quote did. A quote reserves
