@@ -552,7 +552,7 @@ impl Encoding {
         if !matches!(helper.output.read_line(&mut answer), Ok(n) if n > 0) {
             return Err(codec.stopped());
         }
-        *codec.helper.lock().unwrap() = Some(helper);
+        codec.helper.lock().unwrap().get_or_insert(helper); // unless the next call prestarted one
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Answer {
