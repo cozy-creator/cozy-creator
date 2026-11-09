@@ -153,6 +153,22 @@ impl Inner {
         unsafe { io::read(&copies, &ReadOpts::default()) }.map(drop)
     }
 
+    /// `fill` from a kept page, published, with its row.
+    fn publish_kept(&self, fill: varena::Fill, page: &Page, consumer: Option<u64>, origin: &'static str, began: Instant)
+        -> varena::Result<Option<varena::Pin>> {
+        if let Err(error) = self.from_page(&fill, page) {
+            if consumer.is_none() {
+                self.tier.failed();
+            }
+            let failure = tensorfs::Failure::from(error.source);
+            let detail = failure.to_string();
+            FAILED.with_borrow_mut(|failed| *failed = Some(Failed::Storage(failure)));
+            return Err(abort(fill, varena::Error::Callback(detail)));
+        }
+        self.row(page.len() as u64, origin, consumer.is_none(), began);
+        publish(fill, consumer)
+    }
+
     /// Its stored bytes, each item from where it already is: another set's resident Region on this
     /// GPU (a device copy that waits for nothing), else that set's kept page (a pinned host copy),
     /// else the store. The items tile the Region in runs from one place, each gap zeroed by the
@@ -411,15 +427,7 @@ impl varena::Source for PageSource {
         let count = || if let (true, Some(key)) = (ahead, &this.page) { this.tier.count(key, &this.set) };
         if let Some(page) = kept {
             count();
-            if let Err(error) = this.from_page(&fill, &page) {
-                if ahead { this.tier.failed(); }
-                let failure = tensorfs::Failure::from(error.source);
-                let detail = failure.to_string();
-                FAILED.with_borrow_mut(|failed| *failed = Some(Failed::Storage(failure)));
-                return Err(abort(fill, varena::Error::Callback(detail)));
-            }
-            this.row(page.len() as u64, "baked", ahead, began);
-            return publish(fill, consumer);
+            return this.publish_kept(fill, &page, consumer, "baked", began);
         }
         let derive = this.derive.as_ref().filter(|_| !this.plain.load(Ordering::Acquire));
         if ahead && (derive.is_some() || this.stored.is_none()) {
@@ -429,6 +437,26 @@ impl varena::Source for PageSource {
         count();
         if let (Some(key), Some(_)) = (&this.page, derive) {
             this.tier.expect(key.clone(), this);
+        }
+        // Stored bytes a loop streams pin now, read once into the page they refill from after.
+        let streams = match (&this.page, derive, &this.stored) {
+            (Some(key), None, Some(_)) => fill.len() == this.bytes && this.tier.streams(key, &this.set),
+            _ => false,
+        };
+        if let (true, Some(key)) = (streams, &this.page) {
+            let control = Arc::new(ReadControl::default());
+            *this.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
+            let read = |page: *mut u8, at: usize, len: usize| this.read_window(page, this.bytes, at, len);
+            let pinned = this.tier.pin(key, &this.set, this.bytes, read, || control.canceled());
+            *this.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            if let Ok(Some(page)) = pinned {
+                return this.publish_kept(fill, &page, consumer, "store", began);
+            }
+            if control.canceled() {
+                this.tier.canceled();
+                decline(fill);
+                return Err(varena::Error::Busy);
+            }
         }
         if let Some(stored) = &this.stored {
             match this.read(stored, &fill, ahead) {

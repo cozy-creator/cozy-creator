@@ -705,12 +705,13 @@ impl Tier {
         drop(reserved);
     }
 
-    pub(super) fn insert(&self, key: &str, set: &str, page: Page) {
+    pub(super) fn insert(&self, key: &str, set: &str, page: Page) -> Arc<Page> {
+        let page = Arc::new(page);
         let replaced = {
             let mut state = self.state();
             let tick = state.tick();
             state.bytes += page.len as u64;
-            let kept = Kept { page: Arc::new(page), set: set.to_owned(), last: tick };
+            let kept = Kept { page: Arc::clone(&page), set: set.to_owned(), last: tick };
             let replaced = state.kept.insert(key.to_owned(), kept);
             if let Some(replaced) = &replaced {
                 state.bytes -= replaced.page.len as u64;
@@ -718,6 +719,57 @@ impl Tier {
             replaced
         };
         drop(replaced);
+        page
+    }
+
+    /// Whether `key` refills more than once a request: it streams.
+    pub(super) fn streams(&self, key: &str, set: &str) -> bool {
+        self.state().worth(key, set) > 1
+    }
+
+    /// `key`'s stored page, pinned on its fill: admitted, `read` a window at a time, registered
+    /// once touched and kept. A page a loop streams waited for the next idle before: a cold call
+    /// read every refill of Flux-2's 4090 call from the store, at 5.9 GB/s against 12.4 from
+    /// pinned pages, and back-to-back warm calls most of them (pingu 35366, 35403). None: no room,
+    /// `stopped`, or a read failed.
+    pub(super) fn pin(
+        &self,
+        key: &str,
+        set: &str,
+        len: usize,
+        read: impl Fn(*mut u8, usize, usize) -> Result<(), String>,
+        stopped: impl Fn() -> bool,
+    ) -> PyResult<Option<Arc<Page>>> {
+        let (making, gone) = {
+            let mut state = self.state();
+            if state.kept.contains_key(key) || state.reserving.contains(key) {
+                return Ok(None);
+            }
+            self.admit(&mut state, key, set, len as u64)
+        };
+        drop(gone);
+        let Some(making) = making else { return Ok(None) };
+        let mut page = Page::new(len)?;
+        let windows: Vec<_> = page.windows().collect();
+        for (at, window) in windows {
+            if stopped() {
+                return Ok(None);
+            }
+            if let Err(error) = read(page.ptr(), at, window) {
+                self.state().pin_failed += 1;
+                tracing::debug!("a streamed page did not pin: {error}");
+                return Ok(None);
+            }
+        }
+        while !page.registered() {
+            if let Err(error) = page.register_window(self.device) {
+                self.state().off = Some(error.to_string());
+                return Ok(None);
+            }
+        }
+        drop(making);
+        self.state().wanted.remove(key);
+        Ok(Some(self.insert(key, set, page)))
     }
 
     /// A store read of `key` completed.
