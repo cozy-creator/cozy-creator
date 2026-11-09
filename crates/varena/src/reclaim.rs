@@ -368,7 +368,9 @@ pub(crate) fn acquire<T>(
             // Nothing of ours is left to give. What came onto the card outside this process since
             // its quietest sample (a game's, a peer's) may go again: wait for it, and once the card
             // has `want` more free, every lever again from the first.
-            if protect.outside && wait == Wait::Yes {
+            // Only a physical refusal: under a cap the card's free bytes are no room of ours, and on
+            // kesshouban H3's 207 MB GEMM output waited 300 s beside 19.6 GB free (run 43277).
+            if protect.outside && wait == Wait::Yes && physical {
                 let start = free_now(sequence.gpu)?;
                 let came = sequence.gpu.outside.load(Ordering::Acquire)
                     .saturating_sub(sequence.gpu.outside_floor.load(Ordering::Acquire));
