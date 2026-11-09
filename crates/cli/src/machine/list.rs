@@ -1,7 +1,7 @@
 //! `cozy machine ls` and `show`: Calcifer's picture of every machine, which never waits on a Hub.
 use std::process::ExitCode;
 
-use protocol::{
+use api::{
     calcifer::{LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
     error::Error,
 };

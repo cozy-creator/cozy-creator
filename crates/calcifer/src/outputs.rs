@@ -24,7 +24,7 @@ use axum::{
     response::Response,
 };
 use futures_util::StreamExt as _;
-use protocol::{
+use ::api::{
     calcifer::{Event, MachineState},
     error::Kind,
     ids::{Digest, RunId},
@@ -584,7 +584,7 @@ impl Calcifer {
             let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
             if let Some(said) = unlisted {
                 warn!(run = %run.id, output = %name, "{said}");
-                events.extend(self.store.warned(id, &protocol::calcifer::Warning { code: "output_unlisted".to_owned(), message: said })?);
+                events.extend(self.store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said })?);
             }
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
             let publish_began = Instant::now();
@@ -617,7 +617,7 @@ pub struct Item {
 
 /// `GET /v1/runs/{id|number}/outputs/{name}[?index=i]`: the output's exported file, whole or one
 /// `Range` of it, with `ETag: "r<rev>"` naming the revision it holds; otherwise why not. A folder's is its tree document
-/// (`protocol::tree`), and `?member=` one of its files: a client fetches what it asks for, by content.
+/// (`api::tree`), and `?member=` one of its files: a client fetches what it asks for, by content.
 pub async fn serve(
     State(api): State<Arc<Api>>,
     Route((run, name)): Route<(String, String)>,
@@ -696,13 +696,13 @@ async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, heade
         Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
     };
     let at = dir.to_owned();
-    let staged = tokio::task::spawn_blocking(move || protocol::stage::stage(&at, None))
+    let staged = tokio::task::spawn_blocking(move || ::api::stage::stage(&at, None))
         .await
         .map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))?
         .map_err(Refusal)?;
     let (file, media_type, etag) = match member {
         None => {
-            let digest = protocol::ids::Digest::of(&staged.document);
+            let digest = ::api::ids::Digest::of(&staged.document);
             let mut part = tempfile::tempfile().map_err(gone)?;
             std::io::Write::write_all(&mut part, &staged.document).and_then(|()| std::io::Seek::rewind(&mut part)).map_err(gone)?;
             (part, tree::MEDIA.to_owned(), format!("\"{digest}\""))
@@ -737,7 +737,7 @@ pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
     };
     match target.split('/').collect::<Vec<_>>().as_slice() {
         [org, name, function]
-            if *org == protocol::names::ROOT && named(name) && !function.is_empty() =>
+            if *org == ::api::names::ROOT && named(name) && !function.is_empty() =>
         {
             outputs.join(name)
         }
@@ -748,9 +748,9 @@ pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
     }
 }
 
-/// The item's name in its run's output directory (`protocol::calcifer::output_file_name`).
+/// The item's name in its run's output directory (`api::calcifer::output_file_name`).
 pub fn file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
-    protocol::calcifer::output_file_name(number, name, index, media_type)
+    ::api::calcifer::output_file_name(number, name, index, media_type)
 }
 
 fn item_id(number: u64, item: &OutputRow) -> String {

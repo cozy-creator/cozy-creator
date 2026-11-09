@@ -30,7 +30,7 @@ use platform::{
     paths::Home,
     tail::{Log, Start},
 };
-use protocol::{
+use api::{
     calcifer::{
         self as wire, Ended, Event, Keepalive, LogEvent, Machine, MachineKind, MachineList,
         MachineLog, MachineState, MachineStatus, NewMachine, On, SubmitRun,
@@ -409,7 +409,7 @@ impl Machines {
     /// `local` always exists: recorded as Calcifer starts (after its first answer, which writes
     /// nothing before it), or as something names it first.
     fn local_row(self: &Arc<Self>) -> Result<MachineRow, Error> {
-        protocol::calcifer::local_usable("local")?;
+        api::calcifer::local_usable("local")?;
         if let Some(row) = self.store().machine("local").map_err(internal)? {
             return Ok(row);
         }
@@ -449,7 +449,7 @@ impl Machines {
     }
 
     pub(crate) async fn local_up(self: &Arc<Self>) -> Result<(), Error> {
-        protocol::calcifer::local_usable("local")?;
+        api::calcifer::local_usable("local")?;
         if self.local_runs() {
             return Ok(());
         }
@@ -551,10 +551,10 @@ impl Machines {
     }
 
     /// What `GET /v1/status` says of this computer when it is a rental, as its machine last said.
-    pub(crate) fn rental_here(&self) -> Option<protocol::calcifer::StatusRental> {
+    pub(crate) fn rental_here(&self) -> Option<api::calcifer::StatusRental> {
         let frame = self.frame("local")?;
         let hub = frame.hubs.first()?;
-        Some(protocol::calcifer::StatusRental { machine_id: hub.machine_id.clone(), idle_deadline_ms: deadline(&frame) })
+        Some(api::calcifer::StatusRental { machine_id: hub.machine_id.clone(), idle_deadline_ms: deadline(&frame) })
     }
 
     /// `local`, on a rental: what reached this Calcifer through its machine's door can't reach the

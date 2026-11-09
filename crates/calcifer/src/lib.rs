@@ -48,7 +48,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use protocol::{
+use ::api::{
     calcifer::{Event, On, Progress, Reason, Run, Stalled, StagedInput, Status as RunStatus, SubmitRun, Submitted, Warning},
     config::Origin,
     ids::{Digest, RunId},
@@ -76,7 +76,7 @@ pub enum Error {
     Input { path: PathBuf, message: String },
     /// Refused at submit, before anything is recorded.
     #[error("{0}")]
-    Refused(protocol::error::Error),
+    Refused(::api::error::Error),
 }
 
 pub struct Calcifer {
@@ -537,7 +537,7 @@ impl Calcifer {
     }
 
     /// Adds a warning to an unsettled run.
-    pub fn warn(&self, id: &RunId, warning: &protocol::calcifer::Warning) -> Result<(), Error> {
+    pub fn warn(&self, id: &RunId, warning: &::api::calcifer::Warning) -> Result<(), Error> {
         let events = self.store.warn(id.as_str(), warning)?;
         self.publish(id, events);
         Ok(())
@@ -666,7 +666,7 @@ impl Calcifer {
 
     /// What says the run's time left, from the runs like it before (`eta::Prior`): made once, as it is first followed.
     fn clock(&self, run: &RunRow, machine: &str) {
-        if run.kind != protocol::calcifer::Kind::Call || lock(&self.live).get(&run.id).is_some_and(|live| live.clock.is_some()) {
+        if run.kind != ::api::calcifer::Kind::Call || lock(&self.live).get(&run.id).is_some_and(|live| live.clock.is_some()) {
             return;
         }
         let prior = self.prior(&run.target, machine, &run.spec);
@@ -686,7 +686,7 @@ impl Calcifer {
     }
 
     /// What a run of `target` on `machine` would take, before it is sent (`GET /v1/estimate`).
-    pub fn estimate(&self, target: &str, machine: &str, megapixels: Option<f64>, steps: Option<u64>) -> protocol::calcifer::Estimate {
+    pub fn estimate(&self, target: &str, machine: &str, megapixels: Option<f64>, steps: Option<u64>) -> ::api::calcifer::Estimate {
         let prior = eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels);
         eta::before(prior.as_ref(), steps)
     }
@@ -766,7 +766,7 @@ impl Calcifer {
             };
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
             // finishes what it has first, and what's held here goes to what it became.
-            if run.state == State::Queued && run.kind != protocol::calcifer::Kind::Update && self.store.updating(&name).unwrap_or_default() {
+            if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update && self.store.updating(&name).unwrap_or_default() {
                 self.waiting(id, format!("getting {name} ready"));
                 pause.wait(wake, None).await;
                 continue;
@@ -803,7 +803,7 @@ impl Calcifer {
                     continue;
                 }
             };
-            if machine.state == protocol::calcifer::MachineState::Ended {
+            if machine.state == ::api::calcifer::MachineState::Ended {
                 let reason = machine.reason.unwrap_or_else(|| "it ended".into());
                 if let Err(e) = self.machine_ended(&name, &reason) {
                     warn!(run = %id, "{e}");
@@ -863,7 +863,7 @@ impl Calcifer {
                 // so with its age, and is asked again, paced.
                 Err(Stop::Unanswered(message)) => {
                     if let Some(age) = pause.failed() {
-                        let age = protocol::calcifer::clock(age.as_millis() as i64);
+                        let age = ::api::calcifer::clock(age.as_millis() as i64);
                         self.waiting(id, format!("no answer from {name} yet ({age}): {message}"));
                         pause.wait(wake, Some(&mut changed)).await;
                     }
@@ -881,7 +881,7 @@ impl Calcifer {
                             Err(e) => warn!(run = %id, "{e}"),
                         }
                     } else {
-                        self.waiting(id, format!("{name} fails when asked about this run, and is asked again for {}: {code}: {message}", protocol::calcifer::clock(BROKEN_FOR.as_millis() as i64)));
+                        self.waiting(id, format!("{name} fails when asked about this run, and is asked again for {}: {code}: {message}", ::api::calcifer::clock(BROKEN_FOR.as_millis() as i64)));
                         tokio::select! {
                             () = tokio::time::sleep(BROKEN_ASKED_EVERY) => {}
                             () = wake.notified() => {}
@@ -1172,7 +1172,7 @@ impl Calcifer {
             match frame.event {
                 Frame::Log(line) => batch.logs.push((frame.at_ms, line.level, line.text)),
                 Frame::Call(call) => {
-                    let call = protocol::calcifer::Call {
+                    let call = ::api::calcifer::Call {
                         run: call.run,
                         index: call.index,
                         function: call.function,
@@ -1283,7 +1283,7 @@ impl Calcifer {
             tokio::select! {
                 answered = &mut answer => return answered,
                 () = tokio::time::sleep(RESAID) => {
-                    let age = protocol::calcifer::clock(asked.elapsed().as_millis() as i64);
+                    let age = ::api::calcifer::clock(asked.elapsed().as_millis() as i64);
                     self.waiting(id, format!("no answer from {machine} yet ({age})"));
                 }
             }
@@ -1512,7 +1512,7 @@ fn time_left(clock: &mut eta::Clock, progress: &mut Progress) {
     let shown = clock.shown(store::now_ms() as f64);
     progress.eta_s = shown.map(|(left, ..)| left);
     progress.eta_confidence = shown.map(|(_, confidence, _)| confidence);
-    progress.eta_basis = Some(shown.map_or(protocol::calcifer::EtaBasis::FirstRun, |(.., basis)| basis));
+    progress.eta_basis = Some(shown.map_or(::api::calcifer::EtaBasis::FirstRun, |(.., basis)| basis));
 }
 
 /// A picture's size as a run's input asks it: its `megapixels`, else its `width` by its `height`.

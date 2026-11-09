@@ -12,9 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use protocol::names::shown;
+use api::names::shown;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use protocol::{
+use api::{
     calcifer::{
         Adjustment, EtaBasis, Event, Machine, MachineState, NoteLevel, On, OutputItem, Progress, Run, RunQuote,
         RunRequest, Stalled, Status, Submitted,
@@ -315,7 +315,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
 }
 
 /// A weights output's commit.
-fn checkpoint(reference: &protocol::machine::CheckpointRef) -> String {
+fn checkpoint(reference: &api::machine::CheckpointRef) -> String {
     let mut shown = format!("commit {}@{}", reference.repo_id, reference.revision);
     if !reference.lane.is_empty() {
         let _ = write!(shown, " ({})", reference.lane);

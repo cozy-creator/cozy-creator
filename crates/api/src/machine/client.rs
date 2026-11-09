@@ -29,7 +29,7 @@ use super::{
     RunEvent, RunList, RunRequest, RunState, StatusFrame, parse_held, path,
 };
 use crate::{
-    capability,
+    machine::capability,
     error::{Envelope, Kind},
 };
 

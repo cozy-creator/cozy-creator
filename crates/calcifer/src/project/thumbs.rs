@@ -16,7 +16,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, header},
     response::Response,
 };
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use serde::Deserialize;
 use tokio::sync::{Notify, Semaphore};
 use tracing::warn;

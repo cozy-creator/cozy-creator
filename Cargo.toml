@@ -5,14 +5,14 @@ resolver = "3"
 exclude = ["vendor/faer"]
 # The Rust implementation and its complete Python binding/package each have one directory.
 members = [
+    "crates/api",
     "crates/calcifer",
     "crates/cli",
     "crates/cozy",
-    "crates/executor-protocol",
+    "crates/executor-api",
     "crates/hub-client",
     "crates/platform",
     "crates/platform-signal",
-    "crates/protocol",
     "crates/tensord",
     "crates/tensorfs",
     "crates/tensorfs-py",
@@ -33,14 +33,14 @@ homepage = "https://github.com/cozy-creator/cozy-creator"
 publish = false
 
 [workspace.dependencies]
+api = { path = "crates/api" }
 backon = { version = "1.6", default-features = false, features = ["std", "tokio-sleep"] }
 calcifer = { path = "crates/calcifer" }
 cli = { path = "crates/cli" }
-executor-protocol = { path = "crates/executor-protocol" }
+executor-api = { path = "crates/executor-api" }
 hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
 platform-signal = { path = "crates/platform-signal" }
-protocol = { path = "crates/protocol" }
 tensord = { path = "crates/tensord" }
 tensorfs = { path = "crates/tensorfs", default-features = false }
 varena = { path = "crates/varena" }

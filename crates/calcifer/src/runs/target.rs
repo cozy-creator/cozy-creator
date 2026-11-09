@@ -1,4 +1,4 @@
-//! What a run's target names: a published release (`[org/]pkg[/fn][@release]`, `protocol::target`'s
+//! What a run's target names: a published release (`[org/]pkg[/fn][@release]`, `api::target`'s
 //! grammar), resolved against what its machine holds and the cards this computer keeps, or local
 //! code on this computer.
 use std::{
@@ -9,7 +9,7 @@ use std::{
 };
 
 use hub_client::cards::{self, Card};
-use protocol::{
+use api::{
     calcifer::{On, ReleaseFrom, Target, TargetFunction},
     code::LocalCode,
     config::Origin,
@@ -57,7 +57,7 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
             let (path, function) = found?;
             Ok((crate::local_code::own(home, &path)?, function))
         }),
-        None if protocol::target::written_as_path(text) => Some(Err(by_path(text))),
+        None if api::target::written_as_path(text) => Some(Err(by_path(text))),
         None => None,
     }
 }
@@ -79,7 +79,7 @@ pub(crate) async fn resolve(
     warm: bool,
     given: bool,
     key: &str,
-    agreed: Option<protocol::calcifer::Agreed>,
+    agreed: Option<api::calcifer::Agreed>,
 ) -> Result<Resolved, Error> {
     if let Some(found) = local(api, text, code, None) {
         let (code, function) = found?;
@@ -146,15 +146,15 @@ fn answer(
     let published = release_from != ReleaseFrom::Local;
     let callable = function.as_deref().and_then(|name| interface.callables.iter().find(|c| c.name == name));
     let contract = callable.map(|callable| {
-        let text = protocol::contract::contract(&format!("{package}/{}", callable.name), interface, callable);
+        let text = api::contract::contract(&format!("{package}/{}", callable.name), interface, callable);
         let text = match published {
             true => text.replacen('\n', &format!("\n  release: {release} ({release_from})\n"), 1),
             false => text,
         };
-        protocol::names::shown(&text)
+        api::names::shown(&text)
     });
     let request = callable.map(|callable| {
-        let mut request = protocol::interface::request(&document, &callable.name);
+        let mut request = api::interface::request(&document, &callable.name);
         if published {
             request["release"] = release.clone().into();
             request["release_from"] = release_from.to_string().into();
@@ -226,7 +226,7 @@ pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<
 /// What the machine a run goes to holds.
 struct Held {
     machine: String,
-    environments: Vec<protocol::machine::Environment>,
+    environments: Vec<api::machine::Environment>,
     hub: String,
 }
 
@@ -240,7 +240,7 @@ impl Held {
 
     /// The releases of `package` from this run's Hub.
     fn releases(&self, package: &str) -> Vec<&str> {
-        let here = |env: &&protocol::machine::Environment| env.package == package && !env.release.is_empty() && (env.hub.is_empty() || canonical(&env.hub) == self.hub);
+        let here = |env: &&api::machine::Environment| env.package == package && !env.release.is_empty() && (env.hub.is_empty() || canonical(&env.hub) == self.hub);
         self.environments.iter().filter(here).map(|env| env.release.as_str()).collect()
     }
 }

@@ -10,7 +10,7 @@ use std::{
 };
 
 use futures_util::StreamExt as _;
-use protocol::calcifer::{MachineKind, MachineLog, MachineState};
+use api::calcifer::{MachineKind, MachineLog, MachineState};
 
 use crate::{link::LinkError, machines::Machines};
 

@@ -11,7 +11,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use platform::paths::Home;
-use protocol::{
+use api::{
     calcifer::{
         Agreed, Attempt, Ended, HubListing, HubProblem, Machine, MachineKind, MachineState, On,
         Quote, Alternative, Reason, Rental, RentalHistory, RentalRow, RentalSku, RentalSkus,
@@ -1333,8 +1333,8 @@ impl EndBody {
 
 /// An event that may change what a machine's runs owe this computer: an output added, done or
 /// landed, or a run settled.
-fn exports(event: &protocol::calcifer::Event) -> bool {
-    use protocol::calcifer::Event;
+fn exports(event: &api::calcifer::Event) -> bool {
+    use api::calcifer::Event;
     !matches!(
         event,
         Event::Log { .. } | Event::Call { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::OutputDelta { .. }

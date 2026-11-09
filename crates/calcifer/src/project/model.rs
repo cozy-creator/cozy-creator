@@ -7,10 +7,10 @@ use std::{
     time::Instant,
 };
 
-use protocol::{
+use api::{
     calcifer::StreamEvent,
     error::{Error, Kind},
-    project::{Asset as Row, Cut, Standing as RowStanding, State as ProjectState},
+    calcifer::project::{Asset as Row, Cut, Standing as RowStanding, State as ProjectState},
 };
 
 use super::{
@@ -44,7 +44,7 @@ pub(super) struct Told {
     model: Arc<Model>,
     rendering: BTreeMap<String, f64>,
     making: HashMap<String, Vec<u64>>,
-    queue: Vec<protocol::project::Queued>,
+    queue: Vec<api::calcifer::project::Queued>,
     busy: bool,
     moving: bool,
 }
@@ -94,7 +94,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     for (i, standing) in stand.iter().enumerate() {
         let held = lock.asset(&doc.assets[i].name);
         let made = standing.version().and_then(|number| held?.version(number));
-        warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().map(|message| protocol::project::Warning::of(&doc.assets[i].name, message.clone()))));
+        warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().map(|message| api::calcifer::project::Warning::of(&doc.assets[i].name, message.clone()))));
     }
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);

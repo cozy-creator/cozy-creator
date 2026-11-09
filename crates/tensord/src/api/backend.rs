@@ -1,7 +1,7 @@
 //! One adapter into the owned execution engine. This module owns no journal.
 use super::{auth::VerifiedActor, domain, v1};
 use std::collections::BTreeMap;
-use protocol::error::Error;
+use api::error::Error;
 
 pub trait MachineBackend: Send + Sync + 'static {
     /// A count that moves whenever what the engine records may have changed (runs,

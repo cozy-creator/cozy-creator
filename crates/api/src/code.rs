@@ -1,5 +1,5 @@
 //! Local code as it travels (cl-819): a package folder or a PEP 723 script, with the path dependencies its sources name,
-//! under their common folder, as one tree (`protocol::tree`). Whoever holds the folder reads it here, the CLI its own and
+//! under their common folder, as one tree (`api::tree`). Whoever holds the folder reads it here, the CLI its own and
 //! Calcifer a project's `with: ./dir`, and Calcifer works from its copy of the tree, by its digest: it reads no client's disk.
 use std::{
     collections::BTreeMap,

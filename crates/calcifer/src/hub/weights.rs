@@ -14,11 +14,11 @@ use axum::{
     extract::{State, rejection::BytesRejection},
     http::StatusCode,
 };
-use protocol::{
+use api::{
     calcifer::{Agreed, Kind as RunKind, On, OutputItem, Run, RunQuote, StagedInput, SubmitRun, Warning},
     config::Origin,
     error::{Error, Kind},
-    hub::{Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit},
+    calcifer::hub::{Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit},
     ids::Digest,
     machine::{self as v1, InputFile, ModelChoice},
     model_ref::{self as refs, ModelRef, Repo},
@@ -98,12 +98,12 @@ fn escape(name: &str) -> String {
         .collect()
 }
 
-/// The CozyTensors folder a held tree document names (`protocol::tree`), each of its files held: an ordinary retained input
+/// The CozyTensors folder a held tree document names (`api::tree`), each of its files held: an ordinary retained input
 /// tree. The machine admits its headers without importing or fetching the tensor objects a thin folder omits. None: `path`
 /// holds no tree document.
 fn folder(api: &Api, path: &Path, digest: Digest) -> Result<Option<Made>, Refusal> {
     let Ok(document) = std::fs::read(path) else { return Ok(None) };
-    let Ok(members) = protocol::tree::parse(&document) else { return Ok(None) };
+    let Ok(members) = api::tree::parse(&document) else { return Ok(None) };
     let mut staged = vec![];
     for (name, member) in members {
         let (path, digest) = held_file(api, &format!("sha256:{}", member.sha256)).map_err(|Refusal(e)| Refusal(Error { message: format!("{name} of the folder: {}", e.message), ..e }))?;
@@ -111,7 +111,7 @@ fn folder(api: &Api, path: &Path, digest: Digest) -> Result<Option<Made>, Refusa
     }
     let length = document.len() as u64;
     staged.push(StagedInput { path: path.to_owned(), digest, length });
-    let input = InputFile { field: "model".into(), digest: digest.to_string(), length, media_type: protocol::tree::MEDIA.into(), order: 0 };
+    let input = InputFile { field: "model".into(), digest: digest.to_string(), length, media_type: api::tree::MEDIA.into(), order: 0 };
     Ok(Some(Made {
         choice: ModelChoice { parameter: "model".into(), source: "input://model".into(), ..Default::default() },
         base: None,
@@ -255,7 +255,7 @@ impl Ask for ModelUpload {
             let submit = from_run(api, reference, &destination, &lane)?;
             return Ok(warned(Prepared { submit, after: Some(display(false)) }));
         }
-        protocol::calcifer::local_usable(&self.on.to_string()).map_err(Refusal)?;
+        api::calcifer::local_usable(&self.on.to_string()).map_err(Refusal)?;
         // The machine publishes under this computer's sign-in; refuse before anything is made.
         signed_in(api, &hub)?;
         let tree = match self.source.starts_with("sha256:") {

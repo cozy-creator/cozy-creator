@@ -5,7 +5,7 @@ web UI are equal clients of it, and the CLI only parses arguments and prints (cl
 (cl-819): a client's files, folders and local code go by content (`PUT /v1/files`), a project is named by its id or name,
 and a run's outputs are fetched by their URL. A path a client sends is always one of Calcifer's own computer. Every behaviour a verb
 offers is one or more of the calls below. Written by hand and changed in the same PR as the routes
-(`crates/calcifer/src/api.rs`, `machines.rs`, `project/mod.rs`); the records are `crates/protocol`.
+(`crates/calcifer/src/api.rs`, `machines.rs`, `project/mod.rs`); the records are `crates/api`.
 
 ## Clients and discovery
 
@@ -172,7 +172,7 @@ a spec.
     field path, a label, or none for the declared files) and `fidelities`. A file is a held
     `sha256:<hex>` (`404 file_not_held` when neither Calcifer nor the project holds it), six or more hex digits that start the hash of a file of the
     project, or a path its client sent: `paths` maps each path the request names, as written (`@` before it is allowed), to `{file: "sha256:<hex>"}`, or for a
-    folder at a tree input `{tree: "sha256:<hex>"}`, its tree document (`protocol::tree`), each sent first by `PUT /v1/files`. A tree input also takes a held
+    folder at a tree input `{tree: "sha256:<hex>"}`, its tree document (`api::tree`), each sent first by `PUT /v1/files`. A tree input also takes a held
     tree document by its `sha256:`. Calcifer reads no client's disk: a path not in `paths` is `404 input_file_absent`. The CLI sends every file a term, `--file` or
     `--input` names that it has, and a folder written as a path; `--input`'s file it reads and sends as `input`, its names relative to it. In a project, a value that mentions a box (`<coast.2>`, `<take3:48-336>`)
     goes through the project's binder, as Render's does: a prompt's references, a slot's file, a range cut here; and `pickup.take=<shot_1.3>`,
@@ -254,7 +254,7 @@ moves, and its record gets one `no_progress` warning naming the machine and its 
 ### Machines and rentals
 <!-- cl-716 C -->
 A machine is this computer's (`local`, started when used), a rental, or another computer's added by address.
-`{name}` is a live machine's name or former name, or any machine's rental id. Records: `protocol::calcifer`.
+`{name}` is a live machine's name or former name, or any machine's rental id. Records: `api::calcifer`.
 
 - `GET /v1/machines[?refresh=true]`: `MachineList {machines, hubs, unanswered, signed_out, rentals}`. It lists
   every live machine, every live rental of this account among them: one another client ordered is reached with this
@@ -352,7 +352,7 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 ### Packages, models, account and orgs
 Calcifer speaks to the Hub as this computer's device key (`~/.cozy/keys`); every call names its Hub
 (`hub`, `?hub=`). The Hub's refusals pass through with its code as `cause` (as the code itself where
-a client branches on it: `account.name_unavailable`). Records are `protocol::hub`.
+a client branches on it: `account.name_unavailable`). Records are `api::calcifer::hub`.
 
 **Account.** A key is enrolled by a code the Hub emails: the client reads the code from its user and
 sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
@@ -473,10 +473,10 @@ runs; asking again after a restart is safe.
 
 ### Local code
 Local code is a package folder or a PEP 723 script nobody published. It comes by content (cl-819), as `code` `{tree, at}`
-on a run, `GET /v1/targets`, an install, a quantization and authoring: `tree` is a tree document (`protocol::tree`, each
+on a run, `GET /v1/targets`, an install, a quantization and authoring: `tree` is a tree document (`api::tree`, each
 file's `executable` kept) of the package and the path dependencies its sources name, under their common folder, each file
 and then the document sent first by `PUT /v1/files`; `at` is the package's folder or script in it (empty: the tree itself).
-What goes is `protocol::code`'s rule: no VCS, caches, virtualenvs, credentials, keys, weights or links; the CLI says what it
+What goes is `api::code`'s rule: no VCS, caches, virtualenvs, credentials, keys, weights or links; the CLI says what it
 left out. Calcifer copies the tree once from what it holds, into `~/.cozy/calcifer/code/<digest>/` (a script's package
 written beside it), keeps the newest 64 a day, and works from that copy: it reads no client's folder. A project's own
 `with: ./dir/fn` is a folder of Calcifer's computer, read into a copy the same way. Calcifer keeps its manifest under
@@ -496,7 +496,7 @@ holds takes a new id, and its walk's paid work doesn't go on. Calcifer holds a p
 connection, while anything reads it: a call on it, its `/events` stream, a page showing it (`PUT /v1/events/{stream}`), its render (until
 nothing is owed, waiting for a machine too). It closes when the last of these ends, and the next call opens it again (cl-823). `POST
 /v1/projects` names one and reads none of it. Names are unique in the index (`_2`), and a client names a project by its
-name or id, or by its folder on this computer (`protocol::project::NAMED_BY`): never the folder the client is in. Every file the
+name or id, or by its folder on this computer (`api::calcifer::project::NAMED_BY`): never the folder the client is in. Every file the
 project uses is a real file in `files/<sha256>.<ext>`, flat, and a file the database has a row for says only what a file can't: where it
 stays and its parts. YAML is its export (`PROJECT-YAML.md`): `GET …/yaml` writes it and `PUT …/yaml` reads it back. A folder of the files
 from before (`project.yaml`, `project.lock`, `project.canvas.yaml`, `.measured.json`, `.history.json`, `.keys.json`, `.runs/walk.json`) is
@@ -578,7 +578,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 
 ## CLI verbs and their calls
 
-A verb in a project names it with `-p <project>`, else `COZY_PROJECT` (`protocol::project::NAMED_BY`); none named is `not_in_a_project`.
+A verb in a project names it with `-p <project>`, else `COZY_PROJECT` (`api::calcifer::project::NAMED_BY`); none named is `not_in_a_project`.
 
 | Verb | Calls |
 |---|---|

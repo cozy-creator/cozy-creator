@@ -6,7 +6,7 @@ use crate::{
     process::{reap_group, tail},
     seam,
 };
-pub use executor_protocol::{
+pub use executor_api::{
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
     Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,
@@ -640,7 +640,7 @@ fn tree_source(reference: &str) -> io::Result<TreeSource> {
 }
 
 /// An output tree as the machine holds it: each regular file of its spool directory linked as
-/// the spool's `sha256-<hex>`, and a manifest naming them by path (`protocol::tree`), which the
+/// the spool's `sha256-<hex>`, and a manifest naming them by path (`api::tree`), which the
 /// output binds to. A tree forwarded from a child (`sha256:<manifest>`) is already both.
 fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
     let invalid = |why: &str| io::Error::new(io::ErrorKind::InvalidData, format!("output tree: {why}"));
@@ -654,7 +654,7 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
         TreeSource::Manifest(name) => name,
         TreeSource::Directory(directory) => {
             let mut files = std::collections::BTreeMap::new();
-            for name in protocol::tree::walk(&spool.join(&directory), false).map_err(|e| invalid(&e.to_string()))?.into_keys() {
+            for name in api::tree::walk(&spool.join(&directory), false).map_err(|e| invalid(&e.to_string()))?.into_keys() {
                 let member = Path::new(&directory).join(&name);
                 let (sha, length) = hash(&member)?;
                 match fs::hard_link(spool.join(&member), spool.join(format!("sha256-{sha}"))) {
@@ -691,7 +691,7 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
         asset_ref: output.asset_ref.clone(),
         name,
         kind: "tree".into(),
-        media_type: protocol::tree::MEDIA.into(),
+        media_type: api::tree::MEDIA.into(),
         length: bytes.len() as u64,
     })
 }

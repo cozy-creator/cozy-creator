@@ -12,7 +12,7 @@ use platform::{
     paths::Home,
     tools::{self, Archive, Found, Install, Tool},
 };
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use sha2::{Digest as _, Sha256};
 use tensorfs::err::{Code, Refusal};
 

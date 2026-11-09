@@ -48,7 +48,7 @@ pub struct SetItem {
     pub source: Source,
     pub entrypoint: String,
     pub models: Vec<domain::ModelChoice>,
-    pub payload: Option<protocol::machine::Json>,
+    pub payload: Option<api::machine::Json>,
     /// As `Spec::lane`, for this member's main model.
     pub lane: String,
     pub level: Level,
@@ -79,7 +79,7 @@ pub struct Spec {
     pub hub: Option<hub::Source>,
     /// Provider tokens for source models, held in memory only.
     pub providers: Providers,
-    pub tensorfs: Option<protocol::machine::TensorFSOptions>,
+    pub tensorfs: Option<api::machine::TensorFSOptions>,
     /// `org/name`: the requester's repository for the run's weights outputs, or where a
     /// model-only warm run puts the source model it made.
     pub weights_destination: String,
@@ -115,7 +115,7 @@ pub struct RunContext {
     pub(crate) installation: String,
     pub(crate) hub: Option<hub::Source>,
     pub(crate) providers: Providers,
-    pub(crate) tensorfs: Option<protocol::machine::TensorFSOptions>,
+    pub(crate) tensorfs: Option<api::machine::TensorFSOptions>,
     pub(crate) weights_destination: String,
     pub(crate) owner: String,
     pub(crate) catalog_revision: String,
@@ -143,8 +143,8 @@ fn addressed(parameter: &str, package: &str, interface: &Value) -> Option<String
         .strip_prefix(package)
         .and_then(|rest| rest.strip_prefix('/'))
         .unwrap_or(parameter);
-    protocol::interface::entrypoints(interface)
-        .any(|entry| protocol::interface::models(entry).iter().any(|slot| protocol::interface::slot_path(slot) == Some(path)))
+    api::interface::entrypoints(interface)
+        .any(|entry| api::interface::models(entry).iter().any(|slot| api::interface::slot_path(slot) == Some(path)))
         .then(|| path.to_string())
 }
 
@@ -153,10 +153,10 @@ fn addressed(parameter: &str, package: &str, interface: &Value) -> Option<String
 fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> {
     let interface: Value = serde_json::from_slice(&installation.interface)
         .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
-    let constructs = |entry: &Value| protocol::interface::models(entry).iter().any(crate::gpu_service::constructed);
-    Ok(protocol::interface::entrypoints(&interface)
-        .filter(|entry| protocol::interface::internal(entry) && constructs(entry))
-        .filter_map(|entry| protocol::interface::name(entry).map(str::to_owned))
+    let constructs = |entry: &Value| api::interface::models(entry).iter().any(crate::gpu_service::constructed);
+    Ok(api::interface::entrypoints(&interface)
+        .filter(|entry| api::interface::internal(entry) && constructs(entry))
+        .filter_map(|entry| api::interface::name(entry).map(str::to_owned))
         .collect())
 }
 
@@ -186,17 +186,17 @@ fn shared_of(each: &[Vec<(String, Vec<String>)>]) -> Vec<(String, Vec<String>)> 
 fn declares(installation: &Installation, name: &str) -> Result<bool, Refused> {
     let interface: Value = serde_json::from_slice(&installation.interface)
         .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
-    let entry = protocol::interface::entrypoint(&interface, name);
+    let entry = api::interface::entrypoint(&interface, name);
     if let Some(entry) = entry {
         public_root(entry)?;
     }
     Ok(entry.is_some())
 }
 fn public_root(entry: &Value) -> Result<(), Refused> {
-    if protocol::interface::internal(entry) {
+    if api::interface::internal(entry) {
         return Err(refused(
             "callable_internal",
-            format!("{} is an internal package function, which only its package's own code calls: `cozy run <package>` lists the ones you can", protocol::interface::name(entry).unwrap_or_default()),
+            format!("{} is an internal package function, which only its package's own code calls: `cozy run <package>` lists the ones you can", api::interface::name(entry).unwrap_or_default()),
         ));
     }
     Ok(())
@@ -264,7 +264,7 @@ fn held_tree(store: &crate::storage::Store, choice: &domain::ModelChoice) -> Res
 /// one the request carried.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upload(
-    options: &protocol::machine::TensorFSOptions, hub: Option<&hub::Source>, destination: &str, lane: &str,
+    options: &api::machine::TensorFSOptions, hub: Option<&hub::Source>, destination: &str, lane: &str,
     header: &ObjectRef, files: &std::collections::BTreeMap<String, ObjectRef>, store: &tensorfs::store::Store,
     control: &tensorfs::fetch::UploadControl<'_>,
 ) -> Result<tensorfs::fetch::Uploaded, Refused> {
@@ -337,7 +337,7 @@ impl Runs {
                 sha256: input.digest.trim_start_matches("sha256:").into(),
                 length: input.length,
             });
-            if input.media_type != protocol::tree::MEDIA {
+            if input.media_type != api::tree::MEDIA {
                 continue;
             }
             // A tree's files were written too: each its manifest names.
@@ -474,7 +474,7 @@ impl Runs {
         let destination = spec.weights_destination.trim_start_matches("model://");
         // A composition by reference: choice `base[:<component>,…]` is the model the one upload starts from.
         let (bases, choices): (Vec<&domain::ModelChoice>, Vec<&domain::ModelChoice>) =
-            spec.models.iter().partition(|choice| choice.parameter.split(':').next() == Some(protocol::machine::BASE));
+            spec.models.iter().partition(|choice| choice.parameter.split(':').next() == Some(api::machine::BASE));
         if !destination.is_empty() && choices.len() != 1 {
             return Err(refused("invalid_request", "a weights destination takes one model"));
         }
@@ -802,7 +802,7 @@ impl Runs {
                 tracing::warn!("run {id}: {warning} ({error})");
             }
         }
-        let declared = protocol::interface::entrypoint(&interface, &spec.entrypoint);
+        let declared = api::interface::entrypoint(&interface, &spec.entrypoint);
         if declared.is_none() && !install_only {
             return Err(refused(
                 "invalid_entrypoint",
@@ -902,14 +902,14 @@ impl Runs {
         // A memoized callable's run is answered from the success this machine holds for its
         // signer under the same computation, and starts nothing. A writer (weights outputs,
         // published media) has an effect beyond its result: it always runs.
-        let writer = protocol::interface::weights_outputs(entry).next().is_some()
-            || protocol::interface::publishes(entry)
+        let writer = api::interface::weights_outputs(entry).next().is_some()
+            || api::interface::publishes(entry)
             || !spec.weights_destination.is_empty();
         let memo = match writer {
             false => call_memo::of(
                 &generation.record,
                 &spec.application,
-                protocol::interface::invocable(entry),
+                api::interface::invocable(entry),
                 &spec.input,
                 &spec.inputs,
                 (&spec.attention_kernel, &spec.lane),
@@ -999,7 +999,7 @@ impl Runs {
     /// the rental's own Hub, else anonymously from its installation's Hub: a public release
     /// resumes, a private one waits for its owner's next run.
     fn member(&self, held: HeldGeneration, installation: &Installation, plan: Option<Plan>, level: Level,
-        hub: Option<hub::Source>, payload: Option<protocol::machine::Json>) -> Arc<Member> {
+        hub: Option<hub::Source>, payload: Option<api::machine::Json>) -> Arc<Member> {
         let hub = hub.or_else(|| {
             let own = self.own_hub.clone().filter(|own| {
                 installation.hub.is_empty() || hub::origin_key(&own.origin).as_deref() == Some(installation.hub.as_str())
@@ -1043,7 +1043,7 @@ impl Runs {
             id => self.service.engine.preparation(actor, id).ok()?,
         };
         let plan = bound.and_then(|bound| gpu.plan(&bound).ok()).filter(|plan| gpu.holds(plan));
-        let item: protocol::machine::WarmItem = serde_json::from_slice(&STANDARD.decode(&kept.item).ok()?).ok()?;
+        let item: api::machine::WarmItem = serde_json::from_slice(&STANDARD.decode(&kept.item).ok()?).ok()?;
         Some(self.member(held, &installed, plan, Level::named(&kept.level)?, None, item.payload))
     }
 
@@ -1487,7 +1487,7 @@ impl Runs {
 
     /// The run's TensorFS options for its executors: its Hub through the gateway when it reads
     /// there under its signer's run capability, so they hold no token of the Hub's (cl-675).
-    pub(crate) fn tensorfs(&self, id: &str) -> Option<protocol::machine::TensorFSOptions> {
+    pub(crate) fn tensorfs(&self, id: &str) -> Option<api::machine::TensorFSOptions> {
         let contexts = self.contexts.lock().unwrap();
         let context = contexts.get(id)?;
         let options = context.tensorfs.clone()?;
@@ -1495,7 +1495,7 @@ impl Runs {
             return Some(options);
         };
         match crate::gateway::url() {
-            Ok(endpoint) => Some(protocol::machine::TensorFSOptions { endpoint, token: capability.secret().into(), ..Default::default() }),
+            Ok(endpoint) => Some(api::machine::TensorFSOptions { endpoint, token: capability.secret().into(), ..Default::default() }),
             Err(error) => {
                 tracing::warn!("the Hub gateway: {error}");
                 Some(options)

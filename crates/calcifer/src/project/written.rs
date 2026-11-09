@@ -1,7 +1,7 @@
 //! What a project says, as `project.db` holds it (cl-803): its head sections and its boxes in order, each box its fields in order. The
 //! reader (`format::Doc`) reads it as it read project.yaml; YAML is only its export (`to_yaml`) and import (`from_yaml`). Every edit sets
 //! values, so a write changes only the fields it names, and nothing is text surgery.
-use protocol::{
+use api::{
     error::{Error, Kind},
     yaml::{child_keys_at, keys_at, to_json, to_json_and_keys},
 };

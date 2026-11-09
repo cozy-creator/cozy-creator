@@ -7,7 +7,7 @@ use axum::{
     body::Bytes,
     extract::{Path, State, rejection::BytesRejection},
 };
-use protocol::hub::{At, Org, OrgClaim, OrgEdit, OrgHandle, OrgProof};
+use api::calcifer::hub::{At, Org, OrgClaim, OrgEdit, OrgHandle, OrgProof};
 
 use super::{body, origin, refusal, signed_in};
 use crate::api::{Api, Refusal, parse};

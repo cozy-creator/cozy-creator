@@ -16,10 +16,10 @@ use axum::{
     },
 };
 use hub_client::{Bearer, Client, Credential, DeviceKey, Enrollment, UserSession};
-use protocol::{
+use api::{
     config::Origin,
     error::{Error, Kind},
-    hub::{Account, At, Code, CodeAnswer, CodeRequest, CodeStep, ExportedKey, KeyInstall, Naming, Proven, Purpose, SignedOut},
+    calcifer::hub::{Account, At, Code, CodeAnswer, CodeRequest, CodeStep, ExportedKey, KeyInstall, Naming, Proven, Purpose, SignedOut},
 };
 
 use super::{key, origin, reader, refusal, signed_in};

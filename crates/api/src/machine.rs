@@ -2,11 +2,12 @@
 //! every request carrying `authorization: Cozy-Cap <token>`. Live state and run events are SSE;
 //! files move by ranged `PUT`/`HEAD`/`GET`. Refusals are [`crate::error::Envelope`]. Unknown fields
 //! are ignored, and clients skip SSE events they do not know.
-pub use executor_protocol::TensorFSOptions;
-use executor_protocol::base64_bytes;
+pub use executor_api::TensorFSOptions;
+use executor_api::base64_bytes;
 use serde::{Deserialize, Serialize};
 
 pub mod client;
+pub mod capability;
 
 /// Routes, as axum templates.
 pub mod path {

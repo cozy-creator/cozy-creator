@@ -8,9 +8,9 @@ pub const DEFAULT_BYTES: u64 = 256 << 20;
 /// `room` is what a write may still take of the disk that holds the call's output. Model manifests
 /// use their separate weights grant and contribute no asset capacity.
 pub fn for_callable(interface: &Value, name: &str, room: u64) -> io::Result<u64> {
-    let row = protocol::interface::entrypoint(interface, name)
+    let row = api::interface::entrypoint(interface, name)
         .ok_or_else(|| invalid("installed output callable is absent"))?;
-    Ok(capacity(protocol::interface::result(row).unwrap_or(&Value::Null), None)?.max(DEFAULT_BYTES).max(room))
+    Ok(capacity(api::interface::result(row).unwrap_or(&Value::Null), None)?.max(DEFAULT_BYTES).max(room))
 }
 
 fn invalid(detail: &str) -> io::Error {

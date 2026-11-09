@@ -1300,7 +1300,7 @@ echo "unheld: run $n output ${digest:-none}; reclaim --yes left ${left#"$U"/} sh
 rm -rf "$U"
 }
 
-# What a page sends, or any client on another computer: a project by its id, local code by content (its tree, as `protocol::code`
+# What a page sends, or any client on another computer: a project by its id, local code by content (its tree, as `api::code`
 # makes it), a payload as text, a file by its hash, and no path. A file given to a run joins its project, so the run can be asked
 # again once what held it is gone.
 path_free() {

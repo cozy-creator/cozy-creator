@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{
@@ -63,7 +63,7 @@ const KEY_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardRow {
     pub name: String,
-    pub card: protocol::project::Card,
+    pub card: api::calcifer::project::Card,
     pub seq: u64,
     pub by: String,
 }
@@ -222,7 +222,7 @@ pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     written.boxes = boxes.into_iter().map(|(_, held)| held).collect();
     let mut rows = conn.prepare("SELECT key, name, x, y, w, seq, by FROM canvas").map_err(e)?;
     for row in rows.query_map([], |r| {
-        let card = protocol::project::Card { x: r.get(2)?, y: r.get(3)?, w: r.get(4)? };
+        let card = api::calcifer::project::Card { x: r.get(2)?, y: r.get(3)?, w: r.get(4)? };
         Ok((r.get::<_, String>(0)?, CardRow { name: r.get(1)?, card, seq: r.get::<_, i64>(5)? as u64, by: r.get(6)? }))
     }).map_err(e)? {
         let (key, row) = row.map_err(e)?;

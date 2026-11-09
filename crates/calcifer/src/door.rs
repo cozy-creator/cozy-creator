@@ -13,7 +13,7 @@ use axum::{
     response::Response,
 };
 use futures_util::{Stream, StreamExt as _};
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use tokio::sync::watch;
 
 use crate::api::{Api, Refusal, refuse};
@@ -33,7 +33,7 @@ pub(crate) async fn forward(State(api): State<Arc<Api>>, request: Request) -> Re
     if name.eq_ignore_ascii_case("local") {
         return Err(refuse(Kind::Usage, "machine_is_here", "`local`'s Calcifer is this one: ask it directly"));
     }
-    if protocol::machine::calcifer_path(&path).is_none() {
+    if api::machine::calcifer_path(&path).is_none() {
         return Err(refuse(Kind::Forbidden, "calcifer_path_refused", format!("{path:?} is no route of Calcifer's API")));
     }
     let (row, link) = api.machines.linked(name).map_err(Refusal)?;

@@ -1,5 +1,5 @@
 //! A folder a client sends (a Tree input, a CozyTensors folder): its files, and the tree document
-//! naming them (`protocol::tree`), which goes after them as a file of its own.
+//! naming them (`api::tree`), which goes after them as a file of its own.
 use std::{collections::BTreeMap, fs, path::Path};
 
 use crate::{

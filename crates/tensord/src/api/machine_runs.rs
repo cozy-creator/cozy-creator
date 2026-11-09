@@ -10,7 +10,7 @@ use super::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use crate::gpu_service::Level;
-use protocol::error::Error;
+use api::error::Error;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;

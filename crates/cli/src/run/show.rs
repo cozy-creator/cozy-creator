@@ -6,10 +6,10 @@
 //! room took), its calls, and its log.
 use std::process::ExitCode;
 
-use protocol::{
+use api::{
     calcifer::{Event, Run},
     error::Error,
-    report::{self, Measured},
+    calcifer::report::{self, Measured},
 };
 
 use super::follow;

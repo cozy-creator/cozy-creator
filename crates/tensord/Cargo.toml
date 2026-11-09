@@ -9,8 +9,8 @@ publish.workspace = true
 clap.workspace = true
 platform = { workspace = true, features = ["fetch"] }
 getrandom.workspace = true
-protocol.workspace = true
-executor-protocol.workspace = true
+api.workspace = true
+executor-api.workspace = true
 str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 hub-client.workspace = true
 reqwest.workspace = true

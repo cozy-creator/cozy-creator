@@ -13,7 +13,7 @@ use platform::{
     paths::Home,
     service::{ServiceSpec, Services},
 };
-use protocol::{
+use api::{
     config,
     error::{Error, Kind},
 };

@@ -18,6 +18,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{Digest, RunId};
 
+pub mod hub;
+pub mod project;
+pub mod report;
+pub mod tool;
+
 /// What a run does on its machine (`RunSpec.kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -213,7 +218,7 @@ impl FileTerm {
 }
 
 /// A file or folder a client sent by content (`PUT /v1/files`): a file's digest, or a folder's
-/// tree document's (`protocol::tree`), sent after each file it names.
+/// tree document's (`api::tree`), sent after each file it names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sent {
@@ -412,7 +417,7 @@ pub struct Run {
     pub calls: Vec<Call>,
     /// With `?detail=full`: its measurements and its calls', worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report: Option<crate::report::Report>,
+    pub report: Option<crate::calcifer::report::Report>,
     /// With `?detail=full`: what was asked of it, to show and to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<RunAsked>,
@@ -858,21 +863,21 @@ pub enum StreamEvent {
     },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
-    Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::project::Card>> },
+    Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
     /// One job of a project's render as it stands now, whole; `GET /v1/projects/{id}` has them all under `board`.
     #[serde(rename = "job.updated")]
-    JobUpdated { project: String, job: Box<crate::project::Job>, seq: u64 },
+    JobUpdated { project: String, job: Box<crate::calcifer::project::Job>, seq: u64 },
     /// What a machine is fetching ahead of a project's queued jobs, as it stands now.
     #[serde(rename = "ahead.updated")]
-    AheadUpdated { project: String, ahead: Box<crate::project::Ahead> },
+    AheadUpdated { project: String, ahead: Box<crate::calcifer::project::Ahead> },
     /// A project's history moved: an edit, an undo or a redo. `undo` and `redo` are what each would take now.
     #[serde(rename = "history")]
     History {
         id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        undo: Option<Box<crate::project::HistoryEntry>>,
+        undo: Option<Box<crate::calcifer::project::HistoryEntry>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        redo: Option<Box<crate::project::HistoryEntry>>,
+        redo: Option<Box<crate::calcifer::project::HistoryEntry>>,
     },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]

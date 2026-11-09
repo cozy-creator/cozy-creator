@@ -1,11 +1,11 @@
 //! What a run's machine measured (`Outcome.measurements`, `Call.measurements`), worked out into
-//! `protocol::report::Report` for `GET /v1/runs/{id}?detail=full`: where each executor's time went,
+//! `api::calcifer::report::Report` for `GET /v1/runs/{id}?detail=full`: where each executor's time went,
 //! the bytes each GPU moved and at what rate against its ceiling, and what make_room took.
 use std::collections::BTreeMap;
 
-use protocol::{
+use api::{
     calcifer::{Call, Run},
-    report::{self, Report},
+    calcifer::report::{self, Report},
 };
 use serde::Deserialize;
 

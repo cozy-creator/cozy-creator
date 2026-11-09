@@ -86,6 +86,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "api"
+version = "0.22.0"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "ed25519-dalek",
+ "eventsource-stream",
+ "executor-api",
+ "futures-util",
+ "hex",
+ "idna_adapter",
+ "platform",
+ "reqwest",
+ "rustls",
+ "saphyr",
+ "saphyr-parser",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2",
+ "tempfile",
+ "tensorfs",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "url",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -356,6 +387,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 name = "calcifer"
 version = "0.22.0"
 dependencies = [
+ "api",
  "async-trait",
  "axum",
  "base64 0.23.1",
@@ -366,7 +398,6 @@ dependencies = [
  "hub-client",
  "infer",
  "platform",
- "protocol",
  "reqwest",
  "rusqlite",
  "serde",
@@ -513,6 +544,7 @@ version = "0.22.0"
 dependencies = [
  "anstream",
  "anstyle",
+ "api",
  "base64 0.23.1",
  "bytes",
  "calcifer",
@@ -526,7 +558,6 @@ dependencies = [
  "indicatif",
  "jiff",
  "platform",
- "protocol",
  "ratatui",
  "reqwest",
  "rustix",
@@ -1182,7 +1213,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "executor-protocol"
+name = "executor-api"
 version = "0.22.0"
 dependencies = [
  "base64 0.23.1",
@@ -1709,6 +1740,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 name = "hub-client"
 version = "0.22.0"
 dependencies = [
+ "api",
  "aws-lc-rs",
  "base64 0.23.1",
  "ed25519-dalek",
@@ -1716,7 +1748,6 @@ dependencies = [
  "jsonwebtoken",
  "percent-encoding",
  "platform",
- "protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -2670,37 +2701,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "protocol"
-version = "0.22.0"
-dependencies = [
- "base64 0.23.1",
- "bytes",
- "ed25519-dalek",
- "eventsource-stream",
- "executor-protocol",
- "futures-util",
- "hex",
- "idna_adapter",
- "platform",
- "reqwest",
- "rustls",
- "saphyr",
- "saphyr-parser",
- "serde",
- "serde_ignored",
- "serde_json",
- "serde_path_to_error",
- "sha2",
- "tempfile",
- "tensorfs",
- "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
- "toml",
- "url",
 ]
 
 [[package]]
@@ -3961,6 +3961,7 @@ dependencies = [
 name = "tensord"
 version = "0.22.0"
 dependencies = [
+ "api",
  "async-trait",
  "aws-lc-rs",
  "axum",
@@ -3968,7 +3969,7 @@ dependencies = [
  "bytes",
  "clap",
  "ed25519-dalek",
- "executor-protocol",
+ "executor-api",
  "getrandom 0.3.4",
  "hmac",
  "http-body-util",
@@ -3978,7 +3979,6 @@ dependencies = [
  "libc",
  "pep440_rs",
  "platform",
- "protocol",
  "rcgen",
  "reqwest",
  "rusqlite",
@@ -4048,7 +4048,7 @@ name = "tensorfs-py"
 version = "0.22.0"
 dependencies = [
  "async-trait",
- "executor-protocol",
+ "executor-api",
  "libc",
  "platform",
  "pyo3",

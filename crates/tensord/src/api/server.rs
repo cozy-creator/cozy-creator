@@ -180,7 +180,7 @@ pub fn booting(
         worker_id: identity.authority.worker_id.clone(),
         boot_id: identity.authority.boot_id.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
-        commit: protocol::COMMIT.into(),
+        commit: api::COMMIT.into(),
         phase: "booting".into(),
         ..Default::default()
     };
@@ -190,8 +190,8 @@ pub fn booting(
             async move { Json(frame) }
         }))
         .fallback(|| async {
-            let error = protocol::error::Error::unavailable("machine_booting", "the machine is starting; ask again once it serves");
-            (StatusCode::SERVICE_UNAVAILABLE, Json(protocol::error::Envelope { error }))
+            let error = api::error::Error::unavailable("machine_booting", "the machine is starting; ask again once it serves");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(api::error::Envelope { error }))
         });
     let service = TowerToHyperService::new(app);
     let http = Arc::new(auto::Builder::new(TokioExecutor::new()));

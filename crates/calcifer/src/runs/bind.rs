@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use protocol::{
+use api::{
     calcifer::{FileTerm, Note, NoteLevel, Sent, StagedInput, path_key},
     contract as describe,
     error::{Error, Kind},
@@ -92,7 +92,7 @@ impl Terms {
             Some(project) => project.file(text).await?,
             None => None,
         } {
-            let digest = protocol::digests::of(self.digests.as_deref(), &path)?;
+            let digest = api::digests::of(self.digests.as_deref(), &path)?;
             return Ok(Some((path, digest)));
         }
         Ok(match self.sent(text) {
@@ -134,8 +134,8 @@ pub struct InputFile {
     pub order: u32,
 }
 
-pub use protocol::choices::Choice;
-use protocol::choices::Choices;
+pub use api::choices::Choice;
+use api::choices::Choices;
 
 impl Bound {
     /// The warning for the fields that were dropped, if any.
@@ -146,9 +146,9 @@ impl Bound {
 
 impl Bound {
     /// The payload's canonical JSON: sorted keys, no whitespace, exact integers.
-    pub fn canonical_payload(&self) -> protocol::machine::Json {
+    pub fn canonical_payload(&self) -> api::machine::Json {
         let text = canonical(&Value::Object(self.payload.clone()));
-        protocol::machine::Json::parse(text).expect("canonical JSON is JSON")
+        api::machine::Json::parse(text).expect("canonical JSON is JSON")
     }
 }
 
@@ -177,7 +177,7 @@ fn canonical(value: &Value) -> String {
 pub async fn warm_choices(
     target: &str, release: Option<&str>, interface: &Interface, callable: &Callable,
     terms: &Terms, program: bool, notes: &mut Vec<Note>,
-) -> Result<(Vec<Choice>, Option<protocol::machine::Json>), Error> {
+) -> Result<(Vec<Choice>, Option<api::machine::Json>), Error> {
     let mut binder = Binder {
         target: "",
         callable,
@@ -273,7 +273,7 @@ pub async fn bind(
     ignored.extend(std::mem::take(&mut binder.choices.dropped));
     ignored.sort();
     let replaced = std::mem::take(&mut binder.choices.replaced);
-    binder.notes.extend(replaced.into_iter().map(|message| Note { level: protocol::calcifer::NoteLevel::Warning, message }));
+    binder.notes.extend(replaced.into_iter().map(|message| Note { level: api::calcifer::NoteLevel::Warning, message }));
     Ok(Bound {
         payload: binder.document,
         files,
@@ -349,7 +349,7 @@ impl Binder<'_> {
     fn read(&mut self, text: &str, what: &str) -> Result<(), Error> {
         let loaded: Value = match serde_json::from_str(text) {
             Ok(value) => value,
-            _ => protocol::yaml::to_json(text).map_err(|e| invalid("input_invalid", format!("{what}: {e}")))?,
+            _ => api::yaml::to_json(text).map_err(|e| invalid("input_invalid", format!("{what}: {e}")))?,
         };
         let Value::Object(loaded) = loaded else {
             return Err(invalid("input_invalid", format!("{what} does not hold one object")));
@@ -738,7 +738,7 @@ impl Binder<'_> {
             };
             let path = self.terms.held(&digest).ok_or_else(|| not_held(format!("tree document {digest}")))?;
             let document = std::fs::read(&path).map_err(|e| Error::new(Kind::Internal, "tree_unreadable", format!("{field}: {e}")))?;
-            let tree = protocol::tree::parse(&document).map_err(|e| usage("tree_invalid", format!("{field}: {source}: {e}")))?;
+            let tree = api::tree::parse(&document).map_err(|e| usage("tree_invalid", format!("{field}: {source}: {e}")))?;
             for (name, member) in tree {
                 let digest: Digest = format!("sha256:{}", member.sha256).parse().expect("a tree names sha256 hex");
                 let held = self.terms.held(&digest).ok_or_else(|| not_held(format!("{name} of {source} ({digest})")))?;
@@ -756,7 +756,7 @@ impl Binder<'_> {
                 shown: source,
                 digest,
                 length: document.len() as u64,
-                media_type: protocol::tree::MEDIA.into(),
+                media_type: api::tree::MEDIA.into(),
                 order: 0,
             });
         }

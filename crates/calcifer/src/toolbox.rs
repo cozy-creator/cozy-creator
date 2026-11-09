@@ -14,13 +14,13 @@ use axum::{
 };
 use futures_util::{StreamExt as _, stream};
 use hub_client::cards;
-use protocol::{
+use api::{
     calcifer::On,
     config::Origin,
     error::{Error, Kind},
     interface::Interface,
     names::{ROOT, shown},
-    tool::{self, BrowsedPackage, Browsed, Tool, ToolList, ToolListChange, Tools},
+    calcifer::tool::{self, BrowsedPackage, Browsed, Tool, ToolList, ToolListChange, Tools},
 };
 use serde::Deserialize;
 use tensorfs::format::newest_by;
@@ -114,7 +114,7 @@ fn owned(package: &str) -> String {
 /// of a tool taken off goes on as it was. Local code is a project's, named by its boxes (cl-819): a path is refused.
 pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<ToolList>, Refusal> {
     let asked: ToolListChange = parse(&body?)?;
-    if let Some(path) = asked.add.as_deref().filter(|package| protocol::target::written_as_path(package)) {
+    if let Some(path) = asked.add.as_deref().filter(|package| api::target::written_as_path(package)) {
         let said = format!("{path} is local code, which is a project's: a box names it by its path from the project's folder");
         return Err(Refusal(Error::new(Kind::Usage, "tool_list_local", said).next("cozy project add ./<dir>/<function>")));
     }

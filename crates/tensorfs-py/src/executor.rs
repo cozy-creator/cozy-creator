@@ -1,8 +1,8 @@
-//! `tensorfs.executor`: the TensorD ↔ executor seam's types (`executor_protocol`) as Python
+//! `tensorfs.executor`: the TensorD ↔ executor seam's types (`executor_api`) as Python
 //! classes: TensorD's commands and answers, decoded by serde here, and the executor's requests,
 //! built and written by serde here. The Runtime keeps no copy of them: an unknown field is
 //! ignored, a missing one takes its default, a needed one fails by its path.
-use executor_protocol::{
+use executor_api::{
     TensorFSOptions,
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork,

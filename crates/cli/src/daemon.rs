@@ -4,10 +4,10 @@
 use std::process::ExitCode;
 
 use clap::ValueEnum;
-use protocol::{
+use api::{
     calcifer::{CalciferStatus, Holder, MachineState},
     error::{Error, Kind},
-    project::{Open, Opened, State},
+    calcifer::project::{Open, Opened, State},
 };
 use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
@@ -176,7 +176,7 @@ pub(crate) async fn machine_log(
         }
         return calcifer_log(ctx, q).await;
     }
-    protocol::calcifer::local_usable(name)?;
+    api::calcifer::local_usable(name)?;
     let mut path = format!("{}/logs/{}", crate::machine::route(name)?, q.log.as_str());
     if let Some(window) = q.since {
         let at = Timestamp::now().saturating_sub(window).unwrap_or_default();

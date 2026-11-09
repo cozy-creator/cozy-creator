@@ -2,7 +2,6 @@
 #![forbid(unsafe_code)]
 
 pub mod calcifer;
-pub mod capability;
 pub mod choices;
 pub mod code;
 pub mod config;
@@ -10,17 +9,13 @@ pub mod contract;
 pub mod digests;
 pub mod error;
 pub mod interface;
-pub mod hub;
 pub mod ids;
 pub mod machine;
 pub mod model_ref;
 pub mod names;
 pub mod prerelease;
-pub mod project;
-pub mod report;
 pub mod stage;
 pub mod target;
-pub mod tool;
 pub mod tree;
 pub mod yaml;
 

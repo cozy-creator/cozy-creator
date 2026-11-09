@@ -6,10 +6,10 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::Subcommand;
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 
 use crate::{Context, output, run::Placement};
-use protocol::target::Published;
+use api::target::Published;
 
 mod author;
 mod catalog;

@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use platform::paths::Home;
-use protocol::{config::Origin, error::Error as Refusal};
+use api::{config::Origin, error::Error as Refusal};
 
 use crate::Error;
 use crate::device::UserSession;

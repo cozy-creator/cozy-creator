@@ -9,13 +9,13 @@ use axum::{
     extract::{Path, State, rejection::BytesRejection},
     http::HeaderMap,
 };
-use protocol::{
+use api::{
     calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
     interface::Type,
-    project::{CaptionAsked, Captioned},
+    calcifer::project::{CaptionAsked, Captioned},
 };
 use serde_json::{Map, Value};
 
@@ -75,7 +75,7 @@ pub(super) async fn caption(
     let (input, warnings) = (bound.payload, bound.warnings);
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map_or_else(new_key, str::to_owned);
     let run = send(&host, &project, &asking, Value::Object(input), &on, &hub, &key).await?;
-    let Some(text) = protocol::tool::output_text(&callable, run.result.as_ref().unwrap_or(&Value::Null)) else {
+    let Some(text) = api::calcifer::tool::output_text(&callable, run.result.as_ref().unwrap_or(&Value::Null)) else {
         return Err(Refusal(Error::new(Kind::Unavailable, "caption_failed", format!("{} answered no text", asking.target()))));
     };
     Ok(Json(Captioned { name, text, run: run.number, warnings }))

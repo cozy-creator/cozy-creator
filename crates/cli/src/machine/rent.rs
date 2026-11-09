@@ -4,7 +4,7 @@ use std::{
     process::ExitCode,
 };
 
-use protocol::{
+use api::{
     calcifer::{Ended, Machine, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
     config::Origin,
     error::{Error, Kind},

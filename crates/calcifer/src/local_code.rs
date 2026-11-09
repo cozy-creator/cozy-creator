@@ -1,5 +1,5 @@
 //! Local code: a package directory or a script nobody published, run where a published function would be (`cozy run ./dir`, a
-//! project's `with: ./dir/fn`). It comes by content (cl-819): a client sends its tree (`protocol::code`), and a project's own
+//! project's `with: ./dir/fn`). It comes by content (cl-819): a client sends its tree (`api::code`), and a project's own
 //! folder is read into one here. Calcifer works from its copy of the tree, kept by the tree's digest, and reads no client's disk.
 //! A machine installs it from TensorD's `LocalSource`, a manifest naming each source file by its content; the interface its
 //! install answers is kept by the manifest and the Runtime that read it, so the same code on the same Runtime is called at once.
@@ -17,7 +17,7 @@ use std::{
 };
 
 use platform::{durable, paths::Home};
-use protocol::{
+use api::{
     calcifer::{Kind as RunKind, On, Run, StagedInput, Status, SubmitRun},
     code::{self as shared, LocalCode},
     config::Origin,
@@ -28,7 +28,7 @@ use protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use protocol::code::source_files;
+pub use api::code::source_files;
 
 use crate::{api::Api, update::BroughtUp};
 
@@ -88,7 +88,7 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
     Ok(path)
 }
 
-pub use protocol::target::{local, spelled, written_as_path};
+pub use api::target::{local, spelled, written_as_path};
 
 /// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path): a folder of
 /// Calcifer's own computer, as the project is, and the function it names. None: `text` is not written as a path (a published
@@ -128,7 +128,7 @@ pub fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
         if Digest::of(&document) != code.tree {
             return Err(refuse("code_invalid", format!("the file held as {} is not that tree", code.tree)));
         }
-        let members = protocol::tree::parse(&document).map_err(|e| refuse("code_invalid", e))?;
+        let members = api::tree::parse(&document).map_err(|e| refuse("code_invalid", e))?;
         if let Some((name, member)) = members.iter().find(|(_, member)| held(&digest_of(member)).is_none()) {
             return Err(not_held(format!("{name} of local code (sha256:{})", member.sha256)));
         }
@@ -145,7 +145,7 @@ pub fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
     }
     let code = staged.code();
-    let members = protocol::tree::parse(&staged.document).map_err(|e| refuse("code_invalid", e))?;
+    let members = api::tree::parse(&staged.document).map_err(|e| refuse("code_invalid", e))?;
     let from = |digest: &Digest| staged.files.iter().find(|file| file.digest == *digest).map(|file| file.path.clone());
     if !copies(home).join(hex(&code.tree)).join("tree").is_dir() {
         materialize(home, &code.tree, &members, from)?;
@@ -155,7 +155,7 @@ pub fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
 
 /// The tree's files, each from `from`, copied under `code/<digest>/tree`, made whole and then named; and a copy unused for a day
 /// past the newest `COPIES` goes.
-fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, protocol::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
+fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
     let root = copies(home);
     let dir = root.join(hex(tree));
     let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", root.display()));
@@ -185,7 +185,7 @@ fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, protocol::
     Ok(())
 }
 
-fn digest_of(member: &protocol::tree::Member) -> Digest {
+fn digest_of(member: &api::tree::Member) -> Digest {
     format!("sha256:{}", member.sha256).parse().expect("a tree names sha256 hex")
 }
 
@@ -717,7 +717,7 @@ pub fn keep(home: &Home, filed: &Filed, runtime: &str, interface: &Value) {
 }
 
 fn interface(document: &Value) -> bool {
-    protocol::interface::format(document).starts_with("cozy.package.interface/")
+    api::interface::format(document).starts_with("cozy.package.interface/")
 }
 
 /// The run that installs local code `on` a machine: a WARM run naming no function. It is named
@@ -799,7 +799,7 @@ pub async fn prepare(
     hub: &str,
     warm: bool,
     key: &str,
-    agreed: Option<protocol::calcifer::Agreed>,
+    agreed: Option<api::calcifer::Agreed>,
 ) -> Result<Prepared, Error> {
     let hubs = &api.machines.hubs;
     let home = hubs.home().clone();

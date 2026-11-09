@@ -1,6 +1,6 @@
 //! The CLI's one way in for files, the page's: each goes to Calcifer by content (`PUT /v1/files/sha256:<hex>`) and is named by its
-//! digest. What Calcifer holds is skipped, and a part it holds is resumed. A folder is its tree document (`protocol::tree`), sent after
-//! its files, and local code is its package's tree (`protocol::code`). Calcifer reads no path of this computer's.
+//! digest. What Calcifer holds is skipped, and a part it holds is resumed. A folder is its tree document (`api::tree`), sent after
+//! its files, and local code is its package's tree (`api::code`). Calcifer reads no path of this computer's.
 use std::{
     collections::BTreeMap,
     io::SeekFrom,
@@ -8,7 +8,7 @@ use std::{
 };
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use protocol::{
+use api::{
     calcifer::{Sent, path_key},
     code::LocalCode,
     error::{Error, Kind},
@@ -41,7 +41,7 @@ impl<'a> Sender<'a> {
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
         let (at, memo) = (path.to_owned(), self.memo());
-        let digest = tokio::task::spawn_blocking(move || protocol::digests::of(Some(&memo), &at))
+        let digest = tokio::task::spawn_blocking(move || api::digests::of(Some(&memo), &at))
             .await
             .map_err(|e| Error::internal("digest", e.to_string()))??;
         let length = std::fs::metadata(path).map_err(|e| unreadable(path, e))?.len();
@@ -52,7 +52,7 @@ impl<'a> Sender<'a> {
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
         let (at, memo) = (root.to_owned(), self.memo());
-        let staged = tokio::task::spawn_blocking(move || protocol::stage::stage(&at, Some(&memo)))
+        let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, Some(&memo)))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         for file in &staged.files {
@@ -67,10 +67,10 @@ impl<'a> Sender<'a> {
     }
 
     /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
-    /// (`protocol::code`). What never goes is said.
+    /// (`api::code`). What never goes is said.
     pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
         let (at, memo) = (path.to_owned(), self.memo());
-        let staged = tokio::task::spawn_blocking(move || protocol::code::stage(&at, Some(&memo)))
+        let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, Some(&memo)))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {

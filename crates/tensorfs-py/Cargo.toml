@@ -14,7 +14,7 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
-executor-protocol = { workspace = true, features = ["python"] }
+executor-api = { workspace = true, features = ["python"] }
 varena.workspace = true
 libc.workspace = true
 platform.workspace = true

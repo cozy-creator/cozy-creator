@@ -5,7 +5,7 @@ use std::convert::Infallible;
 
 use axum::response::sse;
 use futures_util::{Stream, StreamExt as _, stream};
-use protocol::{
+use api::{
     calcifer::{Event, Kind, Run, Status},
     error::{Error, Kind as Refused},
     ids::RunId,

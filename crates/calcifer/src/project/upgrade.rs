@@ -10,10 +10,10 @@ use std::{
     sync::Mutex,
 };
 
-use protocol::{
+use api::{
     error::{Error, Kind},
     target::written_as_path,
-    tool::EDIT,
+    calcifer::tool::EDIT,
     yaml::{keys, to_json, to_json_keeping},
 };
 use serde::Serialize;
@@ -1089,7 +1089,7 @@ fn retooled(name: &str, body: &mut Map<String, Value>, said: &mut Vec<String>) {
     let Some(tool) = body.get("tool").and_then(Value::as_str).map(str::to_owned) else { return };
     let Some((head, function)) = tool.rsplit_once('/') else { return };
     let (function, release) = function.split_once('@').map_or((function, None), |(function, release)| (function, Some(release)));
-    let package = protocol::tool::package_word(head);
+    let package = api::calcifer::tool::package_word(head);
     let tool_of = |function: &str| format!("{head}/{function}{}", release.map_or_else(String::new, |release| format!("@{release}")));
     let dropped = |body: &mut Map<String, Value>, fields: &[&str], why: &str, said: &mut Vec<String>| {
         for field in fields {

@@ -185,7 +185,7 @@ impl ExecutorFacts {
         Self {
             pid, runtime_version, tensorfs_version,
             tensord_version: env!("CARGO_PKG_VERSION").into(),
-            tensord_commit: Some(protocol::COMMIT.to_owned()),
+            tensord_commit: Some(api::COMMIT.to_owned()),
         }
     }
 

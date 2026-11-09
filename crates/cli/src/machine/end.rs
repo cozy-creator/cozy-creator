@@ -4,7 +4,7 @@ use std::{
     process::ExitCode,
 };
 
-use protocol::{
+use api::{
     calcifer::{self, Component, Ended, Keepalive, Machine, MachineKind, MachineList, MachineState, MachineStatus, MachineUpdate, Updating},
     error::{Error, Kind},
     ids::Digest,
@@ -182,9 +182,9 @@ pub async fn update(
     tensorfs: Option<String>,
     tensord: Option<String>,
     gpu_memory_limit: Option<u64>,
-    mode: Option<protocol::config::MachineMode>,
+    mode: Option<api::config::MachineMode>,
 ) -> Result<ExitCode, Error> {
-    protocol::calcifer::local_usable(name)?;
+    api::calcifer::local_usable(name)?;
     let ask = MachineUpdate {
         runtime: component(ctx, runtime, "cozy_runtime").await?,
         tensorfs: component(ctx, tensorfs, "tensorfs").await?,
@@ -265,7 +265,7 @@ async fn component(ctx: &Context, value: Option<String>, distribution: &str) -> 
     let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let version = distribution.is_empty().then(|| says(&file)).flatten();
     let sha256 = crate::send::Sender::new(ctx).await?.file(&file).await?;
-    Ok(Some(Component::File(protocol::calcifer::DevBuild { sha256, name, version })))
+    Ok(Some(Component::File(api::calcifer::DevBuild { sha256, name, version })))
 }
 
 /// The release a `cozy` binary says it is, when it runs here.

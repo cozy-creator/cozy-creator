@@ -7,11 +7,11 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use protocol::{
+use api::{
     error::{Error, Kind},
-    project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Card, NewAsset, VersionBack, VersionMoved},
+    calcifer::project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Card, NewAsset, VersionBack, VersionMoved},
 };
-use protocol::tool::{FieldType, Tools};
+use api::calcifer::tool::{FieldType, Tools};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
@@ -61,7 +61,7 @@ fn mapping(file: &Path) -> Result<Value, Error> {
         true => drop(std::io::stdin().read_to_string(&mut text).map_err(unreadable)?),
         false => text = std::fs::read_to_string(file).map_err(unreadable)?,
     }
-    protocol::yaml::to_json(&text).map_err(|why| input_error("input_unreadable", format!("{}: {why}", file.display())))
+    api::yaml::to_json(&text).map_err(|why| input_error("input_unreadable", format!("{}: {why}", file.display())))
 }
 
 /// What a file holds, with `field=value` and `field:=json` over it, as `cozy run` reads them.

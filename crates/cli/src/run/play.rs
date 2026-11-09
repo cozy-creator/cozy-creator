@@ -3,7 +3,7 @@
 //! signs a capability for that one output and answers the link.
 use std::process::ExitCode;
 
-use protocol::{calcifer::Play, error::Error};
+use api::{calcifer::Play, error::Error};
 
 use crate::{Context, output};
 

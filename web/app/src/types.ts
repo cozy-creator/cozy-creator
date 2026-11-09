@@ -1,4 +1,4 @@
-// `protocol::calcifer` and `protocol::project` by hand, as far as the page reads them. A reader ignores unknown fields, and an
+// `api::calcifer` and `api::calcifer::project` by hand, as far as the page reads them. A reader ignores unknown fields, and an
 // unknown standing or state shows as unknown.
 
 export interface ErrorBody {

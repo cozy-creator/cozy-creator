@@ -14,7 +14,7 @@ use platform::{
     process::{Birth, Exact, in_kernel, meter},
     tools::Side,
 };
-use protocol::{
+use api::{
     calcifer::{Holder, Machine},
     error::Error,
 };
@@ -70,8 +70,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let tools = crate::tools::rows(ctx, Side::Computer);
     // Without --on, this computer's machine, where this OS runs models itself.
     let on = match args.on {
-        Some(on) => protocol::calcifer::local_usable(&on).map(|()| Some(on))?,
-        None => match protocol::calcifer::local_usable("local") {
+        Some(on) => api::calcifer::local_usable(&on).map(|()| Some(on))?,
+        None => match api::calcifer::local_usable("local") {
             Ok(()) => Some("local".to_owned()),
             Err(off) => {
                 checks.push(Check::ok("machine", format!("{}; {}", off.message, off.remedy.unwrap_or_default())));

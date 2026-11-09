@@ -432,7 +432,7 @@ impl Built {
     pub(crate) fn record(&self, (identity, environment): (&str, &str), (distribution, version): (&str, &str), env: &Path, interface: &Value,
         runtime_build: &str, described: Described) -> Result<Value, Failure> {
         let Described { source_digest, callees, closures } = described;
-        let application = protocol::interface::application(interface)
+        let application = api::interface::application(interface)
             .ok_or(("package_prepare_interface_invalid", "the package interface names no application".to_string()))?;
         let dependencies: Vec<Value> = installed(env).into_iter().filter(|(name, _)| SDK.contains(&name.as_str()))
             .map(|(name, version)| json!({"name": name, "version": version})).collect();

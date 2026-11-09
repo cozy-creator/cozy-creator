@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use protocol::{
+use api::{
     calcifer::{Machine, NewMachine, clock},
     error::{Error, Kind},
     ids::Digest,
@@ -109,7 +109,7 @@ enum Verb {
         gpu_memory_limit: Option<u64>,
         /// How this machine shares its GPU. Persists after the ordinary drain and restart.
         #[arg(long, value_name = "shared|dedicated", value_parser = machine_mode)]
-        mode: Option<protocol::config::MachineMode>,
+        mode: Option<api::config::MachineMode>,
     },
     /// Add another computer's machine by its address and TLS fingerprint.
     Add {
@@ -160,10 +160,10 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     }
 }
 
-fn machine_mode(text: &str) -> Result<protocol::config::MachineMode, String> {
+fn machine_mode(text: &str) -> Result<api::config::MachineMode, String> {
     match text {
-        "shared" => Ok(protocol::config::MachineMode::Shared),
-        "dedicated" => Ok(protocol::config::MachineMode::Dedicated),
+        "shared" => Ok(api::config::MachineMode::Shared),
+        "dedicated" => Ok(api::config::MachineMode::Dedicated),
         _ => Err("mode must be shared or dedicated".into()),
     }
 }
@@ -172,7 +172,7 @@ fn machine_mode(text: &str) -> Result<protocol::config::MachineMode, String> {
 fn gpu_memory_limit(text: &str) -> Result<u64, String> {
     match text {
         "off" => Ok(0),
-        size => match protocol::config::parse_size(size)? {
+        size => match api::config::parse_size(size)? {
             0 => Err("a limit of 0 bytes: write `off` to lift it".into()),
             bytes => Ok(bytes),
         },
@@ -276,7 +276,7 @@ async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, 
 
 /// The line `machine ls` and `status` show where this OS runs no models itself (no `local`).
 pub(crate) fn local_note() -> Option<String> {
-    let off = protocol::calcifer::local_usable("local").err()?;
+    let off = api::calcifer::local_usable("local").err()?;
     Some(format!("{}: {}", off.message, off.remedy.unwrap_or_default()))
 }
 

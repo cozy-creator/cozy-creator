@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use platform::paths::Home;
-use protocol::{
+use api::{
     config::{Config, Loaded, Origin},
     error::Error,
 };

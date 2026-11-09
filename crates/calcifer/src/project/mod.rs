@@ -53,14 +53,14 @@ use axum::{
     routing::{delete, get, post},
 };
 use futures_util::{FutureExt as _, Stream, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
-use protocol::{
+use api::{
     calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
     ids::{Digest, RunId},
     machine as v1,
-    project::{
+    calcifer::project::{
         Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Job, JobState, Known, MainFile, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         VersionPrefix, Warning as ProjectWarning,
@@ -319,15 +319,15 @@ pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
 }
 
-/// The folder of the project a request names (`protocol::project::NAMED_BY`): its id or name in the index, or the project holding
+/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id or name in the index, or the project holding
 /// a folder of this computer's, by its absolute path. Never a client's folder: a relative path names none.
 pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     let text = text.trim();
     let path = FsPath::new(text);
-    if protocol::target::written_as_path(text) {
+    if api::target::written_as_path(text) {
         if !path.is_absolute() {
             let said = format!("{text} is relative, and Calcifer has no folder of a client's to start it from");
-            return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", protocol::project::NAMED_BY)));
+            return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", api::calcifer::project::NAMED_BY)));
         }
         return holding(path);
     }
@@ -415,14 +415,14 @@ impl Holding {
 
     /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, ranges are cut here, and `pickup.`
     /// terms are the gesture. Answers the call, the project's files it names (fetched here if a machine keeps them), and what was said.
-    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &protocol::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
+    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
         let folder = Folder::at(&self.dir);
         // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
         let (doc, lock) = match (Doc::load(&folder), folder.lock()) {
             (Ok(doc), Ok(lock)) => (doc, lock),
             (Err(why), _) | (_, Err(why)) => {
                 let mut written = written;
-                for field in callable.request.fields.iter().filter(|field| matches!(field.ty.plain(), protocol::interface::Type::Prompt(_))) {
+                for field in callable.request.fields.iter().filter(|field| matches!(field.ty.plain(), api::interface::Type::Prompt(_))) {
                     if let Some(Value::String(text)) = written.get(&field.name).cloned() {
                         written.insert(field.name.clone(), json!({"text": text, "references": []}));
                     }
@@ -432,10 +432,10 @@ impl Holding {
         };
         let stand = doc.stand(&lock);
         let mut fields = written;
-        let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), protocol::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
+        let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
         let pickup = match picked {
             None => None,
-            Some(value) => Some(serde_json::from_value::<protocol::project::Pickup>(value).map_err(|why| Error::new(Kind::Usage, "pickup_malformed", format!("a pickup is pickup.take=<box.N> and pickup.out_frame=<frame>: {why}")))?),
+            Some(value) => Some(serde_json::from_value::<api::calcifer::project::Pickup>(value).map_err(|why| Error::new(Kind::Usage, "pickup_malformed", format!("a pickup is pickup.take=<box.N> and pickup.out_frame=<frame>: {why}")))?),
         };
         let reserved = callable.tool.as_ref().map(|tool| tool.reserved.clone()).unwrap_or_default();
         doc.worded(&mut fields, &reserved);
@@ -452,7 +452,7 @@ impl Holding {
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / fps, end: range.to.map(|to| f64::from(to) / fps) };
             let mut notes = vec![];
             let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await?;
-            bound.warnings.extend(notes.into_iter().filter(|note| note.level == protocol::calcifer::NoteLevel::Warning).map(|note| note.message));
+            bound.warnings.extend(notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).map(|note| note.message));
             let clip = made.clip.clone();
             let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| Error::new(Kind::Internal, "clip_hash", e.to_string()))??;
             cut.insert(sha256.clone(), made.clip);
@@ -1051,7 +1051,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
         }
         (None, None) => {
             let Some(name) = &open.name else {
-                return Err(Refusal(Error::new(Kind::Usage, "project_path", format!("name {}, or a new one by its name", protocol::project::NAMED_BY))));
+                return Err(Refusal(Error::new(Kind::Usage, "project_path", format!("name {}, or a new one by its name", api::calcifer::project::NAMED_BY))));
             };
             match key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned()) {
                 Some(dir) => dir,
@@ -1137,7 +1137,7 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
     let not_found = || {
         let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
         Error::new(Kind::NotFound, "project_not_found", said)
-            .remedy(format!("name {}", protocol::project::NAMED_BY))
+            .remedy(format!("name {}", api::calcifer::project::NAMED_BY))
             .next("cozy project ls")
     };
     let start = platform::durable::canonical(path).map_err(|_| not_found())?;
@@ -1254,7 +1254,7 @@ fn next_steps(orphans: &[Orphan], absent: u64, owed: bool) -> Vec<String> {
 }
 
 /// Its render going, or its last since Calcifer started.
-fn board_of(project: &Project) -> Option<protocol::project::Board> {
+fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
     Some(project.jobs.board()).filter(|board| board.seq > 0)
 }
 
@@ -1305,7 +1305,7 @@ type HeardOf = HashMap<String, HeardPackage>;
 
 fn known_packages(api: &Arc<Api>, doc: &Doc) -> HeardOf {
     let targets: BTreeSet<String> = (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()).map(|i| doc.target(i)).collect();
-    let local = |with: &str| with.is_empty() || protocol::target::written_as_path(with) || with.ends_with(".py");
+    let local = |with: &str| with.is_empty() || api::target::written_as_path(with) || with.ends_with(".py");
     (targets.into_iter().filter(|with| !local(with)))
         .filter_map(|with| {
             let package = heard_of(api, &with)?;
@@ -2237,7 +2237,7 @@ fn element_name(name: Option<&str>, source: &str) -> String {
 
 /// The element a kept file makes, in one transaction: one constant box more, under a name nothing has, with `at` its row, and what its drop pushed aside.
 #[allow(clippy::too_many_arguments)]
-fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, description: Option<&str>, file: folder::Kept, exact: bool, moves: BTreeMap<String, protocol::project::Card>, placed: &BTreeMap<String, u64>) -> Result<Imported, Refusal> {
+fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::project::Card>, description: Option<&str>, file: folder::Kept, exact: bool, moves: BTreeMap<String, api::calcifer::project::Card>, placed: &BTreeMap<String, u64>) -> Result<Imported, Refusal> {
     let folder = &project.folder;
     let made = folder.act(|| {
         let lock = folder.lock()?;
@@ -3139,7 +3139,7 @@ impl Walk {
             }
         };
         let spec = v1::RunSpec { kind: v1::RunKind::Warm, source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
-        let target = format!("{}{called}", protocol::project::AHEAD);
+        let target = format!("{}{called}", api::calcifer::project::AHEAD);
         let shown = package.name.clone() + "/" + &renderer.function;
         let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
         let key = format!("project-ahead-{}", new_key());
@@ -4001,7 +4001,7 @@ impl Walk {
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / file.fps, end: range.to.map(|to| f64::from(to) / file.fps) };
             let mut notes = vec![];
             let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await.map_err(|e| e.message)?;
-            notes.into_iter().filter(|note| note.level == protocol::calcifer::NoteLevel::Warning).for_each(|note| self.say(Event::Warning { message: note.message, name: None }));
+            notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).for_each(|note| self.say(Event::Warning { message: note.message, name: None }));
             let clip = made.clip.clone();
             let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| e.to_string())?.map_err(|e| e.message)?;
             self.clips.lock().expect("clips lock").insert(sha256.clone(), made.clip);
@@ -4153,7 +4153,7 @@ impl Walk {
             out: Some(landing(&self.folder().dir)),
             warnings,
             agreed: None,
-            stays: package.callable(&renderer.function).map(|callable| protocol::tool::stays(&callable)).unwrap_or_default(),
+            stays: package.callable(&renderer.function).map(|callable| api::calcifer::tool::stays(&callable)).unwrap_or_default(),
         };
         let _on_the_way = OnTheWay::new(&self.on_the_way, key);
         self.folder().update_walk(|walk| {
@@ -4351,7 +4351,7 @@ impl Walk {
             let sha256 = match output.path.as_ref().filter(|path| path.is_file()) {
                 Some(path) => folder.keep(path)?,
                 // On its way here: its machine holds it, and whatever reads it there needn't wait for this computer.
-                None if output.owed() && output.media_type != protocol::tree::MEDIA => {
+                None if output.owed() && output.media_type != api::tree::MEDIA => {
                     let (Some(sha256), Some(machine)) = (&output.sha256, &run.machine) else { continue };
                     let name = crate::outputs::file_name(run.number, &output.name, output.index, &output.media_type);
                     away.push((sha256.to_string(), machine.clone(), output.length, Some(name)));

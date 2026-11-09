@@ -13,10 +13,10 @@ use std::{
 
 use infer::MatcherType;
 use platform::{durable, paths::Home};
-use protocol::{
+use api::{
     calcifer::On,
     error::{Error, Kind},
-    project::Unheld,
+    calcifer::project::Unheld,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
@@ -244,10 +244,10 @@ pub struct Version {
     pub tool: Option<String>,
     /// The take it picked up from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pickup: Option<protocol::project::Pickup>,
+    pub pickup: Option<api::calcifer::project::Pickup>,
     /// An Edit's: the clips that made it, each with its file, and their rate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub clips: Vec<protocol::project::Clip>,
+    pub clips: Vec<api::calcifer::project::Clip>,
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub fps: f64,
     /// A cut's: the pieces it was cut without.
@@ -625,7 +625,7 @@ pub struct Take {
     pub new: bool,
     /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pickup: Option<protocol::project::Pickup>,
+    pub pickup: Option<api::calcifer::project::Pickup>,
 }
 
 impl Lock {
@@ -714,7 +714,7 @@ impl Lock {
         if let Some(files) = value["files"].as_object_mut() {
             files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
         }
-        protocol::yaml::from_json(&value)
+        api::yaml::from_json(&value)
     }
 
     /// Each asset whose name the file has lost and with nothing on its way, set aside under a key no name can be, so that a later asset of that
@@ -980,13 +980,13 @@ impl Folder {
     }
 
     /// The board the last render here ended on, as project.db keeps it.
-    pub fn last_board(&self) -> Option<protocol::project::Board> {
+    pub fn last_board(&self) -> Option<api::calcifer::project::Board> {
         let held = self.held().ok()?;
         db::meta(&held.as_ref()?.conn, BOARD).and_then(|board| serde_json::from_str(&board).ok())
     }
 
     /// Keeps the board a render ended on, for a read after this project has closed and opened again.
-    pub fn keep_board(&self, board: &protocol::project::Board) -> Result<(), Error> {
+    pub fn keep_board(&self, board: &api::calcifer::project::Board) -> Result<(), Error> {
         let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
         let held = self.held()?;
         let held = held.as_ref().expect("held");
@@ -1777,7 +1777,7 @@ impl Folder {
 /// `text` as a `project.lock` of format 3, for the first open's import. A lock of another isn't read.
 pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
     let unreadable = |why: String| Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {why}"));
-    let value = protocol::yaml::to_json(text).map_err(unreadable)?;
+    let value = api::yaml::to_json(text).map_err(unreadable)?;
     match value["format"].as_u64() {
         Some(format) if format == u64::from(FORMAT) => serde_json::from_value(value).map_err(|e| unreadable(e.to_string())),
         Some(format) => Err(old_lock(&format.to_string())),

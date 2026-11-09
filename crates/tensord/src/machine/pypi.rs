@@ -93,24 +93,24 @@ pub fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, 
     };
     // Nothing yet says what is published: `NotConnected`, asking again may be answered.
     let unread = |why: String| io::Error::new(io::ErrorKind::NotConnected, why);
-    let (status, listed) = read(protocol::prerelease::releases(distribution)).map_err(|e| unread(e.to_string()))?;
+    let (status, listed) = read(api::prerelease::releases(distribution)).map_err(|e| unread(e.to_string()))?;
     if !status.is_success() {
         return Err(unread(format!("GitHub answered HTTP {status}")));
     }
     let releases: Vec<Release> = serde_json::from_str(&listed).map_err(io::Error::other)?;
     let mut versions: Vec<&str> = (releases.iter().filter(|release| !release.draft))
-        .filter_map(|release| protocol::prerelease::version_of(distribution, &release.tag_name))
+        .filter_map(|release| api::prerelease::version_of(distribution, &release.tag_name))
         .filter(|version| meets(version))
         .collect();
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
     while let Some(version) = tensorfs::format::newest_by(versions.iter().copied(), |version| version) {
         versions.retain(|other| *other != version);
-        let base = protocol::prerelease::base(distribution, version);
+        let base = api::prerelease::base(distribution, version);
         let (status, sums) = read(format!("{base}/SHA256SUMS")).map_err(|e| unread(e.to_string()))?;
         if !status.is_success() {
             continue;
         }
-        if let Some((file, sha256)) = protocol::prerelease::wheel(&sums, distribution, version, &platform) {
+        if let Some((file, sha256)) = api::prerelease::wheel(&sums, distribution, version, &platform) {
             let wheel = wheel_at(&format!("{base}/{file}"), sha256, file, dir, machine, stop)?;
             return Ok(Some((version.to_owned(), wheel)));
         }
@@ -123,7 +123,7 @@ pub fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, 
 pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
     // A private server's root as uv trusts it: the bundle SSL_CERT_FILE names. Only this fetch
     // reads it; the Hub's clients trust their own CA alone.
-    let bundle = protocol::config::environment().get("SSL_CERT_FILE").and_then(|path| fs::read(path).ok()).filter(|pem| !pem.is_empty());
+    let bundle = api::config::environment().get("SSL_CERT_FILE").and_then(|path| fs::read(path).ok()).filter(|pem| !pem.is_empty());
     let failed = |e: Refusal| match e.code {
         Code::OBJECT_ID_MISMATCH => io::Error::other(super::update::Coded {
             code: "wheel_digest_mismatch",

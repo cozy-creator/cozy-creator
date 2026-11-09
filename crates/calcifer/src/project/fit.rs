@@ -16,13 +16,13 @@ use axum::{
     extract::{Path, State, rejection::BytesRejection},
 };
 use hub_client::types::RentalPlacementRequest;
-use protocol::{
+use api::{
     calcifer::{On, ReleaseFrom},
     error::{Error, Kind},
     interface::{Interface, Slot},
     model_ref::ModelRef,
-    project::{Fit, FitAsk, RentFor, ToolFit},
-    tool,
+    calcifer::project::{Fit, FitAsk, RentFor, ToolFit},
+    calcifer::tool,
 };
 use serde_json::{Map, Value};
 
@@ -155,7 +155,7 @@ fn rendered(doc: &Doc, stand: &[super::Standing], asked: &FitAsk) -> Vec<usize> 
 /// This computer's GPUs as its machine last said: each one's name and the memory it may use. None: it hasn't said.
 fn gpus(api: &Api) -> Option<Vec<(String, u64)>> {
     let frame = api.machines.frame("local")?;
-    let usable = |gpu: &protocol::machine::Gpu| match gpu.memory_limit_bytes {
+    let usable = |gpu: &api::machine::Gpu| match gpu.memory_limit_bytes {
         0 => gpu.memory_bytes,
         limit => limit.min(gpu.memory_bytes),
     };

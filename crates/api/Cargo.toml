@@ -1,5 +1,5 @@
 [package]
-name = "protocol"
+name = "api"
 description = "The wire types every cozy process shares: the machine API and its client, Cozy-Cap, the error envelope, ids and config.toml"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-executor-protocol.workspace = true
+executor-api.workspace = true
 base64.workspace = true
 bytes.workspace = true
 platform.workspace = true

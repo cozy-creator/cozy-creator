@@ -166,7 +166,7 @@ pub struct Request {
     pub gpu_memory_limit: Option<u64>,
     /// Categorical sharing policy, persisted after drain and read only at restart.
     #[serde(default)]
-    pub mode: Option<protocol::config::MachineMode>,
+    pub mode: Option<api::config::MachineMode>,
     /// The `cozy` binary to run (`cozy machine update --tensord`): a release it fetches, or a
     /// staged dev build, like a wheel.
     #[serde(default)]
@@ -438,7 +438,7 @@ pub struct Updates {
     /// The running update's stop: its cancel ends the download in flight.
     stop: Mutex<Stop>,
     /// The build toolchain as last probed: at start and after each install.
-    toolchain: Mutex<Option<protocol::machine::Toolchain>>,
+    toolchain: Mutex<Option<api::machine::Toolchain>>,
 }
 
 impl Updates {
@@ -480,7 +480,7 @@ impl Updates {
     }
 
     /// The build toolchain, probed once and again after each install.
-    pub fn toolchain(&self) -> protocol::machine::Toolchain {
+    pub fn toolchain(&self) -> api::machine::Toolchain {
         let mut held = self.toolchain.lock().unwrap();
         if held.is_none() {
             *held = Some(self.probe_toolchain());
@@ -496,8 +496,8 @@ impl Updates {
         toolchain
     }
 
-    fn probe_toolchain(&self) -> protocol::machine::Toolchain {
-        let environment = protocol::config::environment();
+    fn probe_toolchain(&self) -> api::machine::Toolchain {
+        let environment = api::config::environment();
         let path: Vec<PathBuf> = environment.get("PATH").map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
         let cuda_home = environment.get("CUDA_HOME").map(PathBuf::from);
         super::toolchain::probe(&super::toolchain::dir(&self.paths.engine), cuda_home.as_deref(), &path)
@@ -506,7 +506,7 @@ impl Updates {
     /// Each kernel's verdict on this machine, as the Runtime keeps them under its kernel store.
     /// A kernel no prebuilt served (a verdict that failed) is the build toolchain's first need: on
     /// a machine without one, it is fetched now, once, in the background, as an update of its own.
-    pub fn kernels(self: &Arc<Self>) -> Vec<protocol::machine::KernelVerdict> {
+    pub fn kernels(self: &Arc<Self>) -> Vec<api::machine::KernelVerdict> {
         let verdicts = super::toolchain::verdicts(&self.paths.engine.join("gpu/kernels"));
         if verdicts.iter().any(|v| !v.ok) && self.toolchain().nvcc.is_empty() {
             let fetch = Request {
@@ -1468,7 +1468,7 @@ fn unlink(link: &Path) -> io::Result<()> {
 
 /// Commit requested machine settings together, preserving other fields/comments. A config
 /// that the ordinary loader would refuse is never written. Zero removes the development cap.
-fn write_machine_settings(path: &Path, limit: Option<u64>, mode: Option<protocol::config::MachineMode>) -> io::Result<()> {
+fn write_machine_settings(path: &Path, limit: Option<u64>, mode: Option<api::config::MachineMode>) -> io::Result<()> {
     let text = match fs::read_to_string(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         read => read?,
@@ -1488,7 +1488,7 @@ fn write_machine_settings(path: &Path, limit: Option<u64>, mode: Option<protocol
         doc["machine"]["mode"] = toml_edit::value(mode.name());
     }
     let text = doc.to_string();
-    protocol::config::Config::parse(&text, &shown).map_err(|e| invalid(&e.message))?;
+    api::config::Config::parse(&text, &shown).map_err(|e| invalid(&e.message))?;
     fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
     platform::durable::replace(path, text.as_bytes(), 0o600).map_err(io::Error::other)
 }

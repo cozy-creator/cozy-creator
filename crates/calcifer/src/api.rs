@@ -2,7 +2,7 @@
 //! browser. Every request passes the guard chain in order: a loopback peer, a loopback `Host`, an
 //! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer or a browser
 //! session (`sessions.rs`), and the admission gate a stopping Calcifer closes. Refusals are
-//! `protocol::error::Envelope`s. No CORS header is ever sent.
+//! `api::error::Envelope`s. No CORS header is ever sent.
 use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
@@ -19,7 +19,7 @@ use axum::{
     },
     routing::{any, delete, get, post, put},
 };
-use protocol::{
+use api::{
     calcifer::{CalciferStatus, Down, Event, MachineKind, MachineState, Run, RunList, Status},
     error::{Envelope, Error, Kind},
     ids::RunId,
@@ -468,7 +468,7 @@ struct Asking {
 }
 
 /// What a run would take on a machine before it is sent: from the runs like it there, else on its GPU.
-async fn estimate(State(api): State<Arc<Api>>, query: Result<Query<Asking>, QueryRejection>) -> Result<Json<protocol::calcifer::Estimate>, Refusal> {
+async fn estimate(State(api): State<Arc<Api>>, query: Result<Query<Asking>, QueryRejection>) -> Result<Json<api::calcifer::Estimate>, Refusal> {
     let Query(asking) = query?;
     let on = asking.on.as_deref().unwrap_or("local");
     let machine = match api.machines.named(on).map_err(Refusal)? {

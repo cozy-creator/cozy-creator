@@ -2,13 +2,13 @@
 //! trigger and strength set at the Hub, an install's older releases removed. Every client gets it,
 //! and one that stops following never skips it. Each is kept in `state.db` by the ask's idempotency
 //! key before the run is submitted, so a Calcifer that stops in between does it when it next hears
-//! the outcome; the result says what was done (`result.after`, `protocol::hub::AfterRun`).
+//! the outcome; the result says what was done (`result.after`, `api::calcifer::hub::AfterRun`).
 
-use protocol::{
+use api::{
     calcifer::{self as wire, Environment, On, Status, SubmitRun},
     config::Origin,
     error::Error,
-    hub::{AfterRun, Displayed, Retired},
+    calcifer::hub::{AfterRun, Displayed, Retired},
     ids::RunId,
     machine::{self as v1, Source},
     model_ref::Repo,

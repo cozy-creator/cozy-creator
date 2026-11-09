@@ -8,9 +8,9 @@ use axum::{
     body::Bytes,
     extract::{Path, State, rejection::BytesRejection},
 };
-use protocol::{
+use api::{
     error::Error,
-    project::{Canvas, CanvasPatch, CanvasPatched, Card},
+    calcifer::project::{Canvas, CanvasPatch, CanvasPatched, Card},
 };
 
 use super::{db::CardRow, folder::Folder, graph::name_key};
@@ -28,7 +28,7 @@ fn tidied(card: Card) -> Card {
 /// `project.canvas.yaml`'s rows, from before `project.db`, for the first open's import. What doesn't read as one is left out.
 pub(super) fn legacy_rows(text: &str) -> BTreeMap<String, Card> {
     let row = |line: &str| {
-        let line = protocol::yaml::to_json(line.trim()).ok()?;
+        let line = api::yaml::to_json(line.trim()).ok()?;
         let (name, card) = line.as_object()?.iter().next()?;
         Some((name.clone(), serde_json::from_value(card.clone()).ok()?))
     };

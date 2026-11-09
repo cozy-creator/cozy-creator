@@ -1082,10 +1082,10 @@ impl Engine {
     ) -> io::Result<ResultRecord> {
         let mut paths: Vec<_> = bindings.iter().map(|b| b.relative_path.clone()).collect();
         // A tree's member files are held beside its manifest, by digest (`tree_binding`).
-        for tree in bindings.iter().filter(|b| b.media_type == protocol::tree::MEDIA) {
+        for tree in bindings.iter().filter(|b| b.media_type == api::tree::MEDIA) {
             let mut manifest = Vec::new();
             open_artifact(source, Path::new(&tree.relative_path))?.read_to_end(&mut manifest)?;
-            paths.extend(protocol::tree::parse(&manifest)?.into_values().map(|m| format!("sha256-{}", m.sha256)));
+            paths.extend(api::tree::parse(&manifest)?.into_values().map(|m| format!("sha256-{}", m.sha256)));
         }
         paths.sort();
         paths.dedup();

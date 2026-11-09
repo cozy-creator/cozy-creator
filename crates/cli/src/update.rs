@@ -10,7 +10,7 @@ use std::{
 };
 
 use platform::release::{self, Release, TARGET};
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use serde::Serialize;
 
 use crate::{Context, machine::Adopted};

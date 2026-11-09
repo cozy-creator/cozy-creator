@@ -15,7 +15,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
 

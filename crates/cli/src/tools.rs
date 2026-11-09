@@ -8,7 +8,7 @@ use std::{
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use platform::tools::{self, Class, Found, Side, TOOLS};
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use serde::Serialize;
 
 use crate::{Context, output};

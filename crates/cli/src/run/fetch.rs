@@ -2,7 +2,7 @@
 //! then each of its files. Calcifer's paths are its own (cl-819): the CLI keeps what it asks for, where it says.
 use std::path::{Path, PathBuf};
 
-use protocol::{
+use api::{
     calcifer::{OutputItem, Run, output_file_name},
     error::{Error, Kind},
     ids::Digest,
@@ -57,7 +57,7 @@ async fn folder(calcifer: &crate::calcifer_client::Client, item: &OutputItem, ur
 
 /// `file` holds the bytes `digest` names, or it's removed and refused.
 fn held(file: &Path, digest: &Digest) -> Result<(), Error> {
-    let got = protocol::digests::of(None, file)?;
+    let got = api::digests::of(None, file)?;
     if got == *digest {
         return Ok(());
     }

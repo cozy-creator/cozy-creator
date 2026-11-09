@@ -21,11 +21,11 @@ use axum::{
 };
 use futures_util::StreamExt as _;
 use hub_client::{cards, types::PackageInstallFile};
-use protocol::{
+use api::{
     error::{Error, Kind},
     interface::Interface,
     names::shown,
-    tool::ToolUi,
+    calcifer::tool::ToolUi,
 };
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
@@ -280,7 +280,7 @@ fn from_wheel(id: &str, wheel: File, module: &str, ui: &str) -> Result<Files, Er
 /// What a wheel lacks of the components `interface` declares: what `package publish` warns of, as it would only show as the declared box.
 pub(crate) fn not_in_wheel(wheel: &Path, interface: &Interface) -> Vec<String> {
     let names = File::open(wheel).ok().and_then(|file| zip::ZipArchive::new(file).ok()).map_or_else(BTreeSet::new, |archive| named(&archive));
-    let gone = |callable: &&protocol::interface::Callable| -> Option<String> {
+    let gone = |callable: &&api::interface::Callable| -> Option<String> {
         let ui = callable.tool.as_ref()?.ui.as_ref()?;
         (!folders(&callable.invocable.module).iter().any(|folder| names.contains(&joined(folder, ui)))).then(|| ui.clone())
     };

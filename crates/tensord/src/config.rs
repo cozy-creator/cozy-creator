@@ -1,13 +1,13 @@
-//! TensorD's configuration: the binary's one load ([`protocol::config`]: the `[machine]` table
+//! TensorD's configuration: the binary's one load ([`api::config`]: the `[machine]` table
 //! of `~/.cozy/config.toml`, then a pod's environment), the command line's lifetime, and the
 //! grant judged from them. Nothing else in TensorD reads the environment; the processes it starts
-//! inherit [`protocol::config::environment`], filtered.
+//! inherit [`api::config::environment`], filtered.
 use crate::machine::{
     endpoint::Endpoint,
     grant::{Grant, Lifetime},
 };
-use executor_protocol::DisplayPace;
-use protocol::config::{self as shared, Loaded, MachineConfig, MachineMode, ENV};
+use executor_api::DisplayPace;
+use api::config::{self as shared, Loaded, MachineConfig, MachineMode, ENV};
 use std::{
     collections::BTreeMap,
     io,

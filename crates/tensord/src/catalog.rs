@@ -72,8 +72,8 @@ impl Generation {
     pub fn widest_group(&self, available: usize) -> u32 {
         std::iter::once(&self.interface)
             .chain(self.callees.iter().map(|callee| &callee.interface))
-            .flat_map(protocol::interface::entrypoints)
-            .map(protocol::interface::models)
+            .flat_map(api::interface::entrypoints)
+            .map(api::interface::models)
             .filter(|models| models.iter().any(crate::gpu_service::constructed))
             .map(|models| crate::gpu_service::group_degree(models, 0, available))
             .max()

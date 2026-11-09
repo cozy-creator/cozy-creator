@@ -8,15 +8,15 @@ use std::{
     time::Duration,
 };
 
-use protocol::{
+use api::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::{Digest, RunId},
     interface::{self, Call, Interface, Slot},
     model_ref::ModelRef,
     names::shown,
-    project::Event,
-    tool,
+    calcifer::project::Event,
+    calcifer::tool,
 };
 use serde_json::Value;
 
@@ -98,7 +98,7 @@ impl Package {
     }
 
     /// The typed inputs of `function`.
-    pub fn callable(&self, function: &str) -> Option<protocol::interface::Callable> {
+    pub fn callable(&self, function: &str) -> Option<api::interface::Callable> {
         self.interface().callables.into_iter().find(|callable| callable.name == function)
     }
 
@@ -467,7 +467,7 @@ impl Host {
             let On::Machine(text) = on else { return (u32::MAX, true) };
             let Ok(Some(row)) = machines.named(text) else { return (u32::MAX, true) };
             let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
-            let held = |frame: protocol::machine::StatusFrame| {
+            let held = |frame: api::machine::StatusFrame| {
                 models.iter().all(|model| frame.models.iter().any(|held| held.repository == *model))
             };
             let cold = !machines.frame(&row.name).is_some_and(held);

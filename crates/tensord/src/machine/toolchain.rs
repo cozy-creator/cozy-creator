@@ -12,7 +12,7 @@ use std::{
 };
 
 use platform::tools;
-use protocol::machine::{KernelVerdict, Toolchain};
+use api::machine::{KernelVerdict, Toolchain};
 use crate::stop::Stop;
 
 use crate::process::Supervised;

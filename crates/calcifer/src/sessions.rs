@@ -14,7 +14,7 @@ use axum::{
     extract::{State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, header},
 };
-use protocol::{
+use ::api::{
     calcifer::{BrowserSession, RedeemCode, SessionCode},
     error::{Error, Kind},
 };

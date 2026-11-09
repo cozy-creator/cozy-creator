@@ -1,7 +1,7 @@
 //! What a run sends: the machine's `RunSpec`, frozen at submit, inside Calcifer's `SubmitRun`.
 use std::path::PathBuf;
 
-use protocol::{
+use api::{
     calcifer::{On, StagedInput, SubmitRun, Warning},
     choices::{self, Choice},
     error::{Error, Kind},
@@ -149,7 +149,7 @@ impl Call<'_> {
         let warnings = ignored.into_iter().chain(cuts).chain(limits).collect();
         SubmitRun {
             agreed: None,
-            stays: protocol::tool::stays(self.callable),
+            stays: api::calcifer::tool::stays(self.callable),
             on,
             hub: hub.to_owned(),
             kind,

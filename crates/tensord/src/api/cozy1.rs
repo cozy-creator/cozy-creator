@@ -12,7 +12,7 @@ use super::{
     machine_runs::{follow, query},
     v1, MachineIdentity,
 };
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use serde_json::{json, Value};
 use platform::durable::FileAt;
 use std::{

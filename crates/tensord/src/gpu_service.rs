@@ -36,10 +36,10 @@ use crate::storage::Store;
 
 /// The snapshots of `binding` that are views this process keeps (`storage::view`), as the
 /// executor opens them: their bytes, which no store holds.
-fn views(binding: &Binding) -> BTreeMap<String, executor_protocol::View> {
+fn views(binding: &Binding) -> BTreeMap<String, executor_api::View> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     (binding.snapshots.values().chain(std::iter::once(&binding.snapshot)))
-        .filter_map(|id| crate::storage::view(id).map(|view| (id.clone(), executor_protocol::View {
+        .filter_map(|id| crate::storage::view(id).map(|view| (id.clone(), executor_api::View {
             header: STANDARD.encode(&view.header),
             own: view.own.iter().map(|o| STANDARD.encode(o)).collect(),
         })))
@@ -82,13 +82,13 @@ pub(crate) fn prepared_uses(
     installed: &crate::journal::Installation,
     entrypoint: &str,
     payload: Option<&serde_json::Value>,
-) -> io::Result<BTreeMap<String, executor_protocol::PreparedUse>> {
+) -> io::Result<BTreeMap<String, executor_api::PreparedUse>> {
     let invalid = |detail: &str| io::Error::new(io::ErrorKind::InvalidInput, detail.to_string());
     let mut uses = BTreeMap::new();
     let Some(payload) = payload else { return Ok(uses) };
     let interface: serde_json::Value = serde_json::from_slice(&installed.interface).map_err(io::Error::other)?;
-    let Some(entry) = protocol::interface::entrypoint(&interface, entrypoint) else { return Ok(uses) };
-    for model in protocol::interface::models(entry) {
+    let Some(entry) = api::interface::entrypoint(&interface, entrypoint) else { return Ok(uses) };
+    for model in api::interface::models(entry) {
         let Some(field) = model.get("prepared_use") else { continue };
         let field = field.as_str().filter(|name| !name.is_empty() && !name.contains('.'))
             .ok_or_else(|| invalid("prepared_use must name a top-level field"))?;
@@ -99,7 +99,7 @@ pub(crate) fn prepared_uses(
         let path = model.get("path").and_then(serde_json::Value::as_str)
             .ok_or_else(|| invalid("prepared-use model path is absent"))?;
         let value = payload.get(field).ok_or_else(|| invalid("prepared-use field is absent"))?;
-        let mut use_: executor_protocol::PreparedUse = serde_json::from_value(value.clone())
+        let mut use_: executor_api::PreparedUse = serde_json::from_value(value.clone())
             .map_err(io::Error::other)?;
         use_.validate().map_err(invalid)?;
         uses.insert(path.to_string(), use_);
@@ -136,7 +136,7 @@ pub struct GpuConfig {
     /// How a call shares a GPU that drives a display (a shared machine's `machine.display_pace`):
     /// sent in Start when one of its lane's GPUs drives one now.
     #[serde(default)]
-    pub display_pace: Option<executor_protocol::DisplayPace>,
+    pub display_pace: Option<executor_api::DisplayPace>,
     /// Explicitly configured locations; the executor seal is imposed on top of them.
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
@@ -476,7 +476,7 @@ pub struct Member {
     /// Why it holds less than `level`, from the last pass over the set.
     held_back: Mutex<&'static str>,
     /// One explicitly requested program variant, outside model construction identity.
-    payload: Option<protocol::machine::Json>,
+    payload: Option<api::machine::Json>,
     /// Point-in-time outcome, attempted once per explicit warm declaration. Keeper passes
     /// never recapture a declined variant; another explicit warm declaration can retry.
     prepared: Mutex<Option<bool>>,
@@ -485,7 +485,7 @@ pub struct Member {
     fetch: Option<Arc<crate::access::Fetch>>,
 }
 impl Member {
-    pub fn new(held: HeldGeneration, plan: Option<Plan>, level: Level, fetch: Option<Arc<crate::access::Fetch>>, payload: Option<protocol::machine::Json>) -> Arc<Self> {
+    pub fn new(held: HeldGeneration, plan: Option<Plan>, level: Level, fetch: Option<Arc<crate::access::Fetch>>, payload: Option<api::machine::Json>) -> Arc<Self> {
         Arc::new(Self {
             held,
             plan,
@@ -756,7 +756,7 @@ fn prepare_request(record: &Execution, plan: &Plan) -> PrepareRequest {
         request_id: record.id.clone(),
         construction: plan.construction.clone(),
         entrypoint: plan.entrypoint.clone(),
-        payload: executor_protocol::Json(record.invocation.input.clone()),
+        payload: executor_api::Json(record.invocation.input.clone()),
         attention_kernel: record.invocation.attention_kernel.clone(),
         bits: plan.bits(),
         input_metadata: record.invocation.inputs.iter().map(|i| (i.input_id.clone(), InputMetadata {
@@ -1050,7 +1050,7 @@ impl Pool {
         }))
     }
     /// Current driver-attributed process usage. TensorD owns no GPU allocations.
-    pub fn memory(&self) -> BTreeMap<String, protocol::machine::GpuMemory> {
+    pub fn memory(&self) -> BTreeMap<String, api::machine::GpuMemory> {
         self.devices.iter().filter_map(|device| {
             let gpu = device.memory.as_ref()?;
             Some((gpu.uuid.clone(), gpu.status(&self.tenants)?))
@@ -1227,7 +1227,7 @@ impl Pool {
     }
     /// The machine's display pace for a call on these GPUs when one of them drives a display now
     /// (NVML's display-active: a desktop is initialized on it), else none.
-    fn display_pace(&self, gpus: &[Device]) -> Option<executor_protocol::DisplayPace> {
+    fn display_pace(&self, gpus: &[Device]) -> Option<executor_api::DisplayPace> {
         let pace = self.config.display_pace?;
         let shown = gpus.iter().find(|gpu| {
             let id = gpu.memory.as_ref().map_or(gpu.entry.as_str(), |memory| memory.uuid.as_str());
@@ -1563,10 +1563,10 @@ impl Pool {
         let reply = session.executor.command(
             &Command::Map(Map {
                 construction: plan.construction.clone(),
-                level: if level == Level::Gpu { executor_protocol::Level::Gpu } else { executor_protocol::Level::Ram },
+                level: if level == Level::Gpu { executor_api::Level::Gpu } else { executor_api::Level::Ram },
                 request_id: if member.payload.is_some() { request_id } else { String::new() },
                 entrypoint: plan.entrypoint.clone(),
-                payload: member.payload.as_ref().map(|payload| executor_protocol::Json(
+                payload: member.payload.as_ref().map(|payload| executor_api::Json(
                     serde_json::from_str(payload.get()).expect("validated warm payload"))),
             }),
             &mut callbacks,
@@ -1893,11 +1893,11 @@ impl Pool {
         let invalid = |detail: &str| io::Error::new(io::ErrorKind::InvalidData, detail.to_string());
         let interface: serde_json::Value =
             serde_json::from_slice(&installed.interface).map_err(io::Error::other)?;
-        let entry = protocol::interface::entrypoint(&interface, entrypoint)
+        let entry = api::interface::entrypoint(&interface, entrypoint)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "declared entrypoint absent"))?;
-        let application = protocol::interface::application(&interface)
+        let application = api::interface::application(&interface)
             .ok_or_else(|| invalid("declared application absent"))?;
-        let models = protocol::interface::models(entry).to_vec();
+        let models = api::interface::models(entry).to_vec();
         let uses = prepared_uses(installed, entrypoint, payload)?;
         let prefix = format!("{entrypoint}.models.");
         let slot_of = |model: &serde_json::Value| -> io::Result<(String, String)> {
@@ -3553,11 +3553,11 @@ impl Pool {
         let interface = session.executor.root_path().join("package-interface.json");
         let caller = calls.map(|calls| calls.caller(&record, held, document, &interface, &spool).0);
         callbacks.caller = caller.as_ref();
-        let entry = protocol::interface::entrypoint(document, &plan.entrypoint).cloned().unwrap_or_default();
-        let weights = protocol::interface::weights_outputs(&entry)
+        let entry = api::interface::entrypoint(document, &plan.entrypoint).cloned().unwrap_or_default();
+        let weights = api::interface::weights_outputs(&entry)
             .filter_map(|(output, max_bytes)| Some((output.to_owned(), max_bytes?)))
             .collect();
-        let operation = crate::call_memo::operation(&held.record, &record.invocation.module, protocol::interface::invocable(&entry))
+        let operation = crate::call_memo::operation(&held.record, &record.invocation.module, api::interface::invocable(&entry))
             .map(|(operation, _)| operation)
             .unwrap_or_default();
         session.executor.codec().prestart();
@@ -3751,8 +3751,8 @@ fn unpack_runtime(wheel: &Path, into: &Path) -> io::Result<PathBuf> {
 
 /// Whether any entrypoint of an installed interface constructs a model.
 fn binds_models(interface: &serde_json::Value) -> bool {
-    protocol::interface::entrypoints(interface)
-        .any(|entry| protocol::interface::models(entry).iter().any(constructed))
+    api::interface::entrypoints(interface)
+        .any(|entry| api::interface::models(entry).iter().any(constructed))
 }
 
 /// No deadline authorizes release: exact kernel exits wake the existing activity loop.
@@ -4051,7 +4051,7 @@ pub(crate) fn stage_inputs(
             .take(96)
             .collect();
         let local = directory.join(format!("{position:03}-{field}"));
-        if input.media_type == protocol::tree::MEDIA {
+        if input.media_type == api::tree::MEDIA {
             let manifest = held_bytes(cas, &input.digest, input.length)?;
             materialize_tree(cas, &manifest, &local)?;
             // A payload names a tree by its field's ref or by its manifest digest.

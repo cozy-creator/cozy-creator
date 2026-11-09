@@ -19,7 +19,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use protocol::error::{Envelope, Error};
+use api::error::{Envelope, Error};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     io::{Read, Seek, SeekFrom},

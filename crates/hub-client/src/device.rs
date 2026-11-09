@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::types::AuthResult;
 use crate::{Client, Error};
 use platform::paths::Home;
-use protocol::{config::Origin, error::Error as Refusal};
+use api::{config::Origin, error::Error as Refusal};
 
 const ENROLL_DOMAIN: &str = "authkit.device-key-enrollment/1";
 const LOGIN_DOMAIN: &str = "authkit.device-key-login/1";

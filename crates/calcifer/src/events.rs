@@ -13,11 +13,11 @@ use axum::{
     response::sse::{self, KeepAlive, Sse},
 };
 use futures_util::Stream;
-use protocol::{
+use api::{
     calcifer::{Event, Machine, Shown, StreamEvent},
     error::Error,
     ids::RunId,
-    project::Card,
+    calcifer::project::Card,
 };
 use tokio::{
     sync::{
@@ -152,17 +152,17 @@ pub fn canvas(id: &str, seq: u64, cards: BTreeMap<String, Option<Card>>) {
 }
 
 /// Tells every stream project `id`'s history moved, and what undo and redo would take now.
-pub fn history(id: &str, undo: Option<Box<protocol::project::HistoryEntry>>, redo: Option<Box<protocol::project::HistoryEntry>>) {
+pub fn history(id: &str, undo: Option<Box<api::calcifer::project::HistoryEntry>>, redo: Option<Box<api::calcifer::project::HistoryEntry>>) {
     let _ = PROJECTS.said.send(StreamEvent::History { id: id.to_owned(), undo, redo });
 }
 
 /// Tells every stream what project `id` is fetching ahead moved.
-pub fn ahead_updated(id: &str, ahead: &protocol::project::Ahead) {
+pub fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
 /// Tells every stream one job of project `id` changed.
-pub fn job_updated(id: &str, job: &protocol::project::Job, seq: u64) {
+pub fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
 }
 
@@ -229,7 +229,7 @@ pub(crate) async fn show(
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<axum::http::StatusCode, crate::api::Refusal> {
     let shown: Shown = crate::api::parse(&body?)?;
-    let gone = || crate::api::Refusal(Error::new(protocol::error::Kind::NotFound, "stream_unknown", format!("no stream {stream} is open: it ended")));
+    let gone = || crate::api::Refusal(Error::new(api::error::Kind::NotFound, "stream_unknown", format!("no stream {stream} is open: it ended")));
     if !SHOWN.lock().expect("shown lock").contains_key(&stream) {
         return Err(gone());
     }

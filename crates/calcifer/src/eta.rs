@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use protocol::calcifer::{EtaBasis, Progress};
+use api::calcifer::{EtaBasis, Progress};
 use serde::Deserialize;
 
 /// How many of the newest runs like it a prior stands on.
@@ -436,14 +436,14 @@ fn left_of(expected: f64, ran: f64) -> (f64, f64) {
 }
 
 /// What a run of `steps` steps would take before it's sent, by its prior; none: `first_run`.
-pub fn before(prior: Option<&Prior>, steps: Option<u64>) -> protocol::calcifer::Estimate {
+pub fn before(prior: Option<&Prior>, steps: Option<u64>) -> api::calcifer::Estimate {
     match prior {
-        Some(prior) => protocol::calcifer::Estimate {
+        Some(prior) => api::calcifer::Estimate {
             eta_s: Some((prior.total_ms(steps) / 1000.0).round() as i64),
             eta_confidence: Some((prior.confidence * 100.0).round() / 100.0),
             eta_basis: prior.basis,
             runs: prior.runs as u32,
         },
-        None => protocol::calcifer::Estimate { eta_s: None, eta_confidence: None, eta_basis: EtaBasis::FirstRun, runs: 0 },
+        None => api::calcifer::Estimate { eta_s: None, eta_confidence: None, eta_basis: EtaBasis::FirstRun, runs: 0 },
     }
 }
