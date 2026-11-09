@@ -5,7 +5,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 doc=$root/crates/tensord/api/openapi.yaml
 routers=("$root/crates/tensord/src/api/http.rs" "$root/crates/tensord/src/api/server.rs")
-client=$root/crates/api/src/machine/client.rs
+client=$root/crates/calcifer/src/machine_client.rs
 shape() { sed -E 's/\{[^}]*\}/{}/g' | sort -u; }
 fail() { echo "machine-routes: $*" >&2; exit 1; }
 

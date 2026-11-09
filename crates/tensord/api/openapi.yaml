@@ -10,7 +10,7 @@ info:
 
     This file follows the server: a change to a route or a body lands here in the same PR.
     `scripts/machine-routes.sh` (the build check) holds TensorD's router and this file to the same
-    routes, both ways, and every route the machine client (`api::machine::client`) calls to it.
+    routes, both ways, and every route the machine client (`calcifer::machine_client`) calls to it.
 
 security: [{cozy_cap: []}]
 

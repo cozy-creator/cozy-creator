@@ -1,6 +1,6 @@
 [package]
 name = "api"
-description = "The wire types every cozy process shares: the machine API and its client, Cozy-Cap, the error envelope, ids and config.toml"
+description = "The types of every cozy API (Calcifer's, the machine's) and the formats and pieces they share; no HTTP"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,14 +10,9 @@ publish.workspace = true
 [dependencies]
 executor-api.workspace = true
 base64.workspace = true
-bytes.workspace = true
 platform.workspace = true
 ed25519-dalek.workspace = true
-eventsource-stream.workspace = true
-futures-util.workspace = true
 hex.workspace = true
-reqwest.workspace = true
-rustls.workspace = true
 saphyr.workspace = true
 saphyr-parser.workspace = true
 serde.workspace = true
@@ -29,8 +24,6 @@ sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 toml.workspace = true
-tokio.workspace = true
-tokio-rustls.workspace = true
 url.workspace = true
 idna_adapter.workspace = true
 

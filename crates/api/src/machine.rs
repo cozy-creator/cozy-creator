@@ -6,8 +6,10 @@ pub use executor_api::TensorFSOptions;
 use executor_api::base64_bytes;
 use serde::{Deserialize, Serialize};
 
-pub mod client;
 pub mod capability;
+
+/// The one DNS name every machine's self-signed leaf carries; clients pin the leaf itself.
+pub const SERVER_NAME: &str = "cozy-worker";
 
 /// Routes, as axum templates.
 pub mod path {

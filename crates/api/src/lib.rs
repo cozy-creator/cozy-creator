@@ -1,4 +1,6 @@
-//! The wire types every cozy process shares.
+//! The types of every cozy API, and nothing that speaks one. `calcifer` is Calcifer's HTTP API, which the CLI and
+//! the page call; `machine` is a machine's (TensorD's), which Calcifer calls; the rest are the pieces and formats
+//! they share. No HTTP, TLS or async runtime: each client brings its own.
 #![forbid(unsafe_code)]
 
 pub mod calcifer;

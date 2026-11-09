@@ -23,6 +23,7 @@ mod local;
 pub mod local_code;
 pub mod tools;
 pub mod machines;
+mod machine_client;
 pub mod outputs;
 mod others;
 mod page;

@@ -1,6 +1,6 @@
-//! A typed client of one machine's API. TLS admits exactly the machine's pinned leaf. Control
-//! calls and SSE share one HTTP/2 connection; bulk bytes go on [`Bulk`] HTTP/1.1 connections of
-//! their own, so parts and ranges move side by side on separate TCP connections. Nothing here
+//! Calcifer's client of one machine's API (`api::machine`). TLS admits exactly the machine's
+//! pinned leaf. Control calls and SSE share one HTTP/2 connection; bulk bytes go on [`Bulk`]
+//! HTTP/1.1 connections of their own, so parts and ranges move side by side on separate TCP connections. Nothing here
 //! judges the machine by its silence: a busy one answers late, never wrongly. Every connection
 //! carries TCP keepalive, which the peer's kernel answers however busy its process is, so only a
 //! host or path that is gone ends one; bulk callers judge their lanes by measured progress.
@@ -24,17 +24,14 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest as _, Sha256};
 use url::Url;
 
-use super::{
-    Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
-    RunEvent, RunList, RunRequest, RunState, StatusFrame, parse_held, path,
-};
-use crate::{
-    machine::capability,
+use api::{
     error::{Envelope, Kind},
+    machine::{
+        Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges, RunEvent, RunList,
+        RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held, path,
+    },
 };
 
-/// The name every machine's self-signed leaf carries.
-pub const SERVER_NAME: &str = "cozy-worker";
 /// A cap is checked when a request opens; an open stream outlives it.
 const CAP_SECONDS: i64 = 300;
 /// TCP keepalive: a probe after this long without a packet, and again this often; the
@@ -48,7 +45,7 @@ pub enum Error {
     #[error("the machine refused it ({}): {}", .error.code, .error.message)]
     Refused {
         status: u16,
-        error: Box<crate::error::Error>,
+        error: Box<api::error::Error>,
     },
     /// No connection could be made: refused, reset or timed out while connecting, a name that
     /// does not resolve, or TLS that failed.
@@ -92,15 +89,12 @@ pub enum Auth {
         key: Arc<SigningKey>,
         worker: String,
     },
-    /// One token for every request (a run-scope play link's).
-    Token(String),
 }
 
 impl Auth {
     fn header(&self) -> Option<String> {
         let token = match self {
             Auth::None => return None,
-            Auth::Token(token) => token.clone(),
             Auth::Key { key, worker } => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -148,14 +142,6 @@ impl Machine {
             auth,
             control,
         })
-    }
-
-    /// This machine with requests authorized by `auth` instead, on the same connections.
-    pub fn with_auth(&self, auth: Auth) -> Self {
-        Self {
-            auth,
-            ..self.clone()
-        }
     }
 
     /// A bulk lane: HTTP/1.1 connections of its own. Dropping it closes them.
@@ -239,11 +225,6 @@ impl Machine {
     /// Cancels the run; an id the machine never received is recorded canceled.
     pub async fn cancel(&self, id: &str) -> Result<RunState, Error> {
         json(send(self.request(Method::POST, path::CANCEL, &[id])).await?).await
-    }
-
-    /// A failed attempt's triage bundle (JSON).
-    pub async fn triage(&self, id: &str) -> Result<Bytes, Error> {
-        bytes(send(self.request(Method::GET, path::TRIAGE, &[id])).await?).await
     }
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
@@ -497,7 +478,7 @@ async fn send(request: RequestBuilder) -> Result<Response, Error> {
     let error = match serde_json::from_slice::<Envelope>(&body) {
         Ok(envelope) => envelope.error,
         // A HEAD's refusal has no body; another service's is not ours.
-        Err(_) if body.is_empty() => crate::error::Error::new(
+        Err(_) if body.is_empty() => api::error::Error::new(
             kind(status),
             format!("http_{}", status.as_u16()),
             status.canonical_reason().unwrap_or("refused"),

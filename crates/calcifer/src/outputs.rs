@@ -28,10 +28,7 @@ use ::api::{
     calcifer::{Event, MachineState},
     error::Kind,
     ids::{Digest, RunId},
-    machine::{
-        self as v1,
-        client::{self, Bulk},
-    },
+    machine as v1,
     tree,
 };
 use serde::Deserialize;
@@ -47,6 +44,7 @@ use crate::{
     api::{self, Api, Refusal},
     lanes::{self, Ranged},
     link::LANES,
+    machine_client::{self, Bulk},
     lock,
     store::{Measured, OutputRow, RunRow, State as RunState, StoreError},
 };
@@ -222,7 +220,7 @@ impl Calcifer {
         };
         let Some(lane) = link.lane(0, false) else { return true };
         let target = v1::OutputTarget { run: run.id.to_string(), output: item.name.clone(), index: item.index, member: String::new() };
-        !matches!(lane.get(&target, (0, 1), item.rev).await, Err(client::Error::Refused { status: 404, .. }))
+        !matches!(lane.get(&target, (0, 1), item.rev).await, Err(machine_client::Error::Refused { status: 404, .. }))
     }
 
     /// What stays on `machine` brought here now, because something needs it, as an export brings an output: its project's `files/`
@@ -1089,16 +1087,16 @@ async fn read_range(
 }
 
 /// A machine's refusal of a read, as the read acts on it.
-fn refused(e: client::Error) -> Ranged<Failure> {
+fn refused(e: machine_client::Error) -> Ranged<Failure> {
     match e {
-        client::Error::Refused { status: 404, error } => Ranged::Stop(Failure::Lost(format!(
+        machine_client::Error::Refused { status: 404, error } => Ranged::Stop(Failure::Lost(format!(
             "the machine no longer holds it ({}: {})",
             error.code, error.message
         ))),
         // Definitive: the machine will not serve this read (403, 400, 416, 501) or holds the
         // output at another revision (412). While the run goes on, its events bring the newer
         // one; once it ended, none comes.
-        client::Error::Refused {
+        machine_client::Error::Refused {
             status: 400 | 403 | 412 | 416 | 501,
             error,
         } => Ranged::Stop(Failure::Refused(format!(
@@ -1107,10 +1105,10 @@ fn refused(e: client::Error) -> Ranged<Failure> {
         ))),
         // Anything else may pass (its key not admitted yet, a refusal while it starts): asked
         // again, paced, until it serves or the machine ends, which loses the item.
-        client::Error::Refused { status, error } if status < 500 => {
+        machine_client::Error::Refused { status, error } if status < 500 => {
             Ranged::Stop(Failure::Again(format!("{}: {}", error.code, error.message)))
         }
-        client::Error::Answer(message) => Ranged::Stop(Failure::Again(message)),
+        machine_client::Error::Answer(message) => Ranged::Stop(Failure::Again(message)),
         e => Ranged::Again(e.to_string()),
     }
 }

@@ -13,9 +13,6 @@ use std::{
 };
 use platform::durable::Mode;
 
-/// The one DNS name of every machine leaf; clients pin the leaf itself.
-pub const SERVER_NAME: &str = "cozy-worker";
-
 pub struct Lifetime {
     pub boot_id: String,
     pub cert_pem: String,
@@ -105,7 +102,7 @@ fn mint_leaf() -> io::Result<(String, String)> {
         KeyUsagePurpose,
     };
     let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).map_err(io::Error::other)?;
-    let mut params = CertificateParams::new(vec![SERVER_NAME.into()]).map_err(io::Error::other)?;
+    let mut params = CertificateParams::new(vec![api::machine::SERVER_NAME.into()]).map_err(io::Error::other)?;
     let mut name = DistinguishedName::new();
     name.push(DnType::CommonName, "tensord");
     params.distinguished_name = name;
