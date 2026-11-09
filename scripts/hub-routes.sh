@@ -19,7 +19,7 @@ if [ -n "$missing" ]; then
   printf '`api::hub` calls routes api/openapi.yaml does not have:\n%s\n' "$missing" >&2
   exit 1
 fi
-echo "hub-routes: $(wc -l <<<"$called") routes `api::hub` calls, all in api/openapi.yaml"
+echo "hub-routes: $(wc -l <<<"$called") routes \`api::hub\` calls, all in api/openapi.yaml"
 
 # `api::hub`'s rental types read only fields the document's schema of the same name has (`Type=Schema` where the names
 # differ): a field the Hub never sends decodes as its default, silently. A struct-level rename or a flatten fails, unread.

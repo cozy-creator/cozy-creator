@@ -160,9 +160,12 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--gpus" = "gate: cli cells"
 "--attention-kernel" = "gate: cli cells"
 "--lora" = "gate: cli cells"
+"--output" = "pr: the CLI in a folder Calcifer can't see: a script's still, downloaded by its digest (-o)"
+"--estimate" = "pr: local code is quoted from its runs"
 ["run show"]
 test = "pr: a run followed, a snapshot, a cancel"
 "--once" = "pr: a run followed, a snapshot, a cancel"
+"--output" = "pr: a tool: a Latents result stays on its machine, any other file comes down (-o)"
 ["run ls"]
 test = "pr: run ls filters"
 "--state" = "pr: run ls filters"
@@ -204,8 +207,6 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; a fu
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
 "--missing" = "pr: projects: only what has no state; reverting runs nothing"
 "--outdated" = "pr: a pin out of date: skipped by the plain run, re-run at its turn, its pin gone, the version it held kept"
-"--take" = "pr: projects: keeps: the take reaches the function as continue_from, one it doesn't have refused"
-"--in" = "pr: projects: keeps: where it lands, ignored with all"
 "--queue" = "pr: projects: three queued, one canceled, the rest land"
 
 ["project cancel"]
@@ -228,7 +229,7 @@ test = "pr: by the CLI: prints the undo line; discards: <name>.<n>, a take off i
 
 ["project export"]
 test = "pr: projectdb: the project as YAML, read back by import unchanged; an edited one imports as one entry"
-"-o" = "pr: projectdb: roundtrip: written to a file"
+"--out" = "pr: projectdb: roundtrip: written to a file (-o)"
 
 ["project approve"]
 test = "pr: projects: its approved set, an edit just before it surviving"

@@ -252,6 +252,7 @@ docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; ret
 # failure is the caller's to judge.
 inside() {
   local name=$1; shift
+  printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"  # docker runs the binary itself
   cp "$HOME/.cozy/calcifer/calcifer.lock.holder" "$HOME/.cozy/config.toml" "$seen/"
   docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME=/home/cli -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
     -e COZY_PROJECT="${UNSEEN_PROJECT:-}" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" \
