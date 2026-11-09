@@ -4,13 +4,11 @@ mod tensor_export;
 mod cache_owner;
 mod plan;
 #[cfg(feature = "store")]
-mod continuation;
 #[cfg(feature = "store")]
 mod host;
 #[cfg(feature = "store")]
 mod pages;
 #[cfg(feature = "store")]
-mod phase;
 #[cfg(feature = "store")]
 mod retained;
 #[cfg(feature = "store")]
@@ -650,6 +648,5 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "store")]
     module.add_class::<retained::PyRetained>()?;
     #[cfg(feature = "store")]
-    module.add_class::<phase::PhaseController>()?;
     Ok(())
 }
