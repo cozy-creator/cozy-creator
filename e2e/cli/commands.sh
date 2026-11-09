@@ -433,10 +433,11 @@ status, body = call("PUT", f"/v1/objects/{digest}", manifest, token)
 assert status < 300, f"PUT /v1/objects/{digest}: {status} {body[:300]!r}"
 run = {"id": f"e2e-path-{time.time_ns()}", "spec": {"kind": "call", "source": {"local": {"manifest": digest}},
                                                    "entrypoint": "reverse", "payload": {"text": "abc"}}}
-status, body = call("POST", "/v1/runs", json.dumps(run).encode(), token)
-open(out, "wb").write(body)
-print(f"POST /v1/runs, a manifest naming {os.path.dirname(project)}: {status} {body[:300].decode()}")
-sys.exit(0 if status >= 400 else 1)
+status, body = call("POST", "/v1/runs/batch", json.dumps({"runs": [run]}).encode(), token)
+print(f"POST /v1/runs/batch, a manifest naming {os.path.dirname(project)}: {status} {body[:300].decode()}")
+refusal = json.loads(body)["runs"][0].get("refusal") if status == 200 else None  # a batch answers each run's refusal
+open(out, "w").write(json.dumps({"error": refusal}) if refusal else body.decode())
+sys.exit(0 if refusal else 1)
 PY
 cozy --json machine authorize "$key" --remove > /dev/null || check "path manifest: machine authorize --remove failed"
 [ "$code" = 0 ] && J '.error.code == "local_source_path_refused"' "$OUT/path-refused.json" \

@@ -104,11 +104,11 @@ impl Error {
             ),
             Self::Call(message) => {
                 // A timeout is the Hub keeping quiet; only what never connected says anything of this computer.
-                let remedy = match message.contains("timed out") {
-                    true => "the Hub took too long to answer: it is busy or down, and asking again is safe",
-                    false => "this computer couldn't reach the Hub: its connection, or the Hub being down. Asking again is safe",
+                let (code, remedy) = match message.contains("timed out") {
+                    true => ("hub_slow", "the Hub took too long to answer: it is busy or down, and asking again is safe"),
+                    false => ("hub_unreachable", "this computer couldn't reach the Hub: its connection, or the Hub being down. Asking again is safe"),
                 };
-                (Refusal::unavailable("hub_unreachable", message), remedy.into())
+                (Refusal::unavailable(code, message), remedy.into())
             }
             Self::Credential(message) => (
                 Refusal::credential("hub_credential", message).next(login()),

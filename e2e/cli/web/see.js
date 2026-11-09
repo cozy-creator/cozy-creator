@@ -614,7 +614,9 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     tab.setDefaultTimeout(STEP_MS);
     const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
     await tab.setViewportSize({ width: 1000, height: 800 });
-    const spruce = `${base}/#/projects/${ours.find((row) => row.name === 'spruce').id}`;
+    // By its folder: with no way to forget a project, an earlier pass's spruce keeps the name and this one is spruce_2.
+    const of = (tree) => ours.find((row) => row.path === join(forest, tree));
+    const spruce = `${base}/#/projects/${of('spruce').id}`;
     await tab.goto(spruce);
     await tab.waitForSelector('nav.ptabs a.ptab.on');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
@@ -677,8 +679,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
 
     // Found by name, and by a folder no name holds.
     const find = tab.locator('.drawer input[aria-label="Search projects"]');
-    await find.fill('ginkgo');
-    const ginkgo = ours.find((row) => row.name === 'ginkgo').id;
+    await find.fill(of('ginkgo').name);
+    const ginkgo = of('ginkgo').id;
     await until('one found by name', drawn, (now) => now.join() === ginkgo).then(() => check('tabs_find_by_name', true), (error) => check('tabs_find_by_name', false, error.message));
     await find.fill(basename(forest));
     const ids = ours.map((row) => row.id).sort().join();

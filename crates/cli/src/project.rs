@@ -636,7 +636,7 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         return Ok(ExitCode::SUCCESS);
     }
     if asked.joined {
-        let name = &project;
+        let name = asked.path.file_name().map_or_else(|| project.clone(), |name| name.to_string_lossy().into_owned());
         output::say(ctx, &match asked.added {
             0 => format!("a render is already going in {name}, and this adds nothing to it: joining it"),
             _ => format!("a render is already going in {name}: joining it"),

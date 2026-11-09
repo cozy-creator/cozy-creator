@@ -334,22 +334,13 @@ const RECHECK: Duration = Duration::from_secs(60);
 /// How long a run waits on a package's first read: it holds up a run, so a Hub slower than this
 /// leaves the run with what its machine holds.
 const LATE: Duration = Duration::from_secs(5);
-/// How long a Hub may take over a package's releases, for whoever has nothing else to go on. A Hub working on an answer sends nothing, so there is
-/// no progress to measure, and one that takes the request and never answers would hold an install with nothing in any log.
-const UNANSWERED: Duration = Duration::from_secs(30);
 
 impl Releases {
     /// `package`'s releases at its Hub now, and kept.
     pub(crate) async fn now(&self, api: &Api, hub: &str, package: &str) -> Result<Arc<cards::Releases>, Error> {
         let reader = api.machines.hubs.reader(hub)?;
-        let read = match tokio::time::timeout(UNANSWERED, cards::releases(&reader, package)).await {
-            Ok(read) => Arc::new(read?),
-            Err(_) => {
-                let said = format!("{hub} gave no answer about {package} in {}s", UNANSWERED.as_secs());
-                tracing::warn!("{said}");
-                return Err(Error::new(Kind::Unavailable, "hub_slow", said).remedy("it's busy or down: asking again is safe"));
-            }
-        };
+        // A Hub that takes the request and never answers is the client's to end (`hub_slow`, after 30 s of nothing).
+        let read = Arc::new(cards::releases(&reader, package).await.inspect_err(|e| tracing::warn!("{package}'s releases at {hub}: {e}"))?);
         let mut kept = self.0.lock().expect("releases lock");
         kept.insert((canonical(hub), package.to_owned()), (Instant::now(), read.clone()));
         Ok(read)
