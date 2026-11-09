@@ -1,13 +1,12 @@
 //! The tools this computer has of those cozy runs and never bundles, as `cozy doctor` shows them.
-//! Fetching the ones cozy installs itself on first need is `calcifer::tools`, which features call
-//! through `ffmpeg` and `uv` here.
+//! Calcifer fetches the ones cozy installs itself, on first need.
 use std::{
     fs::File,
     path::{Path, PathBuf},
 };
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use platform::tools::{self, Class, Found, Side, TOOLS};
+use platform::tools::{self, Class, Found, Side, TOOLS, install_hint};
 use api::error::{Error, Kind};
 use serde::Serialize;
 
@@ -60,8 +59,6 @@ pub(crate) fn rows(ctx: &Context, side: Side) -> Vec<Row> {
         .collect()
 }
 
-use calcifer::tools::install_hint;
-
 /// A row as a line of `cozy doctor`.
 pub(crate) fn cells(row: &Row) -> [String; 3] {
     match row.found {
@@ -85,19 +82,7 @@ pub(crate) fn cells(row: &Row) -> [String; 3] {
 }
 
 fn path() -> Vec<PathBuf> {
-    calcifer::tools::path()
-}
-
-pub use calcifer::tools::Ffmpeg;
-
-/// ffmpeg for a feature that needs it (`calcifer::tools::ffmpeg`), what its fetch says printed.
-pub async fn ffmpeg(ctx: &Context) -> Result<Ffmpeg, Error> {
-    calcifer::tools::ffmpeg(&ctx.home, &|line| output::say(ctx, line)).await
-}
-
-/// uv for authoring (`calcifer::tools::uv`), what its fetch says printed.
-pub async fn uv(ctx: &Context) -> Result<PathBuf, Error> {
-    calcifer::tools::uv(&ctx.home, &|line| output::say(ctx, line)).await
+    std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
 }
 
 /// The refusal a feature gives when an essential tool is missing: what its absence costs, what
@@ -120,7 +105,7 @@ fn doctor(ctx: &Context) -> &'static str {
     }
 }
 
-/// Downloads `url` into `part` (`calcifer::tools::download`), showing the bytes moved on a terminal.
+/// Downloads `url` into `part` (`tensorfs::fetch::get_pinned_into`), showing the bytes moved on a terminal.
 pub(crate) async fn download(ctx: &Context, url: &str, part: &Path) -> Result<(File, String), String> {
     let bar = match !ctx.json && ctx.term.stderr {
         true => ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr()),
@@ -129,7 +114,7 @@ pub(crate) async fn download(ctx: &Context, url: &str, part: &Path) -> Result<(F
     bar.set_style(ProgressStyle::with_template("{spinner} {bytes} at {bytes_per_sec}").expect("a template"));
     let mut first = true;
     let shown = bar.clone();
-    let answer = calcifer::tools::download(url, part, &mut |at| {
+    let answer = tensorfs::fetch::get_pinned_into(url, part, &mut |at| {
         if std::mem::take(&mut first) && at > 0 {
             shown.println(format!("resuming at {}", output::bytes(at)));
         }

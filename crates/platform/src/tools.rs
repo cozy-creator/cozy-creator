@@ -397,6 +397,16 @@ pub fn ffmpeg_encodes(ffmpeg: &Path, encoder: &str) -> bool {
     })
 }
 
+/// The words that install `tool` here.
+pub fn install_hint(tool: &Tool, path: &[PathBuf]) -> String {
+    match tool.install {
+        Install::Fetched => "cozy fetches it when a feature first needs it".into(),
+        Install::System(package) => system_install(package, path)
+            .unwrap_or_else(|| format!("install {package} with this computer's package manager")),
+        Install::Note(text) => format!("install {text}"),
+    }
+}
+
 /// The OS package manager's command for `package`, when this computer has one: `sudo` named where
 /// it needs it, for the person to run.
 pub fn system_install(package: &str, path: &[PathBuf]) -> Option<String> {

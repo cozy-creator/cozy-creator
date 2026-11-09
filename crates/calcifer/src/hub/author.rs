@@ -53,7 +53,7 @@ async fn tools(api: &Api, project: &Project, say: Say<'_>) -> Result<PathBuf, Er
 fn git_missing() -> Error {
     let tool = platform::tools::tool("git");
     Error::new(Kind::Unavailable, "git_unavailable", format!("git not found: {}", tool.cost))
-        .next(crate::tools::install_hint(tool, &crate::tools::path()))
+        .next(platform::tools::install_hint(tool, &crate::tools::path()))
         .next("cozy doctor")
 }
 

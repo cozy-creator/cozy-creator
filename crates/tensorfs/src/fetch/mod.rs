@@ -17,8 +17,9 @@ pub mod token;
 mod volume;
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -46,6 +47,39 @@ use download::{Shared, Task};
 pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let policy = SourcePolicy { any_host: true, allow_local: policy::is_loopback_origin(url), max_redirects: 5, ..Default::default() };
     get_body(policy, url, &[], from, sink).await
+}
+
+/// [`get_pinned`] into the file at `part`, from the bytes it holds (what an earlier fetch reached resumes), telling
+/// `moved` each byte position reached; answers the file and its sha256 for the caller to hold to its pin. Once nothing
+/// moves for the stall rule it is refused, its bytes kept for the next fetch. Another fetch of the same file holds it:
+/// this one is refused.
+pub async fn get_pinned_into(url: &str, part: &Path, moved: &mut (dyn FnMut(u64) + Send)) -> std::result::Result<(File, String), String> {
+    let failed = |e: std::io::Error| format!("{}: {e}", part.display());
+    let mut file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(part).map_err(failed)?;
+    if !platform::lock::try_claim(&file).map_err(|e| e.to_string())? {
+        return Err(format!("another cozy command is fetching {url} now; run this again once it has"));
+    }
+    let (from, mut at) = (file.metadata().map_err(failed)?.len(), 0);
+    moved(from);
+    let mut sink = |start: u64, frame: &[u8]| -> Result<()> {
+        let written = (|| {
+            if start != at {
+                file.set_len(start)?;
+                file.seek(SeekFrom::Start(start))?;
+            }
+            file.write_all(frame)
+        })();
+        written.map_err(|e| Refusal { code: Code::IO_FAILED, detail: failed(e) })?;
+        at = start + frame.len() as u64;
+        moved(at);
+        Ok(())
+    };
+    get_pinned(url, from, &mut sink).await.map_err(|e| e.to_string())?;
+    file.rewind().map_err(failed)?;
+    let mut hash = sha2::Sha256::default();
+    std::io::copy(&mut file, &mut hash).map_err(failed)?;
+    file.rewind().map_err(failed)?;
+    Ok((file, crate::sha256::hex(&sha2::Digest::finalize(hash))))
 }
 
 /// GET a link a person wrote into `sink`, for a caller that judges what it gets itself: http or https, a public
