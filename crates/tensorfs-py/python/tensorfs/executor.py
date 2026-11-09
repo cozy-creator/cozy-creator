@@ -1,4 +1,4 @@
-"""The TensorD ↔ executor seam's types, compiled from `api::executor` (`tensorfs._ext.executor`)
+"""The TensorD ↔ executor seam's types, compiled from `executor_api` (`tensorfs._ext.executor`)
 and typed in `executor.pyi`. The Runtime reads TensorD's commands and answers and writes its
 requests through these: an unknown field is ignored, a missing one takes its default, a needed one
 raises `Malformed` (or ValueError, building one)."""
