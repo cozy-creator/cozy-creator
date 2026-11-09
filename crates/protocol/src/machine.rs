@@ -763,6 +763,8 @@ pub struct EstimateJob {
     pub size: JobSize,
     /// The user's GPU count; 0: the machine chooses.
     pub gpus: u32,
+    /// It opens a GPU, itself or a call it makes: a machine with none can't run it.
+    pub gpu: bool,
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
     pub prior_ms: u64,
@@ -831,15 +833,16 @@ pub struct EstimateAnswer {
 #[serde(default)]
 pub struct Quote {
     pub key: String,
+    /// It can run here at all; one that can't has no times.
     pub fits: bool,
-    /// Why it does not (`does_not_fit`).
+    /// Why it can't: `no_gpu`, `does_not_fit` (its weights, the disk).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Reason>,
     /// The GPUs it would run on; 0: none.
     pub width: u32,
     pub start_ms: u64,
     pub finish_ms: u64,
-    /// Its code's install and its weights' fetch, part of `start_ms`.
+    /// Its code's install and, its weights not here, their download and load onto the GPUs: part of `start_ms`.
     pub prepare_ms: u64,
     /// How many runs and jobs start here before it.
     pub queue_position: u32,

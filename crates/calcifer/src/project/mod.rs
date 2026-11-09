@@ -3146,7 +3146,10 @@ impl Walk {
                 let renderer = package.maker().ok()??;
                 let models = tokio::time::timeout(QUOTE_LATE, fit::checkpoints(&api, &target.hub, &package, &renderer.function, &made)).await.unwrap_or_default();
                 let size = v1::JobSize::of(&Value::Object(made));
-                Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, on })
+                let gpu = protocol::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
+                    interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.gpu(callable))
+                });
+                Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
             }
         });
         let jobs: Vec<placement::Job> = futures_util::future::join_all(called).await.into_iter().flatten().collect();
@@ -4796,7 +4799,7 @@ fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<
 /// to, each asked once, for `count` copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't
 /// answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, count: u32, update: bool) -> (On, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (On, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
     let models = match &read {
@@ -4805,7 +4808,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     };
     let named = format!("{package}/{function}@{release}");
     let jobs: Vec<placement::Job> = (0..count.max(1))
-        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, on: set.to_vec() })
+        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec() })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let (chosen, _) = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), hub, read.as_ref(), function, &Map::new());

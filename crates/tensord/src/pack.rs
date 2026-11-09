@@ -2,17 +2,17 @@
 //! each root its width by and its estimate quotes from. Roots start in the order they are ready,
 //! acceptance breaking ties, on the GPUs free soonest; an older root waiting for GPUs keeps them
 //! from younger ones. As each starts it takes its width in the plan that ends all that waits
-//! soonest, of those capping every job at one width; within 2% the wider plan wins, its first
-//! results coming sooner. So a lone job runs wide and several queued jobs one GPU each.
+//! soonest, of those capping every job at one width; within 2% the narrower plan wins. A width this
+//! machine has not measured is taken to gain nothing over the nearest it has (release owner,
+//! 11-09), so a job runs on one GPU until a run at a wider width measured that one faster.
+use std::collections::BTreeMap;
 
 /// One root's work.
 #[derive(Clone, Debug)]
 pub struct Job {
     /// The widths it runs at, smallest first; none: it holds no GPU.
     pub widths: Vec<u32>,
-    /// Its time on one GPU, ms.
-    pub one_ms: f64,
-    pub scaling: Scaling,
+    pub times: Times,
     /// The soonest it can start, ms from now: when its preparation ends.
     pub ready_ms: f64,
     /// It runs: its width and the ms it has left.
@@ -21,32 +21,23 @@ pub struct Job {
 
 impl Job {
     pub fn ms(&self, width: u32) -> f64 {
-        self.one_ms * self.scaling.at(width)
+        self.times.at(width)
     }
 }
 
-/// How a job goes faster with GPUs: the share of it that doesn't.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scaling {
-    pub serial: f64,
+/// A job's time at each width: what this machine measured at it, else at the nearest width it
+/// measured, a narrower one first; with none measured, `ms` at every width.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Times {
+    pub measured: BTreeMap<u32, f64>,
+    pub ms: f64,
 }
 
-impl Scaling {
-    /// Until two widths have run: 2 GPUs near 1.8x, 4 near 3x, about what fast-linked cards do.
-    pub const PRIOR: Scaling = Scaling { serial: 0.1 };
-
-    /// From its times at two widths.
-    pub fn of((a, at_a): (u32, f64), (b, at_b): (u32, f64)) -> Self {
-        let (a, b, r) = (f64::from(a), f64::from(b), at_a / at_b);
-        let under = (1.0 - 1.0 / a) - r * (1.0 - 1.0 / b);
-        match under.abs() > f64::EPSILON && a != b {
-            true => Scaling { serial: ((r / b - 1.0 / a) / under).clamp(0.0, 1.0) },
-            false => Self::PRIOR,
-        }
-    }
-
-    pub fn at(self, width: u32) -> f64 {
-        self.serial + (1.0 - self.serial) / f64::from(width.max(1))
+impl Times {
+    pub fn at(&self, width: u32) -> f64 {
+        let width = width.max(1);
+        let narrower = self.measured.range(..=width).next_back();
+        narrower.or_else(|| self.measured.range(width..).next()).map_or(self.ms, |(_, ms)| *ms)
     }
 }
 
@@ -60,7 +51,7 @@ pub struct Placed {
     pub position: usize,
 }
 
-/// Within this share of the soonest end, the wider plan wins.
+/// Within this share of the soonest end, the narrower plan wins.
 const TIE: f64 = 0.02;
 
 /// `jobs` on `gpus` GPUs, in their order (running ones first, then by acceptance).
@@ -84,7 +75,7 @@ pub fn pack(gpus: usize, jobs: &[Job]) -> Vec<Placed> {
     placed
 }
 
-/// The cap of the plan for `rest` from `free` that ends soonest, the widest within `TIE`.
+/// The cap of the plan for `rest` from `free` that ends soonest, the narrowest within `TIE`.
 fn cap(free: &[f64], jobs: &[Job], rest: &[usize]) -> u32 {
     let mut caps: Vec<u32> = rest.iter().flat_map(|&at| jobs[at].widths.iter().copied()).collect();
     caps.sort_unstable();
@@ -97,7 +88,7 @@ fn cap(free: &[f64], jobs: &[Job], rest: &[usize]) -> u32 {
         })
         .collect();
     let soonest = ends.iter().map(|(_, end)| *end).fold(f64::INFINITY, f64::min);
-    ends.iter().filter(|(_, end)| *end <= soonest * (1.0 + TIE)).map(|(cap, _)| *cap).max().unwrap_or(1)
+    ends.iter().filter(|(_, end)| *end <= soonest * (1.0 + TIE)).map(|(cap, _)| *cap).min().unwrap_or(1)
 }
 
 /// `job` at its widest under `cap` (its narrowest when none is) on the GPUs of `free` free

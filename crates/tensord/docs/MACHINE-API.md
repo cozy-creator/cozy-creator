@@ -29,10 +29,16 @@ Refusals are `{"error":{kind, code, message}}`; a run's outcome carries the same
 Unknown fields are ignored.
 
 **The machine owns GPU width** (cl-816). A root sent with no count takes, as it starts, its width in
-the packing of the whole queue (`pack.rs`) that `POST /v1/estimate` quotes from: a lone job runs wide,
-several queued jobs one GPU each. Jobs a caller places together it sends together, as one batch: every
-new run of a batch is journaled in one transaction before any prepares, so the scheduler packs them as
-the quote did. A quote reserves nothing; separate callers are settled by the queue.
+the packing of the whole queue (`pack.rs`) that `POST /v1/estimate` quotes from. A width it has not
+measured gains nothing, so a job runs on one GPU until a run at a wider width (one sent with that
+`gpus`) measured that width faster; on a tie the narrower wins. Each completed root keeps its compute
+(its time running less what it waited on its calls for and spent building weights onto GPUs) and its
+load (executor starts and builds); a quote is compute, plus, while its weights aren't here, their
+download at the measured link and that load. A job that opens a GPU (`gpu`) can't run on a machine with
+none: its quote has `fits: false`, `no_gpu`, and no times, as does one whose weights the disk can't hold.
+Jobs a caller places together it sends together, as one batch: every new run of a batch is journaled in
+one transaction before any prepares, so the scheduler packs them as the quote did. A quote reserves
+nothing; separate callers are settled by the queue.
 
 `RunSpec.gpus` is optional (`run-gpus/1`). Zero lets the machine choose among the GPU groups supported by
 all package-code model slots on the machine. A positive value requests exactly that many

@@ -372,15 +372,101 @@ impl Execution {
     }
 }
 
-/// What one completed root took: its width, its size as its input said, and its time running.
+/// What one completed root took: its width, its size as its input said, its compute, and what it
+/// spent putting weights on its GPUs (`Ran`).
 #[derive(Clone, Debug)]
 pub struct RunTime {
     pub width: u32,
     pub size: protocol::machine::JobSize,
     pub ms: f64,
+    pub load_ms: f64,
 }
 
-/// A function's key in `run_times`: `<package>/<entrypoint>`, any release.
+/// What a completed root did with its time, by its own and its calls' records and measurements
+/// (cl-816, release owner 11-09). `compute_ms`: its time running less what it spent waiting on a
+/// call (its weights' download, a GPU, its executor's start) and building weights onto the GPUs
+/// while no other call computed. `load_ms`: those executor starts and builds, which a machine
+/// without its weights quotes again.
+struct Ran {
+    compute_ms: u64,
+    load_ms: u64,
+}
+
+impl Ran {
+    fn of(tx: &rusqlite::Transaction<'_>, root: &Execution) -> io::Result<Self> {
+        let mut statement = tx
+            .prepare("SELECT e.record,m.measurements FROM executions e LEFT JOIN run_measurements m ON m.execution=e.id WHERE json_extract(e.invocation,'$.parent')=?1")
+            .map_err(db_error)?;
+        let calls = statement
+            .query_map([&root.id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)))
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        let own: Option<Vec<u8>> = tx
+            .query_row("SELECT measurements FROM run_measurements WHERE execution=?1", [&root.id], |row| row.get(0))
+            .optional()
+            .map_err(db_error)?;
+        let (mut waits, mut running, mut builds, mut loads) = (vec![], vec![], vec![], vec![]);
+        let mut spent = |measured: Option<&[u8]>| {
+            let (start, build) = spans(measured);
+            builds.extend(build);
+            loads.extend(start.into_iter().chain(build));
+        };
+        spent(own.as_deref());
+        for (call, measured) in &calls {
+            let call: Execution = serde_json::from_str(call).map_err(db_error)?;
+            // A call answered without running (memoized, refused) took no time of its own.
+            if call.started_at_ms == 0 {
+                continue;
+            }
+            waits.push((call.accepted_at_ms, call.started_at_ms));
+            running.push((call.started_at_ms, call.finished_at_ms.max(call.started_at_ms)));
+            spent(measured.as_deref());
+        }
+        let within = |spans: &[Span], (from, to): Span| -> Vec<Span> {
+            spans.iter().map(|&(a, b)| (a.max(from), b.min(to))).collect()
+        };
+        let window = (root.started_at_ms, root.finished_at_ms);
+        let (waits, running, builds) = (within(&waits, window), within(&running, window), within(&builds, window));
+        let idle = covered(&[&waits[..], &builds[..], &running[..]].concat()) - covered(&[&running[..], &builds[..]].concat()) + covered(&builds);
+        Ok(Ran {
+            compute_ms: root.executed_ms.saturating_sub(idle),
+            load_ms: covered(&within(&loads, (root.accepted_at_ms, root.finished_at_ms))),
+        })
+    }
+}
+
+/// An executor's start and a construction's build, as its measurements say (`execution.executor`,
+/// `execution.construction`), Unix ms. An executor serving several calls carries both: a caller
+/// keeps what falls in its own time.
+fn spans(measured: Option<&[u8]>) -> (Option<Span>, Option<Span>) {
+    let Some(measured) = measured.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok()) else { return (None, None) };
+    let (executor, construction) = (&measured["execution"]["executor"], &measured["execution"]["construction"]);
+    let legs: f64 = executor["legs_ms"].as_object().into_iter().flatten().filter_map(|(_, ms)| ms.as_f64()).sum();
+    let start = executor["started_unix_ms"].as_f64().map(|at| (at as u64, (at + legs) as u64));
+    let build = match (construction["prepare_ms"].as_f64(), construction["prepared_unix_ms"].as_f64()) {
+        (Some(ms), Some(end)) if ms > 0.0 => Some(((end - ms).max(0.0) as u64, end as u64)),
+        _ => None,
+    };
+    (start, build)
+}
+
+/// From, to: Unix ms.
+type Span = (u64, u64);
+
+/// How long `spans` cover, each instant once.
+fn covered(spans: &[Span]) -> u64 {
+    let mut spans: Vec<Span> = spans.iter().copied().filter(|(a, b)| b > a).collect();
+    spans.sort_unstable();
+    let (mut total, mut reach) = (0, 0);
+    for (a, b) in spans {
+        total += b.saturating_sub(a.max(reach));
+        reach = reach.max(b);
+    }
+    total
+}
+
+/// A function's key in `root_times`: `<package>/<entrypoint>`, any release.
 pub fn function_key(package: &str, entrypoint: &str) -> String {
     format!("{package}/{entrypoint}")
 }
@@ -534,8 +620,9 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS run_objects(execution INTEGER NOT NULL REFERENCES executions(id),sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sha256));
             CREATE INDEX IF NOT EXISTS run_objects_digest ON run_objects(sha256);
             CREATE TABLE IF NOT EXISTS run_specs(execution INTEGER PRIMARY KEY REFERENCES executions(id),spec BLOB NOT NULL);
-            CREATE TABLE IF NOT EXISTS run_times(execution INTEGER PRIMARY KEY REFERENCES executions(id),function TEXT NOT NULL,width INTEGER NOT NULL,size TEXT NOT NULL,ms INTEGER NOT NULL);
-            CREATE INDEX IF NOT EXISTS run_times_function ON run_times(function,execution);
+            DROP TABLE IF EXISTS run_times;
+            CREATE TABLE IF NOT EXISTS root_times(execution INTEGER PRIMARY KEY REFERENCES executions(id),function TEXT NOT NULL,width INTEGER NOT NULL,size TEXT NOT NULL,ms INTEGER NOT NULL,load_ms INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS root_times_function ON root_times(function,execution);
             CREATE TABLE IF NOT EXISTS held_memos(actor TEXT NOT NULL,computation TEXT NOT NULL,record BLOB NOT NULL,used_ms INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(actor,computation));
             CREATE TABLE IF NOT EXISTS held_memo_objects(actor TEXT NOT NULL,computation TEXT NOT NULL,sha256 TEXT NOT NULL,PRIMARY KEY(actor,computation,sha256));
             CREATE INDEX IF NOT EXISTS held_memo_objects_digest ON held_memo_objects(sha256);
@@ -1311,7 +1398,7 @@ fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) ->
 /// The tables holding rows of one execution.
 const EXECUTION_ROWS: [&str; 10] = [
     "public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied",
-    "run_calls", "triage", "run_objects", "run_specs", "run_times",
+    "run_calls", "triage", "run_objects", "run_specs", "root_times",
 ];
 
 fn insert(
@@ -1533,10 +1620,11 @@ impl Journal {
         if !invocation.parent.is_empty() || record.executed_ms == 0 || record.memo.memoized {
             return Ok(());
         }
+        let ran = Ran::of(tx, record)?;
         let size = encoded(&protocol::machine::JobSize::of(&invocation.input))?;
         tx.execute(
-            "INSERT OR REPLACE INTO run_times(execution,function,width,size,ms) VALUES(?1,?2,?3,?4,?5)",
-            params![record.id, function_key(&invocation.package, &invocation.entrypoint), record.width, size, record.executed_ms as i64],
+            "INSERT OR REPLACE INTO root_times(execution,function,width,size,ms,load_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![record.id, function_key(&invocation.package, &invocation.entrypoint), record.width, size, ran.compute_ms as i64, ran.load_ms as i64],
         )
         .map_err(db_error)?;
         Ok(())
@@ -1545,16 +1633,16 @@ impl Journal {
     /// The newest `limit` times of `function` here (`function_key`), newest first.
     pub fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<RunTime>> {
         let mut statement = self.connection
-            .prepare("SELECT width,size,ms FROM run_times WHERE function=?1 ORDER BY execution DESC LIMIT ?2")
+            .prepare("SELECT width,size,ms,load_ms FROM root_times WHERE function=?1 ORDER BY execution DESC LIMIT ?2")
             .map_err(db_error)?;
         let rows = statement
             .query_map(params![function, limit.min(i64::MAX as usize) as i64], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
             })
             .map_err(db_error)?;
         rows.map(|row| {
-            let (width, size, ms) = row.map_err(db_error)?;
-            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64 })
+            let (width, size, ms, load_ms) = row.map_err(db_error)?;
+            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64 })
         })
         .collect()
     }

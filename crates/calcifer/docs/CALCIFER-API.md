@@ -193,8 +193,8 @@ a spec.
   (`RunQuote`). Nothing is rented or recorded.
 - `POST /v1/run-estimates?count=` (`Idempotency-Key`): a `RunRequest`, bound as a run is: `RunEstimate {machines, soonest?, notes, preparing?}`,
   each machine it may go to (its `on`, else the render set) as it quotes it now, soonest finish first, for each of `count` copies
-  (1 to 32, default 1) sent at once: `{machine, job, fits, refusal?, width, start_ms, finish_ms, prepare_ms, queue_position, basis}`,
-  ms from the answer, `job` the copy. `soonest` is where the run would go. A machine on another minor than this cozy quotes nothing
+  (1 to 32, default 1) sent at once: `{machine, job, fits, refusal?, width, start_ms?, finish_ms?, prepare_ms, queue_position, basis}`,
+  ms from the answer, `job` the copy; one that can't run there (`fits: false`) says why in `refusal` and has no times. `soonest` is where the run would go. A machine on another minor than this cozy quotes nothing
   (a note says so). Nothing is sent, reserved or updated. Local code not ready answers its install as `preparing`: follow it, then
   ask again under the same key.
 - `GET /v1/tools?q=&on=&hub=&project=`: `{tools: [{id, package, function, release, name, label, package_title, makes, description?, local?, fields, ui?, pickup?, model?: {slot, default?, family?}}], note?}`: what can be dropped on a canvas: first the Edit, `cozy/edit`, which Calcifer renders itself, free, with no machine, its one field a `timeline`; then your list, by a card read of the Hub or kept here, so listing installs nothing and it stands with no Hub; then local code and what `on` has installed; and only with `q`, the Hub's, and what you took off your list. Each is every public function of it declared `@app.tool` (its interface's `tool`), never a `quantize`. With `project`, first the local code its assets name, `local` and labelled so, and no other local code is listed. Then what the machine `on` (default `local`) has installed, each package at its newest there, matching `q`'s words in its package's name or its label; then the Hub's search for `q`, or its first page, at each package's newest. `note`: the Hub didn't answer, so only what's installed. `id` is what a box names as its `tool`. `name` is what a new box of it is called, its tool's `named` or its package's word, numbered: `shot_1`, and a taken name counts up. `label` is what it does within its package, its tool's, else its function in words. `package_title` is its package in words, which heads its tools in the page's list: `qwen-image-2` is `Qwen Image 2`, a word with no vowel upper case (`sdxl` SDXL). `makes` is `image`, `video`, `audio` or `text`: its result's first picture, video or sound, else a text. `ui` is the path in its package of a component that draws its box, where it ships one (`PACKAGE-UI.md`). `pickup` `{every, offset, first}`: it takes a pickup, which Pick up from here fills, landing on `offset + k * every` from `first` (`Snap`), or any frame `{1, 0, 0}`. `fields` are its struct's fields in order, each `{field, type, label, required?, default?, auto?, placeholder?, advanced?}` plus by `type`: `words` (a `str`); `prompt` (text with mentions; `takes?: ["image"]` when it takes only those); `toggle` (`auto` for `| None`); `number` (`min, max, step?, unit?, integer?, total?`, `auto` for `| None`; an unbounded number is no field); `choice` (`options`, the values in order, `words?` and `descriptions?` maps by value from `Label`); `shape` (the box's own shape, `ratios?` or `min?, max?`); `slot` (`accept: image|video|audio`, `described?` for a file with its description, `multiple?`, `spans?`, the list whose timeline a video's length is); `group` (`members`, nested as deep as the struct, `list` for rows with `min_items?, max_items?`); `seed`; and the Edit's `timeline`. `advanced` is `Advanced()`: under More, folded. A field's `label` is `Label`'s, else its name in words. A pickup is no field, and neither is `tool`, `approved`, `description`, `models`, `lora`, `text` or a type this cozy can't draw. A box's `fields` hold what's written: a slot's value is a mention, `<coast.2>`, a list when `multiple`.
@@ -253,16 +253,19 @@ machine), `gpu` (on other machines of its GPU, by the name each run's record kee
 
 ### Placement
 
-The machine owns its GPU width (cl-816): a lone job runs wide, several queued jobs one GPU each; Calcifer never picks a width and sends
-`gpus` only when a person asked for a count. It sends each job where it finishes soonest:
+The machine owns its GPU width (cl-816): a job runs on one GPU until that machine measured a wider width faster (a run sent with that
+count), several queued jobs one GPU each; Calcifer never picks a width and sends `gpus` only when a person asked for a count. It sends
+each job where it finishes soonest:
 
 - Each machine a job may go to is asked once per batch (a render's turn, or one `cozy run`), through TensorD's `POST /v1/estimate`
   (capability `estimate/1`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
-  lane commit and bytes, from its Hub card), `size` (`JobSize::of` its payload) and `prior_ms` (eta's time for it on one GPU of that kind,
-  from runs at one width). Its quote is packed with that machine's queue as if the whole batch went there; its relative ms are added to
-  the time the answer came.
-- The soonest finish wins; within 2% (or 1 s), a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while
-  another can, unless its quote stands on its own measured runs.
+  lane commit and bytes, from its Hub card), `size` (`JobSize::of` its payload), `gpu` (it or a call it makes opens a GPU) and `prior_ms`
+  (eta's time for it on one GPU of that kind, from runs at one width). Its quote is packed with that machine's queue as if the whole batch
+  went there; its relative ms are added to the time the answer came.
+- A machine that can't run it at all (`fits: false`: no GPU for a function that opens one, its weights too big for the disk) has no finish
+  and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), one whose quote stands on its own measured runs before one
+  that doesn't, then a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while another can, unless its
+  quote stands on its own measured runs.
 - Only a machine on this cozy's minor quotes ("Machines on this minor"); one on another is updated first and quotes on the next turn.
 - With several machines, a job a machine would start more than a second after its preparation waits here, quoted again as the render
   moves or every 10 s, so it commits to no queue early. A quote reserves nothing: two clients picking one machine are settled by its queue.

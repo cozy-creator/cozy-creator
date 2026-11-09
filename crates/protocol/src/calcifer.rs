@@ -663,14 +663,17 @@ pub struct MachineEstimate {
     pub machine: String,
     /// Which copy, 0 first.
     pub job: u32,
+    /// It can run there at all; one that can't says why (`refusal`) and has no times.
     pub fits: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Reason>,
     /// The GPUs it would run on; 0: none.
     pub width: u32,
-    pub start_ms: u64,
-    pub finish_ms: u64,
-    /// Its code's install and its weights' fetch, part of `start_ms`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_ms: Option<u64>,
+    /// Its code's install and, its weights not there, their download and load: part of `start_ms`.
     pub prepare_ms: u64,
     /// How many runs start there before it.
     pub queue_position: u32,

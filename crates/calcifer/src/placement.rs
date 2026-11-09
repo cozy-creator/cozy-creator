@@ -1,6 +1,7 @@
 //! Where a job goes (cl-816, Paul 11-07): its machine owns its GPU width, and Calcifer only sends it where it finishes soonest. Each
 //! machine a batch of jobs may go to is asked once for all of them (`POST /v1/estimate`), packed with its queue as if all were sent
-//! there now; each job goes to the soonest finish, a rental before this computer on a tie (Paul, 11-05). Only a machine on this cozy's
+//! there now; each job goes to the soonest finish of those that can run it at all, on a tie one measured before one not and a rental
+//! before this computer (Paul, 11-05). Only a machine on this cozy's
 //! minor quotes (`Machines::current`). A quote reserves nothing: two clients that pick one machine are settled by its queue. Offers not
 //! yet rented (`any`, `new`) are never asked: the Hub keeps no times per SKU.
 use std::sync::Arc;
@@ -31,6 +32,8 @@ pub struct Job {
     pub size: JobSize,
     /// The user's GPU count; 0: the machine chooses.
     pub gpus: u32,
+    /// It opens a GPU, itself or a call it makes (`Interface::gpu`): a machine with none can't run it.
+    pub gpu: bool,
     /// The machines it may go to.
     pub on: Vec<On>,
 }
@@ -55,9 +58,9 @@ impl Offer {
         (self.start_at_ms - now - self.prepare_ms as i64).max(0)
     }
 
-    /// As `POST /v1/run-estimates` answers it, from `now`.
+    /// As `POST /v1/run-estimates` answers it, from `now`: one that can't run there has no times.
     pub fn shown(&self, now: i64) -> MachineEstimate {
-        let from = |at: i64| (at - now).max(0) as u64;
+        let from = |at: i64| self.fits.then(|| (at - now).max(0) as u64);
         MachineEstimate {
             machine: self.machine.to_string(),
             job: 0,
@@ -107,13 +110,15 @@ pub async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offe
     (offers, said)
 }
 
-/// The soonest finish of `offers` that fits; of those within a tie of it, a rental before this computer, then the first.
+/// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
+/// of it, one on its own measured runs before one that isn't, and a rental before this computer.
 pub fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    tied().find(|offer| !offer.machine.is_local()).or_else(|| tied().next())
+    let rank = |offer: &&Offer| (offer.basis != Basis::Measured, offer.machine.is_local());
+    tied().min_by_key(rank)
 }
 
 /// What `on` says of `jobs`, in their order.
@@ -147,6 +152,7 @@ async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job], update: bool) -> Result<
                 models: job.models.clone(),
                 size: job.size,
                 gpus: job.gpus,
+                gpu: job.gpu,
                 prior_ms: prior(job),
             })
             .collect(),

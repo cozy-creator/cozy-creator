@@ -439,7 +439,10 @@ async fn estimate(ctx: &Context, ask: RunRequest, count: u32) -> Result<ExitCode
             Some(refusal) => refusal.message.clone(),
             None => basis.to_owned(),
         };
-        let cells = [name, machine.width.to_string(), seconds(machine.start_ms), seconds(machine.finish_ms), seconds(machine.prepare_ms), machine.queue_position.to_string(), basis];
+        let shown = |ms: Option<u64>| ms.map_or_else(|| "-".to_owned(), seconds);
+        let width = if machine.fits { machine.width.to_string() } else { "-".to_owned() };
+        let prepare = if machine.fits { seconds(machine.prepare_ms) } else { "-".to_owned() };
+        let cells = [name, width, shown(machine.start_ms), shown(machine.finish_ms), prepare, machine.queue_position.to_string(), basis];
         copies.then(|| (machine.job + 1).to_string()).into_iter().chain(cells).collect::<Vec<_>>()
     });
     rows.fold(table, output::Table::row).print();
