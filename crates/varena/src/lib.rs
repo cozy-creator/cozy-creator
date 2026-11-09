@@ -21,6 +21,7 @@ pub use source::Source;
 /// Versioned public ABI. All frontends resolve this shared library.
 pub mod abi;
 pub mod plan;
+mod repeat;
 mod retirement;
 pub mod working;
 pub(crate) mod tensor_consumers;
@@ -291,6 +292,8 @@ struct Entry {
     high: bool,
     // State a loop keeps across steps, refilled from its pinned host copy.
     retained: bool,
+    // Its place in the loop the core found (`repeat`).
+    stamp: repeat::Stamp,
 }
 
 impl Entry {
@@ -303,18 +306,20 @@ impl Entry {
 
 impl State {
     /// A use of this region (a clone of a live pin is not one). The core finds loops by itself,
-    /// phase declared or not. A region back
+    /// phase declared or not, and the order each uses its regions in (`repeat`). A region back
     /// again with no boundary yet began a loop at its last use: from there eviction goes most
     /// recent first, keeping what the loop reaches next. One that recurs at a steady period
     /// narrows that to one pass, so what ran before the loop goes first; a small loop inside a
     /// larger one, which would leave most of the pass's bytes outside, does not.
     fn used(&mut self, id: u64, now: u64) {
-        if let Some(last) = self.last_used.replace(id).filter(|last| *last != id)
-            && let Some(entry) = self.entries.get_mut(&last)
-        {
+        let last = self.last_used.replace(id).filter(|last| *last != id);
+        if let Some(last) = last && let Some(entry) = self.entries.get_mut(&last) {
             entry.next = Some(id);
         }
         let entry = self.entries.get_mut(&id).expect("live region");
+        if last.is_some() && !entry.retained {
+            self.repeat.used(&mut entry.stamp);
+        }
         entry.uses.unused.store(false, Ordering::Relaxed);
         let (previous, period) = (entry.last_use, entry.period);
         entry.last_use = now;
@@ -341,35 +346,22 @@ impl State {
         }
     }
 
-    /// Where a planned loop's kept prefix ends: the latest plan position of a region that stayed
-    /// through the pass with more bytes kept than streamed up to it. None in a loop's first pass,
-    /// or with no plan. A region kept far past the streamed ones does not stretch it.
+    /// Where a loop's kept prefix ends (`repeat::prefix`), over the regions `rank` places in the
+    /// loop. None in a loop's first pass.
     pub(crate) fn prefix(&self, order: &plan::Order) -> Option<u64> {
         let boundary = self.phase_boundary?;
         if !self.plan_phase.as_ref().is_none_or(PlanPhase::loops) {
             return None;
         }
-        let mut regions: Vec<(u64, usize, bool)> = self.entries.iter()
+        repeat::prefix(self.entries.iter()
             .filter(|(_, entry)| entry.last_use > boundary && !entry.retained && !entry.high && !entry.prefetched
                 && !matches!(entry.uses.state(), Contents::Cold | Contents::Retired))
-            .filter_map(|(id, entry)| match order.next_use(*id) {
-                Some((0, position)) => Some((position, entry.bytes, entry.filled <= boundary)),
-                _ => None,
+            .filter(|(id, _)| match order.next_use(**id) {
+                None => !order.planned(),
+                Some((phases, _)) => phases == 0,
             })
-            .collect();
-        regions.sort_unstable();
-        let (mut kept, mut streamed, mut end) = (0usize, 0usize, None);
-        for (position, bytes, stayed) in regions {
-            if stayed {
-                kept += bytes;
-                if kept > streamed {
-                    end = Some(position);
-                }
-            } else {
-                streamed += bytes;
-            }
-        }
-        end
+            .filter_map(|(_, entry)| Some((self.repeat.place(&entry.stamp)?, entry.bytes, entry.filled <= boundary)))
+            .collect())
     }
 
     /// Eviction order for idle regions, lowest first. With a plan, the furthest next use goes
@@ -379,9 +371,9 @@ impl State {
     /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
     /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
     ///
-    /// A planned loop keeps a prefix of its plan, as v1 did: what it refilled inside the prefix
-    /// (`prefix`) is the prefix's again, and the prefix gives way from its end, the region the next
-    /// pass needs last. By fill alone, a region another phase had evicted was streamed every pass
+    /// A loop keeps a prefix of its pass, as v1 did: what it refilled inside the prefix (`prefix`)
+    /// is the prefix's again, and the prefix gives way from its end, the region the next pass needs
+    /// last. The pass's order is the one the core saw (`repeat`), declared or not. By fill alone, a region another phase had evicted was streamed every pass
     /// after: Klein's upsampler refilled its 1.9 GB embedding each token, 6.2 GB a pass to v1's
     /// 4.7 (pasan, run 42322).
     fn rank(&self, id: u64, entry: &Entry, order: &plan::Order, prefix: Option<u64>) -> (u8, u64) {
@@ -409,11 +401,14 @@ impl State {
         }
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
+            None | Some((0, _)) if touched && looping => {
+                let stayed = used == reclaim::PHASE_USED;
+                match repeat::rank(stayed, self.repeat.place(&entry.stamp), prefix, entry.last_use) {
+                    (true, key) => (reclaim::PHASE_USED, key),
+                    (false, key) => (reclaim::PHASE_FRESH, key),
+                }
+            }
             None => (used, u64::MAX - entry.last_use),
-            Some((0, position)) if touched && looping => match prefix {
-                Some(end) if used == reclaim::PHASE_USED || position < end => (reclaim::PHASE_USED, u64::MAX - position),
-                _ => (used, u64::MAX - entry.last_use),
-            },
             Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
             // A single pass uses what it used next in a later phase, else next cycle, as late as what no
             // plan names; most recent first, so the next pass finds its start. Ranked as a loop's, Qwen
@@ -769,6 +764,7 @@ impl Device {
                     filled: 0,
                     high: false,
                     retained: false,
+                    stamp: repeat::Stamp::default(),
                 },
             );
             Region {
@@ -782,13 +778,6 @@ impl Device {
                 source,
             }
         }))
-    }
-
-    /// A new phase begins: what was used before it is no longer in its loop. Metadata only.
-    pub fn enter_phase(&self) -> Result<()> {
-        gate(self.ordinal)?.not_capturing()?;
-        self.lock()?.phase_boundary = Some(self.clock.load(Ordering::Relaxed));
-        Ok(())
     }
 
     /// The plan's phase `name` begins, a boundary, or with None the plan ends. Metadata only.

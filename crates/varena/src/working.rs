@@ -312,6 +312,8 @@ pub(crate) struct State {
     pub(crate) passes: BTreeMap<String, bool>,
     // The Region used last: its `next` is this use's.
     pub(crate) last_used: Option<u64>,
+    // The loop the uses' order shows.
+    pub(crate) repeat: crate::repeat::Passes,
     pub(crate) fills: u64,
     pub(crate) filled_bytes: u64,
     pub(crate) hits: u64,

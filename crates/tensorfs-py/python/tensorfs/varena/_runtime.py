@@ -129,20 +129,6 @@ class Plan:
         return self._native.facts()
 
 
-class PhaseController:
-    """Internal per-submission phase decoration using native continuation ownership."""
-
-    def __init__(self, device: Device) -> None:
-        self._native = _ext._VarenaPhaseController(device._native)
-
-    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *, execution_key: str | None = None):
-        """Decorate native completion; key=None observes without entering a phase."""
-        return self._native.wrap(capsule, key, [region._native for region in regions], execution_key=execution_key)
-
-    def facts(self) -> dict[str, object]:
-        return self._native.facts()
-
-
 class Pages:
     """One GPU's host tier: weight pages in pinned host RAM, which TensorFS alone manages."""
 

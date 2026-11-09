@@ -28,10 +28,8 @@ crates/tensorfs-py/src/dlpack_source.rs
 crates/tensorfs-py/src/resident_decode.rs
 crates/tensorfs-py/src/store.rs
 crates/tensorfs-py/src/tensors.rs
-crates/tensorfs-py/src/varena/continuation.rs
 crates/tensorfs-py/src/varena/mod.rs
 crates/tensorfs-py/src/varena/pages.rs
-crates/tensorfs-py/src/varena/phase.rs
 crates/tensorfs-py/src/varena/retained.rs
 crates/tensorfs-py/src/varena/source.rs
 crates/tensorfs-py/src/varena/tensor_export.rs
