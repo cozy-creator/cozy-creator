@@ -8,8 +8,8 @@ use platform::process::{Birth, Exact};
 use crate::{
     catalog::HeldGeneration,
     device_executor::{
-        self, channel_lost, Activate, Answer, Binding, Cancellation, Command, Construction,
-        DeviceExecutor, ExecutorConfig, Forked, Frame, Invoke, Load, Map, ModelLoad,
+        self, channel_lost, Answer, Binding, Cancellation, Command, Construction,
+        DeviceExecutor, ExecutorConfig, Forked, Frame, Invoke, Load, Map,
         InputFile, InputMetadata, PrepareRequest, Request, Services, Start,
     },
     execution::{Engine, Stoppable},
@@ -34,16 +34,14 @@ use std::{
 };
 use crate::storage::Store;
 
-/// The snapshots of `binding` that are views this process keeps (`storage::view`), as the
-/// executor opens them: their bytes, which no store holds.
-fn views(binding: &Binding) -> BTreeMap<String, executor_api::View> {
+/// `binding`'s snapshot when it is a view this process keeps (`storage::view`), as the executor
+/// opens it: its bytes, which no store holds.
+fn view(binding: &Binding) -> Option<executor_api::View> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
-    (binding.snapshots.values().chain(std::iter::once(&binding.snapshot)))
-        .filter_map(|id| crate::storage::view(id).map(|view| (id.clone(), executor_api::View {
-            header: STANDARD.encode(&view.header),
-            own: view.own.iter().map(|o| STANDARD.encode(o)).collect(),
-        })))
-        .collect()
+    crate::storage::view(&binding.snapshot).map(|view| executor_api::View {
+        header: STANDARD.encode(&view.header),
+        own: view.own.iter().map(|o| STANDARD.encode(o)).collect(),
+    })
 }
 
 /// A slot's model as the run's preparation resolved it (`published`).
@@ -74,37 +72,6 @@ pub(crate) struct Applied {
     pub model: String,
     pub strength: f64,
     pub components: Vec<String>,
-}
-
-/// Extract only the source-declared use fields. Unrelated prompt/seed data never changes
-/// construction identity. A payload-free weight warm/prefetch retains its existing route.
-pub(crate) fn prepared_uses(
-    installed: &crate::journal::Installation,
-    entrypoint: &str,
-    payload: Option<&serde_json::Value>,
-) -> io::Result<BTreeMap<String, executor_api::PreparedUse>> {
-    let invalid = |detail: &str| io::Error::new(io::ErrorKind::InvalidInput, detail.to_string());
-    let mut uses = BTreeMap::new();
-    let Some(payload) = payload else { return Ok(uses) };
-    let interface: serde_json::Value = serde_json::from_slice(&installed.interface).map_err(io::Error::other)?;
-    let Some(entry) = api::interface::entrypoint(&interface, entrypoint) else { return Ok(uses) };
-    for model in api::interface::models(entry) {
-        let Some(field) = model.get("prepared_use") else { continue };
-        let field = field.as_str().filter(|name| !name.is_empty() && !name.contains('.'))
-            .ok_or_else(|| invalid("prepared_use must name a top-level field"))?;
-        if entry.get("internal").and_then(serde_json::Value::as_bool) != Some(true)
-            || model.get("weights").and_then(serde_json::Value::as_bool) == Some(true) {
-            return Err(invalid("prepared_use belongs to an internal constructed model"));
-        }
-        let path = model.get("path").and_then(serde_json::Value::as_str)
-            .ok_or_else(|| invalid("prepared-use model path is absent"))?;
-        let value = payload.get(field).ok_or_else(|| invalid("prepared-use field is absent"))?;
-        let mut use_: executor_api::PreparedUse = serde_json::from_value(value.clone())
-            .map_err(io::Error::other)?;
-        use_.validate().map_err(invalid)?;
-        uses.insert(path.to_string(), use_);
-    }
-    Ok(uses)
 }
 
 /// How the machine shares its host and GPUs.
@@ -234,7 +201,7 @@ pub(crate) struct Plan {
     /// The preparation: the construction, entrypoint and sources.
     pub id: String,
     /// What it builds, not which entrypoint names it, so entrypoints building the same models share
-    /// them: Runtime's Load/Activate/Invoke key and its measured figures' key.
+    /// them: Runtime's Load/Invoke key and its measured figures' key.
     #[serde(default)]
     pub construction: String,
     /// Its executors' key: its environment's App and degree (`environment`), so every construction
@@ -534,8 +501,6 @@ struct Session {
     /// Each construction it loaded, and where TensorD last had its models brought (Runtime places
     /// them): `host` once loaded, `gpu` after a call or a `gpu` warming.
     loaded: BTreeMap<String, Level>,
-    /// The construction Runtime serves invokes of (`Activate`).
-    active: String,
     executor: DeviceExecutor,
     /// When it last came back idle: idle executors end least recently used first.
     used: Instant,
@@ -1905,7 +1870,6 @@ impl Pool {
         installed: &crate::journal::Installation,
         entrypoint: &str,
         choices: &[crate::api::domain::ModelChoice],
-        payload: Option<&serde_json::Value>,
         grants: &[ModelGrant],
         degree: u32,
     ) -> io::Result<Plan> {
@@ -1917,7 +1881,6 @@ impl Pool {
         let application = api::interface::application(&interface)
             .ok_or_else(|| invalid("declared application absent"))?;
         let models = api::interface::models(entry).to_vec();
-        let uses = prepared_uses(installed, entrypoint, payload)?;
         let prefix = format!("{entrypoint}.models.");
         let slot_of = |model: &serde_json::Value| -> io::Result<(String, String)> {
             let path = model
@@ -2035,14 +1998,7 @@ impl Pool {
                 model_class: class.into(),
                 model_binding_path: path.clone(),
                 model_parameter_name: parameter.clone(),
-                model_parameter_names: vec![parameter.clone()],
-                prepared_use: uses.get(path).cloned(),
-                component: components[0].clone(),
-                components: components.clone(),
-                snapshots: components
-                    .into_iter()
-                    .map(|c| (c, grant.manifest.clone()))
-                    .collect(),
+                components,
                 snapshot: grant.manifest.clone(),
                 release: format!("{}@{}", installed.package, installed.release),
                 package: installed.package.clone(),
@@ -2941,7 +2897,6 @@ impl Pool {
                     devices: self.lane_devices(0, self.devices.len().min(1) as u32)?,
                     application: held.record.application.clone(),
                     call_interfaces: crate::calls::call_interfaces(held, &interface),
-                    model_choices: true,
                     constructions: vec![],
                     package_interface: interface,
                     sequence_parallel_degree: 1,
@@ -3278,7 +3233,7 @@ impl Pool {
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
-                lookahead: (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead()),
+                lookahead: (plan.degree == 1).then(|| executor.lookahead()),
             });
         }
         let selections = plan.selections();
@@ -3302,7 +3257,6 @@ impl Pool {
             followers: vec![],
             started: false,
             loaded: BTreeMap::new(),
-            active: String::new(),
             executor,
             used: Instant::now(),
             launch,
@@ -3337,7 +3291,7 @@ impl Pool {
             session.executor.begin_request();
         }
         // A retained executor that went away while idle: this call's first command enters no
-        // handler (Activate, Load and PrepareRequest alike), so the attempt never started (`run_on`).
+        // handler (Load and PrepareRequest alike), so the attempt never started (`run_on`).
         let before_entry = |error: io::Error| match retained && channel_lost(&error) {
             true => io::Error::other(Undelivered(format!("retained executor cannot prepare this request before entry: {error}"))),
             false => error,
@@ -3377,7 +3331,6 @@ impl Pool {
                     sequence_parallel_degree: ranks,
                     import_only: false,
                     call_interfaces: crate::calls::call_interfaces(held, &interface_path),
-                    model_choices: true,
                     constructions: constructions(&plan),
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
@@ -3428,15 +3381,14 @@ impl Pool {
                     construction: construction.clone(),
                     devices: lane.clone(),
                     sequence_parallel_degree: ranks,
-                    binding: Binding {
+                    models: vec![Binding {
                         application: held.record.application.clone(),
                         package_interface: interface_path.to_string_lossy().into_owned(),
                         ..Binding::default()
-                    },
-                    models: vec![],
+                    }],
                     attention_pin: String::new(),
                 })),
-                Some(first) => {
+                Some(_) => {
                     let store = self.store.root().to_string_lossy().into_owned();
                     let homes = Self::homes(&plan, gpus);
                     let load = |slot: &PlanSlot| {
@@ -3444,14 +3396,8 @@ impl Pool {
                         binding.package_interface = interface_path.to_string_lossy().into();
                         binding.store = store.clone();
                         binding.homes = homes.get(&slot.binding.model_binding_path).cloned().unwrap_or_default();
-                        binding.views = views(&binding);
-                        ModelLoad { binding }
-                    };
-                    let first = load(first);
-                    // The one-model form names its model alone.
-                    let models = match plan.slots.len() {
-                        1 => vec![],
-                        _ => plan.slots.iter().map(load).collect(),
+                        binding.view = view(&binding);
+                        binding
                     };
                     Command::Load(Box::new(Load {
                         tensorfs: calls.and_then(|calls| calls.tensorfs(id)),
@@ -3459,8 +3405,7 @@ impl Pool {
                         construction: construction.clone(),
                         devices: lane.clone(),
                         sequence_parallel_degree: ranks,
-                        binding: first.binding,
-                        models,
+                        models: plan.slots.iter().map(load).collect(),
                         // The request it loads for names a kernel: its build is imported first.
                         attention_pin: match load_only {
                             true => String::new(),
@@ -3488,17 +3433,6 @@ impl Pool {
         }
         if load_only {
             return Ok(None);
-        }
-        // Runtime invokes only its active construction; switching moves nothing (its Memory evicts
-        // an idle construction's blocks when a stage needs the room).
-        if session.active != construction {
-            command_ok(session.executor.command(
-                &Command::Activate(Activate {
-                    construction: construction.clone(),
-                }),
-                &mut callbacks,
-            ).map_err(before_entry)?)?;
-            session.active = construction.clone();
         }
         let record = engine.get(id)?;
         let prepared = session.executor.command(
@@ -4255,7 +4189,7 @@ pub(crate) fn output_bindings(bindings: Vec<device_executor::AssetBinding>) -> V
         .collect()
 }
 
-/// An executor's refusal of a lifecycle command (start, load, activate), in its own words:
+/// An executor's refusal of a lifecycle command (start, load), in its own words:
 /// a group's names the GPU whose fault came first (Runtime `RankGroup` latches it).
 #[derive(Debug)]
 struct Refused {

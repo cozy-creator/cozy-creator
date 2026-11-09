@@ -5,15 +5,12 @@ raises `Malformed` (or ValueError, building one)."""
 
 from ._ext.executor import (
     COMMANDS,
-    Activate,
-    Adapter,
     Answer,
     Binding,
     ByteGrant,
     CallInterface,
     CallProgress,
     Cancel,
-    Capability,
     CheckpointItem,
     ChildCall,
     ChildCancel,
@@ -21,6 +18,7 @@ from ._ext.executor import (
     ChildForget,
     ChildPoll,
     Construction,
+    DisplayPace,
     Fork,
     GpuRelease,
     Hello,
@@ -31,43 +29,54 @@ from ._ext.executor import (
     Malformed,
     Map,
     MemoSettings,
-    ModelLoad,
     ModelPrefetch,
-    PreparedUse,
     PrepareRequest,
-    Probe,
     Publish,
     PublishPart,
     SavedFile,
-    Shutdown,
     StageMemoLookup,
     StageMemoStore,
     Start,
     TensorFSOptions,
-    Unload,
     View,
     decode_answer,
     decode_command,
 )
 
+#: Any command TensorD sends.
+Command = Hello | Start | Load | PrepareRequest | Cancel | Invoke | Map | Fork
+#: Any request an executor makes of TensorD.
+Request = (
+    ChildEvents
+    | ChildCall
+    | ChildPoll
+    | ChildCancel
+    | ChildForget
+    | GpuRelease
+    | ModelPrefetch
+    | Publish
+    | CheckpointItem
+    | StageMemoLookup
+    | StageMemoStore
+)
+
 __all__ = [
     "COMMANDS",
-    "Activate",
-    "Adapter",
     "Answer",
     "Binding",
     "ByteGrant",
     "CallInterface",
     "CallProgress",
     "Cancel",
-    "Capability",
     "CheckpointItem",
     "ChildCall",
     "ChildCancel",
     "ChildEvents",
     "ChildForget",
     "ChildPoll",
+    "Command",
     "Construction",
+    "DisplayPace",
     "Fork",
     "GpuRelease",
     "Hello",
@@ -78,20 +87,16 @@ __all__ = [
     "Malformed",
     "Map",
     "MemoSettings",
-    "ModelLoad",
     "ModelPrefetch",
-    "PreparedUse",
     "PrepareRequest",
-    "Probe",
     "Publish",
     "PublishPart",
+    "Request",
     "SavedFile",
-    "Shutdown",
     "StageMemoLookup",
     "StageMemoStore",
     "Start",
     "TensorFSOptions",
-    "Unload",
     "View",
     "decode_answer",
     "decode_command",

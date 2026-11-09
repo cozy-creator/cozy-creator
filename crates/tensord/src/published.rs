@@ -112,8 +112,6 @@ pub(crate) struct Request {
     /// Provider tokens for source models (memory only).
     pub providers: Providers,
     pub entrypoint: String,
-    /// Only explicitly marked fields enter the model resolution key.
-    pub payload: Option<Value>,
     pub choices: Vec<domain::ModelChoice>,
     /// 0 selects the widest supported machine group; otherwise exactly this many GPUs.
     pub gpus: u32,
@@ -823,7 +821,6 @@ impl Publisher {
     /// them (`gpus`), never a card's name.
     fn resolution_key(installation: &Installation, request: &Request, gpus: &str) -> io::Result<String> {
         let alias = &installation.alias;
-        let uses = crate::gpu_service::prepared_uses(installation, &request.entrypoint, request.payload.as_ref())?;
         let choices: Vec<_> = request
             .choices
             .iter()
@@ -858,8 +855,7 @@ impl Publisher {
         let origin = request.origin();
         let package = request.installed.as_ref().map(|i| i.package.as_str()).unwrap_or(&request.package);
         let release = request.installed.as_ref().map(|i| i.release.as_str()).unwrap_or(&request.release);
-        let mut key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"catalog":request.catalog_revision,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
-        if !uses.is_empty() { key["prepared_use"] = serde_json::to_value(uses).map_err(io::Error::other)?; }
+        let key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"catalog":request.catalog_revision,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
         Ok(format!("hub-{}", sha256::hex_digest(key.to_string().as_bytes())))
     }
 
@@ -1332,7 +1328,6 @@ impl Publisher {
                 installation,
                 &request.entrypoint,
                 &request.choices,
-                request.payload.as_ref(),
                 &grants,
                 request.gpus,
             )

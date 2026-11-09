@@ -51,7 +51,7 @@ Calcifer ──HTTPS (Cozy-Cap)──> api::http ─> machine_api::NativeBackend
 
 A request is accepted durably (`Engine::submit_public`), then `Service::dispatch_ready` resolves
 its immutable generation (`catalog`) and its plan, and starts it on the pool. Every run takes one
-path (Start, Load, Activate, PrepareRequest, Invoke): a deviceless call (`accelerator=False`, or a
+path (Start, Load, PrepareRequest, Invoke): a deviceless call (`accelerator=False`, or a
 machine without GPUs) on a pooled deviceless executor within CPU room, a GPU call on the GPUs the
 pool places it on. Progress, outputs and terminal state are written
 by `Engine`; outputs are kept in native custody until the client acknowledges collection. A quiescent

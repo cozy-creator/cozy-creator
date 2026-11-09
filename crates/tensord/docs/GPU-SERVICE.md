@@ -71,7 +71,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - Its executors' key (`Plan::executor`) hashes {generation, App, degree}: one process per
   environment, App, degree and lane loads every construction of the package once (H3's `ref2va`,
   `ref2va_turbo` and `motion_segment`; Klein's base and Turbo), on one CUDA context, import and
-  group. TensorD sends `Activate` when a call's construction is not the active one. The process's
+  group. A call names its construction. The process's
   Runtime decides where all their weights live and evicts an idle construction's blocks when a
   stage needs room. A fault, cancel or kill
   ends every construction the process held, and the next call starts a fresh one. A plan

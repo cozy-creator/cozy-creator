@@ -1,19 +1,22 @@
+"""Types of `tensorfs.executor`: one class per struct of the `executor-api` crate, field for field."""
+
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
 from typing_extensions import Self
 
+#: Every `cmd` TensorD sends.
 COMMANDS: frozenset[str]
 
 class Malformed(ValueError): ...
 
 class _Wire:
-    def __init__(self, **fields: Any) -> None: ...
     def json(self) -> str: ...
     def replace(self, **changes: Any) -> Self: ...
 
+# ------------------------------------------------------------------ TensorD's commands
+
 class Hello: ...
-class Shutdown: ...
 
 class TensorFSOptions:
     endpoint: str
@@ -24,6 +27,11 @@ class TensorFSOptions:
 class MemoSettings(_Wire):
     process_bytes: int
     entry_bytes: int
+    def __init__(self, *, process_bytes: int = -1, entry_bytes: int = 0) -> None: ...
+
+class DisplayPace:
+    work_ms: int
+    pause_ms: int
 
 class CallInterface(_Wire):
     module: str
@@ -32,11 +40,14 @@ class CallInterface(_Wire):
     self_call: bool
     interface_document: Any | None
     builtin: str | None
+    #: The wire spells `self_call` as `self`.
+    def __init__(self, **fields: Any) -> None: ...
 
 class Construction(_Wire):
     path: str
     manifest: str
     components: list[str]
+    def __init__(self, *, path: str, manifest: str, components: list[str] = ...) -> None: ...
 
 class Start(_Wire):
     devices: str
@@ -47,28 +58,15 @@ class Start(_Wire):
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
     memo: MemoSettings | None
+    gpu_memory_limit: int | None
     shared: bool
+    display_pace: DisplayPace | None
+    def __init__(self, **fields: Any) -> None: ...
 
-class Adapter(_Wire):
-    model_id: str
-    ref: str
-    scale: float
-    kind: str
-    component: str
-    source_component: str
-    family: str
-
-class PreparedUse(_Wire):
-    target: str
-    tensors: list[str]
-    activation_rows: int
-    repetitions: int
-    compute_dtype: str
-    max_resident_bytes: int
-    workspace_bytes: int
-
-class View(_Wire):
+class View:
+    #: The cozytensors header, base64.
     header: str
+    #: The objects it cites that no store holds, base64.
     own: list[str]
 
 class Binding(_Wire):
@@ -77,26 +75,15 @@ class Binding(_Wire):
     model_class: str
     model_binding_path: str
     model_parameter_name: str
-    model_parameter_names: list[str]
-    component: str
     components: list[str]
-    snapshots: dict[str, str]
     store: str
     snapshot: str
     release: str
-    variant: str
-    development: bool
-    custody: str
-    placement: str
     package: str
     model: str
-    adapters: list[Adapter]
-    views: dict[str, View]
-    prepared_use: PreparedUse | None
+    view: View | None
     homes: dict[str, int]
-
-class ModelLoad(_Wire):
-    binding: Binding
+    def __init__(self, **fields: Any) -> None: ...
 
 class Load(_Wire):
     construction: str
@@ -104,12 +91,9 @@ class Load(_Wire):
     actor: str
     devices: str
     sequence_parallel_degree: int
-    binding: Binding
-    models: list[ModelLoad]
+    models: list[Binding]
     attention_pin: str
-
-class Activate(_Wire):
-    construction: str
+    def __init__(self, **fields: Any) -> None: ...
 
 class InputMetadata(_Wire):
     input_id: str
@@ -117,6 +101,7 @@ class InputMetadata(_Wire):
     digest: str
     length: int
     order: int
+    def __init__(self, **fields: Any) -> None: ...
 
 class InputFile(_Wire):
     local: Path
@@ -124,6 +109,7 @@ class InputFile(_Wire):
     digest: str
     length: int
     order: int
+    def __init__(self, **fields: Any) -> None: ...
 
 class PrepareRequest(_Wire):
     request_id: str
@@ -133,9 +119,11 @@ class PrepareRequest(_Wire):
     attention_kernel: str
     bits: int
     input_metadata: dict[str, InputMetadata]
+    def __init__(self, **fields: Any) -> None: ...
 
 class Cancel(_Wire):
     request_id: str
+    def __init__(self, *, request_id: str) -> None: ...
 
 class Invoke(_Wire):
     tensorfs: TensorFSOptions | None
@@ -155,28 +143,27 @@ class Invoke(_Wire):
     actor: str
     operation: str
     family: str
+    def __init__(self, **fields: Any) -> None: ...
 
 class Map(_Wire):
     construction: str
     level: Literal["gpu", "ram"]
     request_id: str
     entrypoint: str
-    payload: dict[str, object] | None
-
-class Unload(_Wire):
-    construction: str
-
-class Probe(_Wire):
-    collect: bool
+    payload: Any | None
+    def __init__(self, **fields: Any) -> None: ...
 
 class Fork(_Wire):
     socket: Path
     root: Path
     environment: dict[str, str]
+    def __init__(self, **fields: Any) -> None: ...
 
-class Capability(_Wire):
-    actor: str
-    tensorfs: TensorFSOptions
+Command: TypeAlias = Hello | Start | Load | PrepareRequest | Cancel | Invoke | Map | Fork
+
+def decode_command(data: bytes) -> Command: ...
+
+# ------------------------------------------------------------------ TensorD's answers
 
 class ByteGrant(_Wire):
     output_id: str
@@ -186,10 +173,12 @@ class ByteGrant(_Wire):
     length: int
     content_bytes: int
     media_type: str
+    def __init__(self, **fields: Any) -> None: ...
 
 class CallProgress(_Wire):
     sequence: int
     payload: Any
+    def __init__(self, *, sequence: int, payload: Any) -> None: ...
 
 class Answer(_Wire):
     event: str
@@ -213,18 +202,20 @@ class Answer(_Wire):
     disputed: bool
     stored: bool
     reason: str
+    def __init__(self, **fields: Any) -> None: ...
 
-Command: TypeAlias = Hello | Shutdown | Start | Load | Activate | PrepareRequest | Invoke | Map | Unload | Probe | Fork | Capability | Cancel
-
-def decode_command(data: bytes) -> Command: ...
 def decode_answer(data: bytes) -> Answer: ...
 
-class ChildEvents(_Wire): ...
+# ------------------------------------------------------------------ the executor's requests
+
+class ChildEvents(_Wire):
+    def __init__(self) -> None: ...
 
 class SavedFile(_Wire):
     asset_ref: str
     digest: str
     media_type: str
+    def __init__(self, *, asset_ref: str, digest: str, media_type: str = "") -> None: ...
 
 class ChildCall(_Wire):
     call_index: int
@@ -233,26 +224,42 @@ class ChildCall(_Wire):
     payload: str
     progress_label: str
     saved: list[SavedFile]
+    def __init__(
+        self,
+        *,
+        call_index: int,
+        module: str,
+        export: str,
+        payload: str,
+        progress_label: str = "",
+        saved: list[SavedFile] | tuple[SavedFile, ...] = (),
+    ) -> None: ...
 
 class ChildPoll(_Wire):
     call_index: int
+    def __init__(self, *, call_index: int) -> None: ...
 
 class ChildCancel(_Wire):
     call_index: int
+    def __init__(self, *, call_index: int) -> None: ...
 
 class ChildForget(_Wire):
     call_index: int
+    def __init__(self, *, call_index: int) -> None: ...
 
-class GpuRelease(_Wire): ...
+class GpuRelease(_Wire):
+    def __init__(self) -> None: ...
 
 class ModelPrefetch(_Wire):
     module: str
     export: str
     payload: str
+    def __init__(self, *, module: str, export: str, payload: str = "") -> None: ...
 
 class PublishPart(_Wire):
     local: str
     duration_us: int
+    def __init__(self, *, local: str, duration_us: int = 0) -> None: ...
 
 class Publish(_Wire):
     output: str
@@ -263,6 +270,18 @@ class Publish(_Wire):
     size_bytes: int
     digest: str
     parts: list[PublishPart]
+    def __init__(
+        self,
+        *,
+        output: str,
+        asset_ref: str,
+        asset_kind: str,
+        label: str = "",
+        media_type: str = "",
+        size_bytes: int = 0,
+        digest: str = "",
+        parts: list[PublishPart] | tuple[PublishPart, ...] = (),
+    ) -> None: ...
 
 class CheckpointItem(_Wire):
     output: str
@@ -270,11 +289,15 @@ class CheckpointItem(_Wire):
     revision: str
     tag: str
     variant: str
+    def __init__(
+        self, *, output: str, repo_id: str, revision: str, tag: str = "", variant: str = ""
+    ) -> None: ...
 
 class StageMemoLookup(_Wire):
     key: str
     stage: str
     numerics: str
+    def __init__(self, *, key: str, stage: str, numerics: str) -> None: ...
 
 class StageMemoStore(_Wire):
     key: str
@@ -285,6 +308,18 @@ class StageMemoStore(_Wire):
     length: int
     cost_ms: float
     reason: str
+    def __init__(
+        self,
+        *,
+        key: str,
+        stage: str,
+        numerics: str,
+        local: str = "",
+        sha256: str = "",
+        length: int = 0,
+        cost_ms: float = 0.0,
+        reason: str = "",
+    ) -> None: ...
 
 Request: TypeAlias = (
     ChildEvents | ChildCall | ChildPoll | ChildCancel | ChildForget | GpuRelease | ModelPrefetch

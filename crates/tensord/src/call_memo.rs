@@ -101,7 +101,7 @@ pub(crate) fn models(plan: Option<&Plan>, choices: &[ModelChoice]) -> Value {
             .slots
             .iter()
             .map(|slot| json!({"slot": slot.binding.model_binding_path,
-                "snapshots": slot.binding.snapshots, "adapters": slot.binding.adapters}))
+                "snapshot": slot.binding.snapshot}))
             .chain(plan.sources.iter().map(|source| json!({"source": source.parameter, "manifest": source.manifest})))
             .collect(),
         None => {
