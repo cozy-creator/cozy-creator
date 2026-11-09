@@ -344,10 +344,13 @@ impl Tier {
         if left >= state.headroom {
             return gone;
         }
-        let idle = if left >= 0 { super::host::short((state.headroom - left) as u64) } else { 0 };
+        // Unreadable, every page goes. A room below the number is no unreadable one: only the excess
+        // goes. Read as one, Flux-2's and H3's tiers let every page go on kesshouban (runs 42691, 42722).
+        let unreadable = budget.total <= 0;
+        let idle = if unreadable { 0 } else { super::host::short((state.headroom - left).max(0) as u64) };
         let idle = i64::try_from(idle).unwrap_or(i64::MAX);
         let headroom = state.headroom;
-        let enough = |left: i64| left >= 0 && left.saturating_add(idle) >= headroom;
+        let enough = |left: i64| !unreadable && left >= 0 && left.saturating_add(idle) >= headroom;
         while !enough(left) {
             let Some((page, _)) = state.spare.pop() else { break };
             left += page.len as i64;
@@ -359,9 +362,7 @@ impl Tier {
                 break;
             }
             if let Some(kept) = state.remove(&key, "short") {
-                if left >= 0 {
-                    left += kept.page.len as i64;
-                }
+                left += kept.page.len as i64;
                 gone.push(kept);
             }
         }
