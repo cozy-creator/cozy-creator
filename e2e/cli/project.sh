@@ -1301,23 +1301,30 @@ echo "unheld: run $n output ${digest:-none}; reclaim --yes left ${left#"$U"/} sh
 rm -rf "$U"
 }
 
+# by_content <script>: a one-file package as `protocol::code` sends it, the script and then its tree's document, each PUT by its
+# digest; the tree's digest on stdout.
+by_content() {
+  local hex doc tree
+  hex=$(sha256sum "$1" | cut -c1-64)
+  api -sS -o /dev/null -X PUT --data-binary "@$1" "http://$ADDR/v1/files/sha256:$hex" || return 1
+  doc=$(jq -cn --arg h "$hex" --argjson n "$(stat -c %s "$1")" --arg p "${1##*/}" '{entries: [{blob: {length: $n, sha256: $h}, kind: "file", path: $p}]}')
+  tree=$(printf %s "$doc" | sha256sum | cut -c1-64)
+  printf %s "$doc" | api -sS -o /dev/null -X PUT --data-binary @- "http://$ADDR/v1/files/sha256:$tree" || return 1
+  echo "sha256:$tree"
+}
+
 # What a page sends, or any client on another computer: a project by its id, local code by content (its tree, as `protocol::code`
 # makes it), a payload as text, a file by its hash, and no path. A file given to a run joins its project, so the run can be asked
 # again once what held it is gone.
 path_free() {
 step "a project: a run with no path sent"
-local R=$OUT/path-free lock=$HOME/.cozy/calcifer/calcifer.lock.holder id pic hex other n asked input code w h url script tree doc
+local R=$OUT/path-free lock=$HOME/.cozy/calcifer/calcifer.lock.holder id pic hex other n asked input code w h url script tree copied
 cozy project new "$R" > /dev/null || check "path-free: project new"
 id=$(status "$R" | jq -r .id)
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
-# draw.py by content: the script, then its tree's document, each PUT by its digest.
 script=$here/project/draw.py
-hex=$(sha256sum "$script" | cut -c1-64)
-api -sS -o /dev/null -X PUT --data-binary "@$script" "http://$ADDR/v1/files/sha256:$hex" || check "path-free: PUT draw.py"
-doc=$(jq -cn --arg h "$hex" --argjson n "$(stat -c %s "$script")" '{entries: [{blob: {length: $n, sha256: $h}, kind: "file", path: "draw.py"}]}')
-tree=$(printf %s "$doc" | sha256sum | cut -c1-64)
-printf %s "$doc" | api -sS -o /dev/null -X PUT --data-binary @- "http://$ADDR/v1/files/sha256:$tree" || check "path-free: PUT the tree"
-asked=$(ask "$(jq -n --arg t "sha256:$tree" --arg p "$id" '{target: "draw", code: {tree: $t, at: "draw.py"}, project: $p, on: "local", input_text: "instructions: with no path\nseed: 7\n"}')")
+tree=$(by_content "$script") || check "path-free: PUT draw.py by content"
+asked=$(ask "$(jq -n --arg t "$tree" --arg p "$id" '{target: "draw", code: {tree: $t, at: "draw.py"}, project: $p, on: "local", input_text: "instructions: with no path\nseed: 7\n"}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
 [ -n "$n" ] || { check "path-free: a run by the project's id, local code by content and input_text: $asked"; return; }
 ended "$n" > "$OUT/free-draw.json"
@@ -1330,16 +1337,17 @@ w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 
 J --argjson w "$w" --argjson h "$h" '.output[0] | .width == $w and .height == $h' "$OUT/free-draw.json" || check "path-free: measured $(jq -c '.output[0] | {width, height}' "$OUT/free-draw.json"), not $w x $h"
 [ "$(api --get --data-urlencode "project=$id" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" = "$(api --get --data-urlencode "project=path-free" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" ] || check "path-free: GET /v1/runs by id and by name differ"
 [ "$(api -o "$OUT/free-unknown.json" -w '%{http_code}' "http://$ADDR/v1/runs?project=project-0000000000000000")" = 404 ] && J '.error.code == "project_unknown"' "$OUT/free-unknown.json" || check "path-free: GET /v1/runs of an unknown id: $(head -c 200 "$OUT/free-unknown.json")"
-J '.error.code == "project_unknown"' <<< "$(ask "$(jq -n --arg t "sha256:$tree" '{target: "draw", code: {tree: $t, at: "draw.py"}, project: "project-0000000000000000", on: "local", input_text: "instructions: nowhere"}')")" || check "path-free: POST /v1/runs of an unknown id was not refused"
+J '.error.code == "project_unknown"' <<< "$(ask "$(jq -n --arg t "$tree" '{target: "draw", code: {tree: $t, at: "draw.py"}, project: "project-0000000000000000", on: "local", input_text: "instructions: nowhere"}')")" || check "path-free: POST /v1/runs of an unknown id was not refused"
 J '.error.code == "target_by_path"' <<< "$(ask "$(jq -n --arg t "$script" --arg p "$id" '{target: $t, project: $p, on: "local", input_text: "instructions: by path"}')")" || check "path-free: local code by a path was not refused"
 
 step "a project: a file by its hash joins the project, and the run can be asked again"
+copied=$(by_content "$here/project/copied.py") || check "path-free: PUT copied.py by content"
 pic=$OUT/free.png
 ffmpeg -v error -y -f lavfi -i "color=c=0x$(printf %06x $((RANDOM * RANDOM % 16777216))):size=64x48" -frames:v 1 "$pic"
 hex=$(sha "$pic")
 code=$(api -o "$OUT/free-put.json" -w '%{http_code}' -X PUT --data-binary "@$pic" "http://$ADDR/v1/files/sha256:$hex")
 { [ "$code" = 201 ] || [ "$code" = 200 ]; } || check "path-free: PUT: $code $(head -c 200 "$OUT/free-put.json")"
-asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: sha256:$hex" '{target: $t, project: $p, on: "local", input_text: $x}')")
+asked=$(ask "$(jq -n --arg t "$copied" --arg p "$id" --arg x "image: sha256:$hex" '{target: "", code: {tree: $t, at: "copied.py"}, project: $p, on: "local", input_text: $x}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
 [ -n "$n" ] || { check "path-free: a run given a held file: $asked"; return; }
 J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: run $n given a held file did not complete"
@@ -1350,16 +1358,16 @@ rm -f "$HOME/.cozy/calcifer/files/$hex"
 [ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "path-free: the held file is still held"
 input=$(cozy --json --full run show "$n" | jq -c .request.input)
 J --arg s "sha256:$hex" '.image == $s' <<< "$input" || check "path-free: request.input: $input"
-asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --argjson i "$input" '{target: $t, project: $p, on: "local", input: $i}')")
+asked=$(ask "$(jq -n --arg t "$copied" --arg p "$id" --argjson i "$input" '{target: "", code: {tree: $t, at: "copied.py"}, project: $p, on: "local", input: $i}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
 [ -n "$n" ] && J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: asking it again: $asked"
 # A hash prefix, in text and in a request file.
-asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: ${hex:0:12}" '{target: $t, project: $p, on: "local", input_text: $x}')")
+asked=$(ask "$(jq -n --arg t "$copied" --arg p "$id" --arg x "image: ${hex:0:12}" '{target: "", code: {tree: $t, at: "copied.py"}, project: $p, on: "local", input_text: $x}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
 [ -n "$n" ] && J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: a hash prefix in input_text: $asked"
 printf 'image: %s\n' "${hex:0:12}" > "$R/req.yaml"
 cozy run -p "$R" "$here/project/copied.py" --input "$R/req.yaml" > "$OUT/free-input.txt" 2>&1 || check "path-free: a hash prefix in --input: $(tail -c 300 "$OUT/free-input.txt")"
-J '.error.code == "file_not_held"' <<< "$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: sha256:$(printf %064d 1)" '{target: $t, project: $p, on: "local", input_text: $x}')")" || check "path-free: a hash nothing holds was not refused file_not_held"
+J '.error.code == "file_not_held"' <<< "$(ask "$(jq -n --arg t "$copied" --arg p "$id" --arg x "image: sha256:$(printf %064d 1)" '{target: "", code: {tree: $t, at: "copied.py"}, project: $p, on: "local", input_text: $x}')")" || check "path-free: a hash nothing holds was not refused file_not_held"
 # A person's own file is copied: changing it later changes nothing of the project's.
 other=$OUT/free-other.png
 ffmpeg -v error -y -f lavfi -i "color=c=0x$(printf %06x $((RANDOM * RANDOM % 16777216))):size=48x64" -frames:v 1 "$other"
@@ -1372,14 +1380,16 @@ step "a project: GET /v1/targets says what a person runs and a function's contra
 # A package, as a run reads it: its machine's Runtime, kept from installing this source, whatever PyPI's newest can read.
 cozy run -p "$R" "$here/project/shots.py" > "$OUT/free-functions.txt" 2>&1 || check "path-free: run of a package names no function: $(tail -c 300 "$OUT/free-functions.txt")"
 grep -q shoot "$OUT/free-functions.txt" || check "path-free: its functions: $(tail -c 300 "$OUT/free-functions.txt")"
-api --get --data-urlencode "target=$here/project/shots.py" "http://$ADDR/v1/targets" > "$OUT/free-target.json"
+tree=$(by_content "$here/project/shots.py") || check "path-free: PUT shots.py by content"
+api --get --data-urlencode "tree=$tree" --data-urlencode "at=shots.py" "http://$ADDR/v1/targets" > "$OUT/free-target.json"
 J '(.functions | length > 1) and (.next | length > 0) and (has("contract") | not)' "$OUT/free-target.json" || check "path-free: targets of a package: $(jq -c '{functions, next}' "$OUT/free-target.json")"
-api --get --data-urlencode "target=$here/project/shots.py/shoot" "http://$ADDR/v1/targets" > "$OUT/free-function.json"
+api --get --data-urlencode "target=shoot" --data-urlencode "tree=$tree" --data-urlencode "at=shots.py" "http://$ADDR/v1/targets" > "$OUT/free-function.json"
 J '.function == "shoot" and (.contract | contains("/shoot")) and (.request.fields | length > 0)' "$OUT/free-function.json" || check "path-free: targets of a function: $(jq -c '{function, contract}' "$OUT/free-function.json")"
 cozy run "$here/project/shots.py/shoot" --describe > "$OUT/free-describe.txt" 2>&1 && grep -q '/shoot' "$OUT/free-describe.txt" || check "path-free: --describe: $(tail -c 300 "$OUT/free-describe.txt")"
 # The same source no run has read: read from its source by PyPI's newest Runtime, which answers, or says what would read it.
 cp "$here/project/shots.py" "$OUT/free-never-run.py"; printf '\n# never run\n' >> "$OUT/free-never-run.py"
-api --get --data-urlencode "target=$OUT/free-never-run.py" "http://$ADDR/v1/targets" > "$OUT/free-never-run.json"
+tree=$(by_content "$OUT/free-never-run.py") || check "path-free: PUT free-never-run.py by content"
+api --get --data-urlencode "tree=$tree" --data-urlencode "at=free-never-run.py" "http://$ADDR/v1/targets" > "$OUT/free-never-run.json"
 J '(.functions | length > 1) or (.error.code == "describe_failed" and (.error.next[0] | startswith("cozy run ")))' "$OUT/free-never-run.json" || check "path-free: targets of a source no run has read: $(head -c 300 "$OUT/free-never-run.json")"
 
 step "a project: what a machine holds, and Calcifer's log, by their routes"
