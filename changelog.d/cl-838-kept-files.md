@@ -1,0 +1,1 @@
+A file you imported into a project and then deleted from its `files/` folder is said to be "not on this computer" (`cozy project pull` brings it back), not "no version yet": project.db keeps the whole hash of every file a box names only by the start of it (cl-838).
