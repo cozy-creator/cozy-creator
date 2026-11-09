@@ -2739,18 +2739,29 @@ J '.instructions.text == "<amy> by <coast>, in Soft light.." and (.instructions.
 # its own package made.
 latents_stay() {
 step "a tool: a Latents result stays on its machine, any other file comes down, and only its own package reads its extras (weightless 9)"
-local T=$OUT/latents run held
+local T=$OUT/latents run held name url
 tool_pictures "$T"
 (cd "$T" && cozy --json run -p "$T" "$here/project/boxes.py/shot" 'plate=<walk>' --on local) > "$OUT/latents.ndjson" 2> "$OUT/latents.err" || { check "latents: the run: $(tail -c 400 "$OUT/latents.err")"; return; }
 run=$(tail -1 "$OUT/latents.ndjson" | jq -r .run.number)
 ended "$run" > "$OUT/latents.json"
-J '.output[] | select(.name == "latents") | .stays and .path == null and .sha256 != null' "$OUT/latents.json" || check "latents: a Latents field: $(jq -c '[.output[] | {name, stays, path}]' "$OUT/latents.json")"
-J '[.output[] | select(.name == "video" or .name == "given")] | length == 2 and all(.path != null and (.stays | not))' "$OUT/latents.json" || check "latents: what else it made didn't come down: $(jq -c '[.output[] | {name, stays, path}]' "$OUT/latents.json")"
+# Landed, an output has a url that serves its bytes (cl-819): none for what stays.
+J '.output[] | select(.name == "latents") | .stays and .url == null and .sha256 != null' "$OUT/latents.json" || check "latents: a Latents field: $(jq -c '[.output[] | {name, stays, url}]' "$OUT/latents.json")"
+J '[.output[] | select(.name == "video" or .name == "given")] | length == 2 and all(.url != null and (.stays | not))' "$OUT/latents.json" || check "latents: what else it made didn't come down: $(jq -c '[.output[] | {name, stays, url}]' "$OUT/latents.json")"
+# Downloaded by its digest, each is what the run says it made; what stays isn't among them.
+cozy run show "$run" --once -o "$OUT/latents-out" > "$OUT/latents-out.txt" 2>&1 || check "latents: run show -o: $(tail -c 300 "$OUT/latents-out.txt")"
+for name in video given; do
+  held=$(jq -r --arg n "$name" '.output[] | select(.name == $n) | .sha256' "$OUT/latents.json")
+  [ "sha256:$(sha "$(ls "$OUT/latents-out/$run-$name"* 2> /dev/null | head -1)")" = "$held" ] || check "latents: $name downloaded isn't $held: $(ls "$OUT/latents-out")"
+done
+[ -z "$(ls "$OUT/latents-out" | grep -- "-latents")" ] || check "latents: what stays came down: $(ls "$OUT/latents-out")"
 held=$(jq -r '.output[] | select(.name == "latents") | .sha256' "$OUT/latents.json")
 { sql1 "$T" "SELECT record FROM lock_files WHERE sha256 = '$held'" | grep -q '"machine":"local"' && [ ! -e "$T/files/${held#sha256:}" ]; } || check "latents: project.db doesn't say who holds them, or they came here: $(sql "$T" "SELECT record FROM lock_files WHERE sha256 = '$held'")"
 [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/runs/$run/outputs/latents")" = 409 ] || check "latents: the output route served what stays"
 (cd "$T" && cozy --json run -p "$T" "$here/project/shots.py/only_untyped" prompt=alone --on local) > "$OUT/untyped.ndjson" 2> "$OUT/untyped.err" || check "latents: an untyped run: $(tail -c 300 "$OUT/untyped.err")"
-tail -1 "$OUT/untyped.ndjson" | J '.run.output[0] | (.stays | not) and .path != null' || check "latents: an untyped File didn't come down: $(tail -1 "$OUT/untyped.ndjson" | jq -c .run.output)"
+tail -1 "$OUT/untyped.ndjson" | J '.run.output[0] | (.stays | not) and .url != null' || check "latents: an untyped File didn't come down: $(tail -1 "$OUT/untyped.ndjson" | jq -c .run.output)"
+url=$(tail -1 "$OUT/untyped.ndjson" | jq -r '.run.output[0].url')
+[ "$(api -o "$OUT/untyped.blob" -w '%{http_code}' "http://$ADDR$url")" = 200 ] && [ "sha256:$(sha "$OUT/untyped.blob")" = "$(tail -1 "$OUT/untyped.ndjson" | jq -r '.run.output[0].sha256')" ] \
+  || check "latents: $url doesn't serve the untyped File's sha256"
 added "$T" <<YAML
   ours: {tool: $here/project/shaped.py/shot, summary: On <walk>., beats: [{duration: 2}]}
   theirs: {tool: $here/project/shots.py/shoot, summary: On <walk>.}
