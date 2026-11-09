@@ -107,7 +107,11 @@ pub(crate) async fn estimate(
     if machines.is_empty() {
         notes.push(Note { level: NoteLevel::Warning, message: format!("{} quotes nothing: only a machine that is up does", submit.on) });
     }
-    let soonest = matches!(submit.on, On::Machine(_)).then(|| submit.on.to_string());
+    // Where it would go, if that machine can run it at all.
+    let soonest = match &submit.on {
+        On::Machine(name) => machines.iter().any(|machine| machine.job == 0 && machine.fits && machine.machine == *name).then(|| name.clone()),
+        _ => None,
+    };
     Ok(Json(RunEstimate { machines, soonest, notes, preparing: None }))
 }
 
