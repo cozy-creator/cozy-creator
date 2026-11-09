@@ -371,7 +371,7 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || startsWith(matrix.shard, 'projectdb')
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || matrix.shard == 'control' || startsWith(matrix.shard, 'projectdb')
         uses: AnimMouse/setup-ffmpeg@v1
       - name: cli suite
         env:
