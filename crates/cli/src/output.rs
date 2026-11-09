@@ -42,7 +42,7 @@ impl Term {
         Self {
             stdout,
             stderr: std::io::stderr().is_terminal(),
-            hyperlinks: stdout && supports_hyperlinks::on(supports_hyperlinks::Stream::Stdout),
+            hyperlinks: stdout && hyperlinks(),
         }
     }
 
@@ -50,6 +50,22 @@ impl Term {
     pub fn links(&self) -> bool {
         self.hyperlinks
     }
+}
+
+/// Whether the terminal shows OSC 8 links: `FORCE_HYPERLINK` (anything but `0`), or one known to.
+fn hyperlinks() -> bool {
+    let var = |name| std::env::var(name).ok();
+    if let Some(force) = var("FORCE_HYPERLINK") {
+        return force.trim() != "0";
+    }
+    let vte = var("VTE_VERSION").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) >= 5000;
+    let program = matches!(
+        var("TERM_PROGRAM").as_deref(),
+        Some("Hyper" | "iTerm.app" | "terminology" | "WezTerm" | "vscode" | "ghostty" | "zed")
+    );
+    let term = matches!(var("TERM").as_deref(), Some("xterm-kitty" | "alacritty" | "alacritty-direct"));
+    let colorterm = var("COLORTERM").as_deref() == Some("xfce4-terminal");
+    ["DOMTERM", "WT_SESSION", "KONSOLE_VERSION"].iter().any(|name| var(name).is_some()) || vte || program || term || colorterm
 }
 
 /// Prints one JSON document on stdout: indented for a terminal, one line for anything else.

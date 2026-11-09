@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use platform::tools::{self, Class, Found, Side, TOOLS};
 use protocol::error::{Error, Kind};
 use serde::Serialize;
@@ -122,11 +121,9 @@ fn doctor(ctx: &Context) -> &'static str {
 
 /// Downloads `url` into `part` (`calcifer::tools::download`), showing the bytes moved on a terminal.
 pub(crate) async fn download(ctx: &Context, url: &str, part: &Path) -> Result<(File, String), String> {
-    let bar = match !ctx.json && ctx.term.stderr {
-        true => ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr()),
-        false => ProgressBar::hidden(),
-    };
-    bar.set_style(ProgressStyle::with_template("{spinner} {bytes} at {bytes_per_sec}").expect("a template"));
+    let bar = crate::progress::Line::stderr(!ctx.json && ctx.term.stderr, None, |s| {
+        format!("{} {} at {}", s.spinner(), s.bytes(), s.bytes_per_sec())
+    });
     let mut first = true;
     let shown = bar.clone();
     let answer = calcifer::tools::download(url, part, &mut |at| {

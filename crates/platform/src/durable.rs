@@ -49,6 +49,33 @@ pub fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
+/// Puts a copy of the program `new` at `target`, with `target`'s permissions, also while `target`
+/// runs: the running process keeps its old file. On Windows, where a running program's file can be
+/// renamed but not removed, the old one moves aside to `.<name>.old` until the next replacement.
+pub fn replace_program(target: &Path, new: &Path) -> io::Result<()> {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = target.with_file_name(format!(".{name}.swap"));
+    let placed = (|| {
+        fs::copy(new, &temp)?;
+        if let Ok(meta) = fs::metadata(target) {
+            fs::set_permissions(&temp, meta.permissions())?;
+        }
+        if cfg!(windows) {
+            let aside = target.with_file_name(format!(".{name}.old"));
+            match fs::remove_file(&aside) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+            rename_over(target, &aside)?;
+        }
+        rename_over(&temp, target)
+    })();
+    if placed.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    placed
+}
+
 /// Replaces `path` with `bytes`: a reader sees the old file or the new one, never a part, and after
 /// this returns a crash keeps the new one. `mode` is the Unix permission; Windows keeps the
 /// profile's ACL, and has no directory to sync: the rename is atomic in NTFS's journal.

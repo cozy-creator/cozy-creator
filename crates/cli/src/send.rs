@@ -7,7 +7,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use protocol::{
     calcifer::{Sent, path_key},
     code::LocalCode,
@@ -95,11 +94,10 @@ impl<'a> Sender<'a> {
             return Ok(());
         }
         let gaps = missing(&held, length);
-        let bar = match !self.ctx.json && self.ctx.term.stderr && length > PART {
-            true => ProgressBar::with_draw_target(Some(length), ProgressDrawTarget::stderr()),
-            false => ProgressBar::hidden(),
-        };
-        bar.set_style(ProgressStyle::with_template("sending {msg}: {bytes}/{total_bytes} at {bytes_per_sec}").expect("a template"));
+        let shown = !self.ctx.json && self.ctx.term.stderr && length > PART;
+        let bar = crate::progress::Line::stderr(shown, Some(length), |s| {
+            format!("sending {}: {}/{} at {}", s.msg(), s.bytes(), s.total_bytes(), s.bytes_per_sec())
+        });
         bar.set_message(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
         bar.set_position(length - gaps.iter().map(|(start, end)| end - start).sum::<u64>());
         let mut file = tokio::fs::File::open(path).await.map_err(|e| unreadable(path, e))?;

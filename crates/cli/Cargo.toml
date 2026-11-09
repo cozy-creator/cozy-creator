@@ -23,18 +23,16 @@ futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true
 jiff = { workspace = true, features = ["serde", "tz-system"] }
-indicatif.workspace = true
 ratatui.workspace = true
 reqwest.workspace = true
-self-replace.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-supports-hyperlinks.workspace = true
 tempfile.workspace = true
 tensorfs = { workspace = true, features = ["store"] }
 tokio = { workspace = true, features = ["signal"] }
+unicode-width.workspace = true
 url.workspace = true
 zip.workspace = true
 
