@@ -11,7 +11,6 @@
 mod access;
 pub mod api;
 mod authorized;
-mod door;
 pub mod eta;
 pub mod events;
 mod files;

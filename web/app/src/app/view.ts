@@ -18,11 +18,9 @@ function write(key: string, value: unknown) {
   }
 }
 
-const viewKey = (scope: string, id: string) => `cozy.view:${scope}:${id}`
-const selectionKey = (scope: string, id: string) => `cozy.selection:${scope}:${id}`
-const moreKey = (scope: string, id: string) => `cozy.more:${scope}:${id}`
-
-const machineKey = (scope: string) => `cozy.machine:${scope}`
+const viewKey = (id: string) => `cozy.view:${id}`
+const selectionKey = (id: string) => `cozy.selection:${id}`
+const moreKey = (id: string) => `cozy.more:${id}`
 const TOOLS_KEY = "cozy.tools-shut"
 const NSFW_KEY = "cozy.show-nsfw"
 
@@ -34,11 +32,9 @@ export const saveShowNsfw = (shown: boolean) => write(NSFW_KEY, shown)
 export const loadToolsShut = () => read<boolean>(TOOLS_KEY) === true
 export const saveToolsShut = (shut: boolean) => write(TOOLS_KEY, shut)
 
-export const loadMachine = (scope: string) => read<string>(machineKey(scope))
-export const saveMachine = (scope: string, name: string) => write(machineKey(scope), name)
-export const loadViewport = (scope: string, id: string | null) => (id ? read<Viewport>(viewKey(scope, id)) : null)
-export const saveViewport = (scope: string, id: string, viewport: Viewport) => write(viewKey(scope, id), viewport)
-export const loadSelection = (scope: string, id: string | null) => (id ? (read<string[]>(selectionKey(scope, id)) ?? []) : [])
-export const saveSelection = (scope: string, id: string, names: string[]) => write(selectionKey(scope, id), names)
-export const loadMore = (scope: string, id: string | null) => (id ? (read<string[]>(moreKey(scope, id)) ?? []) : [])
-export const saveMore = (scope: string, id: string, names: string[]) => write(moreKey(scope, id), names)
+export const loadViewport = (id: string | null) => (id ? read<Viewport>(viewKey(id)) : null)
+export const saveViewport = (id: string, viewport: Viewport) => write(viewKey(id), viewport)
+export const loadSelection = (id: string | null) => (id ? (read<string[]>(selectionKey(id)) ?? []) : [])
+export const saveSelection = (id: string, names: string[]) => write(selectionKey(id), names)
+export const loadMore = (id: string | null) => (id ? (read<string[]>(moreKey(id)) ?? []) : [])
+export const saveMore = (id: string, names: string[]) => write(moreKey(id), names)

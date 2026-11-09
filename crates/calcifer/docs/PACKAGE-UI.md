@@ -45,5 +45,3 @@ Only from this computer's Calcifer (`GET /v1/tools/{id}/ui`, `CALCIFER-API.md`),
 
 - **A release:** the newest any machine you hold has installed, from the Hub, its wheel held to the digest the Hub says. A wheel that isn't doesn't load.
 - **Local code a project names:** its files as they are now. An edit is another hash, so another URL.
-
-Looking at a pod's Calcifer through the door, the page still asks this computer's, and takes the declared box if it can't. The door gives nothing from a pod a type that can run.

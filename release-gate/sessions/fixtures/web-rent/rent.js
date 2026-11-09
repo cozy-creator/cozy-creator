@@ -185,7 +185,7 @@ async function use(name, work) {
       await shot('used');
     });
 
-    // A real run on it, from the terminal, live in the page by machine, to its end. Then its own Calcifer, through the switcher.
+    // A real run on it, from the terminal, live in the page by machine, to its end.
     await use('run_on_it', async () => {
       let out = '';
       let exited = null;
@@ -208,35 +208,10 @@ async function use(name, work) {
       check('its_result_shows', (await page.textContent('.drawer-body')).includes('words'));
       await shot('run-done');
     });
-
-    await use('switcher', async () => {
-      const update = cozy('machine', 'update', name, '--tensord', execFileSync('sh', ['-c', 'command -v cozy'], { encoding: 'utf8' }).trim(), '-y');
-      seen.update_said = update.slice(-300);
-      await page.goto(machines);
-      await page.waitForSelector('.switcher select');
-      await until('it can be looked at', () => page.locator('.switcher option').allTextContents(), (names) => names.includes(name));
-      const doorOpened = Date.now();
-      await Promise.all([page.waitForEvent('load'), page.selectOption('.switcher select', name)]);
-      await page.waitForSelector('.top');
-      // Its rows, not the drawer's words: the switcher itself says `local` before anything has come through the door.
-      const rows = await until('its world', () => page.locator('.runrow b').allTextContents(), (names) => names.length > 0, 120_000);
-      check('its_world_has_the_pod_as_local', rows.join() === 'local', rows);
-      check('which_calcifer_shows', (await page.textContent('.top')).includes(`On ${name}`));
-      check('no_rent_on_a_pod', (await page.locator('.sku').count()) === 0);
-      check('no_add_on_a_pod', (await page.locator('summary:text-is("Add another computer")').count()) === 0);
-      await shot('switched');
-      // How long a fresh pod's Calcifer takes to list the tools, as a person waits for them, and that they come.
-      await until('its tools', () => page.locator('.tools .tool').count(), (n) => n > 0, 120_000);
-      seen.tools_through_the_door = { ms: Date.now() - doorOpened, tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() };
-      await shot('switched-tools');
-      await Promise.all([page.waitForEvent('load'), page.selectOption('.switcher select', '')]);
-      await page.waitForSelector('.top');
-    });
   }
 
   if (!over) {
-    // End, through the page: what it says, what it waits for, and the Hub's word. On this computer's Calcifer, whatever the switcher was left on.
-    await page.evaluate(() => sessionStorage.removeItem('cozy.calcifer'));
+    // End, through the page: what it says, what it waits for, and the Hub's word.
     await page.goto(drawer);
     await page.reload();
     await page.waitForSelector('.ending button:text-is("End")');

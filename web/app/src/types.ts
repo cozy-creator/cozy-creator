@@ -23,7 +23,6 @@ export interface Status {
   os: string
   local_usable: boolean
   signed_in: boolean
-  rental?: { machine_id: string; idle_deadline_ms?: number }
 }
 
 // Projects

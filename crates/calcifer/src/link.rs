@@ -201,25 +201,6 @@ impl Link {
         Ok(self.machine.keepalive().await?)
     }
 
-    /// Asks a rental to release itself now, which it refuses while it works.
-    pub async fn release(&self) -> Result<(), LinkError> {
-        Ok(self.machine.release().await?)
-    }
-
-    /// One request to the machine's own Calcifer, through its door: the one way one Calcifer speaks
-    /// to another. `target` is the path and query there. Its answer is the answer, refusals too.
-    pub async fn forward(
-        &self,
-        method: reqwest::Method,
-        target: &str,
-        headers: reqwest::header::HeaderMap,
-        body: Option<reqwest::Body>,
-    ) -> Result<reqwest::Response, LinkError> {
-        let unreachable = || LinkError::Unreachable("no connection to the machine".into());
-        let lane = self.lane(0, false).ok_or_else(unreachable)?;
-        Ok(lane.forward(method, target, headers, body).await?)
-    }
-
     /// The identity frame the machine at `address` gives anyone who reaches it: its worker id,
     /// boot and version.
     pub async fn identity(address: &str, pin: [u8; 32]) -> Result<v1::StatusFrame, LinkError> {

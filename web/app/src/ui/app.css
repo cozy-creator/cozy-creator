@@ -2380,15 +2380,6 @@ button:disabled {
   margin-bottom: 8px;
   font-size: var(--body);
 }
-.switcher {
-  margin-bottom: 8px;
-}
-.switcher .field {
-  max-width: 200px;
-}
-.switcher p {
-  margin: 6px 0 0;
-}
 .tb .count {
   margin-left: 6px;
   padding: 0 5px;

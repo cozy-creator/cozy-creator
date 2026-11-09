@@ -39,7 +39,7 @@ export function OnMachine<Body extends object, Answer>({
   onDone: (answer: Answer) => void
   children?: ReactNode
 }) {
-  const { client, status, remote } = useConnection()
+  const { client, status } = useConnection()
   const to = useTo()
   const { data: list } = useQuery(machinesQuery(client))
   const signedIn = useSignedIn() && !list?.signed_out?.length
@@ -130,7 +130,7 @@ export function OnMachine<Body extends object, Answer>({
           </button>
         )}
       </div>
-      {!signedIn && !remote && !client.transport.channel && (
+      {!signedIn && !client.transport.channel && (
         <p className="muted">
           <Link className="more" to={to("account")}>
             Sign in

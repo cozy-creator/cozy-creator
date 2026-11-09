@@ -1204,12 +1204,6 @@ impl Folder {
         db::keep_answer(&held.as_ref().expect("held").conn, key, digest, status, content_type, body).map_err(|e| Error::new(Kind::Unavailable, "project_db", e.to_string()))
     }
 
-    /// A copy of `project.db` whole, for an archive.
-    pub fn snapshot(&self, to: &Path) -> Result<(), Error> {
-        let held = self.held()?;
-        db::snapshot(&held.as_ref().expect("held").conn, to, &self.db())
-    }
-
     /// What the project says: its boxes, as rows.
     pub fn written(&self) -> Result<Written, Error> {
         self.reading_written(Written::clone)

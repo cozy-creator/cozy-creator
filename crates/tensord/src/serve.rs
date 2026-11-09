@@ -87,7 +87,7 @@ fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
     #[cfg(unix)]
     let ready = supervise::supervise(&paths, grant.provider.clone())?;
     // The service: why it fails reaches its parent's rollback reason.
-    config::for_what_it_starts(&config.grant);
+    config::for_what_it_starts();
     config::reread(&mut config)
         .and_then(|()| run_machine(config, ready))
         .inspect_err(|error| update::service_failed(&paths, error))
@@ -192,8 +192,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         grant.idle_ms,
     )?;
     identity.lifecycle = Some(lifecycle.clone());
-    let calcifer = crate::machine::calcifer::Calcifer::new(&grant.home, rental);
-    identity.calcifer = calcifer.clone();
     let engine = layout.engine();
     identity.store = Some(layout.store.clone());
     let generations = engine.join("generations");
@@ -375,11 +373,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         Some(logs),
         reach,
     )?;
-    // After `api-ready.json` and the root's boot id, which is how a Calcifer here finds this machine
-    // as `local` and never starts another.
-    if let Some(calcifer) = calcifer.filter(|_| rental) {
-        calcifer.keep()?;
-    }
     // The Hub probes the endpoint the provider put in this pod's environment at once,
     // instead of waiting for the provider to report it.
     if let (Some(hub), Some(endpoint), true) = (grant.hub.clone(), endpoint, rental) {

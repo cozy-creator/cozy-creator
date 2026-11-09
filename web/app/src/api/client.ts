@@ -158,11 +158,6 @@ export class Client {
     this.hooks = hooks
   }
 
-  /** Calcifer refused the page itself. Whether that signs anyone out is the connection's to judge: through a door, it's the pod's word. */
-  unauthorized() {
-    this.hooks.signedOut()
-  }
-
   /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
     const safe = init.method !== "POST" || new Headers(init.headers).has("Idempotency-Key")
@@ -180,7 +175,7 @@ export class Client {
           return response
         }
         failure = await refusal(response)
-        if (sessionLost(failure)) this.unauthorized()
+        if (sessionLost(failure)) this.hooks.signedOut()
         if (response.status !== 503 || options.once) {
           if (attempt > 1) say(0)
           throw failure
@@ -210,7 +205,7 @@ export class Client {
     const response = await this.transport.fetch(path, { signal, headers: { Accept: "text/event-stream" } })
     if (response.ok) return response
     const failure = await refusal(response)
-    if (sessionLost(failure)) this.unauthorized()
+    if (sessionLost(failure)) this.hooks.signedOut()
     throw failure
   }
 

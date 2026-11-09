@@ -15,31 +15,6 @@ info:
 security: [{cozy_cap: []}]
 
 paths:
-  /v1/calcifer/{*path}:
-    get: &calcifer
-      summary: >-
-        This machine's own Calcifer, which binds only loopback: its answer to the same method, the rest of the
-        path and the query, whatever it is. Machine scope only; a run-scope cap answers 403 `capability_scope`.
-        Both bodies stream with backpressure. It goes with the holder's bearer, `Cozy-Via` naming the signer,
-        and without `Origin`, `Cookie`, `Sec-Fetch-*` and hop-by-hop headers; `Set-Cookie` never comes back. Bytes
-        of files moving (a body neither JSON nor text) restart the idle clock as an output read's do; nothing
-        else here touches it.
-      operationId: calcifer
-      responses: &calcifer-responses
-        default: {description: Calcifer's answer}
-        '403':
-          description: >-
-            `capability_scope`, or `calcifer_path_refused`: a path outside `/v1/`, one with an empty, `.` or `..`
-            segment, `/v1/down`, or a write to `/v1/account*`
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-        '503':
-          description: '`calcifer_down`: none answers yet, or it restarted under a request whose body had gone'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-    head: *calcifer
-    post: *calcifer
-    put: *calcifer
-    patch: *calcifer
-    delete: *calcifer
   /v1/health:
     get:
       summary: >-
@@ -58,17 +33,6 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/StatusFrame'}}}
         '409':
           description: This machine has no idle deadline
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-  /v1/release:
-    post:
-      summary: >-
-        A rental releases itself now, whatever its idle clock says, and tells its Hub within a second. It is
-        answered before the Hub has heard.
-      operationId: release
-      responses:
-        '202': {description: Released}
-        '409':
-          description: '`machine_working`: a job is queued or running. `machine_not_rented`: this is no rental.'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/logs/{name}:
     get:

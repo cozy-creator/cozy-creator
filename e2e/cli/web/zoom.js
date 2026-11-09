@@ -75,7 +75,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     const openTab = async (zoom, x) => {
       const tab = await context.newPage();
       watch(tab);
-      await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:here:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
+      await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
       await tab.goto(`${base}/#/projects/${made.id}`);
       await tab.waitForSelector('.react-flow__node');
       await until('every card its thumbnail', () => tab.evaluate(() => {

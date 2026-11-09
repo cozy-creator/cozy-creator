@@ -287,13 +287,13 @@ function Canvas({
   const connection = useConnection()
   const flow = useReactFlow<ElementNode, Edge>()
   const navigate = useNavigate()
-  const { scope, client, bridge, outbox, canvases } = connection
-  const [saved] = useState(() => loadViewport(scope, projectId))
+  const { client, bridge, outbox, canvases } = connection
+  const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
-    return kept instanceof CanvasStore ? kept : new CanvasStore(client, outbox, projectId, loadSelection(scope, projectId), loadMore(scope, projectId))
+    return kept instanceof CanvasStore ? kept : new CanvasStore(client, outbox, projectId, loadSelection(projectId), loadMore(projectId))
   })
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
@@ -406,14 +406,14 @@ function Canvas({
       if (fitted || !store.projectId) return
       fitted = true
       if (openedOn) await flow.fitView(fitOver())
-      saveViewport(scope, store.projectId, flow.getViewport())
+      saveViewport(store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
       if (flow.getNodes().length || !store.projectId) return fitOnce()
     }
     store.onPlaced = fitOnce
     store.onMore = (names) => {
-      if (store.projectId) saveMore(scope, store.projectId, names)
+      if (store.projectId) saveMore(store.projectId, names)
     }
     store.askMachine = () => navigate(store.projectId ? `/projects/${store.projectId}/machines` : "/machines")
     store.rent = (pick) => {
@@ -422,7 +422,7 @@ function Canvas({
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, scope, openedOn, bridge, navigate])
+  }, [store, flow, saved, openedOn, bridge, navigate])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<{ view: Viewport; until: number } | null>(null)
@@ -563,9 +563,9 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.projectId && !store.inPlace) saveViewport(scope, store.projectId, viewport)
+      if (store.projectId && !store.inPlace) saveViewport(store.projectId, viewport)
     },
-    [store, scope],
+    [store],
   )
 
   const selectionChanged = useCallback(
@@ -573,10 +573,10 @@ function Canvas({
       store.select(nodes.map((node) => node.data.name))
       clearTimeout(settling.current)
       settling.current = setTimeout(() => {
-        if (store.projectId) saveSelection(scope, store.projectId, nodes.map((node) => node.data.name))
+        if (store.projectId) saveSelection(store.projectId, nodes.map((node) => node.data.name))
       }, 200)
     },
-    [store, scope],
+    [store],
   )
 
   const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.react-flow__node[data-id="${CSS.escape(node.id)}"]`) ?? [])

@@ -58,15 +58,15 @@ async function imported(module: string): Promise<Own> {
   return { module, Component: loaded.default, field: typeof loaded.field === "string" ? loaded.field : undefined }
 }
 
-/** A component, from this computer's Calcifer whichever one this tab looks at: a pod's word never supplies one, and its project's local code isn't here. */
+/** A component, from this computer's Calcifer. */
 function useOwn(tool: Tool | undefined) {
-  const { here, remote } = useConnection()
+  const { client } = useConnection()
   const store = useCanvasStore()
   const id = tool?.ui ? tool.id : null
-  const project = remote ? null : store.projectId
+  const project = store.projectId
   const { data, error } = useQuery({
     queryKey: ["tool-ui", id, project],
-    queryFn: async () => imported((await here.toolUi(id ?? "", project)).module),
+    queryFn: async () => imported((await client.toolUi(id ?? "", project)).module),
     enabled: id !== null,
     retry: false,
     // A box mounts on each hover, and one installed or edited a moment ago should show soon.

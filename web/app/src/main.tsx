@@ -11,7 +11,7 @@ import { createRoot } from "react-dom/client"
 import { RouterProvider } from "react-router-dom"
 import { Client } from "./api/client"
 import { sameOrigin } from "./api/transport"
-import { type Boot, type Connection, ConnectionProvider, chooseCalcifer, connect } from "./app/Connection"
+import { type Boot, type Connection, ConnectionProvider, connect } from "./app/Connection"
 import { theRouter } from "./app/routes"
 import { saveSession, takeCode } from "./app/session"
 import { Copyable } from "./ui/Copyable"
@@ -54,22 +54,6 @@ function Unreachable() {
   )
 }
 
-function RemoteDown({ machine }: { machine: string }) {
-  return (
-    <main className="gate">
-      <h1>{machine}'s Calcifer isn't answering</h1>
-      <div className="row">
-        <button type="button" className="tb" onClick={() => location.reload()}>
-          Try again
-        </button>
-        <button type="button" className="tb" onClick={() => chooseCalcifer(null)}>
-          Back to this computer
-        </button>
-      </div>
-    </main>
-  )
-}
-
 function Connected({ connection }: { connection: Connection }) {
   const signedOut = useSignal(connection.signedOut)
   const health = useSignal(connection.stream.health)
@@ -97,7 +81,6 @@ function App() {
   }, [state])
   if (!state) return <main className="gate">Connecting…</main>
   if ("connection" in state) return <Connected connection={state.connection} />
-  if (state.failed === "remote") return <RemoteDown machine={state.machine} />
   return state.failed === "signed_out" ? <SignedOut /> : <Unreachable />
 }
 

@@ -1,5 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query"
-import type { Client } from "../../api/client"
 import { useConnection } from "../../app/Connection"
 import type { Machine, MachineList } from "../../types"
 import { Copyable } from "../../ui/Copyable"
@@ -16,9 +15,8 @@ function useKeepInList() {
 }
 
 /** Ends it: what it waits for, then until the Hub affirms the pod gone. Nothing here says it's gone until the Hub has. */
-export function End({ machine, through, onAsked }: { machine: Machine; through?: Client; onAsked?: () => void }) {
-  const connection = useConnection()
-  const client = through ?? connection.client
+export function End({ machine }: { machine: Machine }) {
+  const { client } = useConnection()
   const keep = useKeepInList()
   const ask = useAsk()
   const id = stableName(machine)
@@ -29,7 +27,6 @@ export function End({ machine, through, onAsked }: { machine: Machine; through?:
       const ended = await client.endMachine(id, force)
       keep(ended.machine)
       if (ended.abandoned?.length) say(`Gave up outputs that had not landed: ${ended.abandoned.join(", ")}`)
-      onAsked?.()
     })
 
   if (machine.kind === "local" || machine.state === "ended") return null

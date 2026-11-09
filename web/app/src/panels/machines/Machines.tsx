@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { machinesQuery } from "../../api/queries"
-import { chooseCalcifer, useConnection } from "../../app/Connection"
+import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
 import type { Machine, MachineList } from "../../types"
 import { Failure, useAsk, useNow, useSignedIn } from "../common"
@@ -10,7 +10,7 @@ import { DrawerFrame } from "../Drawer"
 import { usd } from "../format"
 import { End } from "./End"
 import { Rent } from "./Rent"
-import { endsWords, gpusWords, named, stableName, stateClass, stateWords } from "./words"
+import { endsWords, gpusWords, stableName, stateClass, stateWords } from "./words"
 
 function MachineRow({ machine, now }: { machine: Machine; now: number }) {
   const to = useTo()
@@ -91,54 +91,9 @@ function AddMachine() {
   )
 }
 
-const lookAt = (machine: string | null) => {
-  // A project's id is its folder's on one computer, so a route under one means nothing on the other.
-  history.replaceState(null, "", `${location.pathname}${location.search}#/machines`)
-  chooseCalcifer(machine)
-}
-
-/**
- * Whose world every drawer shows: this computer's, or a rental's own Calcifer through this one, where the pod is `local`. One at a time, since
- * its stream costs a connection. Its End stays here, on this computer's Calcifer.
- */
-function Switcher() {
-  const { here, remote, client } = useConnection()
-  // Here, the list the stream keeps live. Through a door the stream is the pod's and nothing feeds this computer's list, so each opening reads it.
-  const { data } = useQuery({
-    queryKey: remote ? ["here", "machines"] : ["machines"],
-    queryFn: () => here.machines(),
-    refetchOnMount: remote ? "always" : true,
-    enabled: !client.transport.channel,
-  })
-  const doors = data?.machines.filter((machine) => machine.kind === "rental" && machine.state === "ready" && machine.ordered !== false && !machine.offline) ?? []
-  const looked = remote ? data?.machines.find((machine) => named(machine, remote)) : undefined
-  if (!remote && !doors.length) return null
-  return (
-    <div className="switcher">
-      <div className="row center">
-        <label className="check">
-          Looking at
-          <select className="field" aria-label="Which Calcifer" value={remote ?? ""} onChange={(event) => lookAt(event.target.value || null)}>
-            <option value="">This computer</option>
-            {remote && !doors.some((machine) => named(machine, remote)) && <option value={remote}>{remote}</option>}
-            {doors.map((machine) => (
-              <option key={machine.name} value={machine.name}>
-                {machine.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="sp" />
-        {looked && looked.state !== "ending" && <End machine={looked} through={here} onAsked={() => lookAt(null)} />}
-      </div>
-      {remote && <p className="muted">It's <code>local</code> here. What's private stays on this computer.</p>}
-    </div>
-  )
-}
-
 /** The machines, live, and renting one. */
 export function Machines() {
-  const { client, remote } = useConnection()
+  const { client } = useConnection()
   const queries = useQueryClient()
   const to = useTo()
   const { data, error } = useQuery(machinesQuery(client))
@@ -166,11 +121,10 @@ export function Machines() {
   const rentals = mine.filter((machine) => machine.rental)
   const hourly = hourlyOf(rentals)
   const signedIn = useSignedIn() && !data?.signed_out?.length
-  const renting = !remote && !client.transport.channel
+  const renting = !client.transport.channel
 
   return (
     <DrawerFrame title="Machines">
-      <Switcher />
       <Failure error={error} lead="Couldn't list the machines" />
       {rentals.length > 0 && (
         <p className="muted">
@@ -210,7 +164,7 @@ export function Machines() {
         </p>
       )}
       {renting && <Rent signedIn={signedIn} />}
-      {!remote && <AddMachine />}
+      <AddMachine />
     </DrawerFrame>
   )
 }

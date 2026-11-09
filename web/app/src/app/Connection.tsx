@@ -187,13 +187,7 @@ class Bridge {
 }
 
 export interface Connection {
-  /** Which Calcifer: names the stream's lock and what's kept in the browser. */
-  scope: string
   client: Client
-  /** This computer's Calcifer, whichever one this tab looks at: a pod's End and its list stay here. */
-  here: Client
-  /** The machine whose Calcifer this tab looks at through this one; null for this computer's. */
-  remote: string | null
   queries: QueryClient
   stream: EventStream
   bridge: Bridge
@@ -207,59 +201,25 @@ export interface Connection {
   status: Status
 }
 
-const REMOTE_KEY = "cozy.calcifer"
+export type Boot = { connection: Connection } | { failed: "signed_out" | "unreachable" }
 
-/** Which Calcifer this tab looks at: this computer's, or a machine's through it. Kept per tab. */
-function chosenRemote(): string | null {
-  try {
-    return sessionStorage.getItem(REMOTE_KEY)
-  } catch {
-    return null
-  }
-}
-
-/** Look at a machine's Calcifer in this tab, or with null this computer's again. */
-export function chooseCalcifer(machine: string | null) {
-  try {
-    if (machine) sessionStorage.setItem(REMOTE_KEY, machine)
-    else sessionStorage.removeItem(REMOTE_KEY)
-  } catch {
-    // Without storage, this tab stays on this computer's.
-  }
-  location.reload()
-}
-
-export type Boot = { connection: Connection } | { failed: "signed_out" | "unreachable" } | { failed: "remote"; machine: string }
-
-/** One per Calcifer, with its own `QueryClient`, so one Calcifer's world never shows as another's. */
 export async function connect(): Promise<Boot> {
-  const remote = chosenRemote()
   const attempt = signal(0)
   const signedOut = signal(false)
-  const hooks = { signedOut: () => signedOut.set(true), attempt: (n: number) => attempt.set(n) }
-  const here = new Client(sameOrigin(readSession), hooks)
-  // Through a door, the session is still this computer's, and a 401 is the pod's or its TensorD's: only this computer can sign us out.
-  const client = remote
-    ? new Client(sameOrigin(readSession, `/v1/machines/${encodeURIComponent(remote)}/calcifer`), {
-        signedOut: () => void here.status().catch(() => {}),
-        attempt: hooks.attempt,
-      })
-    : here
+  const client = new Client(sameOrigin(readSession), { signedOut: () => signedOut.set(true), attempt: (n: number) => attempt.set(n) })
   let status: Status
   try {
-    if (remote) await here.status()
     status = await client.status()
   } catch {
     if (signedOut.get()) return { failed: "signed_out" }
-    return remote ? { failed: "remote", machine: remote } : { failed: "unreachable" }
+    return { failed: "unreachable" }
   }
   const queries = new QueryClient({
     defaultOptions: {
       queries: { staleTime: Infinity, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false },
     },
   })
-  const scope = remote ?? "here"
-  const stream = new EventStream(client, scope, Boolean(remote))
+  const stream = new EventStream(client)
   const bridge = new Bridge(queries, client)
   const outbox = new Outbox()
   bridge.setVersion(status.version)
@@ -268,7 +228,7 @@ export async function connect(): Promise<Boot> {
     if (event.type === "hello") outbox.back()
   })
   stream.start()
-  return { connection: { scope, client, here, remote, queries, stream, bridge, outbox, canvases: new Map(), attempt, signedOut, status } }
+  return { connection: { client, queries, stream, bridge, outbox, canvases: new Map(), attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

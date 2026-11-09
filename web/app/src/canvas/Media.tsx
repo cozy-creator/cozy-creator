@@ -275,7 +275,7 @@ function Poster({ shown, cardWidth, name, scrubbed, previewing }: { shown: Shown
 /** What a click plays: a file here over Range, or from the machine that has it or is still making it. */
 type Source = { path: string } | { run: number; output: string }
 
-// A project's file, by its hash. Anything else from a state isn't followed: a remote Calcifer's answers are hostile.
+// A project's file, by its hash. Anything else from a state isn't followed.
 const FILE = /^files\/[0-9a-f]{64}(\.\w+)?$/
 
 export function sourceOf(view: ElementView, shown: Shown | null): Source | null {

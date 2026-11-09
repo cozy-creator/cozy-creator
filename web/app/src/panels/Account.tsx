@@ -3,7 +3,7 @@ import { AuthProvider } from "@openrails/auth-ui/react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 import { Navigate } from "react-router-dom"
-import { chooseCalcifer, useConnection } from "../app/Connection"
+import { useConnection } from "../app/Connection"
 import { useTo } from "../app/Shell"
 import type { Account as Who, Code, OrgClaim } from "../types"
 import { Copyable } from "../ui/Copyable"
@@ -183,27 +183,17 @@ function SignOut({ who, onDone }: { who: Who; onDone: () => void }) {
 
 /** Who, credit, sign in, sign out, orgs. Absent entirely on a channel connection: a link can point the page at a fake pod, so no secret is entered there. */
 export function Account() {
-  const { client, remote } = useConnection()
+  const { client } = useConnection()
   const to = useTo()
   const queries = useQueryClient()
   const channel = client.transport.channel
   const { data: who, error } = useQuery({
     queryKey: ["account"],
     queryFn: ({ signal }) => client.account(signal),
-    enabled: !channel && !remote,
+    enabled: !channel,
   })
 
   if (channel) return <Navigate replace to={to()} />
-  if (remote) {
-    return (
-      <DrawerFrame title="Account">
-        <p className="muted">{remote} never signs in. An account is this computer's.</p>
-        <button type="button" className="tb" onClick={() => chooseCalcifer(null)}>
-          Back to this computer
-        </button>
-      </DrawerFrame>
-    )
-  }
 
   const changed = () => {
     void queries.invalidateQueries({ queryKey: ["account"] })

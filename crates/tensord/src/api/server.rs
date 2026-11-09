@@ -22,8 +22,6 @@ pub struct MachineIdentity {
     pub lifecycle: Option<Arc<crate::machine::lifecycle::Lifecycle>>,
     /// The Hubs this machine is registered with: (origin, worker id there).
     pub hubs: Vec<(String, String)>,
-    /// This machine's own Calcifer, behind `/v1/calcifer`; None on development front doors.
-    pub calcifer: Option<Arc<crate::machine::calcifer::Calcifer>>,
     /// `runtime-update/1`; None on development front doors.
     pub updates: Option<Arc<crate::machine::update::Updates>>,
     /// The WebRTC listener: `cozy/1` for browsers (ICE-TCP).
@@ -71,7 +69,6 @@ impl MachineIdentity {
                 .as_millis() as u64,
             lifecycle: None,
             hubs: vec![],
-            calcifer: None,
             updates: None,
             store: None,
             gpus: vec![],
@@ -245,8 +242,8 @@ fn live(stream: &tokio::net::TcpStream) {
 }
 
 /// Bytes count as a rental's use as they're handed to the kernel (`Lifecycle::transferred`), so what it holds unsent is bytes the idle
-/// clock has already counted. Left to itself it can hold a lot: door 41816382607's clock stopped 139 s before a 1000 KiB/s reader's last
-/// byte. A reader slow enough to take over 15 minutes on what's left would lose its pod with the file's tail unsent. With this, door
+/// clock has already counted. Left to itself it can hold a lot: session 41816382607's clock stopped 139 s before a 1000 KiB/s reader's last
+/// byte. A reader slow enough to take over 15 minutes on what's left would lose its pod with the file's tail unsent. With this, session
 /// 41911501719's stopped 14 s before it, on another host. 4 MiB is plenty for a fast link between two wakeups.
 #[cfg(target_os = "linux")]
 fn little_unsent(stream: &tokio::net::TcpStream) {
