@@ -15,6 +15,8 @@ mod phase;
 mod retained;
 #[cfg(feature = "store")]
 mod source;
+#[cfg(feature = "store")]
+mod staging;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     ffi,
@@ -649,6 +651,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<source::PySource>()?;
     #[cfg(feature = "store")]
     module.add_class::<retained::PyRetained>()?;
+    #[cfg(feature = "store")]
+    module.add_class::<staging::PyStaging>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
     Ok(())

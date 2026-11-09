@@ -175,6 +175,44 @@ class Pages:
         own pages included, which yield to them."""
         return self._native.retained_room()
 
+    def staging(self, bytes: int) -> Staging | None:
+        """`bytes` of shared host memory the executors of a group exchange through, pinned for
+        this GPU and held against varena's host number until it closes; None: no room now."""
+        native = self._native.staging(bytes)
+        return None if native is None else Staging(native)
+
+
+class Staging:
+    """Host bytes the executors of a group exchange through, mapped and pinned for this GPU at
+    `ptr`. The owner's (`Pages.staging`) counts against varena's host number; a peer's mapping of
+    it (`Staging.open`, by `name`) counts nothing. Close it before its last copy's memory goes."""
+
+    def __init__(self, native: _ext._VarenaStaging) -> None:
+        self._native = native
+
+    @classmethod
+    def open(cls, device: int, name: str, bytes: int) -> Staging:
+        return cls(_ext._VarenaStaging.open(device, name, bytes))
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    @property
+    def ptr(self) -> int:
+        return self._native.ptr
+
+    @property
+    def bytes(self) -> int:
+        return self._native.bytes
+
+    def unlink(self) -> None:
+        """Its name goes, once every peer has opened it: nothing outlives the processes."""
+        self._native.unlink()
+
+    def close(self) -> None:
+        self._native.close()
+
     def drain(self) -> list[tuple[str, int, int, str, bool, int, float]]:
         """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
         return self._native.drain()
