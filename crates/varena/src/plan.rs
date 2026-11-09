@@ -191,6 +191,8 @@ pub(crate) struct Order {
     next: BTreeMap<u64, (u64, u64)>,
     // For the active phase's regions: their first use in a later phase.
     later: BTreeMap<u64, (u64, u64)>,
+    // The active phase's regions in the order its loop keeps them (`keep_order`).
+    keep: BTreeMap<u64, u64>,
     // Phase names, from the active one.
     names: Vec<String>,
 }
@@ -198,6 +200,10 @@ pub(crate) struct Order {
 impl Order {
     pub(crate) fn next_use(&self, id: u64) -> Option<(u64, u64)> {
         self.next.get(&id).copied()
+    }
+    /// Where the active phase's region `id` stands in what its loop keeps, lowest kept first.
+    pub(crate) fn keep(&self, id: u64) -> u64 {
+        self.keep.get(&id).copied().unwrap_or(u64::MAX)
     }
     pub(crate) fn planned(&self) -> bool {
         !self.next.is_empty()
@@ -228,6 +234,7 @@ pub(crate) fn order(ordinal: i32) -> Result<Order> {
     let lease = Lease::acquire(ordinal)?;
     let mut order = Order::default();
     if let Some((plan, active)) = &lease.active {
+        order.keep = keep_order(&plan.phases[*active].regions);
         for ahead in 0..plan.phases.len() {
             let phase = &plan.phases[(active + ahead) % plan.phases.len()];
             order.names.push(phase.name.clone());
@@ -241,4 +248,23 @@ pub(crate) fn order(ordinal: i32) -> Result<Order> {
         }
     }
     Ok(order)
+}
+
+/// A phase's regions in the order its loop keeps them, lowest first. Region `i` of `n` holds the
+/// 32-bit points of [i/n, (i+1)/n) and goes as late as the least radical inverse among them (its
+/// point with the most trailing zeros): whatever count gives way is spread through the pass (a
+/// half, the quarters, then the eighths), so a streamed region's copy runs under the compute of
+/// the kept ones before it, and one region's size never draws it first. A kept prefix streams its
+/// tail back to back and leaves the copy engine idle through the prefix: Flux-2 on a 4090 stepped
+/// 1.65 s streaming its tail (v1, pasan 42221) and 1.33 s with its streamed regions scattered
+/// (42309, more bytes), against ComfyUI's 1.64 (pingu, 11-04).
+fn keep_order(regions: &[Arc<Region>]) -> BTreeMap<u64, u64> {
+    let n = regions.len().max(1) as u64;
+    let at = |i: u64| (i << 32).div_ceil(n);
+    regions.iter().enumerate().map(|(position, region)| {
+        let (start, end) = (at(position as u64), at(position as u64 + 1));
+        let point = (0..=32).rev().map(|k| start.div_ceil(1 << k) << k).find(|point| *point < end).unwrap_or(start);
+        let inverse = (point.min(u64::from(u32::MAX)) as u32).reverse_bits();
+        (region.id(), u64::from(u32::MAX - inverse) << 32 | position as u64)
+    }).collect()
 }
