@@ -50,18 +50,6 @@ impl Store {
         Ok((self.put_tree(&tree)?, absent))
     }
 
-    /// The commit `tree` as a plain folder in `dir`: its files, and its header's objects this
-    /// store holds.
-    pub(crate) fn snapshot(&self, tree: &ObjectRef, dir: &Path) -> Result<()> {
-        let tree = self.tree(tree)?;
-        let mut payload = Vec::new();
-        for object in Header::from_cbor(&self.read(tree.header()?.1)?)?.objects() {
-            if self.reuse(object)? {
-                payload.push(object.clone());
-            }
-        }
-        self.write_folder(&tree, dir, &payload)
-    }
 
     /// The commit `tree` as a plain folder in `dir`: its repo files, `payload` under `chunks/`,
     /// then its header last, so a folder never has a header without what it names.

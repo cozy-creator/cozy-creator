@@ -63,13 +63,6 @@ const E4M3: Minifloat = Minifloat {
     max: 0x7e,
     nan: Some(0x7f),
 };
-const E5M2: Minifloat = Minifloat {
-    e: 5,
-    m: 2,
-    bias: 15,
-    max: 0x7b,
-    nan: Some(0x7f),
-};
 const E2M1: Minifloat = Minifloat {
     e: 2,
     m: 1,

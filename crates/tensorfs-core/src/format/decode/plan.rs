@@ -100,9 +100,6 @@ impl Bytes<'_> {
             Data::Slot { len, .. } => *len,
         }
     }
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
     pub(crate) fn host(&self) -> Result<&[u8]> {
         match &self.0 {
             Data::Host(bytes) => Ok(bytes),
@@ -114,6 +111,7 @@ impl Bytes<'_> {
     pub(crate) fn slot(index: usize, len: usize) -> Self {
         Self(Data::Slot { index, len })
     }
+    #[cfg(feature = "cuda")]
     pub(crate) fn binding(&self) -> Option<(usize, usize)> {
         match self.0 {
             Data::Slot { index, len } => Some((index, len)),

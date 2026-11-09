@@ -1,10 +1,15 @@
 //! Checked decode plans prepared for TensorFS's prebuilt CUDA kernels. CUDA context, staging,
 //! streams and launches belong to the read engine's shared driver.
 
+#[cfg(feature = "cuda")]
 use crate::format::decode::affine::{Codes as CodeType, Fill, Order};
+#[cfg(feature = "cuda")]
 use crate::format::decode::grid::{Grid, ScaleLayout};
+#[cfg(feature = "cuda")]
 use crate::format::decode::plan::{Bytes, Core, Elems, Plan, Post, Term};
+#[cfg(feature = "cuda")]
 use crate::format::decode::{round, Geometry};
+#[cfg(feature = "cuda")]
 use crate::format::{Dtype, Error, Result};
 
 /// One prebuilt kernel: its sm family, stage, dtype, entry symbol, launch shape and module image.
@@ -26,12 +31,14 @@ const _: () = assert!(
         == FAMILIES.len() * (crate::format::decode::gguf::STRUCTS.len() + CORE_KINDS.len()) * 3
 );
 
+#[cfg(feature = "cuda")]
 pub(crate) enum Prepared<'a> {
     Kernel(Box<Launch<'a>>),
     /// A scheme with a host-only plan: rounded bytes, ready for the engine's host source.
     Host(Vec<u8>),
 }
 
+#[cfg(feature = "cuda")]
 /// Device arguments, in order: destination, words, slots, scale, term, table, global, post,
 /// index, error (one zeroed i32), params. Factors are f32; words retain their stored bits.
 /// `grouped_rotated`: scale=relative group scales, global=channel scales,
@@ -50,6 +57,7 @@ pub(crate) struct Launch<'a> {
     pub params: [u64; 32],
 }
 
+#[cfg(feature = "cuda")]
 /// Float kernel arguments are either normalized Host values or a typed external input.
 /// A slot carries no pointer; the read engine binds it and casts metadata on the device.
 pub(crate) enum Factors {
@@ -60,11 +68,13 @@ pub(crate) enum Factors {
         count: usize,
     },
 }
+#[cfg(feature = "cuda")]
 impl From<Vec<f32>> for Factors {
     fn from(values: Vec<f32>) -> Self {
         Self::Host(values)
     }
 }
+#[cfg(feature = "cuda")]
 impl TryFrom<Elems<'_>> for Factors {
     type Error = Error;
     fn try_from(values: Elems<'_>) -> Result<Self> {
@@ -88,6 +98,7 @@ impl TryFrom<Elems<'_>> for Factors {
         }
     }
 }
+#[cfg(feature = "cuda")]
 impl Factors {
     pub(crate) fn len(&self) -> usize {
         match self {
@@ -108,6 +119,7 @@ impl Factors {
     }
 }
 
+#[cfg(feature = "cuda")]
 impl Launch<'_> {
 
     /// A rotated plan first unpacks to i32, runs `regular_h4` (H₄ along one base-4 digit) once
@@ -121,6 +133,7 @@ impl Launch<'_> {
 
 }
 
+#[cfg(feature = "cuda")]
 /// `count` logical elements beginning at `begin`. The plan and geometry come from `planned`;
 /// this layer chooses a core, never a scheme. No driver or framework is touched here.
 pub(crate) fn prepare<'a>(

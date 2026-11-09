@@ -385,17 +385,3 @@ impl Signals {
 fn drawing(e: io::Error) -> Error {
     Error::new(Kind::Internal, "terminal", format!("the terminal: {e}"))
 }
-
-/// For product tests: the live views drawn on ratatui's `TestBackend`, fed by a real Calcifer.
-#[doc(hidden)]
-pub(crate) mod testing {
-
-    /// A live view the product tests draw.
-    pub(crate) enum View {
-        /// `cozy run ls`
-        Runs,
-        /// `cozy package ls --on all`
-        Packages,
-    }
-
-}
