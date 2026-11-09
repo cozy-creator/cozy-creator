@@ -1549,7 +1549,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     let segment = rounded(class.max(SEGMENT), owner.page())?;
     // A loop's working allocation, like its weights, takes weights before its other pages: what one
     // step freed the next uses again.
-    let protect = Protect { reuse_working: true, keep_phase: looping, ..Default::default() };
+    let protect = Protect { reuse_working: true, keep_phase: looping, outside: true, ..Default::default() };
     let result = reclaim::acquire(device, exact, Wait::Yes, protect, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
