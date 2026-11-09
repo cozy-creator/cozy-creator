@@ -253,9 +253,8 @@ machine), `gpu` (on other machines of its GPU, by the name each run's record kee
 
 ### Placement
 
-The machine owns its GPU width (cl-816): a job runs on one GPU until that machine measured a wider width faster (a run sent with that
-count), several queued jobs one GPU each; Calcifer never picks a width and sends `gpus` only when a person asked for a count. It sends
-each job where it finishes soonest:
+The machine owns its GPU width (cl-816): a lone job runs wide, several queued jobs one GPU each; Calcifer never picks a width and sends
+`gpus` only when a person asked for a count. It sends each job where it finishes soonest:
 
 - Each machine a job may go to is asked once per batch (a render's turn, or one `cozy run`), through TensorD's `POST /v1/estimate`
   (capability `estimate/1`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's

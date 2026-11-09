@@ -29,9 +29,8 @@ Refusals are `{"error":{kind, code, message}}`; a run's outcome carries the same
 Unknown fields are ignored.
 
 **The machine owns GPU width** (cl-816). A root sent with no count takes, as it starts, its width in
-the packing of the whole queue (`pack.rs`) that `POST /v1/estimate` quotes from. A width it has not
-measured gains nothing, so a job runs on one GPU until a run at a wider width (one sent with that
-`gpus`) measured that width faster; on a tie the narrower wins. Each completed root keeps its compute
+the packing of the whole queue (`pack.rs`) that `POST /v1/estimate` quotes from: a lone job runs wide,
+several queued jobs one GPU each. Each completed root keeps its compute
 (its time running less its waits for a GPU lane, for its calls' weights to download and their executors
 to start, and building weights onto GPUs, while no call computed) and its load (executor starts and
 builds); a quote is compute, plus, while its weights aren't here, their download at the measured link

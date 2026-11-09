@@ -1,11 +1,10 @@
 //! What this machine would do with jobs it may be sent (cl-816): its queue and them, laid out by
-//! `pack`, each one's time from its function's runs here (`Journal::run_times`): their compute at
-//! each width, and with its weights not here, its download and its measured load (release owner,
-//! 11-09). Its scheduler gives each root its width from the same picture (`widths`), so a quote is
+//! `pack`, each one's time from its function's runs here (`Journal::run_times`): their compute, and
+//! with its weights not here, its download and its measured load (release owner, 11-09). Its scheduler gives each root its width from the same picture (`widths`), so a quote is
 //! what happens as far as the times hold.
 use crate::{
     journal::{function_key, Execution, Installation, RunTime, State, PREPARING},
-    pack::{self, Job, Times},
+    pack::{self, Job, Scaling},
     runs::Runs,
     service::Service,
 };
@@ -31,22 +30,23 @@ const SAME_SIZE: f64 = 0.15;
 /// A running root past its time has at least this share of it left.
 const OVERRUN: f64 = 0.1;
 
-/// A function's time here: its compute by width, its load onto the GPUs, and what they stand on.
+/// A function's time here: its compute on one GPU, how it scales, its load onto the GPUs, and what
+/// they stand on.
 struct Time {
-    times: Times,
+    one_ms: f64,
+    scaling: Scaling,
     load_ms: f64,
     basis: Basis,
 }
 
-/// From its newest runs here (`runs`, newest first) at `size`, else the caller's `prior_ms`: the
-/// median compute at each width it ran at, and the median load of those that loaded.
+/// From its newest runs' compute here (`runs`, newest first) at `size`, else the caller's
+/// `prior_ms`; and the median load of those that loaded.
 fn time(runs: &[RunTime], size: &JobSize, prior_ms: f64) -> Time {
     if runs.is_empty() {
-        let (ms, basis) = match prior_ms > 0.0 {
-            true => (prior_ms, Basis::Prior),
-            false => (UNKNOWN_MS, Basis::None),
+        return match prior_ms > 0.0 {
+            true => Time { one_ms: prior_ms, scaling: Scaling::PRIOR, load_ms: 0.0, basis: Basis::Prior },
+            false => Time { one_ms: UNKNOWN_MS, scaling: Scaling::PRIOR, load_ms: 0.0, basis: Basis::None },
         };
-        return Time { times: Times { measured: BTreeMap::new(), ms }, load_ms: 0.0, basis };
     }
     let same: Vec<&RunTime> = runs.iter().filter(|run| (size.ratio(&run.size) - 1.0).abs() <= SAME_SIZE).collect();
     let like: Vec<(u32, f64)> = match same.is_empty() {
@@ -60,11 +60,15 @@ fn time(runs: &[RunTime], size: &JobSize, prior_ms: f64) -> Time {
             each.push(ms);
         }
     }
-    let measured: BTreeMap<u32, f64> = by_width.iter().map(|(width, ms)| (*width, median(ms))).collect();
-    let ms = measured.values().next().copied().unwrap_or(UNKNOWN_MS);
+    let medians: Vec<(u32, f64)> = by_width.iter().map(|(width, ms)| (*width, median(ms))).collect();
+    let scaling = match (medians.first(), medians.last()) {
+        (Some(a), Some(b)) if a.0 != b.0 => Scaling::of(*a, *b),
+        _ => Scaling::PRIOR,
+    };
+    let (width, ms) = by_width.iter().max_by_key(|(width, ms)| (ms.len(), std::cmp::Reverse(**width))).map(|(w, ms)| (*w, median(ms))).expect("a run");
     let loads: Vec<f64> = runs.iter().map(|run| run.load_ms).filter(|ms| *ms > 0.0).take(RECENT).collect();
     let load_ms = if loads.is_empty() { 0.0 } else { median(&loads) };
-    Time { times: Times { measured, ms }, load_ms, basis: Basis::Measured }
+    Time { one_ms: ms / scaling.at(width), scaling, load_ms, basis: Basis::Measured }
 }
 
 fn median(values: &[f64]) -> f64 {
@@ -169,7 +173,7 @@ impl<'a> Here<'a> {
                 false => (invocation.widths.clone(), invocation.package.clone()),
             };
             let time = self.time(&package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0)?;
-            let mut job = Job { widths, times: time.times, ready_ms: 0.0, running: None };
+            let mut job = Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: 0.0, running: None };
             match record.state {
                 State::Starting | State::Running => {
                     let width = match record.width {
@@ -286,7 +290,7 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
             continue;
         }
         quote.fits = true;
-        queue.push(Job { widths, times: time.times, ready_ms: prepare_ms, running: None });
+        queue.push(Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: prepare_ms, running: None });
         asked.push((Some(queue.len() - 1), quote));
     }
     let placed = pack::pack(here.gpus, &queue);
