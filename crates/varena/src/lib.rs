@@ -346,21 +346,23 @@ impl State {
         }
     }
 
-    /// Where a loop's kept prefix ends (`repeat::prefix`), over the regions `rank` places in the
-    /// loop. None in a loop's first pass.
-    pub(crate) fn prefix(&self, order: &plan::Order) -> Option<u64> {
+    /// Where what a loop keeps ends in its keep order (`repeat::prefix`), over the loop's regions,
+    /// on the card or not. None in a loop's first pass.
+    pub(crate) fn prefix(&self, order: &plan::Order) -> Option<repeat::Kept> {
         let boundary = self.phase_boundary?;
         if !self.plan_phase.as_ref().is_none_or(PlanPhase::loops) {
             return None;
         }
         repeat::prefix(self.entries.iter()
-            .filter(|(_, entry)| entry.last_use > boundary && !entry.retained && !entry.high && !entry.prefetched
-                && !matches!(entry.uses.state(), Contents::Cold | Contents::Retired))
+            .filter(|(_, entry)| entry.last_use > boundary && !entry.retained && !entry.high
+                && entry.uses.state() != Contents::Retired)
             .filter(|(id, _)| match order.next_use(**id) {
                 None => !order.planned(),
                 Some((phases, _)) => phases == 0,
             })
-            .filter_map(|(_, entry)| Some((self.repeat.place(&entry.stamp)?, entry.bytes, entry.filled <= boundary)))
+            .filter_map(|(_, entry)| {
+                Some((self.repeat.keep(&entry.stamp)?, entry.bytes, entry.handle.is_some()))
+            })
             .collect())
     }
 
@@ -371,12 +373,12 @@ impl State {
     /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
     /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
     ///
-    /// A loop keeps a prefix of its pass, as v1 did: what it refilled inside the prefix (`prefix`)
-    /// is the prefix's again, and the prefix gives way from its end, the region the next pass needs
-    /// last. The pass's order is the one the core saw (`repeat`), declared or not. By fill alone, a region another phase had evicted was streamed every pass
-    /// after: Klein's upsampler refilled its 1.9 GB embedding each token, 6.2 GB a pass to v1's
-    /// 4.7 (pasan, run 42322).
-    fn rank(&self, id: u64, entry: &Entry, order: &plan::Order, prefix: Option<u64>) -> (u8, u64) {
+    /// A loop keeps the top of its keep order (`repeat`), which spreads what streams through the
+    /// pass: what it refilled inside the kept part (`prefix`) is kept again, and the kept give way
+    /// from its end. The pass's order is the one the core saw, declared or not. By fill alone, a
+    /// region another phase had evicted was streamed every pass after: Klein's upsampler refilled
+    /// its 1.9 GB embedding each token, 6.2 GB a pass to v1's 4.7 (pasan, run 42322).
+    fn rank(&self, id: u64, entry: &Entry, order: &plan::Order, prefix: Option<repeat::Kept>) -> (u8, u64) {
         if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
             return (reclaim::CONTENTLESS, entry.last_use);
         }
@@ -403,7 +405,7 @@ impl State {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
             None | Some((0, _)) if touched && looping => {
                 let stayed = used == reclaim::PHASE_USED;
-                match repeat::rank(stayed, self.repeat.place(&entry.stamp), prefix, entry.last_use) {
+                match repeat::rank(stayed, self.repeat.keep(&entry.stamp), entry.bytes, prefix, entry.last_use) {
                     (true, key) => (reclaim::PHASE_USED, key),
                     (false, key) => (reclaim::PHASE_FRESH, key),
                 }

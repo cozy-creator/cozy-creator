@@ -38,8 +38,10 @@ what it is asked for (`CacheOwner`), and TensorD may end an idle process.
 owners and peers under a 2 s budget of last resort. Eviction rank: contentless, prefetched and
 unused, unplanned, later phases furthest first, then this phase's used regions most recent first
 (those this pass filled before those that stayed through it, so a loop streams the same regions
-each pass), then its next use. A loop keeps a prefix of its pass, in the order the core saw it use its regions (`repeat`): a region it refilled
-inside the prefix counts as kept, and the kept go from the prefix's end. A fill ahead takes only
+each pass), then its next use. A loop keeps the top of its keep order, the radical inverse
+of each region's place in the pass the core saw, up to what it holds less a two-region window (regions over twice its median first), so
+what streams is spread through the pass: a region it refilled inside the kept part counts as kept,
+and the kept go from its end. A fill ahead takes only
 the streamed regions. A plan phase that
 ran through last time with no region coming back is a single pass: its used regions rank with the
 unplanned, and other phases' loops go after every single pass's.
