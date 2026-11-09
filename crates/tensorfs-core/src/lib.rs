@@ -1,5 +1,6 @@
 //! TensorFS's core: the cozytensors format, the local store, its writer and the read engine.
 //! No network, no async runtime, no model families: those are `tensorfs`'s.
+#![deny(unreachable_pub)]
 
 // Unsafe code lives only in platform, the OS seam.
 #![deny(unsafe_code)]
