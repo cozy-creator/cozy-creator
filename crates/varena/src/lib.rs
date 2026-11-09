@@ -312,12 +312,12 @@ impl State {
     /// narrows that to one pass, so what ran before the loop goes first; a small loop inside a
     /// larger one, which would leave most of the pass's bytes outside, does not.
     fn used(&mut self, id: u64, now: u64) {
-        let last = self.last_used.replace(id).filter(|last| *last != id);
-        if let Some(last) = last && let Some(entry) = self.entries.get_mut(&last) {
+        let last = self.last_used.replace(id);
+        if let Some(last) = last.filter(|last| *last != id) && let Some(entry) = self.entries.get_mut(&last) {
             entry.next = Some(id);
         }
         let entry = self.entries.get_mut(&id).expect("live region");
-        if last.is_some() && !entry.retained {
+        if last != Some(id) && !entry.retained {
             self.repeat.used(&mut entry.stamp);
         }
         entry.uses.unused.store(false, Ordering::Relaxed);
