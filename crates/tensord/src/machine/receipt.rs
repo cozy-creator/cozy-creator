@@ -328,7 +328,7 @@ fn mac(key: &[u8], payload: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC admits any key size");
     mac.update(DOMAIN);
     mac.update(payload);
-    tensorfs::sha256::hex(&mac.finalize().into_bytes())
+    tensorfs_core::sha256::hex(&mac.finalize().into_bytes())
 }
 
 /// The boot id the payload names.

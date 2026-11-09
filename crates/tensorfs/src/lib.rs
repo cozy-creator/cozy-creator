@@ -8,15 +8,11 @@ pub use tensorfs_core::format;
 pub use tensorfs_core::store;
 pub use tensorfs_core::io;
 pub use tensorfs_core::writer;
-pub use tensorfs_core::kernels;
 pub use tensorfs_core::err;
-pub use tensorfs_core::failure;
-pub use tensorfs_core::home;
-pub use tensorfs_core::sha256;
 pub use tensorfs_core::{Failure, Kind, Result};
 pub use tensorfs_core::VerificationReport;
 pub use tensorfs_core::STORE_FORMAT;
-use tensorfs_core::{descriptors, verification};
+use tensorfs_core::{descriptors, failure, home, sha256, verification};
 
 pub mod export;
 /// Model families: each first-party model's canonical form, verified at ingest.

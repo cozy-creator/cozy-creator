@@ -12,8 +12,8 @@ mod download;
 mod endpoint;
 mod net;
 mod origin;
-pub mod policy;
-pub mod token;
+pub(crate) mod policy;
+pub(crate) mod token;
 mod volume;
 
 use std::collections::HashMap;
@@ -30,8 +30,8 @@ pub use endpoint::{upload_commit, Endpoint, Hardware, Payload, Resolved, Stream,
 pub use net::Client;
 pub(crate) use net::GetError;
 pub use origin::{Location, Origin};
-pub use policy::SourcePolicy;
-pub use token::{bearer, SigV4, TokenProvider};
+pub use policy::{is_loopback_origin, SourcePolicy};
+pub use token::{bearer, HeaderMap, Request, SigV4, TokenProvider};
 pub use volume::VolumeOrigin;
 
 use crate::err::{refuse, Code, Refusal, Result};

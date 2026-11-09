@@ -18,7 +18,8 @@ use std::{
     time::Duration,
 };
 use crate::storage::Store;
-use tensorfs::{format::ObjectRef, sha256};
+use tensorfs::format::ObjectRef;
+use tensorfs_core::sha256;
 use api::error::Error;
 
 pub(crate) struct NativeBackend {

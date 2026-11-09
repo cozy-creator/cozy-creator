@@ -446,7 +446,7 @@ pub(crate) fn compose(store: &Store, base: &ObjectRef, selections: &[Selection])
     let rows: Vec<_> = (graph.adapters.iter())
         .map(|a| serde_json::json!([&a.reference, a.component, a.source_component, a.scale.to_string()]))
         .collect();
-    let identity = tensorfs::sha256::hex_digest(
+    let identity = tensorfs_core::sha256::hex_digest(
         &serde_json_canonicalizer::to_vec(&serde_json::json!([FORMAT, base_ref.id(), rows])).map_err(io::Error::other)?,
     );
     let id = format!("view-{}", &identity[..40]);

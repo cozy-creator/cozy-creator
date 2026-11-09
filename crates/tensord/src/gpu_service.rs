@@ -255,7 +255,7 @@ pub(crate) struct Plan {
 impl Plan {
     /// A call that constructs nothing: deviceless, or one GPU (`degree`).
     pub(crate) fn weightless(generation: &str, application: &str, entrypoint: &str, degree: u32) -> Self {
-        let digest = |semantic: serde_json::Value| tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&semantic));
+        let digest = |semantic: serde_json::Value| tensorfs_core::sha256::hex_digest(&crate::boundary_json::exact(&semantic));
         let construction = format!("plan-{}", digest(serde_json::json!({"generation": generation,
             "application": application, "slots": [], "degree": degree})));
         Self {
@@ -748,7 +748,7 @@ fn environment(generation: &str, application: &str, degree: u32) -> io::Result<S
 
 fn canonical_digest(value: serde_json::Value) -> io::Result<String> {
     let canonical = serde_json_canonicalizer::to_vec(&value).map_err(io::Error::other)?;
-    Ok(tensorfs::sha256::hex_digest(&canonical))
+    Ok(tensorfs_core::sha256::hex_digest(&canonical))
 }
 
 fn prepare_request(record: &Execution, plan: &Plan) -> PrepareRequest {
@@ -2595,7 +2595,7 @@ impl Pool {
     pub(crate) fn kernel_boot(self: &Arc<Self>, held: HeldGeneration) {
         if binds_models(&held.record.interface) {
             // Once per environment: a local package's generations share theirs.
-            let environment = tensorfs::sha256::hex_digest(held.record.python.as_os_str().as_encoded_bytes());
+            let environment = tensorfs_core::sha256::hex_digest(held.record.python.as_os_str().as_encoded_bytes());
             self.boot_kernels(environment[..32].to_string(), held.record.python, None);
         }
     }
@@ -3707,7 +3707,7 @@ const RUNTIME_FIRST: &str = "import runpy, sys; sys.path.insert(0, sys.argv.pop(
 /// A Runtime wheel's importable tree, unpacked once per wheel digest under `into`.
 fn unpack_runtime(wheel: &Path, into: &Path) -> io::Result<PathBuf> {
     let bytes = fs::read(wheel)?;
-    let tree = into.join(&tensorfs::sha256::hex_digest(&bytes)[..32]);
+    let tree = into.join(&tensorfs_core::sha256::hex_digest(&bytes)[..32]);
     if tree.is_dir() {
         return Ok(tree);
     }

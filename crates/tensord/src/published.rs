@@ -29,11 +29,11 @@ use crate::{
     stop::Stop,
     storage::{self, Store},
 };
+use tensorfs_core::sha256;
 use tensorfs::{
     err::Refusal,
     fetch::{Hardware, Landed, Progress as Counted},
     format::ObjectRef,
-    sha256,
 };
 use crate::catalog::normalized;
 
@@ -1439,7 +1439,7 @@ fn make_source(
     let listed = tensorfs::import::remote::parse(source)
         .and_then(|spec| tensorfs::import::remote::list(&spec, &access))
         .map_err(|e| refused("model_source_failed", e))?;
-    let tables = tensorfs::import::engine::tables_digest();
+    let tables = tensorfs::import::tables_digest();
     let families = tensorfs::family::families_digest();
     let identity = serde_json_canonicalizer::to_vec(&json!(["cozy.machine-source-model/3", listed.pinned, converter, tables, families, trained_on]))
         .map_err(|e| io_failure(io::Error::other(e)))?;

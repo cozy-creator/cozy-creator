@@ -36,7 +36,7 @@ use api::{
 use sha2::{Digest as _, Sha256};
 use tensorfs::{
     err::{Code, Refusal as Failed},
-    fetch::{self, Endpoint, Payload, SourcePolicy, TokenProvider, policy::is_loopback_origin, token::Request},
+    fetch::{self, is_loopback_origin, Endpoint, Payload, Request, SourcePolicy, TokenProvider},
     format::{Header, ObjectRef, Tree},
 };
 

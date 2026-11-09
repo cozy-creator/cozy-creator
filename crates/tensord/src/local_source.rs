@@ -21,7 +21,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use crate::{cas::Cas, stop::Stop};
-use tensorfs::{format::ObjectRef, sha256};
+use tensorfs::format::ObjectRef;
+use tensorfs_core::sha256;
 
 /// The manifest object (JSON). Members are objects the same signer wrote.
 #[derive(Deserialize)]
@@ -500,7 +501,7 @@ impl LocalSources {
         // digest alone cannot identify the environment after an update.
         let sdk = &self.publisher.sdk;
         let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": self.publisher.torch_pins(None)});
-        let alias = format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32]);
+        let alias = format!("local-{}", &tensorfs_core::sha256::hex_digest(key.to_string().as_bytes())[..32]);
         let package = open_manifest(&self.objects, actor, digest).map(|(m, _)| m.package).unwrap_or_default();
         let installer = self.installer(&package);
         let _installing = match installer.turn.try_lock() {

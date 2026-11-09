@@ -2102,7 +2102,7 @@ fn _kernel_binary<'py>(
     core: &str,
     dtype: &str,
 ) -> PyResult<(Bound<'py, PyBytes>, &'static str, u32, u32)> {
-    let binary = tensorfs::kernels::BINARIES
+    let binary = tensorfs_core::kernels::BINARIES
         .iter()
         .find(|b| b.family == family && b.kind == core && b.dtype == dtype)
         .ok_or_else(|| {

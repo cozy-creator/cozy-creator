@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tensorfs::{
     err::{refuse, Code},
-    fetch::token::{HeaderMap, Request, TokenProvider},
+    fetch::{HeaderMap, Request, TokenProvider},
 };
 
 pub(crate) use hub_client::types;

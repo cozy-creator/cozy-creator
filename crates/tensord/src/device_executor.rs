@@ -333,7 +333,7 @@ pub(crate) fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
                 "the short socket directory belongs to another user",
             ));
         }
-        let digest = tensorfs::sha256::hex_digest(natural.as_os_str().as_encoded_bytes());
+        let digest = tensorfs_core::sha256::hex_digest(natural.as_os_str().as_encoded_bytes());
         return Ok(dir.join(&digest[..24]));
     }
     Ok(natural)
@@ -639,9 +639,9 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
     let invalid = |why: &str| io::Error::new(io::ErrorKind::InvalidData, format!("output tree: {why}"));
     let hash = |path: &Path| -> io::Result<(String, u64)> {
         let mut file = open_artifact(spool, path)?;
-        let mut hash = tensorfs::sha256::Sha256::new();
+        let mut hash = tensorfs_core::sha256::Sha256::new();
         let length = io::copy(&mut file, &mut HashWriter(&mut hash))?;
-        Ok((tensorfs::sha256::hex(&hash.finish()), length))
+        Ok((tensorfs_core::sha256::hex(&hash.finish()), length))
     };
     let name = match tree_source(&output.asset_ref)? {
         TreeSource::Manifest(name) => name,
@@ -689,7 +689,7 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
     })
 }
 
-struct HashWriter<'a>(&'a mut tensorfs::sha256::Sha256);
+struct HashWriter<'a>(&'a mut tensorfs_core::sha256::Sha256);
 impl Write for HashWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0.update(bytes);
@@ -1311,7 +1311,7 @@ pub(crate) fn read_result(spool: &Path, reply: &Frame) -> io::Result<Value> {
     let mut bytes = Vec::new();
     open_artifact(spool, Path::new(RESULT_DOCUMENT))?.read_to_end(&mut bytes)?;
     if bytes.len() as u64 != reference.length
-        || format!("sha256:{}", tensorfs::sha256::hex_digest(&bytes)) != reference.digest
+        || format!("sha256:{}", tensorfs_core::sha256::hex_digest(&bytes)) != reference.digest
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

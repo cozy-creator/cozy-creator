@@ -19,7 +19,8 @@ use std::{
     io::{self, Read},
     path::{Component, Path, PathBuf},
 };
-use tensorfs::{format::ObjectRef, sha256};
+use tensorfs::format::ObjectRef;
+use tensorfs_core::sha256;
 
 const MAX_PARTS: usize = 128;
 

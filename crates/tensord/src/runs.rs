@@ -243,7 +243,7 @@ fn held_tree(store: &crate::storage::Store, choice: &domain::ModelChoice) -> Res
     let Some(manifest) = choice.manifest.as_ref().filter(|_| !choice.repository.is_empty()) else {
         return Ok(None);
     };
-    let id = tensorfs::sha256::hex(&manifest.digest);
+    let id = tensorfs_core::sha256::hex(&manifest.digest);
     let object = match crate::storage::held(store, &id) {
         Ok(object) => object,
         Err(error) if error.kind() == io::ErrorKind::NotFound && !choice.repository.starts_with("local/") => return Ok(None),
@@ -616,7 +616,7 @@ impl Runs {
             let header = choice.manifest.as_ref().ok_or_else(|| {
                 refused("invalid_request", format!("model choice {:?} names no model", choice.parameter))
             })?;
-            let sha256 = tensorfs::sha256::hex(&header.digest);
+            let sha256 = tensorfs_core::sha256::hex(&header.digest);
             let held = crate::storage::held(publisher.store(), &sha256)
                 .map_err(|_| refused("checkpoint_absent", format!("this machine holds no checkpoint sha256:{sha256}: run what made it on this machine, or name a model of the Hub's")))?;
             publisher.held_for(&self.service, hub_access().ok(), &held).map_err(|(code, message)| refused(code, message))?;

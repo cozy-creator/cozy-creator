@@ -25,7 +25,7 @@
 mod compose;
 pub mod base;
 pub(crate) mod carriers;
-pub mod engine;
+pub(crate) mod engine;
 pub mod gguf;
 pub(crate) mod lora;
 pub(crate) mod order;
@@ -47,6 +47,7 @@ use crate::store::Error;
 use crate::writer::{Data, PartData, Source, Writer};
 
 pub(crate) use engine::{tables, AS_IS};
+pub use engine::tables_digest;
 pub(crate) use order::constructor_order;
 pub use remote::Access;
 

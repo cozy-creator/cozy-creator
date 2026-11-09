@@ -18,7 +18,7 @@ use api::{
     config::Origin,
     error::{Error, Kind},
     calcifer::hub::{
-        At, Families, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelEdited, ModelKind,
+        At, Families, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelEdited,
         ModelLane, ModelRelease, ModelReleaseAsk, ModelReleased, ModelSearch, Provenance,
     },
     model_ref::{self as refs, Repo},

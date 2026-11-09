@@ -18,7 +18,7 @@ pub(crate) struct Tree {
 
 /// The hold that keeps `owner`'s tree.
 fn id(owner: &str) -> String {
-    format!("tree-{}", tensorfs::sha256::hex_digest(owner.as_bytes()))
+    format!("tree-{}", tensorfs_core::sha256::hex_digest(owner.as_bytes()))
 }
 
 /// A tree's document for `files`.

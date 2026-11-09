@@ -3,7 +3,7 @@
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::create_exception;
-use tensorfs::failure::{Failure, Kind};
+use tensorfs::{Failure, Kind};
 
 create_exception!(
     tensorfs,

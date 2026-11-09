@@ -6,7 +6,7 @@
 
 use std::io::Read;
 
-use tensorfs::failure::Result;
+use tensorfs::Result;
 use tensorfs::format::{ClassRef, Dtype, Encoding, GlobalScale, NibbleOrder, ObjectRef, ScaleLayout};
 use tensorfs::store::Store;
 use tensorfs::writer::{Data, PartData, Source};
