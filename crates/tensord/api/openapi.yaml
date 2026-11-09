@@ -197,6 +197,17 @@ paths:
         '503':
           description: '`machine_updating` or `machine_released`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+    get:
+      summary: >-
+        The runs this key reads, newest first, before the run numbered `before` (0, absent: the newest).
+      operationId: runs
+      parameters:
+        - {name: before, in: query, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, format: int32, minimum: 0}}
+      responses:
+        '200':
+          description: Its runs; on a rental its owner reads every one
+          content: {application/json: {schema: {$ref: '#/components/schemas/RunList'}}}
   /v1/runs/{id}/cancel:
     post:
       summary: >-
@@ -802,6 +813,10 @@ components:
           description: >-
             0: a frame that is not in the log (the snapshot, progress before acceptance, live state).
           minimum: 0
+    RunList:
+      type: object
+      properties:
+        runs: {type: array, items: {$ref: '#/components/schemas/RunState'}}
     RunKind: {type: string, enum: [call, warm, update, remove]}
     RunRequest:
       type: object
@@ -880,7 +895,17 @@ components:
     RunState:
       type: object
       properties:
+        accepted_at_ms:
+          type: integer
+          format: int64
+          description: 'When the machine accepted it, Unix ms; 0 until then.'
+          minimum: 0
         attempt: {type: integer, format: int32, minimum: 0}
+        finished_at_ms:
+          type: integer
+          format: int64
+          description: 'When it ended, Unix ms; 0 until then.'
+          minimum: 0
         id: {type: string}
         number: {type: integer, format: int64, description: This machine's run number., minimum: 0}
         sequence: {type: integer, format: int64, description: The log's head., minimum: 0}
@@ -892,6 +917,7 @@ components:
             before it does.
           minimum: 0
         state: {type: string, description: 'queued, preparing, running, succeeded, failed, canceled'}
+        target: {type: string, description: 'What it runs, `<package>/<function>`; empty for an update.'}
         waiting: {type: string, description: 'Why a queued run waits, for people.'}
         waiting_for:
           type: array
