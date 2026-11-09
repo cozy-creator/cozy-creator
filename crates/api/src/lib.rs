@@ -1,6 +1,7 @@
 //! The types of every cozy API, and nothing that speaks one. `calcifer` is Calcifer's HTTP API, which the CLI and
 //! the page call; `machine` is a machine's (TensorD's), which Calcifer calls; the rest are the pieces and formats
-//! they share. No HTTP, TLS or async runtime: each client brings its own.
+//! they share. No HTTP, TLS or async runtime: each client brings its own. The one exception is the `hub` feature:
+//! the Hub's client, which Calcifer and TensorD both speak through.
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 
@@ -11,6 +12,8 @@ pub mod config;
 pub mod contract;
 pub mod digests;
 pub mod error;
+#[cfg(feature = "hub")]
+pub mod hub;
 pub mod interface;
 pub mod ids;
 pub mod machine;

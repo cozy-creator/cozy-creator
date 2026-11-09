@@ -6,10 +6,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
-    io::{Read as _, Seek, SeekFrom},
+    io::{Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use axum::{
@@ -19,8 +18,7 @@ use axum::{
     http::header,
     response::{IntoResponse, Response},
 };
-use futures_util::StreamExt as _;
-use hub_client::{cards, types::PackageInstallFile};
+use ::api::hub::{cards, types::PackageInstallFile};
 use api::{
     error::{Error, Kind},
     interface::Interface,
@@ -30,7 +28,6 @@ use api::{
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tensorfs::format::newest_by;
-use tokio::io::AsyncWriteExt as _;
 
 use crate::{
     api::{Api, Refusal},
@@ -47,8 +44,6 @@ const HELD: usize = 32;
 const MOST_BYTES: u64 = 16 << 20;
 /// The largest wheel read for its component.
 const MOST_WHEEL: u64 = 1 << 30;
-/// A file host that sends nothing for this long has stalled, and the box stays the declared one.
-const STALLED: Duration = Duration::from_secs(60);
 
 type Files = BTreeMap<String, Bytes>;
 
@@ -228,30 +223,33 @@ async fn fetched(id: &str, wheel: &PackageInstallFile) -> Result<File, Error> {
     if length > MOST_WHEEL {
         return Err(too_big(id, &wheel.path));
     }
-    let client = reqwest::Client::builder().connect_timeout(STALLED).read_timeout(STALLED).build().map_err(|why| unreadable(id, why))?;
-    let answer = client.get(&wheel.url).send().await.and_then(reqwest::Response::error_for_status).map_err(|why| unreadable(id, why.without_url()))?;
-    let kept = tempfile::tempfile().map_err(|why| unreadable(id, why))?;
-    let mut out = tokio::fs::File::from_std(kept);
-    let mut stream = answer.bytes_stream();
-    let mut hash = Sha256::new();
-    let mut read = 0u64;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|why| unreadable(id, why.without_url()))?;
-        read += chunk.len() as u64;
-        if read > MOST_WHEEL {
-            return Err(too_big(id, &wheel.path));
+    let mut kept = tempfile::tempfile().map_err(|why| unreadable(id, why))?;
+    let (mut hash, mut at) = (Sha256::new(), 0u64);
+    // A server that starts the body over starts the file and its hash over.
+    let mut sink = |start: u64, frame: &[u8]| -> tensorfs::err::Result<()> {
+        let failed = |why: std::io::Error| tensorfs::err::Refusal { code: tensorfs::err::Code::IO_FAILED, detail: why.to_string() };
+        if start != at {
+            kept.set_len(0).and_then(|()| kept.rewind()).map_err(failed)?;
+            (hash, at) = (Sha256::new(), 0);
         }
-        hash.update(&chunk);
-        out.write_all(&chunk).await.map_err(|why| unreadable(id, why))?;
+        at += frame.len() as u64;
+        if start != 0 && start + frame.len() as u64 != at || at > MOST_WHEEL {
+            return tensorfs::err::refuse(tensorfs::err::Code::ORIGIN_REFUSED, "not one wheel's bytes");
+        }
+        hash.update(frame);
+        kept.write_all(frame).map_err(failed)
+    };
+    let got = tensorfs::fetch::get_pinned(&wheel.url, 0, &mut sink).await;
+    if at > MOST_WHEEL {
+        return Err(too_big(id, &wheel.path));
     }
-    out.flush().await.map_err(|why| unreadable(id, why))?;
+    got.map_err(|why| unreadable(id, why))?;
     let got = format!("sha256:{}", hex::encode(hash.finalize()));
     if !got.eq_ignore_ascii_case(&wheel.digest) {
         return Err(Error::new(Kind::Unavailable, "tool_ui_hash_mismatch", format!("{id}: {} is {got}, and the Hub says {}, so it doesn't load", wheel.path, wheel.digest)));
     }
-    let mut file = out.into_std().await;
-    file.seek(SeekFrom::Start(0)).map_err(|why| unreadable(id, why))?;
-    Ok(file)
+    kept.rewind().map_err(|why| unreadable(id, why))?;
+    Ok(kept)
 }
 
 fn named(archive: &zip::ZipArchive<File>) -> BTreeSet<String> {

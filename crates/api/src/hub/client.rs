@@ -9,11 +9,11 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use platform::paths::Home;
-use api::{config::Origin, error::Error as Refusal};
+use crate::{config::Origin, error::Error as Refusal};
 
-use crate::Error;
-use crate::device::UserSession;
-use crate::types::*;
+use crate::hub::Error;
+use crate::hub::device::UserSession;
+use crate::hub::types::*;
 
 /// Who a request speaks as.
 #[derive(Clone)]
@@ -53,8 +53,7 @@ const SEGMENT: &AsciiSet = &CONTROLS
     .add(b'%');
 
 impl Client {
-    /// A client of the Hub at `origin` speaking as `credential`, over `http` (which carries the
-    /// TLS roots and timeouts the caller chose).
+    /// A client of the Hub at `origin` speaking as `credential`, over `http` ([`crate::hub::http`]).
     pub fn connect(origin: &str, http: reqwest::Client, credential: Credential) -> Self {
         let origin = origin.trim_end_matches('/').to_owned();
         Self {
@@ -82,7 +81,12 @@ impl Client {
 
     /// The same Hub, anonymously: for the exchanges that mint a credential.
     pub fn anonymous(&self) -> Self {
-        Self::connect(&self.origin, self.http.clone(), Credential::Anonymous)
+        self.with(Credential::Anonymous)
+    }
+
+    /// The same Hub as another credential, over the same connections.
+    pub fn with(&self, credential: Credential) -> Self {
+        Self::connect(&self.origin, self.http.clone(), credential)
     }
 
     pub(crate) fn origin(&self) -> &str {
@@ -624,7 +628,7 @@ impl Client {
             tracing::warn!(%method, path, "the Hub did not answer: {error}");
             error
         })?;
-        crate::workload::observe(response.url(), response.headers());
+        crate::hub::workload::observe(response.url(), response.headers());
         Ok(response)
     }
 

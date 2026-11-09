@@ -427,7 +427,7 @@ impl Endpoint {
     /// One exchange, its answer read whole, asked again by the one rule ([`ask`]); the provider
     /// may ask once more (a nonce, a refresh). Bytes of a body sent are progress.
     async fn exchange(&self, ask: Ask<'_>) -> Result<Reply> {
-        let (mut backoff, mut challenged) = (Backoff::new(), false);
+        let (mut backoff, mut challenged) = (Backoff::transfer(), false);
         loop {
             let sent = self.sent.load(Ordering::Relaxed);
             let (why, wait) = match self.attempt(&ask).await {

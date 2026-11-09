@@ -1,8 +1,10 @@
-//! The one HTTP client: reqwest, set up as its docs say: one pool, 5 s to connect, and a request
-//! that receives nothing for 30 s fails (`read_timeout`, which restarts with every read). No proxy,
-//! and every address is the egress policy's before it is dialed ([`SourcePolicy`]). Redirects are
-//! followed here, not by reqwest: credentials go only to the origin they were given for, and
-//! reqwest's own list (Authorization, Cookie) would carry a DPoP proof or SigV4 headers on.
+//! The one HTTP stack. [`http`] starts every outbound client cozy makes: its name, 5 s to connect, a dead
+//! peer found by TCP keepalive, and rustls over the webpki roots. [`Client`] is the one that moves
+//! bytes: a request that receives nothing for [`STALL`] fails (`read_timeout`, which restarts with
+//! every read), no proxy, and every address is the egress policy's before it is dialed
+//! ([`SourcePolicy`]). Redirects are followed here, not by reqwest: credentials go only to the origin
+//! they were given for, and reqwest's own list (Authorization, Cookie) would carry a DPoP proof or
+//! SigV4 headers on.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -20,7 +22,44 @@ use crate::err::{refuse, Code, Refusal, Result};
 
 const CONNECT: Duration = Duration::from_secs(5);
 /// No bytes for this long fails a request (CRT's and Ollama's stall rule).
-const STALL: Duration = Duration::from_secs(30);
+pub const STALL: Duration = Duration::from_secs(30);
+/// A silent connection is probed this often, six times, after six of these with nothing on it.
+const PROBE: Duration = Duration::from_secs(5);
+
+/// How every outbound client starts, so no caller picks a name, a connect timeout or TLS: `cozy/<version>` as
+/// its User-Agent, 5 s to connect, a peer that went away found by TCP keepalive (a minute at most), and rustls
+/// trusting the webpki roots and each DER certificate in `extra`. A caller adds only what is its own: its
+/// redirects, [`STALL`] where an answer is one exchange, a pinned verifier.
+pub fn http(extra: &[&[u8]]) -> Result<reqwest::ClientBuilder> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for der in extra {
+        roots.add(CertificateDer::from(der.to_vec())).map_err(|error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("not a CA certificate: {error}") })?;
+    }
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_safe_default_protocol_versions()
+        .expect("rustls ships its default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(reqwest::Client::builder()
+        .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT)
+        .tcp_keepalive(PROBE * 6)
+        .tcp_keepalive_interval(PROBE)
+        .tcp_keepalive_retries(6)
+        .tls_backend_preconfigured(tls))
+}
+
+/// The DER certificates of a PEM bundle, for [`http`]; an empty bundle is refused.
+pub fn pem_roots(pem: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let roots: Vec<CertificateDer<'static>> = rustls::pki_types::pem::PemObject::pem_slice_iter(pem)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("not a PEM certificate bundle: {error}") })?;
+    if roots.is_empty() {
+        return refuse(Code::UNKNOWN_FORMAT, "the PEM bundle holds no certificate");
+    }
+    Ok(roots.iter().map(|root| root.to_vec()).collect())
+}
 
 /// A response, its body still on the wire, and the URL that answered it.
 pub(crate) struct Answer {
@@ -140,41 +179,24 @@ pub struct Client {
 impl Client {
     /// A client bound by `policy`, trusting the webpki roots.
     pub fn new(policy: SourcePolicy) -> Client {
-        Client::trusting(policy, &[])
+        Client::trusting(policy, &[]).expect("the webpki roots alone")
     }
 
     /// A client that also trusts the CA certificates in `pem` (a private origin's).
     pub fn with_roots(policy: SourcePolicy, pem: &[u8]) -> Result<Client> {
-        let roots: Vec<CertificateDer<'static>> = rustls::pki_types::pem::PemObject::pem_slice_iter(pem)
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("not a PEM certificate bundle: {error}") })?;
-        if roots.is_empty() {
-            return refuse(Code::UNKNOWN_FORMAT, "the PEM bundle holds no certificate");
-        }
-        Ok(Client::trusting(policy, &roots))
+        let roots = pem_roots(pem)?;
+        Client::trusting(policy, &roots.iter().map(Vec::as_slice).collect::<Vec<_>>())
     }
 
-    fn trusting(policy: SourcePolicy, extra: &[CertificateDer<'static>]) -> Client {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        for root in extra {
-            let _ = roots.add(root.clone());
-        }
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
-            .with_safe_default_protocol_versions()
-            .expect("rustls ships its default protocol versions")
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        let inner = reqwest::Client::builder()
+    fn trusting(policy: SourcePolicy, extra: &[&[u8]]) -> Result<Client> {
+        let inner = http(extra)?
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(CONNECT)
             .read_timeout(STALL)
             .dns_resolver(Arc::new(Checked(policy.clone())))
-            .tls_backend_preconfigured(tls)
             .build()
             .expect("reqwest builds with a rustls config");
-        Client { inner, policy }
+        Ok(Client { inner, policy })
     }
 
     pub(crate) fn policy(&self) -> &SourcePolicy {

@@ -7,11 +7,11 @@ use std::{
 };
 
 use platform::durable;
-use api::error::{Error, Kind};
-use api::interface::Interface;
+use crate::error::{Error, Kind};
+use crate::interface::Interface;
 use serde_json::Value;
 
-use crate::Client;
+use crate::hub::Client;
 
 /// A release's card: its release and package interface, read from the Hub's answer.
 #[derive(Debug)]
@@ -50,7 +50,7 @@ fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
 }
 
 /// A failed Hub call as a refusal.
-pub fn refusal(error: crate::Error) -> Error {
+pub fn refusal(error: crate::hub::Error) -> Error {
     error.refusal(|| "cozy login <email>".into())
 }
 
@@ -97,7 +97,7 @@ impl Releases {
 pub async fn releases(client: &Client, package: &str) -> Result<Releases, Error> {
     let (org, name) = package.split_once('/').expect("a package is org/name");
     let card = client.get_package(org, name).await.map_err(|e| absent(refusal(e), package))?;
-    let yanked = |row: &&crate::types::CatalogRelease| row.yanked == Some(true) || row.yanked_at.as_deref().is_some_and(|at| !at.is_empty());
+    let yanked = |row: &&crate::hub::types::CatalogRelease| row.yanked == Some(true) || row.yanked_at.as_deref().is_some_and(|at| !at.is_empty());
     Ok(Releases {
         newest: card.package.latest_release,
         released: card.releases.iter().map(|row| row.release.clone()).collect(),

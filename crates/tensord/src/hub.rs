@@ -3,7 +3,7 @@
 //! carried one (cl-675: a workload token bound to this machine's key), or anonymously without one. A
 //! machine never holds an account's sign-in.
 use base64::Engine as _;
-use hub_client::{workload::WorkloadKey, Credential};
+use ::api::hub::{workload::WorkloadKey, Credential};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -14,7 +14,7 @@ use tensorfs::{
     fetch::{HeaderMap, Request, TokenProvider},
 };
 
-pub(crate) use hub_client::types;
+pub(crate) use ::api::hub::types;
 
 /// `scheme://host:port`, lowercase, default port spelled: one key per origin.
 pub(crate) fn origin_key(origin: &str) -> Option<String> {
@@ -110,10 +110,8 @@ pub(crate) fn block<T: Send>(call: impl Future<Output = T> + Send) -> T {
     })
 }
 
-/// HTTPS to one Hub: the public roots and its granted CA, no redirects. A live Hub that is
-/// merely slow is waited for; a dead one is found by TCP keepalive (probes after 30 s of
-/// silence, 5 s apart), as TensorFS's downloader finds its own. For calls on the Hub runtime
-/// (`block`).
+/// HTTPS to one Hub (`api::hub::http`): the public roots and its granted CA. For calls on the Hub
+/// runtime (`block`).
 pub(crate) fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
     static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());
     pooled(&CLIENTS, ca_der)
@@ -132,31 +130,7 @@ fn pooled(pool: &Pool, ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal
     if let Some((_, client)) = clients.iter().find(|(ca, _)| ca.as_deref() == ca_der) {
         return Ok(client.clone());
     }
-    let unusable = |why: String| Refusal(format!("the Hub's TLS: {why}"));
-    let mut roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    if let Some(der) = ca_der {
-        roots
-            .add(der.to_vec().into())
-            .map_err(|e| unusable(e.to_string()))?;
-    }
-    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|e| unusable(e.to_string()))?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    const PROBE: Duration = Duration::from_secs(5);
-    let client = reqwest::Client::builder()
-        .tls_backend_preconfigured(tls)
-        .redirect(reqwest::redirect::Policy::none())
-        .tcp_keepalive(PROBE * 6)
-        .tcp_keepalive_interval(PROBE)
-        .tcp_keepalive_retries(6)
-        .build()
-        .map_err(|e| unusable(e.to_string()))?;
+    let client = ::api::hub::http(ca_der).map_err(Refusal)?;
     clients.push((ca_der.map(<[u8]>::to_vec), client.clone()));
     Ok(client)
 }
@@ -412,18 +386,18 @@ impl Capability {
     }
 
     /// `signed` redeemed at this Hub's token endpoint for a token bound to the workload key.
-    fn redeem(&self, signed: &str) -> Result<Token, hub_client::Error> {
-        let http = http(self.ca_der.as_deref()).map_err(|e| hub_client::Error::Call(e.0))?;
-        let hub = hub_client::Client::connect(&self.origin, http, Credential::Anonymous);
+    fn redeem(&self, signed: &str) -> Result<Token, ::api::hub::Error> {
+        let http = http(self.ca_der.as_deref()).map_err(|e| ::api::hub::Error::Call(e.0))?;
+        let hub = ::api::hub::Client::connect(&self.origin, http, Credential::Anonymous);
         let known = self.endpoint.lock().unwrap().clone();
         let endpoint = match known {
             Some(endpoint) => endpoint,
             None => {
-                let endpoint = asked(&self.origin, hub.token_endpoint())?;
+                let endpoint = block(hub.token_endpoint())?;
                 self.endpoint.lock().unwrap().insert(endpoint).clone()
             }
         };
-        let token = asked(&self.origin, hub.redeem(workload_key(), &endpoint, signed))?;
+        let token = block(hub.redeem(workload_key(), &endpoint, signed))?;
         Ok(Token {
             access: token.access_token,
             expires_unix_ms: now_ms() + token.expires_in * 1000,
@@ -541,13 +515,13 @@ impl std::fmt::Debug for Source {
 /// A Hub's package catalog, read anonymously.
 pub(crate) struct Catalog {
     origin: String,
-    hub: hub_client::Client,
+    hub: ::api::hub::Client,
 }
 
 impl Catalog {
     pub(crate) fn new(source: &Source) -> Result<Self, Refusal> {
         let http = http(source.ca_der.as_deref())?;
-        let hub = hub_client::Client::connect(&source.origin, http, Credential::Anonymous);
+        let hub = ::api::hub::Client::connect(&source.origin, http, Credential::Anonymous);
         Ok(Self { origin: source.origin.clone(), hub })
     }
 
@@ -556,13 +530,13 @@ impl Catalog {
     }
 
     /// The software machines run, PyTorch among it.
-    pub(crate) fn software(&self) -> Result<types::Software, hub_client::Error> {
-        asked(&self.origin, self.hub.get_software())
+    pub(crate) fn software(&self) -> Result<types::Software, ::api::hub::Error> {
+        block(self.hub.get_software())
     }
 
     /// A package and its releases.
-    pub(crate) fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, hub_client::Error> {
-        asked(&self.origin, self.hub.get_package(org, name))
+    pub(crate) fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, ::api::hub::Error> {
+        block(self.hub.get_package(org, name))
     }
 
     /// The exact files of one committed release (`python_version` picks its project wheel):
@@ -573,21 +547,7 @@ impl Catalog {
         name: &str,
         release: &str,
         python_version: Option<&str>,
-    ) -> Result<types::PackageInstallPlan, hub_client::Error> {
-        asked(&self.origin, self.hub.get_package_download_plan(org, name, release, python_version))
+    ) -> Result<types::PackageInstallPlan, ::api::hub::Error> {
+        block(self.hub.get_package_download_plan(org, name, release, python_version))
     }
-}
-
-/// The last resort (`design/stalls.md`): a catalog answer is one small JSON document, and the
-/// Hub gives no progress on it but the answer itself, so each ask gets `ANSWER`. Its caller asks
-/// again: a run's preparation while it lives (`published::patiently`), the capability's renewal.
-const ANSWER: Duration = Duration::from_secs(60);
-
-fn asked<T: Send>(origin: &str, ask: impl Future<Output = Result<T, hub_client::Error>> + Send) -> Result<T, hub_client::Error> {
-    block(async {
-        match tokio::time::timeout(ANSWER, ask).await {
-            Ok(answered) => answered,
-            Err(_) => Err(hub_client::Error::Call(format!("{origin} gave no answer in {} s", ANSWER.as_secs()))),
-        }
-    })
 }

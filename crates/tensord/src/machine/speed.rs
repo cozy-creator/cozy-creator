@@ -5,7 +5,7 @@
 //! answers 404 and that is fine. A marker in the machine's state keeps a restarted TensorD from
 //! reporting again.
 use super::hub::Hub;
-use hub_client::types::{WorkerDownload, WorkerProbe};
+use ::api::hub::types::{WorkerDownload, WorkerProbe};
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},

@@ -21,7 +21,7 @@ use axum::{
     extract::rejection::BytesRejection,
     routing::{delete, get, patch, post, put},
 };
-use hub_client::{Client, DeviceKey};
+use ::api::hub::{Client, DeviceKey};
 use api::{
     config::Origin,
     calcifer::hub::{ModelDownload, PackageInstall},
@@ -76,7 +76,7 @@ pub(crate) fn origin(api: &Api, named: Option<&str>) -> Result<Origin, Refusal> 
 }
 
 /// A failed Hub call: its own code as the cause, and `cozy login` next on a refused credential.
-pub(crate) fn refusal(hub: &Origin, error: hub_client::Error) -> Refusal {
+pub(crate) fn refusal(hub: &Origin, error: ::api::hub::Error) -> Refusal {
     Refusal(error.refusal(|| crate::rentals::login(hub)))
 }
 
@@ -93,7 +93,7 @@ fn reader(api: &Api, hub: &Origin) -> Result<Client, Refusal> {
 /// The device key a signed-in client speaks as.
 fn key(client: &Client) -> &DeviceKey {
     match client.credential() {
-        hub_client::Credential::User(session) => session.key(),
+        ::api::hub::Credential::User(session) => session.key(),
         _ => unreachable!("a signed-in client"),
     }
 }

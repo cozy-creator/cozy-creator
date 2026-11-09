@@ -13,7 +13,7 @@ use axum::{
         rejection::{BytesRejection, QueryRejection},
     },
 };
-use hub_client::types;
+use ::api::hub::types;
 use api::{
     config::Origin,
     error::{Error, Kind},

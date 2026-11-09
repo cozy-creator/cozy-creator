@@ -23,7 +23,7 @@ use api::{
     machine as v1,
 };
 use ed25519_dalek::SigningKey;
-use hub_client::{Client, types};
+use ::api::hub::{Client, types};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
 
@@ -55,7 +55,7 @@ struct Listing {
 impl Hubs {
     pub(crate) fn new(home: &Home, hub: config::Origin) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: ::api::hub::http(None).expect("the webpki roots alone"),
             home: home.clone(),
             hub,
             listings: Mutex::default(),
@@ -85,7 +85,7 @@ impl Hubs {
     /// A client for what the Hub tells anyone: its catalog, its stock, its software target.
     pub(crate) fn anonymous(&self, origin: &str) -> Result<Client, Error> {
         config::Origin::parse(origin)?;
-        Ok(Client::connect(origin, self.http.clone(), hub_client::Credential::Anonymous))
+        Ok(Client::connect(origin, self.http.clone(), ::api::hub::Credential::Anonymous))
     }
 
     /// A client speaking as this computer's device key at the Hub.
@@ -538,7 +538,7 @@ impl Machines {
         let mut pause = Duration::ZERO;
         loop {
             let listed = match self.hubs.client(&ask.hub) {
-                Ok(client) => within("listing rentals", client.list_rentals("live")).await.map_err(|e| hub_refusal(&ask.hub, e)),
+                Ok(client) => client.list_rentals("live").await.map_err(|e| hub_refusal(&ask.hub, e)),
                 Err(e) => Err(e),
             };
             match listed {
@@ -637,7 +637,7 @@ impl Machines {
     async fn ask_once(&self, ask: &Ask) -> Result<types::Rental, Error> {
         let client = self.hubs.client(&ask.hub)?;
         let request = RentBody::of(ask)?.request;
-        within("ordering a rental", client.create_rental(&ask.key, &request)).await.map_err(|e| hub_refusal(&ask.hub, e))
+        client.create_rental(&ask.key, &request).await.map_err(|e| hub_refusal(&ask.hub, e))
     }
 
     /// Rents a machine for an unplaced run (`--on new[:<sku>]`) under a key the run names, so a
@@ -1024,7 +1024,7 @@ impl Machines {
             lists.spawn(async move { me.list_hub(&origin).await });
         }
         lists.join_all().await;
-        let _ = tokio::time::timeout(HUB_ANSWER, self.hubs.learn()).await;
+        self.hubs.learn().await;
         self.calcifer.machine_changed();
     }
 
@@ -1038,7 +1038,7 @@ impl Machines {
                 return;
             }
         };
-        let rentals = match within("listing rentals", client.list_rentals("live")).await {
+        let rentals = match client.list_rentals("live").await {
             Ok(listing) => listing.rentals,
             Err(e) => {
                 let error = hub_refusal(origin, e);
@@ -1265,7 +1265,7 @@ impl Machines {
                 Err(e) => return settle(Err(e.message)),
             };
             if !released {
-                let release = within("releasing a rental", client.release_rental(&id)).await;
+                let release = client.release_rental(&id).await;
                 match release.map_err(|e| hub_refusal(&ask.hub, e)) {
                     Ok(_) => released = true,
                     Err(e) if e.kind == Kind::NotFound => {
@@ -1283,7 +1283,7 @@ impl Machines {
                 }
             }
             if released {
-                match within("reading a rental", client.get_rental(&id)).await {
+                match client.get_rental(&id).await {
                     Ok(rental) => {
                         let gone_now = gone(&rental.state).then(|| cause(&rental));
                         self.hubs.seen(&ask.hub, rental);
@@ -1312,7 +1312,7 @@ impl Hubs {
     /// One rental as its Hub says it now.
     async fn read(&self, origin: &str, id: &str) -> Result<types::Rental, Error> {
         let client = self.client(origin)?;
-        let rental = within("reading a rental", client.get_rental(id)).await.map_err(|e| hub_refusal(origin, e))?;
+        let rental = client.get_rental(id).await.map_err(|e| hub_refusal(origin, e))?;
         self.seen(origin, rental.clone());
         Ok(rental)
     }
@@ -1453,27 +1453,7 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
 }
 
 /// A Hub's failure as the API answers it, naming the Hub.
-/// How long a Hub may take over one read for `cozy machine ls`. A Hub working on an answer sends
-/// nothing, so there is no progress to measure: this is TensorFS's stall floor (`fetch::ask`), and
-/// what TensorD allows its own Hub calls.
-const HUB_ANSWER: Duration = Duration::from_secs(30);
-
-/// `call`, unanswered as the Hub being unreachable once [`HUB_ANSWER`] has passed: a Hub that takes a
-/// request and never answers holds no loop, and a call asked again under its key is the same call.
-async fn within<T>(
-    what: &str,
-    call: impl Future<Output = Result<T, hub_client::Error>>,
-) -> Result<T, hub_client::Error> {
-    match tokio::time::timeout(HUB_ANSWER, call).await {
-        Ok(answer) => answer,
-        Err(_) => {
-            warn!(call = what, "the Hub gave no answer in {} s", HUB_ANSWER.as_secs());
-            Err(hub_client::Error::Call(format!("{what}: no answer in {} s", HUB_ANSWER.as_secs())))
-        }
-    }
-}
-
-pub(crate) fn hub_refusal(origin: &str, e: hub_client::Error) -> Error {
+pub(crate) fn hub_refusal(origin: &str, e: ::api::hub::Error) -> Error {
     let mut error = e.refusal(|| login(origin));
     error.message = format!("{origin}: {}", error.message);
     error

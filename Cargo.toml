@@ -10,7 +10,6 @@ members = [
     "crates/cli",
     "crates/cozy",
     "crates/executor-api",
-    "crates/hub-client",
     "crates/platform",
     "crates/platform-signal",
     "crates/tensord",
@@ -37,7 +36,6 @@ api = { path = "crates/api" }
 calcifer = { path = "crates/calcifer" }
 cli = { path = "crates/cli" }
 executor-api = { path = "crates/executor-api" }
-hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
 platform-signal = { path = "crates/platform-signal" }
 tensord = { path = "crates/tensord" }

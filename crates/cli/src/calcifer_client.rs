@@ -31,9 +31,8 @@ use reqwest::{RequestBuilder, Response, StatusCode, header};
 const IGNORED_FIELDS: &str = "cozy-ignored-fields";
 /// What a write is asked under: every send of one call is the same ask, done once (cl-812).
 const KEY: &str = "Idempotency-Key";
-/// A machine that answers no connect, and the seconds before each further attempt at it.
+/// A machine that answers no connect.
 const UNREACHABLE: &str = "machine_unreachable";
-const UNREACHABLE_WAITS: [u64; 4] = [3, 6, 12, 24];
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{Context, output};
@@ -92,7 +91,7 @@ impl Client {
     fn new(ctx: &Context) -> Result<Self, Error> {
         // Who a project's history says made an edit.
         let said = header::HeaderMap::from_iter([(header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli"))]);
-        let http = reqwest::Client::builder()
+        let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone")
             .no_proxy()
             .default_headers(said)
             .build()
@@ -181,21 +180,19 @@ impl Client {
 
     /// `ask`, and again while its refusal is `again`, each attempt said, at the wait the answer stated if it did.
     async fn asked_again<T, F: Future<Output = Result<T, Error>>>(&self, again: impl Fn(&Error) -> bool, ask: impl Fn() -> F) -> Result<T, Error> {
-        let attempts = UNREACHABLE_WAITS.len() + 1;
-        for (attempt, wait) in UNREACHABLE_WAITS.iter().enumerate() {
+        let mut backoff = tensorfs::fetch::Backoff::call();
+        loop {
             match ask().await {
-                Err(e) if again(&e) => {
-                    let wait = e.wait_or(Duration::from_secs(*wait));
-                    output::warn(&format!("{}; attempt {}/{attempts} in {} s", e.message, attempt + 2, wait.as_secs()));
-                    tokio::time::sleep(wait).await;
-                }
+                Err(e) if again(&e) => match backoff.again(&e.message, false, e.retry_after_s.map(Duration::from_secs)) {
+                    Some((wait, said)) => {
+                        output::warn(&said);
+                        tokio::time::sleep(wait).await;
+                    }
+                    None => return Err(Error { message: backoff.spent(&e.message), ..e }),
+                },
                 answer => return answer,
             }
         }
-        ask().await.map_err(|e| match again(&e) {
-            true => Error { message: format!("{}, after {attempts} attempts", e.message), ..e },
-            false => e,
-        })
     }
 
     async fn posted<B, T>(&self, path: &str, body: &B, key: &str) -> Result<T, Error>

@@ -27,7 +27,7 @@ use futures_util::stream::{FuturesUnordered, TryStreamExt};
 
 pub(crate) use endpoint::streaming_writer;
 pub use endpoint::{upload_commit, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
-pub use net::Client;
+pub use net::{http, pem_roots, Client, STALL};
 pub(crate) use net::GetError;
 pub use origin::{Boxed, Location, Origin};
 pub use policy::{is_loopback_origin, SourcePolicy};
@@ -36,7 +36,7 @@ pub use volume::VolumeOrigin;
 
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{self, Header, ObjectRef, Tree};
-pub use ask::ATTEMPTS;
+pub use ask::{Backoff, ATTEMPTS};
 pub use download::{Fetching, Phase};
 use download::{Shared, Task};
 
@@ -87,8 +87,7 @@ pub async fn get_pinned_into(url: &str, part: &Path, moved: &mut (dyn FnMut(u64)
 /// address at every hop, 5 redirects at most, asked as [`get_pinned`] asks. Nothing makes it local.
 pub async fn get_link(url: &str, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let policy = SourcePolicy { any_host: true, plaintext: true, max_redirects: 5, ..Default::default() };
-    // Some hosts refuse a request that names no client.
-    get_body(policy, url, &[("user-agent".into(), "cozy".into())], 0, sink).await
+    get_body(policy, url, &[], 0, sink).await
 }
 
 async fn get_body(policy: SourcePolicy, url: &str, headers: &[(String, String)], from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {

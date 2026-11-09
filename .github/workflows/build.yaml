@@ -1,6 +1,6 @@
 name: build
 # The PR check (tracker/design/ci-v2.md §1): the workspace compiles, clippy's deny lints pass (warnings are not
-# gates yet: master has 61 in tensorfs), and the routes hold to their API documents: every route hub-client calls is
+# gates yet: master has 61 in tensorfs), and the routes hold to their API documents: every route `api::hub` calls is
 # in tensorhub's api/openapi.yaml, and TensorD's router, its client and crates/tensord/api/openapi.yaml name the same
 # routes, and every route web/app calls is one Calcifer serves; web/app/src/api/calcifer.ts is api's types as ts-rs writes them
 # (scripts/web-types.sh). It also builds the page, so the checks compile it in.
@@ -48,7 +48,7 @@ jobs:
           fi
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
-      # Every route hub-client calls is in tensorhub's API document as it is now.
+      # Every route `api::hub` calls is in tensorhub's API document as it is now.
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
         with:

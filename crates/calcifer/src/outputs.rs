@@ -56,8 +56,6 @@ const RANGE: u64 = 8 << 20;
 const RANGES_PER_LANE: usize = 4;
 /// How many whole reads of one revision may fail its digest before it is given up.
 const WRONG_READS: u32 = 3;
-/// How many times what stays on a machine is tried for, with what needs it waiting.
-const BRING_TRIES: u32 = 5;
 
 /// An output Calcifer still owes this computer: its run's number, its name and index, its length
 /// and the bytes of it in place.
@@ -252,25 +250,23 @@ impl Calcifer {
         {
             machines.local_up().await.map_err(|e| e.message)?;
         }
-        let mut why = String::new();
-        for attempt in 0..BRING_TRIES {
-            if attempt > 0 {
-                info!(run = %run.id, output = %item.name, attempt = attempt + 1, "bringing it here: {why}");
-                tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
-            }
+        let mut backoff = tensorfs::fetch::Backoff::call();
+        loop {
             let mut changed = None;
             let done = match self.reach(&run, &mut changed) {
                 Ok(link) => self.export_item(&run, &item, &link, changed).await,
                 Err(failure) => Err(failure),
             };
-            match done {
+            let why = match done {
                 Ok(()) => return Ok(()),
                 Err(Failure::Superseded) => return Err("a newer revision of it is recorded".into()),
                 Err(Failure::Lost(message) | Failure::Refused(message)) => return Err(message),
-                Err(Failure::Again(message) | Failure::Wrong(message)) => why = message,
-            }
+                Err(Failure::Again(message) | Failure::Wrong(message)) => message,
+            };
+            let Some((wait, said)) = backoff.again(&why, false, None) else { return Err(why) };
+            info!(run = %run.id, output = %item.name, "bringing it here: {said}");
+            tokio::time::sleep(wait).await;
         }
-        Err(why)
     }
 
     /// Exports the run's outputs, each at its newest revision, until none is left: up to `LANES`

@@ -411,10 +411,7 @@ fn release(text: &str) -> Result<String, Error> {
 /// pure one. Its URL and sha256; `None` for a PyPI release, which the machine fetches from PyPI.
 async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result<Option<(String, String)>, Error> {
     let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", e.to_string());
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(failed)?;
+    let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").read_timeout(tensorfs::fetch::STALL).build().map_err(failed)?;
     let project = distribution.replace('_', "-");
     let pypi = http.get(format!("https://pypi.org/pypi/{project}/{version}/json")).send().await.map_err(failed)?;
     if pypi.status().is_success() {

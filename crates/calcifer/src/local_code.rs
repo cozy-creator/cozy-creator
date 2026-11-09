@@ -39,12 +39,12 @@ pub(crate) fn refuse(code: &str, detail: impl Display) -> Error {
     Error::new(Kind::Validation, code, detail.to_string())
 }
 
-fn hub_refusal(error: hub_client::Error) -> Error {
+fn hub_refusal(error: ::api::hub::Error) -> Error {
     error.refusal(|| "cozy login <email>".into())
 }
 
 /// The account `client` is signed in as.
-pub(crate) async fn account(client: &hub_client::Client) -> Result<String, Error> {
+pub(crate) async fn account(client: &::api::hub::Client) -> Result<String, Error> {
     Ok(client.get_current_account().await.map_err(hub_refusal)?.name)
 }
 
@@ -328,7 +328,7 @@ impl Project {
 /// its publish check holds a uv.lock to, wherever this computer reaches the Hub. A Hub that
 /// advertises none takes no publication, and its configured origin stands.
 pub(crate) async fn index_url(
-    client: &hub_client::Client,
+    client: &::api::hub::Client,
     hub: &Origin,
     account: &str,
 ) -> Result<String, Error> {
@@ -378,7 +378,7 @@ struct Member {
 /// `code` as a machine installs it: its manifest and every file of Calcifer's copy, sent by content. A project whose sources name
 /// the `tensorhub` index takes the namespace its lock was made for (`_` for a first-party checkout), read through `hub`'s reader:
 /// anonymous when this computer is signed out.
-pub(crate) async fn source(home: &Home, code: &LocalCode, (reader, hub): (&hub_client::Client, &Origin)) -> Result<Source, Error> {
+pub(crate) async fn source(home: &Home, code: &LocalCode, (reader, hub): (&::api::hub::Client, &Origin)) -> Result<Source, Error> {
     let project_dir = copied(home, code)?;
     let project = Project::read(project_dir.clone())?;
     let locals = shared::path_dependencies(&project_dir)?;
@@ -453,7 +453,7 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, (reader, hub): (&hub_c
         let namespace = match locked_namespace(&project_dir) {
             Some(namespace) => namespace,
             // Unlocked, its sources are the signed-in account's own.
-            None if matches!(reader.credential(), hub_client::Credential::User(_)) => account(reader).await?,
+            None if matches!(reader.credential(), ::api::hub::Credential::User(_)) => account(reader).await?,
             None => {
                 return Err(Error::new(
                     Kind::Credential,

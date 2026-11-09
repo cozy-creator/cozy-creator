@@ -510,15 +510,20 @@ fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::mach
         Err(error) => return tracing::warn!("endpoint report: {error}"),
     };
     runtime.block_on(async {
-        for attempt in 0..5u32 {
-            match hub.report_endpoint(&endpoint).await {
+        let mut backoff = tensorfs::fetch::Backoff::call();
+        loop {
+            let (why, stated) = match hub.report_endpoint(&endpoint).await {
                 Ok(()) => return tracing::info!("reported endpoint {}", endpoint.public_host),
                 Err(Refusal::Denied | Refusal::Ended) => return tracing::warn!("the Hub refused the endpoint report"),
-                Err(Refusal::NotReady) => tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await,
-                Err(Refusal::Transport(error, wait)) => {
-                    tracing::warn!("endpoint report: {error}");
-                    tokio::time::sleep(wait.unwrap_or(std::time::Duration::from_secs(1 << attempt))).await;
+                Err(Refusal::NotReady) => ("the Hub is not ready for it".to_owned(), None),
+                Err(Refusal::Transport(error, wait)) => (error, wait),
+            };
+            match backoff.again(&format!("endpoint report: {why}"), false, stated) {
+                Some((wait, said)) => {
+                    tracing::warn!("{said}");
+                    tokio::time::sleep(wait).await;
                 }
+                None => return tracing::warn!("{}", backoff.spent(&format!("endpoint report: {why}"))),
             }
         }
     });

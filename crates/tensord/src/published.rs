@@ -253,27 +253,25 @@ fn canceled() -> Failure {
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
 /// silent, the Hub's 5xx. A definite answer (absent, private, refused, malformed) is never this.
 pub(crate) const UNREACHABLE: &str = "hub_unreachable";
-/// How many times an unanswered lookup is asked before its run says it had no answer.
-const ATTEMPTS: u32 = 5;
-/// The wait before it is asked again, doubling: about a minute and a quarter over all of them.
-const FIRST_WAIT: Duration = Duration::from_secs(5);
 /// How often a wait looks at its run's cancel.
 const TICK: Duration = Duration::from_millis(100);
 
-/// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), up to [`ATTEMPTS`]
-/// times: its cancel ends the wait, and the run shows each attempt and why. Nothing has executed, so
+/// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), by the one retry rule
+/// (`tensorfs::fetch::Backoff`): its cancel ends the wait, and the run shows each attempt and why. Nothing has executed, so
 /// asking again re-executes nothing, and what an earlier ask resolved is held. A hint (no run to
 /// stop) is asked once.
 pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
     let Some(stop) = &job.stop else { return prepare() };
-    let mut wait = FIRST_WAIT;
-    for attempt in 1..ATTEMPTS {
+    let mut backoff = tensorfs::fetch::Backoff::call();
+    loop {
         let why = match prepare() {
             Err((UNREACHABLE, why)) => why,
             answered => return answered,
         };
-        let said = format!("unreachable, retrying in {} s (attempt {}/{ATTEMPTS}): {why}", wait.as_secs(), attempt + 1);
-        tracing::warn!(run = %job.caller, retry_in_s = wait.as_secs(), "{said}");
+        let Some((wait, said)) = backoff.again(&format!("unreachable: {why}"), false, None) else {
+            return Err((UNREACHABLE, format!("{}. Nothing else is wrong with this run: send it again once that answers", backoff.spent(&format!("no answer: {why}")))));
+        };
+        tracing::warn!(run = %job.caller, "{said}");
         job.stage(said.clone());
         job.waiting(Some(said));
         let until = Instant::now() + wait;
@@ -286,12 +284,7 @@ pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Fai
         }
         // Asked again: what it does now is what it shows.
         job.waiting(None);
-        wait *= 2;
     }
-    prepare().map_err(|(code, why)| match code {
-        UNREACHABLE => (code, format!("no answer after {ATTEMPTS} attempts: {why}. Nothing else is wrong with this run: send it again once that answers")),
-        _ => (code, why),
-    })
 }
 
 /// What one environment generation is built from: the release's card (its exact pyproject and
@@ -1683,11 +1676,11 @@ fn apply_adapters(
 /// unexpected internal failure").
 /// The Hub's own 404 names an absence; one without its envelope (`http_404`: a tunnel or proxy
 /// in front of it) names nothing (tfs-101). No answer, or the Hub's 5xx, is [`UNREACHABLE`].
-fn absent(refusal: hub_client::Error, code: &'static str, read: &str, named: impl FnOnce() -> String) -> Failure {
+fn absent(refusal: ::api::hub::Error, code: &'static str, read: &str, named: impl FnOnce() -> String) -> Failure {
     let failed = if refusal.retry() { UNREACHABLE } else { "catalog_read_failed" };
     let why = match refusal {
-        hub_client::Error::Hub { status: 404, code: hub, .. } if !hub.starts_with("http_") => return (code, named()),
-        hub_client::Error::Hub { status, code, message, remedy, .. } => match remedy.is_empty() {
+        ::api::hub::Error::Hub { status: 404, code: hub, .. } if !hub.starts_with("http_") => return (code, named()),
+        ::api::hub::Error::Hub { status, code, message, remedy, .. } => match remedy.is_empty() {
             true => format!("the Hub answered {status} {code}: {message}"),
             false => format!("the Hub answered {status} {code}: {message} ({remedy})"),
         },
@@ -1738,7 +1731,7 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
     if plan.release != release {
         return Err(("catalog_read_failed", format!("{package}@{release} named another release")));
     }
-    let text = |what: &str, document: &hub_client::types::ExactDocument| {
+    let text = |what: &str, document: &::api::hub::types::ExactDocument| {
         base64::engine::general_purpose::STANDARD.decode(&document.canonical_bytes).ok().and_then(|bytes| String::from_utf8(bytes).ok())
             .ok_or(("package_prepare_plan_invalid", format!("the release's {what} is not base64 UTF-8")))
     };

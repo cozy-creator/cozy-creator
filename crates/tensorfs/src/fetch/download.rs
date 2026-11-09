@@ -931,7 +931,7 @@ impl Shared {
 
     /// One range, asked again by the one rule (`ask`) from the byte reached, to its end.
     async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<()> {
-        let (mut backoff, mut attempt, mut still) = (Backoff::new(), 0, 0);
+        let (mut backoff, mut attempt, mut still) = (Backoff::transfer(), 0, 0);
         let (began, first) = (Instant::now(), part.reached);
         loop {
             attempt += 1;

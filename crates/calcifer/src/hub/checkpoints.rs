@@ -10,7 +10,7 @@ use std::{
 };
 
 use futures_util::{StreamExt as _, stream};
-use hub_client::{Client, types};
+use ::api::hub::{Client, types};
 use api::{
     config::Origin,
     calcifer::hub::{FamilyFrom, FoundModel, ModelKind},

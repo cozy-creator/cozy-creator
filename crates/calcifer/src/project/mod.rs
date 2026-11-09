@@ -2903,36 +2903,26 @@ impl Walk {
     /// `ask`, and again while its machine answers no connect or the Hub doesn't answer, each attempt said. Everything asked this way
     /// is a read, or goes under a key.
     async fn again<T, F: Future<Output = Result<T, Error>>>(&self, ask: impl Fn() -> F) -> Result<T, Error> {
-        const WAITS: [u64; 4] = [3, 6, 12, 24];
         let again = |e: &Error| e.code == "machine_unreachable" || e.hub_transient();
-        for (attempt, wait) in WAITS.iter().enumerate() {
-            match ask().await {
-                Err(e) if again(&e) => {
-                    let wait = e.wait_or(std::time::Duration::from_secs(*wait));
-                    let message = format!("{}; attempt {}/{} in {} s", e.message, attempt + 2, WAITS.len() + 1, wait.as_secs());
-                    self.say(Event::Warning { message, name: None });
-                    tokio::time::sleep(wait).await;
-                }
-                answer => return answer,
-            }
-        }
-        // This computer with no network tells nothing of its machine, and its job is never failed for it: it goes when the network does.
-        let mut said = false;
+        let (mut backoff, mut said) = (tensorfs::fetch::Backoff::call(), false);
         loop {
-            match ask().await {
-                Err(e) if again(&e) && self.elsewhere() && !self.host.online().await => {
-                    if !std::mem::replace(&mut said, true) {
-                        self.say(Event::Warning { message: format!("{}; this computer reaches nothing: it goes on once it does", e.message), name: None });
-                    }
-                    tokio::time::sleep(OFFLINE).await;
-                }
-                answer => {
-                    return answer.map_err(|e| match again(&e) {
-                        true => Error { message: format!("{}, after {} attempts", e.message, WAITS.len() + 1), ..e },
-                        false => e,
-                    });
-                }
+            let e = match ask().await {
+                Err(e) if again(&e) => e,
+                answer => return answer,
+            };
+            if let Some((wait, message)) = backoff.again(&e.message, false, e.retry_after_s.map(std::time::Duration::from_secs)) {
+                self.say(Event::Warning { message, name: None });
+                tokio::time::sleep(wait).await;
+                continue;
             }
+            // This computer with no network tells nothing of its machine, and its job is never failed for it: it goes when the network does.
+            if !(self.elsewhere() && !self.host.online().await) {
+                return Err(Error { message: backoff.spent(&e.message), ..e });
+            }
+            if !std::mem::replace(&mut said, true) {
+                self.say(Event::Warning { message: format!("{}; this computer reaches nothing: it goes on once it does", e.message), name: None });
+            }
+            tokio::time::sleep(OFFLINE).await;
         }
     }
 

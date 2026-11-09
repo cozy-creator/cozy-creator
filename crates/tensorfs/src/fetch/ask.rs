@@ -1,6 +1,6 @@
 //! The one retry rule, for every request (object_store's and the AWS SDKs'): a transport failure (no
 //! connection, 30 s with no bytes, a body cut off) or a "not now" answer is asked again after
-//! an exponential backoff, 100 ms doubling to 15 s with jitter, or the wait the answer states.
+//! an exponential backoff with jitter, or the wait the answer states ([`Backoff`]).
 //! An attempt that moved bytes starts the count over; [`ATTEMPTS`] in a row that moved nothing end it.
 
 use std::hash::{BuildHasher as _, RandomState};
@@ -24,30 +24,67 @@ pub(crate) fn transient(refusal: &Refusal) -> bool {
     matches!(refusal.code, Code::TRANSFER_FAILED | Code::HUB_UNREACHABLE | Code::FD_HEADROOM)
 }
 
-/// The pauses between one request's attempts: 100 ms doubling to 15 s, each lengthened by up to
-/// itself again at random.
-pub(crate) struct Backoff {
+/// The pauses between one ask's attempts, the same rule wherever cozy asks again: a pause that doubles to a
+/// ceiling, lengthened by up to itself again at random, or the wait the answer states; an attempt that moved
+/// bytes starts the count over, and a fixed number in a row that moved nothing end it. Each pause is said.
+pub struct Backoff {
+    first: Duration,
+    most: Duration,
+    attempts: usize,
     next: Duration,
-    left: usize,
+    made: usize,
 }
 
 impl Backoff {
-    pub(crate) fn new() -> Backoff {
-        Backoff { next: Duration::from_millis(100), left: ATTEMPTS - 1 }
+    /// A transfer's request: [`ATTEMPTS`], 100 ms doubling to 15 s.
+    pub fn transfer() -> Backoff {
+        Backoff::of(ATTEMPTS, Duration::from_millis(100), Duration::from_secs(15))
+    }
+
+    /// A call a person or a run waits on: 5 attempts, about 3, 6, 12 and 24 s apart.
+    pub fn call() -> Backoff {
+        Backoff::of(5, Duration::from_secs(2), Duration::from_secs(16))
+    }
+
+    fn of(attempts: usize, first: Duration, most: Duration) -> Backoff {
+        Backoff { first, most, attempts, next: first, made: 1 }
+    }
+
+    /// How many attempts in a row may move nothing.
+    pub fn attempts(&self) -> usize {
+        self.attempts
     }
 
     /// The pause after a failed attempt (`moved`: it gained bytes; `stated`: the answer's
-    /// Retry-After), or None once [`ATTEMPTS`] in a row moved nothing.
-    pub(crate) fn after(&mut self, moved: bool, stated: Option<Duration>) -> Option<Duration> {
+    /// Retry-After), or None once every attempt in a row moved nothing.
+    pub fn after(&mut self, moved: bool, stated: Option<Duration>) -> Option<Duration> {
         if moved {
-            *self = Backoff::new();
+            (self.next, self.made) = (self.first, 1);
         }
-        self.left = self.left.checked_sub(1)?;
+        if self.made >= self.attempts {
+            return None;
+        }
+        self.made += 1;
         let pause = self.next;
-        self.next = (pause * 2).min(Duration::from_secs(15));
+        self.next = (pause * 2).min(self.most);
         // A uniform fraction from the 53 high bits of a fresh random hash.
         let jitter = (RandomState::new().hash_one(()) >> 11) as f64 / (1u64 << 53) as f64;
         Some(stated.unwrap_or(pause + pause.mul_f64(jitter)))
+    }
+
+    /// [`Backoff::after`] with the line that says it: `<why>; attempt 2/5 in 3 s`.
+    pub fn again(&mut self, why: &str, moved: bool, stated: Option<Duration>) -> Option<(Duration, String)> {
+        let pause = self.after(moved, stated)?;
+        let wait = match pause.as_secs_f64() {
+            s if s < 1.0 => format!("{s:.1}"),
+            s => format!("{}", s.round() as u64),
+        };
+        Some((pause, format!("{why}; attempt {}/{} in {wait} s", self.made, self.attempts)))
+    }
+
+    /// The last failure's line once the attempts are spent: `<why>, after 5 attempts`.
+    pub fn spent(&self, why: &str) -> String {
+        format!("{why}, after {} attempts", self.attempts)
     }
 }
 
@@ -66,7 +103,7 @@ pub(crate) async fn get(
     sink: &mut Sink<'_>,
 ) -> Result<Result<HeaderMap, u16>, GetError> {
     let (mut at, through) = range.unwrap_or((0, None));
-    let mut backoff = Backoff::new();
+    let mut backoff = Backoff::transfer();
     loop {
         let from = at;
         let (why, wait) = match attempt(client, url, headers, provider, &mut at, through, sink).await {

@@ -1792,7 +1792,7 @@ pub(crate) fn write_key(path: &Path, key: &SigningKey) -> Result<(), Error> {
 pub(crate) fn signer(path: &Path) -> Result<SigningKey, Error> {
     let raw = std::fs::read(path).ok();
     let pem = raw.as_deref().and_then(|raw| SigningKey::from_pkcs8_pem(std::str::from_utf8(raw).ok()?).ok());
-    pem.or_else(|| Some(hub_client::DeviceKey::read(raw.as_deref()?, "").ok()?.signing_key().clone()))
+    pem.or_else(|| Some(::api::hub::DeviceKey::read(raw.as_deref()?, "").ok()?.signing_key().clone()))
         .ok_or_else(|| {
             Error::new(
                 Kind::Credential,
