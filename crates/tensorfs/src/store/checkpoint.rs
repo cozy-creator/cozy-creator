@@ -65,12 +65,6 @@ impl Store {
         Checkpoint::opened(objects, ObjectRef::of(header), parsed, None)
     }
 
-    /// How the import that made `header` read its source, as its header records it.
-    pub fn source_format(&self, header: &ObjectRef) -> Result<Option<crate::import::SourceFormat>> {
-        let parsed = Header::from_cbor(&self.read(header)?)?;
-        Ok(crate::import::SourceFormat::read(&parsed.metadata))
-    }
-
     /// The tree document `tree`.
     pub fn tree(&self, tree: &ObjectRef) -> Result<Tree> {
         Ok(Tree::from_json(&self.read(tree)?)?)
@@ -193,7 +187,7 @@ impl Checkpoint {
                 return Err(Error::Absent(object.sha256.clone()));
             }
         }
-        let config = crate::export::config_json(&component.config);
+        let config = crate::format::config_json(&component.config);
         let files = std::iter::once((component.config_name(), Ok(config)))
             .chain(component.assets.keys().map(|n| (n.as_str(), self.asset(&component.name, n))));
         for (name, bytes) in files {

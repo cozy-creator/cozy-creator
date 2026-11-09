@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::err::{refuse, Code, Result};
 use crate::family::{self, Record, Stored};
-use crate::format::compose::{compose, Supply};
+use super::compose::{compose, Supply};
 use crate::format::{Header, ObjectRef, Provenance, Value};
 use crate::store::Store;
 

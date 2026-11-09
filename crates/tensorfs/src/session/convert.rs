@@ -187,7 +187,7 @@ impl Client {
                 progress: &report,
                 stop: Some(&stopped),
             };
-            let mut writer = store.writer(None, None)?;
+            let mut writer = crate::writer(&store, None, None)?;
             import::convert(&request, &mut writer).map_err(provider::from_native)?;
             worker_control.check()?;
             let header = writer.committed().ok_or_else(|| Failure {

@@ -1445,10 +1445,9 @@ fn make_source(
         .map_err(|e| io_failure(io::Error::other(e)))?;
     let name = format!("source-{}", &sha256::hex_digest(&identity)[..40]);
     let made = |header: ObjectRef| {
-        let format = store.source_format(&header).ok().flatten().map(|f| f.to_string()).unwrap_or_default();
-        let family = (store.read(&header).ok())
-            .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).ok())
-            .and_then(|h| tensorfs::family::summary(&h.metadata));
+        let read = store.read(&header).ok().and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).ok());
+        let format = (read.as_ref()).and_then(|h| tensorfs::import::SourceFormat::read(&h.metadata)).map(|f| f.to_string()).unwrap_or_default();
+        let family = read.and_then(|h| tensorfs::family::summary(&h.metadata));
         Made {
             repository: format!("local/{name}"),
             format: family.map_or(format.clone(), |f| format!("{format}; {f}")),
@@ -1483,7 +1482,7 @@ fn make_source(
         stop: Some(&stop),
     };
     let started = Instant::now();
-    let (header, files) = store.import(&request, Some(&name)).map_err(|e| {
+    let (header, files) = tensorfs::import::into_store(store, &request, Some(&name)).map_err(|e| {
         crate::storage::transport(store, "import-failed", source, &e.to_string());
         match stop() {
             true => canceled(),

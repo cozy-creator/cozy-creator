@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{invalid, Body, Component, Header, Metadata, Result};
+use crate::format::{invalid, Body, Component, Header, Metadata, Result};
 use crate::family::{self, Record};
 
 /// `component` of `header` becomes the composition's `name`.

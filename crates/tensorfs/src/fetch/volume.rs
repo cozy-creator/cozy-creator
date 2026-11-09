@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use platform::durable::Mode;
 
 use super::origin::{Location, Origin};
-use super::ObjectStore;
+use crate::store::Store;
 use crate::err::Result;
 use crate::format::ObjectRef;
 
@@ -91,7 +91,7 @@ impl VolumeOrigin {
     /// `replace` is not asked.
     pub(crate) fn write(
         &self,
-        store: &dyn ObjectStore,
+        store: &Store,
         object: &ObjectRef,
         replace: bool,
     ) -> Wrote {
@@ -122,12 +122,12 @@ impl VolumeOrigin {
 
     fn copy(
         &self,
-        store: &dyn ObjectStore,
+        store: &Store,
         object: &ObjectRef,
         path: &Path,
     ) -> std::io::Result<()> {
         static UNIQUE: AtomicU64 = AtomicU64::new(0);
-        let mut source = store.open(object)?;
+        let mut source = open(store, object)?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -270,4 +270,13 @@ impl Origin for VolumeOrigin {
     fn public(&self) -> bool {
         false
     }
+}
+
+/// A held object's bytes, or why not as an I/O error.
+pub(super) fn open(store: &Store, object: &ObjectRef) -> std::io::Result<std::fs::File> {
+    store.file(object).map_err(|error| match error {
+        crate::store::Error::Absent(_) => std::io::Error::new(std::io::ErrorKind::NotFound, error.to_string()),
+        crate::store::Error::Io { source, .. } => source,
+        other => std::io::Error::other(other.to_string()),
+    })
 }

@@ -3,12 +3,12 @@
 //! sha2 only, so it builds without the `store` feature.
 
 mod cbor;
-pub(crate) mod compose;
 pub mod decode;
 mod doc;
 mod dtype;
 pub mod encode;
 mod json;
+pub use json::config_json;
 pub mod layout;
 mod repo;
 mod value;

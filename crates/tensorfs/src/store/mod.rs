@@ -39,7 +39,6 @@ use std::time::{Duration, SystemTime};
 use platform::durable::{self, DiskClass, FileId};
 
 use crate::err::{Code, Refusal};
-use crate::fetch;
 use crate::format::{self, is_digest, ObjectRef};
 use crate::sha256::{hex, Sha256};
 
@@ -696,15 +695,16 @@ pub(crate) struct Partial {
 }
 
 /// Bytes written at their offsets, each stretch recorded once written.
-struct Stretch {
+pub(crate) struct Stretch {
     file: File,
     journal: Option<Arc<Mutex<File>>>,
     path: PathBuf,
     paced: durable::Paced,
 }
 
-impl fetch::RangeWrite for Stretch {
-    fn write_at(&mut self, at: u64, bytes: &[u8]) -> crate::err::Result<()> {
+impl Stretch {
+    /// `bytes` at `at`, the stretch recorded once written.
+    pub(crate) fn write_at(&mut self, at: u64, bytes: &[u8]) -> crate::err::Result<()> {
         write_all_at(&self.file, bytes, at).map_err(|error| fail("write", &self.path)(error).refusal())?;
         self.paced.wrote(&self.file, at, bytes.len() as u64);
         if let Some(journal) = &self.journal {
@@ -715,17 +715,20 @@ impl fetch::RangeWrite for Stretch {
     }
 }
 
-impl fetch::Admission for Partial {
-    fn held(&self) -> Vec<(u64, u64)> {
+impl Partial {
+    /// What an earlier fetch left: sorted, disjoint `[start, end)` stretches. `commit` judges them too.
+    pub(crate) fn held(&self) -> Vec<(u64, u64)> {
         self.held.clone()
     }
 
-    fn writer(&self) -> crate::err::Result<Box<dyn fetch::RangeWrite>> {
+    /// A writer of bytes at their offsets, one per request.
+    pub(crate) fn writer(&self) -> crate::err::Result<Stretch> {
         let file = self.file.as_ref().expect("a partial has its file until it commits").try_clone().map_err(|error| fail("open", &self.temp)(error).refusal())?;
-        Ok(Box::new(Stretch { file, journal: self.journal.clone(), path: self.temp.clone(), paced: durable::Paced::default() }))
+        Ok(Stretch { file, journal: self.journal.clone(), path: self.temp.clone(), paced: durable::Paced::default() })
     }
 
-    fn commit(mut self: Box<Self>) -> crate::err::Result<()> {
+    /// Hashes what was written and installs it: only the object's digest lets it in.
+    pub(crate) fn commit(mut self) -> crate::err::Result<()> {
         let mut file = self.file.take().expect("a partial has its file until it commits");
         let got = (|| -> io::Result<ObjectRef> {
             file.seek(SeekFrom::Start(0))?;
@@ -764,10 +767,6 @@ impl fetch::Admission for Partial {
         })();
         self.keep = false;
         installed.map_err(Error::refusal)
-    }
-
-    fn discard(mut self: Box<Self>) {
-        self.keep = false;
     }
 }
 
@@ -833,27 +832,11 @@ pub(crate) fn sync_dir(dir: &Path) -> Result<()> {
     durable::sync_dir(dir).map_err(platform("sync directory", dir))
 }
 
-/// The fetcher admits through the store's one door (design §5).
-impl fetch::ObjectStore for Store {
-    fn has(&self, object: &ObjectRef) -> bool {
-        self.reuse(object).unwrap_or(false)
-    }
-
-    fn open(&self, object: &ObjectRef) -> io::Result<File> {
-        self.file(object).map_err(|error| match error {
-            Error::Absent(_) => io::Error::new(io::ErrorKind::NotFound, error.to_string()),
-            Error::Io { source, .. } => source,
-            other => io::Error::other(other.to_string()),
-        })
-    }
-
-    fn admit(&self, object: &ObjectRef) -> crate::err::Result<Box<dyn fetch::Admission>> {
-        Ok(Box::new(Store::partial(self, object).map_err(Error::refusal)?))
-    }
-
-    /// A lock on `tmp/fetching-<sha256>`, which an exit lets go. A claim that can't be made is no
+impl Store {
+    /// Claims `object`'s download among everything sharing this store, until the claim drops. None:
+    /// another holds it now. A lock on `tmp/fetching-<sha256>`, which an exit lets go. A claim that can't be made is no
     /// reason to wait: the worst of one is a second download.
-    fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>> {
+    pub(crate) fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>> {
         struct Claim(#[allow(dead_code)] File, PathBuf);
         impl Drop for Claim {
             fn drop(&mut self) {

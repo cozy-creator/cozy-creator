@@ -106,7 +106,7 @@ impl Machine {
             None => Client::new(policy),
         };
         let _entered = self.runtime.enter();
-        let store: Arc<dyn tensorfs::fetch::ObjectStore> = self.store.clone();
+        let store = self.store.clone();
         let fetcher = Arc::new(Fetcher::new(store, client, self.volume.clone(), Config::default()));
         fetchers.push((key.clone(), fetcher.clone()));
         Ok(fetcher)

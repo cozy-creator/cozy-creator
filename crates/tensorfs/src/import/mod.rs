@@ -22,6 +22,7 @@
 //!
 //! A GGUF file is one component of its own (`gguf`).
 
+mod compose;
 pub mod base;
 pub(crate) mod carriers;
 pub mod engine;
@@ -770,6 +771,15 @@ fn config_class(file: &str, config: &Config) -> ClassRef {
         (_, _, Some(c)) if file == "tokenizer_config.json" => ClassRef::new("transformers", "", c),
         _ => ClassRef::default(),
     }
+}
+
+/// Imports `req` into a committed cozytensors in `store`: (its header, the source's repo files). With
+/// `key`, an interrupted import resumes: the tensors its journal holds are not converted again.
+pub fn into_store(store: &crate::store::Store, req: &Request, key: Option<&str>) -> Result<(crate::format::ObjectRef, std::collections::BTreeMap<String, crate::format::ObjectRef>)> {
+    let mut writer = crate::writer(store, None, key).map_err(crate::store::Error::refusal)?;
+    convert(req, &mut writer)?;
+    let header = writer.committed().cloned().expect("an import commits");
+    Ok((header, writer.repo_files().clone()))
 }
 
 pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {

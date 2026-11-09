@@ -20,10 +20,11 @@
 //! - A folder writer writes `chunks/<sha256>` first and `model.cozytensors` last, by rename: a
 //!   folder without the header is unfinished. Objects its base's store holds are referenced,
 //!   not copied (a thin folder).
-//! - A streaming writer sends each object to an endpoint as it seals it ([`Stream`]) and, at
-//!   commit, the header with its repo files as a new commit in its lane.
+//! - An uploading writer hands each object to its [`Upload`] as it seals it and, at commit, the
+//!   header with its repo files.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -34,13 +35,11 @@ use platform::durable::{self, FileId};
 use serde::{Deserialize, Serialize};
 
 use crate::err;
-use crate::fetch::Stream;
 use crate::format::layout::{self, GRID, STANDALONE};
 use crate::format::{
     self, segment, Body, ClassRef, Component, Config, Dtype, Encoding, Header, Metadata,
-    ObjectRef, Part, Pipeline, Tensor, Value, CHUNKS_DIR, CONFIG_FILE, HEADER_PATH,
+    ObjectRef, Part, Pipeline, Tensor, Tree, Value, CHUNKS_DIR, CONFIG_FILE, HEADER_PATH,
 };
-use crate::import;
 use crate::store::retention::{self, Hold};
 use crate::sha256::{hex, Sha256};
 use crate::store::{fail, is_name, sync_dir, Admission, Checkpoint, Error, Result, Store};
@@ -210,6 +209,18 @@ struct Spec {
     config_file: Option<String>,
 }
 
+/// Where a writer's objects go beyond its store: each one as it seals (or is found already held),
+/// then at commit the header's bytes with the repo files. `tensorfs`'s streaming upload is one.
+pub trait Upload: Send + Sync + fmt::Debug {
+    /// `object`, now held by `store`.
+    fn sealed(&self, store: &Store, object: &ObjectRef) -> err::Result<()>;
+    /// The committed header and the repo files; answers the tree the destination now holds.
+    fn commit(&self, header: Vec<u8>, repo: &BTreeMap<String, ObjectRef>) -> err::Result<Tree>;
+}
+
+/// Run on the header's metadata and components just before a commit makes the header.
+pub type BeforeCommit = Box<dyn Fn(&mut Metadata, &[Component]) + Send + Sync>;
+
 /// Where the objects and the header go.
 #[derive(Clone, Debug)]
 enum Dest {
@@ -220,13 +231,10 @@ enum Dest {
         root: PathBuf,
         cache: Option<Store>,
     },
-    /// Objects sent as they seal; at commit the header with the repo files, a commit of repo
-    /// `name` in lane `lane`.
-    Endpoint {
+    /// Objects handed to `upload` as they seal; at commit, the header with the repo files.
+    Upload {
         store: Store,
-        stream: Arc<Stream>,
-        name: String,
-        lane: String,
+        upload: Arc<dyn Upload>,
     },
 }
 
@@ -261,6 +269,7 @@ pub struct Writer {
     buffer: Vec<u8>,
     committed: Option<ObjectRef>,
     published: Option<ObjectRef>,
+    before_commit: Option<BeforeCommit>,
 }
 
 /// One component of a [`Writer`]: borrowed from it by [`Writer::component`] or [`Writer::get`].
@@ -286,19 +295,6 @@ impl Store {
             }
         };
         Writer::open(Dest::Store(self.clone()), writers.join(name), key, base)
-    }
-
-    /// A writer whose objects go to `stream` as they seal and whose commit (the header with its
-    /// repo files, in lane `lane`) becomes one of repo `name`'s there. The local checkpoint
-    /// commits first and remains available when the upload fails. With `key`, it resumes.
-    pub(crate) fn streaming_writer(&self, stream: Arc<Stream>, name: &str, lane: &str, base: Option<&Checkpoint>, key: Option<&str>) -> Result<Writer> {
-        if !format::label(lane) {
-            return Err(bad(format!("lane {lane:?} is not a label")));
-        }
-        // Reuse the existing keyed journal, kernel fence, replay and retention machinery.
-        let mut writer = self.writer(base, key)?;
-        writer.dest = Dest::Endpoint { store: self.clone(), stream, name: name.to_owned(), lane: lane.to_owned() };
-        Ok(writer)
     }
 
     /// Removes the directories of writers no process holds and nothing touched for `older_than`
@@ -341,20 +337,6 @@ impl Store {
         }
         Ok(removed)
     }
-
-    /// Imports `req` into a committed cozytensors: (its header, the source's repo files). With
-    /// `key`, an interrupted import resumes: the tensors its journal holds are not converted
-    /// again. The header and repo files are cached like any other use.
-    pub fn import(
-        &self,
-        req: &import::Request,
-        key: Option<&str>,
-    ) -> err::Result<(ObjectRef, BTreeMap<String, ObjectRef>)> {
-        let mut writer = self.writer(None, key).map_err(Error::refusal)?;
-        import::convert(req, &mut writer)?;
-        let header = writer.committed.clone().expect("an import commits");
-        Ok((header, std::mem::take(&mut writer.repo)))
-    }
 }
 
 impl Writer {
@@ -390,6 +372,7 @@ impl Writer {
             buffer: vec![0; 1 << 20],
             committed: None,
             published: None,
+            before_commit: None,
         };
         if writer.journal.is_some() {
             writer.resume()?;
@@ -503,6 +486,19 @@ impl Writer {
         self.tensors.index.contains_key(&(component.to_owned(), key.to_owned()))
     }
 
+    /// Its objects go to `upload` as they seal, and its header to it at commit (with the repo
+    /// files). The local checkpoint commits first and remains available when the upload fails.
+    pub fn uploading(&mut self, upload: Arc<dyn Upload>) {
+        if let Dest::Store(store) = &self.dest {
+            self.dest = Dest::Upload { store: store.clone(), upload };
+        }
+    }
+
+    /// `hook` runs on the header's metadata and components just before commit makes the header.
+    pub fn before_commit(&mut self, hook: impl Fn(&mut Metadata, &[Component]) + Send + Sync + 'static) {
+        self.before_commit = Some(Box::new(hook));
+    }
+
     /// The header, once committed.
     pub(crate) fn committed(&self) -> Option<&ObjectRef> {
         self.committed.as_ref()
@@ -531,12 +527,12 @@ impl Writer {
                 durable::replace(&at, bytes, 0o644).map_err(|e| fail("write", &at)(e.into()))?;
                 ObjectRef::of(bytes)
             }
-            Dest::Endpoint { store, stream, .. } => {
+            Dest::Upload { store, upload } => {
                 let acquisition = retention::acquire(store)?;
                 let object = store.put_bytes(bytes)?;
                 if let Some(hold) = &self.hold { hold.extend([object.sha256.clone()])?; }
                 drop(acquisition);
-                stream.put_stored(store, &object).map_err(sent)?;
+                upload.sealed(store, &object).map_err(sent)?;
                 object
             }
         };
@@ -642,13 +638,15 @@ impl Writer {
         // What wrote the base did not write this one.
         metadata.remove(crate::format::Provenance::KEY);
         metadata.extend(self.metadata.clone());
-        crate::family::reverify(&mut metadata, &components);
+        if let Some(hook) = &self.before_commit {
+            hook(&mut metadata, &components);
+        }
         let pipeline = self.pipeline.clone().or_else(|| self.base.as_ref()?.pipeline().cloned());
         let header = Header::new(chunks, pipeline, components, metadata)?;
-        if let Dest::Endpoint { store, stream, .. } = &self.dest {
+        if let Dest::Upload { store, upload } = &self.dest {
             for object in header.objects() {
                 if store.reuse(object)? {
-                    stream.put_stored(store, object).map_err(sent)?;
+                    upload.sealed(store, object).map_err(sent)?;
                 }
             }
         }
@@ -666,11 +664,11 @@ impl Writer {
                 durable::replace(&at, &header, 0o644).map_err(|e| fail("write", &at)(e.into()))?;
                 ObjectRef::of(&header)
             }
-            Dest::Endpoint { store, stream, name, lane } => {
+            Dest::Upload { store, upload } => {
                 let id = self.admit_header(store, &header)?;
                 store.used(&id.sha256, std::iter::once(&id).chain(&objects).chain(self.repo.values()))?;
                 self.committed = Some(id.clone());
-                let (_, tree) = stream.commit(name, lane, header, &self.repo).map_err(sent)?;
+                let tree = upload.commit(header, &self.repo).map_err(sent)?;
                 // The commit's tree is held here too: the checkpoint names it.
                 self.published = Some(store.put_tree(&tree)?);
                 id
@@ -682,7 +680,7 @@ impl Writer {
     }
 
     // The local header must join the same native hold before publication can fail. Use the
-    // retained local admission path; an Endpoint header is uploaded later by Stream::commit.
+    // retained local admission path; an Upload's header goes to it later, at its commit.
     fn admit_header(&self, store: &Store, header: &[u8]) -> Result<ObjectRef> {
         let mut admit = Admit::Store(store.admit(None)?, self.hold.clone());
         admit.write_all(header).map_err(fail("write", &self.dir))?;
@@ -1227,7 +1225,6 @@ impl ComponentWriter<'_> {
             order.insert((self.name.clone(), (*k).to_owned()), i);
         }
     }
-
 }
 
 fn tensor<'a>(e: &Entry, places: &mut impl Iterator<Item = &'a format::Location>) -> Tensor {
@@ -1279,7 +1276,7 @@ impl Dest {
         match self {
             Dest::Store(store) => Some(store),
             Dest::Folder { cache, .. } => cache.as_ref(),
-            Dest::Endpoint { store, .. } => Some(store),
+            Dest::Upload { store, .. } => Some(store),
         }
     }
 
@@ -1287,7 +1284,7 @@ impl Dest {
         match self {
             Dest::Store(store) => store.flushes(),
             Dest::Folder { .. } => true,
-            Dest::Endpoint { store, .. } => store.flushes(),
+            Dest::Upload { store, .. } => store.flushes(),
         }
     }
 
@@ -1302,10 +1299,10 @@ impl Dest {
                 }
                 cache.as_ref().map_or(Ok(false), |c| c.reuse(object))
             }
-            Dest::Endpoint { store, stream, .. } => {
+            Dest::Upload { store, upload } => {
                 let held = store.reuse(object)?;
                 if held {
-                    stream.put_stored(store, object).map_err(sent)?;
+                    upload.sealed(store, object).map_err(sent)?;
                 }
                 Ok(held)
             }
@@ -1330,7 +1327,7 @@ impl Dest {
                     length: 0,
                 }))
             }
-            Dest::Endpoint { store, stream, .. } => Ok(Admit::Endpoint(store.clone(), Arc::clone(stream), store.admit(None)?, hold.cloned())),
+            Dest::Upload { store, upload } => Ok(Admit::Upload(store.clone(), Arc::clone(upload), store.admit(None)?, hold.cloned())),
         }
     }
 
@@ -1366,7 +1363,7 @@ impl Dest {
 enum Admit {
     Store(Admission, Option<Arc<Hold>>),
     Folder(FolderObject),
-    Endpoint(Store, Arc<Stream>, Admission, Option<Arc<Hold>>),
+    Upload(Store, Arc<dyn Upload>, Admission, Option<Arc<Hold>>),
 }
 
 /// A send that failed, as the writer's error.
@@ -1404,12 +1401,12 @@ impl Admit {
                 fs::rename(&o.temp, &at).map_err(fail("rename into", &at))?;
                 Ok(got)
             }
-            Admit::Endpoint(store, stream, admission, hold) => {
+            Admit::Upload(store, upload, admission, hold) => {
                 let acquisition = hold.as_ref().map(|hold| hold.acquire()).transpose()?;
                 let object = admission.finish()?;
                 if let Some(hold) = hold { hold.extend([object.sha256.clone()])?; }
                 drop(acquisition);
-                stream.put_stored(&store, &object).map_err(sent)?;
+                upload.sealed(&store, &object).map_err(sent)?;
                 Ok(object)
             }
         }
@@ -1426,7 +1423,7 @@ impl Write for Admit {
                 o.length += n as u64;
                 Ok(n)
             }
-            Admit::Endpoint(_, _, admission, _) => admission.write(bytes),
+            Admit::Upload(_, _, admission, _) => admission.write(bytes),
         }
     }
 

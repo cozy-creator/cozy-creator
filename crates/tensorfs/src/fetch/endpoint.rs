@@ -31,7 +31,8 @@ use super::token::{default_for, s3_base, Request, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{is_digest, repo_name, Header, ObjectRef, Repo, Tree};
 use crate::sha256::hex_digest;
-use crate::store::Store;
+use crate::store::{self, Checkpoint, Store};
+use crate::writer::{Upload, Writer};
 
 /// The most bytes a document or an answer may have.
 const DOCUMENT_BYTES: usize = 16 << 20;
@@ -783,4 +784,34 @@ fn refusal(reply: &Reply, what: &str) -> Refusal {
     let named = if named.is_empty() { String::new() } else { format!(" {named}") };
     let detail = if detail.is_null() { String::new() } else { format!(" {detail}") };
     Refusal { code, detail: format!("{what} {}: {}{named}: {message}{detail}", shown(&reply.url), reply.status) }
+}
+
+/// A streaming writer's upload: each object to `stream` as it seals, the commit into repo `name` in lane `lane`.
+#[derive(Debug)]
+struct Streamed {
+    stream: Arc<Stream>,
+    name: String,
+    lane: String,
+}
+
+impl Upload for Streamed {
+    fn sealed(&self, store: &Store, object: &ObjectRef) -> Result<()> {
+        self.stream.put_stored(store, object)
+    }
+
+    fn commit(&self, header: Vec<u8>, repo: &BTreeMap<String, ObjectRef>) -> Result<Tree> {
+        self.stream.commit(&self.name, &self.lane, header, repo).map(|(_, tree)| tree)
+    }
+}
+
+/// A writer of `store` whose objects go to `stream` as they seal and whose commit (the header with
+/// its repo files, in lane `lane`) becomes one of repo `name`'s there. The local checkpoint commits
+/// first and remains available when the upload fails. With `key`, it resumes.
+pub(crate) fn streaming_writer(store: &Store, stream: Arc<Stream>, name: &str, lane: &str, base: Option<&Checkpoint>, key: Option<&str>) -> store::Result<Writer> {
+    if !crate::format::label(lane) {
+        return Err(crate::format::Error::Invalid(format!("lane {lane:?} is not a label")).into());
+    }
+    let mut writer = crate::writer(store, base, key)?;
+    writer.uploading(Arc::new(Streamed { stream, name: name.to_owned(), lane: lane.to_owned() }));
+    Ok(writer)
 }

@@ -515,7 +515,7 @@ impl Record {
 /// `metadata`'s `family` re-read for the base components a writer lays out: the form they are
 /// now (a lane its recipe pruned is the pruned form), or no `family` when they are no form of it.
 /// A derived lane carries its base's metadata; this keeps `family` true of what was written.
-pub(crate) fn reverify(metadata: &mut Metadata, components: &[Component]) {
+pub fn reverify(metadata: &mut Metadata, components: &[Component]) {
     let bases: Vec<&Component> = components.iter().filter(|c| !c.tensors.is_empty() && !is_lora(c)).collect();
     let Some(mut record) = Record::read(metadata).filter(|_| !bases.is_empty()) else {
         metadata.remove(FAMILY);

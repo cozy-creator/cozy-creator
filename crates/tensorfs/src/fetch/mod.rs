@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::stream::{FuturesUnordered, TryStreamExt};
 
+pub(crate) use endpoint::streaming_writer;
 pub use endpoint::{upload_commit, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
 pub use net::Client;
 pub(crate) use net::GetError;
@@ -99,37 +100,6 @@ async fn get_body(policy: SourcePolicy, url: &str, headers: &[(String, String)],
         Err(status @ (404 | 410)) => refuse(Code::REF_NOT_FOUND, format!("{url}: HTTP {status}")),
         Err(status) => refuse(Code::ORIGIN_REFUSED, format!("{url}: HTTP {status}")),
     }
-}
-
-/// The store objects are admitted into (design §4).
-pub trait ObjectStore: Send + Sync + 'static {
-    /// Whether the store holds `object` (verified when it was admitted).
-    fn has(&self, object: &ObjectRef) -> bool;
-    /// A held object's bytes.
-    fn open(&self, object: &ObjectRef) -> std::io::Result<File>;
-    /// The one door for a fetch of `object`: its bytes at their offsets, then `commit`, which hashes them
-    /// and refuses anything but `object` (`OBJECT_ID_MISMATCH`). A fetch may be cut at any moment: what it
-    /// wrote stays for the next fetch of `object` ([`Admission::held`]).
-    fn admit(&self, object: &ObjectRef) -> Result<Box<dyn Admission>>;
-    /// Claims `object`'s download among everything sharing this store, until the claim drops. None:
-    /// another holds it now.
-    fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>>;
-}
-
-/// One object on its way into a store.
-pub trait Admission: Send + Sync {
-    /// What an earlier fetch left: sorted, disjoint `[start, end)` stretches. `commit` judges them too.
-    fn held(&self) -> Vec<(u64, u64)>;
-    /// A writer of bytes at their offsets, one per request.
-    fn writer(&self) -> Result<Box<dyn RangeWrite>>;
-    fn commit(self: Box<Self>) -> Result<()>;
-    /// Ends it, nothing kept.
-    fn discard(self: Box<Self>);
-}
-
-/// Bytes of an object at their offsets.
-pub trait RangeWrite: Send {
-    fn write_at(&mut self, at: u64, bytes: &[u8]) -> Result<()>;
 }
 
 /// Where an object came from.
@@ -253,7 +223,7 @@ impl Drop for Fetcher {
 impl Fetcher {
     /// Fetches into `store` over `client`, reading `volume` first when one is given.
     pub fn new(
-        store: Arc<dyn ObjectStore>,
+        store: Arc<crate::store::Store>,
         client: Client,
         volume: Option<VolumeOrigin>,
         config: Config,
@@ -339,7 +309,7 @@ impl Fetcher {
             if let Some(progress) = want.progress {
                 progress.total.fetch_add(object.length, Ordering::Relaxed);
             }
-            match self.shared.store.has(object) {
+            match self.shared.store.reuse(object).unwrap_or(false) {
                 true => {
                     landed.add(Tier::Local, object.length, 0);
                     if let Some(progress) = want.progress {
@@ -381,7 +351,7 @@ impl Fetcher {
         let (store, object) = (Arc::clone(&self.shared.store), object.clone());
         let read = tokio::task::spawn_blocking(move || {
             let mut bytes = Vec::with_capacity(object.length as usize);
-            store.open(&object)?.read_to_end(&mut bytes).map(|_| bytes)
+            volume::open(&store, &object)?.read_to_end(&mut bytes).map(|_| bytes)
         });
         read.await
             .map_err(|error| Refusal {

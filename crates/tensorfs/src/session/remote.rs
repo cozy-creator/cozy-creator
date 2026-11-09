@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::failure::{fail, Failure, Kind, Result};
-use crate::fetch::{self, Fetcher, Hardware, ObjectStore, Origin, VolumeOrigin, Want};
+use crate::fetch::{self, Fetcher, Hardware, Origin, VolumeOrigin, Want};
 use crate::format::{Header, ObjectRef, Repo, Tree};
 use crate::store::Store;
 
@@ -50,7 +50,7 @@ impl Remote {
                 ..Fetched::default()
             });
         }
-        let store: Arc<dyn ObjectStore> = Arc::new(self.store.clone());
+        let store = Arc::new(self.store.clone());
         let mirror = self
             .mirror
             .as_ref()

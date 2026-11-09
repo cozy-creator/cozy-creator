@@ -124,11 +124,9 @@ impl Client {
                 detail: "a streaming Writer needs the caller's active Tokio runtime".into(),
             })?;
             let stream = Arc::new(crate::fetch::Stream::new(endpoint.inner, runtime));
-            store
-                .streaming_writer(stream, repo_id, &lane, base, options.resume)
-                .map_err(from_writer)?
+            crate::fetch::streaming_writer(&store, stream, repo_id, &lane, base, options.resume).map_err(from_writer)?
         } else {
-            store.writer(base, options.resume).map_err(from_writer)?
+            crate::writer(&store, base, options.resume).map_err(from_writer)?
         };
         Ok(Writer {
             state: Arc::new(Mutex::new(State {

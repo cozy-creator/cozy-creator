@@ -254,17 +254,6 @@ pub enum ModelKind {
     Component,
 }
 
-impl ModelKind {
-    /// What a header says it is: a LoRA, else a family's model, else a component.
-    pub fn of(facts: &tensorfs::family::Facts) -> ModelKind {
-        match (facts.lora, &facts.family) {
-            (true, _) => ModelKind::Lora,
-            (false, Some(_)) => ModelKind::Weights,
-            (false, None) => ModelKind::Component,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelAuthor {

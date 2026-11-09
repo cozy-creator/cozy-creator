@@ -11,7 +11,7 @@
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
-//! - **Cut or killed.** What landed stays in the store's `tmp/` ([`ObjectStore::admit`]), and the next
+//! - **Cut or killed.** What landed stays in the store's `tmp/` ([`Store::partial`]), and the next
 //!   fetch asks only for the rest (tfs-143).
 //! - **Every answer that is not 2xx is logged** with its object, range and attempt, and counted.
 
@@ -30,7 +30,8 @@ use super::ask::{self, Backoff, ATTEMPTS};
 use super::net::{shown, Client, GetError};
 use super::origin::{HttpLocation, Location, Origin};
 use super::volume::{blocking, VolumeOrigin, Wrote, STEP};
-use super::{Admission, ObjectStore, RangeWrite, Tier};
+use super::Tier;
+use crate::store::{Partial, Store, Stretch};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::ObjectRef;
 
@@ -219,7 +220,7 @@ impl Queue {
 
 /// What the Fetcher shares with its dispatcher and transfers.
 pub(crate) struct Shared {
-    pub store: Arc<dyn ObjectStore>,
+    pub store: Arc<Store>,
     pub client: Client,
     pub volume: Option<VolumeOrigin>,
     queue: Mutex<Queue>,
@@ -293,13 +294,13 @@ struct Part<'s> {
     /// Bytes received; those before `written` are in the store, the rest in `buffer`.
     reached: u64,
     written: u64,
-    writer: Option<Box<dyn RangeWrite>>,
+    writer: Option<Stretch>,
     buffer: Vec<u8>,
 }
 
 impl<'s> Part<'s> {
     /// A range of `[from, end)`; with `taken`, one free places may take from (a request's, not a file's).
-    fn new(shared: &'s Shared, admission: &dyn Admission, from: u64, end: u64, taken: Option<mpsc::UnboundedSender<(u64, u64, Slot)>>) -> Result<Part<'s>> {
+    fn new(shared: &'s Shared, admission: &Partial, from: u64, end: u64, taken: Option<mpsc::UnboundedSender<(u64, u64, Slot)>>) -> Result<Part<'s>> {
         let stealable = taken.is_some();
         let flight = Arc::new(Flight { span: Mutex::new((from, end)), taken });
         if stealable {
@@ -479,7 +480,7 @@ impl Drop for Slot {
 }
 
 impl Shared {
-    pub(crate) fn new(store: Arc<dyn ObjectStore>, client: Client, volume: Option<VolumeOrigin>, requests: usize) -> Shared {
+    pub(crate) fn new(store: Arc<Store>, client: Client, volume: Option<VolumeOrigin>, requests: usize) -> Shared {
         Shared {
             store,
             client,
@@ -790,7 +791,7 @@ impl Shared {
     /// `task`'s object from the first tier that has it. Another process on this store fetching it
     /// now (TensorD, for an executor's read) is waited for, so it downloads once on this machine.
     async fn fetch(self: &Arc<Self>, task: &Arc<Task>, permit: Slot) -> Result<Tier> {
-        if self.store.has(&task.object) {
+        if self.store.reuse(&task.object).unwrap_or(false) {
             return Ok(Tier::Local);
         }
         let _claim = loop {
@@ -800,7 +801,7 @@ impl Shared {
             tokio::time::sleep(CLAIM_POLL).await;
         };
         // It may have landed while another held the claim.
-        if self.store.has(&task.object) {
+        if self.store.reuse(&task.object).unwrap_or(false) {
             return Ok(Tier::Local);
         }
         let admission = self.admit(task).await?;
@@ -808,9 +809,9 @@ impl Shared {
     }
 
     /// The object's door, with what an earlier fetch left: those bytes count as here already.
-    async fn admit(&self, task: &Task) -> Result<Box<dyn Admission>> {
+    async fn admit(&self, task: &Task) -> Result<Partial> {
         let (store, object) = (Arc::clone(&self.store), task.object.clone());
-        let admission = tokio::task::spawn_blocking(move || store.admit(&object))
+        let admission = tokio::task::spawn_blocking(move || store.partial(&object).map_err(crate::store::Error::refusal))
             .await
             .map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })??;
         let held: u64 = admission.held().iter().map(|(a, b)| b - a).sum();
@@ -823,20 +824,20 @@ impl Shared {
     }
 
     /// Hashes and admits what was written: only the object's digest lets it in.
-    async fn commit(admission: Box<dyn Admission>) -> Result<()> {
+    async fn commit(admission: Partial) -> Result<()> {
         tokio::task::spawn_blocking(move || admission.commit())
             .await
             .map_err(|error| Refusal { code: Code::IO_FAILED, detail: error.to_string() })?
     }
 
     /// The object from the volume, else the origin.
-    async fn through_tiers(self: &Arc<Self>, task: &Arc<Task>, mut admission: Box<dyn Admission>, permit: Slot) -> Result<Tier> {
+    async fn through_tiers(self: &Arc<Self>, task: &Arc<Task>, mut admission: Partial, permit: Slot) -> Result<Tier> {
         let mut replace = false;
         if let Some(volume) = self.volume.clone().filter(VolumeOrigin::answering) {
             let _reading = self.volume_reads.acquire().await;
             if volume.answering() {
                 task.enter(Phase::Volume);
-                match self.read_file(task, &*admission, volume.blob(&task.object), Some(&volume)).await {
+                match self.read_file(task, &admission, volume.blob(&task.object), Some(&volume)).await {
                     FileRead::Done => match Shared::commit(admission).await {
                         Ok(()) => {
                             let (touching, object) = (volume.clone(), task.object.clone());
@@ -866,7 +867,7 @@ impl Shared {
 
     /// The origin's copy. Wrong bytes are asked for once more, from nothing: different wrong bytes
     /// may be the link's, the same twice are the origin's.
-    async fn origin_copy(&self, task: &Arc<Task>, mut admission: Box<dyn Admission>, permit: Slot) -> Result<()> {
+    async fn origin_copy(&self, task: &Arc<Task>, mut admission: Partial, permit: Slot) -> Result<()> {
         let (mut permit, mut wrong) = (Some(permit), None::<String>);
         loop {
             task.enter(Phase::Origin);
@@ -875,13 +876,13 @@ impl Shared {
                 return refuse(Code::REF_NOT_FOUND, format!("{}: the origin located nothing", task.object.sha256));
             };
             match &here {
-                Location::File(path) => match self.read_file(task, &*admission, path.clone(), None).await {
+                Location::File(path) => match self.read_file(task, &admission, path.clone(), None).await {
                     FileRead::Done => {}
                     FileRead::Absent => return refuse(Code::REF_NOT_FOUND, format!("{}: absent", path.display())),
                     FileRead::Stuck(why) => return refuse(Code::TRANSFER_FAILED, why),
                     FileRead::Failed(refusal) => return Err(refusal),
                 },
-                http => self.ranges(task, &*admission, &http.http().expect("a URL location"), &mut permit).await?,
+                http => self.ranges(task, &admission, &http.http().expect("a URL location"), &mut permit).await?,
             }
             match Shared::commit(admission).await {
                 Ok(()) => return Ok(()),
@@ -897,7 +898,7 @@ impl Shared {
 
     /// What the object lacks, as `PART` ranges side by side, each written at its offset, and the back
     /// halves free places take from them (`steal`).
-    async fn ranges(&self, task: &Task, admission: &dyn Admission, here: &HttpLocation<'_>, first: &mut Option<Slot>) -> Result<()> {
+    async fn ranges(&self, task: &Task, admission: &Partial, here: &HttpLocation<'_>, first: &mut Option<Slot>) -> Result<()> {
         let (taken, mut takes) = mpsc::unbounded_channel();
         let mut flying = FuturesUnordered::new();
         for (from, end) in lacking(&admission.held(), task.object.length) {
@@ -1069,7 +1070,7 @@ impl Shared {
 
     /// The object read whole from a file. A step that takes `VOLUME_STALL` is abandoned, and a
     /// volume's abandoned read keeps it out of every fetch until it returns.
-    async fn read_file(&self, task: &Task, admission: &dyn Admission, path: PathBuf, volume: Option<&VolumeOrigin>) -> FileRead {
+    async fn read_file(&self, task: &Task, admission: &Partial, path: PathBuf, volume: Option<&VolumeOrigin>) -> FileRead {
         let length = task.object.length;
         let stuck = || FileRead::Stuck(format!("{}: no step in {} s", path.display(), VOLUME_STALL.as_secs()));
         let mut part = match Part::new(self, admission, 0, length, None) {

@@ -234,6 +234,7 @@ const CONFIGS: [(&str, [&str; 3], &str); 2] = [
 /// Writes the cozytensors; its header, pinned under its digest.
 pub(crate) fn ckpt(store: &Store, blocks: u64, scale: u64, plain: bool, files: bool) -> Result<ObjectRef> {
     let mut w = store.writer(None, None)?;
+    w.before_commit(tensorfs::family::reverify);
     if files {
         for (component, [library, version, name], config) in CONFIGS {
             let config = serde_json::from_str(config).expect("a config");
