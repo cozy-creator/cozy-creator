@@ -1763,6 +1763,12 @@ pub fn driver_reservation(device: i32) -> Result<usize> {
     Ok(gpu(device)?.reservation.get().copied().unwrap_or(0))
 }
 
+/// What this process may hold on this device: the card or its cap, less what is outside it.
+/// `usize::MAX` until the card is sampled.
+pub fn capacity(device: i32) -> Result<usize> {
+    Ok(gpu(device)?.capacity())
+}
+
 /// Bytes every completed fill has written on this device: host-to-device traffic.
 pub fn filled_bytes(device: i32) -> Result<u64> {
     Ok(gpu(device)?.lock()?.filled_bytes)

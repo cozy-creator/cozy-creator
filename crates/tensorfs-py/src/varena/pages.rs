@@ -178,6 +178,22 @@ struct Reserved {
     page: Page,
 }
 
+/// A page admitted for a streamed fill's stored bytes and not yet touched: the store read lands in it,
+/// which touches it, then `Tier::keep_read` registers it.
+pub(super) struct Filling {
+    page: Page,
+    making: Moving,
+}
+
+impl Filling {
+    pub(super) fn ptr(&self) -> *mut u8 {
+        self.page.ptr
+    }
+    pub(super) fn len(&self) -> usize {
+        self.page.len
+    }
+}
+
 /// One fill, for the request's record.
 pub(super) struct Row {
     pub(super) set: String,
@@ -254,6 +270,8 @@ pub(super) struct Tier {
     /// offset in their bytes. Content-addressed, so two sets sharing objects (a LoRA view and its
     /// base, two releases' text encoder) find each other's bytes.
     objects: Mutex<HashMap<String, Ranges>>,
+    /// Each set's stored bytes, by block.
+    sets: Mutex<HashMap<String, HashMap<u32, u64>>>,
 }
 
 /// An object's ranges (offset, length) -> each Source placing it, and where in its bytes.
@@ -313,7 +331,7 @@ impl Tier {
             device, cap, shared, state: Mutex::new(State { room: -1, ..State::default() }),
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), making: Arc::default(), freeing: Arc::default(),
-            stores: Mutex::default(), objects: Mutex::default(),
+            stores: Mutex::default(), objects: Mutex::default(), sets: Mutex::default(),
         });
         tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier));
@@ -322,6 +340,8 @@ impl Tier {
 
     /// `source`'s stored object ranges, so other fills can find its bytes.
     pub(super) fn place(&self, source: &Arc<Inner>, items: &[Item]) {
+        self.sets.lock().unwrap_or_else(|error| error.into_inner())
+            .entry(source.set().to_owned()).or_default().insert(source.block(), source.bytes() as u64);
         let mut objects = self.objects.lock().unwrap_or_else(|error| error.into_inner());
         for item in items {
             if let ItemSource::Object(range) = &item.source {
@@ -330,6 +350,14 @@ impl Tier {
                 placed.push((Arc::downgrade(source), item.offset));
             }
         }
+    }
+
+    /// `set` stores more than the card holds: its regions stream, whatever stays, so a first fill
+    /// takes a page like a refill. A set that fits pins nothing until one of its regions comes back.
+    pub(super) fn streams(&self, set: &str) -> bool {
+        let stored: u64 = self.sets.lock().unwrap_or_else(|error| error.into_inner())
+            .get(set).map_or(0, |blocks| blocks.values().sum());
+        varena::capacity(self.device).is_ok_and(|capacity| stored > capacity as u64)
     }
 
     /// For each of `items`, the other Sources whose bytes are the stored ones and place it.
@@ -705,12 +733,49 @@ impl Tier {
         drop(reserved);
     }
 
+    /// A page for a fill of `key` to read its stored bytes into and copy to the card from, as v1
+    /// kept its pages: it waits for no idle pin, and every refill after it is one DMA. None: no
+    /// room, or the tier is off; the fill reads straight to the card.
+    pub(super) fn filling(&self, key: &str, set: &str, len: usize) -> PyResult<Option<Filling>> {
+        let (making, gone) = {
+            let mut state = self.state();
+            if state.kept.contains_key(key) {
+                return Ok(None);
+            }
+            self.admit(&mut state, key, set, len as u64)
+        };
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        let Some(making) = making else { return Ok(None) };
+        Ok(Some(Filling { page: Page::new(len)?, making }))
+    }
+
+    /// `filling`, its read landed, registered while touched and kept. If the driver refuses, the
+    /// tier is off and the page serves this copy alone.
+    pub(super) fn keep_read(&self, key: &str, set: &str, filling: Filling) -> Arc<Page> {
+        let Filling { mut page, making } = filling;
+        while !page.registered() {
+            if let Err(error) = page.register_window(self.device) {
+                self.state().off = Some(error.to_string());
+                return Arc::new(page);
+            }
+        }
+        let page = Arc::new(page);
+        self.keep(key, set, Arc::clone(&page));
+        drop(making);
+        page
+    }
+
     pub(super) fn insert(&self, key: &str, set: &str, page: Page) {
+        self.keep(key, set, Arc::new(page));
+    }
+
+    fn keep(&self, key: &str, set: &str, page: Arc<Page>) {
         let replaced = {
             let mut state = self.state();
             let tick = state.tick();
             state.bytes += page.len as u64;
-            let kept = Kept { page: Arc::new(page), set: set.to_owned(), last: tick };
+            state.wanted.remove(key);
+            let kept = Kept { page, set: set.to_owned(), last: tick };
             let replaced = state.kept.insert(key.to_owned(), kept);
             if let Some(replaced) = &replaced {
                 state.bytes -= replaced.page.len as u64;
@@ -924,6 +989,7 @@ impl Tier {
             let keys: Vec<_> = state.kept.iter().filter(|(_, kept)| set.is_none_or(|set| kept.set == set))
                 .map(|(key, _)| key.clone()).collect();
             state.wanted.retain(|_, wanted| set.is_some_and(|set| wanted.set != set));
+            self.sets.lock().unwrap_or_else(|error| error.into_inner()).retain(|placed, _| set.is_some_and(|set| placed != set));
             let spare = if set.is_none() {
                 state.filled = None;
                 std::mem::take(&mut state.spare)

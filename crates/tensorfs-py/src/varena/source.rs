@@ -122,6 +122,9 @@ impl Inner {
     pub(super) fn set(&self) -> &str {
         &self.set
     }
+    pub(super) fn block(&self) -> u32 {
+        self.block
+    }
     /// Its bytes are the stored ones (no derive, or one that wrote nothing): a fill of another set
     /// may copy them.
     pub(super) fn stored_bytes(&self) -> bool {
@@ -271,6 +274,42 @@ impl Inner {
         self.row(stats.bytes, "store", ahead, began);
         self.tier.read_source(&self.set, self.block, &stats);
         Ok(())
+    }
+
+    /// Stored bytes through a page the tier admits, for a fill of a region that streams (a refill,
+    /// or any fill of a set larger than the card holds): read into the page, which touches it,
+    /// registered (touched memory registers at about 28 GB/s, untouched at 3) and kept, then one
+    /// DMA to the card, as from a kept page. No copy back from the card. Left for an idle pin,
+    /// every refill meanwhile read the store again: SDXL's second call 2 GB, Klein's upsampler
+    /// 550 GiB a call (kesshouban, runs 42714, 42716). None: no page, or items another set holds
+    /// (`read` copies those from it).
+    fn through_page(self: &Arc<Self>, key: &str, stored: &Stored, fill: &varena::Fill, ahead: bool) -> Option<Result<(), tensorfs::io::source::Error>> {
+        if self.tier.holders(self, &stored.items).iter().any(|held| !held.is_empty()) {
+            return None;
+        }
+        let filling = self.tier.filling(key, &self.set, fill.len()).ok().flatten()?;
+        let began = Instant::now();
+        let control = Arc::new(ReadControl::default());
+        *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
+        let placement = Placement { items: &stored.items, origin: 0, dst: Dst::Host { ptr: filling.ptr(), len: filling.len() } };
+        let source = if ahead { &stored.local } else { &stored.fetching };
+        // SAFETY: the page is this call's alone until `keep_read`, and it holds `len` bytes.
+        let read = unsafe { source.read_placements_cancelable(&[placement], READERS, Mode::Cache, &IoTally::default(), &control) };
+        *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let stats = match read {
+            Ok(stats) => stats,
+            Err(error) => return Some(Err(error)),
+        };
+        let page = self.tier.keep_read(key, &self.set, filling);
+        if let Err(error) = self.from_page(fill, &page) {
+            if io::drain(fill.device()).is_err() {
+                std::mem::forget(page); // Unproven: the driver may still read it.
+            }
+            return Some(Err(error.into()));
+        }
+        self.row(stats.bytes, "store", ahead, began);
+        self.tier.read_source(&self.set, self.block, &stats);
+        Some(Ok(()))
     }
 
     /// Where `other`'s stored bytes are now: its Region on this GPU, pinned while ready (no use of
@@ -431,7 +470,13 @@ impl varena::Source for PageSource {
             this.tier.expect(key.clone(), this);
         }
         if let Some(stored) = &this.stored {
-            match this.read(stored, &fill, ahead) {
+            let paged = match &this.page {
+                Some(key) if derive.is_none() && (fill.target().refilled() || this.tier.streams(&this.set)) => {
+                    this.through_page(key, stored, &fill, ahead)
+                }
+                _ => None,
+            };
+            match paged.unwrap_or_else(|| this.read(stored, &fill, ahead)) {
                 Ok(()) => {}
                 Err(error) => {
                     let (error, failed) = storage(error);
