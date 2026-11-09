@@ -4,13 +4,10 @@
 use aws_lc_rs::{
     digest::{SHA256, digest},
     rand::{SecureRandom, SystemRandom},
-    signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
+    signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use jsonwebtoken::{
-    Algorithm, EncodingKey, Header,
-    jwk::{CommonParameters, Jwk, ThumbprintHash},
-};
+use serde::Serialize;
 use reqwest::{
     Url,
     header::{AGE, DATE, HeaderMap, HeaderName},
@@ -30,21 +27,61 @@ const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
 /// A P-256 key: what a machine's capabilities bind (`cnf.jkt`) and its tokens prove.
 pub struct WorkloadKey {
-    key: EncodingKey,
+    key: EcdsaKeyPair,
     jwk: Jwk,
     thumbprint: String,
+}
+
+/// A P-256 public key as a proof's header carries it: kty, crv, x and y only.
+#[derive(Serialize)]
+pub(crate) struct Jwk {
+    kty: &'static str,
+    crv: &'static str,
+    x: String,
+    y: String,
+}
+
+/// A JWS protected header (RFC 7515), its members in this order.
+#[derive(Serialize)]
+pub(crate) struct Header<'a> {
+    pub typ: &'a str,
+    pub alg: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwk: Option<&'a Jwk>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kid: Option<&'a str>,
+}
+
+/// `header.claims.signature` (JWS compact serialization), each part unpadded base64url;
+/// `sign` signs the first two as they are joined.
+pub(crate) fn jws(header: &Header<'_>, claims: &Value, sign: impl FnOnce(&[u8]) -> Vec<u8>) -> String {
+    fn part(value: &impl Serialize) -> String {
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(value).expect("a JWS part serializes"))
+    }
+    let mut token = format!("{}.{}", part(header), part(claims));
+    let signature = sign(token.as_bytes());
+    token.push('.');
+    token.push_str(&URL_SAFE_NO_PAD.encode(signature));
+    token
 }
 
 impl WorkloadKey {
     /// A new key, in memory only.
     pub fn generate() -> Self {
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-            .expect("a P-256 key");
-        let key = EncodingKey::from_ec_der(pkcs8.as_ref());
-        let mut jwk = Jwk::from_encoding_key(&key, Algorithm::ES256).expect("a P-256 key's JWK");
-        // kty, crv, x and y only, as a proof's header carries it.
-        jwk.common = CommonParameters::default();
-        let thumbprint = jwk.thumbprint(ThumbprintHash::SHA256).expect("a P-256 JWK's thumbprint");
+        let random = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &random).expect("a P-256 key");
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref()).expect("a P-256 key");
+        // The uncompressed point: 0x04, x, y.
+        let point = key.public_key().as_ref();
+        let jwk = Jwk {
+            kty: "EC",
+            crv: "P-256",
+            x: URL_SAFE_NO_PAD.encode(&point[1..33]),
+            y: URL_SAFE_NO_PAD.encode(&point[33..65]),
+        };
+        // RFC 7638: the required members, in lexicographic order, without whitespace.
+        let members = format!(r#"{{"crv":"{}","kty":"{}","x":"{}","y":"{}"}}"#, jwk.crv, jwk.kty, jwk.x, jwk.y);
+        let thumbprint = URL_SAFE_NO_PAD.encode(digest(&SHA256, members.as_bytes()));
         Self { key, jwk, thumbprint }
     }
 
@@ -54,10 +91,11 @@ impl WorkloadKey {
     }
 
     fn sign(&self, typ: &str, claims: &Value) -> String {
-        let mut header = Header::new(Algorithm::ES256);
-        header.typ = Some(typ.into());
-        header.jwk = Some(self.jwk.clone());
-        jsonwebtoken::encode(&header, claims, &self.key).expect("ES256 signs")
+        let header = Header { typ, alg: "ES256", jwk: Some(&self.jwk), kid: None };
+        jws(&header, claims, |signed| {
+            let signature = self.key.sign(&SystemRandom::new(), signed).expect("ES256 signs");
+            signature.as_ref().to_vec()
+        })
     }
 
     /// A proof of this key for `method` on `url` (its query and fragment dropped), naming `token`

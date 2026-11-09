@@ -74,7 +74,6 @@ idna_adapter = "=1.0.0"
 indicatif = "0.18"
 infer = { version = "0.22", default-features = false }
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
-jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
 libc = "0.2"
 libloading = "0.9"
 # The cozy binary's allocator (cl-822): it gives back what any thread freed, on every OS. No transparent huge pages:
