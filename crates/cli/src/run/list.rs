@@ -16,7 +16,7 @@ pub(crate) const HEADERS: [&str; 7] = ["#", "TARGET", "PROJECT", "MACHINE", "STA
 const SHOWN: u64 = 20;
 /// What `--json` keeps of a run in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
-    "older", "machine", "unreadable", "runs.id", "runs.number", "runs.kind", "runs.target", "runs.project", "runs.machine",
+    "older", "machine", "unreadable", "runs.id", "runs.number", "runs.kind", "runs.target", "runs.project", "runs.project_id", "runs.machine",
     "runs.status", "runs.queue_position", "runs.waiting", "runs.progress", "runs.stalled", "runs.reason.code",
     "runs.reason.message", "runs.created_at_ms", "runs.accepted_at_ms", "runs.started_at_ms", "runs.settled_at_ms",
     "runs.execution_ms", "others.id", "others.machine_number", "others.target", "others.machine", "others.status",

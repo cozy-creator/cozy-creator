@@ -783,12 +783,15 @@ impl Lock {
 struct Shared {
     /// Its canonical folder, which `SHARED` knows it by.
     dir: PathBuf,
-    /// One writer at a time: an act, or a write of no act's, holds it from what it changes to its commit.
-    writing: Mutex<()>,
+    /// One writer at a time, with the connection that writes: an act, or a write of no act's, holds it from what it changes to its commit,
+    /// SQLite's wait on another program's write lock too. Nothing that only reads waits on it (cl-837).
+    writing: Mutex<Option<rusqlite::Connection>>,
     /// Held while a file is kept and while files are deleted, so one isn't deleted between.
     collecting: Mutex<()>,
-    /// `project.db` and what it holds, read once and kept as each commit leaves it.
+    /// What `project.db` holds, read once and kept as each commit leaves it. Held only to look at or swap, never through a wait on SQLite.
     held: Mutex<Option<Held>>,
+    /// A connection that only reads: what `held` doesn't keep, and whether another connection committed. In WAL a read waits on no writer.
+    reading: Mutex<Option<rusqlite::Connection>>,
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
     /// Its history, read from project.db once.
@@ -808,16 +811,19 @@ impl Drop for Shared {
             shared.remove(&self.dir);
         }
         drop(shared);
-        if let Some(held) = self.held.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
-            std::thread::spawn(move || drop(held));
+        let writing = self.writing.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let reading = self.reading.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        if writing.is_some() || reading.is_some() {
+            std::thread::spawn(move || drop((writing, reading)));
         }
     }
 }
 
 struct Held {
-    conn: rusqlite::Connection,
-    /// `PRAGMA data_version` as `stored` was read: another connection's commit moves it, and it's read again.
+    /// `PRAGMA data_version` of `reading` as `stored` was read or committed: another connection's commit moves it, and it's read again.
     seen: i64,
+    /// How many times it was read again for another connection's commit.
+    loads: u64,
     stored: Stored,
     /// How `files/` stood when the lock's table was filled from it.
     files: String,
@@ -842,6 +848,7 @@ fn shared(dir: &Path) -> Arc<Shared> {
         writing: Mutex::default(),
         collecting: Mutex::default(),
         held: Mutex::default(),
+        reading: Mutex::default(),
         checkpointing: std::sync::atomic::AtomicBool::default(),
         book: std::sync::OnceLock::new(),
         films: Mutex::default(),
@@ -965,29 +972,42 @@ impl Folder {
     }
 
     /// What the first open's upgrade said and nothing has said yet: once. project.db keeps it until then, whatever closes between.
+    /// It's read past every writer first: a landing waits on no write of the project's for it.
     pub fn upgraded(&self) -> Vec<String> {
-        let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
-        let Ok(held) = self.held() else { return vec![] };
-        let Some(held) = held.as_ref() else { return vec![] };
-        let Some(said) = db::meta(&held.conn, UPGRADED) else { return vec![] };
-        if let Err(error) = db::set_meta(&held.conn, &self.db(), UPGRADED, None) {
-            warn!("{}: {}", self.dir.display(), error.message);
+        if self.reading_db(|conn| db::meta(conn, UPGRADED)).ok().flatten().is_none() {
+            return vec![];
         }
-        serde_json::from_str(&said).unwrap_or_default()
+        let said = self.write_past(|conn| {
+            let said = db::meta(conn, UPGRADED);
+            if said.is_some() {
+                db::set_meta(conn, &self.db(), UPGRADED, None)?;
+            }
+            Ok(said)
+        });
+        match said {
+            Ok(said) => said.and_then(|said| serde_json::from_str(&said).ok()).unwrap_or_default(),
+            Err(error) => {
+                warn!("{}: {}", self.dir.display(), error.message);
+                vec![]
+            }
+        }
     }
 
     /// The board the last render here ended on, as project.db keeps it.
     pub fn last_board(&self) -> Option<protocol::project::Board> {
-        let held = self.held().ok()?;
-        db::meta(&held.as_ref()?.conn, BOARD).and_then(|board| serde_json::from_str(&board).ok())
+        self.reading_db(|conn| db::meta(conn, BOARD)).ok().flatten().and_then(|board| serde_json::from_str(&board).ok())
     }
 
     /// Keeps the board a render ended on, for a read after this project has closed and opened again.
     pub fn keep_board(&self, board: &protocol::project::Board) -> Result<(), Error> {
-        let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
-        let held = self.held()?;
-        let held = held.as_ref().expect("held");
-        db::set_meta(&held.conn, &self.db(), BOARD, Some(&serde_json::to_string(board).expect("a board serializes")))
+        self.write_past(|conn| db::set_meta(conn, &self.db(), BOARD, Some(&serde_json::to_string(board).expect("a board serializes"))))
+    }
+
+    /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
+    /// turn, which finds out.
+    pub fn held_elsewhere(&self) -> Option<bool> {
+        let mut turn = self.shared.writing.try_lock().ok()?;
+        self.writer(&mut turn).ok().map(|conn| db::locked_elsewhere(conn))
     }
 
     /// The project folder `dir` is, if it is one: `project.db`, or the files a first open imports.
@@ -1008,36 +1028,40 @@ impl Folder {
         self.dir.join(db::DB)
     }
 
-    /// What's held of `project.db`, read now if it wasn't or another connection wrote it, `files/` filled in again if it moved.
+    /// What's held of `project.db`, read now if it wasn't or another connection wrote it, `files/` filled in again if it moved. It
+    /// waits on no writer: a commit holds this only to swap in what it wrote (cl-837).
     fn held(&self) -> Result<MutexGuard<'_, Option<Held>>, Error> {
         let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
-        if held.as_ref().is_none_or(|held| db::data_version(&held.conn) != held.seen) {
-            let conn = match held.take() {
-                Some(was) => was.conn,
-                None if !Self::is_project(&self.dir) => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy project new <path>")),
-                None => {
-                    // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once. What that
-                    // said waits in project.db for a run landing in it (`upgraded`).
-                    let said = match self.db().is_file() {
-                        true => vec![],
-                        false => {
-                            let said = super::upgrade::on_touch(&self.dir)?;
-                            super::legacy::import(self)?;
-                            said
-                        }
-                    };
-                    let conn = db::open(&self.db())?;
-                    if !said.is_empty() {
-                        db::set_meta(&conn, &self.db(), UPGRADED, Some(&serde_json::to_string(&said).expect("words serialize")))?;
+        let mut reading = self.shared.reading.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = match &mut *reading {
+            Some(conn) => conn,
+            None if !Self::is_project(&self.dir) => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy project new <path>")),
+            none => none.insert({
+                // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once. What that
+                // said waits in project.db for a run landing in it (`upgraded`).
+                let said = match self.db().is_file() {
+                    true => vec![],
+                    false => {
+                        let said = super::upgrade::on_touch(&self.dir)?;
+                        super::legacy::import(self)?;
+                        said
                     }
-                    conn
+                };
+                let conn = db::open(&self.db())?;
+                if !said.is_empty() {
+                    db::set_meta(&conn, &self.db(), UPGRADED, Some(&serde_json::to_string(&said).expect("words serialize")))?;
                 }
-            };
-            let mut stored = db::load(&conn, &self.db())?;
+                conn
+            }),
+        };
+        if held.as_ref().is_none_or(|held| db::data_version(conn) != held.seen) {
+            let (seen, mut stored) = db::read(conn, &self.db())?;
             let files = super::stamp(&self.dir.join(FILES));
             self.fill(Arc::make_mut(&mut stored.lock), &stored.measured);
-            *held = Some(Held { seen: db::data_version(&conn), conn, stored, files, commits: 0, shown: 0 });
+            let loads = held.as_ref().map_or(0, |held| held.loads + 1);
+            *held = Some(Held { seen, loads, stored, files, commits: 0, shown: 0 });
         }
+        drop(reading);
         let now = super::stamp(&self.dir.join(FILES));
         if let Some(held) = held.as_mut().filter(|held| held.files != now) {
             let measured = held.stored.measured.clone();
@@ -1055,7 +1079,7 @@ impl Folder {
     /// What moves with each commit, this Calcifer's or another connection's that it read again, and with each act that changed what a
     /// read shows and committed nothing.
     pub fn stamp(&self) -> String {
-        self.held().ok().and_then(|held| held.as_ref().map(|held| format!("{}.{}.{}", held.stored.seq, held.seen, held.shown))).unwrap_or_default()
+        self.held().ok().and_then(|held| held.as_ref().map(|held| format!("{}.{}.{}", held.stored.seq, held.loads, held.shown))).unwrap_or_default()
     }
 
     /// `change` as one transaction: every write it makes to this project, its history entry and its request's key commit together, or
@@ -1066,12 +1090,12 @@ impl Folder {
             return change();
         }
         let asked = Instant::now();
-        let _turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
         let (began, wait_ms) = (Instant::now(), ms(asked));
-        let (base, files) = {
+        let (base, files, seen) = {
             let held = self.held()?;
             let held = held.as_ref().expect("held");
-            (held.stored.clone(), held.files.clone())
+            (held.stored.clone(), held.files.clone(), held.seen)
         };
         let act = Rc::new(Acting {
             id,
@@ -1118,16 +1142,23 @@ impl Folder {
         if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() {
             return Ok(answer);
         }
+        // SQLite's wait on another program's write lock holds the turn alone: every read goes on meanwhile (cl-837).
+        let conn = self.writer(&mut turn)?;
+        let mut current = false;
+        let seq = db::commit(conn, &self.db(), &act.base, &after, &extra, || current = self.version() == seen)?;
         let (seq, shown) = {
-            let mut held = self.held()?;
+            let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
             let held = held.as_mut().expect("held");
-            let seq = db::commit(&mut held.conn, &self.db(), &act.base, &after, &extra)?;
             after.seq = seq.unwrap_or(act.base.seq);
             let shown = seq.is_none() && changed[2] && after.lock.files != act.base.lock.files;
             held.shown += u64::from(shown);
             held.stored = after;
             held.files = files;
-            held.seen = db::data_version(&held.conn);
+            // What it began from was all there was, and nothing read again since: this commit is the only change. Else the next read
+            // reads it all, with what another connection committed.
+            if current && held.seen == seen {
+                held.seen = self.version();
+            }
             held.commits += u32::from(seq.is_some());
             if held.commits >= CHECKPOINT_EVERY && !self.shared.checkpointing.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 held.commits = 0;
@@ -1186,28 +1217,60 @@ impl Folder {
         })
     }
 
+    /// The connection that writes, opened at the first write, once the project's first open has made `project.db`.
+    fn writer<'t>(&self, turn: &'t mut Option<rusqlite::Connection>) -> Result<&'t mut rusqlite::Connection, Error> {
+        if turn.is_none() {
+            drop(self.held()?);
+            *turn = Some(db::open(&self.db())?);
+        }
+        Ok(turn.as_mut().expect("opened"))
+    }
+
+    /// `data_version` of the connection that reads: any other connection's commit moves it, the one that writes too.
+    fn version(&self) -> i64 {
+        self.shared.reading.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, db::data_version)
+    }
+
+    /// `read` of what `held` doesn't keep, on the connection that only reads: past every writer.
+    fn reading_db<R>(&self, read: impl FnOnce(&rusqlite::Connection) -> R) -> Result<R, Error> {
+        drop(self.held()?);
+        let reading = self.shared.reading.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(read(reading.as_ref().expect("opened")))
+    }
+
+    /// `write` in the writing turn, of what `held` doesn't keep: no part of the project moves, so what it holds stays current but for
+    /// another connection's commit.
+    fn write_past<R>(&self, write: impl FnOnce(&rusqlite::Connection) -> Result<R, Error>) -> Result<R, Error> {
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer(&mut turn)?;
+        let seen = self.held()?.as_ref().map(|held| held.seen);
+        let done = write(conn);
+        let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(held) = held.as_mut().filter(|held| Some(held.seen) == seen) {
+            held.seen = self.version();
+        }
+        done
+    }
+
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
-        let held = self.held()?;
-        db::ops(&held.as_ref().expect("held").conn, &self.db())
+        self.reading_db(|conn| db::ops(conn, &self.db()))?
     }
 
     /// What the request under `key` asked and answered here, if it was kept.
     pub(super) fn keyed(&self, key: &str) -> Option<db::Keyed> {
-        let held = self.held().ok()?;
-        db::keyed(&held.as_ref()?.conn, key)
+        self.reading_db(|conn| db::keyed(conn, key)).ok().flatten()
     }
 
     /// The answer the request under `key` gave, kept on its row.
     pub(super) fn keep_answer(&self, key: &str, digest: &str, status: u16, content_type: &str, body: &[u8]) -> Result<(), Error> {
-        let held = self.held()?;
-        db::keep_answer(&held.as_ref().expect("held").conn, key, digest, status, content_type, body).map_err(|e| Error::new(Kind::Unavailable, "project_db", e.to_string()))
+        self.write_past(|conn| db::keep_answer(conn, key, digest, status, content_type, body).map_err(|e| Error::new(Kind::Unavailable, "project_db", e.to_string())))
     }
 
-    /// A copy of `project.db` whole, for an archive.
+    /// A copy of `project.db` whole, for an archive, on a connection of its own: no read waits on it.
     pub fn snapshot(&self, to: &Path) -> Result<(), Error> {
-        let held = self.held()?;
-        db::snapshot(&held.as_ref().expect("held").conn, to, &self.db())
+        drop(self.held()?);
+        db::snapshot(&db::open(&self.db())?, to, &self.db())
     }
 
     /// What the project says: its boxes, as rows.
@@ -1340,8 +1403,7 @@ impl Folder {
         {
             return Ok(text.clone());
         }
-        let held = self.held()?;
-        db::asked(&held.as_ref().expect("held").conn, &ask.digest).ok_or_else(|| Error::new(Kind::NotFound, "ask_text_missing", format!("the text render {} was asked with is gone", ask.id)))
+        self.reading_db(|conn| db::asked(conn, &ask.digest))?.ok_or_else(|| Error::new(Kind::NotFound, "ask_text_missing", format!("the text render {} was asked with is gone", ask.id)))
     }
 
     pub fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
@@ -1465,7 +1527,9 @@ impl Folder {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
-            let unmeasured = measured.and_then(|measured| self.record_measured(&BTreeMap::from([(digest.to_owned(), measured.clone())])).err());
+            // Held by another program, it's said at once and not waited out: the bytes are kept, and a walk's landing lists them (cl-837).
+            let held = (self.held_elsewhere() == Some(true)).then(|| db::held(&self.db()));
+            let unmeasured = held.or_else(|| measured.and_then(|measured| self.record_measured(&BTreeMap::from([(digest.to_owned(), measured.clone())])).err()));
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;

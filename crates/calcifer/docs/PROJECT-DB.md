@@ -35,8 +35,10 @@ CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `f
 
 In memory Calcifer holds one copy per folder (`folder::Shared`): the boxes (`written::Written`), the canvas, the lock and the walk. A
 read costs no query. A write is applied to a copy of what it changes and committed as row changes; nothing is rewritten whole. Another
-connection's commit (`PRAGMA data_version`) drops the copy. The copy, its history and the connection last as long as anything holds
-the project open (`CALCIFER-API.md`, Projects): the last `Folder` to go closes the connection.
+connection's commit (`PRAGMA data_version`) drops the copy. Two connections: the one that writes lives in the write turn, and one that
+only reads answers what the copy doesn't hold (history, keys, asked texts, `meta`). A read never waits on a writer, even one waiting
+out another program's write lock (cl-837). The copy, its history and the connections last as long as anything holds the project open
+(`CALCIFER-API.md`, Projects): the last `Folder` to go closes them.
 
 ## One action, one transaction
 

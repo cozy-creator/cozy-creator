@@ -148,6 +148,10 @@ impl Model {
     /// `GET /v1/projects/{id}`, with or without its assets.
     pub(super) fn state(&self, project: &Project, assets: bool) -> ProjectState {
         let mut state = self.head.clone();
+        // As it is this moment: it moves no revision, so the model worked out once per revision can't hold it (cl-837).
+        if let Some(why) = project.folder.unsaved() {
+            state.warnings.insert(0, protocol::project::Warning::of_file(super::not_saved(&why)));
+        }
         state.busy = *project.walking.lock().expect("walking lock");
         state.moving = project.moving.try_lock().is_err();
         state.board = board_of(project);
