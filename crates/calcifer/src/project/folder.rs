@@ -525,6 +525,21 @@ pub struct Bound {
     pub calcifer: String,
 }
 
+impl Bound {
+    /// Of another project than `here` (a copy, which has its own id) or another Calcifer's: what it was doing isn't `here`'s.
+    fn elsewhere(&self, here: &Bound) -> bool {
+        self.calcifer != here.calcifer || (!self.project.is_empty() && self.project != here.project)
+    }
+}
+
+/// The board a render ended on, with the project and Calcifer whose render it was.
+#[derive(Serialize, Deserialize)]
+struct KeptBoard {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bound: Option<Bound>,
+    board: protocol::project::Board,
+}
+
 /// This Calcifer's id, the same across its restarts, once it has said it.
 static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -1013,14 +1028,18 @@ impl Folder {
         }
     }
 
-    /// The board the last render here ended on, as project.db keeps it.
+    /// The board the last render here ended on, as project.db keeps it. A copy's (its original's render) or another Calcifer's is none:
+    /// its runs aren't this project's, as what its walk owed isn't (`unbind_elsewhere`).
     pub fn last_board(&self) -> Option<protocol::project::Board> {
-        self.reading_db(|conn| db::meta(conn, BOARD)).ok().flatten().and_then(|board| serde_json::from_str(&board).ok())
+        let kept: KeptBoard = self.reading_db(|conn| db::meta(conn, BOARD)).ok().flatten().and_then(|kept| serde_json::from_str(&kept).ok())?;
+        let theirs = kept.bound.as_ref().zip(self.bound()).is_some_and(|(bound, here)| bound.elsewhere(&here));
+        (!theirs).then_some(kept.board)
     }
 
     /// Keeps the board a render ended on, for a read after this project has closed and opened again.
     pub fn keep_board(&self, board: &protocol::project::Board) -> Result<(), Error> {
-        self.write_past(|conn| db::set_meta(conn, &self.db(), BOARD, Some(&serde_json::to_string(board).expect("a board serializes"))))
+        let kept = KeptBoard { bound: self.bound(), board: board.clone() };
+        self.write_past(|conn| db::set_meta(conn, &self.db(), BOARD, Some(&serde_json::to_string(&kept).expect("a board serializes"))))
     }
 
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
@@ -1397,8 +1416,7 @@ impl Folder {
     /// A walk of another project (this is a copy) or another Calcifer's doesn't go on here: what it owes is dropped.
     fn unbind_elsewhere(&self) -> Result<(), Error> {
         let Some(here) = self.bound() else { return Ok(()) };
-        let other = |bound: &Bound| bound.calcifer != here.calcifer || (!bound.project.is_empty() && bound.project != here.project);
-        let elsewhere = self.reading_walk(|walk| walk.bound.as_ref().is_some_and(other))?;
+        let elsewhere = self.reading_walk(|walk| walk.bound.as_ref().is_some_and(|bound| bound.elsewhere(&here)))?;
         if !elsewhere {
             return Ok(());
         }
