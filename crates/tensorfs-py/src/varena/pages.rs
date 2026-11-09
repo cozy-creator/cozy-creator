@@ -27,6 +27,9 @@ const LOOK: Duration = Duration::from_millis(100);
 /// How much of a page is read or registered before a command may take over: one registration
 /// of H3's largest page made a request wait 0.6 s on an RTX 3090.
 const WINDOW: usize = 64 << 20;
+/// How much an idle pin reads before it looks for a command: a command waits on it at most one
+/// such read (about 6 ms at a store's 1.3 GB/s), never a window's.
+const IDLE_PIECE: usize = 8 << 20;
 /// Threads faulting a page in: registering untouched memory on the fill path held each of Flux-2's
 /// 57 blocks about 0.2 s in step 1 (run 39103). On a 4090 host the driver registered untouched
 /// memory at 3 GB/s, one page at a time, touched memory at 28, and faulting in ran at 10.5 GB/s on
@@ -853,7 +856,7 @@ impl Tier {
                 if is_waiting()? {
                     return self.requeue(key, set, &source);
                 }
-                let len = WINDOW.min(page.len - at);
+                let len = IDLE_PIECE.min(page.len - at);
                 let (ptr, whole) = (page.ptr as usize, page.len);
                 read = py.detach(|| source.read_window(ptr as *mut u8, whole, at, len));
                 at += len;
