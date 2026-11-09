@@ -22,7 +22,8 @@ pub use quantize::{FitDetails, Normalization, NormalizationResult, NormalizeBf16
 pub use endpoint::Endpoint;
 pub use file::CheckpointFile;
 pub use provider::{bearer, HeaderMap, Request, TokenProvider};
-pub use writer::{ComponentWriter, PartData, Writer, WriterOptions};
+pub use writer::{ComponentWriter, Writer, WriterOptions};
+pub use writer::{PartData};
 
 use std::fmt;
 use std::ops::Range;

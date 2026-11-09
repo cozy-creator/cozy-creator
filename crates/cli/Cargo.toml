@@ -32,7 +32,7 @@ serde_json.workspace = true
 sha2.workspace = true
 supports-hyperlinks.workspace = true
 tempfile.workspace = true
-tensorfs = { workspace = true, features = ["store"] }
+tensorfs.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 url.workspace = true
 zip.workspace = true

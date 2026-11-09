@@ -15,6 +15,7 @@ members = [
     "crates/platform-signal",
     "crates/tensord",
     "crates/tensorfs",
+    "crates/tensorfs-core",
     "crates/tensorfs-py",
     "crates/varena",
     "crates/varena-client",
@@ -42,7 +43,8 @@ hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
 platform-signal = { path = "crates/platform-signal" }
 tensord = { path = "crates/tensord" }
-tensorfs = { path = "crates/tensorfs", default-features = false }
+tensorfs = { path = "crates/tensorfs" }
+tensorfs-core = { path = "crates/tensorfs-core" }
 varena = { path = "crates/varena" }
 varena-ledger = { path = "crates/varena-ledger" }
 

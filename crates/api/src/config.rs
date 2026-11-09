@@ -361,7 +361,7 @@ pub fn load() -> Result<Loaded, Error> {
 }
 
 /// The load over a given environment and user home (what tests drive).
-pub fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> Result<Loaded, Error> {
+pub(crate) fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> Result<Loaded, Error> {
     let home = Home::under(&user_home);
     let path = home.config();
     let file = path.display().to_string();

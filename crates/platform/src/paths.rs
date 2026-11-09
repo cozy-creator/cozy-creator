@@ -16,7 +16,7 @@ impl Home {
     }
 
     /// A root the config names instead.
-    pub fn at(root: impl Into<PathBuf>) -> Self {
+    pub(crate) fn at(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 

@@ -151,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tensorfs-kernels-${{ steps.sha.outputs.sha }}
-          path: crates/tensorfs/kernels/aot/
+          path: crates/tensorfs-core/kernels/aot/
           if-no-files-found: error
           retention-days: 7
       - name: Build the TensorFS wheel
