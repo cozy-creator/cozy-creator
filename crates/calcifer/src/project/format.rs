@@ -327,9 +327,6 @@ impl Doc {
             return Err(invalid("project_format", said).next(if version.is_some_and(|version| version > format) { "cozy update" } else { "cozy project new" }));
         }
         let mut warnings = vec![];
-        if let Some(why) = folder.unsaved() {
-            warnings.push(Warning::of_file(format!("Not saved yet: {why}, and what landed goes in as soon as it can")));
-        }
         if version.is_none() {
             warnings.push(Warning::of_file(format!("{} has no `version: {FORMAT}`, so it reads as version {FORMAT}: add it", folder::PROJECT)));
         }

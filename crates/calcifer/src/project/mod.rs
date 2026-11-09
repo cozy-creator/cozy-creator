@@ -987,6 +987,11 @@ fn remember(api: &Api) {
     }
 }
 
+/// What a project and its render say while what landed can't go in.
+pub(super) fn not_saved(why: &str) -> String {
+    format!("Not saved yet: {why}, and what landed goes in as soon as it can")
+}
+
 /// What to run while a project's render goes on.
 fn status_next(folder: &Folder) -> Vec<String> {
     vec![format!("cozy project -p {} status", identity(&folder.dir).1)]
@@ -4115,7 +4120,7 @@ impl Walk {
             return false;
         }
         if self.folder().unsaved().is_none() {
-            self.say(Event::Warning { message: format!("Not saved yet: {}, and what landed goes in as soon as it can", error.message), name: None });
+            self.say(Event::Warning { message: not_saved(&error.message), name: None });
             self.folder().set_unsaved(Some(error.message.clone()));
             crate::events::project_settled(&self.folder().dir);
         }
@@ -4130,11 +4135,12 @@ impl Walk {
         }
     }
 
-    /// `land`, however long the project takes to take it.
+    /// `land`, however long the project takes to take it. Each try waits on the project's turn and SQLite's lock off the async workers,
+    /// which answer every read meanwhile (cl-837).
     async fn land_owed(&self, key: &str, run: &Run) -> Result<Option<Coming>, Error> {
         loop {
-            match self.land(key, run).await {
-                Err(error) if self.held_up(&error) => tokio::time::sleep(HELD_UP).await,
+            match tokio::task::block_in_place(|| self.land(key, run)) {
+                Err(error) if self.held_up(&error) => self.until_free().await,
                 done => {
                     self.taken();
                     return done;
@@ -4147,12 +4153,23 @@ impl Walk {
     async fn arrived_owed(&self, id: &RunId, version: Option<Coming>) -> Result<(), Error> {
         let run = self.host.wait(id).await?;
         loop {
-            match self.arrived(&run, version.clone()) {
-                Err(error) if self.held_up(&error) => tokio::time::sleep(HELD_UP).await,
+            match tokio::task::block_in_place(|| self.arrived(&run, version.clone())) {
+                Err(error) if self.held_up(&error) => self.until_free().await,
                 done => {
                     self.taken();
                     return done;
                 }
+            }
+        }
+    }
+
+    /// Back once project.db takes a write again: asked each `HELD_UP` with no wait on its lock, so no try sits in SQLite's wait
+    /// with the project's turn while another program holds it, and a write of anyone's goes first.
+    async fn until_free(&self) {
+        loop {
+            tokio::time::sleep(HELD_UP).await;
+            if self.folder().held_elsewhere() == Some(false) {
+                return;
             }
         }
     }
@@ -4211,7 +4228,7 @@ impl Walk {
     /// The run sent under `key`, once it ended on its machine, into the project: its outputs listed as its asset's newest version in
     /// project.lock, kept as files once they land, and read on its machine by their hashes until then. A run that did not complete is
     /// no version, with its reason, and is never run again this walk. What it listed, if its files are on their way.
-    async fn land(&self, key: &str, run: &Run) -> Result<Option<Coming>, Error> {
+    fn land(&self, key: &str, run: &Run) -> Result<Option<Coming>, Error> {
         let folder = self.folder();
         let Some(pending) = folder.walk_now()?.pending.remove(key) else { return Ok(None) };
         let name = pending.asset.clone();

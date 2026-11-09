@@ -121,23 +121,40 @@ fn err(at: &Path, e: impl std::fmt::Display) -> Error {
 /// and waits out, and a landing is owed.
 fn sql(at: &Path, e: rusqlite::Error) -> Error {
     match e.sqlite_error_code() {
-        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
-            let name = at.file_name().map_or_else(|| at.display().to_string(), |name| name.to_string_lossy().into_owned());
-            Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again")
-        }
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => held(at),
         _ => err(at, e),
     }
+}
+
+/// `at` held by another program: its write lock past the busy timeout.
+pub fn held(at: &Path) -> Error {
+    let name = at.file_name().map_or_else(|| at.display().to_string(), |name| name.to_string_lossy().into_owned());
+    Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again")
 }
 
 fn json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("a project row serializes")
 }
 
+/// How long a write waits on another program's write lock before it's `file_held`.
+const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether another program holds the write lock this moment, asked with no wait: `conn` takes it, and lets it go at once.
+pub fn locked_elsewhere(conn: &Connection) -> bool {
+    let busy = |e: rusqlite::Error| matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked));
+    if conn.busy_timeout(std::time::Duration::ZERO).is_err() {
+        return false;
+    }
+    let held = conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK").is_err_and(busy);
+    let _ = conn.busy_timeout(WAIT);
+    held
+}
+
 /// `project.db` in `dir` opened, made with this schema if it's new.
 pub fn open(path: &Path) -> Result<Connection, Error> {
     let e = |error: rusqlite::Error| sql(path, error);
     let conn = Connection::open(path).map_err(e)?;
-    conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(e)?;
+    conn.busy_timeout(WAIT).map_err(e)?;
     conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
     conn.pragma_update(None, "synchronous", "NORMAL").map_err(e)?;
     // Checkpoints run beside the writes (`checkpoint`), never in a commit: on a busy disk one's fsync takes a second.
@@ -191,6 +208,13 @@ pub fn seq_at(path: &Path) -> Option<u64> {
 /// What another connection's commit changes: `Folder` reads again when this moves.
 pub fn data_version(conn: &Connection) -> i64 {
     conn.pragma_query_value(None, "data_version", |r| r.get(0)).unwrap_or(0)
+}
+
+/// `load` in one read transaction, and the `data_version` it's of.
+pub fn read(conn: &Connection, at: &Path) -> Result<(i64, Stored), Error> {
+    let tx = conn.unchecked_transaction().map_err(|e| sql(at, e))?;
+    let stored = load(&tx, at)?;
+    Ok((data_version(&tx), stored))
 }
 
 /// All of it but the history, keys and asked texts.
@@ -280,9 +304,11 @@ fn file_record(file: &File) -> String {
 }
 
 /// `after` written over `before`, row by row, with `extra`, as one transaction: the new revision, or none when nothing differed.
-pub fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &Stored, extra: &Extra) -> Result<Option<u64>, Error> {
+/// `locked` runs once it holds the write lock, before it writes: no other connection commits until it does.
+pub fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
+    locked();
     let was = tx.total_changes();
     write(&tx, before, after, extra).map_err(e)?;
     if tx.total_changes() == was {
@@ -472,7 +498,7 @@ pub fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, Str
     let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops: ops.to_vec(), ..Default::default() };
     let mut fresh = stored.clone();
     fresh.seq = 0;
-    commit(&mut conn, path, &Stored::default(), &fresh, &extra)?;
+    commit(&mut conn, path, &Stored::default(), &fresh, &extra, || ())?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| err(path, e))?;
     drop(conn);
     Ok(())
