@@ -181,6 +181,13 @@ class Pages:
         native = self._native.staging(bytes)
         return None if native is None else Staging(native)
 
+    def drain(self) -> list[tuple[str, int, int, str, bool, int, float]]:
+        """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
+        return self._native.drain()
+
+    def stats(self) -> dict[str, Any]:
+        return self._native.stats()
+
 
 class Staging:
     """Host bytes the executors of a group exchange through, mapped and pinned for this GPU at
@@ -212,13 +219,6 @@ class Staging:
 
     def close(self) -> None:
         self._native.close()
-
-    def drain(self) -> list[tuple[str, int, int, str, bool, int, float]]:
-        """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
-        return self._native.drain()
-
-    def stats(self) -> dict[str, Any]:
-        return self._native.stats()
 
 
 class Source:
