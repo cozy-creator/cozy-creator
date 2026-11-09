@@ -76,7 +76,7 @@ settled held 60
 # answer twice, and the history stepped once. Then `cozy project undo`'s own write is kept under the CLI's key.
 writes_once() {
 step "a project write resent under its key is done once (cl-812)"
-local P=$OUT/once lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr token id key=resend-$RANDOM$RANDOM first second
+local P=$OUT/writes-once lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr token id key=resend-$RANDOM$RANDOM first second
 cozy project new "$P" > "$OUT/once-new.txt" 2>&1 || { check "once: project new failed: $(tail -c 300 "$OUT/once-new.txt")"; return; }
 for c in red green blue; do
   ffmpeg -v error -y -f lavfi -i "color=c=$c:size=64x64" -frames:v 1 "$OUT/once-$c.png" || { check "once: ffmpeg failed"; return; }
