@@ -8,7 +8,7 @@ use std::{
     fs::OpenOptions,
     io,
     path::Path,
-    process::{Child, ChildStdout, Command, ExitStatus},
+    process::{Child, Command, ExitStatus},
     sync::Arc,
     time::Duration,
 };
@@ -66,19 +66,6 @@ impl Birth {
     }
 }
 
-/// What a process is doing: CPU it has used (monotonic, in the OS's own unit) and whether a
-/// thread of it is running or waiting on a disk now (Linux `R`/`D`, macOS running threads;
-/// Windows cannot say, so false).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Usage {
-    pub cpu: u64,
-    pub running: bool,
-}
-
-pub(crate) fn usage(pid: u32) -> Result<Usage> {
-    sys::usage(pid).map_err(Error::os("read a process's usage"))
-}
-
 /// Where a thread of it sleeps uninterruptibly (Linux `D`: mid-fsync, a hung mount): its wait
 /// channel, empty when the kernel hides it. Until that wait ends it acts on no signal, SIGKILL
 /// included. `None`: no thread does, or the OS cannot say (macOS, Windows).
@@ -86,20 +73,9 @@ pub fn in_kernel(pid: u32) -> Option<String> {
     sys::in_kernel(pid)
 }
 
-/// Its threads' names, states and wait channels, alike ones counted (`"call_0 S futex_wait_queue"`
-/// ×N): why a process makes no progress. Empty where the OS cannot say (macOS, Windows).
-pub(crate) fn threads(pid: u32) -> Vec<(String, usize)> {
-    sys::threads(pid)
-}
-
 /// This kernel's boot. Page cache and process starts belong to a boot.
 pub fn boot_id() -> Result<String> {
     sys::boot_id().map_err(Error::os("read the boot id"))
-}
-
-/// This process's peak resident memory, in bytes.
-pub(crate) fn peak_resident() -> Result<u64> {
-    sys::peak_resident().map_err(Error::os("read peak resident memory"))
 }
 
 /// Raises the soft descriptor limit as far as the OS lets a process; once is enough.
@@ -115,20 +91,6 @@ pub fn fd_limit() -> Option<u64> {
     return unix::fd_limit();
     #[cfg(windows)]
     None
-}
-
-/// Descriptors this process has open now.
-pub(crate) fn open_fds() -> Result<u64> {
-    let dir = if cfg!(target_os = "linux") {
-        "/proc/self/fd"
-    } else if cfg!(target_vendor = "apple") {
-        "/dev/fd"
-    } else {
-        return Err(Error::unsupported(crate::Seam::Process));
-    };
-    Ok(std::fs::read_dir(dir)
-        .map_err(Error::io("list descriptors", dir))?
-        .count() as u64)
 }
 
 /// The process's or the system's descriptor table is full.
@@ -300,7 +262,6 @@ pub fn end_tree(tree: &[Exact]) -> Result<()> {
     Ok(())
 }
 
-
 /// Every process in `leader`'s process group born with or after it: a leader's followers. A
 /// group number is not reused while a member lives. Windows, which has no groups: its descendants.
 pub fn group_members(leader: &Birth) -> Vec<Birth> {
@@ -414,11 +375,6 @@ pub fn glibc_version() -> String {
     unix::glibc_version()
 }
 
-/// An OS shortage that may clear by itself; nothing else justifies requeueing a launch.
-pub(crate) fn transient(error: &io::Error) -> bool {
-    sys::transient(error)
-}
-
 #[cfg(windows)]
 pub(crate) use sys::command_line;
 #[cfg(windows)]
@@ -443,15 +399,6 @@ pub fn own_group(command: &mut Command) -> &mut Command {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(command, 0);
     command
-}
-
-/// Whether a process handle kept as a file (a pidfd, a kqueue on its exit) shows its exit now.
-#[cfg(unix)]
-pub(crate) fn ended(handle: &impl std::os::fd::AsFd) -> bool {
-    matches!(
-        unix::readable(handle.as_fd(), Some(Duration::ZERO)),
-        Ok(true)
-    )
 }
 
 /// A process and everything it starts, the spawner's: dropping the `Tree` ends it, and on Windows
@@ -512,10 +459,6 @@ impl Tree {
         self.child.id()
     }
 
-    pub(crate) fn stdout(&mut self) -> Option<ChildStdout> {
-        self.child.stdout.take()
-    }
-
     /// Ends every process in the tree. On Unix the group is reached while its leader is unreaped
     /// (its zombie keeps the group's number); after `wait`, members that outlived the leader are
     /// for a containment scope to end.
@@ -533,14 +476,6 @@ impl Tree {
         Ok(status)
     }
 
-    pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
-        let status = self
-            .child
-            .try_wait()
-            .map_err(Error::os("wait for a process"))?;
-        self.reaped |= status.is_some();
-        Ok(status)
-    }
 }
 
 impl Drop for Tree {

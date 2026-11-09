@@ -629,11 +629,6 @@ impl Stream {
         }
     }
 
-    /// Whether `object` was given to [`Stream::put`].
-    pub(crate) fn has(&self, object: &ObjectRef) -> bool {
-        self.sent.lock().unwrap().contains(object)
-    }
-
     /// Sends `bytes` as an object, once; its ref at once.
     pub(crate) fn put(&self, bytes: Vec<u8>) -> Result<ObjectRef> {
         let object = ObjectRef::of(&bytes);

@@ -127,16 +127,6 @@ impl LocalStream {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// How long a read waits before it answers `TimedOut`, as a socket's read timeout.
-    pub(crate) fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
-        let ms = timeout.map_or(0, |t| {
-            t.as_millis().clamp(1, u128::from(INFINITE - 1)) as u32
-        });
-        self.read_timeout_ms
-            .store(ms, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
-    }
-
     /// Whether a read or write that cannot finish at once answers `WouldBlock` instead of waiting.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.nonblocking
@@ -360,18 +350,6 @@ impl LocalListener {
             security,
             next: Mutex::new(Some(first)),
         })
-    }
-
-    /// Every dialer, one at a time, as `UnixListener::incoming` gives them.
-    pub(crate) fn incoming(&self) -> impl Iterator<Item = Result<LocalStream>> + '_ {
-        std::iter::repeat_with(|| self.accept())
-    }
-
-    pub(crate) fn accept(&self) -> Result<LocalStream> {
-        match self.connect_one(None)? {
-            Some(stream) => Ok(stream),
-            None => unreachable!("only a process ends a wait"),
-        }
     }
 
     /// A dialer, or `None` once `process` has ended first: woken by the kernel, never a timer.

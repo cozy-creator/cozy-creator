@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::layout::ALIGN;
-use super::{cbor, decode, invalid, Config, Dtype, Error, PartBytes, Result, Value};
+use super::{cbor, invalid, Config, Dtype, Error, Result, Value};
 
 /// Free-form metadata, and a scheme's params.
 pub type Metadata = BTreeMap<String, Value>;
@@ -381,11 +381,6 @@ impl Header {
         cbor::write(self)
     }
 
-    /// The recipe that wrote this lane, when one did.
-    pub(crate) fn provenance(&self) -> Option<&Provenance> {
-        self.provenance.as_ref()
-    }
-
     /// What `model_index.json` held; `None` for a checkpoint of one model.
     pub fn pipeline(&self) -> Option<&Pipeline> {
         self.pipeline.as_ref()
@@ -458,65 +453,6 @@ impl Header {
             (chunk, start, left) = (chunk + 1, 0, left - length);
         }
         out
-    }
-
-    /// A location's bytes, gathered from whole chunks that `chunk` supplies by index.
-    pub(crate) fn bytes<B: AsRef<[u8]>>(
-        &self,
-        at: &Location,
-        mut chunk: impl FnMut(usize) -> Result<B>,
-    ) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(at.length as usize);
-        for s in self.spans(at) {
-            let bytes = chunk(s.chunk)?;
-            let bytes = bytes.as_ref();
-            if bytes.len() as u64 != self.chunks[s.chunk].length {
-                return invalid(format!(
-                    "chunk {} is {} bytes, its ref says {}",
-                    s.chunk,
-                    bytes.len(),
-                    self.chunks[s.chunk].length
-                ));
-            }
-            out.extend_from_slice(&bytes[s.start as usize..(s.start + s.length) as usize]);
-        }
-        Ok(out)
-    }
-
-    /// A tensor's logical bytes: a plain tensor's data, or its parts through the reference decode.
-    pub(crate) fn read<B: AsRef<[u8]>>(
-        &self,
-        component: &str,
-        key: &str,
-        mut chunk: impl FnMut(usize) -> Result<B>,
-    ) -> Result<Vec<u8>> {
-        let Some(t) = self.tensor(component, key) else {
-            return invalid(format!("no tensor {component}/{key}"));
-        };
-        match &t.body {
-            Body::Data(at) => self.bytes(at, &mut chunk),
-            Body::Encoded { encoding, parts } => {
-                let bytes = parts
-                    .iter()
-                    .map(|p| self.bytes(&p.at(), &mut chunk))
-                    .collect::<Result<Vec<_>>>()?;
-                let views = parts
-                    .iter()
-                    .zip(&bytes)
-                    .map(|(p, b)| {
-                        (
-                            p.role.as_str(),
-                            PartBytes {
-                                dtype: &p.dtype,
-                                shape: &p.shape,
-                                bytes: b,
-                            },
-                        )
-                    })
-                    .collect();
-                decode(&t.dtype, &t.shape, encoding, &views)
-            }
-        }
     }
 
     /// Sizes known dtypes; an unknown dtype's `length` stands as written. `rooms[i]` is the

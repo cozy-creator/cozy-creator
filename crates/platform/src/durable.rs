@@ -61,22 +61,6 @@ pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     )
 }
 
-/// As `replace`, returning once it is named, never waiting on the disk's write-back: the bytes
-/// reach the disk before the name does, so a crash of the machine keeps the old file or the new one,
-/// whole. Where the filesystem orders a rename over a file after its data (`renames_after_data`)
-/// nothing waits; else these bytes alone are written first (`ordered`). `soon` makes it durable
-/// after; a crash before then keeps the old.
-pub(crate) fn replace_soon(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let flush = match path.exists() && renames_after_data(dir) {
-        true => Flush::Not,
-        false => Flush::Ordered,
-    };
-    renamed(path, bytes, mode, flush)?;
-    soon(path);
-    Ok(())
-}
-
 /// As `replace`, but nothing is made to survive a crash: for a record of a live process, which a
 /// crash makes stale anyway. It never waits on the disk's write-back.
 pub fn swap(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
@@ -348,41 +332,6 @@ pub fn mode(metadata: &Metadata) -> Option<u32> {
     }
 }
 
-/// Who a file belongs to: uid and gid on Unix; on Windows every file is the profile's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Owner {
-    #[cfg(unix)]
-    uid: u32,
-    #[cfg(unix)]
-    gid: u32,
-}
-
-impl Owner {
-    pub(crate) fn of(metadata: &Metadata) -> Owner {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Owner {
-                uid: metadata.uid(),
-                gid: metadata.gid(),
-            }
-        }
-        #[cfg(windows)]
-        {
-            let _ = metadata;
-            Owner {}
-        }
-    }
-
-    pub(crate) fn assign(self, file: &File) -> Result<()> {
-        #[cfg(unix)]
-        std::os::unix::fs::fchown(file, Some(self.uid), Some(self.gid))?;
-        #[cfg(windows)]
-        let _ = file;
-        Ok(())
-    }
-}
-
 /// One file's identity: device and inode, or volume serial and file index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileId {
@@ -463,35 +412,6 @@ pub fn device(path: &Path) -> Result<u64> {
     {
         Ok(FileId::at(path)?.dev)
     }
-}
-
-/// Sizes `file` to `len` as a hole: writes fill it in any order and only what they write takes
-/// disk. Unix files are sparse already; NTFS allocates a grown file whole unless marked sparse.
-pub(crate) fn set_sparse_len(file: &File, len: u64) -> Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_SPARSE};
-        let mut returned = 0u32;
-        // SAFETY: no buffers in or out, on a handle this File owns.
-        let ok = unsafe {
-            DeviceIoControl(
-                file.as_raw_handle(),
-                FSCTL_SET_SPARSE,
-                std::ptr::null(),
-                0,
-                std::ptr::null_mut(),
-                0,
-                &mut returned,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error().into());
-        }
-    }
-    file.set_len(len)?;
-    Ok(())
 }
 
 /// Hard links to the file `path` names itself, a symlink not followed: unlinking one of several
@@ -675,29 +595,6 @@ pub(crate) fn sync_file(path: &Path) -> Result<()> {
         OpenOptions::new().write(true).open(path)?.sync_data()?;
     }
     Ok(())
-}
-
-/// Opens a small record another process may be replacing or deleting right now. Windows
-/// answers an open that races a rename or a delete with access denied: the open is asked
-/// again while the name keeps changing, and a refusal of an unchanged name stands; a name that
-/// no longer identifies is gone.
-pub(crate) fn open_racing(path: &Path) -> io::Result<File> {
-    let mut refused: Option<FileId> = None;
-    loop {
-        match File::open(path) {
-            Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
-                // A name that cannot even be identified is a delete in flight.
-                let Ok(now) = FileId::at(path) else {
-                    return Err(io::ErrorKind::NotFound.into());
-                };
-                if refused == Some(now) {
-                    return Err(error);
-                }
-                refused = Some(now);
-            }
-            opened => return opened,
-        }
-    }
 }
 
 /// The filesystem is full, or this user's quota is.

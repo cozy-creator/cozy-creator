@@ -150,10 +150,6 @@ impl Bearer {
         self.expires > now() + MARGIN
     }
 
-    /// When the session mints the next one (Unix seconds).
-    pub(crate) fn refresh_at(&self) -> u64 {
-        self.expires.saturating_sub(MARGIN)
-    }
 }
 
 /// One user signed in by a device key: a Bearer kept in memory and, if given a path, beside

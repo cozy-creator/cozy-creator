@@ -62,14 +62,6 @@ impl Checkpoint {
 }
 
 impl CheckpointFile {
-    /// Its length in bytes: the last object's end.
-    pub(crate) fn len(&self) -> u64 {
-        self.len
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len == 0
-    }
 
     /// Up to `buf.len()` bytes from `at`, through the read engine; 0 at or past the end.
     #[allow(unsafe_code)]

@@ -1,14 +1,8 @@
-use super::{Encoder, Input, QuantizationStats, Quantized, elem, encoding, part};
+use super::{Input, QuantizationStats, Quantized, elem, encoding, part};
 use crate::format::{Dtype, Encoding, Error, Result};
 
 /// Runtime's F32 row scale, floor 1e-12, saturating E4M3 round-to-nearest-even.
 pub(crate) const FP8_ROWWISE_STRATEGY: &str = "fp8-rowwise-rne/1";
-
-pub(crate) const ROWWISE: Encoder = Encoder {
-    scheme: "fp8.rowwise",
-    quantize: None,
-    pack: None,
-};
 
 impl Encoding {
     /// One scale for the tensor, its part stored as the producer wrote it (`F32`, `BF16` or `F16`).
@@ -18,10 +12,6 @@ impl Encoding {
     /// A scale per row.
     pub fn fp8_rowwise() -> Encoding {
         encoding("fp8.rowwise", &[])
-    }
-    /// A scale per column.
-    pub(crate) fn fp8_columnwise() -> Encoding {
-        encoding("fp8.columnwise", &[])
     }
 }
 

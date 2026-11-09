@@ -36,7 +36,6 @@ pub(crate) const SUCCESS: CUresult = 0;
 pub(crate) const ERROR_INVALID_VALUE: CUresult = 1;
 pub(crate) const ERROR_OUT_OF_MEMORY: CUresult = 2;
 pub(crate) const ERROR_HOST_MEMORY_ALREADY_REGISTERED: CUresult = 712;
-pub(crate) const ERROR_NOT_READY: CUresult = 600;
 pub(crate) const ERROR_NOT_SUPPORTED: CUresult = 801;
 
 pub(crate) const STREAM_NON_BLOCKING: c_uint = 0x1;
@@ -47,22 +46,9 @@ pub(crate) const MEMHOSTREGISTER_PORTABLE: c_uint = 0x1;
 pub(crate) const MEMHOSTREGISTER_READ_ONLY: c_uint = 0x8;
 pub(crate) const MEMHOSTALLOC_PORTABLE: c_uint = 0x1;
 
-pub(crate) const ATTR_VMM_SUPPORTED: c_int = 102;
 pub(crate) const ATTR_PCI_BUS_ID: c_int = 33;
 pub(crate) const ATTR_PCI_DEVICE_ID: c_int = 34;
 pub(crate) const ATTR_PCI_DOMAIN_ID: c_int = 50;
-pub(crate) const ATTR_POSIX_FD_SUPPORTED: c_int = 103;
-pub(crate) const ATTR_WIN32_HANDLE_SUPPORTED: c_int = 104;
-pub(crate) const ATTR_READ_ONLY_HOST_REGISTER_SUPPORTED: c_int = 113;
-
-pub(crate) const MEM_ALLOCATION_TYPE_PINNED: u32 = 1;
-pub(crate) const MEM_LOCATION_TYPE_DEVICE: u32 = 1;
-pub(crate) const MEM_HANDLE_TYPE_NONE: u32 = 0;
-pub(crate) const MEM_HANDLE_TYPE_POSIX_FD: u32 = 1;
-pub(crate) const MEM_HANDLE_TYPE_WIN32: u32 = 2;
-pub(crate) const MEM_ACCESS_PROT_READ: u32 = 1;
-pub(crate) const MEM_ACCESS_PROT_READWRITE: u32 = 3;
-pub(crate) const MEM_GRANULARITY_MINIMUM: u32 = 0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
@@ -91,19 +77,6 @@ pub(crate) struct AllocationProp {
 }
 
 impl AllocationProp {
-    /// Pinned device memory on `device`; `handles`: another process may hold it by a POSIX fd.
-    pub(crate) fn device(device: CUdevice, handles: u32) -> Self {
-        AllocationProp {
-            kind: MEM_ALLOCATION_TYPE_PINNED,
-            requested_handle_types: handles,
-            location: MemLocation {
-                kind: MEM_LOCATION_TYPE_DEVICE,
-                id: device,
-            },
-            win32_handle_meta_data: std::ptr::null_mut(),
-            alloc_flags: AllocFlags::default(),
-        }
-    }
 }
 
 #[repr(C)]
@@ -232,10 +205,6 @@ pub(super) fn allocate_ready(device: i32, bytes: usize) -> Result<u64> {
         })?;
     }
     Ok(ptr)
-}
-
-pub(crate) fn available() -> bool {
-    driver().is_ok()
 }
 
 macro_rules! load {
@@ -410,26 +379,6 @@ pub(crate) fn primary_context(ordinal: c_int) -> Result<(CUdevice, CUcontext)> {
     Ok((dev, ctx))
 }
 
-/// How many devices the driver shows this process.
-pub(crate) fn device_count() -> Result<c_int> {
-    let d = driver()?;
-    let mut count: c_int = 0;
-    // SAFETY: out-param.
-    check("cuDeviceGetCount", unsafe {
-        (d.device_get_count)(&mut count)
-    })?;
-    Ok(count)
-}
-
-/// The device at `ordinal`; a bad ordinal is a driver error.
-pub(crate) fn device_at(ordinal: c_int) -> Result<CUdevice> {
-    let d = driver()?;
-    let mut dev: CUdevice = 0;
-    // SAFETY: out-param; a bad ordinal is a driver error, not UB.
-    check("cuDeviceGet", unsafe { (d.device_get)(&mut dev, ordinal) })?;
-    Ok(dev)
-}
-
 pub(crate) fn attribute(dev: CUdevice, attr: c_int) -> Result<i32> {
     let d = driver()?;
     let mut v: c_int = 0;
@@ -438,17 +387,6 @@ pub(crate) fn attribute(dev: CUdevice, attr: c_int) -> Result<i32> {
         (d.device_get_attribute)(&mut v, attr, dev)
     })?;
     Ok(v)
-}
-
-/// The device's LUID: the one its DXGI adapter has (Windows; the driver refuses it elsewhere).
-pub(crate) fn luid(dev: CUdevice) -> Result<[u8; 8]> {
-    let d = driver()?;
-    let (mut luid, mut nodes) = ([0u8; 8], 0 as c_uint);
-    // SAFETY: an 8-byte and a node-mask out-param.
-    check("cuDeviceGetLuid", unsafe {
-        (d.device_get_luid)(&mut luid, &mut nodes, dev)
-    })?;
-    Ok(luid)
 }
 
 pub(crate) fn uuid(dev: CUdevice) -> Result<String> {
@@ -537,42 +475,6 @@ impl Stream {
     }
     pub(crate) fn context(&self) -> CUcontext {
         self.ctx
-    }
-    /// Destroy a stream whose GPU work is already checked complete.
-    ///
-    /// # Safety
-    /// No further enqueue or consumer may use this handle; actual capture is excluded.
-    /// On error retain the actual owner until retirement. Neither this method nor Drop
-    /// retries an ambiguous destroy/context release.
-    pub(crate) unsafe fn release_completed(&mut self) -> Result<()> {
-        if self.release_failed {
-            return Err(Error::CudaUnavailable(
-                "stream release was already unproven".into(),
-            ));
-        }
-        if self.ctx.is_null() {
-            return Ok(());
-        }
-        self.release_failed = true;
-        let driver = driver()?;
-        {
-            let _ctx = CtxGuard::enter(self.ctx)?;
-            if !self.raw.is_null() {
-                // SAFETY: all stream work is complete and this is its sole owned handle.
-                check("cuStreamDestroy(checked)", unsafe {
-                    (driver.stream_destroy)(self.raw)
-                })?;
-                self.raw = std::ptr::null_mut();
-            }
-        }
-        // Restore the caller's context before releasing a possibly final primary reference.
-        // SAFETY: balances precisely this stream's retained primary-context reference.
-        check("cuDevicePrimaryCtxRelease(checked)", unsafe {
-            (driver.primary_ctx_release)(self.device)
-        })?;
-        self.ctx = std::ptr::null_mut();
-        self.release_failed = false;
-        Ok(())
     }
 }
 

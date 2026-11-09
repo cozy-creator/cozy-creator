@@ -33,11 +33,6 @@ impl Card {
         &self.document["package_interface"]
     }
 
-    /// A callable's request struct as its card spells it, with `accelerator: false` for a CPU
-    /// function: what `--describe --json` prints.
-    pub(crate) fn request(&self, name: &str) -> Value {
-        api::interface::request(&self.document["package_interface"], name)
-    }
 }
 
 /// Where `(hub, package)`'s cards live under `root`, the cozy home.

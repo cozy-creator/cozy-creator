@@ -2,12 +2,27 @@
 //! Rows are independent. Only one F64 rotated row and its F64 group scales are live;
 //! encoded output is returned to the existing Writer's bounded staging loop.
 
-use super::{
-    Input, QuantizationStats, Quantized, affine, comfy::LUT, elem, int8::hadamard256, part,
-};
+use super::{Input, QuantizationStats, Quantized, affine, elem, encoding, int8::hadamard256, part};
 use crate::format::{Dtype, Encoding, Error, Result};
 
 pub(crate) const W4A8_STRATEGY: &str = "w4a8-convrot256-fixed/1";
+
+impl Encoding {
+    pub(crate) fn w4a8_convrot(rotation_size: u64) -> Encoding {
+        let p = [
+            ("group_size", 16u64.into()),
+            ("rotation", "kron_regular_h4".into()),
+            ("rotation_size", rotation_size.into()),
+        ];
+        encoding("w4a8.convrot", &p)
+    }
+}
+
+/// The frozen Lloyd-Max levels of a group-normalized Gaussian (kitchen's `_FIXED_LUT`).
+const LUT: [f32; 16] = [
+    -0.980602, -0.794529, -0.638165, -0.500986, -0.377321, -0.263187, -0.155210, -0.050720,
+    0.052541, 0.156985, 0.265284, 0.379533, 0.502636, 0.638953, 0.794876, 0.980671,
+];
 
 // NumPy's contiguous length-16 F64 reduction: eight lanes, then the same balanced tree.
 // No fused multiply/add: the producer materializes products before this reduction.

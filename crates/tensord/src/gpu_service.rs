@@ -1170,17 +1170,6 @@ impl Pool {
         &self.memo
     }
 
-    pub(crate) fn config(&self) -> &GpuConfig {
-        &self.config
-    }
-    /// The manifests this pool's live executors read (`Serving`).
-    pub(crate) fn serving(&self) -> Vec<String> {
-        let held = self.serving.held.lock().unwrap();
-        let mut manifests: Vec<String> = held.values().flatten().cloned().collect();
-        manifests.sort();
-        manifests.dedup();
-        manifests
-    }
     /// The kernel store; live executors and kernel boots hold their namespace's lock.
     pub(crate) fn kernel_caches(&self) -> crate::reclaim::KernelCaches {
         crate::reclaim::KernelCaches {
@@ -1759,9 +1748,6 @@ impl Pool {
         engine.finish_pending(id)
     }
 
-    pub(crate) fn store(&self) -> &Arc<Store> {
-        &self.store
-    }
     /// Whether the store holds the structure of every model `plan` binds.
     pub(crate) fn holds(&self, plan: &Plan) -> bool {
         plan.selections().iter().all(|selected| crate::storage::held(&self.store, &selected.manifest).is_ok())
@@ -3794,8 +3780,6 @@ fn await_executor_exit(engine: &Arc<Engine>, births: &[Birth]) {
     }
 }
 
-
-
 fn executor_births(leader: &Birth, followers: &[platform::process::Exact]) -> Vec<Birth> {
     let mut processes = platform::process::group_members(leader);
     processes.extend(followers.iter().map(|exact| exact.birth().clone()));
@@ -4275,7 +4259,6 @@ pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply:
         tracing::warn!("run {id}: measurements not kept: {error}");
     }
 }
-
 
 /// The call's memory: torch's high-water marks over the call and varena's record of the request
 /// kept whole as `stats`, as its executor measured them, and `driver`, each GPU's bytes in use as

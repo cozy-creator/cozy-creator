@@ -17,7 +17,7 @@ use std::{
 use tensorfs::{
     err::{refuse, Code, Refusal, Result},
     fetch::{Client, Config, Fetcher, Landed, Origin, Progress, Pulled, SourcePolicy, VolumeOrigin, Want},
-    format::{ObjectRef, Tree},
+    format::ObjectRef,
     store::Store,
 };
 
@@ -148,19 +148,6 @@ impl Machine {
             let _ = sent.send(answered);
         });
         answer.recv().unwrap_or_else(|_| refuse(Code::TRANSFER_FAILED, "the fetch runtime ended"))
-    }
-
-    /// The tree document `tree`, landed here (its repo files are not: nothing on a machine reads
-    /// them).
-    pub(crate) fn tree(&self, remote: &Remote, tree: &ObjectRef, stop: &Stop) -> Result<Tree> {
-        let (fetcher, store, origin) = (self.of(remote)?, self.store.clone(), remote.origin.clone());
-        let tree = tree.clone();
-        self.block(stop, async move {
-            fetcher.objects(&origin, std::slice::from_ref(&tree), &Want { priority: priority::NOW, ..Want::default() }).await?;
-            tokio::task::spawn_blocking(move || store.tree(&tree).map_err(|e| e.refusal()))
-                .await
-                .map_err(|e| Refusal { code: Code::IO_FAILED, detail: e.to_string() })?
-        })
     }
 
     /// The cozytensors whose header is `header`, the `components` given (all when `None`): its

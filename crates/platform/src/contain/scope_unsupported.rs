@@ -25,10 +25,6 @@ impl Scope {
         vec!["--scope-backend".into(), "inherit".into()]
     }
 
-    pub(crate) fn processes(&self) -> Result<usize> {
-        Err(Error::unsupported(Seam::Containment))
-    }
-
     pub fn adopt(&self, _: u32) -> Result<()> {
         Err(Error::unsupported(Seam::Containment))
     }

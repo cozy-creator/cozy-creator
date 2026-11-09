@@ -111,33 +111,6 @@ pub(super) fn in_kernel(_pid: u32) -> Option<String> {
     None
 }
 
-pub(super) fn threads(_pid: u32) -> Vec<(String, usize)> {
-    Vec::new()
-}
-
-pub(super) fn usage(pid: u32) -> io::Result<super::Usage> {
-    // SAFETY: plain-old-data the call fills.
-    let mut task: libc::proc_taskinfo = unsafe { mem::zeroed() };
-    let size = mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-    // SAFETY: a writable buffer of exactly `size` bytes.
-    let filled = unsafe {
-        libc::proc_pidinfo(
-            pid as libc::c_int,
-            libc::PROC_PIDTASKINFO,
-            0,
-            (&mut task as *mut libc::proc_taskinfo).cast(),
-            size,
-        )
-    };
-    if filled != size {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(super::Usage {
-        cpu: task.pti_total_user + task.pti_total_system,
-        running: task.pti_numrunning > 0,
-    })
-}
-
 /// `kern.bootsessionuuid`: a UUID the kernel draws at each boot.
 pub(super) fn boot_id() -> io::Result<String> {
     let mut uuid = [0u8; 64];
@@ -158,17 +131,6 @@ pub(super) fn boot_id() -> io::Result<String> {
     Ok(String::from_utf8_lossy(&uuid[..len])
         .trim_end_matches('\0')
         .into())
-}
-
-/// `ru_maxrss`, in bytes on macOS.
-pub(super) fn peak_resident() -> io::Result<u64> {
-    // SAFETY: plain-old-data; all-zero is a valid value.
-    let mut usage: libc::rusage = unsafe { mem::zeroed() };
-    // SAFETY: a valid `who` and a writable rusage.
-    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(usage.ru_maxrss as u64)
 }
 
 fn info(pid: u32) -> io::Result<libc::proc_bsdinfo> {
@@ -302,13 +264,6 @@ pub(super) fn die_with_parent(parent: u32) -> crate::Result<bool> {
         })
         .map_err(crate::Error::os("start the parent watch"))?;
     Ok(true)
-}
-
-pub(super) fn transient(error: &io::Error) -> bool {
-    matches!(
-        error.raw_os_error(),
-        Some(libc::EAGAIN | libc::ENOMEM | libc::EMFILE | libc::ENFILE | libc::EINTR)
-    )
 }
 
 /// Exited, a zombie included, or gone altogether.

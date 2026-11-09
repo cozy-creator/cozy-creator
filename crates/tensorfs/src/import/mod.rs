@@ -45,8 +45,8 @@ use crate::format::{
 use crate::store::Error;
 use crate::writer::{Data, PartData, Source, Writer};
 
-pub(crate) use engine::{tables, Table, AS_IS};
-pub(crate) use order::{constructor_order, Ordered};
+pub(crate) use engine::{tables, AS_IS};
+pub(crate) use order::constructor_order;
 pub use remote::Access;
 
 /// One stored part of an output tensor, `data` yielding exactly its bytes.

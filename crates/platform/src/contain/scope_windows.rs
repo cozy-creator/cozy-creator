@@ -39,10 +39,6 @@ impl Scope {
         None
     }
 
-    pub(crate) fn trampoline_args(&self) -> Vec<String> {
-        vec!["--scope-backend".into(), "inherit".into()]
-    }
-
     /// Live processes in the scope.
     pub(crate) fn processes(&self) -> Result<usize> {
         // SAFETY: plain-old-data the call fills.

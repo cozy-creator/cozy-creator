@@ -27,10 +27,7 @@ mod records;
 pub(crate) mod retention;
 
 pub use checkpoint::{wanted, Checkpoint};
-pub(crate) use gc::{Collected, Evicted};
-pub(crate) use retention::{Room, RoomLane};
 pub(crate) use records::is_name;
-pub(crate) use retention::TTL;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -104,16 +101,6 @@ pub enum Error {
 }
 
 impl Error {
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Error::Io { .. } => "io",
-            Error::Full { .. } => "full",
-            Error::Absent(_) => "absent",
-            Error::Mismatch { .. } => "mismatch",
-            Error::Invalid { .. } => "invalid",
-            Error::Format(error) => error.code(),
-        }
-    }
 }
 
 impl Error {
@@ -276,27 +263,8 @@ impl Store {
         self
     }
 
-    pub(crate) fn with_durability(mut self, durability: Durability) -> Store {
-        self.durability = durability.supported();
-        self
-    }
-
-    pub(crate) fn with_grace(mut self, grace: Duration) -> Store {
-        self.grace = grace;
-        self
-    }
-
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    pub(crate) fn durability(&self) -> Durability {
-        self.durability
-    }
-
-    /// How long an unreferenced object outlives its last write or reuse.
-    pub(crate) fn grace(&self) -> Duration {
-        self.grace
     }
 
     /// Where `object` lives. A malformed digest has no path.

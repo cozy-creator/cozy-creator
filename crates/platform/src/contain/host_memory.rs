@@ -81,18 +81,3 @@ pub struct Resident {
 pub fn resident(pid: u32) -> io::Result<Resident> {
     sys::resident(pid)
 }
-
-/// Starts `pid`'s high-water over from its use now.
-pub(crate) fn reset_peak(pid: u32) -> io::Result<()> {
-    sys::reset_peak(pid)
-}
-
-/// Private bytes (PSS less shared pages) of `pid` and every process descended from it: what a
-/// process tree holds that no one else counts.
-pub(crate) fn tree_private(pid: u32) -> u64 {
-    std::iter::once(pid)
-        .chain(crate::process::descendants(pid))
-        .filter_map(|pid| process(pid).ok())
-        .map(|m| m.pss.saturating_sub(m.pss_shmem))
-        .sum()
-}

@@ -32,13 +32,6 @@ impl DiskClass {
         filesystem(path).class
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            DiskClass::Ephemeral => "ephemeral",
-            DiskClass::Persistent => "persistent",
-            DiskClass::Network => "network",
-        }
-    }
 }
 
 /// The filesystem holding a path: its class and the name it was recognised by.

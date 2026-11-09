@@ -52,9 +52,6 @@ pub use session::{
     QuantizedTensor, QuantizeFit, QuantizeTensor, quantization_implementation,
 };
 
-/// This TensorFS's release version.
-pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// The on-disk store this build reads and writes, shared by every process on a machine. A
 /// change an older build would misread bumps it (`tensorfs.store/3`: trees and D10 headers).
 pub const STORE_FORMAT: u32 = 3;

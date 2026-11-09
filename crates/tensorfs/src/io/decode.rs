@@ -316,33 +316,6 @@ fn validate_into<'a>(
     Ok((metadata, device))
 }
 
-/// Prepare the existing device decoder without reading input values or submitting its kernels.
-///
-/// # Safety
-/// Parts and output satisfy `into`'s span contract and remain retained through the decoder
-/// AND every dependent consumer. Enqueue supplies native producer streams or a prior proof
-/// of completion; this object never owns the caller's input/output allocations.
-pub(crate) unsafe fn prepare_into(
-    encoding: &Encoding,
-    dtype: &Dtype,
-    shape: &[u64],
-    parts: &[Part<'_>],
-    out: Output<'_>,
-) -> Result<DeviceDecode> {
-    let (metadata, device) = validate_into(encoding, dtype, shape, parts, &out)?;
-    let Some(device) = device else {
-        return invalid("prepared decode requires existing device buffers");
-    };
-    decode::planned_sources(dtype, shape, encoding, &metadata, |plan, geometry| {
-        let count = geometry
-            .rows
-            .checked_mul(geometry.cols)
-            .ok_or_else(|| crate::format::Error::Decode("decode size overflow".into()))?;
-        Ok(device_plan(plan, geometry, dtype, 0, count as u64)
-            .and_then(|launch| prepare_execute(device, &launch, parts, Some(out.dst))))
-    })?
-}
-
 /// Decode a logical element window through the prebuilt CUDA catalog. Host-only plans are
 /// unsupported; logical CPU expansion and upload are never a GPU decode fallback.
 pub fn read(
@@ -413,11 +386,6 @@ fn idle_streams() -> &'static Mutex<BTreeMap<i32, Vec<cuda::Stream>>> {
 }
 
 static STREAMS_CREATED: AtomicU64 = AtomicU64::new(0);
-
-/// Decode streams this process has created: flat once each concurrent decode has one.
-pub(crate) fn streams_created() -> u64 {
-    STREAMS_CREATED.load(Ordering::Relaxed)
-}
 
 fn take_stream(device: i32) -> Result<cuda::Stream> {
     let idle = idle_streams()
@@ -799,9 +767,6 @@ impl DeviceDecode {
             stage.enqueue(stream)?;
         }
         Ok((stream.raw(), self.error))
-    }
-    pub(crate) fn submitted(&self) -> bool {
-        self.submitted
     }
     /// Release only this decoder's private owners after checked composed completion.
     ///

@@ -53,11 +53,6 @@ pub(crate) fn record(c: Copy) {
     log.push(c);
 }
 
-/// Every copy run since the last call.
-pub(crate) fn take() -> Vec<Copy> {
-    std::mem::take(&mut LOG.lock().unwrap())
-}
-
 /// A run of reads from `files`, logged against its volume's kept ceiling. Only a run the page
 /// cache had no part in measures the volume: one of a probe's size seeds the ceiling, any that
 /// beats it raises it. A run that read cached bytes is logged unmeasured (ceiling 0).

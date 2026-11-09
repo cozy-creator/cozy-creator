@@ -190,19 +190,4 @@ impl Packing<'_> {
         Ok(out)
     }
 
-    /// The `n` codes of one lane: `bytes` is its words (a block struct's field, say).
-    pub(crate) fn lane(&self, bytes: &[u8], n: usize) -> Result<Vec<i32>> {
-        let slots = self.slots()?;
-        let nw = self.words(n)?;
-        let wb = self.word as usize / 8;
-        if bytes.len() != nw * wb {
-            return Err(bad(format!("{} bytes are not {nw} words", bytes.len())));
-        }
-        let word = |k: usize| {
-            let mut v = [0u8; 4];
-            v[..wb].copy_from_slice(&bytes[k * wb..(k + 1) * wb]);
-            u32::from_le_bytes(v)
-        };
-        Ok((0..n).map(|t| self.code(&slots, nw, word, t)).collect())
-    }
 }

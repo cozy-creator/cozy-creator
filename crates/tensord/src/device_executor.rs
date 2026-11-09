@@ -7,11 +7,10 @@ use crate::{
     seam,
 };
 pub(crate) use executor_api::{
-    Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
-    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
-    Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,
-    Output, PrepareRequest, Probe, Publish, PublishPart, Request, Residency, ResultRef, SavedFile,
-    StageMemoStore, Start, Unload, RESULT_DOCUMENT,
+    Activate, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem,
+    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke, Load, LoadFacts, Map, MemoSettings, ModelLoad, ModelPrefetch, Outcome,
+    Output, PrepareRequest, Publish, Request, SavedFile,
+    StageMemoStore, Start, RESULT_DOCUMENT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,7 +48,6 @@ pub(crate) fn refused(seq: u64, code: &str, detail: impl Into<String>) -> Answer
     Answer::refused(seq, code, crate::triage::ends(&detail.into(), 1024))
 }
 
-
 /// The run a command executes and the spool its executor reads and writes.
 fn spool(command: &Command) -> Option<(&str, &Path)> {
     match command {
@@ -57,8 +55,6 @@ fn spool(command: &Command) -> Option<(&str, &Path)> {
         _ => None,
     }
 }
-
-
 
 pub(crate) trait Services {
     fn progress(&mut self, _: &Frame) {}
@@ -87,9 +83,6 @@ impl Line {
         };
         let bytes = command_bytes(command);
         bytes.and_then(|bytes| seam::write_body(&mut writer.lock().unwrap(), &bytes)).is_ok()
-    }
-    pub(crate) fn same(&self, other: &Line) -> bool {
-        self.0.ptr_eq(&other.0)
     }
 }
 
@@ -1009,9 +1002,6 @@ impl DeviceExecutor {
     pub(crate) fn abandoned_lookahead(&self) -> bool {
         self.lookahead.lock().unwrap().retire
     }
-    pub(crate) fn preparing_lookahead(&self) -> bool {
-        self.lookahead.lock().unwrap().queued.as_ref().is_some_and(|q| q.reply.is_none())
-    }
     pub(crate) fn cancellation(&self) -> Cancellation {
         Cancellation { enabled: Arc::new(Mutex::new(true)), ..self.cancellation.clone() }
     }
@@ -1420,4 +1410,3 @@ fn scan(value: &Value) -> io::Result<()> {
     }
     Ok(())
 }
-

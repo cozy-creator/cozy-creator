@@ -118,12 +118,6 @@ pub(crate) fn for_what_it_starts(grant: &Grant) {
     }
 }
 
-/// The load over a given environment and user home (what the tests drive).
-pub(crate) fn load_from(lifetime: Lifetime, environment: &BTreeMap<String, String>, user_home: PathBuf) -> io::Result<Config> {
-    let loaded = shared::load_from(environment, user_home).map_err(|e| invalid(&named(&e.message)))?;
-    from_loaded(lifetime, loaded, environment)
-}
-
 fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String, String>) -> io::Result<Config> {
     let machine = &loaded.config.machine;
     let provider: BTreeMap<String, String> = environment

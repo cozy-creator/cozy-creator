@@ -304,10 +304,6 @@ impl Capability {
         held.values().find(|capability| !secret.is_empty() && capability.secret == secret).cloned()
     }
 
-    pub(crate) fn actor(&self) -> &str {
-        &self.actor
-    }
-
     pub(crate) fn origin(&self) -> &str {
         &self.origin
     }

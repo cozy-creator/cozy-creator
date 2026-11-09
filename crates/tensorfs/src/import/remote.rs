@@ -898,12 +898,6 @@ pub(crate) fn select(
 
 // ------------------------------------------------------------------------------ download
 
-/// Lands `m` at `dest`: resumes a partial file, then checks length and sha256 when the
-/// provider states them. A local member is read where it is.
-pub(crate) fn land(m: &Member, dest: &Path, access: &Access) -> Result<PathBuf> {
-    land_in(m, dest, &Scope::new(access, None), &mut |_| {})
-}
-
 /// `m` landed at `dest`, telling `landed` how many of its bytes are here and verified as they
 /// are: a kept prefix as it is read again for the digest, then each frame as it arrives. The
 /// digest is taken as the bytes land, so nothing is read twice.
@@ -1013,11 +1007,6 @@ pub(crate) fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Res
         },
     )?;
     Ok(out)
-}
-
-/// A document of `m`, whole (an index or a config, never weights).
-pub(crate) fn read_small(m: &Member, access: &Access) -> Result<Vec<u8>> {
-    read_small_in(m, &Scope::new(access, None))
 }
 
 fn read_small_in(m: &Member, access: &Scope<'_>) -> Result<Vec<u8>> {

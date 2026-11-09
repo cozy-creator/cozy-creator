@@ -53,9 +53,6 @@ impl Growth {
         self.seen = 0;
     }
 
-    pub(crate) fn most(&self) -> u64 {
-        self.most
-    }
 }
 
 #[cfg_attr(target_os = "linux", path = "host_pressure_linux.rs")]

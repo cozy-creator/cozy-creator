@@ -63,15 +63,6 @@ pub enum Error {
 }
 
 impl Error {
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Error::Invalid(_) => "invalid",
-            Error::Format { .. } => "format",
-            Error::UnknownScheme(_) => "unknown_scheme",
-            Error::Decode(_) => "decode",
-            Error::Encode(_) => "encode",
-        }
-    }
 }
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;

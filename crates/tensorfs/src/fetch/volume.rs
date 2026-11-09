@@ -73,10 +73,6 @@ impl VolumeOrigin {
         (device(&root)? != device(root.parent()?)?).then(|| VolumeOrigin::new(root, ttl))
     }
 
-    pub(crate) fn root(&self) -> &Path {
-        &self.0.root
-    }
-
     pub(crate) fn blob(&self, object: &ObjectRef) -> PathBuf {
         self.0.root.join(object.key())
     }

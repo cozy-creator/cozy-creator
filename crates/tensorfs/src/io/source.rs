@@ -156,13 +156,6 @@ impl Source {
         )))
     }
 
-    pub(crate) fn resident(&self, obj: &ObjectRef, _tally: &IoTally) -> Result<bool> {
-        #[cfg(feature = "store")]
-        self.load(std::slice::from_ref(obj))?;
-        let file = self.file(obj)?;
-        Ok(platform::durable::cached(&file, 0, obj.length).unwrap_or(false))
-    }
-
     /// Transfer a placement range. Uncovered padding is zeroed through the same engine.
     ///
     /// # Safety

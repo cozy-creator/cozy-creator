@@ -30,27 +30,6 @@ pub fn resolve(explicit: Option<&Path>) -> Result<PathBuf> {
     Ok(resolve_env(explicit)?.0)
 }
 
-/// The Store root of a command that needs a Store.
-///
-/// A named root — argument or `TENSORFS_HOME` — is used as given, and `tfs store init`/`ensure`
-/// may bring it into existence. The `$HOME/.cache/tensorfs` fallback is accepted only for a Store that
-/// ALREADY exists: with nothing named and nothing there, every command refuses instead of
-/// materializing a database nobody asked for.
-pub(crate) fn store_root(explicit: Option<&Path>) -> Result<PathBuf> {
-    let (root, origin) = resolve_env(explicit)?;
-    if origin == Origin::Named || root.is_dir() {
-        return Ok(root);
-    }
-    refuse(
-        Code::STORE_ROOT_ABSENT,
-        format!(
-            "no Store root was given and the default {} does not exist: name a root, set {ENV}, \
-             or create one with `tfs store init <root>`",
-            root.display()
-        ),
-    )
-}
-
 fn resolve_env(explicit: Option<&Path>) -> Result<(PathBuf, Origin)> {
     resolve_values(
         explicit,

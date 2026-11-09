@@ -1,15 +1,9 @@
-use super::{Encoder, Input, OwnedPart, encoding, part};
+use super::{Input, encoding, part};
 use crate::format::{Dtype, Encoding, Error, Result};
 
 /// Production Runtime's deterministic rowwise H256/16 quantizer. The revision is
 /// provenance, not an extra encoding parameter: decoders only need the rotation.
 pub(crate) const CONVROT_STRATEGY: &str = "int8-convrot256/1";
-
-pub(crate) const CONVROT: Encoder = Encoder {
-    scheme: "int8.convrot",
-    quantize: Some(convrot),
-    pack: None,
-};
 
 impl Encoding {
     pub fn int8_tensorwise() -> Encoding {
@@ -18,9 +12,6 @@ impl Encoding {
     pub fn int8_rowwise() -> Encoding {
         encoding("int8.rowwise", &[])
     }
-    pub(crate) fn int8_columnwise() -> Encoding {
-        encoding("int8.columnwise", &[])
-    }
     pub fn int8_convrot(rotation_size: u64) -> Encoding {
         let p = [
             ("rotation", "kron_regular_h4".into()),
@@ -28,12 +19,6 @@ impl Encoding {
         ];
         encoding("int8.convrot", &p)
     }
-}
-
-/// Encode complete rows without another tensor-sized floating-point allocation.
-/// Callers can split at any row boundary; neither the scale nor the rotation spans rows.
-fn convrot(input: &Input) -> Result<Vec<OwnedPart>> {
-    Ok(convrot_measured(input)?.parts)
 }
 
 pub(super) fn convrot_measured(input: &Input) -> Result<super::Quantized> {

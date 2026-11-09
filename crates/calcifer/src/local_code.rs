@@ -88,7 +88,7 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
     Ok(path)
 }
 
-pub(crate) use api::target::{local, spelled, written_as_path};
+pub(crate) use api::target::local;
 
 /// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path): a folder of
 /// Calcifer's own computer, as the project is, and the function it names. None: `text` is not written as a path (a published

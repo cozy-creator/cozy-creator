@@ -143,18 +143,12 @@ impl Checkpoint {
     pub fn metadata(&self) -> &format::Metadata {
         &self.header().metadata
     }
-    pub(crate) fn chunks(&self) -> &[ObjectRef] {
-        &self.header().chunks
-    }
     /// The lane of the commit it was opened from.
     pub fn lane(&self) -> Option<&str> {
         self.data.named.as_ref().and_then(|r| r.lane.as_deref())
     }
     pub fn named(&self) -> Option<&Ref> {
         self.data.named.as_ref()
-    }
-    pub(crate) fn pipeline(&self) -> Option<&format::Pipeline> {
-        self.data.raw.pipeline()
     }
     pub(crate) fn components(&self) -> &[Component] {
         &self.components
@@ -408,11 +402,6 @@ impl Checkpoint {
         Ok(crate::io::view::plan(self.header(), regions)?.0)
     }
 
-    /// The stored dtype and shape of the part `component/key#role` (`#value`: plain data).
-    pub(crate) fn stored_part(&self, name: &str) -> Option<crate::io::StoredPart> {
-        crate::io::view::part(self.header(), name)
-    }
-
     /// This checkpoint's chunks as a read-engine source. A read fetches the chunks it needs
     /// and lacks on the process runtime, so call it from outside an async context.
     pub fn source(&self, direct_io: bool) -> crate::io::source::Source {
@@ -490,21 +479,8 @@ impl Component {
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
-    pub(crate) fn cls(&self) -> &format::ClassRef {
-        &self.metadata().class
-    }
-    pub(crate) fn config(&self) -> &format::Config {
-        &self.metadata().config
-    }
-    /// The file name the config exports as: `config.json` unless the writer named another.
-    pub(crate) fn config_file(&self) -> &str {
-        self.metadata().config_name()
-    }
     pub(crate) fn tensors(&self) -> &[format::Tensor] {
         &self.metadata().tensors
-    }
-    pub(crate) fn assets(&self) -> &BTreeMap<String, ObjectRef> {
-        &self.metadata().assets
     }
 
     /// A tensor's stored bytes, as Python's `read(decode=False)`: a plain tensor's data, or an

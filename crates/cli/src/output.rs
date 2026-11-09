@@ -12,7 +12,7 @@ use std::{
 
 use anstyle::{AnsiColor, Style};
 use comfy_table::{ContentArrangement, presets};
-use api::error::{Envelope, Error, Kind};
+use api::error::{Envelope, Error};
 use api::names::shown;
 use serde::Serialize;
 
@@ -124,12 +124,6 @@ pub(crate) fn ndjson<T: Serialize + ?Sized>(event: &T) {
 /// Prints a refusal on stdout (the envelope with `--json`) and answers its exit code.
 pub(crate) fn refusal(ctx: &Context, error: &Error) -> ExitCode {
     refuse(ctx.json, error)
-}
-
-/// A verb this platform does not have, refused as `unsupported` (the envelope with `--json`).
-pub(crate) fn unsupported(message: &str) -> ExitCode {
-    let json = std::env::args_os().any(|arg| arg == "--json");
-    refuse(json, &Error::new(Kind::Usage, "unsupported", message))
 }
 
 pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {

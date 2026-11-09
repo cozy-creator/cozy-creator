@@ -75,10 +75,6 @@ impl Home {
         self.root.join("calcifer")
     }
 
-    pub(crate) fn calcifer_db(&self) -> PathBuf {
-        self.calcifer().join("state.db")
-    }
-
     pub fn calcifer_log(&self) -> PathBuf {
         self.calcifer().join("calcifer.log")
     }

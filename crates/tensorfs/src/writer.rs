@@ -358,26 +358,6 @@ impl Store {
 }
 
 impl Writer {
-    /// A writer into the plain folder `path` (created when absent), starting from `base` when
-    /// given; objects `base`'s store holds are referenced, not copied. With `resume`, it takes
-    /// back what an interrupted writer there journaled.
-    pub(crate) fn folder(path: &Path, base: Option<&Checkpoint>, resume: bool) -> Result<Writer> {
-        let chunks = path.join(CHUNKS_DIR);
-        fs::create_dir_all(&chunks).map_err(fail("create", &chunks))?;
-        let dir = chunks.join(WRITING).join(HEADER_PATH);
-        let dest = Dest::Folder {
-            root: path.to_path_buf(),
-            cache: base.and_then(Checkpoint::store).cloned(),
-        };
-        if !resume {
-            let fence = fence(&dir)?;
-            for name in [SPOOL, JOURNAL] {
-                let _ = fs::remove_file(dir.join(name));
-            }
-            drop(fence);
-        }
-        Writer::open(dest, dir, resume.then_some(HEADER_PATH), base)
-    }
 
     fn open(dest: Dest, dir: PathBuf, key: Option<&str>, base: Option<&Checkpoint>) -> Result<Writer> {
         let fence = fence(&dir)?;
@@ -516,16 +496,6 @@ impl Writer {
     /// A header metadata field; it overrides the base's.
     pub(crate) fn set_metadata(&mut self, key: &str, value: Value) {
         self.metadata.insert(key.to_owned(), value);
-    }
-
-    /// The header order when the producer's calls are not it (a resumed migration): these
-    /// tensors first, in this order, then the rest in recorded order; components in order of
-    /// their first tensor here. Given before `commit`.
-    pub(crate) fn set_order(&mut self, tensors: &[(&str, &str)]) {
-        self.order = (tensors.iter().enumerate())
-            .map(|(i, (c, k))| (((*c).to_owned(), (*k).to_owned()), i))
-            .collect();
-        self.components_ranked = true;
     }
 
     /// Written (or journaled by an interrupted writer of this key); base tensors don't count.
@@ -1168,9 +1138,6 @@ impl Drop for Writer {
 }
 
 impl ComponentWriter<'_> {
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
 
     /// Writes a tensor, replacing one written before under the same key.
     pub fn put(&mut self, key: &str, dtype: &Dtype, shape: &[u64], data: Data) -> Result<()> {
@@ -1241,13 +1208,6 @@ impl ComponentWriter<'_> {
         self.add_asset(name, object, false, bytes.len() as u64)
     }
 
-    /// An asset already stored as `object` elsewhere: referenced, not copied or required here.
-    pub(crate) fn reuse_asset(&mut self, name: &str, object: &ObjectRef) -> Result<()> {
-        self.w.live()?;
-        asset_name(&self.name, name)?;
-        self.add_asset(name, object.clone(), true, 0)
-    }
-
     fn add_asset(&mut self, name: &str, object: ObjectRef, reused: bool, bytes: u64) -> Result<()> {
         let line = Line::Asset {
             component: self.name.clone(),
@@ -1268,10 +1228,6 @@ impl ComponentWriter<'_> {
         }
     }
 
-    /// Written (or journaled by an interrupted writer of this key); base tensors don't count.
-    pub(crate) fn has(&self, key: &str) -> bool {
-        self.w.has(&self.name, key)
-    }
 }
 
 fn tensor<'a>(e: &Entry, places: &mut impl Iterator<Item = &'a format::Location>) -> Tensor {

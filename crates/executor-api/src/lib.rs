@@ -1090,9 +1090,6 @@ fn max_output_bytes() -> u64 {
 pub struct Json(pub Value);
 
 #[cfg(feature = "python")]
-use python::value as to_python;
-
-#[cfg(feature = "python")]
 mod python {
     use pyo3::{
         exceptions::PyValueError,

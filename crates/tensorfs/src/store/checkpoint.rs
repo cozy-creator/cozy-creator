@@ -13,7 +13,7 @@ use platform::durable;
 use super::retention::{self, Hold};
 use super::{fail, invalid, Error, Result, Store};
 use crate::format::{
-    self, decode, is_header, Body, Component, Header, Location, ObjectRef, HEADER_PATH,
+    self, decode, is_header, Body, Component, Header, Location, ObjectRef,
     PartBytes, Pipeline, Tensor, Tree, CHUNKS_DIR,
 };
 use crate::io::{Copy, Dst, ReadOpts, Src};
@@ -183,21 +183,6 @@ impl Checkpoint {
         Err(Error::Absent(object.sha256.clone()))
     }
 
-    /// A plain folder view of this checkpoint, sharing its admitted object files.
-    pub(crate) fn path(&self) -> Result<PathBuf> {
-        match &self.objects {
-            Objects::Folder { dir, .. } => Ok(dir.clone()),
-            Objects::Memory { .. } => Err(Error::Invalid { path: PathBuf::new(), why: format!("{} is held in memory and has no folder", self.id.id()) }),
-            Objects::Store(store) => {
-                let dir = store.root().join("snapshots").join(&self.id.sha256);
-                store.used(&self.id.sha256, self.closure())?;
-                let tree = Tree { files: [(HEADER_PATH.to_owned(), self.id.clone())].into(), ..Tree::default() };
-                store.snapshot(&store.put_tree(&tree)?, &dir)?;
-                Ok(dir)
-            }
-        }
-    }
-
     /// Export only a component's config and support files to `dir`, each replaced atomically.
     /// Missing assets refuse before any directory is created; this never downloads weights.
     /// The caller classifies `dir` for the cache.
@@ -312,14 +297,6 @@ impl Checkpoint {
         }
     }
 
-    /// The store it reads (a folder's cache).
-    pub(crate) fn store(&self) -> Option<&Store> {
-        match &self.objects {
-            Objects::Store(store) | Objects::Memory { store, .. } => Some(store),
-            Objects::Folder { cache, .. } => cache.as_ref(),
-        }
-    }
-
     /// Asset `name` of `component`.
     pub(crate) fn asset(&self, component: &str, name: &str) -> Result<Vec<u8>> {
         let Some(object) = self.component(component)?.assets.get(name) else {
@@ -333,22 +310,6 @@ impl Checkpoint {
         let mut bytes = Vec::with_capacity(object.length as usize);
         (self.object(object)?.read_to_end(&mut bytes)).map_err(fail("read", name))?;
         Ok(bytes)
-    }
-
-    /// The chunks and assets of `components` (all when `None`) that cannot be read here.
-    pub(crate) fn missing(&self, components: Option<&[String]>) -> Result<Vec<ObjectRef>> {
-        let mut out = Vec::new();
-        for object in wanted(&self.header, components)? {
-            if !self.holds(&object)? {
-                out.push(object);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Every tensor with its component's name, in header (construction) order.
-    pub(crate) fn tensors(&self) -> impl Iterator<Item = (&str, &Tensor)> {
-        self.header.tensors()
     }
 
     pub(crate) fn tensor(&self, component: &str, key: &str) -> Result<&Tensor> {

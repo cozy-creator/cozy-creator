@@ -27,7 +27,7 @@ use crate::err::{refuse, Code, Result};
 use crate::format::decode::gguf::{blocks_shape, Type};
 use crate::format::{Dtype, Encoding};
 
-use super::remote::{self, Access, Member};
+use super::remote::{Access, Member};
 
 /// The dtype of an unblocked ggml type, stored as a plain tensor.
 pub(crate) fn plain(ty: Type) -> Option<Dtype> {
@@ -178,23 +178,6 @@ impl At for File {
 pub(crate) struct Remote<'a> {
     pub member: &'a Member,
     pub access: &'a Access,
-}
-
-impl At for Remote<'_> {
-    fn size(&self) -> u64 {
-        self.member.length.unwrap_or(0)
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        let got = remote::read_range(self.member, offset, offset + buf.len() as u64, self.access)?;
-        if got.len() != buf.len() {
-            return refuse(
-                Code::SHORT_READ,
-                format!("{}: {} of {} bytes", self.member.path, got.len(), buf.len()),
-            );
-        }
-        buf.copy_from_slice(&got);
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone)]

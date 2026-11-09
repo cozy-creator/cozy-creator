@@ -7,17 +7,6 @@ use crate::format::decode::plan::{Bytes, Core, Elems, Plan, Post, Term};
 use crate::format::decode::{round, Geometry};
 use crate::format::{Dtype, Error, Result};
 
-pub(crate) const FAMILIES: [u32; 6] = [80, 86, 89, 90, 100, 120];
-pub(crate) const CORE_KINDS: [&str; 7] = [
-    "codes",
-    "unpack",
-    "regular_h4",
-    "rotated",
-    "requantize",
-    "grouped_rotated",
-    "cast_metadata",
-];
-
 pub struct Binary {
     pub family: u32,
     pub kind: &'static str,
@@ -35,9 +24,6 @@ const _: () = assert!(
     BINARIES.len()
         == FAMILIES.len() * (crate::format::decode::gguf::STRUCTS.len() + CORE_KINDS.len()) * 3
 );
-
-/// Schemes whose plans no device core runs: `prepare` gives their values from the host.
-pub(crate) const HOST_SCHEMES: [&str; 1] = ["svdq.nvfp4"];
 
 pub(crate) enum Prepared<'a> {
     Kernel(Box<Launch<'a>>),
@@ -122,9 +108,6 @@ impl Factors {
 }
 
 impl Launch<'_> {
-    pub(crate) fn binary(&self, family: u32) -> Option<&'static Binary> {
-        self.stage_binary(family, self.kind)
-    }
 
     /// A rotated plan first unpacks to i32, runs `regular_h4` (H₄ along one base-4 digit) once
     /// per stride 1, 4, … < B (`params[31]`), alternating two i32 buffers, which together apply
@@ -135,9 +118,6 @@ impl Launch<'_> {
             .find(|b| b.family == family && b.kind == stage && b.dtype == self.dtype.name())
     }
 
-    pub(crate) fn blocks(&self) -> u64 {
-        self.params[5].div_ceil(256)
-    }
 }
 
 /// `count` logical elements beginning at `begin`. The plan and geometry come from `planned`;

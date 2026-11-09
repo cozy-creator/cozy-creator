@@ -366,27 +366,6 @@ impl Host {
         self.nudge.send();
     }
 
-    /// Nudges the watcher and blocks until a look begun since has been made.
-    pub(crate) fn look(&self) {
-        let begun = self.looks.0.lock().unwrap_or_else(|e| e.into_inner()).0;
-        self.nudge();
-        self.await_look(begun);
-    }
-
-    /// Looks made so far.
-    pub(crate) fn looks(&self) -> u64 {
-        self.looks.0.lock().unwrap_or_else(|e| e.into_inner()).1
-    }
-
-    /// Blocks until more than `made` looks have been made.
-    pub(crate) fn await_look(&self, made: u64) {
-        let (count, signal) = &*self.looks;
-        let mut looks = count.lock().unwrap_or_else(|e| e.into_inner());
-        while looks.1 <= made {
-            looks = signal.wait(looks).unwrap_or_else(|e| e.into_inner());
-        }
-    }
-
     /// Whether a look found the host short since this was last asked (the events thread asks).
     pub(crate) fn short(&self) -> bool {
         self.short.clear()

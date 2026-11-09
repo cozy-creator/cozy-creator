@@ -55,11 +55,6 @@ fn reference(class: &str) -> Option<&'static Reference> {
     refs.get(class)
 }
 
-/// The classes with a reference.
-pub(crate) fn classes() -> impl Iterator<Item = &'static str> {
-    ORDERS.iter().map(|(class, _)| *class)
-}
-
 /// `keys` in a class's construction order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Ordered {

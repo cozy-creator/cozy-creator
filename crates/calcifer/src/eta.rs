@@ -301,10 +301,6 @@ impl Clock {
         Self { prior, ..Self::default() }
     }
 
-    pub(crate) fn prior(&self) -> Option<&Prior> {
-        self.prior.as_ref()
-    }
-
     /// Its execution began at `at`.
     pub(crate) fn started(&mut self, at: f64) {
         self.started.get_or_insert(at);

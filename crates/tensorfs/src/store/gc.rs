@@ -15,7 +15,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::time::{Duration, SystemTime};
 
-use super::retention::{self, list, Use};
+use super::retention::{list, Use};
 use super::{fail, invalid, is_digest, same_family, Result, Store};
 use crate::format::{self, is_header, Header, ObjectRef, Tree, HEADER_FORMAT, TREE_FORMAT};
 
@@ -205,21 +205,6 @@ impl Store {
             }
         }
         Ok(objects)
-    }
-
-    /// Sweeps what neither a root nor a use keeps and is older than the grace.
-    pub(crate) fn gc(&self) -> Result<Collected> {
-        self.collect(0, Duration::MAX)
-    }
-
-    /// Drops the uses unused for `older_than`, least recently used first, until `need` bytes
-    /// would be free (`u64::MAX`: every one), then sweeps. Roots are never dropped. Skips while
-    /// another process reads metadata to hold it.
-    pub(crate) fn collect(&self, need: u64, older_than: Duration) -> Result<Collected> {
-        let Some(_gc) = retention::try_collect(self)? else {
-            return Ok(Collected::default());
-        };
-        self.collect_locked(need, older_than)
     }
 
     /// The caller holds the collection fence for the whole mark and sweep.

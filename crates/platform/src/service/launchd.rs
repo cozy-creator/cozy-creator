@@ -69,16 +69,6 @@ pub(super) fn announce(_: &Path, _: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn stop(_: &Path, name: &str) -> Result<()> {
-    let stopped = run(MANAGER, &mut launchctl(&["bootout", &target(name)]));
-    let loaded = launchctl(&["print", &target(name)])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if loaded { stopped } else { Ok(()) }
-}
-
 /// A session of its own is enough: launchd ends a stopped job's process group, not others.
 pub(super) fn scope(_: &ServiceSpec) -> Option<(PathBuf, Vec<std::ffi::OsString>)> {
     None

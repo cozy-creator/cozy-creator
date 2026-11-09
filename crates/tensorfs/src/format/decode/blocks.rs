@@ -2,18 +2,8 @@
 //! holding `n` consecutive elements of a row (GGUF's `block_q4_0` and kin). The walker hands
 //! each struct to the scheme, which reads its fields with the helpers below.
 
-use super::{elem, Ctx, Shape};
+use super::elem;
 use crate::format::Result;
-
-/// The part's shape for structs of `n` elements in `size` bytes; `C` must be whole structs.
-pub(crate) fn shape(c: &Ctx, n: usize, size: usize) -> Result<Shape> {
-    if !c.cols.is_multiple_of(n) {
-        return Err(c.fail(format!("{} columns are not whole blocks of {n}", c.cols)));
-    }
-    Ok(Shape::Exact(
-        [c.lead(), &[(c.cols / n) as u64, size as u64]].concat(),
-    ))
-}
 
 /// The `[R, C]` values (`R·C` of them) from structs of `size` bytes in row-major order:
 /// `f(block, out)` writes the `n` elements of each.

@@ -268,9 +268,6 @@ impl DeviceBuffer {
     pub fn device(&self) -> i32 {
         self.engine.device
     }
-    pub(crate) fn context(&self) -> CUcontext {
-        self.engine.ctx
-    }
     /// Free a completed native-owned allocation, checking the driver result.
     ///
     /// # Safety

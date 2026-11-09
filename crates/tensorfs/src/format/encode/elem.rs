@@ -1,7 +1,7 @@
 //! f32 to element codes: round to nearest, ties to even, saturating at the largest finite value
 //! (a producer that rounds otherwise keeps its own). `F16`/`BF16` are the decode's `round_L`.
 
-pub(crate) use crate::format::decode::{bf16, f16};
+pub(crate) use crate::format::decode::bf16;
 
 /// A sign-magnitude minifloat: `e` exponent bits (bias `bias`), `m` mantissa bits, subnormals
 /// at exponent 0, largest finite code `max`.
@@ -80,10 +80,6 @@ const E2M1: Minifloat = Minifloat {
 
 pub(crate) fn e4m3(x: f32) -> u8 {
     E4M3.encode(x)
-}
-
-pub(crate) fn e5m2(x: f32) -> u8 {
-    E5M2.encode(x)
 }
 
 /// The E2M1 nibble; NaN has no code and encodes as zero.

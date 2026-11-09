@@ -121,11 +121,6 @@ pub fn verify(
     Ok((grant, signer))
 }
 
-/// The token of an `authorization` value, when it carries one.
-pub(crate) fn from_authorization(value: &str) -> Option<&str> {
-    value.strip_prefix(SCHEME)
-}
-
 impl Grant {
     /// Whether the grant covers one output of a run; `index` is a list item's 1-based index.
     pub fn allows(&self, run: &str, output: &str, index: Option<u32>) -> bool {

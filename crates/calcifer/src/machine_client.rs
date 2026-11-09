@@ -60,23 +60,6 @@ pub(crate) enum Error {
 }
 
 impl Error {
-    /// The HTTP status of a refusal.
-    pub(crate) fn status(&self) -> Option<u16> {
-        match self {
-            Error::Refused { status, .. } => Some(*status),
-            _ => None,
-        }
-    }
-    /// The refusal's stable code.
-    pub(crate) fn code(&self) -> Option<&str> {
-        match self {
-            Error::Refused { error, .. } => Some(&error.code),
-            _ => None,
-        }
-    }
-    pub(crate) fn is_not_found(&self) -> bool {
-        self.status() == Some(404)
-    }
 }
 
 /// How each request is authorized.

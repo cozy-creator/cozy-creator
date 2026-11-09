@@ -6,7 +6,6 @@ crates/platform/src/contain/scope_windows.rs
 crates/platform/src/durable.rs
 crates/platform/src/durable/disk.rs
 crates/platform/src/gpu/apple.rs
-crates/platform/src/gpu/budget.rs
 crates/platform/src/gpu/cuda.rs
 crates/platform/src/handles/unix.rs
 crates/platform/src/handles/windows.rs
@@ -42,7 +41,6 @@ crates/tensorfs/src/io/device.rs
 crates/tensorfs/src/io/host.rs
 crates/tensorfs/src/io/metrics/gpu.rs
 crates/tensorfs/src/io/mod.rs
-crates/tensorfs/src/io/pins.rs
 crates/tensorfs/src/io/plan.rs
 crates/tensorfs/src/io/source.rs
 crates/tensorfs/src/raw.rs

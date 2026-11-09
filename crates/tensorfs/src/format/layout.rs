@@ -79,19 +79,6 @@ pub(crate) fn plan(items: &[Item]) -> Plan {
 }
 
 impl Plan {
-    /// The chunks' bytes, given each item's bytes in input order (zero padding between parts).
-    pub(crate) fn assemble(&self, data: &[&[u8]]) -> Vec<Vec<u8>> {
-        let mut out: Vec<Vec<u8>> = self.chunks.iter().map(|n| vec![0; *n as usize]).collect();
-        for (at, bytes) in self.places.iter().zip(data) {
-            let (mut chunk, mut offset, mut rest) = (at.chunk as usize, at.offset as usize, *bytes);
-            while !rest.is_empty() {
-                let n = rest.len().min(out[chunk].len() - offset);
-                out[chunk][offset..offset + n].copy_from_slice(&rest[..n]);
-                (chunk, offset, rest) = (chunk + 1, 0, &rest[n..]);
-            }
-        }
-        out
-    }
 }
 
 /// The deepest numbered prefix of a dotted key: `a.1.b.2.c` → `a.1.b.2`; `""` without one.

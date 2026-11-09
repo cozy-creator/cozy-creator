@@ -153,16 +153,6 @@ pub(crate) struct CheckedUrl {
 }
 
 impl CheckedUrl {
-    /// The URL this check admitted, as a string a later ask can start from.
-    pub(crate) fn url(&self) -> String {
-        let scheme = if self.https { "https" } else { "http" };
-        let host = if self.host.contains(':') {
-            format!("[{}]", self.host)
-        } else {
-            self.host.clone()
-        };
-        format!("{scheme}://{host}:{}{}", self.port, self.target)
-    }
 }
 
 /// The deployment's declared egress bound. Carried by every caller that hands this module

@@ -119,11 +119,6 @@ impl Link {
         })
     }
 
-    /// A bulk lane of its own: HTTP/1.1 connections apart from the control one.
-    pub(crate) fn bulk(&self) -> Result<Bulk, LinkError> {
-        Ok(self.machine.bulk()?)
-    }
-
     /// Bulk lane `i`, connected again when `fresh`.
     pub(crate) fn lane(&self, i: usize, fresh: bool) -> Option<Bulk> {
         let mut lanes = self.lanes.lock().unwrap_or_else(|e| e.into_inner());

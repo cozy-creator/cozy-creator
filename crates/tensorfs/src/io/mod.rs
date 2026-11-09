@@ -12,8 +12,6 @@ mod device;
 mod host;
 #[cfg(unix)]
 pub(crate) mod metrics;
-#[cfg(feature = "cuda")]
-pub(crate) mod pins;
 mod plan;
 mod probe;
 pub mod source;
@@ -25,7 +23,7 @@ pub use device::DeviceBuffer;
 pub use plan::Target;
 pub use probe::{ceiling, disk, keep_ceilings_in, Ceiling};
 #[cfg(feature = "store")]
-pub(crate) use view::{Span, StoredPart};
+pub(crate) use view::Span;
 
 /// `[ptr, ptr + len)` registered with this device's context: a copy from it is one DMA.
 ///
@@ -290,9 +288,6 @@ pub struct ReadStats {
 }
 
 impl ReadStats {
-    pub(crate) fn gbps(&self) -> f64 {
-        self.bytes as f64 / self.ns.max(1) as f64
-    }
 }
 
 /// Copy `copy` failed.
@@ -306,9 +301,6 @@ pub struct Error {
 
 #[cfg(feature = "cuda")]
 impl Error {
-    pub(crate) fn cuda(&self) -> Option<&cuda::Error> {
-        self.source.get_ref()?.downcast_ref()
-    }
 }
 
 /// Check completion of this device's engine streams and retained decode work. No driver,

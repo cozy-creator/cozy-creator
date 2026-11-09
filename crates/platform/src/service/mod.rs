@@ -48,17 +48,6 @@ impl Services {
         self.login && sys::available()
     }
 
-    /// Whether a user service manager answers at all, whatever the home: a home without one
-    /// (`available` false) is then another home than the login's, not a session without one.
-    pub(crate) fn reachable(&self) -> bool {
-        sys::available()
-    }
-
-    /// Writes the definition and enables it at login, without starting it.
-    pub(crate) fn install(&self, spec: &ServiceSpec) -> Result<()> {
-        sys::install(&self.dir, spec)
-    }
-
     /// Whether the definition kept here is `spec`'s: one read, no flush, no manager reload.
     pub fn current(&self, spec: &ServiceSpec) -> bool {
         sys::current(&self.dir, spec)
@@ -84,11 +73,6 @@ impl Services {
     /// for it. Windows' `Run` key has no manager to ask; systemd and launchd track it themselves.
     pub fn announce(&self, name: &str) -> Result<()> {
         sys::announce(&self.dir, name)
-    }
-
-    /// Ends it; nothing starts it again before `start` or the next login.
-    pub(crate) fn stop(&self, name: &str) -> Result<()> {
-        sys::stop(&self.dir, name)
     }
 
     /// Starts `spec`'s program now, detached from the caller and from the service the caller runs
