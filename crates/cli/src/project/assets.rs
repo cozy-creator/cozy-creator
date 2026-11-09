@@ -360,8 +360,8 @@ pub(super) async fn one(ctx: &Context, at: Option<&String>, name: String) -> Res
     // What a render would send now: the JSON `cozy run --input` takes.
     if let Some(call) = &held.call {
         println!("call: {}", serde_json::to_string_pretty(call).unwrap_or_default());
-        held.call_warnings.iter().for_each(|said| output::warn(said));
     }
+    held.call_warnings.iter().for_each(|said| output::warn(said));
     Ok(ExitCode::SUCCESS)
 }
 

@@ -882,6 +882,13 @@ async function died(why) {
     await post(`${at}/approve`, { name: 'shapes', version: '1' });
     await api(`${at}/assets/shapes`, { method: 'PATCH', body: JSON.stringify({ fields: { aspect_ratio: '16:9', seconds: 4 } }) });
     await until('16:9 asked', () => asset('shapes'), (row) => row?.fields?.aspect_ratio === '16:9' && row.pinned);
+    // Opened once the page shows its take at rest, as a person sees it first: an image tool's box opened before the page has read a take
+    // opens on its next take's words, and stays there as the take arrives (1bd797168). Opened sooner, a slow runner's read loses that race.
+    await page.keyboard.press('f');
+    await page.waitForTimeout(400);
+    const restBegan = Date.now();
+    await box('shapes').locator('.media:not(.blank) img').first().waitFor();
+    seen.shapes_take_at_rest_ms = Date.now() - restBegan;
     await open('shapes');
     const shapesHere = page.locator('.card.here[data-asset="shapes"]');
     // Once the page has read its approval: an open made before that shows what it last read.
