@@ -344,6 +344,7 @@ upgrades
 first_open
 version_text
 old_landing
+reclaim_unheld
 upgrade_interrupted
 tombstones
 lost_lock
@@ -354,7 +355,6 @@ text_assets
 memo
 pins
 project_runs
-reclaim_unheld
 path_free
 entities
 orphans
