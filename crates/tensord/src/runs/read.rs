@@ -4,7 +4,7 @@ use super::Runs;
 use crate::{
     api::auth::VerifiedActor,
     gpu_service::{without_gpus, KeptMember, Level},
-    journal::{Execution, PublicTerminal, State},
+    journal::{Execution, State},
     objects::refusal,
     stored,
 };
@@ -71,7 +71,7 @@ impl Runs {
             .public_terminal(&record.id)
             .map_err(problem)?
             .map(|held| {
-                stored::decode::<stored::LogPage>(held.events.as_slice())
+                stored::decode::<stored::LogPage>(&held)
                     .map(|page| page.head_sequence)
                     .map_err(|_| Error::internal("custody_corrupt", "durable event projection corrupt"))
             })
@@ -87,7 +87,7 @@ impl Runs {
                 .map_err(|_| Error::internal("internal", "invalid journal run number"))?,
             state: state_name(record).into(),
             sequence,
-            attempt: record.attempt.max(1) as u32,
+            attempt: record.attempt.max(1),
             started_at_ms: record.started_at_ms,
             target: [invocation.package.as_str(), invocation.entrypoint.as_str()]
                 .into_iter()
@@ -123,8 +123,8 @@ impl Runs {
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
         let canceled = self.service.engine.cancel_run(&actor_id(actor), id).map_err(|error| match error.kind() {
-            io::ErrorKind::Unsupported => refusal("update_control_unsupported", &error.to_string()),
-            io::ErrorKind::ResourceBusy => refusal("cancel_unavailable", &error.to_string()),
+            io::ErrorKind::Unsupported => refusal("update_control_unsupported", error.to_string()),
+            io::ErrorKind::ResourceBusy => refusal("cancel_unavailable", error.to_string()),
             _ => problem(error),
         })?;
         if let Some(calls) = self.service.calls() {
@@ -177,7 +177,7 @@ impl Runs {
             .public_terminal(&record.id)
             .map_err(problem)?
         {
-            return stored::decode::<stored::LogPage>(held.events.as_slice())
+            return stored::decode::<stored::LogPage>(&held)
                 .map_err(|_| Error::internal("custody_corrupt", "durable event projection is corrupt"));
         }
         if !record.state.terminal() {
@@ -424,7 +424,7 @@ impl Runs {
                 "outcome_id":outcome.outcome_id,
                 "outcome_digest":format!("sha256:{}",sha256::hex(&outcome.outcome_digest))
             }))?,
-            outcome: Some(outcome.clone()),
+            outcome: Some(outcome),
             ..Default::default()
         });
         let page = stored::LogPage {
@@ -436,15 +436,9 @@ impl Runs {
         let committed = self
             .service
             .engine
-            .commit_public_terminal(
-                &record.id,
-                PublicTerminal {
-                    outcome: stored::encode(&outcome),
-                    events: stored::encode(&page),
-                },
-            )
+            .commit_public_terminal(&record.id, stored::encode(&page))
             .map_err(problem)?;
-        stored::decode::<stored::LogPage>(committed.events.as_slice())
+        stored::decode::<stored::LogPage>(&committed)
             .map_err(|_| Error::internal("custody_corrupt", "durable event projection is corrupt"))
     }
     /// One output of `actor`'s run `id`: its current bytes. `index` is a list item's 1-based index.

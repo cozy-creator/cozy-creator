@@ -255,6 +255,9 @@ pub(crate) fn resume(runs: &Arc<crate::runs::Runs>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether a run sent is new, and its state; or why it was refused.
+pub(crate) type Accepted = Result<(bool, v1::RunState), Error>;
+
 impl Runs {
     /// Accepts the runs `requests` name as one admission (`Runs::admit`): each whether it is new and
     /// its state, or why it was refused. A run reads its Hub's public content anonymously, and private
@@ -264,7 +267,7 @@ impl Runs {
         self: &Arc<Self>,
         actor: VerifiedActor,
         requests: Vec<v1::RunRequest>,
-    ) -> Result<Vec<Result<(bool, v1::RunState), Error>>, Error> {
+    ) -> Result<Vec<Accepted>, Error> {
         let signer = super::read::actor_id(actor);
         let (mut answers, mut sent, mut serving) = (vec![], vec![], vec![]);
         for request in requests {

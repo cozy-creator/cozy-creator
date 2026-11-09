@@ -103,12 +103,6 @@ pub(crate) struct Installation {
     pub hub: String,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct PublicTerminal {
-    pub outcome: Vec<u8>,
-    pub events: Vec<u8>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AdmissionError {
     BindingConflict,
@@ -1034,18 +1028,10 @@ impl Journal {
             .map_err(db_error)?;
         Ok(record)
     }
-    pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<PublicTerminal>> {
+    /// A finished run's log (`stored::LogPage`), once its first read made it.
+    pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
         self.connection
-            .query_row(
-                "SELECT outcome,events FROM public_terminals WHERE execution=?1",
-                [id],
-                |row| {
-                    Ok(PublicTerminal {
-                        outcome: row.get(0)?,
-                        events: row.get(1)?,
-                    })
-                },
-            )
+            .query_row("SELECT events FROM public_terminals WHERE execution=?1", [id], |row| row.get(0))
             .optional()
             .map_err(db_error)
     }
@@ -1098,8 +1084,8 @@ impl Journal {
     pub(crate) fn commit_public_terminal(
         &mut self,
         id: &str,
-        projection: PublicTerminal,
-    ) -> io::Result<PublicTerminal> {
+        events: Vec<u8>,
+    ) -> io::Result<Vec<u8>> {
         if !self.get(id)?.state.terminal() {
             return Err(db_error(
                 "terminal projection requires durable terminal custody",
@@ -1110,11 +1096,11 @@ impl Journal {
         }
         self.connection
             .execute(
-                "INSERT INTO public_terminals(execution,outcome,events) VALUES(?1,?2,?3)",
-                params![id, projection.outcome, projection.events],
+                "INSERT INTO public_terminals(execution,outcome,events) VALUES(?1,x'',?2)",
+                params![id, events],
             )
             .map_err(db_error)?;
-        Ok(projection)
+        Ok(events)
     }
 
     /// `actor`'s runs accepted as one admission, in one transaction (cl-816): each referencing its

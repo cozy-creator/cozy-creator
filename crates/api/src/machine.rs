@@ -1,6 +1,6 @@
 //! The machine API (design/machine-http-api.md): HTTP + JSON on the machine's one pinned-TLS port,
 //! every request carrying `authorization: Cozy-Cap <token>`. Live state and run events are SSE;
-//! files move by ranged `PUT`/`HEAD`/`GET`. Refusals are [`crate::error::Envelope`]. Unknown fields
+//! files move by ranged `PUT`/`GET`. Refusals are [`crate::error::Envelope`]. Unknown fields
 //! are ignored, and clients skip SSE events they do not know.
 pub use executor_api::TensorFSOptions;
 use executor_api::base64_bytes;
@@ -221,7 +221,7 @@ pub enum RunKind {
     Warm,
     /// Stage, verify and activate a software cohort at idle.
     Update,
-    /// `remove/1`: the caller's installations of the source leave the machine: an installation by
+    /// The caller's installations of the source leave the machine: an installation by
     /// its name, or a release's package (its release, or every release when empty) from the run's
     /// Hub (local/ packages from none). Their environments are deleted once no process and no
     /// other installation holds them.
@@ -330,7 +330,7 @@ pub struct RunSpec {
     /// Provider tokens for source models, kept in memory only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub providers: Option<ProviderAccess>,
-    /// `warm/2`: the caller's whole warm set, replacing its previous one; no items clears it.
+    /// The caller's whole warm set, replacing its previous one; no items clears it.
     /// The run installs and downloads every member, and its result lists each one's `level` and
     /// `held_back`. Absent: the set is left as it is.
     #[serde(skip_serializing_if = "Option::is_none")]
