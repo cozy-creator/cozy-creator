@@ -10,7 +10,6 @@
 #   have       space-separated name/lane=commit pairs already on the Hub (bf16 too): not uploaded or written again
 #   lanes      comma-separated lanes the package's recipes write; the first one gates the release
 #   version    the release: higher than every earlier one
-#   traffic_gb GB the provider bills: the image, the sources and the uploads (430)
 #   function (ask), slot (model): the call and its model slot
 #   request    the calls' payload (JSON); a seed key gets a fresh seed per call
 #   expect     text every gate answer contains (42; empty: none)
@@ -19,7 +18,7 @@
 #              model needs a GPU to answer; a GPU session gates them and the release follows (true)
 . "$(dirname "$0")/lib.sh"
 PACKAGE=$(param package) SOURCES=$(param sources) LANES=$(param lanes) VERSION=$(param version) GIVEN=$(param have)
-TRAFFIC_GB=$(param traffic_gb 430) FUNCTION=$(param function ask) SLOT=$(param slot model)
+FUNCTION=$(param function ask) SLOT=$(param slot model)
 REQUEST=$(param request '{"prompt": "First, what is 17 + 25? Give just the number. Then describe this picture in two sentences.", "max_tokens": 160, "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5, "seed": 0}')
 EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg GATE=$(param gate true)
 trees=("$PACKAGES"/*/)
@@ -59,7 +58,7 @@ for p in $GIVEN; do
 done
 printf 'commit   _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 7 > "$OUT/probe.txt"
 [ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
-quote "$TRAFFIC_GB" 7200
+quote 7200
 rent
 
 # 1. Each source as its bf16 commit, unless given.

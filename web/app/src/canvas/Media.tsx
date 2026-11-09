@@ -497,21 +497,23 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
   return <Progress veil={making} fraction={run?.progress?.done_fraction} says={says || undefined} />
 }
 
-/** The picture in a box's frame, one take's alone: its small thumbnail at once, the one its tile and its box at rest already have, scaled up,
- *  and its own resolution over it as soon as that's decoded. Another take's picture is never what stands in. */
-function FramePicture({ sha256, restWidth, onSize, onShown }: { sha256: string; restWidth: number; onSize: (aspect: number) => void; onShown: () => void }) {
+/** The picture in a box's frame, one take's alone. At rest, as wide as it's drawn, in line with the rest. Open, its small thumbnail at once, the one
+ *  its tile and its box at rest already have, scaled up, and its own resolution over it as soon as that's decoded. Another take's picture is
+ *  never what stands in. */
+function FramePicture({ sha256, open, restWidth, onSize, onShown }: { sha256: string; open: boolean; restWidth: number; onSize: (aspect: number) => void; onShown: () => void }) {
   const [full, setFull] = useState(false)
+  if (full && !open) setFull(false)
   return (
     <>
-      {!full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
+      {open && !full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
       <Thumb
         sha256={sha256}
-        cardWidth={FULL}
-        exact
-        now
+        cardWidth={open ? FULL : restWidth}
+        exact={open}
+        now={open}
         onSize={onSize}
         onShown={() => {
-          setFull(true)
+          if (open) setFull(true)
           onShown()
         }}
       />
@@ -631,7 +633,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
         />
       )}
       {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-      {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+      {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       {blank && words && !madeFrom && <Said words={words} view={view} name={name} />}

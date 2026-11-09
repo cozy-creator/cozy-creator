@@ -72,8 +72,8 @@ export function AddOns({ name }: { name: string }) {
   )
 }
 
-/** Behind More: each add-on, and how strong a LoRA is. */
-function AddOnRow({ name, addOn }: { name: string; addOn: AddOn }) {
+/** Behind More, and in the left bar of an open box: each add-on, and how strong a LoRA is. */
+export function AddOnRow({ name, addOn }: { name: string; addOn: AddOn }) {
   const { lora, models, store } = useAddOns(name)
   const [moving, setMoving] = useState<number | null>(null)
   const shown = moving ?? addOn.strength

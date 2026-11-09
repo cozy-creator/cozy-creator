@@ -11,14 +11,13 @@
 # params:
 #   model      a small public model the pieces read raw (default proomptengineer/balloon-lora-sdxl, 176 MB)
 #   outage_s   seconds the resolver stays broken after the run says it retries (default 20)
-#   traffic_gb GB the provider bills: the image, the model, the fixture's environment (default 8)
 . "$(dirname "$0")/lib.sh"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 [ -f "$FIX/hub-outage/package.toml" ] || fail "no fixture checkout"
 MODEL=$(param model proomptengineer/balloon-lora-sdxl) OUTAGE=$(param outage_s 20) ABSENT=fidika/cl708-absent-$RANDOM
-quote "$(param traffic_gb 8)" 1200
+quote 1200
 rent
 
 sh() { cozy machine ssh "$NAME" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; }

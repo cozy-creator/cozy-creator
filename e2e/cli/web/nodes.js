@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, until, watchBoxes } = require('./page');
+const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -158,7 +158,7 @@ function linesOf(text, name) {
   // A tool dragged out of the list drops a box at that point: what it is comes from what it makes. The Edit is always there, and costs nothing.
   const dragOut = async (row, x, y) => {
     const namesBefore = (await state()).assets.map((held) => held.name);
-    await row.dragTo(page.locator('.stage'), { targetPosition: { x, y } });
+    await carry(page, row, { x, y });
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
@@ -212,10 +212,11 @@ function linesOf(text, name) {
     tool = wire.id;
     check('local_tool_says_so', wire.local && !wire.label.includes('(local)') && wire.id.startsWith(drawer), wire);
     check('local_tools_are_editable', (await page.locator('.tools section:has(h4:has-text("Editable")) .tool').count()) > 0);
-    // A retry of a new asset makes no `_2`, on the wire.
+    // A retry of a new asset makes no `_2`, on the wire. Calcifer keeps a key a day whatever the project (cl-812): each pass, its own.
     const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
-    const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
-    const second = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
+    const twice = `nodes-twice-${id}`;
+    const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': twice }, body });
+    const second = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': twice }, body });
     check('retry_makes_no_second', first.status === 201 && second.status === 201 && second.body.name === first.body.name && !yaml().includes('Twice_2'), { first, second });
     check('new_asset_has_its_tool', /Twice:\n {4}tool: /.test(yaml()), linesOf(yaml(), 'Twice'));
     await api(`/v1/projects/${id}/assets/Twice`, { method: 'DELETE' });
@@ -357,6 +358,10 @@ function linesOf(text, name) {
 
   // Controls from what it holds: its words and its beats shown, whatever the alphabet says of `style` and `summary`, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
   replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    style: wash\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
+  // It reads source-b, so it's placed beside it, which may be out of view of source-a open: placed, the canvas at rest and fitted has it in view (as versions.js's moving_words).
+  await until('knobs placed', rows, (now) => now.knobs);
+  await away();
+  await page.keyboard.press('f');
   await box('knobs').waitFor();
   await open('knobs');
   const knobs = box('knobs');
@@ -388,6 +393,15 @@ function linesOf(text, name) {
   check('its_shape_by_its_corner', (await knobs.locator('.ratio-rest').innerText()) === '3:2', await knobs.locator('.ratio-rest').innerText());
   const widthBefore = (await rows()).knobs.w;
   const pull = async (dx, dy) => {
+    // Firefox's driver drops a release past the window's edge, and fitted, knobs can be the box at it: the canvas pans first, so the pull ends inside.
+    const { width, height } = page.viewportSize();
+    const at = await knobs.locator('.corner').boundingBox();
+    const [overX, overY] = [Math.max(0, at.x + 6 + dx - (width - 40)), Math.max(0, at.y + 6 + dy - (height - 40))];
+    if (overX || overY) {
+      await page.locator('.react-flow__pane').dispatchEvent('wheel', { deltaX: overX, deltaY: overY });
+      await settled(page);
+      await knobs.locator('.nm').hover();
+    }
     const corner = await knobs.locator('.corner').boundingBox();
     await page.mouse.move(corner.x + 6, corner.y + 6);
     await page.mouse.down();
@@ -615,11 +629,13 @@ function linesOf(text, name) {
     await open('Sheet');
     // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
     await until('the page has its words', () => box('Sheet').locator('text=The sheet of two.').count(), (n) => n > 0);
-    // Picked up from its big tile, the take it shows.
+    // Picked up from its big tile, the take it shows. It moves out (571ee2123): its box keeps the rest.
     await box('Sheet').locator('.take[aria-label="version 2"]').click();
+    const [carried, kept] = [(await of('Sheet')).prefixes[1].main.sha256, (await versions('Sheet')) - 1];
     await box('Sheet').locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
     const out = await until('taken out', () => of('Sheet_2'), Boolean);
-    check('taken_out_is_the_same_file', out.sha256 === (await of('Sheet')).prefixes[1].main.sha256 && !out.tool, out);
+    check('taken_out_is_the_same_file', out.sha256 === carried && !out.tool, out);
+    await until('and gone from its box', () => versions('Sheet'), (n) => n === kept);
     check('taken_out_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
     await until('it keeps what it says', () => of('Sheet_2'), (held) => held.fields?.description?.includes('sheet of two'));
     await shot('versions');
@@ -717,7 +733,7 @@ function linesOf(text, name) {
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
-    const heldFile = (await of('Sheet')).sha256;
+    const [heldFile, heldTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
     const filesThen = readdirSync(join(folder, 'files')).length;
     const stood = (await rows())['source-a'];
     const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a'));
@@ -758,7 +774,7 @@ function linesOf(text, name) {
     await (await renderOf(page, 'Sheet')).click();
     const again = await until('it says so again', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render")));
     check('failed_again_said_again', again.every((line) => !line.includes('Sheet: ')), again);
-    check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
+    check('failed_runs_nothing', (await versions('Sheet')) === heldTakes && (await of('Sheet')).sha256 === heldFile, { takes: await versions('Sheet'), heldTakes });
     await render('Other', 2);
     check('the_rest_goes_on', true);
     await open('Sheet');
@@ -810,10 +826,10 @@ function linesOf(text, name) {
     await box('source-b').waitFor();
 
     // Render on what's approved: another to look at, and the approval stays.
-    const nowHeld = (await of('Sheet')).sha256;
+    const [nowHeld, nowTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
     await open('Sheet');
     await (await renderOf(page, 'Sheet')).click();
-    await until('another to look at', () => versions('Sheet'), (n) => n === 3, FIRST_RUN_MS);
+    await until('another to look at', () => versions('Sheet'), (n) => n === nowTakes + 1, FIRST_RUN_MS);
     check('approved_stays', (await of('Sheet')).pinned && (await of('Sheet')).sha256 === nowHeld, await of('Sheet'));
 
     // Render all: its count, what's approved left alone.

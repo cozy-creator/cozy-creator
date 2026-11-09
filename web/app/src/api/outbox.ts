@@ -3,8 +3,8 @@ import { ApiError, sessionLost } from "./client"
 
 /** One thing a person did. The page already shows it; this is its way to Calcifer. */
 export interface Action<T = unknown> {
-  /** One try. `once` ends it. An `Idempotency-Key` is made with the action, so every try is the same ask. */
-  send(once: AbortSignal): Promise<T>
+  /** One try. `once` ends it. `action` is made with the action and goes with every try (`Write.action`), so every try is the same ask. */
+  send(once: AbortSignal, action: string): Promise<T>
   /** Calcifer has it. */
   done?(answer: T): void
   /** Calcifer said no: what the page showed goes, and a line says why. */
@@ -127,12 +127,13 @@ export class Outbox {
   }
 
   private async attempt<T>(action: Action<T>) {
+    const id = crypto.randomUUID()
     for (let tries = 1; ; tries++) {
       const trying = new AbortController()
       if (!action.long) this.trying = trying
       let answer: T
       try {
-        answer = await action.send(trying.signal)
+        answer = await action.send(trying.signal, id)
       } catch (error) {
         if (lost(error)) {
           this.tell({ slow: true, held: error instanceof ApiError && error.body.code === HELD ? error.message : undefined })

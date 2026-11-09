@@ -23,7 +23,7 @@ macro_rules! family {
 }
 
 /// The built-in families.
-pub const FAMILIES: [&str; 9] = [
+pub const FAMILIES: [&str; 14] = [
     family!("minimax-h3"),
     family!("sdxl"),
     family!("anima"),
@@ -33,6 +33,11 @@ pub const FAMILIES: [&str; 9] = [
     family!("moss"),
     family!("ideogram-4"),
     family!("seedvr2"),
+    family!("flux-2"),
+    family!("flux-3-klein"),
+    family!("fibo-2"),
+    family!("hunyuan-image-3"),
+    family!("hidream-o1"),
 ];
 
 /// The form a family's reference is in.
@@ -81,6 +86,10 @@ pub struct Def {
     /// LoRA-only targets, `[path, [out, in]]`: what an adapter may train that no weight is.
     #[serde(default)]
     pub sites: Vec<(String, Vec<u64>)>,
+    /// A variant's own pinned checkpoint (`hf://org/repo@<commit>`): a checkpoint pinned to its
+    /// repository is this variant (Klein's base DiT, FIBO 2's Edit-Turbo).
+    #[serde(default)]
+    pub reference: Option<String>,
 }
 
 /// A stored form: a declared edit of some components' canonical keys. `*` in a key matches any
@@ -132,13 +141,22 @@ pub fn of_table(table: &str) -> Option<&'static Family> {
     families().iter().find(|f| f.sources.iter().any(|s| s == table))
 }
 
-/// The family a class names.
-pub fn of_class(class: &str) -> Option<&'static Family> {
-    families().iter().find(|f| f.classes.iter().any(|c| c == class))
+/// Every family `classes` name, in their order, once: a class can name several (Qwen3-VL's is HiDream O1's, and
+/// FLUX.3's and FIBO 2's text encoder's), and the keys say which.
+pub fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<&'static Family> {
+    let mut out: Vec<&'static Family> = Vec::new();
+    for class in classes {
+        for f in families().iter().filter(|f| f.classes.iter().any(|c| c == class)) {
+            if !out.iter().any(|o| o.name == f.name) {
+                out.push(f);
+            }
+        }
+    }
+    out
 }
 
-/// What a LoRA's tensors end in.
-pub const FACTORS: [&str; 3] = [".lora_A.weight", ".lora_B.weight", ".alpha"];
+/// What a LoRA's tensors end in: its factors, alpha and a DoRA's magnitude.
+pub const FACTORS: [&str; 4] = [".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector"];
 /// What a LoRA keeps beside its factors that adapts no base weight: a parallel decoder's per-step
 /// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`).
 pub const KEPT: [&str; 1] = [".heads"];
@@ -185,10 +203,16 @@ pub struct Facts {
     pub family: Option<String>,
 }
 
+/// Whether every tensor of a stored component is a LoRA's, as its source may have spelled it (kohya's
+/// `lora_down`, PEFT's adapter name): one kept as it was until a table read it.
+fn holds_factors(component: &Component) -> bool {
+    component.tensors.iter().all(|t| lora_key(&t.key) || crate::import::lora::peft_key(&t.key).is_some())
+}
+
 impl Facts {
     /// What `header` is; none when it holds no tensors.
     pub fn of(header: &Header) -> Option<Facts> {
-        let (loras, bases): (Vec<&Component>, Vec<&Component>) = header.components().iter().filter(|c| !c.tensors.is_empty()).partition(|c| is_lora(c));
+        let (loras, bases): (Vec<&Component>, Vec<&Component>) = header.components().iter().filter(|c| !c.tensors.is_empty()).partition(|c| holds_factors(c));
         let lora = bases.is_empty();
         if lora && loras.is_empty() {
             return None;
@@ -204,27 +228,44 @@ impl Facts {
 /// The one family every LoRA component of a header adapts.
 fn adapted(metadata: &Metadata, loras: &[&Component]) -> Option<String> {
     let recorded: BTreeSet<String> = Adapter::read_all(metadata).into_values().map(|adapter| adapter.family).collect();
-    let fits = |c: &&Component| fitting(&targets_of(c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())))).into_iter().map(|(family, _)| family.name.clone()).collect::<BTreeSet<_>>();
     let mut found = match recorded.is_empty() {
-        true => loras.iter().map(fits).reduce(|held, next| &held & &next).unwrap_or_default().into_iter(),
+        true => loras.iter().map(|c| adapts(c)).reduce(|held, next| &held & &next).unwrap_or_default().into_iter(),
         false => recorded.into_iter(),
     };
     found.next().filter(|_| found.next().is_none())
 }
 
-/// The family a header's classes name, by the keys and shapes of what they name: a lane's text encoder is cut or scaled as it likes, and says nothing of what a
-/// checkpoint is. A class of the pipeline's alone leaves all it has of the family to say.
-fn based(header: &Header, bases: &[&Component]) -> Option<String> {
-    if let Some(record) = Record::read(&header.metadata) {
-        return Some(record.name);
+/// The families a LoRA component's factors fit: by its module names, else as a LoRA table reads its spelling.
+fn adapts(c: &Component) -> BTreeSet<String> {
+    let keys = || c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice()));
+    let fits: BTreeSet<String> = fitting(&targets_of(keys())).into_iter().map(|(family, _)| family.name.clone()).collect();
+    match fits.is_empty() {
+        true => crate::import::engine::lora_family(keys()).map(|family| family.name.clone()).into_iter().collect(),
+        false => fits,
     }
-    let classes = header.pipeline().map(|p| &p.class.name).into_iter().chain(header.components().iter().map(|c| &c.class.name));
-    let family = classes.into_iter().find_map(|class| of_class(class))?;
-    let (named, rest): (Vec<&Component>, Vec<&Component>) = bases.iter().copied().filter(|c| family.def(&c.name).is_some()).partition(|c| family.classes.contains(&c.class.name));
-    let stored: Vec<Stored> = (if named.is_empty() { rest } else { named }.iter())
-        .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
-        .collect();
-    (!stored.is_empty() && family.form_of(&stored).is_ok()).then(|| family.name.clone())
+}
+
+/// The family a header's classes name, by the keys and shapes of what they name: a lane's text encoder is cut or scaled as it likes, and says nothing of what a
+/// checkpoint is. A class of the pipeline's alone leaves all it has of the family to say. A class several families share
+/// (Qwen3-VL's) is each of theirs to verify, in order.
+fn based(header: &Header, bases: &[&Component]) -> Option<String> {
+    match Record::read(&header.metadata) {
+        Some(record) => Some(record.name),
+        None => verified(header, bases).map(|(family, _, _)| family.name.clone()),
+    }
+}
+
+/// The family `based` verifies, its form and the components it verified.
+fn verified<'h>(header: &'h Header, bases: &[&'h Component]) -> Option<(&'static Family, String, Vec<&'h str>)> {
+    let classes = header.pipeline().map(|p| p.class.name.as_str()).into_iter().chain(header.components().iter().map(|c| c.class.name.as_str()));
+    of_classes(classes).into_iter().find_map(|family| {
+        let (named, rest): (Vec<&Component>, Vec<&Component>) = bases.iter().copied().filter(|c| family.def(&c.name).is_some()).partition(|c| family.classes.contains(&c.class.name));
+        let stored: Vec<Stored> = (if named.is_empty() { rest } else { named }.iter())
+            .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
+            .collect();
+        let form = family.form_of(&stored).ok().filter(|_| !stored.is_empty())?;
+        Some((family, form, stored.iter().map(|s| s.name).collect()))
+    })
 }
 
 /// One stored component: its name and every tensor's key and logical shape.
@@ -281,6 +322,15 @@ impl Family {
             .filter(|c| self.def(c).is_some_and(|(r, _)| r == root))
             .map(String::as_str)
             .collect()
+    }
+
+    /// The variant of `component` a checkpoint pinned to `sources` is: the one whose own reference
+    /// is in one of their repositories, else `component`.
+    pub fn pinned_variant<'a>(&'a self, component: &'a str, sources: &[&str]) -> &'a str {
+        let repo = |s: &str| s.split('@').next().unwrap_or(s).to_ascii_lowercase();
+        let repos: Vec<String> = sources.iter().map(|s| repo(s)).collect();
+        let own = |v: &&str| self.components.get(*v).and_then(|d| d.reference.as_deref()).is_some_and(|r| repos.contains(&repo(r)));
+        self.variants(component).into_iter().find(own).unwrap_or(component)
     }
 
     /// `component`'s keys under `form`.
@@ -437,6 +487,23 @@ impl Record {
             reference: field(m, "reference")?.to_owned(),
             components: strings(m.get("components")),
         })
+    }
+
+    /// A header's `family`: what its ingest recorded, else what its keys verify as now, each
+    /// component the variant its pinned source is (a checkpoint stored before its family was known).
+    pub fn of(header: &Header) -> Option<Record> {
+        if let Some(record) = Record::read(&header.metadata) {
+            return Some(record);
+        }
+        let bases: Vec<&Component> = header.components().iter().filter(|c| !c.tensors.is_empty() && !holds_factors(c)).collect();
+        let (family, form, stored) = verified(header, &bases)?;
+        let sources: Vec<&str> = match header.metadata.get(crate::import::SOURCE) {
+            Some(Value::List(l)) => l.iter().filter_map(Value::as_str).collect(),
+            Some(v) => v.as_str().into_iter().collect(),
+            None => vec![],
+        };
+        let components = stored.into_iter().map(|c| (c.to_owned(), family.pinned_variant(c, &sources).to_owned())).collect();
+        Some(Record { name: family.name.clone(), form, reference: family.reference.clone(), components })
     }
 
     /// The family component a stored one is: what `components` records, else its own name.

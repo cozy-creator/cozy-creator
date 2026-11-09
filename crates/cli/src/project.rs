@@ -590,7 +590,9 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         in_s: args.in_s,
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
-    let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
+    // This render, as the `ended` that ends it names it.
+    let key = mint_key();
+    let asked: Asked = calcifer.post(&path, &runs, Some(&key)).await?;
     match asked.skipped.as_slice() {
         [] => {}
         [one] => output::say(ctx, &format!("{one} is approved: skipped. Name it to make a new version, or unapprove it")),
@@ -623,13 +625,14 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     let events = events.take().expect("following");
     let status = format!("cozy project -p {} status", opened.path.display());
     if ctx.json {
-        return following_json(ctx, events, &status).await;
+        return following_json(ctx, events, &status, Some(&key)).await;
     }
-    render::follow(ctx, render::Rendering::new(opened.path.clone(), asked.board), events, args_plain, &status).await
+    render::follow(ctx, render::Rendering::new(opened.path.clone(), asked.board, Some(key)), events, args_plain, &status).await
 }
 
-/// `--json`: each run's own events, as `cozy run` gives them, and the render's refusal as its envelope.
-async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch<Event>, status: &str) -> Result<ExitCode, Error> {
+/// `--json`: each run's own events, as `cozy run` gives them, and the render's refusal as its envelope. It ends with the walk that ends
+/// the render asked under `key`, or with None the one going.
+async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch<Event>, status: &str, key: Option<&str>) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let mut warned = std::collections::HashSet::new();
     // `/events` opens with the runs going, and one that began just then can be told twice.
@@ -647,7 +650,7 @@ async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch
                     output::warn(&message);
                 }
             }
-            Event::Ended { error, .. } => {
+            Event::Ended { error, keys, .. } if key.is_none_or(|key| keys.iter().any(|ended| ended == key)) => {
                 return match error {
                     Some(error) => Err(error),
                     None => Ok(ExitCode::SUCCESS),
@@ -685,8 +688,8 @@ async fn wait(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> {
     let state: State = calcifer.get(&format!("/v1/projects/{}", opened.id)).await?;
     let status = format!("cozy project -p {} status", opened.path.display());
     match state.board.clone().filter(|_| state.busy) {
-        Some(_) if ctx.json => following_json(ctx, events, &status).await,
-        Some(board) => render::follow(ctx, render::Rendering::new(opened.path.clone(), board), events, false, &status).await,
+        Some(_) if ctx.json => following_json(ctx, events, &status, None).await,
+        Some(board) => render::follow(ctx, render::Rendering::new(opened.path.clone(), board, None), events, false, &status).await,
         None => {
             shown(ctx, &state);
             let failed = state.assets.iter().any(|asset| asset.failure.is_some());
@@ -750,9 +753,6 @@ pub(crate) fn totals(state: &State) -> String {
 /// Under the table, on stdout: what's going, what failed, and what to do; with `--full`, each version's hash, what
 /// is missing and out of date and why, what the file no longer names, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
-    if let Some(held) = &state.held {
-        println!("{}", render::held_line(held));
-    }
     let (running, queued): (Vec<_>, Vec<_>) = state.queue.iter().partition(|item| item.running);
     if !running.is_empty() {
         let shown: Vec<String> = running.iter().map(|item| item.run.map_or_else(|| item.name.clone(), |run| format!("{} (run {run})", item.name))).collect();

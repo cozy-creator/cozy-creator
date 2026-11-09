@@ -442,7 +442,7 @@ impl Calcifer {
             };
             let measured = self.measured(item, &staged).await;
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
-            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured))
+            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))
         };
         tokio::pin!(work);
         let done = loop {
@@ -506,25 +506,23 @@ impl Calcifer {
         Ok(owed.collect())
     }
 
-    /// What ffprobe says of a revision about to land, a picture, video or sound; nothing with no ffprobe here, or of what it doesn't read.
-    async fn measured(&self, item: &OutputRow, staged: &Path) -> Measured {
-        let media = ["image/", "video/", "audio/"].iter().any(|kind| item.media_type.starts_with(kind));
-        let Some(machines) = self.machines().filter(|_| media) else { return Measured::default() };
-        let Some((_, ffprobe)) = platform::tools::ffmpeg(&machines.hubs.home().tools(), &crate::tools::path()) else {
-            return Measured::default();
-        };
-        let staged = staged.to_owned();
-        tokio::task::spawn_blocking(move || probe(&ffprobe, &staged)).await.unwrap_or_default()
+    /// What's measured of a revision about to land, a picture, video or sound, once, as its project measures its files: the run's record
+    /// and its project both say it from the moment it lands. Nothing with no ffprobe here, or of what it doesn't read.
+    async fn measured(&self, item: &OutputRow, staged: &Path) -> Option<crate::project::Facts> {
+        let machines = self.machines()?;
+        let (tools, staged, media_type) = (machines.hubs.home().tools(), staged.to_owned(), item.media_type.clone());
+        tokio::task::spawn_blocking(move || crate::project::measured(&tools, &staged, &media_type)).await.ok().flatten()
     }
 
-    /// Puts the staged bytes in the item's place and records them, one step as `serve` sees it.
+    /// Puts the staged bytes in the item's place and records them, one step as `serve` sees it: its project's file measured before it's
+    /// there, the run's record once it is.
     fn land(
         &self,
         run: &RunRow,
         item: &OutputRow,
         staged: &Path,
         dest: &Path,
-        measured: Measured,
+        measured: Option<&crate::project::Facts>,
     ) -> Result<(), Failure> {
         let began = Instant::now();
         let old = suffixed(dest, ".old");
@@ -556,7 +554,7 @@ impl Calcifer {
             let mut unlisted = None;
             let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
                 Some(project) => {
-                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest };
+                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest, measured };
                     match crate::project::landed(project, &made, dest) {
                         Ok((kept, said)) => {
                             unlisted = said;
@@ -573,6 +571,11 @@ impl Calcifer {
             };
             let project_ms = project_began.elapsed().as_secs_f64() * 1000.0;
             let store_began = Instant::now();
+            let measured = measured.map_or_else(Measured::default, |facts| Measured {
+                width: facts.width as u32,
+                height: facts.height as u32,
+                duration_ms: facts.lasts_ms(),
+            });
             let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
             if let Some(said) = unlisted {
                 warn!(run = %run.id, output = %name, "{said}");
@@ -595,40 +598,6 @@ impl Calcifer {
             elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
         remove(&old);
         Ok(())
-    }
-}
-
-/// A file's first video stream's size and its length, as ffprobe reads them.
-fn probe(ffprobe: &Path, path: &Path) -> Measured {
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    struct Stream {
-        width: u32,
-        height: u32,
-    }
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    struct Format {
-        duration: String,
-    }
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    struct Probed {
-        streams: Vec<Stream>,
-        format: Format,
-    }
-    let asked = std::process::Command::new(ffprobe)
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json"])
-        .arg(path)
-        .output();
-    let Ok(probed) = asked.map_err(drop).and_then(|done| serde_json::from_slice::<Probed>(&done.stdout).map_err(drop)) else {
-        return Measured::default();
-    };
-    let stream = probed.streams.first();
-    Measured {
-        width: stream.map_or(0, |s| s.width),
-        height: stream.map_or(0, |s| s.height),
-        duration_ms: probed.format.duration.parse::<f64>().map_or(0, |seconds| (seconds * 1000.0).round() as u64),
     }
 }
 

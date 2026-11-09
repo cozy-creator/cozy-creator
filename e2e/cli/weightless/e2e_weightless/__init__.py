@@ -1,7 +1,6 @@
 """The cli suite's weightless requests: from cozy through TensorD, the Runtime and TensorFS to the executor's
 reply and back, with no model, so they run on any computer."""
 
-import os
 import time
 
 import msgspec
@@ -43,21 +42,6 @@ def wait(payload: Wait) -> Waited:
 def silent(payload: Wait, tel: Telemetry) -> Waited:
     """Says it waits, then sleeps without a word: nothing judges a run's progress (cl-663)."""
     tel.progress(0.0, stage="waiting silently")
-    time.sleep(payload.seconds)
-    return Waited(seconds=payload.seconds)
-
-
-@app.entrypoint(accelerator=False)
-def orphan(payload: Wait, tel: Telemetry) -> Waited:
-    """Forks a child that holds the executor's channel open, names both, then waits: the suite
-    kills this executor, and its run must end at once."""
-    child = os.fork()
-    if child == 0:
-        try:
-            time.sleep(payload.seconds)
-        finally:
-            os._exit(0)
-    tel.progress(0.0, stage=f"executor {os.getpid()} forked {child}")
     time.sleep(payload.seconds)
     return Waited(seconds=payload.seconds)
 

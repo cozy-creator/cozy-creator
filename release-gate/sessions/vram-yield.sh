@@ -21,13 +21,12 @@
 #   runtime, tensorfs  `machine update` versions (default: the pod's own)
 #   tensord            a cozy binary for the pod (default: the session's)
 #   idle_gb, midjob_gb, big_gb  the games (default 5, 3 and 5, of an 8 GB card)
-#   traffic_gb         GB the provider bills: the image, SDXL, Qwen and the fixture's environment (default 45)
 . "$(dirname "$0")/lib.sh"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 [ -f "$FIX/game.py" ] || fail "no fixture checkout"
-quote "$(param traffic_gb 45)" 3000
+quote 3000
 rent
 
 args=(--tensord "$(param tensord "$(command -v cozy)")")

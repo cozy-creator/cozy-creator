@@ -4,7 +4,8 @@
 //! sandbox: same-UID code can move out of a delegated cgroup or scrub its token.
 //!
 //! A shared machine is also contained ([`contain`]): it and its executors in one cgroup with a
-//! memory limit the kernel enforces, so a run that outgrows the computer is killed inside it.
+//! memory limit the kernel enforces, so a run that outgrows the computer is killed inside it. The
+//! limit is varena's number ([`follow`]); this only applies it.
 use super::{Stuck, TOKEN_ENV};
 use super::host_memory::{available_outside, computer, events, number};
 use crate::process::{Birth, Exact, State, gone, in_kernel};
@@ -35,10 +36,9 @@ struct Contained {
 
 /// A budget below this much movement is not written again.
 const MOVED: u64 = 64 << 20;
-/// What the machine's own processes may grow by under the tightest budget.
-const MACHINE_ROOM: u64 = 1 << 30;
 
-/// What a contained machine and its executors may use, as last written to their cgroup.
+/// What a contained machine and its executors may use, as last written to their cgroup: varena's
+/// number (`varena_ledger::host::machine`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Budget {
     /// `memory.max`: past it, the kernel takes the machine's page cache back, then kills inside
@@ -183,17 +183,28 @@ pub fn contain(namespace: &str) -> std::result::Result<PathBuf, String> {
     Ok(root)
 }
 
-/// Follows a contained machine's budget: what it holds that the kernel cannot take back, plus what
-/// the computer has available outside it, less `reserve`. Never more than the computer less
-/// `reserve`, and never less than the machine's own processes use plus [`MACHINE_ROOM`]: a call
-/// that outgrows the computer is killed, the machine stays. When the computer's other programs grow into the
-/// reserve the budget falls below what the executors hold: the kernel takes their page cache back,
-/// then kills one. Written once it moved [`MOVED`]. None when not contained.
-pub fn follow(reserve: u64) -> Option<io::Result<Budget>> {
+/// What the kernel accounts for a contained machine, for varena to size its limit from
+/// (`varena_ledger::host::machine`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineFacts {
+    /// The computer: physical memory, or less where a limit above the machine's own is.
+    pub computer: u64,
+    /// What it has available outside the machine's cgroups.
+    pub outside: u64,
+    /// What the machine and its executors hold that the kernel cannot take back (page cache aside).
+    pub held: u64,
+    /// What the machine's own processes use (`machine/memory.current`).
+    pub own: u64,
+}
+
+/// Applies varena's number to a contained machine's cgroup: `size` turns what the kernel accounts
+/// into (`memory.max`, the reserve kept outside it). Written once it moved [`MOVED`]. None when not
+/// contained. This sizes nothing.
+pub fn follow(size: impl FnOnce(&MachineFacts) -> (u64, u64)) -> Option<io::Result<Budget>> {
     let contained = CONTAINED.get()?;
-    let read = || -> io::Result<Budget> {
+    let read = || -> io::Result<(MachineFacts, u64)> {
         let root = &contained.root;
-        let (Ok(available), Some(total)) = (u64::try_from(available_outside()), computer()) else {
+        let (Ok(outside), Some(computer)) = (u64::try_from(available_outside()), computer()) else {
             return Err(io::Error::other("/proc/meminfo is unreadable"));
         };
         let used = number(&root.join("memory.current")).unwrap_or(0);
@@ -204,11 +215,12 @@ pub fn follow(reserve: u64) -> Option<io::Result<Budget>> {
             .filter(|(name, _)| matches!(*name, "active_file" | "inactive_file"))
             .filter_map(|(_, v)| v.trim().parse::<u64>().ok())
             .sum();
-        let floor = number(&root.join("machine/memory.current")).unwrap_or(0) + MACHINE_ROOM;
-        let max = (used.saturating_sub(file) + available).saturating_sub(reserve).min(total.saturating_sub(reserve)).max(floor);
-        Ok(Budget { max, reserve, used })
+        let own = number(&root.join("machine/memory.current")).unwrap_or(0);
+        Ok((MachineFacts { computer, outside, held: used.saturating_sub(file), own }, used))
     };
-    Some(read().and_then(|budget| {
+    Some(read().and_then(|(facts, used)| {
+        let (max, reserve) = size(&facts);
+        let budget = Budget { max, reserve, used };
         let mut written = contained.written.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(was) = *written {
             if was.max.abs_diff(budget.max) < MOVED {

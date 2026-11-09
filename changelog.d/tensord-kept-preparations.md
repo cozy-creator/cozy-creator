@@ -1,0 +1,1 @@
+A run a machine accepted with access (a Hub capability or a provider token) is no longer lost when the machine restarts while it prepares: the machine keeps it as `needs_access`, its sender sends the access again, and the same run prepares on and completes. Any other sender sees the run, not `run_not_found`.

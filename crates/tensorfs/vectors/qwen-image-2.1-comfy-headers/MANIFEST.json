@@ -1,0 +1,23 @@
+{
+ "note": "Qwen-Image 2.1 transformers in ComfyUI's single-file layout (bare Diffusers names, each block's img_mlp.gate_layer and proj fused as gate_up [gate; proj]): Comfy-Org's bf16 repack of the reference, and Noctaluna's Noct-Q V4 fine-tune in ComfyUI's int8_convrot (comfy_quant markers, per-row weight_scale)",
+ "members": [
+  {
+   "source": "Comfy-Org/Qwen-Image-2.1@aacf31a6d48e707f352ecba714cee0680da3479b",
+   "member": "diffusion_models/qwen_image_2.1_bf16.safetensors",
+   "header_file": "qwen_image_2.1_bf16.safetensors.header",
+   "header_sha256": "377506d809fe1b61f711031a10adadb3d89850e66b97b176fcdc08e49091eb21",
+   "header_bytes": 31144,
+   "full_length": 14230280616,
+   "declared_source_sha256": "89f4158d066cc33906a199fca85634f766892dd78f49b6698dabf187ac86c4bc"
+  },
+  {
+   "source": "Noctaluna/Noct-Q-Uncensored-Qwen-Image-2.1@a81b9af51120a78e285e57906f2250a2a02080e9",
+   "member": "NoctQ_V4_int8_convrot.safetensors",
+   "header_file": "NoctQ_V4_int8_convrot.safetensors.header",
+   "header_sha256": "d87c241e41e03ad27a1f66f3da5ba795e64f82bd3d3478131a0cc5ce11b7523b",
+   "header_bytes": 75760,
+   "full_length": 7256784368,
+   "declared_source_sha256": "4d92d5538253ab36e6a73b056cce5f697950f4303cb9e6686a3198d0ea13f9e8"
+  }
+ ]
+}

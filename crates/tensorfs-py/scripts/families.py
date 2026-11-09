@@ -120,7 +120,7 @@ FAMILIES: list[dict[str, Any]] = [
         "reference": "hf://Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758",
         "classes": ["QwenImage21Pipeline", "QwenImage21Transformer2DModel"],
         "folders": ["transformer", "text_encoder", "vae"],
-        "sources": ["qwenimage21.lora"],
+        "sources": ["qwenimage21.comfy", "qwenimage21.lora"],
     },
     {
         "name": "krea-2",
@@ -148,6 +148,58 @@ FAMILIES: list[dict[str, Any]] = [
             "keys": [f"layers.0.attention.to_{p}.weight" for p in "qkv"],
             "variants": {"transformer": "transformer", "unconditional_transformer": "unconditional_transformer"},
         },
+    },
+    {
+        "name": "flux-2",
+        "reference": "hf://black-forest-labs/FLUX.2-dev@26afe3a78bb242c0a8bb181dcc8937bb16e5c66c",
+        "classes": ["Flux2Pipeline", "Flux2Transformer2DModel"],
+        "folders": ["transformer", "text_encoder", "vae"],
+        "sources": ["flux2.lora"],
+    },
+    {
+        "name": "flux-3-klein",
+        # The distilled DiT; the base lacks its target-timestep embedder (black-forest-labs/flux-3-image-klein-base@1469d27).
+        "reference": "hf://black-forest-labs/flux-3-image-klein@8454017f9ebaada30c998fccd9f67a80c7580f68",
+        "classes": ["Flux3DistilledModularPipeline", "Flux3ModularPipeline", "Flux3Transformer2DModel"],
+        "folders": ["transformer", "text_encoder", "vae"],
+        "optional": {"transformer": [f"target_timestep_embedder.linear_{n}.weight" for n in (1, 2)]},
+        "sources": ["flux3klein.lora"],
+        # The base DiT, a checkpoint of its own: one pinned to it is that variant, so a LoRA trained on one adapts
+        # the other with a warning (tensord adapter.rs).
+        "variants": {"transformer_base": ("transformer", "hf://black-forest-labs/flux-3-image-klein-base@1469d27cfb9bb1bd81d3a93f5a023b39dbf136e4")},
+        # AI-Toolkit writes only `ss_base_model_version=flux3`, for either DiT; a file that names its checkpoint
+        # (`base_model`: ausboss's AI-Toolkit LoRAs, Wan2GP's flux3 trainer) says which.
+        "trained_on": [{"producer": "its file", "field": "base_model", "values": {
+            "black-forest-labs/flux-3-image-klein": "transformer", "black-forest-labs/flux-3-image-klein-base": "transformer_base",
+            "flux3_klein_base": "transformer_base"}}],
+    },
+    {
+        "name": "fibo-2",
+        "reference": "hf://briaai/Fibo-2.0-dev@fb2b781f9e9e5572a6c348a5af7a4d155a2b1ed0",
+        "classes": ["BriaFibo2Pipeline", "BriaFibo2Transformer2DModel"],
+        "folders": ["transformer", "text_encoder", "vae"],
+        "sources": ["fibo2.lora"],
+        # Edit-Turbo: Dev's keys, shapes and config, other weights (the Hub mirror's 901c026 no longer resolves).
+        "variants": {"transformer_edit_turbo": ("transformer", "hf://briaai/Fibo-2.0-edit-turbo@7b133d62d92e897f1468af0427a73cc41a03cb5d")},
+        # DiffSynth-Studio's `base_model`.
+        "trained_on": [{"producer": "its file", "field": "base_model", "values": {
+            "briaai/Fibo-2.0-dev": "transformer", "briaai/Fibo-2.0-edit-turbo": "transformer_edit_turbo"}}],
+    },
+    {
+        "name": "hunyuan-image-3",
+        # Instruct-Distil: Instruct (tencent/HunyuanImage-3.0-Instruct@2ec2c78) lacks its guidance and timestep-r embedders.
+        # One Transformers model at the repository's root; its PEFT LoRAs name its modules.
+        "reference": "hf://tencent/HunyuanImage-3.0-Instruct-Distil@c8ffd07206f1b843697606968196e8f59f8ff38c",
+        "classes": ["HunyuanImage3ForCausalMM"],
+        "folders": [""],
+        "optional": {"model": [f"{e}.mlp.{n}.{p}" for e in ("guidance_emb", "timestep_r_emb") for n in (0, 2) for p in ("weight", "bias")]},
+    },
+    {
+        "name": "hidream-o1",
+        # Qwen3-VL's class with its own image embedders and heads (`model.x_embedder`, `model.final_layer2`): the keys tell it.
+        "reference": "hf://HiDream-ai/HiDream-O1-Image@0b0901d99f200389e138c61946af1185f5f49a13",
+        "classes": ["Qwen3VLForConditionalGeneration"],
+        "folders": [""],
     },
     {
         "name": "seedvr2",
@@ -207,7 +259,7 @@ def header(u: str) -> tuple[int, dict[str, Any]]:
 
 def folder_files(files: list[dict[str, Any]], folder: str) -> list[str]:
     """A folder's weights: its index's shards, else its one file; the default variant first."""
-    names = [f["path"] for f in files if f["type"] == "file" and f["path"].rsplit("/", 1)[0] == folder]
+    names = [f["path"] for f in files if f["type"] == "file" and f["path"].rpartition("/")[0] == folder]
     weights = [n for n in names if n.endswith(".safetensors")]
     plain = [n for n in weights if ".fp16." not in n and ".bf16." not in n] or weights
     return sorted(plain)
@@ -233,7 +285,7 @@ def class_of(reference: str, files: list[dict[str, Any]], folder: str) -> str | 
         entry = json.loads(get(url(reference, index))).get(folder)
         if isinstance(entry, list) and len(entry) >= 2 and isinstance(entry[1], str):
             return entry[1]
-    config = f"{folder}/config.json"
+    config = f"{folder}/config.json" if folder else "config.json"
     if config in paths:
         c = json.loads(get(url(reference, config)))
         return c.get("_class_name") or (c.get("architectures") or [None])[0]
@@ -504,12 +556,20 @@ def build(spec: dict[str, Any]) -> dict[str, Any]:
         shapes[folder] = dict(keys)
         mine = sorted((k, tuple(s)) for k, s in keys)
         same = next((c for c, d in comps.items() if "keys" in d and sorted((k, tuple(s)) for k, s in d["keys"]) == mine), None)
+        # The repository root's weights are one component, `model` (import's ROOT_COMPONENT).
+        comp = folder or "model"
         if same:
-            comps[folder] = {"same_as": same}
+            comps[comp] = {"same_as": same}
             continue
-        comps[folder] = {"class": class_of(spec["reference"], files, folder), "keys": [[k, s] for k, s in keys]}
-        if folder in spec.get("optional", {}):
-            comps[folder]["optional"] = spec["optional"][folder]
+        comps[comp] = {"class": class_of(spec["reference"], files, folder), "keys": [[k, s] for k, s in keys]}
+        if comp in spec.get("optional", {}):
+            comps[comp]["optional"] = spec["optional"][comp]
+    # A variant with a checkpoint of its own: its keys and shapes are its root's, but for the root's optional ones.
+    for comp, (root, reference) in spec.get("variants", {}).items():
+        theirs, _ = component(reference, tree(reference), root)
+        optional = set(spec.get("optional", {}).get(root, []))
+        assert {(k, tuple(s)) for k, s in theirs if k not in optional} == {(k, tuple(s)) for k, s in comps[root]["keys"] if k not in optional}, comp
+        comps[comp] = {"same_as": root, "reference": reference}
     # LoRA-only targets a family's adapters train that no weight is: [path, [out, in]].
     for comp, sites in spec.get("sites", {}).items():
         comps[comp]["sites"] = sites

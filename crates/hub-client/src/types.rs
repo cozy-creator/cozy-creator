@@ -594,12 +594,9 @@ pub struct RentalFallback {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RentalQuote {
+    /// The one price an hour, the machine with its disk and traffic: an order sends it back as its cap.
     #[serde(default)]
     pub price_usd_micros_per_hour: i64,
-    #[serde(default)]
-    pub storage_usd_micros_per_hour: i64,
-    #[serde(default)]
-    pub bandwidth_usd_micros_per_gb: Option<i64>,
     #[serde(default)]
     pub container_disk_gb: i64,
     pub expected_price: RentalPriceEstimate,
@@ -653,9 +650,8 @@ pub struct Rental {
     pub development: bool,
     pub cert_pem: Option<String>,
     pub base_worker_image_digest: String,
+    /// Its one price an hour, never above the cap its order sent.
     pub hourly_rate_usd_micros: i64,
-    pub compute_usd_micros_per_hour: Option<i64>,
-    pub bandwidth_usd_micros_per_gb: Option<i64>,
     pub spend_usd_micros: i64,
     pub spend_basis: String,
     /// What the provider billed Tensorhub for it, on the basis `provider_billed` or `estimate`:

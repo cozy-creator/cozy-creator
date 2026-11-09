@@ -131,9 +131,9 @@ struct Machine {
 
 /// How often a wait for a machine's answer says again how long it has lasted.
 const RESAID: Duration = Duration::from_secs(5);
-/// How long a machine answering an internal failure about a run is asked again before the run ends saying so.
-const BROKEN_FOR: Duration = Duration::from_secs(120);
-const BROKEN_ASKED_EVERY: Duration = Duration::from_secs(5);
+/// How soon a machine answering an internal failure about a run is asked again, at first and at most. Only its journal settles the run.
+const BROKEN_ASKED_FIRST: Duration = Duration::from_secs(5);
+const BROKEN_ASKED_MOST: Duration = Duration::from_secs(60);
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
 
@@ -739,8 +739,8 @@ impl Calcifer {
 
     async fn follow_to_end(self: &Arc<Self>, id: &RunId, wake: &Notify) {
         let mut pause = Pause::default();
-        // When its machine began failing it, which an attach that answers doesn't reset.
-        let mut broken: Option<Instant> = None;
+        // When its machine began failing it, and how often it has been asked since; an attach that answers doesn't reset it.
+        let mut broken: Option<(Instant, u32)> = None;
         loop {
             let run = match self.store.run(id.as_str()) {
                 Ok(Some(run)) => run,
@@ -866,25 +866,28 @@ impl Calcifer {
                         pause.wait(wake, Some(&mut changed)).await;
                     }
                 }
-                // Its own bug, not its being busy: said in its words, logged, asked again for a while, and then the run
-                // ends saying so. A cancel doesn't wait for it. Nothing runs again either way.
+                // Its own bug, not its being busy: said in its words, logged, and asked again, paced, for as long as it lasts. It may
+                // still be running there, so only its outcome settles it; a cancel doesn't wait for it. Nothing runs again either way.
                 Err(Stop::Broken(code, message)) => {
-                    let since = *broken.get_or_insert_with(|| {
-                        warn!(run = %id, machine = %name, "{code}: {message}");
-                        Instant::now()
-                    });
-                    if run.cancel_requested || since.elapsed() >= BROKEN_FOR {
-                        match self.store.gave_up(id.as_str(), &name, &code, &message) {
+                    if run.cancel_requested {
+                        match self.store.cancel_unanswered(id.as_str(), &name, &code, &message) {
                             Ok(events) => self.publish(id, events),
                             Err(e) => warn!(run = %id, "{e}"),
                         }
-                    } else {
-                        self.waiting(id, format!("{name} fails when asked about this run, and is asked again for {}: {code}: {message}", protocol::calcifer::clock(BROKEN_FOR.as_millis() as i64)));
-                        tokio::select! {
-                            () = tokio::time::sleep(BROKEN_ASKED_EVERY) => {}
-                            () = wake.notified() => {}
-                            _ = changed.changed() => {}
-                        }
+                        continue;
+                    }
+                    let (since, asked) = broken.get_or_insert_with(|| {
+                        warn!(run = %id, machine = %name, "{code}: {message}");
+                        (Instant::now(), 0)
+                    });
+                    *asked = asked.saturating_add(1);
+                    let wait = BROKEN_ASKED_FIRST.saturating_mul(1u32 << (*asked - 1).min(5)).min(BROKEN_ASKED_MOST);
+                    let age = protocol::calcifer::clock(since.elapsed().as_millis() as i64);
+                    self.waiting(id, format!("{name} fails when asked about this run ({age}), asked again in {} s: {code}: {message}", wait.as_secs()));
+                    tokio::select! {
+                        () = tokio::time::sleep(wait) => {}
+                        () = wake.notified() => {}
+                        _ = changed.changed() => {}
                     }
                 }
                 Err(Stop::Waiting(message)) => {
@@ -1035,17 +1038,14 @@ impl Calcifer {
                         let spec = self.sent_spec(run).await?;
                         (self.send_run(run, machine, link, spec).await?, None)
                     }
-                    // A restart forgets a run still preparing that was sent with tokens, which stay
-                    // off its disk: nothing of it ran, so it goes on as it is sent again.
-                    Err(LinkError::NoRun) if unstarted(run) => {
-                        tracing::info!(run = %run.id, machine, "its machine restarted before it began: sent again");
-                        self.write_inputs(link, run, machine).await?;
+                    // A restart while it prepared kept it without its access, which stays off the
+                    // machine's disk: the same spec sent again brings it, and it prepares on.
+                    Ok((state, events)) if state.state == "needs_access" => {
+                        tracing::info!(run = %run.id, machine, "its machine restarted while it prepared: its access sent again");
                         let _turn = sending.lock().await;
                         self.known_warm(run, machine, link).await?;
                         let spec = self.sent_spec(run).await?;
-                        let state = self.send_run(run, machine, link, spec).await?;
-                        self.store.sent_again(id, &state)?;
-                        (state, None)
+                        (self.send_run(run, machine, link, spec).await?, Some(events))
                     }
                     attached => {
                         let (state, events) = attached?;
@@ -1468,19 +1468,12 @@ impl Calcifer {
     }
 }
 
-/// Waiting for its turn: in the outbox, or in its machine's line.
-/// Whether nothing of an accepted run began, as far as its machine ever said.
-fn unstarted(run: &RunRow) -> bool {
-    run.state == State::Accepted
-        && run.started_at_ms.is_none()
-        && matches!(run.machine_state.as_deref(), None | Some("preparing" | "queued"))
-}
-
 /// Whether a machine's word for a run says it is over.
 fn finished(state: &str) -> bool {
     matches!(state, "succeeded" | "completed" | "failed" | "canceled")
 }
 
+/// Waiting for its turn: in the outbox, or in its machine's line.
 fn queued(run: &Run) -> bool {
     run.status == RunStatus::Queued
         || (run.status == RunStatus::InProgress && run.machine_state.as_deref() == Some("queued"))

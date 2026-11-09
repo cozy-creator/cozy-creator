@@ -20,10 +20,11 @@ from varena import check as varena  # noqa: E402
 from cli import check as cli  # noqa: E402
 from kernels import check as kernels  # noqa: E402
 from escaped import check as escaped  # noqa: E402
+from contract import check as contract  # noqa: E402  (every gate: the records the other suites made)
 # A suite's check runs when gate.sh ran the suite (--suite: the names in <gate dir>/suites).
 SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.path.join(out, 'suites')) else []
 SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check, 'escaped': escaped.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
-CHECKS = [quality.check, lm.check, swap.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
+CHECKS = [quality.check, lm.check, swap.check, contract.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
 # Step 1 is judged as load + step 1 (the run's or call's start to step 1's end; agreed by the lead, 2026-11-06): v2 readies
 # weights on first use inside step 1, where v1 readied them in a load before it. step1_ms is kept, not judged.

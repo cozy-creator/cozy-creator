@@ -109,10 +109,21 @@ export interface Options {
   once?: AbortSignal
   /** What a person did that this write is of (`Cozy-Edit`): the project's history keeps the writes of one as one entry. */
   edit?: string
+  /** The outbox action this try is of: every try of one ask goes under one `Idempotency-Key`, so Calcifer does it once. */
+  action?: string
 }
 
-/** One try of a write, and the edit it's of. */
-export type Write = Pick<Options, "once" | "edit">
+/** One try of a write, the edit it's of, and its action. */
+export type Write = Pick<Options, "once" | "edit" | "action">
+
+/** The `Idempotency-Key` of a write: the one it names, else one per action and ask, so each try of the same ask is the same key and a try
+ * that asks something else (a batch grown since) is another. FNV-1a: tries of one action are all it tells apart. */
+function keyOf(method: string, path: string, body: string, key?: string, action?: string): string | undefined {
+  if (key || !action) return key
+  let hash = 0x811c9dc5
+  for (const char of `${method} ${path}\n${body}`) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0
+  return `${action}-${hash.toString(16)}`
+}
 
 export interface Hooks {
   signedOut(): void
@@ -201,8 +212,10 @@ export class Client {
 
   private write<T>(method: string, path: string, body: unknown, key?: string, options?: Options): Promise<T> {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
-    if (key) headers["Idempotency-Key"] = key
-    return this.json(path, { method, headers, body: JSON.stringify(body) }, options)
+    const text = JSON.stringify(body)
+    const asked = keyOf(method, path, text, key, options?.action)
+    if (asked) headers["Idempotency-Key"] = asked
+    return this.json(path, { method, headers, body: text }, options)
   }
 
   // Session
@@ -310,7 +323,11 @@ export class Client {
   patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string, write: Write = {}): Promise<AssetPatched> {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     if (read) headers["If-Match"] = read
-    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) }, write)
+    const path = `${project(id)}/assets/${encodeURIComponent(name)}`
+    const text = JSON.stringify(body)
+    const asked = keyOf("PATCH", path, `${read ?? ""}\n${text}`, undefined, write.action)
+    if (asked) headers["Idempotency-Key"] = asked
+    return this.json(path, { method: "PATCH", headers, body: text }, write)
   }
 
   deleteAsset(id: string, name: string, write: Write = {}): Promise<AssetDeleted> {
@@ -532,8 +549,12 @@ export class Client {
 
   // Models
 
-  models(q: string, limit: number, signal?: AbortSignal): Promise<ModelSearch> {
-    return this.json(`/v1/models?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`, { signal })
+  /** The Hub's models, those of `family` only when it's said. */
+  models(q: string, limit: number, signal?: AbortSignal, family?: string): Promise<ModelSearch> {
+    const asked = new URLSearchParams({ limit: String(limit) })
+    if (q) asked.set("q", q)
+    if (family) asked.set("family", family)
+    return this.json(`/v1/models?${asked}`, { signal })
   }
 
   model(name: string, signal?: AbortSignal): Promise<ModelDetail> {

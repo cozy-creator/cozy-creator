@@ -1,7 +1,9 @@
 //! LoRA components in the D10 form (spec §4): factors under the module names they adapt, as
 //! PEFT's `<module>.lora_A.weight` `[r, in]` and `.lora_B.weight` `[out, r]`, applied as
 //! `W' = W + (α / r) · (B · A)` with `r` `lora_A`'s rows and `α` the module's `<module>.alpha`,
-//! else the config's `lora_alpha`, else `r`. The component's config is PEFT's
+//! else the config's `lora_alpha`, else `r`. A DoRA's module also holds its magnitude,
+//! `<module>.lora_magnitude_vector` `[out]`, applied as PEFT's `W' = m · V / ‖V‖` per output
+//! channel, `V = W + (α / r) · (B · A)`. The component's config is PEFT's
 //! `adapter_config.json`: the source's own (its file, or diffusers' `lora_adapter_metadata`) with
 //! `alpha_pattern`, `rank_pattern` and `use_rslora` folded into per-module `.alpha`, or kohya's
 //! training metadata mapped. A kohya `.alpha` is the α its loaders apply: it is stored as an F32
@@ -23,6 +25,9 @@ pub const ADAPTER_CONFIG: &str = "adapter_config.json";
 const A: &str = ".lora_A.weight";
 const B: &str = ".lora_B.weight";
 const ALPHA: &str = ".alpha";
+/// A DoRA's magnitude, `[out]`: PEFT's `lora_magnitude_vector` (as saved, or a module's
+/// `lora_magnitude_vector.<adapter>.weight`), kohya's and LyCORIS' `dora_scale` `[out, 1]`.
+pub const MAGNITUDE: &str = ".lora_magnitude_vector";
 /// `get_peft_model_state_dict`'s wrapper around the base model's module names.
 const PEFT_PREFIX: &str = "base_model.model.";
 /// diffusers' `save_lora_adapter` records the `LoraConfig` here, as JSON.
@@ -31,13 +36,18 @@ const DIFFUSERS_CONFIG: &str = "lora_adapter_metadata";
 /// table maps them onto a model's modules.
 const KOHYA: [&str; 2] = ["lora_unet_", "lora_te"];
 
-/// A LoRA key in PEFT's spelling, or `None` for a key that is no LoRA factor or alpha: kohya's
-/// `<m>.lora_down[.weight]` and `.lora_up[.weight]` are `<m>.lora_A.weight` and `.lora_B.weight`,
-/// PEFT's adapter name goes (`<m>.lora_A.default.weight`), and so does `base_model.model.`.
+/// A LoRA key in PEFT's spelling, or `None` for a key that is no LoRA factor, alpha or DoRA
+/// magnitude: kohya's `<m>.lora_down[.weight]` and `.lora_up[.weight]` are `<m>.lora_A.weight` and
+/// `.lora_B.weight`, its `dora_scale` `<m>.lora_magnitude_vector`, PEFT's adapter name goes
+/// (`<m>.lora_A.default.weight`), and so does `base_model.model.`.
 pub fn peft_key(key: &str) -> Option<String> {
     let key = key.strip_prefix(PEFT_PREFIX).unwrap_or(key);
     if let Some(m) = key.strip_suffix(ALPHA) {
         return Some(format!("{m}{ALPHA}"));
+    }
+    let named = key.strip_suffix(".weight").and_then(|k| k.rsplit_once('.')).map(|(m, _)| m);
+    if let Some(m) = [key, named.unwrap_or("")].into_iter().find_map(|k| k.strip_suffix(MAGNITUDE).or_else(|| k.strip_suffix(".dora_scale"))) {
+        return Some(format!("{m}{MAGNITUDE}"));
     }
     let weight = key.strip_suffix(".weight");
     for (from, to) in [(".lora_down", A), (".lora_up", B), (".lora_A", A), (".lora_B", B)] {
@@ -102,10 +112,12 @@ pub struct Adapter {
 
 /// Normalizes, in `planned`, each component holding LoRA factors ([`peft_key`]), and returns its
 /// adapter. `sources` is each component's source group; an adapter config file read becomes the
-/// component's config and leaves `files`. `set` reads the source files a reading names.
+/// component's config and leaves `files`. `set` reads the source files a reading names. A key of
+/// a component no table converted (`tabled`) that is no factor refuses: nothing is left out.
 pub fn normalize(
     planned: &mut Vec<Planned>,
     sources: &BTreeMap<String, &Group>,
+    tabled: &BTreeSet<String>,
     files: &mut BTreeMap<String, Vec<u8>>,
     set: &SourceSet,
 ) -> Result<BTreeMap<String, Adapter>> {
@@ -122,11 +134,17 @@ pub fn normalize(
             continue;
         }
         let mut seen = BTreeSet::new();
-        let (mut modules, mut kept) = (BTreeMap::new(), BTreeSet::new());
+        let (mut modules, mut kept, mut magnitudes, mut strays) = (BTreeMap::new(), BTreeSet::new(), BTreeSet::new(), vec![]);
         for i in &mine {
             let p = &mut planned[*i];
-            if let Some(key) = peft_key(&p.key) {
-                p.key = key;
+            match peft_key(&p.key) {
+                Some(key) => p.key = key,
+                None if !tabled.contains(component) => strays.push(p.key.clone()),
+                None => {}
+            }
+            if let Some(m) = p.key.strip_suffix(MAGNITUDE).map(str::to_owned) {
+                magnitude(component, p)?;
+                magnitudes.insert(m);
             }
             if !seen.insert(p.key.clone()) {
                 return refuse(Code::DUPLICATE_KEY, format!("{component}: two LoRA keys are {}", p.key));
@@ -139,6 +157,15 @@ pub fn normalize(
             } else if let Some(m) = p.key.strip_suffix(ALPHA) {
                 kept.insert(m.to_owned());
             }
+        }
+        if !strays.is_empty() {
+            let shown = strays[..strays.len().min(4)].join(", ");
+            return refuse(Code::UNPLACED_KEYS, format!(
+                "{component}: {} of its {} keys are no LoRA factor, alpha or DoRA magnitude: {shown}. Keep it unconverted \
+                 (--source-format as-is) to store every key as it is", strays.len(), mine.len()));
+        }
+        if let Some(m) = magnitudes.iter().find(|m| !modules.contains_key(*m)) {
+            return refuse(Code::UNPLACED_KEYS, format!("{component}: {m}{MAGNITUDE} has no A and B factor pair to apply"));
         }
         let path = super::join(&group.folder, ADAPTER_CONFIG);
         let source = match (files.get(&path), group.metadata.get(DIFFUSERS_CONFIG)) {
@@ -161,7 +188,7 @@ pub fn normalize(
             p.parts = vec![PlannedPart { role: String::new(), dtype: Dtype::F32, shape: vec![], read }];
         }
         let source = match source {
-            Some(source) => Some(fold(component, source, &modules, &kept, &mut alphas)?),
+            Some(source) => Some(fold(component, source, &modules, &kept, &magnitudes, &mut alphas)?),
             None => None,
         };
         if source.is_none() && !stated.is_empty() {
@@ -171,6 +198,9 @@ pub fn normalize(
         }
         let ranks = modules.iter().map(|(m, v)| (m.clone(), v.rank));
         let mut config = adapter_config(ranks, &group.metadata, source.as_ref(), None);
+        if !magnitudes.is_empty() {
+            config.insert("use_dora".into(), Json::Bool(true));
+        }
         let given = source.as_ref().is_some_and(|s| s.contains_key("lora_alpha"));
         if let (false, Some(alpha)) = (given, commonest(&stated)) {
             config.insert("lora_alpha".into(), number(alpha));
@@ -199,6 +229,21 @@ pub fn normalize(
         planned.insert(at + 1, p);
     }
     Ok(adapters)
+}
+
+/// A DoRA magnitude as stored: `[out]`, its `[out, 1]` read as that (the same bytes). Another
+/// axis's (LyCORIS' `wd_on_out=False`) is no PEFT DoRA.
+fn magnitude(component: &str, p: &mut Planned) -> Result<()> {
+    let refused = |why: &str| refuse(Code::ADAPTER_TARGET_UNSUPPORTED, format!("{component}/{}: {why}", p.key));
+    if p.encoding.is_some() || p.parts.len() != 1 || !matches!(p.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) {
+        return refused("a DoRA magnitude is one plain float vector");
+    }
+    match p.shape.as_slice() {
+        [_] => {}
+        [out, 1] if *out > 1 => (p.shape, p.parts[0].shape) = (vec![*out], vec![*out]),
+        _ => return refused("a DoRA magnitude of another axis than the output's (PEFT's) does not apply"),
+    }
+    Ok(())
 }
 
 /// The value of a one-element tensor, read from its source.
@@ -285,6 +330,7 @@ fn fold(
     mut config: Config,
     modules: &BTreeMap<String, Module>,
     kept: &BTreeSet<String>,
+    magnitudes: &BTreeSet<String>,
     alphas: &mut Vec<(usize, String, String, f32)>,
 ) -> Result<Config> {
     let unsupported = |why: String| refuse(Code::ADAPTER_TARGET_UNSUPPORTED, format!("{component}: {why}"));
@@ -294,7 +340,9 @@ fn fold(
         Some(t) => return unsupported(format!("peft_type {t} is not LORA")),
     }
     if config.get("use_dora") == Some(&Json::Bool(true)) {
-        return unsupported("DoRA's magnitude vectors are not LoRA factors".into());
+        if let Some(m) = modules.keys().find(|m| !magnitudes.contains(*m)) {
+            return unsupported(format!("use_dora, and {m} holds no {MAGNITUDE}"));
+        }
     }
     let number = |what: &str, v: &Json| {
         v.as_f64().ok_or_else(|| Refusal {

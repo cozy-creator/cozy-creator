@@ -354,13 +354,12 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "calcifer"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
  "ed25519-dalek",
- "eventsource-stream",
  "futures-util",
  "getrandom 0.3.4",
  "hex",
@@ -510,7 +509,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "anstream",
  "anstyle",
@@ -650,10 +649,11 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cozy"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "calcifer",
  "cli",
+ "mimalloc",
  "tensord",
 ]
 
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "executor-protocol"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "base64 0.23.1",
  "pyo3",
@@ -1705,7 +1705,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hub-client"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -2118,10 +2118,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
-name = "libsqlite3-sys"
-version = "0.38.2"
+name = "libmimalloc-sys"
+version = "0.1.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "libsqlite3-sys"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -2190,6 +2199,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "mimalloc"
+version = "0.1.52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+dependencies = [
+ "libmimalloc-sys",
+]
 
 [[package]]
 name = "mime"
@@ -2572,7 +2590,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "platform"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "flate2",
  "getrandom 0.3.4",
@@ -2595,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "platform-signal"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "rustix",
  "windows-sys 0.61.2",
@@ -2654,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3119,9 +3137,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
@@ -3939,7 +3957,7 @@ dependencies = [
 
 [[package]]
 name = "tensord"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -3991,7 +4009,7 @@ dependencies = [
 
 [[package]]
 name = "tensorfs"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "backon",
@@ -4020,12 +4038,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "varena",
+ "varena-ledger",
  "webpki-roots",
 ]
 
 [[package]]
 name = "tensorfs-py"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "async-trait",
  "executor-protocol",
@@ -4039,6 +4058,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "varena",
+ "varena-ledger",
 ]
 
 [[package]]
@@ -4461,7 +4481,7 @@ dependencies = [
 
 [[package]]
 name = "varena"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "libc",
  "libloading 0.9.0",
@@ -4481,14 +4501,15 @@ dependencies = [
 
 [[package]]
 name = "varena-ledger"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "libc",
+ "platform",
 ]
 
 [[package]]
 name = "varena-ledger-cells"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "libc",
  "varena-ledger",

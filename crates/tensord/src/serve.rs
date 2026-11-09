@@ -533,13 +533,14 @@ fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::mach
     });
 }
 
-/// A shared machine and its executors under one memory limit the kernel keeps, below what this
-/// computer's other programs need (`platform::contain::follow`); the host rule follows it from
-/// here. Where the host gives no such cgroup: one warning, and only the in-process limits hold.
+/// A shared machine and its executors under one memory limit the kernel keeps: varena's host
+/// number (`varena_ledger::host::machine`), below what this computer's other programs need;
+/// the host rule follows it from here. Where the host gives no such cgroup: one warning, and only
+/// the in-process limits hold.
 fn contain(engine: &std::path::Path) {
-    use platform::contain::{self, host_memory};
+    use platform::contain;
     let contained = contain::contain(&contain::namespace(engine))
-        .and_then(|root| match contain::follow(host_memory::reserve()) {
+        .and_then(|root| match contain::follow(varena_ledger::host::machine) {
             Some(Ok(budget)) => Ok((root, budget)),
             Some(Err(error)) => Err(format!("its limit was not written: {error}")),
             None => Err("not contained".into()),

@@ -49,10 +49,10 @@ time.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+varena-ledger.workspace = true
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-varena-ledger.workspace = true
 socket2 = { version = "0.6", features = ["all"] }
 
 [target.'cfg(unix)'.dependencies]

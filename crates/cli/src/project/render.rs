@@ -9,7 +9,7 @@ use std::{
 
 use protocol::{
     error::{Error, Kind},
-    project::{Ahead, Board, Event, HeldBy, Job, JobState, Rendered},
+    project::{Ahead, Board, Event, Job, JobState, Rendered},
 };
 use ratatui::{
     Frame,
@@ -36,6 +36,8 @@ pub(super) struct Rendering {
     said: Vec<Said>,
     /// What failed that is no asset's.
     errors: Vec<Error>,
+    /// The `Idempotency-Key` this render was asked under, whose walk's end is its end; None follows whatever walk is going to its end.
+    key: Option<String>,
     ended: Option<(Option<Error>, Option<Rendered>)>,
 }
 
@@ -50,8 +52,8 @@ struct Said {
 }
 
 impl Rendering {
-    pub(super) fn new(dir: PathBuf, board: Board) -> Self {
-        Self { dir, board, warnings: vec![], said: vec![], errors: vec![], ended: None }
+    pub(super) fn new(dir: PathBuf, board: Board, key: Option<String>) -> Self {
+        Self { dir, board, warnings: vec![], said: vec![], errors: vec![], key, ended: None }
     }
 
     /// Takes in `event`; what it newly is for a person to read.
@@ -109,7 +111,8 @@ impl Rendering {
                     Fresh::Failed(error)
                 }
             },
-            Event::Ended { error, rendered } => {
+            // Another walk's end, one ending as this was asked, isn't this render's.
+            Event::Ended { error, rendered, keys } if self.key.as_ref().is_none_or(|key| keys.contains(key)) => {
                 self.ended = Some((error, rendered));
                 Fresh::Ended
             }
@@ -128,16 +131,12 @@ impl Rendering {
         }
     }
 
-    /// `lab2 on sekai`, and where a render another machine holds stands: `lab2 on sekai, until 14:32: 3 files not here yet`.
+    /// `lab2 on sekai`.
     fn title(&self) -> String {
         let name = self.dir.file_name().map_or_else(|| self.dir.display().to_string(), |name| name.to_string_lossy().into_owned());
-        let title = match self.board.on.as_slice() {
+        match self.board.on.as_slice() {
             [] => name,
             on => format!("{name} on {}", on.join(", ")),
-        };
-        match &self.board.held {
-            Some(held) => format!("{title}, {}", held_line(held)),
-            None => title,
         }
     }
 
@@ -411,19 +410,6 @@ fn short(path: &str) -> String {
     }
 }
 
-/// A render another machine holds, said the one way: where it is, and what isn't here yet, lost if not collected before that machine ends.
-pub(crate) fn held_line(held: &HeldBy) -> String {
-    let machine = &held.machine;
-    let until = held.until_ms.and_then(|at| jiff::Timestamp::from_millisecond(at).ok());
-    let until = until.map(|at| at.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string());
-    match (held.files, until) {
-        (0, None) => format!("rendering on {machine}"),
-        (0, Some(until)) => format!("all here; {machine} ends at {until} unless used"),
-        (files, None) => format!("rendering on {machine}: {files} files ({}) not here yet, which come while Calcifer here reaches it", output::bytes(held.bytes)),
-        (files, Some(until)) => format!("on {machine} until {until}: {files} files ({}) not here yet, lost if not collected by then", output::bytes(held.bytes)),
-    }
-}
-
 /// `2m07s`, under a minute `38s`, past an hour `1h02m`.
 fn clock(ms: u64) -> String {
     let s = (ms + 500) / 1000;
@@ -449,8 +435,6 @@ fn finished(rendered: &Rendered) -> String {
 /// What has been said of each job, so each change is said once. A stage's steps are said at each tenth of the way.
 #[derive(Default)]
 struct Lines {
-    /// What it last said of where a held render stands.
-    held: Option<String>,
     /// What it last said of each thing fetched ahead, by run.
     ahead: HashMap<u64, String>,
     said: HashSet<(String, Option<u32>, String)>,
@@ -465,11 +449,6 @@ impl Lines {
     }
 
     fn board(&mut self, ctx: &Context, rendering: &Rendering) {
-        let held = rendering.board.held.as_ref().map(held_line);
-        if held.is_some() && held != self.held {
-            output::say(ctx, held.as_deref().unwrap_or_default());
-            self.held = held;
-        }
         // What is fetched ahead, as it starts a stage or every quarter of the way.
         for ahead in &rendering.board.ahead {
             // Nothing to say until it has bytes to fetch: what weighs nothing is ready as soon as it's asked.

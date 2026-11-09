@@ -1,6 +1,8 @@
-//! TensorFS as varena's Source: a Region's bytes from its host page, else the store (fetched if
-//! a caller is waiting), then its derive on the thread that called `use`. A worker running ahead
-//! of demand never sees Python: what needs a derive declines there.
+//! TensorFS as varena's Source: a Region's bytes from its host page, else each stored object
+//! range from where it already is (another set's resident Region on this GPU, or that set's kept
+//! page), else the store (fetched if a caller is waiting), then its derive on the thread that
+//! called `use`. A worker running ahead of demand never sees Python: what needs a derive declines
+//! there.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,7 +13,7 @@ use pyo3::{exceptions::PyRuntimeError, ffi, prelude::*};
 use tensorfs::io::source::{IoTally, Item, ItemSource, Mode, Placement, Source as Store};
 use tensorfs::io::{self, Dst, ObjectRange, ReadControl, ReadOpts, Src};
 
-use super::pages::{self, Page, PyPages, Row, Tier};
+use super::pages::{self, Held, Page, PyPages, Row, Tier, WINDOW};
 use super::{Consumers, PyUse};
 use crate::store::PyCheckpoint;
 
@@ -120,9 +122,14 @@ impl Inner {
     pub(super) fn set(&self) -> &str {
         &self.set
     }
-    /// Its derive's bytes are kept: none are known to be the stored ones.
+    /// Its bytes are the stored ones (no derive, or one that wrote nothing): a fill of another set
+    /// may copy them.
+    pub(super) fn stored_bytes(&self) -> bool {
+        self.stored.is_some() && (self.derive.is_none() || self.plain.load(Ordering::Acquire))
+    }
+    /// Its bytes are kept on the fill path: a derive's, or the stored ones once landed.
     pub(super) fn keeps(&self) -> bool {
-        self.page.is_some() && self.derive.is_some() && !self.plain.load(Ordering::Acquire)
+        self.page.is_some() && (self.derive.is_some() || self.stored.is_some())
     }
     pub(super) fn region(&self) -> Weak<varena::Region> {
         self.region.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -146,17 +153,138 @@ impl Inner {
         unsafe { io::read(&copies, &ReadOpts::default()) }.map(drop)
     }
 
-    fn read(&self, stored: &Stored, fill: &varena::Fill, ahead: bool) -> Result<io::ReadStats, tensorfs::io::source::Error> {
+    /// Its stored bytes, each item from where it already is: another set's resident Region on this
+    /// GPU (a device copy that waits for nothing), else that set's kept page (a pinned host copy),
+    /// else the store. The items tile the Region in runs from one place, each gap zeroed by the
+    /// run it falls in, and each place's bytes are a fill row of their own.
+    fn read(self: &Arc<Self>, stored: &Stored, fill: &varena::Fill, ahead: bool) -> Result<(), tensorfs::io::source::Error> {
+        let device = fill.device();
+        let dst = |start: u64, end: u64| Dst::Device { device, ptr: fill.ptr() + start, len: (end - start) as usize, stream: 0 };
+        let mut sources: Vec<(Arc<Inner>, Option<Bytes>)> = Vec::new();
+        // Each item's first holder with its bytes on the card or in a kept page, each holder
+        // looked up once.
+        let from: Vec<Option<(usize, u64)>> = self.tier.holders(self, &stored.items).into_iter().map(|held| {
+            held.into_iter().find_map(|Held { source, at }| {
+                let index = sources.iter().position(|(known, _)| Arc::ptr_eq(known, &source)).unwrap_or_else(|| {
+                    let bytes = self.bytes_of(&source, device);
+                    sources.push((source, bytes));
+                    sources.len() - 1
+                });
+                sources[index].1.is_some().then_some((index, at))
+            })
+        }).collect();
+        let sorted = stored.items.windows(2).all(|pair| pair[0].offset + pair[0].len <= pair[1].offset);
+        let found = sorted && from.iter().any(Option::is_some);
+        // Runs of items from one place, (from the store, start, end, items), tiling the Region.
+        let mut runs: Vec<(bool, u64, u64, std::ops::Range<usize>)> = Vec::new();
+        if found {
+            let mut cursor = 0;
+            for (index, item) in stored.items.iter().enumerate() {
+                let store = from[index].is_none();
+                match runs.last_mut() {
+                    Some(run) if run.0 == store => (run.2, run.3.end) = (item.offset + item.len, index + 1),
+                    _ => runs.push((store, cursor, item.offset + item.len, index..index + 1)),
+                }
+                cursor = item.offset + item.len;
+            }
+            if let Some(run) = runs.last_mut() {
+                run.2 = fill.len() as u64;
+            }
+        } else {
+            runs.push((true, 0, fill.len() as u64, 0..stored.items.len()));
+        }
+        let (mut card, mut host, mut moved) = (Vec::new(), Vec::new(), [0u64; 2]);
+        for (_, start, end, items) in runs.iter().filter(|run| !run.0) {
+            let mut at = *start;
+            for (index, item) in stored.items[items.clone()].iter().enumerate() {
+                if item.offset > at {
+                    card.push(io::Copy { src: Src::Zero, dst: dst(at, item.offset) });
+                }
+                let (source, held) = from[items.start + index].expect("a run of held items");
+                match sources[source].1.as_ref().expect("held items' bytes") {
+                    Bytes::Card(pin) => {
+                        let src = Src::Device { device, ptr: pin.ptr() + held, stream: io::COMPLETE };
+                        card.push(io::Copy { src, dst: dst(item.offset, item.offset + item.len) });
+                        moved[0] += item.len;
+                    }
+                    Bytes::Host(page) => {
+                        // No copy spans two of the page's registered windows: CUDA refuses it.
+                        let mut done = 0;
+                        while done < item.len {
+                            let offset = (held + done) as usize;
+                            let len = ((WINDOW - offset % WINDOW) as u64).min(item.len - done);
+                            // SAFETY: inside the page, which `sources` holds through the copy.
+                            let src = Src::Host(unsafe { page.ptr().add(offset) });
+                            host.push(io::Copy { src, dst: dst(item.offset + done, item.offset + done + len) });
+                            done += len;
+                        }
+                        moved[1] += item.len;
+                    }
+                }
+                at = item.offset + item.len;
+            }
+            if *end > at {
+                card.push(io::Copy { src: Src::Zero, dst: dst(at, *end) });
+            }
+        }
+        let copied = (|| -> Result<(), io::Error> {
+            for (copies, bytes, origin) in [(&card, moved[0], "resident"), (&host, moved[1], "host")] {
+                if copies.is_empty() {
+                    continue;
+                }
+                let began = Instant::now();
+                // SAFETY: the Fill is exclusive and the copies disjoint; each source is a pinned
+                // Region or a kept page that `sources` holds until the read proves them done.
+                unsafe { io::read(copies, &ReadOpts::default()) }?;
+                if bytes != 0 {
+                    self.row(bytes, origin, ahead, began);
+                }
+            }
+            Ok(())
+        })();
+        if copied.is_err() && io::drain(device).is_err() {
+            std::mem::forget(sources); // Unproven: their pins and pages stay with the poisoned fill.
+            return copied.map_err(Into::into);
+        }
+        for (_, bytes) in sources {
+            if let Some(Bytes::Card(pin)) = bytes {
+                // SAFETY: the read returned, or the drain did: the copies from it are complete.
+                super::release_region(unsafe { pin.into_completed_region() });
+            }
+        }
+        copied?;
+        let placements: Vec<_> = runs.iter().filter(|run| run.0).map(|(_, start, end, items)| {
+            Placement { items: &stored.items[items.clone()], origin: *start, dst: dst(*start, *end) }
+        }).collect();
+        if placements.is_empty() {
+            return Ok(());
+        }
+        let began = Instant::now();
         let control = Arc::new(ReadControl::default());
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
         let mode = if fill.target().refilled() { Mode::Buffered } else { Mode::Cache };
-        let dst = Dst::Device { device: fill.device(), ptr: fill.ptr(), len: fill.len(), stream: 0 };
         let source = if ahead { &stored.local } else { &stored.fetching };
-        let placement = Placement { items: &stored.items, origin: 0, dst };
         // SAFETY: the Fill is exclusive; `abort` drains before a failed fill's pages are released.
-        let read = unsafe { source.read_placements_cancelable(&[placement], READERS, mode, &IoTally::default(), &control) };
+        let read = unsafe { source.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        read
+        let stats = read?;
+        self.row(stats.bytes, "store", ahead, began);
+        self.tier.read_source(&self.set, self.block, &stats);
+        Ok(())
+    }
+
+    /// Where `other`'s stored bytes are now: its Region on this GPU, pinned while ready (no use of
+    /// it: a copied page keeps its reclaim order), else its kept page.
+    fn bytes_of(&self, other: &Arc<Inner>, device: i32) -> Option<Bytes> {
+        if let Some(region) = other.region().upgrade() {
+            let pin = region.try_pin_unused().ok().flatten().filter(|pin| pin.device() == device);
+            super::release_region(region);
+            if let Some(pin) = pin {
+                return Some(Bytes::Card(pin));
+            }
+        }
+        let key = other.page.as_ref()?;
+        self.tier.take(key, &other.set, other.bytes, false).map(Bytes::Host)
     }
 
     /// Bytes `at..at + len` of its stored bytes into a host page of `whole` bytes, gaps zeroed.
@@ -173,7 +301,7 @@ impl Inner {
 
     fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>) -> PyResult<()> {
         let began = Instant::now();
-        let page = py.detach(|| self.tier.reserve(key, self.bytes))?;
+        let page = py.detach(|| self.tier.reserve(key, &self.set, self.bytes))?;
         self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let Some(page) = page else { return Ok(()) };
         // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
@@ -193,6 +321,28 @@ impl Inner {
         Ok(())
     }
 
+    /// Its stored bytes, just landed on the card, copied into a host page now if the tier admits
+    /// one (made ahead by `expect`). Left for an idle pin, every refill read them from the store
+    /// again meanwhile: SDXL's second call 2 GB, Klein's upsampler 550 GiB a call (kesshouban,
+    /// runs 42714, 42716). Whether it is kept.
+    fn keep_landed(&self, key: &str, fill: &varena::Fill) -> bool {
+        let began = Instant::now();
+        let Ok(Some(page)) = self.tier.reserve(key, &self.set, self.bytes) else { return false };
+        let copies: Vec<_> = page.windows().map(|(at, len)| io::Copy {
+            src: Src::Device { device: fill.device(), ptr: fill.ptr() + at as u64, stream: 0 },
+            // SAFETY: `at..at + len` lies inside the page.
+            dst: Dst::Host { ptr: unsafe { page.ptr().add(at) }, len },
+        }).collect();
+        // SAFETY: the Fill is exclusive and its read returned, so every byte landed; the page is
+        // this call's alone until `insert`.
+        if unsafe { io::read(&copies, &ReadOpts::default()) }.is_err() {
+            return false;
+        }
+        self.tier.insert(key, &self.set, page);
+        self.tier.keep_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        true
+    }
+
     /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor.
     fn derive(&self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>) -> varena::Result<varena::Pin> {
         let device = fill.device();
@@ -204,10 +354,9 @@ impl Inner {
                 let used = Py::new(py, PyUse::filling(fill, consumers))?;
                 let view = py.import("torch")?.call_method1("from_dlpack", (used.clone_ref(py),))?;
                 let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
-                if changed || self.stored.is_none() {
-                    if let Some(key) = &self.page {
-                        self.keep(key, py, &view)?;
-                    }
+                // Derived or, unchanged, the stored bytes: a refill never reads the store again.
+                if let Some(key) = &self.page {
+                    self.keep(key, py, &view)?;
                 }
                 let pin = used.borrow(py).finish(py)?;
                 Ok((changed, pin))
@@ -216,8 +365,10 @@ impl Inner {
                 Ok((changed, pin)) => {
                     if !changed && self.stored.is_some() {
                         self.plain.store(true, Ordering::Release);
-                        if let Some(key) = &self.page {
-                            py.detach(|| self.tier.unreserve(key));
+                    }
+                    if let Some(key) = self.page.as_ref().filter(|key| !self.tier.holds(key)) {
+                        py.detach(|| self.tier.unreserve(key));
+                        if !changed && self.stored.is_some() {
                             self.tier.want(key, &self.set, this, region);
                         }
                     }
@@ -253,6 +404,12 @@ fn window(items: &[Item], at: u64, len: u64) -> Vec<Item> {
     }).collect()
 }
 
+/// Where a held item's bytes are copied from: a pinned Region, or a kept page.
+enum Bytes {
+    Card(varena::Pin),
+    Host(Arc<Page>),
+}
+
 pub(super) struct PageSource(pub(super) Arc<Inner>);
 
 impl varena::Source for PageSource {
@@ -272,8 +429,11 @@ impl varena::Source for PageSource {
         let this = &self.0;
         let began = Instant::now();
         let ahead = consumer.is_none();
-        let kept = this.page.as_ref().and_then(|key| this.tier.take(key, fill.len(), true));
+        // A fill ahead counts once it goes on: one its caller makes again counts there.
+        let kept = this.page.as_ref().and_then(|key| this.tier.take(key, &this.set, fill.len(), !ahead));
+        let count = || if let (true, Some(key)) = (ahead, &this.page) { this.tier.count(key, &this.set) };
         if let Some(page) = kept {
+            count();
             if let Err(error) = this.from_page(&fill, &page) {
                 if ahead { this.tier.failed(); }
                 let failure = tensorfs::Failure::from(error.source);
@@ -289,15 +449,13 @@ impl varena::Source for PageSource {
             decline(fill); // Its page went since the core asked: this one needs its caller.
             return Err(varena::Error::Busy);
         }
-        if let (Some(key), Some(_)) = (&this.page, derive) {
+        count();
+        if let Some(key) = this.page.as_ref().filter(|_| derive.is_some() || this.stored.is_some()) {
             this.tier.expect(key.clone(), this);
         }
         if let Some(stored) = &this.stored {
             match this.read(stored, &fill, ahead) {
-                Ok(stats) => {
-                    this.row(stats.bytes, "store", ahead, began);
-                    this.tier.read_source(&this.set, this.block, &stats);
-                }
+                Ok(()) => {}
                 Err(error) => {
                     let (error, failed) = storage(error);
                     if matches!(error, varena::Error::Busy) {
@@ -319,7 +477,10 @@ impl varena::Source for PageSource {
             return this.derive(derive, fill, consumer, weak).map(Some);
         }
         if let Some(key) = &this.page {
-            this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
+            if this.stored.is_none() || !this.keep_landed(key, &fill) {
+                this.tier.unreserve(key);
+                this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
+            }
         }
         publish(fill, consumer)
     }
@@ -383,12 +544,14 @@ impl PySource {
             }
             _ => None,
         };
-        Ok(Self {
-            inner: Arc::new(Inner {
-                tier: pages.tier.clone(), page, set, block, bytes, stored, derive,
-                plain: AtomicBool::new(false), reading: Mutex::new(None), region: Mutex::new(Weak::new()),
-            }),
-        })
+        let inner = Arc::new(Inner {
+            tier: pages.tier.clone(), page, set, block, bytes, stored, derive,
+            plain: AtomicBool::new(false), reading: Mutex::new(None), region: Mutex::new(Weak::new()),
+        });
+        if let Some(stored) = &inner.stored {
+            pages.tier.place(&inner, &stored.items);
+        }
+        Ok(Self { inner })
     }
 
     /// Its bytes in a writable host buffer: its kept page unless `stored`, else the store.
@@ -398,7 +561,7 @@ impl PySource {
         let buffer = pyo3::buffer::PyBuffer::<u8>::get(&view.call_method1("cast", ("B",))?)?;
         let (ptr, len) = (buffer.buf_ptr() as usize, buffer.len_bytes());
         let this = &self.inner;
-        let page = this.page.as_ref().filter(|_| !stored).and_then(|key| this.tier.take(key, len, false));
+        let page = this.page.as_ref().filter(|_| !stored).and_then(|key| this.tier.take(key, &this.set, len, false));
         if let Some(page) = page {
             // SAFETY: both hold `len` bytes, and the exporter keeps `out` alive through this.
             py.detach(|| unsafe { std::ptr::copy_nonoverlapping(page.ptr(), ptr as *mut u8, len) });

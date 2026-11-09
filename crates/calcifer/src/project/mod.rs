@@ -16,6 +16,7 @@ mod graph;
 mod history;
 pub(crate) mod host;
 mod jobs;
+mod keyed;
 pub(crate) mod model;
 mod remote;
 mod thumbs;
@@ -23,7 +24,6 @@ mod caption;
 mod direct;
 mod tools;
 mod sim;
-mod takeover;
 mod upgrade;
 mod walker;
 
@@ -33,7 +33,7 @@ use std::{
     path::{Path as FsPath, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -143,25 +143,15 @@ struct Project {
     importing: Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
-    /// When its walk last moved: a run's progress, anything it said, a cut's (unix ms). A rental's walk renews its clock only while this is recent.
-    moved: Arc<AtomicI64>,
-    /// Another machine holds its render (`takeover`): its watcher is going, the holder's end waits here until what it made is, what of it
-    /// isn't here yet (files, bytes), and when the holder last answered.
-    watching: AtomicBool,
-    ended: Mutex<Option<Event>>,
-    collecting: Mutex<(u64, u64)>,
-    heard: AtomicI64,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
     /// What kept its last render from reaching a machine (`State::unsent`).
     unsent: Mutex<Vec<Error>>,
 }
 
-pub fn routes() -> Router<Arc<Api>> {
+pub fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
-        .route("/v1/projects/take", post(takeover::take))
-        .route("/v1/projects/{id}/taken", get(takeover::taken))
         .route("/v1/projects/{id}", get(state).delete(forget))
         .route("/v1/projects/{id}/imports", post(import))
         .route("/v1/projects/{id}/assets/{name}/caption", post(caption::caption))
@@ -188,6 +178,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/history/undo", post(history::undo))
         .route("/v1/projects/{id}/history/redo", post(history::redo))
         .route_layer(axum::middleware::from_fn(history::record))
+        // Outside the history's: a write answered again is no edit of its own.
+        .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
 }
 
 impl Projects {
@@ -228,21 +220,13 @@ impl Projects {
                     moving: tokio::sync::Mutex::default(),
                     importing: Mutex::default(),
                     keys: Mutex::default(),
-                    moved: Arc::default(),
-                    watching: AtomicBool::new(false),
-                    ended: Mutex::default(),
-                    collecting: Mutex::default(),
-                    heard: AtomicI64::new(0),
                     said: Mutex::default(),
                     unsent: Mutex::default(),
                 })
             })
             .clone();
         project.said.lock().expect("said lock").extend(said);
-        if project.folder.walk_now()?.held.is_some() {
-            *project.walking.lock().expect("walking lock") = true;
-            takeover::watch(api, &project);
-        } else if project.folder.lock()?.owes() {
+        if project.folder.lock()?.owes() {
             walk(api, &project);
         }
         Ok(id)
@@ -363,13 +347,25 @@ impl Holding {
     }
 }
 
-/// What a project's run landed: which run, of what, and its bytes' digest.
+/// What a project's run landed: which run, of what, its bytes' digest, and what's measured of them.
 pub(crate) struct Landed<'a> {
     pub run: u64,
     pub target: &'a str,
     pub output: &'a str,
     pub index: u32,
     pub digest: &'a str,
+    pub measured: Option<&'a Facts>,
+}
+
+/// What's measured of a file: a picture's or video's size, a video's rate and frames, a picture's alpha, a sound's length.
+pub(crate) use folder::File as Facts;
+
+/// What's measured of the picture, video or sound at `path`, as a project measures its files, with ffprobe (and ffmpeg, for a picture's
+/// alpha) from `tools`, else PATH's. None of anything else, or with no ffprobe here.
+pub(crate) fn measured(tools: &FsPath, path: &FsPath, media_type: &str) -> Option<Facts> {
+    let field = ["image", "video", "audio"].into_iter().find(|field| media_type.strip_prefix(field).is_some_and(|rest| rest.starts_with('/')))?;
+    let (found, ffprobe) = platform::tools::ffmpeg(tools, &crate::tools::path())?;
+    tools::measured(&found.path, &ffprobe, path, field)
 }
 
 /// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
@@ -384,7 +380,7 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         Ok(said) => (said, None),
         Err(why) => (vec![], Some(why)),
     };
-    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
+    let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
     let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
@@ -460,28 +456,34 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
     project.jobs.begin();
     let walk = Walk::new(api, project);
     let following = following(api, project);
-    let clock = takeover::keep_clock(api, project);
     let api = api.clone();
     tokio::spawn(async move {
         remember(&api);
         let error = match walk.go().await {
             Ok(first) => first.map(|first| walk.last_word(first)),
             Err(error) => {
-                *walk.project.walking.lock().expect("walking lock") = false;
+                let mut walking = walk.project.walking.lock().expect("walking lock");
+                *walking = false;
+                // What it was asked stays owed for the next walk; for whoever follows those renders, this one stopped. Read before
+                // `walking` goes, so a render asked after is the next walk's.
+                if let Ok(owed) = walk.folder().walk_now() {
+                    walk.ends(owed.walk.asked.into_keys());
+                }
+                drop(walking);
                 walk.project.unsent.lock().expect("unsent lock").push(error.clone());
                 Some(error)
             }
         };
         remember(&api);
-        // What landed last is measured here, or no later walk says how long a take lasts, which New take from here needs.
+        // A take is measured as it lands. What this walk made here (a cut, a frame), or what landed before ffprobe was here, is measured now.
         if let Err(error) = walk.measure() {
             warn!("measuring a project's files: {}", error.message);
         }
         crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
-        clock.abort();
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
-        walk.say(Event::Ended { error, rendered: walk.rendered() });
+        let keys = std::mem::take(&mut *walk.ended.lock().expect("ended lock"));
+        walk.say(Event::Ended { error, rendered: walk.rendered(), keys });
     });
 }
 
@@ -496,9 +498,6 @@ fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return,
             };
-            if project.jobs.has_run(&id) {
-                project.moved.store(now_ms(), Ordering::Relaxed);
-            }
             if let Some((name, message)) = project.jobs.ran(&id, &event, &project.folder.dir) {
                 let _ = project.events.send(Event::Warning { message, name: Some(name) });
             }
@@ -956,9 +955,21 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     open.remove(&id);
     drop(open);
     match indexed(&api, true, |index| index.projects.remove(&id)) {
-        Some(_) => Ok(StatusCode::NO_CONTENT),
+        Some(entry) => {
+            let_go(&id, &entry.path);
+            Ok(StatusCode::NO_CONTENT)
+        }
         None => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
     }
+}
+
+/// What this Calcifer kept of a project it forgot, let go: its lock as last read, its history, its canvas's rows and what streams were told
+/// of it. Opened again, it's read anew.
+fn let_go(id: &str, dir: &FsPath) {
+    folder::let_go(dir);
+    history::let_go(dir);
+    canvas::let_go(id);
+    crate::events::let_go(id);
 }
 
 /// Its assets as they stand.
@@ -977,13 +988,12 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), held: takeover::held_by(&api, &project), unsent: vec![] }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
-    state.held = takeover::held_by(&api, &project);
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
     Ok(Json(state))
@@ -1466,15 +1476,12 @@ async fn rename(
 ) -> Result<Json<Renamed>, Refusal> {
     let asked: Rename = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    rename_now(&api, &project, &id, asked).await.map(Json)
+    rename_now(&project, &id, asked).await.map(Json)
 }
 
 /// Asset `from` called `to`, as `POST rename` has it.
-async fn rename_now(api: &Arc<Api>, project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
+async fn rename_now(project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
     format::named(&asked.to).map_err(Refusal)?;
-    // What a machine holds it renames first: what it makes then lands here under the new name.
-    let body = Bytes::from(serde_json::to_vec(&asked).expect("a rename serializes"));
-    let _: Option<Renamed> = takeover::forward(api, project, "rename", &body).await?;
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let text = folder.text().map_err(Refusal)?;
@@ -1518,8 +1525,7 @@ async fn rename_now(api: &Arc<Api>, project: &Arc<Project>, id: &str, asked: Ren
     canvas::moved(folder, id, &from, &to).map_err(Refusal)?;
     // Under `walking`, as a walk's end is: it is over, or it follows this.
     let walking = project.walking.lock().expect("walking lock");
-    // A machine holding it walks it there, and has this already.
-    let follows = *walking && folder.walk_now().map_err(Refusal)?.held.is_none();
+    let follows = *walking;
     if follows || old.is_some() || !stamps.is_empty() {
         folder
             .update_lock(|lock| {
@@ -1655,9 +1661,7 @@ async fn runs(
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let idempotency = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
-    if let Some(handed) = takeover::render(&api, &project, &asked, idempotency.as_ref()).await? {
-        return Ok(handed);
-    }
+    project.unsent.lock().expect("unsent lock").clear();
     if let Some((key, digest)) = &idempotency {
         // Kept in the walk's file too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
         let held = project.folder.walk_now().map_err(Refusal)?;
@@ -1875,12 +1879,8 @@ async fn cancel(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Cancelled>, Refusal> {
-    let body = body?;
-    let asked: Cancel = parse(&body)?;
+    let asked: Cancel = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(answer) = takeover::forward(&api, &project, "cancel", &body).await? {
-        return Ok(Json(answer));
-    }
     Ok(Json(cancelled(&api, &project, &asked.names, &|_| "canceled".to_owned())?))
 }
 
@@ -2125,12 +2125,8 @@ async fn approve(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Approved>, Refusal> {
-    let body = body?;
-    let asked: Approve = parse(&body)?;
+    let asked: Approve = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(answer) = takeover::forward(&api, &project, "approve", &body).await? {
-        return Ok(Json(answer));
-    }
     let folder = &project.folder;
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &asked.name).map_err(Refusal)?;
@@ -2184,12 +2180,8 @@ async fn unpin(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Unpinned>, Refusal> {
-    let body = body?;
-    let asked: Unpin = parse(&body)?;
+    let asked: Unpin = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(answer) = takeover::forward(&api, &project, "unpin", &body).await? {
-        return Ok(Json(answer));
-    }
     let folder = &project.folder;
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &asked.name).map_err(Refusal)?;
@@ -2275,30 +2267,28 @@ async fn events(
     let told = going.into_iter().map(|event| Ok(sse::Event::default().json_data(&event).expect("an event serializes")));
     let stop = api.stop_signal();
     let stream = futures_util::stream::iter(told).chain(futures_util::stream::unfold((tail, boards, stop), |(mut tail, mut boards, mut stop)| async move {
-        loop {
-            // The board first: what the walk says last, it has already shown.
-            let event = tokio::select! {
-                biased;
-                changed = boards.changed() => match changed {
-                    Ok(()) => Ok(Event::Board { board: boards.borrow_and_update().clone() }),
-                    Err(_) => return None,
-                },
-                event = tail.recv() => event,
-                _ = stop.wait_for(|stopping| *stopping) => return None,
-            };
-            match event {
-                Ok(event) => {
-                    let sent = sse::Event::default().json_data(&event).expect("an event serializes");
-                    return Some((Ok(sent), (tail, boards, stop)));
-                }
-                // It fell behind: what it missed is in the board.
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let event = Event::Board { board: boards.borrow().clone() };
-                    let sent = sse::Event::default().json_data(&event).expect("an event serializes");
-                    return Some((Ok(sent), (tail, boards, stop)));
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
+        // The board first: what the walk says last, it has already shown.
+        let event = tokio::select! {
+            biased;
+            changed = boards.changed() => match changed {
+                Ok(()) => Ok(Event::Board { board: boards.borrow_and_update().clone() }),
+                Err(_) => return None,
+            },
+            event = tail.recv() => event,
+            _ = stop.wait_for(|stopping| *stopping) => return None,
+        };
+        match event {
+            Ok(event) => {
+                let sent = sse::Event::default().json_data(&event).expect("an event serializes");
+                return Some((Ok(sent), (tail, boards, stop)));
             }
+            // It fell behind: what it missed is in the board.
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                let event = Event::Board { board: boards.borrow().clone() };
+                let sent = sse::Event::default().json_data(&event).expect("an event serializes");
+                return Some((Ok(sent), (tail, boards, stop)));
+            }
+            Err(broadcast::error::RecvError::Closed) => return None,
         }
     }));
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
@@ -2446,6 +2436,8 @@ struct Walk {
     stopped: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// That this computer's first need of ffprobe was met: it measures what a function reads of a file.
     measuring: AtomicBool,
+    /// The `Idempotency-Key`s of the renders it ended, which its end names.
+    ended: Mutex<Vec<String>>,
 }
 
 /// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
@@ -2539,6 +2531,7 @@ impl Walk {
             faults: Mutex::default(),
             stopped: Mutex::default(),
             measuring: AtomicBool::new(false),
+            ended: Mutex::default(),
         }
     }
 
@@ -2692,12 +2685,26 @@ impl Walk {
                 self.folder().drop_text(digest);
             }
         }
+        let done = std::cell::RefCell::new(vec![]);
         self.folder().update_walk(|walk| {
             walk.walk.asks.retain(|ask| ask.id != id);
+            // Every render asked of it is done: its end names them.
             if walk.walk.asks.is_empty() {
-                walk.walk.asked.clear();
+                *done.borrow_mut() = std::mem::take(&mut walk.walk.asked).into_keys().collect();
             }
-        })
+        })?;
+        self.ends(done.into_inner());
+        Ok(())
+    }
+
+    /// The renders asked under `keys` end with this walk.
+    fn ends(&self, keys: impl IntoIterator<Item = String>) {
+        let mut ended = self.ended.lock().expect("ended lock");
+        for key in keys {
+            if !ended.contains(&key) {
+                ended.push(key);
+            }
+        }
     }
 
     /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked
@@ -2743,7 +2750,6 @@ impl Walk {
     }
 
     fn say(&self, event: Event) {
-        self.project.moved.store(now_ms(), Ordering::Relaxed);
         self.project.jobs.told(&event);
         if matches!(event, Event::Started { .. }) {
             self.sync();
@@ -3480,11 +3486,15 @@ impl Walk {
             })?;
         }
         if !*walking {
+            let joined = std::cell::RefCell::new(vec![]);
             self.folder().update_walk(|walk| {
                 walk.walk.runs.clear();
                 walk.walk.landing.clear();
                 walk.walk.numbered.clear();
+                // A render that joined it with nothing to add ends with it.
+                *joined.borrow_mut() = std::mem::take(&mut walk.walk.asked).into_keys().collect();
             })?;
+            self.ends(joined.into_inner());
             *self.project.walker.lock().expect("walker lock") = Walker::default();
             self.folder().drop_texts();
         }
@@ -4296,7 +4306,7 @@ impl Walk {
         let cache = self.host.cache().join("cuts");
         let cutting_name = name.clone();
         let fps = canvas.fps;
-        let (rendering, rendered, moved) = (self.project.rendering.clone(), asset.name.clone(), self.project.moved.clone());
+        let (rendering, rendered) = (self.project.rendering.clone(), asset.name.clone());
         rendering.lock().expect("rendering lock").insert(rendered.clone(), 0.0);
         crate::events::project_settled(&folder.dir);
         let cutting_result = tokio::task::spawn_blocking(move || {
@@ -4304,7 +4314,6 @@ impl Walk {
             let dir = project.folder.dir.clone();
             // Each twentieth, so a page shows it moving and reads the project a few times, however long the film.
             let told = move |done: f64| {
-                moved.store(now_ms(), Ordering::Relaxed);
                 let mut now = rendering.lock().expect("rendering lock");
                 if now.get(&rendered).is_none_or(|was| done - was >= 0.05) {
                     now.insert(rendered.clone(), done.min(1.0));

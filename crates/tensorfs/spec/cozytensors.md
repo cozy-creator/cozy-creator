@@ -204,7 +204,12 @@ read them.
 - LoRAs are stored under the upstream module names they adapt, with PEFT's `lora_A` and `lora_B` keys:
   `<module>.lora_A.weight` `[r, in]` and `<module>.lora_B.weight` `[out, r]`, `r` being `lora_A`'s rows. A module
   adapts its base weight `W [out, in]` as `W' = W + (α / r) · (B · A)`. `α` is the module's scalar `<module>.alpha`
-  when the component has one, else the component config's `lora_alpha`, else `r` (a scale of 1).
+  when the component has one, else the component config's `lora_alpha`, else `r` (a scale of 1). A DoRA module
+  also holds its magnitude `<module>.lora_magnitude_vector` `[out]` (PEFT's state-dict key; kohya's and LyCORIS'
+  `dora_scale` `[out, 1]`) and adapts `W` as PEFT does: `W' = m · V / ‖V‖` per output row, `V = W + (α / r) · (B · A)`;
+  its config says `use_dora: true`. A magnitude of the input axis (`[1, in]`) is no PEFT DoRA and is refused.
+- A converter places every source key or refuses, naming the keys it could not place; keys a table knows to leave
+  out (its `optional`) are said as ignored.
 - A LoRA component's config is PEFT's `adapter_config.json` (`config_file`; `peft_type: "LORA"`,
   `base_model_name_or_path`, `r`, `lora_alpha`, `target_modules`, …). A converter normalizes the scale at ingest:
   PEFT's `alpha_pattern` (and rsLoRA's `α / √r`) become each module's `.alpha`, its `rank_pattern` is each

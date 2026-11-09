@@ -117,6 +117,20 @@ const SCHEMA: &str = "
         run TEXT REFERENCES runs (id)
     ) STRICT;";
 
+/// What each project write's `Idempotency-Key` answered (cl-812), kept a day: a store made before it gains the table, at the same
+/// version, which a Calcifer that predates it never reads.
+const ANSWERS: &str = "
+    CREATE TABLE IF NOT EXISTS answers (
+        key TEXT PRIMARY KEY,
+        digest TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        body BLOB NOT NULL,
+        at_ms INTEGER NOT NULL
+    ) STRICT;";
+/// How long an answer is kept for its write's retries.
+const ANSWER_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// A store made before outputs were measured gains their columns. Its version stands: every statement names its columns, so a
 /// Calcifer that predates them goes on reading it.
 fn measured_columns(writer: &mut Connection) -> Result<()> {
@@ -349,6 +363,7 @@ impl Store {
             VERSION => measured_columns(&mut writer)?,
             other => return Err(StoreError::Version(other)),
         }
+        writer.execute_batch(ANSWERS)?;
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;
         Ok(Self {
@@ -375,6 +390,29 @@ impl Store {
             Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(commit),
             _ => commit(),
         }
+    }
+
+    /// What the write under `key` answered, if it was kept.
+    pub fn answer(&self, key: &str) -> Result<Option<Answer>> {
+        self.read(|conn| {
+            let row = conn.query_row("SELECT digest, status, content_type, body FROM answers WHERE key = ?1", [key], |r| {
+                Ok(Answer { digest: r.get(0)?, status: r.get(1)?, content_type: r.get(2)?, body: r.get(3)? })
+            });
+            Ok(row.optional()?)
+        })
+    }
+
+    /// Keeps what the write under `key` answered; answers older than a day go.
+    pub fn keep_answer(&self, key: &str, answer: &Answer) -> Result<()> {
+        let now = now_ms();
+        self.write(|tx| {
+            tx.execute("DELETE FROM answers WHERE at_ms < ?1", [now - ANSWER_KEPT_MS])?;
+            tx.execute(
+                "INSERT OR REPLACE INTO answers (key, digest, status, content_type, body, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![key, answer.digest, answer.status, answer.content_type, answer.body, now],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn put_machine(&self, machine: &MachineRow) -> Result<()> {
@@ -911,17 +949,6 @@ impl Store {
         })
     }
 
-    /// An accepted run its machine forgot was sent again: the machine numbers its events anew.
-    pub fn sent_again(&self, id: &str, state: &v1::RunState) -> Result<()> {
-        self.write(|tx| {
-            tx.execute(
-                "UPDATE runs SET cursor = 0, machine_number = ?2, machine_state = ?3 WHERE id = ?1",
-                params![id, state.number as i64, state.state],
-            )?;
-            Ok(())
-        })
-    }
-
     /// Records a batch of an accepted run's frames and moves its cursor past them.
     pub fn observe(&self, id: &str, batch: Batch) -> Result<Vec<Event>> {
         self.write(|tx| {
@@ -1019,21 +1046,15 @@ impl Store {
         })
     }
 
-    /// Settles a run its machine keeps answering an internal failure about: canceled when that was asked, else failed, saying where
-    /// to look, as it may have gone on there. It is never sent again.
-    pub fn gave_up(&self, id: &str, machine: &str, code: &str, message: &str) -> Result<Vec<Event>> {
+    /// Settles a canceled run its machine keeps answering an internal failure about. Anything else stays unsettled: only its
+    /// machine's outcome settles it.
+    pub fn cancel_unanswered(&self, id: &str, machine: &str, code: &str, message: &str) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
-            Some(row) if row.state == State::Settled => Ok(vec![]),
-            Some(row) if row.cancel_requested => {
+            Some(row) if row.state != State::Settled && row.cancel_requested => {
                 let message = format!("canceled, though {machine} wouldn't answer: {code}: {message}");
                 end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message, ..Default::default() }))
             }
-            Some(_) => {
-                let message = format!("{machine} keeps failing when asked about this run, and it was not retried: {message}");
-                let next = vec![format!("cozy machine logs {machine}")];
-                end(tx, id, Status::Failed, Some(Reason { code: code.into(), message, origin: "machine".into(), next, ..Default::default() }))
-            }
-            None => Ok(vec![]),
+            _ => Ok(vec![]),
         })
     }
 
@@ -1632,6 +1653,15 @@ pub enum AskState {
     Pending,
     Done,
     Failed,
+}
+
+/// What a project write answered under its `Idempotency-Key`, and the digest of the ask (method, path and body).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answer {
+    pub digest: String,
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
 }
 
 /// One ask of a Hub: its key is the idempotency key the Hub gets, and `body` the exact bytes.

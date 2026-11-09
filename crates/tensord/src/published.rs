@@ -107,8 +107,6 @@ pub struct Request {
     pub installed: Option<Installation>,
     /// The account an unpublished package's org-relative model names belong to.
     pub owner: String,
-    /// The caller's catalog revision: a held resolution is reused only under the same one.
-    pub catalog_revision: String,
     /// Provider tokens for source models (memory only).
     pub providers: Providers,
     pub entrypoint: String,
@@ -318,6 +316,32 @@ pub struct Publisher {
     building: Mutex<HashMap<String, String>>,
     /// This machine's PyTorch layer once read (`layer`).
     layer: Mutex<Option<Arc<layer::Layer>>>,
+    /// The held names being read again at their Hub (`resolve`).
+    refreshing: Arc<Mutex<BTreeSet<String>>>,
+}
+
+/// How long a held answer stands (a name the Hub resolved, a preparation made of such answers)
+/// before the run that uses it has it read again, in the background: a publish, yank or new lane
+/// reaches this machine within it, and a warm run never waits on the Hub (minimal-submit-path).
+const FRESH: Duration = Duration::from_secs(10 * 60);
+
+/// A name as its Hub resolved it, with the hardware it was asked for: read again, it is asked as
+/// it was then (free VRAM moves; the first answer's stands).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Answer {
+    release: String,
+    lane: String,
+    commit: ObjectRef,
+    header: ObjectRef,
+    reasons: Vec<String>,
+    hardware: Hardware,
+}
+impl Answer {
+    fn ask(machine: &Machine, source: &hub::Source, named: &Named, hardware: &Hardware) -> Result<Self, Failure> {
+        let r = origin::resolve(machine, source, &named.repository, &named.release, &named.lane, hardware)
+            .map_err(|e| unsigned(source, refused("model_resolution_failed", e.clone()), &e))?;
+        Ok(Self { release: r.release, lane: r.lane, commit: r.commit, header: r.header, reasons: r.reasons, hardware: hardware.clone() })
+    }
 }
 
 /// An identity's builder, forgotten however the build ends.
@@ -337,6 +361,7 @@ impl Publisher {
             making: Mutex::new(HashMap::new()),
             building: Mutex::new(HashMap::new()),
             layer: Mutex::default(),
+            refreshing: Arc::default(),
         })
     }
 
@@ -667,24 +692,65 @@ impl Publisher {
     }
 
     /// The commit `named` is: one by hash as given, a name as the Hub resolves its release and
-    /// lane (or, with no lane, `hardware`); then that commit's header. Journaled per catalog
-    /// revision and GPUs (free VRAM moves; the first answer stands) so a warm run, across
-    /// restarts too, asks the Hub nothing (th-245).
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, revision: &str) -> Result<Named, Failure> {
+    /// lane (or, with no lane, `hardware`); then that commit's header. Journaled per GPUs so a
+    /// warm run, across restarts too, asks the Hub nothing (th-245); an answer older than `FRESH`
+    /// is read again behind it (`refresh`).
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware) -> Result<Named, Failure> {
         if named.tree.is_some() {
             return self.commit(service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
-        let name = json!(["resolve-v3", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
-        let held = service.engine.with_journal(|j| j.named(&name, revision)).map_err(io_failure)?;
-        if let Some((release, lane, tree, header, reasons)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
-            return Ok(Named { release, lane, tree: Some(tree), header: Some(header), reasons, ..named });
+        let name = json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
+        let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
+        let answer = match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
+            Some((answer, read)) => {
+                if stale(read) {
+                    self.refresh(service, source, &named, name, answer.hardware.clone());
+                }
+                answer
+            }
+            None => {
+                let answer = Answer::ask(&self.machine, source, &named, hardware)?;
+                let kept = serde_json::to_string(&answer).map_err(|e| io_failure(io::Error::other(e)))?;
+                service.engine.with_journal(|j| j.bind_named(&name, &kept)).map_err(io_failure)?;
+                answer
+            }
+        };
+        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.commit), header: Some(answer.header), reasons: answer.reasons, ..named })
+    }
+
+    /// Reads held name `name` again at its Hub on a thread of its own, once at a time. An answer
+    /// that moved is kept and moves this machine's catalog: the preparations made under the old
+    /// one are made again. A Hub that does not answer leaves the held answer standing.
+    fn refresh(&self, service: &Service, source: &hub::Source, named: &Named, name: String, hardware: Hardware) {
+        if !self.refreshing.lock().unwrap().insert(name.clone()) {
+            return;
         }
-        let r = origin::resolve(&self.machine, source, &named.repository, &named.release, &named.lane, hardware)
-            .map_err(|e| unsigned(source, refused("model_resolution_failed", e.clone()), &e))?;
-        let answer = json!([r.release, r.lane, r.commit, r.header, r.reasons]).to_string();
-        service.engine.with_journal(|j| j.bind_named(&name, revision, &answer)).map_err(io_failure)?;
-        Ok(Named { release: r.release, lane: r.lane, tree: Some(r.commit), header: Some(r.header), reasons: r.reasons, ..named })
+        let (machine, engine, refreshing) = (self.machine.clone(), service.engine.clone(), self.refreshing.clone());
+        let (source, named, done, unspawned) = (source.clone(), named.clone(), name.clone(), name.clone());
+        let read = move || -> Result<(), String> {
+            let answer = Answer::ask(&machine, &source, &named, &hardware).map_err(|(_, why)| why)?;
+            let kept = serde_json::to_string(&answer).map_err(|e| e.to_string())?;
+            engine.with_journal(|j| {
+                let moved = j.named(&name)?.is_none_or(|(held, _)| held != kept);
+                j.bind_named(&name, &kept)?;
+                if moved {
+                    tracing::info!(repository = %named.repository, release = %named.release, lane = %answer.lane, "a held model name resolves anew");
+                    j.move_catalog()?;
+                }
+                Ok(())
+            }).map_err(|e| e.to_string())
+        };
+        let spawned = std::thread::Builder::new().name("name-refresh".into()).spawn(move || {
+            if let Err(why) = read() {
+                tracing::info!(name = %done, "a held model name stands: reading it again failed: {why}");
+            }
+            refreshing.lock().unwrap().remove(&done);
+        });
+        if let Err(error) = spawned {
+            tracing::warn!("a held model name is not read again: {error}");
+            self.refreshing.lock().unwrap().remove(&unspawned);
+        }
     }
 
     /// A commit (or a bare header) named by its hash, with what a hash alone does not say: its
@@ -705,8 +771,8 @@ impl Publisher {
         }
         let tree = named.tree()?.clone();
         let key = json!(["commit-v1", hub::origin_key(&source.origin).unwrap_or_default(), named.repository, tree.id()]).to_string();
-        let held: Option<Held> = service.engine.with_journal(|j| j.named(&key, "")).map_err(io_failure)?
-            .and_then(|held| serde_json::from_str(&held).ok());
+        let held: Option<Held> = service.engine.with_journal(|j| j.named(&key)).map_err(io_failure)?
+            .and_then(|(held, _)| serde_json::from_str(&held).ok());
         let reader = match &source.capability {
             Some(capability) => capability.account(),
             None => Some(PUBLIC.to_string()),
@@ -737,7 +803,7 @@ impl Publisher {
         if let Some(reader) = reader {
             held.readers.insert(reader);
             let answer = serde_json::to_string(&held).map_err(|e| io_failure(io::Error::other(e)))?;
-            service.engine.with_journal(|j| j.bind_named(&key, "", &answer)).map_err(io_failure)?;
+            service.engine.with_journal(|j| j.bind_named(&key, &answer)).map_err(io_failure)?;
         }
         Ok(Named { tree: held.tree, lane: held.lane, header: Some(held.header), ..named })
     }
@@ -753,13 +819,12 @@ impl Publisher {
         source: &hub::Source,
         named: Named,
         hardware: &Hardware,
-        revision: &str,
         structure: bool,
         stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware, revision).map_err(failed)?;
+        let named = self.resolve(service, source, named, hardware).map_err(failed)?;
         // A checkpoint this store already holds whole moves nothing and asks the Hub nothing.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, stop, bytes).map_err(failed)?;
@@ -821,8 +886,9 @@ impl Publisher {
     }
 
     /// A held resolution's key: the request, under the machine's GPUs as the lane rule reads
-    /// them (`gpus`), never a card's name.
-    fn resolution_key(installation: &Installation, request: &Request, gpus: &str) -> io::Result<String> {
+    /// them (`gpus`), never a card's name, and the machine's catalog as it read its names
+    /// (`refresh`).
+    fn resolution_key(installation: &Installation, request: &Request, gpus: &str, catalog: u64) -> io::Result<String> {
         let alias = &installation.alias;
         let uses = crate::gpu_service::prepared_uses(installation, &request.entrypoint, request.payload.as_ref())?;
         let choices: Vec<_> = request
@@ -859,7 +925,7 @@ impl Publisher {
         let origin = request.origin();
         let package = request.installed.as_ref().map(|i| i.package.as_str()).unwrap_or(&request.package);
         let release = request.installed.as_ref().map(|i| i.release.as_str()).unwrap_or(&request.release);
-        let mut key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"catalog":request.catalog_revision,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
+        let mut key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"catalog":catalog,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
         if !uses.is_empty() { key["prepared_use"] = serde_json::to_value(uses).map_err(io::Error::other)?; }
         Ok(format!("hub-{}", sha256::hex_digest(key.to_string().as_bytes())))
     }
@@ -896,7 +962,8 @@ impl Publisher {
         let Some(gpu) = service.pool() else {
             return Ok(None);
         };
-        let key = Self::resolution_key(&installation, request, &machine_row(&gpu))?;
+        let catalog = service.engine.with_journal(|j| j.catalog())?;
+        let key = Self::resolution_key(&installation, request, &machine_row(&gpu), catalog)?;
         let Some(id) = service.engine.with_journal(|j| j.resolution(actor, &key))? else {
             return Ok(None);
         };
@@ -909,11 +976,18 @@ impl Publisher {
         if !gpu.holds(&plan) {
             return Ok(None);
         }
-        let warnings = service.engine.with_journal(|j| j.named(&warnings_key(&key), &request.catalog_revision))?;
+        // Made longer ago than `FRESH`, it is made again, reading its names again behind it, by a
+        // run that reaches their Hub; one that reaches none keeps it.
+        let warnings = service.engine.with_journal(|j| j.named(&warnings_key(&key)))?;
+        let warnings = match warnings {
+            Some((said, made)) if !stale(made) || request.source.is_none() => said,
+            None if request.source.is_none() => String::new(),
+            _ => return Ok(None),
+        };
         Ok(Some(Prepared {
             installation,
             plan: Some(plan),
-            warnings: warnings.and_then(|held| serde_json::from_str(&held).ok()).unwrap_or_default(),
+            warnings: serde_json::from_str(&warnings).unwrap_or_default(),
         }))
     }
 
@@ -1230,6 +1304,8 @@ impl Publisher {
         let entry = protocol::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
         let degree = gpu.degree(&entry, request.gpus);
         let hardware = gpu.hardware(degree);
+        // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
+        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
@@ -1270,7 +1346,7 @@ impl Publisher {
             // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only.
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
             let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, &request.catalog_revision)?;
+            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.repository)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1316,7 +1392,7 @@ impl Publisher {
                 .find(|c| c.parameter == grant.slot || c.parameter == parameter)
             {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, &request.catalog_revision);
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware);
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs: Vec<String> = (slots.iter())
                     .find(|slot| slot["path"] == grant.slot.as_str())
@@ -1347,13 +1423,13 @@ impl Publisher {
                 document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
             })
             .map_err(io_failure)?;
-        let key = Self::resolution_key(installation, request, &machine_row(gpu)).map_err(io_failure)?;
+        let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
         let said = Value::from(warnings.clone()).to_string();
         service
             .engine
             .with_journal(|j| {
                 j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
-                j.bind_named(&warnings_key(&key), &request.catalog_revision, &said)
+                j.bind_named(&warnings_key(&key), &said)
             })
             .map_err(io_failure)?;
         Ok((plan, warnings))
@@ -1376,6 +1452,11 @@ fn distinct<'a>(named: impl Iterator<Item = &'a Named>) -> Vec<Named> {
         }
     }
     checkpoints
+}
+
+/// Whether a held answer read at `read_ms` is older than `FRESH`.
+fn stale(read_ms: i64) -> bool {
+    crate::machine::lifecycle::now_ms() - read_ms >= FRESH.as_millis() as i64
 }
 
 /// The machine's GPUs as a held resolution is keyed by: how many, and what they run.

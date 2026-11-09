@@ -157,7 +157,7 @@ pub struct File {
 }
 
 /// What is measured of a file, kept apart from project.lock, as ffprobe can always say it again.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(super) struct Measured {
     #[serde(default, skip_serializing_if = "is_zero")]
     width: u64,
@@ -171,6 +171,12 @@ pub(super) struct Measured {
     alpha: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
     duration_ms: u64,
+}
+
+impl Measured {
+    fn of(file: &File) -> Self {
+        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms }
+    }
 }
 
 impl File {
@@ -523,38 +529,6 @@ pub struct WalkFile {
     pub pending: BTreeMap<String, Pending>,
     #[serde(default)]
     pub walk: Owed,
-    /// Another machine holds this folder's render, and this Calcifer collects what it makes (`takeover`). The one way a render's state
-    /// leaves the folder: while it's set, nothing walks here.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held: Option<Held>,
-}
-
-/// Who holds a folder's render, and what's on its way to them.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Held {
-    /// This computer's name for the machine.
-    pub machine: String,
-    /// The project's id there, once it took it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub id: String,
-    /// project.yaml as both last had it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub base: String,
-    /// Renders asked here and not yet answered there, each under its `Idempotency-Key`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub asking: Vec<Handing>,
-    /// Each key a render was asked under while it holds, and that ask's digest.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub keys: BTreeMap<String, String>,
-    /// The other machines it drives, which admit its key until the hold ends.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub drives: BTreeSet<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Handing {
-    pub key: String,
-    pub runs: protocol::project::Runs,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -583,7 +557,7 @@ pub fn bind_calcifer(dir: &Path) -> Result<(), Error> {
 
 impl WalkFile {
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.walk.is_empty() && self.held.is_none()
+        self.pending.is_empty() && self.walk.is_empty()
     }
 }
 
@@ -819,39 +793,6 @@ impl Lock {
         }
     }
 
-    /// What `other`, another computer's copy of this project's lock, knows that this one doesn't: each version of an asset `named` names, or
-    /// that this one holds, and each file. `holder`: `other` walked it, so what failed and was tried is its word.
-    pub fn absorb(&mut self, other: &Lock, named: impl Fn(&str) -> bool, holder: bool) {
-        for (key, theirs) in &other.assets {
-            if !named(key) && !self.assets.contains_key(key) {
-                continue;
-            }
-            let mine = self.assets.entry(key.clone()).or_default();
-            if mine.name.is_empty() {
-                (mine.name, mine.kind) = (theirs.name.clone(), theirs.kind.clone());
-            }
-            for version in &theirs.versions {
-                if !mine.versions.iter().any(|held| held.number == version.number) {
-                    mine.versions.push(version.clone());
-                }
-            }
-            mine.versions.sort_by_key(|version| version.number);
-            mine.numbered = mine.numbered.max(theirs.numbered);
-            if holder {
-                (mine.tried, mine.failed) = (theirs.tried.clone(), theirs.failed.clone());
-            }
-        }
-        for (sha256, file) in &other.files {
-            self.files.entry(sha256.clone()).or_insert_with(|| File { machine: String::new(), ..file.clone() });
-        }
-        for (key, tags) in &other.reserved {
-            self.reserved.entry(key.clone()).or_insert_with(|| tags.clone());
-        }
-        for (key, makes) in &other.makes {
-            self.makes.entry(key.clone()).or_insert_with(|| makes.clone());
-        }
-    }
-
     /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
     pub fn named(&self, keep: impl Fn(&str) -> bool) -> BTreeSet<&str> {
         let versions = (self.assets.iter().filter(|(key, _)| keep(key))).flat_map(|(_, asset)| &asset.versions);
@@ -877,6 +818,13 @@ static SHARED: LazyLock<Mutex<HashMap<PathBuf, Arc<Shared>>>> = LazyLock::new(Mu
 fn shared(dir: &Path) -> Arc<Shared> {
     let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
     SHARED.lock().unwrap_or_else(|e| e.into_inner()).entry(dir).or_default().clone()
+}
+
+/// The project in `dir` is forgotten: what's held of it goes, and its films' frame counts.
+pub fn let_go(dir: &Path) {
+    let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+    SHARED.lock().unwrap_or_else(|e| e.into_inner()).remove(&dir);
+    FILMS.lock().expect("films lock").retain(|path, _| !path.starts_with(&dir));
 }
 
 /// A write that took this long, waiting and held, is said, with how long each took.
@@ -1181,23 +1129,24 @@ impl Folder {
         let _turn = self.turn(LOCK);
         let moved = std::cell::RefCell::new(None);
         let wrote = std::cell::RefCell::new(None);
-        // What this wrote it needn't read back.
+        // What this wrote it needn't read back. Stamped before it's filled: a file that comes to `files/` between moves the stamp, so a read
+        // never keeps the table as it was under the stamp after.
         let held = || {
             if let Some(mut lock) = wrote.take() {
+                let stamp = self.stamp();
                 self.fill(&mut lock);
-                *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.stamp(), lock));
+                *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((stamp, lock));
             }
         };
         self.rewrite_held(&self.dir.join(LOCK), |_| {
             let mut lock = self.lock_file()?;
             let kept = self.walk_kept()?;
             let before = kept.as_ref().map(|walk| (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes")));
-            let held = kept.as_ref().and_then(|walk| walk.held.clone());
             if let Some(walk) = kept {
                 (lock.pending, lock.walk) = (walk.pending, walk.walk);
             }
             change(&mut lock);
-            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk), held };
+            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
             let after = (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes"));
             // Unchanged, it isn't written.
             *moved.borrow_mut() = (before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty())).then_some(walk);
@@ -1269,14 +1218,21 @@ impl Folder {
         Ok(sha256)
     }
 
-    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. Listed as
-    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path, and why it
-    /// isn't listed: paid-for bytes are kept whatever the project can say of them.
-    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<(PathBuf, Option<Error>), Error> {
+    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. In this order: what's
+    /// `measured` of it, its file in `files/`, then its run's listing, in place of what an earlier revision of that output was, which goes if
+    /// nothing else names it. So a read that finds the file here finds it measured. Answers its path, and why it isn't listed: paid-for bytes
+    /// are kept whatever the project can say of them, measured or not.
+    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
             let at = self.dir.join(&path);
+            // What's measured is a cache a read can make again: one that can't be written leaves the file for the walk's measure.
+            if let Some(measured) = measured
+                && let Err(error) = self.record_measured(&BTreeMap::from([(digest.to_owned(), measured.clone())]))
+            {
+                warn!("{}: what's measured of {digest} isn't kept: {}", self.dir.display(), error.message);
+            }
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
@@ -1286,6 +1242,10 @@ impl Folder {
                         durable::soon(&at);
                     }
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
+                }
+                // A video that landed: the page plays its preview on a hover.
+                if let Some(measured) = measured.filter(|measured| measured.fps > 0.0 && measured.width > 0) {
+                    super::thumbs::landed(at.clone(), digest, measured.lasts_ms() as f64 / 1000.0);
                 }
             }
             let old = std::cell::RefCell::new(vec![]);
@@ -1332,17 +1292,6 @@ impl Folder {
             // Another disk.
             Err(_) => std::fs::copy(at, part).and_then(|_| std::fs::remove_file(at)),
         })
-    }
-
-    /// The held file at `at` put where project.lock has it, whatever it is. Err: why not.
-    pub fn place_held(&self, at: &Path, path: &str) -> Result<(), String> {
-        let to = self.path(path);
-        let placed = to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| match std::fs::rename(at, &to) {
-            Ok(()) => Ok(()),
-            // Another disk.
-            Err(_) => std::fs::copy(at, &to).and_then(|_| std::fs::remove_file(at)),
-        });
-        placed.map_err(|e| format!("{}: {e}", to.display()))
     }
 
     /// `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock. Err: why not.
@@ -1455,11 +1404,17 @@ impl Folder {
                 }
             }
         }
+        self.record_measured(&measured)
+    }
+
+    /// What's `measured` of these files by hash, kept with what's measured of the rest in one write, unless it is so already.
+    fn record_measured(&self, measured: &BTreeMap<String, File>) -> Result<(), Error> {
         self.rewrite(&self.dir.join(MEASURED), |text| {
             let mut held: BTreeMap<String, Measured> = serde_json::from_str(text).unwrap_or_default();
-            for (sha256, file) in &measured {
-                held.insert(sha256.clone(), Measured { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms });
+            if measured.iter().all(|(sha256, file)| held.get(sha256) == Some(&Measured::of(file))) {
+                return Ok(text.to_owned());
             }
+            held.extend(measured.iter().map(|(sha256, file)| (sha256.clone(), Measured::of(file))));
             Ok(serde_json::to_string(&held).expect("what is measured serializes"))
         })
         .map(drop)
@@ -1520,12 +1475,21 @@ impl Folder {
             let _ = std::fs::remove_file(&at);
         }
         let unused: Vec<&String> = sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())).collect();
+        // What was measured of an earlier revision goes with it.
+        self.rewrite(&self.dir.join(MEASURED), |text| {
+            let mut held: BTreeMap<String, Measured> = serde_json::from_str(text).unwrap_or_default();
+            if !unused.iter().any(|sha256| held.contains_key(*sha256)) {
+                return Ok(text.to_owned());
+            }
+            held.retain(|sha256, _| !unused.contains(&sha256));
+            Ok(serde_json::to_string(&held).expect("what is measured serializes"))
+        })?;
         self.update_lock(|lock| lock.files.retain(|sha256, _| !unused.contains(&sha256)))
     }
 }
 
 /// `text` as a lock of this format. A lock of another isn't read, so nothing writes over it.
-pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
+fn parse_lock(text: &str) -> Result<Lock, Error> {
     let unreadable = |why: String| Error::new(Kind::Validation, UNREADABLE, format!("{LOCK}: {why}"));
     let value = protocol::yaml::to_json(text).map_err(unreadable)?;
     match value["format"].as_u64() {

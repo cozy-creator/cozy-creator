@@ -632,7 +632,7 @@ impl Engine {
             let mut jobs = Vec::new();
             let tally = Tally::default();
             for (local, &(copy, c)) in copies.iter().enumerate() {
-                if let Src::Device { device, stream, .. } = c.src {
+                if let Some(Src::Device { device, stream, .. }) = c.src.ordered() {
                     let source = Engine::get(device).map_err(|e| failed(copy, e))?;
                     owners
                         .events

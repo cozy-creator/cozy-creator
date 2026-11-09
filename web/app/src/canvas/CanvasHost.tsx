@@ -26,9 +26,9 @@ import { AssetMenu } from "./AssetMenu"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore, useElement } from "./context"
+import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
 import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
-import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
@@ -493,32 +493,53 @@ function Canvas({
     [placer, visibleCentre],
   )
 
-  const drop = useCallback(
-    (event: DragEvent) => {
-      if (letGo(store, event.clientX, event.clientY)) return event.preventDefault()
-      const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
-      const tool = event.dataTransfer.getData(DRAGGED_TOOL)
-      const taken = event.dataTransfer.getData(DRAGGED_FILE)
-      const picture = event.dataTransfer.getData(DRAGGED_NAME)
-      const under = boxAt(store, event.clientX, event.clientY)
-      if (picture) {
-        event.preventDefault()
-        const target = store.dropTargetAt(event.clientX, event.clientY, [])
-        if (target) target.drop([picture], event.clientX, event.clientY)
-        else if (under) store.takeInto(under, [picture])
+  // What's carried in the page, let go here: on a box that takes it, else by what it is.
+  const land = useCallback(
+    (load: Load, x: number, y: number) => {
+      if (letGo(store, x, y)) return
+      const point = flow.screenToFlowPosition({ x, y })
+      const under = boxAt(store, x, y)
+      if (load.name) {
+        const target = store.dropTargetAt(x, y, [])
+        if (target) target.drop([load.name], x, y)
+        else if (under) store.takeInto(under, [load.name])
         store.setHot(null)
         return
       }
-      if (tool || taken) {
-        event.preventDefault()
-        const named = store.tools.get().get(tool)
-        if (named) placer.addTool(named, point)
-        if (taken && !(under && store.takePicture(under, JSON.parse(taken)))) placer.addFile(JSON.parse(taken), point)
-        return
-      }
+      if (load.tool) placer.addTool(load.tool, point, load.fields)
+      if (load.take && !(under && store.takePicture(under, load.take))) placer.addFile(load.take, point)
+    },
+    [placer, flow, store],
+  )
+  useEffect(() => {
+    const el = stage.current
+    if (!el) return
+    const heard = (event: Event) => {
+      const { load, x, y } = (event as LetGo).detail
+      land(load, x, y)
+    }
+    el.addEventListener(LET_GO, heard)
+    return () => el.removeEventListener(LET_GO, heard)
+  }, [land])
+  // While something's carried, what would take it says so.
+  useEffect(
+    () =>
+      carriedAt.subscribe(() => {
+        const at = carriedAt.get()
+        if (at) carriedOver(store, at.x, at.y)
+        else store.setHot(null)
+      }),
+    [store],
+  )
+
+  // Files from the computer: the browser's own drag.
+  const drop = useCallback(
+    (event: DragEvent) => {
       if (!hasFiles(event)) return
       event.preventDefault()
       setVeil(false)
+      const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      const under = boxAt(store, event.clientX, event.clientY)
       const files = [...event.dataTransfer.files]
       if (!files.length) return
       if (under && store.joins(under)) placer.join(files, under)
@@ -774,7 +795,6 @@ function Canvas({
       cancelAnimationFrame(settle)
     }
   }, [flowStore])
-  const accepted = useCallback((event: DragEvent) => [DRAGGED_TOOL, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_CHECKPOINT].some((type) => event.dataTransfer.types.includes(type)), [])
 
   // The list a box's controls come from, whatever the panel is searching.
   useEffect(() => {
@@ -794,6 +814,7 @@ function Canvas({
         }}
         place={placeTool}
         choose={choose}
+        box={opened}
       />
       <div
         ref={stage}
@@ -811,10 +832,9 @@ function Canvas({
           if (hasFiles(event)) setVeil(true)
         }}
         onDragOver={(event) => {
-          if (!hasFiles(event) && !accepted(event)) return
+          if (!hasFiles(event)) return
           event.preventDefault()
           event.dataTransfer.dropEffect = "copy"
-          carriedOver(store, event.clientX, event.clientY)
         }}
         onDragLeave={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget as globalThis.Node | null)) setVeil(false)

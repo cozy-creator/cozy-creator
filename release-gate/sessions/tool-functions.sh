@@ -5,7 +5,6 @@
 # its TensorD to the pod, and `runtime` the Runtime with `Node`. A completed run is no pass: each output is measured, its frames kept for
 # a person to judge in $OUT/frames, and each call's input is checked against what crossed its mentions. One rental (a 4090). params:
 #   runtime     the Runtime wheel with Node, https://…#sha256=<hex> (default: the session's RUNTIME_WHEEL, from rc/<x>)
-#   traffic_gb  GB the provider bills (110)
 #   caption     also ask a local qwen3.5 for a description, 9 GB more ("true")
 . "$(dirname "$0")/lib.sh"
 URL=$(param runtime) PK=$PACKAGES/pk CAPTION=$(param caption true)
@@ -76,7 +75,7 @@ $(awk -v join="$join" -F= '/YAVG/ { n++; y[n] = $2 } END { for (i = join - 23; i
   ffmpeg -v error -y -i "$old" -vf "select='eq(n,$((join - 1)))'" -vsync 0 "$OUT/frames/join-kept.png"
 }
 
-quote "$(param traffic_gb 110)" 3600
+quote 3600
 rent
 step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" -y || fail "update"
 say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, gpu: .status.gpus[0].name}')"

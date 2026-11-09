@@ -14,7 +14,6 @@
 #   sdxl        the SDXL function (sdxl/generate@0.1.3)
 #   anima       the Anima function (anima/generate@0.1.1)
 #   qwen        the Qwen-Image function (qwen-image-2/generate@0.1.8), at 1 MP, 20 steps
-#   traffic_gb  GB the provider bills: the image and both models' weights (40)
 #   need_s      seconds the guard must buy (5400)
 #   sample      true: the pod's disk, process I/O, pressure and GPU sampled for the session (samples.jsonl, dmon.txt)
 #   settle      true: each cold request waits until the disk reads at 80% of its rate before the weights landed
@@ -253,7 +252,7 @@ EOF
 )
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
-quote "$(param traffic_gb 40)" "$(param need_s 5400)"
+quote "$(param need_s 5400)"
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done

@@ -1043,8 +1043,6 @@ export class CanvasStore {
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset || view.conflict) return
-    // From an image tool's words, the box looks at the take being made, and its + goes back to them.
-    if (view.here && view.hereWords && paints(view, this.tools.get())) this.watchTake(key)
     const on = madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
@@ -1052,6 +1050,9 @@ export class CanvasStore {
       this.askMachine()
       return
     }
+    // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
+    // for is said under its words.
+    if (view.here && view.hereWords && paints(view, this.tools.get())) this.watchTake(key)
     this.patch(key, { waiting: undefined, scrub: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
@@ -1607,8 +1608,11 @@ export class CanvasStore {
     return names.filter((name) => nameKey(name).startsWith(key)).sort()
   }
 
-  /** The name a mention is, in any case, with `_` and `-` alike. */
+  /** The name a mention is, in any case, with `_` and `-` alike. Names differ by more than that, so one written as it's named is that box, found
+   *  without reading every box's name: each box's shape asks of each mention at once. */
   nameOf(mention: string): string | null {
+    const exact = this.views.get(mention)
+    if (exact && !exact.placing) return mention
     const key = nameKey(mention)
     for (const [name, view] of this.views) if (!view.placing && nameKey(name) === key) return name
     return null
@@ -1743,7 +1747,7 @@ export class CanvasStore {
       this.rows?.delete(name)
       this.removeNode(name)
       this.outbox.add<AssetDeleted>({
-        send: (once) => this.client.deleteAsset(this.projectId!, this.served.get(id) ?? name, { once, edit }),
+        send: (once, action) => this.client.deleteAsset(this.projectId!, this.served.get(id) ?? name, { once, edit, action }),
         done: () => {
           if (this.deleting.has(name)) this.deleting.set(name, performance.now())
         },
@@ -1844,7 +1848,7 @@ export class CanvasStore {
     const note = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}`)
     this.stepped = note
     this.outbox.add<HistoryStepped>({
-      send: (once) => this.client[verb](id, { to: entry }, { once }),
+      send: (once, action) => this.client[verb](id, { to: entry }, { once, action }),
       done: (answer) => {
         shown.forEach((one) => one.settle())
         if (answer.stopped) say(`Couldn't ${verb} them all`, new ApiError(409, answer.stopped))
@@ -1873,7 +1877,7 @@ export class CanvasStore {
     const note = say(`${back ? "Undone" : "Redone"}: ${words}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) }, ms: UNDO_MS })
     this.stepped = note
     this.outbox.add<HistoryStepped>({
-      send: (once) => this.client[verb](id, target, { once }),
+      send: (once, action) => this.client[verb](id, target, { once, action }),
       done: () => {
         shown.settle()
         this.history.read()
@@ -2213,9 +2217,9 @@ export class CanvasStore {
     const id = this.ids.get(this.resolveName(name))
     const inTurn = {
       ...action,
-      send: async (once: AbortSignal) => {
+      send: async (once: AbortSignal, outboxed: string) => {
         const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
-        return served ? action.send(served, { once, edit: action.edit }) : NOT_THERE
+        return served ? action.send(served, { once, edit: action.edit, action: outboxed }) : NOT_THERE
       },
       done: (answer: T | typeof NOT_THERE) => {
         if (answer !== NOT_THERE) action.done?.(answer as T)
@@ -2261,7 +2265,7 @@ export class CanvasStore {
       if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
     }
     this.outbox.add<T>({
-      send: (once) => ask(at, { once, edit: by }),
+      send: (once, action) => ask(at, { once, edit: by, action }),
       done: (answer) => {
         this.served.set(node.id, answer.name)
         // Another writer took the name, unless a rename has moved it on since.
@@ -2368,7 +2372,7 @@ export class CanvasStore {
     let sent = new Map<string, Row>()
     let edits = new Map<string, Set<string>>()
     this.outbox.add({
-      send: (once) => {
+      send: (once, action) => {
         sent = new Map([...this.moving].filter(([id]) => ready(id)))
         edits = new Map([...sent.keys()].map((id) => [id, new Set(this.movingEdits.get(id))]))
         const edit = [...new Set([...edits.values()].flatMap((held) => [...held]))].join(",") || undefined
@@ -2377,7 +2381,7 @@ export class CanvasStore {
           return name && this.namesById.has(id) ? [[name, row, this.movingFrom.get(id)]] : []
         })
         const was = Object.fromEntries(cards.flatMap(([name, , from]) => (from === undefined ? [] : [[name, from]])))
-        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards.map(([name, row]) => [name, row])), was, { once, edit }) : Promise.resolve(null)
+        return cards.length && this.projectId ? this.client.moveCards(this.projectId, Object.fromEntries(cards.map(([name, row]) => [name, row])), was, { once, edit, action }) : Promise.resolve(null)
       },
       done: (answer) => {
         this.movesOwed = false

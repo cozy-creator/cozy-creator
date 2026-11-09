@@ -18,7 +18,6 @@
 #   parts       which of a, g, b, c, v, m, s, l run (default all but s)
 #   rent_lock   a file to hold while ordering, where several sessions rent from one computer
 #   runtime     a Runtime for the pod with `cozy`: a wheel or a version (default: the pod's)
-#   traffic_gb  GB the provider bills (default 12)
 #   seconds     the least time the cap must buy (default 2400)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/client-gone" && pwd)
@@ -28,7 +27,7 @@ UNDER=$(param cozy "$(command -v cozy)") BEFORE=$(param before) LOCK=$(param ren
 PARTS=,$(param parts a,g,b,c,v,m,l), BEFORE_PARTS=$(param before_parts "b c m s")
 has() { [[ $PARTS == *",$1,"* ]]; }
 RENT_ARGS=--ssh
-quote "$(param traffic_gb 12)" "$(param seconds 2400)"
+quote "$(param seconds 2400)"
 [ -z "$LOCK" ] || { exec 9>"$LOCK"; flock 9; }
 order
 [ -z "$LOCK" ] || { flock -u 9; exec 9>&-; }

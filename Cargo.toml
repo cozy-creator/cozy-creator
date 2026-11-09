@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.21.2"
+version = "0.21.3"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -78,13 +78,16 @@ jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
 libc = "0.2"
 libloading = "0.9"
+# The cozy binary's allocator (cl-822): it gives back what any thread freed, on every OS. No transparent huge pages:
+# a 2 MiB page that holds a few small allocations is 2 MiB resident.
+mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
 nvml-wrapper = "0.13"
 nvml-wrapper-sys = "0.10"
 percent-encoding = "2.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13", default-features = false, features = ["form", "http2", "json", "query", "rustls", "stream"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 rustix = { version = "1.1.4", default-features = false, features = ["std"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 saphyr = { version = "0.2.2", default-features = false }

@@ -505,7 +505,8 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS native_outputs(actor TEXT NOT NULL,owner TEXT NOT NULL,source BLOB NOT NULL,PRIMARY KEY(actor,owner));
             CREATE TABLE IF NOT EXISTS triage(execution INTEGER PRIMARY KEY REFERENCES executions(id),record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS resolutions(actor TEXT NOT NULL,key TEXT NOT NULL,package TEXT NOT NULL,preparation TEXT NOT NULL,PRIMARY KEY(actor,key));
-            CREATE TABLE IF NOT EXISTS names(name TEXT PRIMARY KEY,revision TEXT NOT NULL,named TEXT NOT NULL);
+            DROP TABLE IF EXISTS names;
+            CREATE TABLE IF NOT EXISTS held_names(name TEXT PRIMARY KEY,named TEXT NOT NULL,read_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS objects(actor TEXT NOT NULL,sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(actor,sha256));
             CREATE TABLE IF NOT EXISTS object_uses(sha256 TEXT PRIMARY KEY,length INTEGER NOT NULL,used_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS run_objects(execution INTEGER NOT NULL REFERENCES executions(id),sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sha256));
@@ -699,17 +700,34 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
-    /// What a Hub named `name` (its origin, a repository, release and lane) under the caller's
-    /// catalog `revision` (th-245), or None. One row per name: a moved revision replaces it.
-    pub fn named(&self, name: &str, revision: &str) -> io::Result<Option<String>> {
+    /// What a Hub named `name` (its origin, a repository, release and lane: th-245), and when it
+    /// was read there, or None.
+    pub fn named(&self, name: &str) -> io::Result<Option<(String, i64)>> {
         self.connection
-            .query_row("SELECT named FROM names WHERE name=?1 AND revision=?2", params![name, revision], |r| r.get(0))
+            .query_row("SELECT named,read_ms FROM held_names WHERE name=?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()
             .map_err(db_error)
     }
-    pub fn bind_named(&mut self, name: &str, revision: &str, named: &str) -> io::Result<()> {
+    /// `name` as read now.
+    pub fn bind_named(&mut self, name: &str, named: &str) -> io::Result<()> {
         self.connection
-            .execute("INSERT OR REPLACE INTO names(name,revision,named) VALUES(?1,?2,?3)", params![name, revision, named])
+            .execute("INSERT OR REPLACE INTO held_names(name,named,read_ms) VALUES(?1,?2,?3)", params![name, named, timestamp()])
+            .map_err(db_error)?;
+        Ok(())
+    }
+    /// This machine's catalog: how many times a held name has resolved anew. Held preparations
+    /// are kept per catalog.
+    pub fn catalog(&self) -> io::Result<u64> {
+        let catalog: Option<String> = self.connection
+            .query_row("SELECT value FROM machine_metadata WHERE key='catalog'", [], |r| r.get(0))
+            .optional()
+            .map_err(db_error)?;
+        Ok(catalog.and_then(|c| c.parse().ok()).unwrap_or(0))
+    }
+    pub fn move_catalog(&mut self) -> io::Result<()> {
+        let next = (self.catalog()? + 1).to_string();
+        self.connection
+            .execute("INSERT OR REPLACE INTO machine_metadata(key,value) VALUES('catalog',?1)", [next])
             .map_err(db_error)?;
         Ok(())
     }
@@ -1170,31 +1188,18 @@ impl Journal {
     }
 
     /// A restarted machine holds no preparation. A preparing run it kept the spec of prepares
-    /// again (`interrupted`). One sent with tokens kept none, since they stay off its disk: nothing
-    /// of it ran, so it is forgotten, and its controller, which holds them, finds it gone
-    /// (`run_not_found`) and sends it again. A child's parent ended with this restart, and it
-    /// ends FAILED with its parent.
+    /// again, or waits for its access (`interrupted`). A child keeps none: its parent ended with
+    /// this restart, and it ends FAILED with its parent.
     pub(crate) fn interrupt_preparations(&mut self) -> io::Result<()> {
-        let preparing: Vec<(i64, bool)> = {
+        let preparing: Vec<i64> = {
             let mut statement = self
                 .connection
-                .prepare("SELECT id, COALESCE(json_extract(record,'$.invocation.parent'),'')<>'' FROM executions WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1 AND id NOT IN (SELECT execution FROM run_specs)")
+                .prepare("SELECT id FROM executions WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1 AND id NOT IN (SELECT execution FROM run_specs)")
                 .map_err(db_error)?;
-            let rows = statement
-                .query_map([PREPARING], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(db_error)?;
+            let rows = statement.query_map([PREPARING], |row| row.get(0)).map_err(db_error)?;
             rows.collect::<Result<_, _>>().map_err(db_error)?
         };
-        for (id, child) in preparing {
-            if !child {
-                let tx = self.connection.transaction().map_err(db_error)?;
-                for table in EXECUTION_ROWS {
-                    tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
-                }
-                tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
-                tx.commit().map_err(db_error)?;
-                continue;
-            }
+        for id in preparing {
             let failure = Failure {
                 status: 3,
                 cause: 7,
@@ -1212,6 +1217,30 @@ impl Journal {
         let mut statement = self.connection.prepare("SELECT COALESCE(request_id, CAST(id AS TEXT)) FROM executions WHERE state IN ('starting','running') ORDER BY id").map_err(db_error)?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(db_error)?;
         rows.collect::<Result<_, _>>().map_err(db_error)
+    }
+
+    /// A preparing run waits for its access, kept with its spec.
+    pub(crate) fn park(&mut self, id: &str) -> io::Result<Execution> {
+        self.update(id, |record| {
+            let preparing = record.state == State::Queued && record.waiting_reason.as_deref() == Some(PREPARING);
+            if preparing {
+                record.waiting_reason = Some(NEEDS_ACCESS.into());
+            }
+            Ok(preparing)
+        })
+    }
+
+    /// A run waiting for its access prepares again: whether it was waiting.
+    pub(crate) fn unpark(&mut self, id: &str) -> io::Result<bool> {
+        let mut parked = false;
+        self.update(id, |record| {
+            parked = record.state == State::Queued && record.waiting_reason.as_deref() == Some(NEEDS_ACCESS);
+            if parked {
+                record.waiting_reason = Some(PREPARING.into());
+            }
+            Ok(parked)
+        })?;
+        Ok(parked)
     }
 
     /// The preparing runs a restart interrupted, each with its signer and kept spec.
@@ -1281,12 +1310,14 @@ fn reference_objects(
 
 /// The waiting reason of a run accepted before its preparation completes.
 pub const PREPARING: &str = "preparing";
+/// The waiting reason of a preparing run a restart interrupted, until its sender sends it again
+/// with the access that stays off disk.
+pub const NEEDS_ACCESS: &str = "needs_access";
 
-/// The tables holding rows of one execution.
-const EXECUTION_ROWS: [&str; 9] = [
-    "public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied",
-    "run_calls", "triage", "run_objects", "run_specs",
-];
+/// Not yet prepared: its spec is kept.
+fn unprepared(record: &Execution) -> bool {
+    record.state == State::Queued && matches!(record.waiting_reason.as_deref(), Some(PREPARING | NEEDS_ACCESS))
+}
 
 fn insert(
     tx: &rusqlite::Transaction<'_>,
@@ -1440,16 +1471,18 @@ impl Journal {
 
     /// Accepted history remains evidence of use even after every execution is terminal.
     /// Whether a job (any run asked of this machine: a call, a warm-up, an upload) is queued or
-    /// running, and when the last one ended: `since` or later.
+    /// running, and when the last one ended: `since` or later. One waiting for its sender's access
+    /// (`NEEDS_ACCESS`) is none: a sender that never comes back leaves the machine idle.
     /// A record changed since `since` is the only one that can have stopped after it, so each
     /// sample reads only what changed.
     pub fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
         self.connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM executions WHERE state IN ('queued','starting','running')),
+                "SELECT EXISTS(SELECT 1 FROM executions WHERE state IN ('queued','starting','running')
+                   AND COALESCE(json_extract(record,'$.waiting_reason'),'')<>?2),
                  (SELECT MAX(json_extract(record,'$.finished_at_ms')) FROM executions
                    WHERE updated_ms>=?1 AND state IN ('completed','failed','canceled'))",
-                [since],
+                params![since, NEEDS_ACCESS],
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )
             .map_err(db_error)
@@ -1560,8 +1593,7 @@ impl Journal {
             ));
         }
         let was_terminal = record.state.terminal();
-        let preparing = |record: &Execution| record.state == State::Queued && record.waiting_reason.as_deref() == Some(PREPARING);
-        let was_preparing = preparing(&record);
+        let was_unprepared = unprepared(&record);
         let running_since = (record.state == State::Running).then_some(record.started_at_ms);
         let changed = change(&mut record)?;
         if let Some(since) = running_since.filter(|&s| s > 0 && record.state != State::Running) {
@@ -1594,7 +1626,7 @@ impl Journal {
                 params![encoded(&record)?, record.state.name(), timestamp(), id],
             )
             .map_err(db_error)?;
-            if was_preparing && !preparing(&record) {
+            if was_unprepared && !unprepared(&record) {
                 tx.execute("DELETE FROM run_specs WHERE execution=?1", [id]).map_err(db_error)?;
             }
             also(&tx, &record)?;

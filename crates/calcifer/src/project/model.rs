@@ -119,7 +119,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
-    let head = ProjectState { id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None, held: None, unsent: vec![] };
+    let head = ProjectState { id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![] };
     Ok(Model { rev, heard, doc, lock, head, rows, stand })
 }
 
