@@ -266,11 +266,10 @@ impl Table {
         let _ = row.running.try_update(AcqRel, Acquire, |running| running.checked_sub(1));
     }
 
-    /// What the rows but `row` in no request hold: an ask or the supervisor's end brings it back.
-    pub fn held_idle_elsewhere(&self, row: Row) -> u64 {
-        self.page.rows.iter().enumerate()
-            .filter(|(index, words)| *index != row.0 && words.pid.load(Acquire) != 0 && words.running.load(Acquire) == 0)
-            .map(|(_, words)| words.held.load(Acquire)).sum()
+    /// Bytes idle in every row but `row`.
+    pub fn idle_elsewhere(&self, row: Row) -> u64 {
+        self.page.rows.iter().enumerate().filter(|(index, words)| *index != row.0 && words.pid.load(Acquire) != 0)
+            .map(|(_, words)| words.idle.load(Acquire)).sum()
     }
 
     /// Bytes idle on this GPU, across every row.

@@ -27,9 +27,6 @@ const LOOK: Duration = Duration::from_millis(100);
 /// How much of a page is read or registered before a command may take over: one registration
 /// of H3's largest page made a request wait 0.6 s on an RTX 3090.
 pub(super) const WINDOW: usize = 64 << 20;
-/// How much an idle pin reads before it looks for a command: a command waits on it at most one
-/// such read (about 6 ms at a store's 1.3 GB/s), never a window's.
-const IDLE_PIECE: usize = 8 << 20;
 /// Threads faulting a page in: registering untouched memory on the fill path held each of Flux-2's
 /// 57 blocks about 0.2 s in step 1 (run 39103). On a 4090 host the driver registered untouched
 /// memory at 3 GB/s, one page at a time, touched memory at 28, and faulting in ran at 10.5 GB/s on
@@ -374,11 +371,8 @@ impl Tier {
     /// pages go, the least worth first, while it is under the headroom. Unreadable: they all go.
     /// Clean page cache is room, active or not: the kernel takes it back before it kills, and
     /// pinned pages hold the bytes a cached copy would. In a request, short of the headroom: idle
-    /// peers are asked first, and this tier's pages go only for what they do not hold; theirs are
-    /// worth less than any of a running call's. Where nothing kills at the number (`headroom` 0),
-    /// half the reserve is slack while they give back; past the number only the excess goes. Read
-    /// as unreadable, a room below the number let every page go: Flux-2's tier let 10 GiB go on
-    /// kesshouban while idle peers held more (run 42691).
+    /// peers are asked for their pages, and this tier's go only for what they do not hold; their
+    /// pages are worth less than any of a running call's.
     fn trim(&self, state: &mut State) -> Gone {
         let mut gone = Gone::new(self);
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
@@ -392,11 +386,10 @@ impl Tier {
         if left >= state.headroom {
             return gone;
         }
-        let unreadable = budget.total <= 0;
-        let idle = if unreadable { 0 } else { super::host::short((state.headroom - left).max(0) as u64) };
+        let idle = if left >= 0 { super::host::short((state.headroom - left) as u64) } else { 0 };
         let idle = i64::try_from(idle).unwrap_or(i64::MAX);
-        let (headroom, floor) = (state.headroom, if budget.headroom > 0 { 0 } else { -budget.reserve / 2 });
-        let enough = |left: i64| !unreadable && left >= floor && left.saturating_add(idle) >= headroom;
+        let headroom = state.headroom;
+        let enough = |left: i64| left >= 0 && left.saturating_add(idle) >= headroom;
         while !enough(left) {
             let Some((page, _)) = state.spare.pop() else { break };
             left += page.len as i64;
@@ -408,7 +401,9 @@ impl Tier {
                 break;
             }
             if let Some(kept) = state.remove(&key, "short") {
-                left += kept.page.len as i64;
+                if left >= 0 {
+                    left += kept.page.len as i64;
+                }
                 gone.push(kept);
             }
         }
@@ -898,7 +893,7 @@ impl Tier {
                 if is_waiting()? {
                     return self.requeue(key, set, &source);
                 }
-                let len = IDLE_PIECE.min(page.len - at);
+                let len = WINDOW.min(page.len - at);
                 let (ptr, whole) = (page.ptr as usize, page.len);
                 read = py.detach(|| source.read_window(ptr as *mut u8, whole, at, len));
                 at += len;

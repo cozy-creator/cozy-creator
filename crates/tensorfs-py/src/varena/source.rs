@@ -127,9 +127,9 @@ impl Inner {
     pub(super) fn stored_bytes(&self) -> bool {
         self.stored.is_some() && (self.derive.is_none() || self.plain.load(Ordering::Acquire))
     }
-    /// Its bytes are kept on the fill path: a derive's, or the stored ones once landed.
+    /// Its derive's bytes are kept: none are known to be the stored ones.
     pub(super) fn keeps(&self) -> bool {
-        self.page.is_some() && (self.derive.is_some() || self.stored.is_some())
+        self.page.is_some() && self.derive.is_some() && !self.plain.load(Ordering::Acquire)
     }
     pub(super) fn region(&self) -> Weak<varena::Region> {
         self.region.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -321,28 +321,6 @@ impl Inner {
         Ok(())
     }
 
-    /// Its stored bytes, just landed on the card, copied into a host page now if the tier admits
-    /// one (made ahead by `expect`). Left for an idle pin, every refill read them from the store
-    /// again meanwhile: SDXL's second call 2 GB, Klein's upsampler 550 GiB a call (kesshouban,
-    /// runs 42714, 42716). Whether it is kept.
-    fn keep_landed(&self, key: &str, fill: &varena::Fill) -> bool {
-        let began = Instant::now();
-        let Ok(Some(page)) = self.tier.reserve(key, &self.set, self.bytes) else { return false };
-        let copies: Vec<_> = page.windows().map(|(at, len)| io::Copy {
-            src: Src::Device { device: fill.device(), ptr: fill.ptr() + at as u64, stream: 0 },
-            // SAFETY: `at..at + len` lies inside the page.
-            dst: Dst::Host { ptr: unsafe { page.ptr().add(at) }, len },
-        }).collect();
-        // SAFETY: the Fill is exclusive and its read returned, so every byte landed; the page is
-        // this call's alone until `insert`.
-        if unsafe { io::read(&copies, &ReadOpts::default()) }.is_err() {
-            return false;
-        }
-        self.tier.insert(key, &self.set, page);
-        self.tier.keep_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        true
-    }
-
     /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor.
     fn derive(&self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>) -> varena::Result<varena::Pin> {
         let device = fill.device();
@@ -354,9 +332,10 @@ impl Inner {
                 let used = Py::new(py, PyUse::filling(fill, consumers))?;
                 let view = py.import("torch")?.call_method1("from_dlpack", (used.clone_ref(py),))?;
                 let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
-                // Derived or, unchanged, the stored bytes: a refill never reads the store again.
-                if let Some(key) = &self.page {
-                    self.keep(key, py, &view)?;
+                if changed || self.stored.is_none() {
+                    if let Some(key) = &self.page {
+                        self.keep(key, py, &view)?;
+                    }
                 }
                 let pin = used.borrow(py).finish(py)?;
                 Ok((changed, pin))
@@ -365,10 +344,8 @@ impl Inner {
                 Ok((changed, pin)) => {
                     if !changed && self.stored.is_some() {
                         self.plain.store(true, Ordering::Release);
-                    }
-                    if let Some(key) = self.page.as_ref().filter(|key| !self.tier.holds(key)) {
-                        py.detach(|| self.tier.unreserve(key));
-                        if !changed && self.stored.is_some() {
+                        if let Some(key) = &self.page {
+                            py.detach(|| self.tier.unreserve(key));
                             self.tier.want(key, &self.set, this, region);
                         }
                     }
@@ -450,7 +427,7 @@ impl varena::Source for PageSource {
             return Err(varena::Error::Busy);
         }
         count();
-        if let Some(key) = this.page.as_ref().filter(|_| derive.is_some() || this.stored.is_some()) {
+        if let (Some(key), Some(_)) = (&this.page, derive) {
             this.tier.expect(key.clone(), this);
         }
         if let Some(stored) = &this.stored {
@@ -477,10 +454,7 @@ impl varena::Source for PageSource {
             return this.derive(derive, fill, consumer, weak).map(Some);
         }
         if let Some(key) = &this.page {
-            if this.stored.is_none() || !this.keep_landed(key, &fill) {
-                this.tier.unreserve(key);
-                this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
-            }
+            this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
         }
         publish(fill, consumer)
     }

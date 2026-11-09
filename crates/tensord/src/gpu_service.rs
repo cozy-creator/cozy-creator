@@ -529,7 +529,7 @@ struct Session {
     /// Its row of `Serving`: the manifests its constructions read.
     serving: u64,
     /// Its TensorFS has varena v2, whose cores share each GPU through its ledger. An older one
-    /// is asked for nothing and asks for nothing: TensorD makes its room (`room_at_start`).
+    /// is asked for nothing and asks for nothing: TensorD makes its room (`room_outside_ledger`).
     ledger: bool,
 }
 impl Session {
@@ -1186,44 +1186,27 @@ impl Pool {
             .map(|(key, _)| key.clone());
         key.is_some_and(|key| self.end_session(&key))
     }
-    /// Before `session` serves a call, room for it, as v1 made it at a model switch: at placement,
-    /// never when the call runs short. Idle executors of other packages on its lane end, and other
-    /// packages' idle deviceless executors and import-only parents, whose contexts and host memory
-    /// no ask returns: on kesshouban an idle executor of the last model held 23 GiB of the card
-    /// while Klein's upsampler ran (+83%), and Flux-2's host tier let 10 GiB of its pages go before
-    /// the asks ended its peers, 37 s in. An idle executor of the package being placed stays, and
-    /// so do warm sets. An executor outside the ledger (`Session::ledger`) sizes itself by what the
-    /// driver has free: idle executors outside the ledger there end too, and for a construction it
-    /// has not loaded, every idle ledger member. Then each member left gives back what it holds idle.
-    fn room_at_start(&self, session: &Session, loading: bool) {
-        let lane = session.lane();
+    /// Before an executor outside the ledger (`Session::ledger`) serves a call on `lane`, room for
+    /// it, as v1 made it: it sizes itself by what the driver has free, which no peer gives it.
+    /// Idle executors outside the ledger there end, since nothing else returns what they hold; for
+    /// a construction it has not loaded, idle ledger members too, whose contexts no ask returns
+    /// (v1 ended every idle neighbour for a first call); then every member left gives back what it
+    /// holds idle. Warm sets stay.
+    fn room_outside_ledger(&self, lane: std::ops::Range<usize>, loading: bool) {
         let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
-        let other = |generation: &str| generation != session.generation.as_str();
         let keys: Vec<String> = self.sessions.lock().unwrap().iter()
             .filter(|(_, s)| s.degree != 0 && s.start < lane.end && lane.start < s.start + s.degree as usize)
-            .filter(|(_, s)| other(s.generation.as_str()) || (!session.ledger && (loading || !s.ledger)))
-            .filter(|(_, s)| !s.loaded.keys().any(|key| warm.contains(key)))
+            .filter(|(_, s)| (loading || !s.ledger) && !s.loaded.keys().any(|key| warm.contains(key)))
             .map(|(key, _)| key.clone()).collect();
         let ended = keys.iter().filter(|key| self.end_session(key)).count();
-        let mut deviceless = 0;
-        while self.end_idle_deviceless(|s| other(s.generation.as_str()) && !s.loaded.keys().any(|key| warm.contains(key))) {
-            deviceless += 1;
-        }
-        let parents = self.zygotes.lock().unwrap().iter()
-            .filter(|((generation, _), zygote)| other(generation.as_str()) && zygote.childless()).count();
-        self.end_idle_parents(|(generation, _)| other(generation.as_str()));
-        // Ledger members left give back on the core's asks; one outside it is asked for nothing.
         #[cfg(target_os = "linux")]
-        let given: u64 = match session.ledger {
-            true => 0,
-            false => self.devices[lane.clone()].iter().filter_map(|device| device.asking.as_ref())
-                .filter_map(|table| table.lock().unwrap().ask_all_idle(Instant::now() + std::time::Duration::from_secs(2))).sum(),
-        };
+        let given: u64 = self.devices[lane.clone()].iter().filter_map(|device| device.asking.as_ref())
+            .filter_map(|table| table.lock().unwrap().ask_all_idle(Instant::now() + std::time::Duration::from_secs(2))).sum();
         #[cfg(not(target_os = "linux"))]
         let given = 0;
-        self.notes.note(serde_json::json!({"event": "room_at_start", "gpus": lane, "loading": loading,
-            "ended": ended, "deviceless": deviceless, "parents": parents, "given": given, "free": self.free(&lane)}));
+        self.notes.note(serde_json::json!({"event": "room_outside_ledger", "gpus": lane, "loading": loading,
+            "ended": ended, "given": given, "free": self.free(&lane)}));
     }
     /// Current minimum driver free bytes, used only for exit diagnostics.
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -3416,8 +3399,8 @@ impl Pool {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
         let gpus = self.lane(start, degree)?;
-        if degree > 0 {
-            self.room_at_start(session, !session.loaded.contains_key(&construction));
+        if !session.ledger && degree > 0 {
+            self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
         }
         let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
         // A call begins: the host is looked at before it grows.
