@@ -43,6 +43,7 @@ pub mod runs;
 pub mod serve;
 mod queue;
 mod read_order;
+mod build_ahead;
 pub mod service;
 pub mod stop;
 pub mod storage;

@@ -398,6 +398,27 @@ pub fn runtime() -> Result<Arc<tokio::runtime::Runtime>> {
     Ok(Arc::clone(held.insert(Arc::new(runtime))))
 }
 
+/// Ends the process's fetch runtime and joins its threads; the next caller starts another. A
+/// process that forks with no thread calls it once its reads are done (the Runtime's import-only
+/// parent, after the headers of the constructions it builds ahead). False when a call still holds
+/// the runtime, which then keeps running.
+pub fn release_runtime() -> bool {
+    let Ok(slot) = runtime_slot() else { return true };
+    let mut held = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(runtime) = held.take() else { return true };
+    match Arc::try_unwrap(runtime) {
+        Ok(runtime) => {
+            drop(held);
+            runtime.shutdown_timeout(std::time::Duration::from_secs(10));
+            true
+        }
+        Err(shared) => {
+            *held = Some(shared);
+            false
+        }
+    }
+}
+
 type RuntimeSlot = Mutex<Option<Arc<tokio::runtime::Runtime>>>;
 
 #[cfg(not(unix))]

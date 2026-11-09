@@ -43,6 +43,18 @@ fn python_distribution_version() -> String {
     format!("{release}.dev{development}")
 }
 
+/// Ends the process's fetch runtime and its release worker, joining their threads, so it can fork
+/// holding none; the next call that needs one starts it again. False when a call still holds the
+/// fetch runtime.
+#[pyfunction]
+fn release_threads(py: Python<'_>) -> bool {
+    py.detach(|| {
+        let released = tensorfs::fetch::release_runtime();
+        cleanup::release();
+        released
+    })
+}
+
 #[pymodule]
 fn _ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The library's warnings reach the process's stderr.
@@ -53,6 +65,7 @@ fn _ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ceiling::install(m)?;
     varena::install(m)?;
     executor::install(m)?;
+    m.add_function(wrap_pyfunction!(release_threads, m)?)?;
     m.add("__version__", python_distribution_version())?;
     // The store format every process on the machine shares.
     m.add("STORE_FORMAT", tensorfs::STORE_FORMAT)?;

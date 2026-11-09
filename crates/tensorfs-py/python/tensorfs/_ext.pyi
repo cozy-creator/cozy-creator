@@ -85,6 +85,11 @@ def ceiling(device: int | None = None, path: StrPath | None = None) -> Ceiling:
     """`path`'s volume (default: the TensorFS home) and, with `device`, pinned H2D to that GPU;
     measured unless kept this boot."""
 
+def release_threads() -> bool:
+    """End the process's fetch runtime and release worker, joining their threads, so it can fork
+    holding none; the next call that needs one starts it again. False when a call still holds the
+    fetch runtime."""
+
 class VerificationReport:
     """Local object references found missing or corrupt; verification never repairs them."""
 

@@ -1,8 +1,10 @@
 //! Final native releases must not wait under the GIL, or on a mover that a release joins.
 //! Queue state is process-owned: Runtime imports TensorFS before its CPU-only parent forks.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
+use std::thread::JoinHandle;
 
 use pyo3::prelude::*;
 
@@ -10,6 +12,12 @@ type Task = Box<dyn FnOnce() + Send + 'static>;
 struct State {
     pid: u32,
     sender: mpsc::Sender<Task>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+thread_local! {
+    /// Set on a worker by `release`: it ends after the task that set it.
+    static STOP: Cell<bool> = const { Cell::new(false) };
 }
 struct Pending {
     pid: u32,
@@ -32,7 +40,7 @@ fn state() -> Result<&'static State, std::io::Error> {
             return Ok(unsafe { &*old });
         }
         let (sender, receiver) = mpsc::channel::<Task>();
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("tensorfs-cleanup".into())
             .spawn(move || {
                 for task in receiver {
@@ -42,9 +50,12 @@ fn state() -> Result<&'static State, std::io::Error> {
                         // provider weakrefs can observe release without another API call.
                         flush();
                     }));
+                    if STOP.get() {
+                        return;
+                    }
                 }
             })?;
-        let fresh = Box::into_raw(Box::new(State { pid, sender }));
+        let fresh = Box::into_raw(Box::new(State { pid, sender, worker: Mutex::new(Some(worker)) }));
         match STATE.compare_exchange(old, fresh, Ordering::AcqRel, Ordering::Acquire) {
             // SAFETY: `fresh` was just published; published states are never freed.
             Ok(_) => return Ok(unsafe { &*fresh }),
@@ -158,6 +169,29 @@ fn submit(task: Task, queue: std::io::Result<&State>) {
             retain(task);
             // Do not enter a process-global logger from a post-fork destructor: its
             // lock may also belong to a vanished parent thread. A later defer retries.
+        }
+    }
+}
+
+/// Ends this process's worker once it has run what was sent before, and joins it; the next
+/// `defer` starts another. Call it without the GIL (a task's flush attaches). The state stays
+/// published-and-never-freed: a sender still holding it only fails over to `retain`.
+pub(crate) fn release() {
+    let pid = std::process::id();
+    let old = STATE.load(Ordering::Acquire);
+    // SAFETY: published boxes are never freed; pid is immutable after publication.
+    if old.is_null() || unsafe { (*old).pid } != pid {
+        return;
+    }
+    if STATE.compare_exchange(old, std::ptr::null_mut(), Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return;
+    }
+    // SAFETY: as above; this process published it.
+    let state = unsafe { &*old };
+    if state.sender.send(Box::new(|| STOP.set(true))).is_ok() {
+        let worker = state.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(worker) = worker {
+            let _ = worker.join();
         }
     }
 }

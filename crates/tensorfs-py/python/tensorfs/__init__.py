@@ -43,6 +43,7 @@ from ._ext import (
     VerificationReport,
     __version__,
     ceiling,
+    release_threads,
 )
 from . import raw
 from .api import CheckpointFile, ComponentWriter, Endpoint, Writer, configure, convert_to_cozytensors, download_file, open, materialize, upload_folder, view
@@ -87,6 +88,7 @@ __all__ = [
     "download_file",
     "open",
     "materialize",
+    "release_threads",
     "upload_folder",
     "view",
 ]

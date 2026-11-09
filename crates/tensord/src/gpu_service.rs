@@ -834,6 +834,9 @@ pub struct Pool {
     /// Per generation, the import-only executor sessions fork from. Declared after
     /// `sessions`: executors end before the parent they were forked from.
     zygotes: Mutex<BTreeMap<(String, String), Arc<Zygote>>>,
+    /// Apps whose parent could not fork after building ahead, and why: theirs build nothing
+    /// ahead again while this process runs.
+    build_off: Mutex<BTreeMap<App, String>>,
     /// Each generation's kernel boot of this machine run: its process while it runs.
     kernel_boots: Mutex<BTreeMap<String, Option<platform::process::Exact>>>,
     /// Each caller's warm set, in the order it sent it.
@@ -980,6 +983,7 @@ impl Pool {
     pub fn new(root: &Path, config: GpuConfig, store: Arc<Store>) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         crate::read_order::open(root);
+        crate::build_ahead::open(root);
         let notes = MemoryLog::at(store.root().join("logs"));
         // Weight sources and output transport can retain many descriptors; executors inherit
         // this process limit even though GPU handles no longer cross the seam.
@@ -1075,6 +1079,7 @@ impl Pool {
                 leaders: Mutex::default(),
                 tenants,
                 zygotes: Mutex::new(BTreeMap::new()),
+                build_off: Mutex::new(BTreeMap::new()),
                 kernel_boots: Mutex::new(BTreeMap::new()),
                 members: Mutex::new(BTreeMap::new()),
                 keeping: Mutex::new(()),
@@ -1930,7 +1935,7 @@ impl Pool {
             return "this machine imports nothing ahead for it (no fork, or it binds no model)";
         };
         if start {
-            self.start_parent(&parent, held);
+            self.start_parent(&parent, held, true);
         }
         parent.wait_started();
         match (parent.ready(), parent.failed()) {
@@ -2533,7 +2538,7 @@ impl Pool {
                 let asked = Instant::now();
                 if let Some((zygote, start)) = pool.zygote(&held) {
                     if start {
-                        pool.start_parent(&zygote, &held);
+                        pool.start_parent(&zygote, &held, false);
                     }
                     zygote.wait_started();
                 }
@@ -2888,7 +2893,7 @@ impl Pool {
         let started = std::thread::Builder::new()
             .name("executor-prespawn".into())
             .spawn(move || match pool.upgrade() {
-                Some(pool) => pool.start_parent(&zygote, &held),
+                Some(pool) => pool.start_parent(&zygote, &held, true),
                 None => zygote.set(ZygoteState::Off("the GPU pool ended".into())),
             });
         if let Err(error) = started {
@@ -2996,8 +3001,9 @@ impl Pool {
     }
 
     /// Brings `zygote` up as `held`'s import-only parent, and tells the engine it did (or failed).
-    /// Its first import records its environment's import pages (`import_pages`).
-    fn start_parent(&self, zygote: &Zygote, held: &HeldGeneration) {
+    /// Its first import records its environment's import pages (`import_pages`). `ahead`: started
+    /// ahead of a call, it then builds what its App last loaded (`build_ahead`).
+    fn start_parent(&self, zygote: &Zygote, held: &HeldGeneration, ahead: bool) {
         zygote.set(self.import_only(held));
         if let Some(parent) = zygote.birth() {
             crate::import_pages::record_later(held, parent);
@@ -3005,6 +3011,86 @@ impl Pool {
         if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
             engine.notify_activity();
         }
+        if let Some(recorded) = ahead.then(|| crate::build_ahead::recorded(held)).flatten() {
+            self.send_build(zygote, held, &recorded);
+        }
+    }
+
+    /// A call of `held` admitted: its model slots' device-free construction (headers, config,
+    /// `load()`) starts now in its generation's import-only parent, beside its weights' read
+    /// ahead, and stays there for the executors that parent forks. Recorded, so the parent builds
+    /// them again when it next starts.
+    pub fn build_ahead(self: &Arc<Self>, held: HeldGeneration, plan: &Plan) {
+        let store = self.store.root().to_string_lossy().into_owned();
+        let slots: Vec<Binding> = plan.slots.iter().filter(|slot| !slot.on_demand)
+            .map(|slot| Binding { store: store.clone(), ..slot.binding.clone() }).collect();
+        if slots.is_empty() || plan.degree != 1 {
+            return;
+        }
+        let recorded = crate::build_ahead::Recorded { construction: plan.construction.clone(), slots };
+        crate::build_ahead::record(&held, &recorded.construction, recorded.slots.clone());
+        let Some((zygote, _)) = self.zygote(&held) else { return };
+        let pool = Arc::downgrade(self);
+        let started = std::thread::Builder::new().name("executor-build-ahead".into()).spawn(move || {
+            if let Some(pool) = pool.upgrade() {
+                zygote.wait_started();
+                pool.send_build(&zygote, &held, &recorded);
+            }
+        });
+        if let Err(error) = started {
+            tracing::warn!("executor build ahead: {error}");
+        }
+    }
+
+    /// `recorded` to `zygote`'s parent as a Load: it builds what needs no device and keeps it for
+    /// the executors it forks, which adopt it. A fork waits for it. A parent its builds left
+    /// unable to fork refuses every fork (each launch spawns) until it is replaced, and its App
+    /// builds nothing ahead again while this process runs.
+    fn send_build(&self, zygote: &Zygote, held: &HeldGeneration, recorded: &crate::build_ahead::Recorded) {
+        let app = parent_app(held);
+        if let Some(why) = self.build_off.lock().unwrap().get(&app) {
+            tracing::info!("{}: builds nothing ahead: {why}", held.record.application);
+            return;
+        }
+        let mut state = zygote.state.lock().unwrap();
+        let ZygoteState::Ready(parent) = &mut *state else { return };
+        let started = Instant::now();
+        let reply = (|| {
+            let interface = self.interface_file(parent, held)?.to_string_lossy().into_owned();
+            let devices = self.lane_devices(0, self.devices.len().min(1) as u32)?;
+            let slot = |binding: &Binding| ModelLoad {
+                binding: Binding { package_interface: interface.clone(), views: views(binding), ..binding.clone() },
+            };
+            let mut models: Vec<ModelLoad> = recorded.slots.iter().map(slot).collect();
+            let first = models.first().map(|m| m.binding.clone()).unwrap_or_default();
+            if models.len() == 1 {
+                models.clear();
+            }
+            let load = Command::Load(Box::new(Load {
+                tensorfs: None,
+                actor: String::new(),
+                construction: recorded.construction.clone(),
+                devices,
+                sequence_parallel_degree: 1,
+                binding: first,
+                models,
+                attention_pin: String::new(),
+            }));
+            parent.command(&load, &mut device_executor::Baseline)
+        })();
+        drop(state);
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        let line = match reply {
+            Ok(reply) if reply.ok => format!("built ahead in {ms:.0} ms: {}", reply.detail),
+            Ok(reply) => {
+                let why = format!("{}: {}", reply.code, reply.detail);
+                self.build_off.lock().unwrap().insert(app, why.clone());
+                format!("its import-only parent cannot fork after building ahead ({why}): its App builds nothing ahead")
+            }
+            Err(error) => format!("building ahead: {error}"),
+        };
+        tracing::info!("{}: {line}", held.record.application);
+        self.notes.note(serde_json::json!({"event": "build_ahead", "generation": held.record.identity, "ms": ms, "line": line}));
     }
 
     /// Spawn an executor of `held` and import torch, the Runtime and the package with no
@@ -3316,7 +3402,7 @@ impl Pool {
                 break;
             };
             if start {
-                self.start_parent(&zygote, held);
+                self.start_parent(&zygote, held, false);
             }
             match zygote.fork(config.take().expect("one config per launch"), &on_birth)? {
                 Forked::Ready(executor) => {
@@ -3326,7 +3412,9 @@ impl Pool {
                 Forked::Refused(returned, reason) => {
                     tracing::warn!("executor fork refused, spawning: {reason}");
                     config = Some(*returned);
-                    if zygote.failed() {
+                    // One that can never fork (a thread its builds ahead left) is replaced once
+                    // ending it ends no executor.
+                    if zygote.failed() || (reason.starts_with("fork_unsafe") && zygote.childless()) {
                         self.forget_parent(held, &zygote);
                     }
                     break;

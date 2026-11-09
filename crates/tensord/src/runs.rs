@@ -781,6 +781,10 @@ impl Runs {
         }
         if let (false, Some(gpu)) = (spec.warm, self.service.gpu()) {
             gpu.prespawn(generation.clone());
+            // A cold call's models build their device-free part in that parent meanwhile.
+            if let Some(plan) = plan.as_ref().filter(|plan| !gpu.loaded(plan)) {
+                gpu.build_ahead(generation.clone(), plan);
+            }
             // A pipeline's next packages: a root's calls go to the other packages' Apps its
             // environment holds, so their parents start now too, under the same budget.
             if spec.parent.is_empty() {
