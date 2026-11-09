@@ -8,8 +8,9 @@
 //! as reclaimable. Every executor's tiers share the host through its ledger page (`host`): idle
 //! ones give pages back to a call that is short. On a person's computer nothing pins while the
 //! host stalls on memory, and the headroom doubles.
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -118,6 +119,52 @@ struct Kept {
     last: u64,
 }
 
+/// Bytes moving into or out of the tier that the kernel's figures may not show yet, counted while
+/// this lives.
+struct Moving {
+    count: Arc<AtomicI64>,
+    bytes: i64,
+}
+
+impl Moving {
+    fn new(count: &Arc<AtomicI64>, bytes: i64) -> Self {
+        count.fetch_add(bytes, Ordering::Relaxed);
+        Self { count: count.clone(), bytes }
+    }
+    fn add(&mut self, bytes: i64) {
+        self.count.fetch_add(bytes, Ordering::Relaxed);
+        self.bytes += bytes;
+    }
+}
+
+impl Drop for Moving {
+    fn drop(&mut self) {
+        self.count.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+/// Pages the tier let go, unregistered and freed when this drops, never under the lock. Until
+/// then their bytes are `freeing`: the pages drop before the count does (field order).
+pub(super) struct Gone {
+    pages: Vec<Kept>,
+    freeing: Moving,
+}
+
+impl Gone {
+    fn new(tier: &Tier) -> Self {
+        Self { pages: Vec::new(), freeing: Moving::new(&tier.freeing, 0) }
+    }
+    fn push(&mut self, kept: Kept) {
+        self.freeing.add(kept.page.len as i64);
+        self.pages.push(kept);
+    }
+    fn extend(&mut self, kept: Option<Kept>) {
+        if let Some(kept) = kept {
+            self.push(kept);
+        }
+    }
+}
+
 /// A stored page read once: pinned at idle if it has left the card by then.
 struct Wanted {
     set: String,
@@ -159,6 +206,12 @@ struct State {
     filled: Option<(String, String, Page)>,
     refills: HashMap<String, u64>,
     rate: HashMap<String, u64>,
+    /// Each set's pass this request, from 1: a page taken again in the same pass begins the next.
+    passes: HashMap<String, u64>,
+    /// The pass of its set each page was last taken in.
+    taken: HashMap<String, u64>,
+    /// Bytes of pages let go this process, by why: short of room, displaced, given, shed, forgotten.
+    let_go: HashMap<&'static str, u64>,
     clock: u64,
     log: Vec<Row>,
     /// Pages derives will keep, to make while their fills run, in the order the fills began.
@@ -191,6 +244,10 @@ pub(super) struct Tier {
     /// Fill-path time in `keep`, and of it in `reserve`.
     pub(super) keep_ns: AtomicU64,
     pub(super) reserve_ns: AtomicU64,
+    /// Bytes admitted and not yet made (`Moving`): the kernel charges them once they are touched.
+    making: Arc<AtomicI64>,
+    /// Bytes let go and not yet freed (`Gone`): the kernel charges them until the unregister ends.
+    freeing: Arc<AtomicI64>,
     /// One open store per checkpoint, for as long as a Source reads it: local, fetching.
     stores: Mutex<HashMap<String, (Weak<Store>, Weak<Store>)>>,
     /// The Sources placing each stored object range (by object, then offset and length), and the
@@ -209,21 +266,40 @@ pub(super) struct Held {
 }
 
 impl State {
-    fn worth(&self, key: &str) -> u64 {
-        self.rate.get(key).copied().unwrap_or(1).max(self.refills.get(key).copied().unwrap_or(0))
+    /// `key`'s refills per request: the last request's, or this one's, where a page its set's pass
+    /// has not reached yet counts that pass too. Blocks refill in a fixed order, so counted as
+    /// taken, the blocks a step reached next were worth one less than those it had passed, and a
+    /// tier short of room let them go first, each just before its use: Flux-2 refilled none of
+    /// its 57 blocks from the tier in 8 steps (pasan, run 42449).
+    fn worth(&self, key: &str, set: &str) -> u64 {
+        let refills = self.refills.get(key).copied().unwrap_or(0);
+        let behind = self.taken.get(key).is_some_and(|taken| self.passes.get(set).is_some_and(|pass| taken < pass));
+        self.rate.get(key).copied().unwrap_or(1).max(refills + u64::from(behind))
     }
     fn tick(&mut self) -> u64 {
         self.clock += 1;
         self.clock
     }
-    fn remove(&mut self, key: &str) -> Option<Kept> {
+    /// One refill of `key`, in its set's pass: taken again in the same pass, the next begins.
+    fn count(&mut self, key: &str, set: &str) {
+        let pass = self.passes.entry(set.to_owned()).or_insert(1);
+        if self.taken.get(key).copied() == Some(*pass) {
+            *pass += 1;
+        }
+        self.taken.insert(key.to_owned(), *pass);
+        *self.refills.entry(key.to_owned()).or_default() += 1;
+    }
+    fn remove(&mut self, key: &str, why: &'static str) -> Option<Kept> {
         let kept = self.kept.remove(key)?;
         self.bytes -= kept.page.len as u64;
+        *self.let_go.entry(why).or_default() += kept.page.len as u64;
         Some(kept)
     }
-    /// Keys from the least worth, then the least recently used.
-    fn cheapest(&self) -> Vec<(u64, u64, String)> {
-        let mut keys: Vec<_> = self.kept.iter().map(|(key, kept)| (self.worth(key), kept.last, key.clone())).collect();
+    /// Keys from the least worth, then the most recently used: of pages a loop refills alike, the
+    /// one it used last is the one it needs last.
+    fn cheapest(&self) -> Vec<(u64, Reverse<u64>, String)> {
+        let mut keys: Vec<_> = self.kept.iter()
+            .map(|(key, kept)| (self.worth(key, &kept.set), Reverse(kept.last), key.clone())).collect();
         keys.sort_unstable();
         keys
     }
@@ -236,8 +312,8 @@ impl Tier {
         let tier = Arc::new(Self {
             device, cap, shared, state: Mutex::new(State { room: -1, ..State::default() }),
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
-            keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), stores: Mutex::default(),
-            objects: Mutex::default(),
+            keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), making: Arc::default(), freeing: Arc::default(),
+            stores: Mutex::default(), objects: Mutex::default(),
         });
         tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier));
@@ -295,40 +371,55 @@ impl Tier {
     /// pages go, the least worth first, while it is under the headroom. Unreadable: they all go.
     /// Clean page cache is room, active or not: the kernel takes it back before it kills, and
     /// pinned pages hold the bytes a cached copy would. In a request, short of the headroom: idle
-    /// peers are asked for their pages.
-    fn trim(&self, state: &mut State) -> Vec<Kept> {
+    /// peers are asked for their pages, and this tier's go only for what they do not hold; their
+    /// pages are worth less than any of a running call's.
+    fn trim(&self, state: &mut State) -> Gone {
+        let mut gone = Gone::new(self);
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
-            return Vec::new();
+            return gone;
         }
         state.looked = Some(Instant::now());
         let budget = budget();
         self.look(state, &budget);
-        let mut room = if budget.total <= 0 { -1 } else { budget.total - budget.held };
+        let (room, mut left) = self.rooms(&budget);
         state.room = room;
-        let mut gone = Vec::new();
-        if room >= state.headroom {
+        if left >= state.headroom {
             return gone;
         }
-        if room >= 0 {
-            super::host::short((state.headroom - room) as u64);
-        }
-        for (page, _) in state.spare.drain(..) {
-            room += page.len as i64;
+        let idle = if left >= 0 { super::host::short((state.headroom - left) as u64) } else { 0 };
+        let idle = i64::try_from(idle).unwrap_or(i64::MAX);
+        let headroom = state.headroom;
+        let enough = |left: i64| left >= 0 && left.saturating_add(idle) >= headroom;
+        while !enough(left) {
+            let Some((page, _)) = state.spare.pop() else { break };
+            left += page.len as i64;
+            *state.let_go.entry("short").or_default() += page.len as u64;
             gone.push(Kept { page: Arc::new(page), set: String::new(), last: 0 });
         }
         for (_, _, key) in state.cheapest() {
-            if room >= state.headroom && room >= 0 {
+            if enough(left) {
                 break;
             }
-            if let Some(kept) = state.remove(&key) {
-                if room >= 0 {
-                    room += kept.page.len as i64;
+            if let Some(kept) = state.remove(&key, "short") {
+                if left >= 0 {
+                    left += kept.page.len as i64;
                 }
                 gone.push(kept);
             }
         }
-        state.room = room;
         gone
+    }
+
+    /// The room varena's number leaves this tier, as the kernel would show it with the tier's own
+    /// moves landed: to pin more, less what it admitted and has not touched yet; to decide what goes,
+    /// plus what it let go and has not freed yet. Read straight, each look before an unregister
+    /// ended took more pages again, and Flux-2's tier emptied every step (pasan, run 42449).
+    fn rooms(&self, budget: &Budget) -> (i64, i64) {
+        if budget.total <= 0 {
+            return (-1, -1);
+        }
+        let room = budget.total - budget.held;
+        (room - self.making.load(Ordering::Relaxed).max(0), room + self.freeing.load(Ordering::Relaxed).max(0))
     }
 
     /// What stays free beside pinned pages: the number's headroom (`Budget::headroom`). On a
@@ -351,18 +442,19 @@ impl Tier {
     pub(super) fn give(&self, bytes: u64) -> u64 {
         let (given, gone) = {
             let mut state = self.state();
-            let mut gone: Vec<Kept> = Vec::new();
+            let mut gone = Gone::new(self);
             let mut given = 0;
             while given < bytes {
                 let Some((page, _)) = state.spare.pop() else { break };
                 given += page.len as u64;
+                *state.let_go.entry("given").or_default() += page.len as u64;
                 gone.push(Kept { page: Arc::new(page), set: String::new(), last: 0 });
             }
             for (_, _, key) in state.cheapest() {
                 if given >= bytes {
                     break;
                 }
-                if let Some(kept) = state.remove(&key) {
+                if let Some(kept) = state.remove(&key, "given") {
                     given += kept.page.len as u64;
                     gone.push(kept);
                 }
@@ -396,52 +488,57 @@ impl Tier {
     }
 
     /// Whether a page of `bytes` that is no weight (a retained region's) may pin now, within the
-    /// headroom and never while the host stalls. `shed`: a region's copy waits on it, and kept
-    /// weight pages, which the store refills, go first, the least worth first; a page made ahead
-    /// takes only free room. The pages that go come with the answer.
-    fn room_for(&self, bytes: usize, shed: bool) -> (bool, Vec<Kept>) {
+    /// headroom. `shed`: a region's copy waits on it, and kept weight pages, which the store
+    /// refills, go first, the least worth first; a page made ahead takes only free room. While the
+    /// host stalls nothing grows: a copy pins only in place of the weight pages it sheds. The
+    /// pages that go come with the answer, and the bytes are `making` while the guard lives.
+    fn room_for(&self, bytes: usize, shed: bool) -> (Option<Moving>, Gone) {
         let mut state = self.state();
         let mut gone = self.trim(&mut state);
         let bytes = bytes as i64;
-        if state.pressed {
-            return (false, gone);
+        let pressed = state.pressed;
+        if pressed && !shed {
+            return (None, gone);
         }
+        let short = |state: &State, shed: i64| if pressed { shed < bytes } else { state.room - bytes < state.headroom };
+        let mut freed = 0;
         for (_, _, key) in if shed { state.cheapest() } else { Vec::new() } {
-            if state.room - bytes >= state.headroom {
+            if !short(&state, freed) {
                 break;
             }
-            if let Some(kept) = state.remove(&key) {
+            if let Some(kept) = state.remove(&key, "shed") {
+                freed += kept.page.len as i64;
                 state.room += kept.page.len as i64;
                 gone.push(kept);
             }
         }
-        let fits = state.room - bytes >= state.headroom;
-        if fits {
-            state.room -= bytes;
-        } else {
+        if short(&state, freed) {
             self.ask_room(&state, bytes);
+            return (None, gone);
         }
-        (fits, gone)
+        state.room -= bytes;
+        (Some(Moving::new(&self.making, bytes)), gone)
     }
 
-    /// Whether `key`, `bytes` of host RAM, enters the tier. Where there is no room it displaces
-    /// kept pages worth less, never one worth as much: blocks refill in a fixed order, so
-    /// replacing the least recently used of equals would miss every refill.
-    fn admit(&self, state: &mut State, key: &str, bytes: u64) -> (bool, Vec<Kept>) {
+    /// Whether `key` of `set`, `bytes` of host RAM, enters the tier. Where there is no room it
+    /// displaces kept pages worth less, never one worth as much: blocks refill in a fixed order,
+    /// so replacing the least recently used of equals would miss every refill. Admitted, the
+    /// bytes are `making` while the guard lives.
+    fn admit(&self, state: &mut State, key: &str, set: &str, bytes: u64) -> (Option<Moving>, Gone) {
         let mut gone = self.trim(state);
         if state.off.is_some() {
-            return (false, gone);
+            return (None, gone);
         }
         let bytes = bytes as i64;
         if state.pressed {
-            return (false, gone);
+            return (None, gone);
         }
         if self.fits(state, bytes) {
             state.room -= bytes;
-            return (true, gone);
+            return (Some(Moving::new(&self.making, bytes)), gone);
         }
         self.ask_room(state, bytes);
-        let worth = state.worth(key);
+        let worth = state.worth(key, set);
         let (mut freed, mut chosen) = (0, Vec::new());
         for (value, _, kept) in state.cheapest() {
             if value >= worth || self.fits(state, bytes - freed) {
@@ -451,21 +548,22 @@ impl Tier {
             chosen.push(kept);
         }
         if !self.fits(state, bytes - freed) {
-            return (false, gone);
+            return (None, gone);
         }
         for key in chosen {
-            gone.extend(state.remove(&key));
+            gone.extend(state.remove(&key, "displaced"));
         }
         state.room += freed - bytes;
-        (true, gone)
+        (Some(Moving::new(&self.making, bytes)), gone)
     }
 
-    /// `key`'s page of `len` bytes. A GPU `refill` counts whichever way it is served.
-    pub(super) fn take(&self, key: &str, len: usize, refill: bool) -> Option<Arc<Page>> {
+    /// `key`'s page of `len` bytes. A GPU `refill` counts whichever way it is served, in the pass
+    /// of `set` it is in.
+    pub(super) fn take(&self, key: &str, set: &str, len: usize, refill: bool) -> Option<Arc<Page>> {
         let (page, gone) = {
             let mut state = self.state();
             if refill {
-                *state.refills.entry(key.to_owned()).or_default() += 1;
+                state.count(key, set);
             }
             let gone = self.trim(&mut state);
             let tick = state.tick();
@@ -479,14 +577,19 @@ impl Tier {
         page
     }
 
+    /// A GPU refill of `key` in `set` that `take` did not count.
+    pub(super) fn count(&self, key: &str, set: &str) {
+        self.state().count(key, set);
+    }
+
     pub(super) fn holds(&self, key: &str) -> bool {
         self.state().kept.contains_key(key)
     }
 
     /// A page with bytes the caller is about to write for `key`, admitted and registered, or
     /// None: `insert` it once they are written. One registered ahead if there is, or will be soon.
-    pub(super) fn reserve(&self, key: &str, len: usize) -> PyResult<Option<Page>> {
-        let (admitted, gone) = {
+    pub(super) fn reserve(&self, key: &str, set: &str, len: usize) -> PyResult<Option<Page>> {
+        let (making, gone) = {
             let mut state = self.state();
             while state.reserving.contains(key) {
                 state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner());
@@ -500,13 +603,13 @@ impl Tier {
                 state.reserved_ahead += 1;
                 return Ok(Some(reserved.page));
             }
-            self.admit(&mut state, key, len as u64)
+            self.admit(&mut state, key, set, len as u64)
         };
         drop(gone);
-        if !admitted {
-            return Ok(None);
-        }
-        self.registered(len, false)
+        let Some(making) = making else { return Ok(None) };
+        let page = self.registered(len, false);
+        drop(making);
+        page
     }
 
     /// A page of `len` bytes, registered, faulted in first if `populate`. None: the driver refused,
@@ -557,16 +660,17 @@ impl Tier {
                 if state.kept.contains_key(&key) || state.reserved.contains_key(&key) || state.reserving.contains(&key) {
                     continue;
                 }
-                let (admitted, gone) = self.admit(&mut state, &key, source.bytes() as u64);
-                if admitted {
+                let (making, gone) = self.admit(&mut state, &key, source.set(), source.bytes() as u64);
+                if making.is_some() {
                     state.bytes += source.bytes() as u64;
                     state.reserving.insert(key.clone());
                 }
-                (admitted.then_some(key), source, state.forgets, gone)
+                (making.map(|making| (key, making)), source, state.forgets, gone)
             };
             drop(gone);
-            let Some(key) = key else { continue };
+            let Some((key, making)) = key else { continue };
             let page = self.registered(source.bytes(), true).ok().flatten();
+            drop(making);
             let unused = {
                 let mut state = self.state();
                 state.reserving.remove(&key);
@@ -628,6 +732,8 @@ impl Tier {
     pub(super) fn request_ended(&self) {
         let mut state = self.state();
         state.rate = std::mem::take(&mut state.refills);
+        state.passes.clear();
+        state.taken.clear();
         state.looked = None;
         state.last_reads = std::mem::take(&mut state.reads);
         let (fresh, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut state.spare).into_iter().partition(|(_, fresh)| *fresh);
@@ -637,35 +743,39 @@ impl Tier {
     }
 
     /// A registered host page of at least `len` bytes for a retained region's copy: the smallest
-    /// spare that holds it, else a new one.
-    pub(super) fn retained_page(&self, len: usize) -> Result<Page, String> {
+    /// spare that holds it, else a new one. Short of room, idle peers are asked first and it
+    /// tries again once they answered. `Ok(None)`: no room now; the region stays spillable.
+    pub(super) fn retained_page(&self, len: usize) -> Result<Option<Page>, String> {
         let spare = {
             let mut state = self.state();
             let best = state.spare.iter().enumerate().filter(|(_, (page, _))| page.len >= len)
                 .min_by_key(|(_, (page, _))| page.len).map(|(at, _)| at);
             best.map(|at| state.spare.swap_remove(at).0)
         };
-        match spare {
-            Some(page) => Ok(page),
-            None => self.new_page(len, true),
+        if let Some(page) = spare {
+            return Ok(Some(page));
+        }
+        match self.new_page(len, true)? {
+            Some(page) => Ok(Some(page)),
+            None if super::host::ask_idle(len as u64) => self.new_page(len, true),
+            None => Ok(None),
         }
     }
 
     /// Faulted in first: the driver registers touched memory about nine times as fast, and
     /// registering holds every other driver call of the process. Only within the headroom
-    /// (`room_for`): refused, the region stays on the card.
-    fn new_page(&self, len: usize, shed: bool) -> Result<Page, String> {
-        let (fits, gone) = self.room_for(len, shed);
+    /// (`room_for`): None when there is none.
+    fn new_page(&self, len: usize, shed: bool) -> Result<Option<Page>, String> {
+        let (making, gone) = self.room_for(len, shed);
         drop(gone); // Unregistering waits on the device: never under the lock.
-        if !fits {
-            return Err(format!("no host room for {} MiB beyond what the computer keeps free", len >> 20));
-        }
+        let Some(making) = making else { return Ok(None) };
         let mut page = Page::new(len).map_err(|error| error.to_string())?;
         page.populate();
         while !page.registered() {
             page.register_window(self.device).map_err(|error| error.to_string())?;
         }
-        Ok(page)
+        drop(making);
+        Ok(Some(page))
     }
 
     /// A spare page of `len` bytes made now, while nothing waits for it, unless one is there: the
@@ -674,7 +784,7 @@ impl Tier {
         if self.state().spare.iter().any(|(page, _)| page.len >= len) {
             return;
         }
-        if let Ok(page) = self.new_page(len, false) {
+        if let Ok(Some(page)) = self.new_page(len, false) {
             self.spare(page);
         }
     }
@@ -715,7 +825,7 @@ impl Tier {
         state.wanted.retain(|_, wanted| wanted.source.strong_count() != 0 && wanted.region.strong_count() != 0);
         let key = state.wanted.iter()
             .filter(|(_, wanted)| wanted.region.upgrade().is_some_and(|region| !region.holds_contents()))
-            .map(|(key, _)| (state.worth(key), key)).max()?.1.clone();
+            .map(|(key, wanted)| (state.worth(key, &wanted.set), key)).max()?.1.clone();
         let wanted = state.wanted.remove(&key)?;
         Some((key, wanted.source.upgrade()?, wanted.set))
     }
@@ -766,17 +876,17 @@ impl Tier {
             }
         }
         while !is_waiting()? {
-            let (next, admitted, gone) = {
+            let (next, making, gone) = {
                 let mut state = self.state();
                 let Some((key, source, set)) = Self::next_wanted(&mut state) else { return Ok(()) };
-                let (admitted, gone) = self.admit(&mut state, &key, source.bytes() as u64);
-                ((key, source, set), admitted, gone)
+                let (making, gone) = self.admit(&mut state, &key, &set, source.bytes() as u64);
+                ((key, source, set), making, gone)
             };
             drop(gone);
             let (key, source, set) = next;
-            if !admitted {
+            let Some(_making) = making else {
                 continue; // Kept pages are worth at least as much; a smaller wanted one may fit.
-            }
+            };
             let page = Page::new(source.bytes())?;
             let (mut at, mut read) = (0, Ok(()));
             while at < page.len && read.is_ok() {
@@ -826,7 +936,7 @@ impl Tier {
                 .map(|(key, _)| key.clone()).collect();
             let reserved: Vec<_> = reserved.iter().filter_map(|key| state.reserved.remove(key)).collect();
             state.bytes -= reserved.iter().map(|reserved| reserved.page.len as u64).sum::<u64>();
-            (keys.iter().filter_map(|key| state.remove(key)).collect::<Vec<_>>(), reserved, spare)
+            (keys.iter().filter_map(|key| state.remove(key, "forgotten")).collect::<Vec<_>>(), reserved, spare)
         };
         drop(gone);
     }
@@ -870,10 +980,11 @@ impl PyPages {
             .map(|row| (row.set, row.block, row.bytes, row.origin, row.ahead, row.ns, row.at_ms)).collect()
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (pages, bytes, room, wanted, pin_failed, off, headroom, pressed, reserved, reserved_ahead, reads) = {
+        let (pages, bytes, room, wanted, pin_failed, off, headroom, pressed, reserved, reserved_ahead, reads, let_go) = {
             let state = self.tier.state();
             (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone(),
-                state.headroom, state.pressed, state.reserved.len(), state.reserved_ahead, state.last_reads.clone())
+                state.headroom, state.pressed, state.reserved.len(), state.reserved_ahead, state.last_reads.clone(),
+                state.let_go.clone())
         };
         let row = PyDict::new(py);
         row.set_item("scope", "the host tier: every streamed page's bytes, pinned")?;
@@ -893,6 +1004,10 @@ impl PyPages {
         row.set_item("ahead_failed", self.tier.failed.load(Ordering::Relaxed))?;
         row.set_item("keep_ns", self.tier.keep_ns.load(Ordering::Relaxed))?;
         row.set_item("reserve_ns", self.tier.reserve_ns.load(Ordering::Relaxed))?;
+        row.set_item("let_go_scope", "bytes of pages let go this process, by why")?;
+        row.set_item("let_go", let_go)?;
+        row.set_item("making", self.tier.making.load(Ordering::Relaxed))?;
+        row.set_item("freeing", self.tier.freeing.load(Ordering::Relaxed))?;
         row.set_item("store_reads_scope", "the last request's store reads: set, block, O_DIRECT bytes, cached bytes, ns")?;
         row.set_item("store_reads", reads)?;
         Ok(row)

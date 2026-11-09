@@ -260,9 +260,10 @@ impl<'a> Sequence<'a> {
         gate.not_capturing()?;
         let mut state = self.gpu.lock()?;
         self.gpu.poll_fences(&mut state)?;
+        let prefix = state.prefix(&order);
         let mut candidates: Vec<_> = state.entries.iter()
             .filter(|(id, entry)| entry.idle() && !self.protect.regions.is_some_and(|ids| ids.contains(id)))
-            .map(|(id, entry)| (state.rank(*id, entry, &order), *id, entry.bytes))
+            .map(|(id, entry)| (state.rank(*id, entry, &order, prefix), *id, entry.bytes))
             .filter(|(rank, ..)| classes.contains(&rank.0))
             .collect();
         candidates.sort_unstable();
@@ -416,9 +417,10 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
         let _context = gpu.driver().enter()?;
         let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
         let state = gpu.lock()?;
+        let prefix = state.prefix(&order);
         let idle = state.entries.iter()
             .filter(|(id, entry)| {
-                let class = state.rank(**id, entry, &order).0;
+                let class = state.rank(**id, entry, &order, prefix).0;
                 entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
                     && gpu.completion(&state, **id) == Completion::Done
             })
