@@ -259,10 +259,10 @@ each job where it finishes soonest:
 
 - Each machine a job may go to is asked once per batch (a render's turn, or one `cozy run`), through TensorD's `POST /v1/estimate`
   (capability `estimate/1`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
-  lane commit and bytes, from its Hub card), `size` (`JobSize::of` its payload), `gpu` (it or a call it makes opens a GPU) and `prior_ms`
+  lane commit and bytes, from its Hub card), `size` (`JobSize::of` its payload), `gpu` (it or a call it makes builds a model on a GPU) and `prior_ms`
   (eta's time for it on one GPU of that kind, from runs at one width). Its quote is packed with that machine's queue as if the whole batch
   went there; its relative ms are added to the time the answer came.
-- A machine that can't run it at all (`fits: false`: no GPU for a function that opens one, its weights too big for the disk) has no finish
+- A machine that can't run it at all (`fits: false`: no GPU for a function that builds a model on one, its weights too big for the disk) has no finish
   and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), one whose quote stands on its own measured runs before one
   that doesn't, then a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while another can, unless its
   quote stands on its own measured runs.

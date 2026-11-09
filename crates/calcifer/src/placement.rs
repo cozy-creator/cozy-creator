@@ -32,7 +32,7 @@ pub struct Job {
     pub size: JobSize,
     /// The user's GPU count; 0: the machine chooses.
     pub gpus: u32,
-    /// It opens a GPU, itself or a call it makes (`Interface::gpu`): a machine with none can't run it.
+    /// It builds a model on a GPU, itself or a call it makes (`Interface::needs_gpu`): a machine with none can't run it.
     pub gpu: bool,
     /// The machines it may go to.
     pub on: Vec<On>,

@@ -351,7 +351,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
     if set.len() == 1 {
         protocol::calcifer::local_usable(&on.to_string())?;
     }
-    let gpu = code.interface.gpu(callable);
+    let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
     let (mut submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
@@ -364,7 +364,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
     let mut offers = vec![];
     match &resolved {
         Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
-            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, gpu, count, !estimates).await;
+            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, needs_gpu, count, !estimates).await;
             notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
             if set.len() > 1 {
                 on = chosen;
@@ -374,7 +374,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
         Resolved::Local { local, .. } if estimates => {
             let function = format!("{}/{}", local.source.manifest, callable.name);
             let jobs: Vec<crate::placement::Job> = (0..count)
-                .map(|copy| crate::placement::Job { key: copy.to_string(), target: named.clone(), function: function.clone(), size, gpus, gpu, on: set.clone(), ..Default::default() })
+                .map(|copy| crate::placement::Job { key: copy.to_string(), target: named.clone(), function: function.clone(), size, gpus, gpu: needs_gpu, on: set.clone(), ..Default::default() })
                 .collect();
             let (offered, said) = crate::placement::offers(api, &jobs, false).await;
             notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));

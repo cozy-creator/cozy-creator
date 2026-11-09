@@ -763,7 +763,7 @@ pub struct EstimateJob {
     pub size: JobSize,
     /// The user's GPU count; 0: the machine chooses.
     pub gpus: u32,
-    /// It opens a GPU, itself or a call it makes: a machine with none can't run it.
+    /// It builds a model on a GPU, itself or a call it makes: a machine with none can't run it.
     pub gpu: bool,
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.

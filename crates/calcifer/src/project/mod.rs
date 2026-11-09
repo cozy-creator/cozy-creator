@@ -3147,7 +3147,7 @@ impl Walk {
                 let models = tokio::time::timeout(QUOTE_LATE, fit::checkpoints(&api, &target.hub, &package, &renderer.function, &made)).await.unwrap_or_default();
                 let size = v1::JobSize::of(&Value::Object(made));
                 let gpu = protocol::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
-                    interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.gpu(callable))
+                    interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
                 });
                 Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
             }

@@ -268,7 +268,7 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
         if job.gpu && here.gpus == 0 {
             quote.refusal = Some(v1::Reason {
                 code: "no_gpu".into(),
-                message: "this machine has no GPU it may use, and it runs on one".into(),
+                message: "this machine has no GPU it may use, and it builds a model on one".into(),
                 origin: "machine".into(),
                 ..Default::default()
             });

@@ -462,6 +462,21 @@ impl Interface {
         callable.accelerator != Some(false) || callable.calls.iter().any(Call::gpu)
     }
 
+    /// Whether `callable` can't run without a GPU: it builds a model on one, or calls a function that does (its declared `calls`;
+    /// with none declared, a deviceless root of a package whose own child tasks build one, as TensorD reads its GPU groups). One that
+    /// opens a GPU but builds nothing runs on a CPU too.
+    pub fn needs_gpu(&self, callable: &Callable) -> bool {
+        let builds = |models: &[Slot]| models.iter().any(|slot| !slot.weights);
+        if callable.accelerator != Some(false) && builds(&callable.models) {
+            return true;
+        }
+        if !callable.calls.is_empty() {
+            return callable.calls.iter().any(|call| call.gpu() && builds(&call.models));
+        }
+        callable.accelerator == Some(false)
+            && self.callables.iter().any(|other| other.internal && other.accelerator != Some(false) && builds(&other.models))
+    }
+
     /// Whether `callable` is a CPU tool that composes calls.
     pub fn composes(&self, callable: &Callable) -> bool {
         callable.accelerator == Some(false) && callable.calls.iter().any(Call::gpu)
