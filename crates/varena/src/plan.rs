@@ -138,11 +138,7 @@ impl Plan {
         self.device.enter_plan_phase(Some(&self.phases[phase].name))
     }
 
-    pub fn deactivate(self: &Arc<Self>) -> Result<()> {
-        self.retire()
-    }
-
-    fn retire(&self) -> Result<()> {
+    pub fn deactivate(&self) -> Result<()> {
         let mut active = self.device.plan.lock().map_err(|_| Error::Poisoned("plan mutex".into()))?;
         if active.as_ref().is_some_and(|active| active.id == self.id) {
             *active = None;
@@ -157,7 +153,7 @@ impl Plan {
 impl Drop for Plan {
     fn drop(&mut self) {
         if self.pid == std::process::id() {
-            let _ = self.retire();
+            let _ = self.deactivate();
         }
     }
 }

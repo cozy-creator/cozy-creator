@@ -2,7 +2,12 @@
 //! below the machine's where the host delegates one, else a process-tree token. Either
 //! reaches descendants that call `setsid` or double-fork. Lifecycle containment, not a
 //! sandbox: same-UID code can move out of a delegated cgroup or scrub its token.
+//!
+//! A shared machine is also contained ([`contain`]): it and its executors in one cgroup with a
+//! memory limit the kernel enforces, so a run that outgrows the computer is killed inside it. The
+//! limit is varena's number ([`follow`]); this only applies it.
 use super::{Stuck, TOKEN_ENV};
+use super::host_memory::{available_outside, computer, events, number};
 use crate::process::{Birth, Exact, State, gone, in_kernel};
 use rustix::{
     event::{PollFd, PollFlags, Timespec},
@@ -14,11 +19,37 @@ use std::{
     io::{self, Read, Seek, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant, SystemTime},
 };
 
 const ROOT: &str = "/sys/fs/cgroup";
+
+/// The machine's own cgroup once [`contain`] made it.
+static CONTAINED: OnceLock<Contained> = OnceLock::new();
+
+struct Contained {
+    /// `<own>/cozy-<namespace>`: `machine` (its processes) and every executor scope.
+    root: PathBuf,
+    written: Mutex<Option<Budget>>,
+}
+
+/// A budget below this much movement is not written again.
+const MOVED: u64 = 64 << 20;
+
+/// What a contained machine and its executors may use, as last written to their cgroup: varena's
+/// number (`varena_ledger::host::machine`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Budget {
+    /// `memory.max`: past it, the kernel takes the machine's page cache back, then kills inside
+    /// the machine. No `memory.high`: below a max it throttles a run that cannot shrink (pinned
+    /// pages, no swap) for a minute before the kill (a 3 GiB hog under a 1.5 GiB max, 11-06).
+    pub max: u64,
+    /// What the computer keeps for its other programs.
+    pub reserve: u64,
+    /// What the machine and its executors use now (`memory.current`).
+    pub used: u64,
+}
 
 /// How often an end looks at killed members still alive: never a deadline.
 const SAMPLE: Duration = Duration::from_millis(100);
@@ -34,12 +65,177 @@ pub struct Scope(Backend);
 
 #[derive(Debug)]
 enum Backend {
-    /// One exact directory, protected against path reuse by its inode.
-    Cgroup { relative: String, inode: u64 },
+    /// One exact directory, protected against path reuse by its inode. `oom_before`: the host's
+    /// OOM kills when it was made, read where its own `memory.events` is not.
+    Cgroup { relative: String, inode: u64, oom_before: u64 },
     /// `<namespace>-<id>` in the leader's environment, inherited by every descendant that
     /// keeps it. An escaped one is adopted and reaped by the machine's supervisor (the
     /// subreaper); a `/proc` census finds it by its token wherever it is parented.
-    Tree { token: String },
+    Tree { token: String, oom_before: u64 },
+}
+
+/// The host's OOM kills so far (`/proc/vmstat` `oom_kill`, every kind).
+fn host_oom_kills() -> u64 {
+    fs::read_to_string("/proc/vmstat")
+        .ok()
+        .and_then(|text| text.lines().find_map(|l| l.strip_prefix("oom_kill ")?.trim().parse().ok()))
+        .unwrap_or(0)
+}
+
+/// Where executor scopes go: the machine's own cgroup once contained, else this process's.
+fn scopes_parent() -> io::Result<PathBuf> {
+    match CONTAINED.get() {
+        Some(contained) => Ok(contained.root.clone()),
+        None => own_cgroup(),
+    }
+}
+
+fn write(path: &Path, text: &str) -> io::Result<()> {
+    OpenOptions::new().write(true).open(path)?.write_all(text.as_bytes())
+}
+
+fn pids(cgroup: &Path) -> Vec<u32> {
+    fs::read_to_string(cgroup.join("cgroup.procs"))
+        .map(|text| text.lines().filter_map(|l| l.parse().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// This process, its descendants, and its supervisor (its parent, running the same program) with
+/// theirs: the processes a machine's cgroup holds when nothing else shares it.
+fn family() -> BTreeSet<u32> {
+    let own = std::process::id();
+    let mut family: BTreeSet<u32> = std::iter::once(own).chain(crate::process::descendants(own)).collect();
+    let exe = |pid: u32| fs::read_link(format!("/proc/{pid}/exe")).ok();
+    if let Ok(parent) = crate::process::parent_of(own) {
+        if parent > 1 && exe(parent).is_some() && exe(parent) == exe(own) {
+            family.insert(parent);
+            family.extend(crate::process::descendants(parent));
+        }
+    }
+    family
+}
+
+/// Contains this machine: its processes move to `<own>/cozy-<namespace>/machine`, the memory
+/// controller is enabled down to its executor scopes, and none of them swaps. Its budget is then
+/// [`follow`]ed. The reason when the host gives no such hierarchy: read-only or v1 (a container),
+/// the memory controller not delegated, or programs other than this machine's in its cgroup (it
+/// moves no one else's).
+pub fn contain(namespace: &str) -> std::result::Result<PathBuf, String> {
+    if let Some(contained) = CONTAINED.get() {
+        return Ok(contained.root.clone());
+    }
+    if !writable_unified() {
+        return Err("no writable cgroup v2 hierarchy".into());
+    }
+    let own = own_cgroup().map_err(|error| format!("no cgroup of its own: {error}"))?;
+    let name = format!("cozy-{namespace}");
+    // A machine restarted in place is already inside.
+    let inside = own.file_name().is_some_and(|n| n == "machine")
+        && own.parent().and_then(Path::file_name).is_some_and(|n| n.to_string_lossy() == name);
+    let root = if inside { own.parent().unwrap().to_path_buf() } else { own.join(&name) };
+    let outer = root.parent().unwrap().to_path_buf();
+    let failed = |what: &str, path: &Path, error: io::Error| format!("{what} {}: {error}", path.display());
+    let delegated = fs::read_to_string(outer.join("cgroup.controllers")).map_err(|e| failed("read", &outer, e))?;
+    if !delegated.split_whitespace().any(|c| c == "memory") {
+        return Err(format!("the memory controller is not delegated to {}", outer.display()));
+    }
+    let machine = root.join("machine");
+    if !inside {
+        let ours = family();
+        let others: Vec<String> = pids(&own)
+            .into_iter()
+            .filter(|pid| !ours.contains(pid))
+            .map(|pid| format!("{pid} {}", fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default().trim()))
+            .collect();
+        if !others.is_empty() {
+            return Err(format!("{} also holds other programs ({})", own.display(), others.join(", ")));
+        }
+        for dir in [&root, &machine] {
+            match fs::create_dir(dir) {
+                Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(failed("create", dir, error)),
+                _ => (),
+            }
+        }
+        // A cgroup holding processes cannot enable a controller for its children: each moves to
+        // the leaf, a fork made meanwhile too.
+        let mut moved = 0;
+        loop {
+            for pid in pids(&own) {
+                match write(&machine.join("cgroup.procs"), &pid.to_string()) {
+                    Err(error) if error.raw_os_error() != Some(libc::ESRCH) => return Err(failed("move into", &machine, error)),
+                    _ => (),
+                }
+            }
+            match write(&outer.join("cgroup.subtree_control"), "+memory") {
+                Err(error) if error.raw_os_error() == Some(libc::EBUSY) && moved < 8 => moved += 1,
+                Err(error) => return Err(failed("enable memory under", &outer, error)),
+                Ok(()) => break,
+            }
+        }
+    }
+    write(&root.join("cgroup.subtree_control"), "+memory").map_err(|e| failed("enable memory under", &root, e))?;
+    // No swap accounting (a kernel built or booted without it): nothing of its swaps to bound.
+    match write(&root.join("memory.swap.max"), "0") {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(failed("write memory.swap.max of", &root, error)),
+        _ => (),
+    }
+    let _ = CONTAINED.set(Contained { root: root.clone(), written: Mutex::new(None) });
+    Ok(root)
+}
+
+/// What the kernel accounts for a contained machine, for varena to size its limit from
+/// (`varena_ledger::host::machine`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineFacts {
+    /// The computer: physical memory, or less where a limit above the machine's own is.
+    pub computer: u64,
+    /// What it has available outside the machine's cgroups.
+    pub outside: u64,
+    /// What the machine and its executors hold that the kernel cannot take back (page cache aside).
+    pub held: u64,
+    /// What the machine's own processes use (`machine/memory.current`).
+    pub own: u64,
+}
+
+/// Applies varena's number to a contained machine's cgroup: `size` turns what the kernel accounts
+/// into (`memory.max`, the reserve kept outside it). Written once it moved [`MOVED`]. None when not
+/// contained. This sizes nothing.
+pub fn follow(size: impl FnOnce(&MachineFacts) -> (u64, u64)) -> Option<io::Result<Budget>> {
+    let contained = CONTAINED.get()?;
+    let read = || -> io::Result<(MachineFacts, u64)> {
+        let root = &contained.root;
+        let (Ok(outside), Some(computer)) = (u64::try_from(available_outside()), computer()) else {
+            return Err(io::Error::other("/proc/meminfo is unreadable"));
+        };
+        let used = number(&root.join("memory.current")).unwrap_or(0);
+        let stat = fs::read_to_string(root.join("memory.stat"))?;
+        let file: u64 = stat
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .filter(|(name, _)| matches!(*name, "active_file" | "inactive_file"))
+            .filter_map(|(_, v)| v.trim().parse::<u64>().ok())
+            .sum();
+        let own = number(&root.join("machine/memory.current")).unwrap_or(0);
+        Ok((MachineFacts { computer, outside, held: used.saturating_sub(file), own }, used))
+    };
+    Some(read().and_then(|(facts, used)| {
+        let (max, reserve) = size(&facts);
+        let budget = Budget { max, reserve, used };
+        let mut written = contained.written.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(was) = *written {
+            if was.max.abs_diff(budget.max) < MOVED {
+                return Ok(Budget { used: budget.used, ..was });
+            }
+        }
+        write(&contained.root.join("memory.max"), &budget.max.to_string())?;
+        *written = Some(budget);
+        Ok(budget)
+    }))
+}
+
+/// The budget last written, when the machine is contained.
+pub fn budget() -> Option<Budget> {
+    *CONTAINED.get()?.written.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 16 random hex digits naming one scope.
@@ -83,14 +279,14 @@ impl Scope {
         }
         let token = format!("{namespace}-{id}");
         LIVE.lock().unwrap().insert(token.clone());
-        Ok(Self(Backend::Tree { token }))
+        Ok(Self(Backend::Tree { token, oom_before: host_oom_kills() }))
     }
 
     fn cgroup(namespace: &str, id: &str) -> io::Result<Option<Self>> {
         if !writable_unified() {
             return Ok(None);
         }
-        let path = own_cgroup()?.join(format!("cozy-executor-{namespace}-{id}"));
+        let path = scopes_parent()?.join(format!("cozy-executor-{namespace}-{id}"));
         if let Err(error) = fs::create_dir(&path) {
             return match error.kind() {
                 io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => Ok(None),
@@ -106,10 +302,36 @@ impl Scope {
             let _ = fs::remove_dir(&path);
             return Ok(None);
         }
+        // Contained: it never swaps, and the kernel's OOM killer ends all of it, not one member.
+        if CONTAINED.get().is_some() {
+            for (file, value) in [("memory.swap.max", "0"), ("memory.oom.group", "1")] {
+                if let Err(error) = write(&path.join(file), value) {
+                    tracing::warn!("executor scope {}: {file}: {error}", path.display());
+                }
+            }
+        }
         Ok(Some(Self(Backend::Cgroup {
             relative: format!("/{}", path.strip_prefix(ROOT).unwrap().display()),
             inode: fs::metadata(&path)?.ino(),
+            oom_before: host_oom_kills(),
         })))
+    }
+
+    /// Whether the kernel's OOM killer ended a member: its own `memory.events` counts it (the
+    /// machine's limit or the host's); without one, only that the host killed something since it
+    /// was made, which its caller pairs with a member's death by SIGKILL.
+    pub fn oom_killed(&self) -> bool {
+        let before = match &self.0 {
+            Backend::Cgroup { relative, inode, oom_before } => {
+                let own = Self::path(relative, *inode).and_then(|path| fs::read_to_string(path.join("memory.events")));
+                if let Ok(text) = own {
+                    return events(&text, &["oom_kill", "oom_group_kill"]) > 0;
+                }
+                *oom_before
+            }
+            Backend::Tree { oom_before, .. } => *oom_before,
+        };
+        host_oom_kills() > before
     }
 
     /// Its cgroup (`/…`, as `0::` lines name it), when it is one.
@@ -124,7 +346,7 @@ impl Scope {
     pub fn environment(&self) -> Option<(&'static str, &str)> {
         match &self.0 {
             Backend::Cgroup { .. } => None,
-            Backend::Tree { token } => Some((TOKEN_ENV, token)),
+            Backend::Tree { token, .. } => Some((TOKEN_ENV, token)),
         }
     }
 
@@ -142,7 +364,7 @@ impl Scope {
     /// (the machine gives the process group).
     pub fn trampoline_args(&self) -> Vec<String> {
         match &self.0 {
-            Backend::Cgroup { relative, inode } => vec![
+            Backend::Cgroup { relative, inode, .. } => vec![
                 "--scope-backend".into(),
                 "cgroup_v2".into(),
                 "--cgroup".into(),
@@ -157,8 +379,8 @@ impl Scope {
     /// Live processes in the scope.
     pub fn processes(&self) -> crate::Result<usize> {
         match &self.0 {
-            Backend::Cgroup { relative, inode } => Ok(procs(&Self::path(relative, *inode)?)?.len()),
-            Backend::Tree { token } => {
+            Backend::Cgroup { relative, inode, .. } => Ok(procs(&Self::path(relative, *inode)?)?.len()),
+            Backend::Tree { token, .. } => {
                 let rows = census()?;
                 Ok(members(&rows, |t| t == token)
                     .filter(|row| row.alive)
@@ -170,7 +392,7 @@ impl Scope {
     /// Move a running process into a cgroup scope (a fork starts in its parent's).
     pub fn adopt(&self, pid: u32) -> crate::Result<()> {
         match &self.0 {
-            Backend::Cgroup { relative, inode } => Ok(OpenOptions::new()
+            Backend::Cgroup { relative, inode, .. } => Ok(OpenOptions::new()
                 .write(true)
                 .open(Self::path(relative, *inode)?.join("cgroup.procs"))?
                 .write_all(pid.to_string().as_bytes())?),
@@ -180,11 +402,11 @@ impl Scope {
 
     pub fn kill(&self) -> crate::Result<()> {
         match &self.0 {
-            Backend::Cgroup { relative, inode } => Ok(OpenOptions::new()
+            Backend::Cgroup { relative, inode, .. } => Ok(OpenOptions::new()
                 .write(true)
                 .open(Self::path(relative, *inode)?.join("cgroup.kill"))?
                 .write_all(b"1")?),
-            Backend::Tree { token } => {
+            Backend::Tree { token, .. } => {
                 let rows = census()?;
                 for row in members(&rows, |t| t == token).filter(|row| row.alive) {
                     if let Some(exact) = row.exact()? {
@@ -201,7 +423,7 @@ impl Scope {
     /// kernel are shown (`stuck`), not waited on: the scope is removed once they exit.
     pub fn end(&self) -> crate::Result<usize> {
         match &self.0 {
-            Backend::Cgroup { relative, inode } => {
+            Backend::Cgroup { relative, inode, .. } => {
                 let stragglers = self.processes()?;
                 if stragglers > 0 {
                     self.kill()?;
@@ -218,7 +440,7 @@ impl Scope {
                 }
                 Ok(stragglers)
             }
-            Backend::Tree { token } => {
+            Backend::Tree { token, .. } => {
                 let stragglers = end_members(|t| t == token)?;
                 LIVE.lock().unwrap().remove(token);
                 // Anything of this machine's that no live scope claims goes now too.
@@ -238,7 +460,7 @@ impl Scope {
             return Ok(held);
         }
         let prefix = format!("cozy-executor-{namespace}-");
-        for entry in fs::read_dir(own_cgroup()?)? {
+        for entry in fs::read_dir(scopes_parent()?)? {
             let entry = entry?;
             if !entry.file_name().to_string_lossy().starts_with(&prefix) {
                 continue;
@@ -246,6 +468,7 @@ impl Scope {
             let scope = Self(Backend::Cgroup {
                 relative: format!("/{}", entry.path().strip_prefix(ROOT).unwrap().display()),
                 inode: entry.metadata()?.ino(),
+                oom_before: 0,
             });
             held += scope.end()?;
         }
@@ -255,7 +478,7 @@ impl Scope {
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        if let Backend::Tree { token } = &self.0 {
+        if let Backend::Tree { token, .. } = &self.0 {
             LIVE.lock().unwrap().remove(token);
         }
     }

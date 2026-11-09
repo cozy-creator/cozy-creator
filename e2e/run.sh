@@ -7,7 +7,7 @@
 # A run is followed by the CLI's own stream (`cozy --json run`, <name>.ndjson): it ends when that follower exits, at the
 # run's terminal event once its outputs landed, or with a typed error. Nothing here ends a run or a read for taking
 # long: a slow run shows its progress in its events, a Calcifer that stops answering is named on the follower's stderr
-# (<name>.err), and the workflow's timeout-minutes is the last resort for a runner that gives no signal at all.
+# (<name>.err). Only a run that never gets its number ends its follower (`run_submit`).
 RUN_CLI=${RUN_CLI:-cozy}
 
 # run_project <dir>: <dir> made a project unless it is one, for this script's runs wherever the script goes.
@@ -17,15 +17,30 @@ run_project() {
 }
 
 # run_submit <dir> <name> <cozy args...>: starts `cozy --json <args>` (a verb that makes a numbered run) in the
-# background and prints the run's number once its events name one; nothing when the command ended without one.
+# background and prints the run's number once its events name one; nothing when the command ended without one, or
+# when none came in RUN_NUMBER_S (default 1860 s: local code installs before its call is sent, cold on a new pod). Each doubling wait
+# without one is said on stderr (attempt k/5, with the follower's last line); after the fifth the follower is ended,
+# never a run.
 run_submit() {
-  local dir=$1 name=$2 n=''; shift 2
+  local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
   [ "$1" != run ] || set -- "$@" -p "$RUN_PROJECT"
   rm -f "$dir/$name".{ndjson,err,json,number,pid}
   "$RUN_CLI" --json "$@" > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
-  until n=$(run_number "$dir/$name.ndjson"); [ -n "$n" ] || ! kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  at=$((limit / 31))
+  until n=$(run_number "$dir/$name.ndjson"); [ -n "$n" ] || ! kill -0 "$pid" 2> /dev/null; do
+    if [ $((SECONDS - start)) -ge "$at" ]; then
+      if [ "$k" -ge 5 ]; then
+        echo "$name: no run number in $((SECONDS - start)) s; its follower ends: $(tail -n 1 "$dir/$name.err" 2> /dev/null)" >&2
+        kill "$pid" 2> /dev/null || true
+        break
+      fi
+      echo "$name: no run number yet after $((SECONDS - start)) s (attempt $k/5): $(tail -n 1 "$dir/$name.err" 2> /dev/null)" >&2
+      k=$((k + 1)) at=$((at * 2 + limit / 31))
+    fi
+    sleep 0.2
+  done
   [ -n "$n" ] || n=$(run_number "$dir/$name.ndjson")
   echo "${n:-none}" > "$dir/$name.number"
   [ -z "$n" ] || echo "$n"

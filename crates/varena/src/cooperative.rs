@@ -29,6 +29,16 @@ struct Service {
 static SERVICES: Mutex<BTreeMap<i32, Arc<Service>>> = Mutex::new(BTreeMap::new());
 static JOINING: Mutex<()> = Mutex::new(());
 
+/// A claimed row until its donor stops serving it. Dropped, the row goes, so no peer waits on it.
+struct Serving(i32, Arc<Service>);
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        SERVICES.lock().unwrap_or_else(|error| error.into_inner()).remove(&self.0);
+        self.1.table.leave(self.1.row);
+    }
+}
+
 fn service(device: i32) -> Option<Arc<Service>> {
     SERVICES.lock().unwrap_or_else(|error| error.into_inner()).get(&device).cloned()
 }
@@ -43,14 +53,15 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
     }
     // The row comes first: coming up can itself be refused for memory, and then we ask.
     let uuid = cuda::device_uuid(device)?;
-    let service = match Table::open(&uuid).map(|table| table.claim().map(|row| Service { table, row })) {
-        Ok(Some(service)) => Some(Arc::new(service)),
+    let serving = match Table::open(&uuid).map(|table| table.claim().map(|row| Service { table, row })) {
+        Ok(Some(service)) => {
+            let service = Arc::new(service);
+            SERVICES.lock().unwrap_or_else(|error| error.into_inner()).insert(device, Arc::clone(&service));
+            Some(Serving(device, service))
+        }
         Ok(None) => { eprintln!("varena: GPU {device}'s ledger is full; this process shares no memory"); None }
         Err(error) => { eprintln!("varena: GPU {device} has no ledger: {error}"); None }
     };
-    if let Some(service) = &service {
-        SERVICES.lock().unwrap_or_else(|error| error.into_inner()).insert(device, Arc::clone(service));
-    }
     // One ask for the context and the first stream together: Torch creates that stream, where a
     // refusal reaches nobody who could give room.
     let mut last = false;
@@ -66,13 +77,12 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
         }
         last = recover(device, BRING_UP_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
     }?;
-    if let Some(service) = service {
+    if let Some(serving) = serving {
         let mut donor = Native::new(device, shared, uuid)?;
         std::thread::Builder::new().name(format!("varena-owner-{device}")).spawn(move || {
+            let Serving(_, service) = &serving;
             let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.table.serve(service.row, &mut donor)));
-            // Only reached on a panic. The row goes, so nobody waits on this process.
             eprintln!("varena: GPU {device}'s donor ended: {served:?}");
-            service.table.leave(service.row);
         }).map_err(|error| Error::Unsupported(format!("donor thread: {error}")))?;
     }
     Ok(())
@@ -210,7 +220,7 @@ impl Donor for Native {
         let _ = crate::reclaim_completed(self.device, wanted);
         if released() - since < bytes && cache_owner::requestable(self.device).is_ok_and(|owners| owners != 0) {
             // Only its owners can shrink a cache. Their worker runs them, so a GIL never blocks this thread.
-            let key = cache_owner::next_generation().map(|generation| cache_owner::RequestKey { cause: cache_owner::Cause::Allocation, generation });
+            let key = cache_owner::next_generation().map(|generation| cache_owner::RequestKey { generation });
             if let Ok(Ok(Some(request))) = key.map(|key| cache_owner::request_shrink(self.device, key, wanted)) {
                 let _ = request.wait_release(since, Instant::now() + OWNER_WAIT);
             }

@@ -184,14 +184,36 @@ pub(crate) fn shown(run: &Run) -> bool {
 }
 
 fn row(run: &Run) -> Vec<String> {
+    vec![
+        run.name(),
+        target(run),
+        run.project.clone().unwrap_or_else(|| "—".into()),
+        run.machine.clone().unwrap_or_else(|| "—".into()),
+        status(run),
+        progress(run),
+        time(run),
+    ]
+}
+
+/// What it runs, as a list shows it: `_/` dropped, its kind first when it isn't a call.
+pub(crate) fn target(run: &Run) -> String {
     let mut target = run.target.strip_prefix("_/").unwrap_or(&run.target).to_owned();
     if run.kind != RunKind::Call {
         target = format!("{} {target}", run.kind.as_str());
     }
-    let status = match run.queue_position {
+    clip_target(target)
+}
+
+/// How it stands: its place in its machine's queue, else its status.
+pub(crate) fn status(run: &Run) -> String {
+    match run.queue_position {
         Some(n) => format!("queue: {n}"),
         None => follow::status(run),
-    };
+    }
+}
+
+/// Its progress while it goes, or why it ended; empty when there's nothing to say.
+pub(crate) fn progress(run: &Run) -> String {
     let progress = match (run.status, &run.progress) {
         _ if run.queue_position.is_some() => String::new(),
         (Status::InProgress, Some(p)) => {
@@ -223,24 +245,18 @@ fn row(run: &Run) -> Vec<String> {
         (Status::Failed | Status::Canceled, _) => run.reason.as_ref().map(|r| r.message.clone()).unwrap_or_default(),
         _ => String::new(),
     };
-    let progress = progress.split_whitespace().collect::<Vec<_>>().join(" ");
-    // Its own time, never its queue's: since it began executing, then its execution's total.
-    let time = match (run.status, run.execution_ms, run.started_at_ms) {
+    clip(progress.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Its own time, never its queue's: since it began executing, then its execution's total.
+fn time(run: &Run) -> String {
+    match (run.status, run.execution_ms, run.started_at_ms) {
         (Status::InProgress, _, Some(at)) => seconds(now_ms().saturating_sub(at.max(0) as u64)),
         (Status::InProgress | Status::Queued, ..) => "—".into(),
         (_, Some(ms), _) => seconds(ms),
         (_, None, Some(at)) => run.settled_at_ms.map_or_else(|| "—".into(), |end| seconds(end.saturating_sub(at).max(0) as u64)),
         _ => "—".into(),
-    };
-    vec![
-        run.name(),
-        clip_target(target),
-        run.project.clone().unwrap_or_else(|| "—".into()),
-        run.machine.clone().unwrap_or_else(|| "—".into()),
-        status,
-        clip(progress),
-        time,
-    ]
+    }
 }
 
 fn seconds(ms: u64) -> String {

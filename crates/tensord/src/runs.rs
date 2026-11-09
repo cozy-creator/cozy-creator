@@ -2,8 +2,8 @@
 //! once and prepares inside itself: its code installs, its models resolve at the run's Hub and
 //! download, and each stage is the run's progress. Its Hub capability lives only in memory
 //! (`hub::Capability`), as do its provider tokens, for the run's life (its children prepare with
-//! them). A restart before it completes prepares it again, from its kept spec or, sent with tokens,
-//! as its controller sends it again (`journal::interrupt_preparations`).
+//! them). A restart before it completes prepares it again from its kept spec; one sent with access
+//! waits, `needs_access`, until its sender sends it again (`api::machine_runs::resume`).
 use crate::{
     api::domain,
     call_memo::{self, Memo},
@@ -84,14 +84,12 @@ pub struct Spec {
     /// model-only warm run puts the source model it made.
     pub weights_destination: String,
     pub owner: String,
-    /// The caller's catalog revision: held resolutions are reused only under it (th-245).
-    pub catalog_revision: String,
     /// A child run of a callee: the other package's App its parent's environment holds.
     pub application: String,
     /// The spec's identity (its access excluded): a resubmitted id must carry the same.
     pub digest: String,
-    /// The spec as sent, kept in the journal while it prepares so a restart prepares it again;
-    /// empty for one that cannot (a child run, provider tokens, which live in memory only).
+    /// The spec as sent less its access, kept in the journal while it prepares so a restart
+    /// prepares it again; empty for a child run.
     pub journaled: Vec<u8>,
 }
 
@@ -115,8 +113,8 @@ pub struct Runs {
     pub contexts: Mutex<HashMap<String, RunContext>>,
 }
 
-/// What a run's children prepare with: its installation, Hub access, owner, catalog revision,
-/// attention pin, lane and the model choices addressed to its callables (`<entrypoint>.models.<p>`).
+/// What a run's children prepare with: its installation, Hub access, owner, attention pin, lane
+/// and the model choices addressed to its callables (`<entrypoint>.models.<p>`).
 #[derive(Clone, Default)]
 pub struct RunContext {
     pub(crate) installation: String,
@@ -125,7 +123,6 @@ pub struct RunContext {
     pub(crate) tensorfs: Option<protocol::machine::TensorFSOptions>,
     pub(crate) weights_destination: String,
     pub(crate) owner: String,
-    pub(crate) catalog_revision: String,
     pub(crate) attention_kernel: String,
     pub(crate) gpus: u32,
     pub(crate) lane: String,
@@ -342,7 +339,13 @@ impl Runs {
                     drafts.push((answers.len(), id, spec, invocation, references));
                     answers.push(None);
                 }
-                Ok(Drafted::Held(run)) => answers.push(Some(Ok((*run, false)))),
+                Ok(Drafted::Held(run)) => {
+                    // A run a restart left `needs_access` takes the re-sent spec's access and prepares on.
+                    if self.service.engine.unpark(&run.id)? {
+                        self.prepare_later(actor, &run.id, spec)?;
+                    }
+                    answers.push(Some(Ok((*run, false))))
+                }
                 Err(refusal) => answers.push(Some(Err(refusal))),
             }
         }
@@ -697,7 +700,7 @@ impl Runs {
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.repository), format!("saving {}", choice.repository));
             let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.repository, &self.service.engine.caller_id(id));
-            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, &spec.catalog_revision, structure, stop, &|done, total| {
+            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, stop, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
@@ -996,7 +999,6 @@ impl Runs {
                 tensorfs: spec.tensorfs.clone(),
                 weights_destination: spec.weights_destination.clone(),
                 owner: spec.owner.clone(),
-                catalog_revision: spec.catalog_revision.clone(),
                 attention_kernel: spec.attention_kernel.clone(),
                 gpus: spec.gpus,
                 lane: spec.lane.clone(),
@@ -1330,7 +1332,6 @@ impl Runs {
             release,
             installed: held,
             owner: spec.owner.clone(),
-            catalog_revision: spec.catalog_revision.clone(),
             providers: spec.providers.clone(),
             entrypoint: entrypoint.into(),
             payload,
@@ -1449,7 +1450,6 @@ impl Runs {
             tensorfs: context.tensorfs,
             weights_destination: String::new(),
             owner: context.owner,
-            catalog_revision: context.catalog_revision,
             application: application.into(),
             digest: digest.into(),
             journaled: vec![],

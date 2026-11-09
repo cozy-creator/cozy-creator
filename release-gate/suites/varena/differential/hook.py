@@ -9,6 +9,11 @@ import hashlib
 from typing import Any
 
 import torch
+
+from cozy_runtime.internal.contract import unsealed
+
+#: The driver's view, read on purpose: this cell tests the memory manager itself.
+mem_get_info = unsealed(torch, "mem_get_info")
 from cozy_runtime import graphs
 from cozy_runtime.internal import loop
 from cozy_runtime.internal.execution import catch
@@ -60,7 +65,7 @@ def run(self: Any, step: Any, steps: Any, state: Any, carried: Any, inputs: Any,
     held = None
     if PRESS in ("refill", "hold") and _loops[0] == 2:
         device = state[0].device
-        held = torch.empty(torch.cuda.mem_get_info(device)[1] - LEFT, dtype=torch.uint8, device=device)
+        held = torch.empty(mem_get_info(device)[1] - LEFT, dtype=torch.uint8, device=device)
         held.fill_(1)
         if PRESS == "refill":
             held = None

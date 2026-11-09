@@ -157,8 +157,8 @@ fn saved(run: Run) -> Result<Run, Error> {
     .next(&show))
 }
 
-/// Follows a run another one waits on (local code's install): its progress on a terminal, no
-/// record and no events of its own.
+/// Follows a run another one waits on (local code's install): its progress on stderr, `--json`
+/// too, so an install is never silent; no record and no events of its own.
 pub(crate) async fn settle(ctx: &Context, run: Run) -> Result<Run, Error> {
     Ok(watch(ctx, run, false, interrupt()).await?.0)
 }
@@ -224,15 +224,14 @@ async fn watch(
                     return Err(error);
                 }
                 Some(Ok(event)) if stalls(&event) => {
-                    if events_out {
-                        output::ndjson(&event);
-                    } else if !ctx.json {
-                        view.on(&event);
+                    match events_out {
+                        true => output::ndjson(&event),
+                        false => view.on(&event),
                     }
                     view.done();
                     return Ok((calcifer.run(id.as_str()).await?, true));
                 }
-                Some(Ok(event)) if events.restarted() && !ctx.json => {
+                Some(Ok(event)) if events.restarted() && !events_out => {
                     view.line(&format!("  Calcifer restarted; following run {} again", view.number));
                     let before = view.machine.clone();
                     view.on(&event);
@@ -244,7 +243,6 @@ async fn watch(
                     terminal = event.sequence_number();
                 }
                 Some(Ok(event)) if events_out => output::ndjson(&event),
-                Some(Ok(_)) if ctx.json => {}
                 Some(Ok(event)) => {
                     let before = view.machine.clone();
                     view.on(&event);

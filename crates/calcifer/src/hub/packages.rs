@@ -208,8 +208,7 @@ impl Ask for PackageInstall {
         let home = api.machines.hubs.home();
         if let Some(code) = &self.code {
             // Local code: installed as it is now; it retires nothing.
-            let reader = reader(api, &hub)?;
-            let source = crate::local_code::source(home, code, (&reader, &hub)).await.map_err(Refusal)?;
+            let source = crate::local_code::source(home, code, &api.machines.hubs, &hub).await.map_err(Refusal)?;
             let mut submit = crate::local_code::install_run(home, hub.as_str(), self.on, &source);
             submit.agreed = self.agreed;
             return Ok(Prepared { submit, after: Some(After::Keep(source.filed())) });

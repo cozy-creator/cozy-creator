@@ -1,0 +1,1 @@
+A package release locked on a Runtime older than varena v2 (TensorFS below 0.21) gets its GPU's room as under v1: before each of its calls, idle executors of an older pair there end and varena v2 executors give back their idle memory (ending too before its first load), so it no longer runs out of memory or streams beside them.

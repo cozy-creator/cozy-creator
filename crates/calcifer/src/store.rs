@@ -1006,17 +1006,6 @@ impl Store {
         })
     }
 
-    /// An accepted run its machine forgot was sent again: the machine numbers its events anew.
-    pub fn sent_again(&self, id: &str, state: &v1::RunState) -> Result<()> {
-        self.write(|tx| {
-            tx.execute(
-                "UPDATE runs SET cursor = 0, machine_number = ?2, machine_state = ?3 WHERE id = ?1",
-                params![id, state.number as i64, state.state],
-            )?;
-            Ok(())
-        })
-    }
-
     /// Records a batch of an accepted run's frames and moves its cursor past them.
     pub fn observe(&self, id: &str, batch: Batch) -> Result<Vec<Event>> {
         self.write(|tx| {
@@ -1114,21 +1103,15 @@ impl Store {
         })
     }
 
-    /// Settles a run its machine keeps answering an internal failure about: canceled when that was asked, else failed, saying where
-    /// to look, as it may have gone on there. It is never sent again.
-    pub fn gave_up(&self, id: &str, machine: &str, code: &str, message: &str) -> Result<Vec<Event>> {
+    /// Settles a canceled run its machine keeps answering an internal failure about. Anything else stays unsettled: only its
+    /// machine's outcome settles it.
+    pub fn cancel_unanswered(&self, id: &str, machine: &str, code: &str, message: &str) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
-            Some(row) if row.state == State::Settled => Ok(vec![]),
-            Some(row) if row.cancel_requested => {
+            Some(row) if row.state != State::Settled && row.cancel_requested => {
                 let message = format!("canceled, though {machine} wouldn't answer: {code}: {message}");
                 end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message, ..Default::default() }))
             }
-            Some(_) => {
-                let message = format!("{machine} keeps failing when asked about this run, and it was not retried: {message}");
-                let next = vec![format!("cozy machine logs {machine}")];
-                end(tx, id, Status::Failed, Some(Reason { code: code.into(), message, origin: "machine".into(), next, ..Default::default() }))
-            }
-            None => Ok(vec![]),
+            _ => Ok(vec![]),
         })
     }
 

@@ -11,7 +11,7 @@ use std::io;
 mod sys;
 
 #[cfg(target_os = "linux")]
-pub(crate) use sys::{cgroups, number};
+pub(crate) use sys::{cgroups, events, number};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HostMemory {
@@ -26,14 +26,60 @@ pub struct HostMemory {
     /// The limit `available` is measured against: the tightest cgroup's, else physical memory.
     pub bound: i64,
     /// Clean active page cache charged where that limit is, left out of `available`: the kernel
-    /// takes it back under pressure once it has aged it. A cache holding the bytes that page cache
-    /// holds (TensorFS's host tier) counts it as room. 0 where `available` is the host's own.
+    /// takes it back under pressure once it has aged it. 0 where `available` is the host's own.
     pub active: i64,
+    /// All that limit charges, page cache included (the host's: `MemTotal − MemFree`).
+    pub charged: i64,
 }
 
 /// Physical memory; -1 when unreadable.
 pub fn total() -> i64 {
     sys::total()
+}
+
+/// The computer the machine runs on: physical memory, or less where a limit above the machine's
+/// own cgroups is (a container's, a unit's `MemoryMax`); never the limit the machine sets itself.
+pub fn computer() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    return sys::computer();
+    #[cfg(not(target_os = "linux"))]
+    u64::try_from(total()).ok().filter(|&n| n > 0)
+}
+
+/// What the computer has available outside the machine's own cgroups: `MemAvailable`, or less
+/// where a limit above them has less room (Linux); elsewhere the live budget. -1 when unreadable.
+pub fn available_outside() -> i64 {
+    #[cfg(target_os = "linux")]
+    return sys::available_outside();
+    #[cfg(not(target_os = "linux"))]
+    read().available
+}
+
+/// (swap, the part free); 0 where unreadable.
+pub fn swap() -> (u64, u64) {
+    sys::swap()
+}
+
+/// The host stalling on memory now: PSI's `some avg10` above this (a tenth of the last 10 s with a
+/// task waiting on memory). Paul's laptop, swap full all day on 11-06, sampled at most 3.7.
+pub const STALLED: f32 = 10.0;
+
+/// How much this process waits on memory: PSI `some avg10`, percent, the most of the system's
+/// and of each limited cgroup v2 on its path (a limit stalls only what is under it). Limit events
+/// are no measure: page cache filling a limit counts one per reclaim. 0 where unreadable.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq)]
+pub struct Stall {
+    pub some_avg10: f32,
+}
+
+impl Stall {
+    pub fn pressed(&self) -> bool {
+        self.some_avg10 > STALLED
+    }
+}
+
+pub fn stall() -> Stall {
+    sys::stall()
 }
 
 /// The most this process's memory can reach: physical memory, or less where a limit on it is
@@ -52,6 +98,7 @@ pub fn read() -> HostMemory {
     sys::read()
 }
 
+
 /// One process's resident and proportional set sizes: Linux's PSS counts a shared sealed layout
 /// once across every process that maps it; macOS gives its physical footprint and Windows its
 /// private commit there, with no shared part.
@@ -66,33 +113,12 @@ pub fn process(pid: u32) -> io::Result<ProcessMemory> {
     sys::process(pid)
 }
 
-/// One process's resident bytes now, anonymous, file and shmem (a sealed layout it maps), and
-/// its resident high-water since it started or [`reset_peak`]. Linux keeps no anonymous
-/// high-water; varena's request window bounds one from these. Linux only; elsewhere
-/// `Unsupported`.
+/// One process's resident anonymous bytes now. Linux only; elsewhere `Unsupported`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resident {
     pub anon: u64,
-    pub file: u64,
-    pub shmem: u64,
-    pub peak: u64,
 }
 
 pub fn resident(pid: u32) -> io::Result<Resident> {
     sys::resident(pid)
-}
-
-/// Starts `pid`'s high-water over from its use now.
-pub fn reset_peak(pid: u32) -> io::Result<()> {
-    sys::reset_peak(pid)
-}
-
-/// Private bytes (PSS less shared pages) of `pid` and every process descended from it: what a
-/// process tree holds that no one else counts.
-pub fn tree_private(pid: u32) -> u64 {
-    std::iter::once(pid)
-        .chain(crate::process::descendants(pid))
-        .filter_map(|pid| process(pid).ok())
-        .map(|m| m.pss.saturating_sub(m.pss_shmem))
-        .sum()
 }
