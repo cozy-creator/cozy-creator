@@ -281,9 +281,10 @@ impl Fetch {
         Ok(())
     }
 
-    /// The page cache takes `selected`'s chunks on disk, the smallest component first, while the
-    /// call's executor forks, imports and opens its GPU: its Start pass and first phase then read
-    /// memory, not the disk (a cold Qwen-Image text encoder is 8.4 GB). Read on threads of their
+    /// The page cache takes `selected`'s chunks on disk, in the order its last run on this machine
+    /// first filled them (`read_order`), while the call's executor forks, imports and opens its
+    /// GPU: its first phase then reads memory, not the disk (a cold Qwen-Image text encoder is
+    /// 8.4 GB). The smallest first read Qwen's text encoder, which it fills first, last. Read on threads of their
     /// own, a chunk the cache holds skipped, within half of the host's available memory, ending
     /// with the call. Never its on-demand models: a cold Qwen-Image 2.1 call with its enhancer off
     /// read its two 11 GiB enhancers behind its own 16.8 GB, 32.9 GB from disk in all against
@@ -291,14 +292,16 @@ impl Fetch {
     fn read_ahead(self: &Arc<Self>, selected: &[(String, Vec<String>)]) {
         let store = self.store().clone();
         let ordered = |groups: &[(String, Vec<String>)]| {
-            let mut components: Vec<(u64, Vec<ObjectRef>)> = groups.iter()
-                .filter_map(|(header, components)| Some((checkpoint(&store, header).ok()?, components)))
-                .flat_map(|(checkpoint, components)| components.iter().map(move |component| {
-                    let objects = storage::chunks(&checkpoint, std::slice::from_ref(component));
-                    (objects.iter().map(|o| o.length).sum(), objects)
+            let mut components: Vec<(Option<u64>, Vec<ObjectRef>)> = groups.iter()
+                .filter_map(|(header, components)| Some((header, checkpoint(&store, header).ok()?, components)))
+                .flat_map(|(header, checkpoint, components)| components.iter().map(move |component| {
+                    let rank = crate::read_order::rank(&crate::read_order::key(header, component));
+                    (rank, storage::chunks(&checkpoint, std::slice::from_ref(component)))
                 }).collect::<Vec<_>>())
                 .collect();
-            components.sort_by_key(|(bytes, _)| *bytes);
+            // In the order its last run first filled them; components it never recorded keep the
+            // plan's order, after.
+            components.sort_by_key(|(rank, _)| rank.unwrap_or(u64::MAX));
             components.into_iter().flat_map(|(_, objects)| objects).collect::<Vec<_>>()
         };
         let chunks: Vec<ObjectRef> = ordered(selected).into_iter().filter(|o| store.holds(o)).collect();

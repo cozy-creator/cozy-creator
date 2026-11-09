@@ -979,6 +979,7 @@ fn gpu_request_queued(engine: &Engine, root: Option<u64>) -> bool {
 impl Pool {
     pub fn new(root: &Path, config: GpuConfig, store: Arc<Store>) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
+        crate::read_order::open(root);
         let notes = MemoryLog::at(store.root().join("logs"));
         // Weight sources and output transport can retain many descriptors; executors inherit
         // this process limit even though GPU handles no longer cross the seam.
@@ -3979,6 +3980,7 @@ impl<'a> Dispatched<'a> {
     /// under the call's key before the key goes.
     fn record(&self, reply: &Frame, inventory: &[crate::machine::receipt::Gpu]) {
         let Some(value) = reply.memory.as_ref().and_then(|m| m.get("varena")) else { return };
+        crate::read_order::record(value);
         let rows = match Vec::<GpuMeasurement>::deserialize(value) {
             Ok(rows) => rows,
             Err(error) => return tracing::warn!("memory: request {}'s final figures unread: {error}", self.id),
