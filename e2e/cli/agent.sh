@@ -35,14 +35,16 @@ view() {
   [ ! -s "$A/$label.err" ] || check "agent: cozy $* wrote to stderr, not in its block: $(head -c 300 "$A/$label.err")"
 }
 
-cozy project new "$E" > /dev/null 2>&1 && printf 'version: 3\nassets: {}\n' > "$E/project.yaml" || fail "agent: project new $E"
+# A project's boxes are project.db's: what an agent writes goes in by `cozy project import` (yaml_in, cl-803).
+cozy project new "$E" > /dev/null 2>&1 || fail "agent: project new $E"
+printf 'version: 4\nassets: {}\n' | yaml_in "$E"
 view run-ls-empty "$E" run ls
 view project-empty "$E" project status
 view home-out / status
 
 cozy project new "$F" > /dev/null 2>&1 || fail "agent: project new $F"
-cat > "$F/project.yaml" <<YAML
-version: 3
+yaml_in "$F" <<YAML
+version: 4
 assets:
   sky:
     tool: $here/project/draw.py/draw
@@ -59,7 +61,7 @@ assets:
 YAML
 (cd "$F" && cozy project -p "$F" render sky sea hill --on local) > "$A/render.txt" 2>&1 || check "agent: render: $(tail -c 300 "$A/render.txt")"
 (cd "$F" && cozy project -p "$F" approve sky 1) > /dev/null 2>&1 || check "agent: approve sky 1"
-sed -i 's/A green hill\./A green hill in the rain./' "$F/project.yaml"
+hand "$F" 's/A green hill\./A green hill in the rain./'
 (cd "$F" && cozy --json run -p "$F" "$here/weightless/reverse" "text=agent $RANDOM" --on local) > "$A/reverse.ndjson" 2> "$A/reverse.err" || check "agent: the weightless run failed"
 (cd "$F" && cozy --json run -p "$F" "$here/project/shots.py/crash" "crash=the agent cell fails on purpose" --on local) > "$A/crash.ndjson" 2> "$A/crash.err" || true
 n=$(run_number "$A/reverse.ndjson") failed=$(run_number "$A/crash.ndjson")
@@ -86,8 +88,8 @@ cat "$A/bytes.tsv"
 # wait: nothing going is the project as it stands; a render asked with --queue is followed to its end; a failure is 1.
 local W=$A/waiting code
 cozy project new "$W" > /dev/null 2>&1 || fail "agent: project new $W"
-cat > "$W/project.yaml" <<YAML
-version: 3
+yaml_in "$W" <<YAML
+version: 4
 assets:
   slow_one:
     tool: $here/project/tool.py/slow
