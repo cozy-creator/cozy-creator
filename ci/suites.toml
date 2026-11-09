@@ -62,7 +62,7 @@ select = ["os:macos", "os:windows"]
 # the packages' questions, and of the crates that install, load and run them; a crate TensorD only depends on
 # (api, platform) is not.
 [[cozy-creator.also]]
-paths = ["crates/tensord/**", "crates/executor-api/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**", "crates/varena-ledger/**"]
+paths = ["crates/tensord/**", "crates/executor-api/**", "crates/tensorfs/**", "crates/tensorfs-core/**", "crates/tensorfs-py/**", "crates/varena/**", "crates/varena-ledger/**"]
 select = ["imports", "model"]
 
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on
@@ -77,6 +77,7 @@ platform = ["cli", "os:macos", "os:windows", "build:cozy"]
 executor-api = ["cli", "build:cozy"]
 tensord = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 tensorfs = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
+tensorfs-core = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 varena = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 tensorfs-py = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:tensorfs"]
 

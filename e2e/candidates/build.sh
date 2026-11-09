@@ -64,7 +64,7 @@ elif [ "$what" = tensorfs ]; then
   # tfs resolved with the extension's features (tensorfs-py's default store), as maturin resolves them: TensorFS and
   # every dependency compile once for both.
   (cd "$src"
-    cargo build --release --locked -p tensorfs-py -p tensorfs --bin tfs --no-default-features --features tensorfs/store,tensorfs-py/store
+    cargo build --release --locked -p tensorfs-py -p tensorfs --bin tfs --no-default-features --features tensorfs-py/store
     mkdir -p crates/tensorfs-py/wheel-data/scripts
     cp "target/release/tfs$exe" crates/tensorfs-py/wheel-data/scripts/
     cd crates/tensorfs-py && uvx -q maturin@1.15.0 build --release --locked --out "$out")
