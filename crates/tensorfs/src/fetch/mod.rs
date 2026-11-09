@@ -22,12 +22,12 @@ use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use futures::stream::{FuturesUnordered, TryStreamExt};
+use futures_util::stream::{FuturesUnordered, TryStreamExt};
 
 pub use endpoint::{upload_commit, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
 pub use net::Client;
 pub(crate) use net::GetError;
-pub use origin::{Location, Origin};
+pub use origin::{Boxed, Location, Origin};
 pub use policy::SourcePolicy;
 pub use token::{bearer, SigV4, TokenProvider};
 pub use volume::VolumeOrigin;

@@ -1589,9 +1589,8 @@ impl Since {
 
 fn stamp(line: &str) -> Option<i64> {
     let word = line.split_whitespace().next()?;
-    let rfc3339 = time::OffsetDateTime::parse(word, &time::format_description::well_known::Rfc3339);
-    match rfc3339 {
-        Ok(at) => Some((at.unix_timestamp_nanos() / 1_000_000) as i64),
+    match word.parse::<jiff::Timestamp>() {
+        Ok(at) => Some(at.as_millisecond()),
         Err(_) => word.parse::<f64>().ok().map(|seconds| (seconds * 1000.0) as i64),
     }
 }

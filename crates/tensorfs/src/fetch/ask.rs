@@ -1,11 +1,10 @@
 //! The one retry rule, for every request (object_store's and the AWS SDKs'): a transport failure (no
 //! connection, 30 s with no bytes, a body cut off) or a "not now" answer is asked again after
-//! backon's exponential backoff, 100 ms doubling to 15 s with jitter, or the wait the answer states.
+//! an exponential backoff, 100 ms doubling to 15 s with jitter, or the wait the answer states.
 //! An attempt that moved bytes starts the count over; [`ATTEMPTS`] in a row that moved nothing end it.
 
+use std::hash::{BuildHasher as _, RandomState};
 use std::time::Duration;
-
-use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 
 use super::net::{shown, Client, GetError, HeaderMap};
 use super::token::TokenProvider;
@@ -25,18 +24,16 @@ pub(crate) fn transient(refusal: &Refusal) -> bool {
     matches!(refusal.code, Code::TRANSFER_FAILED | Code::HUB_UNREACHABLE | Code::FD_HEADROOM)
 }
 
-/// The pauses between one request's attempts.
-pub(crate) struct Backoff(ExponentialBackoff);
+/// The pauses between one request's attempts: 100 ms doubling to 15 s, each lengthened by up to
+/// itself again at random.
+pub(crate) struct Backoff {
+    next: Duration,
+    left: usize,
+}
 
 impl Backoff {
     pub(crate) fn new() -> Backoff {
-        let builder = ExponentialBuilder::default()
-            .with_min_delay(Duration::from_millis(100))
-            .with_factor(2.0)
-            .with_max_delay(Duration::from_secs(15))
-            .with_max_times(ATTEMPTS - 1)
-            .with_jitter();
-        Backoff(builder.build())
+        Backoff { next: Duration::from_millis(100), left: ATTEMPTS - 1 }
     }
 
     /// The pause after a failed attempt (`moved`: it gained bytes; `stated`: the answer's
@@ -45,8 +42,12 @@ impl Backoff {
         if moved {
             *self = Backoff::new();
         }
-        let pause = self.0.next()?;
-        Some(stated.unwrap_or(pause))
+        self.left = self.left.checked_sub(1)?;
+        let pause = self.next;
+        self.next = (pause * 2).min(Duration::from_secs(15));
+        // A uniform fraction from the 53 high bits of a fresh random hash.
+        let jitter = (RandomState::new().hash_one(()) >> 11) as f64 / (1u64 << 53) as f64;
+        Some(stated.unwrap_or(pause + pause.mul_f64(jitter)))
     }
 }
 

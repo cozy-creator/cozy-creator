@@ -25,7 +25,7 @@ use std::{
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
-use tokio_stream::{Stream, StreamExt as _};
+use futures_util::{Stream, StreamExt as _};
 
 const VIA: HeaderName = HeaderName::from_static("cozy-via");
 

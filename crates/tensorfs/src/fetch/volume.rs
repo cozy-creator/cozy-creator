@@ -19,10 +19,9 @@ use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use platform::durable::Mode;
 
-use super::origin::{Location, Origin};
+use super::origin::{Boxed, Location, Origin};
 use super::ObjectStore;
 use crate::err::Result;
 use crate::format::ObjectRef;
@@ -262,13 +261,9 @@ pub(crate) async fn blocking<T: Send + 'static>(
     }
 }
 
-#[async_trait]
 impl Origin for VolumeOrigin {
-    async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>> {
-        Ok(objects
-            .iter()
-            .map(|object| Location::File(self.blob(object)))
-            .collect())
+    fn locate<'a>(&'a self, objects: &'a [ObjectRef]) -> Boxed<'a, Result<Vec<Location>>> {
+        Box::pin(async move { Ok(objects.iter().map(|object| Location::File(self.blob(object))).collect()) })
     }
 
     fn public(&self) -> bool {

@@ -176,12 +176,7 @@ pub fn init_logs(dir: Option<&Path>) {
         std::fs::create_dir_all(dir)
             .map_err(|e| eprintln!("tensord: no log directory {}: {e}", dir.display()))
             .ok()?;
-        tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("tensord")
-            .filename_suffix("log")
-            .max_log_files(7)
-            .build(dir)
+        DailyLog::open(dir)
             .map_err(|e| eprintln!("tensord: no log file in {}: {e}", dir.display()))
             .ok()
     });
@@ -189,6 +184,73 @@ pub fn init_logs(dir: Option<&Path>) {
         Some(file) => builder.with_writer(file.and(std::io::stderr)).try_init(),
         None => builder.with_writer(std::io::stderr).try_init(),
     };
+}
+
+/// `<dir>/tensord.<UTC date>.log`, appended to: a new file at each UTC midnight, and the oldest
+/// removed so seven remain.
+struct DailyLog {
+    dir: PathBuf,
+    today: std::sync::Mutex<(jiff::civil::Date, std::sync::Arc<std::fs::File>)>,
+}
+
+impl DailyLog {
+    const KEPT: usize = 7;
+
+    fn open(dir: &Path) -> io::Result<Self> {
+        let day = Self::day();
+        let file = Self::start(dir, day)?;
+        Ok(Self { dir: dir.to_owned(), today: std::sync::Mutex::new((day, file.into())) })
+    }
+
+    fn day() -> jiff::civil::Date {
+        jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
+    }
+
+    /// `day`'s file, after the oldest others go.
+    fn start(dir: &Path, day: jiff::civil::Date) -> io::Result<std::fs::File> {
+        let name = format!("tensord.{day}.log");
+        let mut older: Vec<String> = std::fs::read_dir(dir)?
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|other| other.starts_with("tensord.") && other.ends_with(".log") && *other != name)
+            .collect();
+        older.sort();
+        for old in &older[..older.len().saturating_sub(Self::KEPT - 1)] {
+            if let Err(e) = std::fs::remove_file(dir.join(old)) {
+                eprintln!("tensord: cannot remove the old log {old}: {e}");
+            }
+        }
+        std::fs::OpenOptions::new().create(true).append(true).open(dir.join(name))
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for DailyLog {
+    type Writer = DayFile;
+
+    fn make_writer(&'a self) -> DayFile {
+        let mut today = self.today.lock().unwrap_or_else(|e| e.into_inner());
+        let day = Self::day();
+        if day != today.0 {
+            match Self::start(&self.dir, day) {
+                Ok(file) => *today = (day, file.into()),
+                Err(e) => eprintln!("tensord: no log file for {day} in {}: {e}", self.dir.display()),
+            }
+        }
+        DayFile(today.1.clone())
+    }
+}
+
+struct DayFile(std::sync::Arc<std::fs::File>);
+
+impl io::Write for DayFile {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        (&*self.0).write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self.0).flush()
+    }
 }
 
 fn invalid(detail: &str) -> io::Error {

@@ -17,15 +17,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
-use async_trait::async_trait;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 
 use super::ask::{self, Backoff, ATTEMPTS};
 use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap};
-use super::origin::{Location, Origin};
+use super::origin::{Boxed, Location, Origin};
 use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
@@ -494,9 +493,18 @@ impl Endpoint {
     }
 }
 
-#[async_trait]
 impl Origin for Endpoint {
-    async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>> {
+    fn locate<'a>(&'a self, objects: &'a [ObjectRef]) -> Boxed<'a, Result<Vec<Location>>> {
+        Box::pin(async move { Ok(self.located(objects)) })
+    }
+
+    fn public(&self) -> bool {
+        self.token.is_none()
+    }
+}
+
+impl Endpoint {
+    fn located(&self, objects: &[ObjectRef]) -> Vec<Location> {
         let mut out = Vec::with_capacity(objects.len());
         for object in objects {
             out.push(match &self.at {
@@ -510,11 +518,7 @@ impl Origin for Endpoint {
                 }
             });
         }
-        Ok(out)
-    }
-
-    fn public(&self) -> bool {
-        self.token.is_none()
+        out
     }
 }
 
@@ -560,7 +564,7 @@ pub async fn upload_commit(endpoint: &Endpoint, name: &str, tree: &ObjectRef, st
     (control.progress)(0, total);
     let [header, tree_object] = documents;
     for stage in [leaves, vec![header], vec![tree_object]] {
-        let mut sending = futures::stream::iter(stage)
+        let mut sending = futures_util::stream::iter(stage)
             .map(|object| async move {
                 let (from, at) = (store.clone(), object.clone());
                 let payload = move || from.file(&at).map(Payload::File).map_err(crate::store::Error::refusal);

@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
-
 use crate::failure::{Failure, Kind, Result};
 pub use crate::fetch::token::HeaderMap;
+pub use crate::fetch::Boxed;
 
 pub struct Request<'a> {
     pub method: &'a str,
@@ -12,9 +11,8 @@ pub struct Request<'a> {
     pub payload: Option<&'a str>,
 }
 
-#[async_trait]
 pub trait TokenProvider: Send + Sync {
-    async fn headers(&self, request: &Request<'_>) -> Result<Vec<(String, String)>>;
+    fn headers<'a>(&'a self, request: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>>;
     fn retry(&self, _sent: &Request<'_>, _status: u16, _headers: &HeaderMap) -> Result<bool> {
         Ok(false)
     }
@@ -25,10 +23,9 @@ pub fn bearer(token: impl Into<String>) -> Arc<dyn TokenProvider> {
 }
 
 struct Bearer(String);
-#[async_trait]
 impl TokenProvider for Bearer {
-    async fn headers(&self, _request: &Request<'_>) -> Result<Vec<(String, String)>> {
-        Ok(vec![("authorization".into(), format!("Bearer {}", self.0))])
+    fn headers<'a>(&'a self, _request: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>> {
+        Box::pin(async move { Ok(vec![("authorization".into(), format!("Bearer {}", self.0))]) })
     }
 }
 
@@ -76,13 +73,12 @@ pub(super) fn from_native(error: crate::err::Refusal) -> Failure {
     }
 }
 
-#[async_trait]
 impl crate::fetch::TokenProvider for NativeProvider {
-    async fn headers(
-        &self,
-        native: &crate::fetch::token::Request<'_>,
-    ) -> crate::err::Result<Vec<(String, String)>> {
-        self.0.headers(&request(native)).await.map_err(native_error)
+    fn headers<'a>(
+        &'a self,
+        native: &'a crate::fetch::token::Request<'a>,
+    ) -> Boxed<'a, crate::err::Result<Vec<(String, String)>>> {
+        Box::pin(async move { self.0.headers(&request(native)).await.map_err(native_error) })
     }
     fn retry(
         &self,

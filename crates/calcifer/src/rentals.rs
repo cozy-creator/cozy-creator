@@ -1713,8 +1713,8 @@ fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey
 
 /// The UTC day of a unix-ms instant, `2026-10-30`.
 fn utc_day(ms: i64) -> String {
-    let at = time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000);
-    at.map_or_else(|_| "?".into(), |at| at.date().to_string())
+    let at = jiff::Timestamp::from_millisecond(ms);
+    at.map_or_else(|_| "?".into(), |at| at.to_zoned(jiff::tz::TimeZone::UTC).date().to_string())
 }
 
 fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
@@ -1773,7 +1773,5 @@ fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
 
 /// An RFC 3339 time of the Hub's, in unix milliseconds.
 fn ms(at: &str) -> Option<i64> {
-    let at = time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339);
-    at.ok()
-        .map(|at| (at.unix_timestamp_nanos() / 1_000_000) as i64)
+    at.parse::<jiff::Timestamp>().ok().map(|at| at.as_millisecond())
 }

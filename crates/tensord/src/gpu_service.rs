@@ -969,7 +969,7 @@ impl Pool {
         // this process limit even though GPU handles no longer cross the seam.
         platform::process::raise_fd_limit();
         let envelope = config.envelope();
-        let incarnation = uuid::Uuid::new_v4().simple().to_string();
+        let incarnation = crate::uuid::simple();
         crate::launch_identity::remove_stale_jit(root, &incarnation);
         remove_old_executor_roots(root);
         let peaks = memory::Peaks::at(root.join("peaks"), notes.clone());
@@ -2944,7 +2944,7 @@ impl Pool {
     /// A new executor root and its socket path. The socket is named through this process's
     /// descriptor of the root (Linux `sun_path` limit).
     fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> {
-        let root = self.root.join(uuid::Uuid::new_v4().simple().to_string());
+        let root = self.root.join(crate::uuid::simple());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
         // Linux names it through this process's descriptor of the root; elsewhere it is the
@@ -3725,7 +3725,7 @@ fn unpack_runtime(wheel: &Path, into: &Path) -> io::Result<PathBuf> {
     if tree.is_dir() {
         return Ok(tree);
     }
-    let staging = into.join(format!(".{}", uuid::Uuid::new_v4().simple()));
+    let staging = into.join(format!(".{}", crate::uuid::simple()));
     let mut archive = zip::ZipArchive::new(io::Cursor::new(bytes)).map_err(io::Error::other)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(io::Error::other)?;

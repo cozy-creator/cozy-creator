@@ -47,3 +47,4 @@ pub mod stop;
 pub mod storage;
 pub mod triage;
 pub mod trees;
+mod uuid;

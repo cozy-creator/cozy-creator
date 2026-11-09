@@ -33,7 +33,6 @@ homepage = "https://github.com/cozy-creator/cozy-creator"
 publish = false
 
 [workspace.dependencies]
-backon = { version = "1.6", default-features = false, features = ["std", "tokio-sleep"] }
 calcifer = { path = "crates/calcifer" }
 cli = { path = "crates/cli" }
 executor-protocol = { path = "crates/executor-protocol" }
@@ -48,7 +47,6 @@ varena-ledger = { path = "crates/varena-ledger" }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"
-async-trait = "0.1.92"
 aws-lc-rs = "1.18"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
 base64 = "0.23"
@@ -62,7 +60,6 @@ flate2 = "1.1"
 futures-util = { version = "0.3.34", default-features = false }
 getrandom = "0.3"
 hex = "0.4"
-hmac = "0.12"
 http = "1"
 http-body-util = "0.1.5"
 httpdate = "1"
@@ -100,16 +97,13 @@ sigstore-verify = { version = "0.15", default-features = false, features = ["aws
 tar = { version = "0.4", default-features = false }
 tempfile = "3"
 thiserror = "2"
-time = { version = "0.3.55", features = ["parsing"] }
 tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
-tokio-stream = "0.1.19"
 tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 toml_edit = "0.22.27"
 tower-service = "0.3.3"
 tracing = "0.1"
-tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 unicode-width = "0.2.2"
 url = { version = "2.5.8", features = ["serde"] }

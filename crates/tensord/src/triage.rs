@@ -129,7 +129,7 @@ pub fn write(
     facts: &Facts,
     executor: Option<&crate::journal::ExecutorFacts>,
 ) -> io::Result<TriageRef> {
-    let subject_id = format!("trb-{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    let subject_id = format!("trb-{}", &crate::uuid::simple()[..24]);
     let mut bundle = json!({
         "format": "cozy.machine.triage/1",
         "subject_id": subject_id,

@@ -487,16 +487,15 @@ static HELD: Mutex<BTreeMap<(String, String), Arc<Capability>>> = Mutex::new(BTr
 
 /// `unix_ms` as UTC, to the second.
 fn utc(unix_ms: i64) -> String {
-    match time::OffsetDateTime::from_unix_timestamp(unix_ms / 1000) {
-        Ok(t) => format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", t.year(), t.month() as u8, t.day(), t.hour(), t.minute(), t.second()),
+    match jiff::Timestamp::from_second(unix_ms / 1000) {
+        Ok(t) => t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
         Err(_) => format!("unix {unix_ms} ms"),
     }
 }
 
-#[async_trait::async_trait]
 impl TokenProvider for Capability {
-    async fn headers(&self, request: &Request<'_>) -> tensorfs::err::Result<Vec<(String, String)>> {
-        Ok(self.authorize(request.method, request.url).await)
+    fn headers<'a>(&'a self, request: &'a Request<'a>) -> tensorfs::fetch::Boxed<'a, tensorfs::err::Result<Vec<(String, String)>>> {
+        Box::pin(async move { Ok(self.authorize(request.method, request.url).await) })
     }
 
     /// A 401 for a token renewed since is asked once more; the newest refused fails the read.

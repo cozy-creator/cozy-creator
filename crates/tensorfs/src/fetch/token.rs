@@ -6,12 +6,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use async_trait::async_trait;
-use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 pub use super::net::HeaderMap;
 use super::policy::base_host;
+use super::Boxed;
 use crate::err::{refuse, Code, Refusal, Result};
 
 /// A request about to be sent.
@@ -24,10 +23,9 @@ pub struct Request<'a> {
     pub payload: Option<&'a str>,
 }
 
-#[async_trait]
 pub trait TokenProvider: Send + Sync {
     /// The headers that authorize `request`.
-    async fn headers(&self, request: &Request<'_>) -> Result<Vec<(String, String)>>;
+    fn headers<'a>(&'a self, request: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>>;
 
     /// The answer to `sent` was `status` with `headers`: true asks once more (a DPoP nonce, a
     /// refreshed token).
@@ -40,10 +38,9 @@ pub trait TokenProvider: Send + Sync {
 /// `Authorization: Bearer <token>`.
 pub struct Bearer(pub String);
 
-#[async_trait]
 impl TokenProvider for Bearer {
-    async fn headers(&self, _: &Request<'_>) -> Result<Vec<(String, String)>> {
-        Ok(vec![("authorization".into(), format!("Bearer {}", self.0))])
+    fn headers<'a>(&'a self, _: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>> {
+        Box::pin(async move { Ok(vec![("authorization".into(), format!("Bearer {}", self.0))]) })
     }
 }
 
@@ -154,19 +151,19 @@ impl SigV4 {
     }
 }
 
-#[async_trait]
 impl TokenProvider for SigV4 {
-    async fn headers(&self, request: &Request<'_>) -> Result<Vec<(String, String)>> {
-        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let headers: Vec<_> = request.headers.iter().filter(|(name, _)| !name.eq_ignore_ascii_case("range")).cloned().collect();
-        self.sign(&Request { headers: &headers, ..*request }, now)
+    fn headers<'a>(&'a self, request: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>> {
+        Box::pin(async move {
+            let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let headers: Vec<_> = request.headers.iter().filter(|(name, _)| !name.eq_ignore_ascii_case("range")).cloned().collect();
+            self.sign(&Request { headers: &headers, ..*request }, now)
+        })
     }
 }
 
 fn hmac(key: &[u8], message: &[u8]) -> [u8; 32] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes a key of any size");
-    mac.update(message);
-    mac.finalize().into_bytes().into()
+    let tag = aws_lc_rs::hmac::sign(&aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, key), message);
+    tag.as_ref().try_into().expect("HMAC-SHA256 is 32 bytes")
 }
 
 /// `YYYYMMDDTHHMMSSZ` for `secs` since the Unix epoch (days to the civil date, proleptic Gregorian).

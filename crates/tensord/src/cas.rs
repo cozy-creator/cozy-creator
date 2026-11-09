@@ -78,7 +78,7 @@ impl Cas {
         }
         let tmp = self.root.join("tmp");
         fs::create_dir_all(&tmp)?;
-        let temp = tmp.join(uuid::Uuid::new_v4().to_string());
+        let temp = tmp.join(crate::uuid::hyphenated());
         let written = (|| {
             let mut file = File::create_new(&temp)?;
             let (mut hash, mut length, mut buffer) = (Sha256::new(), 0u64, vec![0; 1 << 20]);

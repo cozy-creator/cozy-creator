@@ -18,7 +18,7 @@ default = ["store"]
 cuda = ["dep:varena"]
 # `Writer::quantize` and its SVDQ fit: faer and its tree. The wheel's; `cozy` never quantizes.
 quantize = ["store", "dep:faer", "dep:rayon", "dep:pulp", "dep:rand", "dep:rand_chacha", "dep:rand_distr"]
-store = ["dep:hmac", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:reqwest", "dep:backon", "dep:async-trait", "dep:bytes", "dep:futures", "dep:tracing-subscriber"]
+store = ["dep:aws-lc-rs", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:reqwest", "dep:bytes", "dep:futures-util", "dep:tracing-subscriber"]
 
 [dependencies]
 # SVDQ producer revision pins its factorization and random-sketch implementation.
@@ -47,15 +47,12 @@ rustls = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
 # Requests in flight are tasks, never a thread each.
 tokio = { workspace = true, optional = true }
-# Exponential backoff with jitter between attempts (src/fetch/ask.rs).
-backon = { workspace = true, optional = true }
-async-trait = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-futures = { version = "0.3.31", default-features = false, features = ["std", "executor"], optional = true }
+futures-util = { workspace = true, features = ["std"], optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
-# Endpoint credentials (src/fetch/token.rs): S3 SigV4.
-hmac = { workspace = true, optional = true }
+# Endpoint credentials (src/fetch/token.rs): S3 SigV4's HMAC, from the TLS stack's own crypto.
+aws-lc-rs = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
