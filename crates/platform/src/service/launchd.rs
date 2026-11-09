@@ -65,6 +65,10 @@ fn running(name: &str) -> bool {
         })
 }
 
+pub(super) fn clear(_: &Path, _: &ServiceSpec) -> Result<()> {
+    Ok(())
+}
+
 pub(super) fn announce(_: &Path, _: &str) -> Result<()> {
     Ok(())
 }

@@ -1118,7 +1118,7 @@ fn said_in(value: &Value, place: String, found: &mut Vec<(String, String)>) {
 }
 
 /// Each text under `value` with nothing after its last word.
-fn end_trimmed(value: &mut Value) {
+pub(super) fn end_trimmed(value: &mut Value) {
     match value {
         Value::String(text) => text.truncate(text.trim_end().len()),
         Value::Array(items) => items.iter_mut().for_each(end_trimmed),

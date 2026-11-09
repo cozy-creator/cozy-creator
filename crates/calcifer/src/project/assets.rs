@@ -121,19 +121,24 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
         })
         .collect();
     let discarded = lock.asset(&asset.name).into_iter().flat_map(|held| &held.discarded).map(|version| version.number).collect();
+    // What can't make the call, a package the Hub doesn't have among them, is said with no call: the asset and its versions still answer.
     let (call, call_warnings) = match asked.call && doc.makes(i) && doc.tool(i).is_none() {
         true => {
-            let hub = api.machines.hubs.default_origin();
-            let on = [crate::runs::default_on(&api)];
-            let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on).await.map_err(Refusal)?;
-            let function = package.maker().map_err(Refusal)?.map(|maker| maker.function).unwrap_or_default();
-            let callable = package.callable(&function).ok_or_else(|| Refusal(Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {function}", package.name))))?;
-            let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
-            // A mention of nothing is said, as a render would refuse it, and the rest of the call stands.
-            let missing = doc.missing_inputs(i, &reserved, lock);
-            let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None };
-            match binder::bind(&call) {
-                Ok(bound) => (Some(serde_json::Value::Object(bound.payload)), missing.into_iter().chain(bound.warnings).collect()),
+            let bound = async {
+                let hub = api.machines.hubs.default_origin();
+                let on = [crate::runs::default_on(&api)];
+                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on).await?;
+                let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
+                let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {function}", package.name)))?;
+                let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
+                // A mention of nothing is said, as a render would refuse it, and the rest of the call stands.
+                let missing = doc.missing_inputs(i, &reserved, lock);
+                let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None };
+                let bound = binder::bind(&call)?;
+                Ok::<_, Error>((bound.payload, missing.into_iter().chain(bound.warnings).collect::<Vec<String>>()))
+            };
+            match bound.await {
+                Ok((payload, said)) => (Some(serde_json::Value::Object(payload)), said),
                 Err(why) => (None, vec![why.message]),
             }
         }

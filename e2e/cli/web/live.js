@@ -488,6 +488,9 @@ function linesOf(text, name) {
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
     await project('set', 'live_shot', 'seconds:=14');
+    // The first render over on the page too: its picture can show from its run before its take lands, and until the page reads that it's
+    // landed, its box shows that run whole. Progress sampled from here is the next render's alone.
+    await until('the first render over on the page', () => page.evaluate((name) => !window.boxOf(name)?.querySelector('.prog'), 'live_shot'), Boolean);
     const moving = bounded(page.evaluate((name) => window.progressOf(name), 'live_shot'), FIRST_RUN_MS, () => 'its progress never ended');
     await timed('render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     const landed = until('two takes', async () => (await held('live_shot')).versions, (versions) => versions === 2, FIRST_RUN_MS).then(() => Date.now());

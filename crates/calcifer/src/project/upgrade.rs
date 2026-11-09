@@ -1052,10 +1052,13 @@ fn four(dir: &Path, told: &BTreeMap<String, BTreeSet<String>>) -> Result<Upgrade
         .collect();
     doc.stamped(&mut lock, &current);
 
-    if !dir.join(WAS_THREE).is_file() {
-        platform::durable::replace(&dir.join(WAS_THREE), text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+    // Each kept once: a move cut short between the two still keeps the other.
+    if !dir.join(WAS_THREE_LOCK).is_file() {
         let held = std::fs::read(dir.join(folder::LOCK)).unwrap_or_default();
         platform::durable::replace(&dir.join(WAS_THREE_LOCK), &held, 0o644).map_err(|e| io(&dir, e))?;
+    }
+    if !dir.join(WAS_THREE).is_file() {
+        platform::durable::replace(&dir.join(WAS_THREE), text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
     }
     platform::durable::replace(&dir.join(folder::LOCK), lock.written().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
     legacy::canvas_renamed(&dir, &|name: &str| renamed(name))?;

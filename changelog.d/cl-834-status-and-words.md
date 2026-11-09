@@ -1,0 +1,1 @@
+`cozy project status <box>` answers for a box whose call can't be made, a package the Hub doesn't have among them, and says why under the box instead of failing. A box's words are kept with nothing after their last word, so words with a line break, a dropped mention's among them, export as a `|` block again, not a quoted line (cl-834).

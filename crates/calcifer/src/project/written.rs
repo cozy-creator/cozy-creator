@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::prefix_of,
-    format::{FORMAT, INSTRUCTIONS, LEADS, TEXT, canonical, invalid, names_a_file, yaml_key},
+    format::{FORMAT, INSTRUCTIONS, LEADS, TEXT, canonical, end_trimmed, invalid, names_a_file, yaml_key},
     graph::{mention, mention_moved, name_key},
 };
 
@@ -166,11 +166,13 @@ impl Written {
         out
     }
 
-    /// Box `name`'s fields set, a null cleared, and what was said doing so. Setting what it holds changes nothing.
+    /// Box `name`'s fields set, a null cleared, and what was said doing so. Setting what it holds changes nothing. A text is kept with
+    /// nothing after its last word, as everything reads it: the space a chip leaves to type on isn't words, and a `|` block can't hold it.
     pub fn set(&mut self, name: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
         let (translated, said) = super::tools::in_the_file(fields)?;
         let held = self.get_mut(name)?;
-        for (field, value) in translated {
+        for (field, mut value) in translated {
+            end_trimmed(&mut value);
             if held.get(&field).map_or(value.is_null(), |now| canonical(now) == canonical(&value)) {
                 continue;
             }
