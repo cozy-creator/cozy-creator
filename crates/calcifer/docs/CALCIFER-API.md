@@ -5,7 +5,9 @@ web UI are equal clients of it, and the CLI only parses arguments and prints (cl
 (cl-819): a client's files, folders and local code go by content (`PUT /v1/files`), a project is named by its id or name,
 and a run's outputs are fetched by their URL. A path a client sends is always one of Calcifer's own computer. Every behaviour a verb
 offers is one or more of the calls below. Written by hand and changed in the same PR as the routes
-(`crates/calcifer/src/api.rs`, `machines.rs`, `project/mod.rs`); the records are `crates/api`.
+(`crates/calcifer/src/api.rs`, `machines.rs`, `project/mod.rs`); the records are `api::calcifer` (`crates/api`). The CLI
+uses them as Rust types; the page uses the same records as TypeScript, `web/app/src/api/calcifer.ts`, which ts-rs writes from
+them (`scripts/web-types.sh`, checked in build).
 
 ## Clients and discovery
 
