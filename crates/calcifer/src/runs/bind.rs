@@ -1376,6 +1376,7 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
                             | Type::Bool
                             | Type::Null
                             | Type::Literal(_)
+                            | Type::Shape
                     )
                 })
             };
