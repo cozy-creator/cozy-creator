@@ -14,8 +14,6 @@ default = "e2e_probe:app"
 
 [tool.uv.sources]
 e2e-probe-callee = { path = "../probe-callee" }
-# Until cozy-runtime 0.43.0 is on PyPI: rc/tools, the 0.22 line.
-cozy-runtime = { git = "https://github.com/cozy-creator/cozy-runtime", rev = "fcf43544c7794e249b570ffc27d0c5bfd0a9c54c" }
 
 [tool.uv.build-backend]
 module-name = "e2e_probe"
