@@ -80,11 +80,8 @@ test = "pr: packages"
 ["package info"]
 test = "pr: packages"
 ["package install"]
-test = "pr: packages"
+test = "pr: packages (gate: tensord unversioned-installed, an installed package moved to its newest)"
 "--on" = "pr: packages"
-["package update"]
-test = "gate: tensord unversioned-installed"
-"--on" = "gate: tensord unversioned-installed"
 ["package remove"]
 test = "pr: packages"
 "--on" = "pr: packages"
@@ -119,9 +116,8 @@ test = "pr: models"
 ["model edit"]
 test = "release: throwaway model, family, tags, trigger and strength set and cleared"
 "--family" = "release: throwaway model, family set and cleared (none)"
-"--tag" = "release: throwaway model, a tag added"
-"--untag" = "release: throwaway model, a tag removed"
-"--tags" = "release: throwaway model, tags set and cleared"
+"--tag" = "release: throwaway model, tags added"
+"--untag" = "release: throwaway model, a tag removed, then each cleared"
 "--trigger" = "release: throwaway model, trigger set and cleared"
 "--strength" = "release: throwaway model, strength set and cleared (none)"
 ["model upload"]
@@ -211,7 +207,6 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; a fu
 "--take" = "pr: projects: keeps: the take reaches the function as continue_from, one it doesn't have refused"
 "--in" = "pr: projects: keeps: where it lands, ignored with all"
 "--queue" = "pr: projects: three queued, one canceled, the rest land"
-"--plain" = "pr: projects: by asset, one line per event on a terminal too"
 
 ["project cancel"]
 test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"
@@ -229,13 +224,7 @@ test = "pr: by the CLI: a value, JSON, clearing, what makes it, where it sits; w
 "--input" = "pr: by the CLI: fields from a file, from stdin, a term over them; web-live: an Edit's clips"
 
 ["project delete"]
-test = "pr: by the CLI: prints what restores it; web-live: gone from the open canvas"
-"--version" = "pr: discards: a take off its box at once, one or several, each printing what restores it"
-
-["project restore"]
-test = "pr: by the CLI: the line delete printed, run as printed, its takes kept; web-live: back where it was"
-"--version" = "pr: discards: a discarded take back in its place, as delete printed it"
-"--approved" = "pr: discards: the approved take back with its approval, as delete printed it"
+test = "pr: by the CLI: prints the undo line; discards: <name>.<n>, a take off its box at once, one or several, each printing its undo line; web-live: gone from the open canvas"
 
 ["project export"]
 test = "pr: projectdb: the project as YAML, read back by import unchanged; an edited one imports as one entry"
@@ -251,7 +240,7 @@ test = "pr: projects: gives the file back, restoring an input the pin was over"
 test = "pr: web-undo: the history kept across a Calcifer restart, newest first (-n)"
 
 ["project undo"]
-test = "pr: web-undo: the page's edit undone from the CLI, a clobbering undo refused"
+test = "pr: web-undo: the page's edit undone from the CLI, a clobbering undo refused; by the CLI, discards: the line delete printed, an approved take back with its approval; web-live: back where it was"
 "--to" = "pending: every edit back to one; web-undo undoes one at a time"
 
 ["project redo"]

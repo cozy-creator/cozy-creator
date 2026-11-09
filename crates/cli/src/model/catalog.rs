@@ -175,18 +175,16 @@ fn said(view: &ModelDetail, repo: &Repo) -> Record {
 
 pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
     let repo = Repo::hub(&args.model)?;
-    let tags = args.tags.map(|tags| tags.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect());
     let ask = ModelEdit {
         hub: Some(ctx.hub().to_string()),
         family: args.family,
         trigger: args.trigger,
         strength: args.strength.map(|s| s.0),
-        tags,
         add_tags: args.tag,
         remove_tags: args.untag,
     };
     if ask.family.is_none() && ask.trigger.is_none() && ask.strength.is_none() && !ask.tags_change() {
-        return Err(Error::new(Kind::Usage, "model_edit_empty", "name what changes: --family, --tag, --untag, --tags, --trigger or --strength"));
+        return Err(Error::new(Kind::Usage, "model_edit_empty", "name what changes: --family, --tag, --untag, --trigger or --strength"));
     }
     let edited: ModelEdited = ctx.calcifer().await?.patch(&path(&["v1", "models", &repo.org, &repo.name]), &ask).await?;
     if ctx.json {

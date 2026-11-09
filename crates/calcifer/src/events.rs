@@ -133,12 +133,6 @@ pub(crate) fn project_closed(id: &str) {
     PROJECTS.revs.lock().expect("revs lock").remove(id);
 }
 
-/// Project `id` is forgotten: nothing more is said of it.
-pub(crate) fn project_forgotten(id: &str) {
-    PROJECTS.revs.lock().expect("revs lock").remove(id);
-    PROJECTS.owed.lock().expect("owed lock").remove(id);
-}
-
 /// `dir`'s project opens, before anything reads it: only a change from here on is news.
 pub(crate) fn project_opened(dir: &Path) {
     let mut revs = PROJECTS.revs.lock().expect("revs lock");

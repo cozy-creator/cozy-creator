@@ -1,4 +1,4 @@
-//! `/v1/package-locks` and `/v1/package-publications`: authoring a package a client sent by content
+//! `cozy/package_lock` and `cozy/package_publish`: authoring a package a client sent by content
 //! (cl-819), with uv, in Calcifer's copy of it. Package code never runs here: the interface comes from
 //! Runtime's static describer.
 //!
@@ -19,14 +19,16 @@ use ::api::hub::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
 use api::{
     config::Origin,
     error::{Error, Kind},
-    calcifer::hub::{LockAsk, Locked, PublishAsk, Published},
+    calcifer::hub::{Locked, PackageLock, PackagePublish, Published},
+    code::LocalCode,
     interface::Interface,
 };
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-use super::{origin, reader, refusal, signed_in, work::Work};
+use super::{reader, refusal, signed_in};
 use crate::{
+    Here,
     api::Api,
     local_code::{INDEX, Project, account, describe_with, index_url, locked_namespace, python, refuse, run, source_files, uv},
     tools::Say,
@@ -206,11 +208,10 @@ fn sent(api: &Api, code: &api::code::LocalCode) -> Result<Project, Error> {
     blocking(|| Project::read(crate::local_code::copied(api.machines.hubs.home(), code)?))
 }
 
-/// Locks the package `ask.code` names for the Hub and account it publishes to, and answers its lock.
-pub(super) async fn lock(api: &Arc<Api>, ask: LockAsk, work: &Work) -> Result<Locked, Error> {
+/// Locks the package `code` is for the Hub and account it publishes to, and answers its lock.
+pub(super) async fn lock(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &PackageLock, work: &Here) -> Result<Locked, Error> {
     let say = &|message: &str| work.say(message);
-    let hub = origin(api, ask.hub.as_deref()).map_err(|r| r.0)?;
-    let project = sent(api, &ask.code)?;
+    let project = sent(api, code)?;
     let uv_path = tools(api, &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
     // The namespace it is locked for: the root's with `root`, else the one its lock already names,
@@ -223,14 +224,14 @@ pub(super) async fn lock(api: &Arc<Api>, ask: LockAsk, work: &Work) -> Result<Lo
                 false => locked_namespace(&project.root),
             };
             let (client, namespace) = match namespace {
-                Some(namespace) => (reader(api, &hub).map_err(|r| r.0)?, namespace),
+                Some(namespace) => (reader(api, hub).map_err(|r| r.0)?, namespace),
                 None => {
-                    let client = signed_in(api, &hub).map_err(|r| r.0)?;
+                    let client = signed_in(api, hub).map_err(|r| r.0)?;
                     let account = account(&client).await?;
                     (client, account)
                 }
             };
-            let url = index_url(&client, &hub, &namespace).await?;
+            let url = index_url(&client, hub, &namespace).await?;
             stage.bind(&url)?;
             Some(url)
         }
@@ -270,17 +271,16 @@ impl File {
     }
 }
 
-/// Publishes the package `ask.code` names: staged, relocked for this Hub and account, built,
+/// Publishes the package `code` is: staged, relocked for this Hub and account, built,
 /// described, uploaded and finalized. A version already published is answered as it is.
-pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Result<Published, Error> {
+pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &PackagePublish, work: &Here) -> Result<Published, Error> {
     let say = &|message: &str| work.say(message);
-    let hub = origin(api, ask.hub.as_deref()).map_err(|r| r.0)?;
-    let hub_error = |e| refusal(&hub, e).0;
-    let project = sent(api, &ask.code)?;
+    let hub_error = |e| refusal(hub, e).0;
+    let project = sent(api, code)?;
     if !project.identified {
         return Err(refuse("project_identity_missing", "a release needs a literal version in pyproject.toml's [project]"));
     }
-    let client = signed_in(api, &hub).map_err(|r| r.0)?;
+    let client = signed_in(api, hub).map_err(|r| r.0)?;
     let account = publisher(&client, ask.root).await?;
     let mut result = Published {
         package: format!("{account}/{}", project.name),
@@ -302,7 +302,7 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
     // Locked first, its lock is answered for the client to write, and the release holds it.
     if !project.root.join("uv.lock").is_file() {
         say("this project has no uv.lock: locking it first");
-        let locked = lock(api, LockAsk { hub: ask.hub.clone(), code: ask.code.clone(), root: ask.root, upgrade: vec![] }, work).await?;
+        let locked = lock(api, hub, code, &PackageLock { root: ask.root, upgrade: vec![] }, work).await?;
         result.lock = Some(locked.lock);
     }
     let uv_path = tools(api, &project, say).await?;
@@ -321,14 +321,14 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
     // cannot meet is refused by name, never re-resolved to a newer release.
     let python = blocking(|| python(&project, &stage.uv))?;
     if project.account_index {
-        let url = index_url(&client, &hub, &account).await?;
+        let url = index_url(&client, hub, &account).await?;
         stage.bind(&url)?;
         let pins = index_pins(&committed)?;
         if !pins.is_empty() && !committed.contains(&url) {
-            blocking(|| stage.relock_pinned(python.request.as_str(), &pins)).map_err(|e| unmet(e, &pins, &account, &hub))?;
+            blocking(|| stage.relock_pinned(python.request.as_str(), &pins)).map_err(|e| unmet(e, &pins, &account, hub))?;
         }
     }
-    let (files, unshipped) = blocking(|| built(&stage, &python.request, &committed, &result.package, &hub))?;
+    let (files, unshipped) = blocking(|| built(&stage, &python.request, &committed, &result.package, hub))?;
     for ui in unshipped {
         say(&format!("the wheel doesn't hold {ui}, so that function draws its declared box: keep it beside the module that names it, and have your build include it"));
     }
@@ -367,7 +367,7 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
     result.status = if ask.yanked { "published yanked" } else { "published" }.into();
     result.changed = true;
     result.warnings = state.warnings;
-    api.releases.forget(&hub, &result.package);
+    api.releases.forget(hub, &result.package);
     Ok(result)
 }
 

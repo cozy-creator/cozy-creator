@@ -444,8 +444,8 @@ fn kept(method: &Method, path: &str) -> bool {
     match (method.as_str(), rest) {
         ("POST", ["imports" | "assets" | "approve" | "unpin" | "rename"]) => true,
         ("POST", ["assets", _, "versions"]) => true,
-        ("PATCH" | "DELETE" | "PUT", ["assets", _]) => true,
-        ("DELETE" | "PUT", ["assets", _, "versions", _]) => true,
+        ("PATCH" | "DELETE", ["assets", _]) => true,
+        ("DELETE", ["assets", _, "versions", _]) => true,
         ("PATCH", ["canvas"]) | ("PUT", ["yaml"]) => true,
         _ => false,
     }
@@ -586,6 +586,7 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
     let body = body?;
     let asked: HistoryStep = if body.iter().all(u8::is_ascii_whitespace) { HistoryStep::default() } else { parse(&body)? };
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     let book = book(&project.folder);
     let _one = book.stepping.lock().await;
     let chosen = {

@@ -31,7 +31,7 @@ const EXAMPLES: &str = "Examples:
   cozy project import ./kyogre.png             adds it as kyogre, which <kyogre> reads in any text
   cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
   cozy project set whale megapixels=1 at=400,120   as its box's controls; --input takes a file of them
-  cozy project delete whale                    prints the command that puts it back
+  cozy project delete whale                    `undo` puts it back; `delete whale.2` discards its take 2
   cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three more takes of fight
   cozy project approve fight 2                 fight holds that file, as its `approved`
@@ -91,31 +91,13 @@ enum Verb {
     Import(ImportFile),
     Add(assets::Add),
     Set(assets::Set),
-    /// Delete assets, as the X on a box: their work stops, what they made stays until `reclaim`, and it prints what puts each back.
-    /// With `--version`, discards takes of one asset instead.
-    #[command(after_help = "Examples:\n  cozy project delete whale\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line it printed\n  cozy project delete whale --version 2 --version 3")]
+    /// Delete assets, as the X on a box: their work stops, and what they made stays until `reclaim`. `<name>.<n>` discards that take
+    /// or version instead. `cozy project undo` puts either back, and each prints the command.
+    #[command(after_help = "Examples:\n  cozy project delete whale\n  cozy project delete whale.2 whale.3   takes 2 and 3 of whale: off it, their numbers never used again\n  cozy project undo 42                  the line it printed")]
     Delete {
-        /// The assets.
+        /// The assets, or `<name>.<n>` for one take or version of one.
         #[arg(required = true, value_name = "NAME")]
         names: Vec<String>,
-        /// Discard this take or version: it's off the asset, its number is never used again, and its files stay until `reclaim`. Repeatable.
-        #[arg(long = "version", value_name = "N")]
-        versions: Vec<u32>,
-    },
-    /// Put back a deleted asset as it was, where it was, with what it made, or with `--version` a take it discarded.
-    #[command(after_help = "Examples:\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line `delete` printed\n  cozy project restore whale --version 2")]
-    Restore {
-        /// The asset.
-        name: String,
-        /// What `delete` printed for it.
-        #[arg(value_name = "KEPT", required_unless_present = "versions", conflicts_with = "versions")]
-        kept: Option<String>,
-        /// The take or version to put back. Repeatable.
-        #[arg(long = "version", value_name = "N")]
-        versions: Vec<u32>,
-        /// And its approval, as `delete --version` printed.
-        #[arg(long, requires = "versions")]
-        approved: bool,
     },
     Render(Render),
     /// Approve a take or version: its hash is the asset's `approved`.
@@ -257,9 +239,6 @@ struct Render {
     /// Approve the new take or version when it lands (only with -n 1).
     #[arg(long)]
     approve: bool,
-    /// One line per event, each starting with its asset's name, rather than the live view. Off a terminal it always is.
-    #[arg(long)]
-    plain: bool,
 }
 
 
@@ -304,12 +283,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Export { out } => return export(ctx, args.project.as_ref(), out).await,
         Verb::Add(add) => return assets::add(ctx, args.project.as_ref(), add).await,
         Verb::Set(set) => return assets::set(ctx, args.project.as_ref(), set).await,
-        Verb::Delete { names, versions } => return assets::delete(ctx, args.project.as_ref(), names, versions).await,
-        Verb::Restore { name, kept, versions, approved } => return assets::restore(ctx, args.project.as_ref(), name, kept, versions, approved).await,
+        Verb::Delete { names } => return assets::delete(ctx, args.project.as_ref(), names).await,
         Verb::Render(render) => return self::render(ctx, args.project.as_ref(), render).await,
         Verb::Approve { name, version } => {
-            let opened = open(ctx, args.project.as_ref()).await?;
-            let path = format!("/v1/projects/{}/approve", opened.id);
+            let path = at(&named(args.project.as_ref())?, &["approve"]);
             let approved: Approved = ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version }, None).await?;
             approved.warnings.iter().for_each(|warning| output::warn(warning));
             if ctx.json {
@@ -326,8 +303,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Unapprove { name } => {
-            let opened = open(ctx, args.project.as_ref()).await?;
-            let path = format!("/v1/projects/{}/unpin", opened.id);
+            let path = at(&named(args.project.as_ref())?, &["unpin"]);
             let unpinned: Unpinned = ctx.calcifer().await?.post(&path, &Unpin { name }, None).await?;
             if ctx.json {
                 output::json(&unpinned);
@@ -342,8 +318,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Cancel { names } => {
-            let opened = open(ctx, args.project.as_ref()).await?;
-            let path = format!("/v1/projects/{}/cancel", opened.id);
+            let path = at(&named(args.project.as_ref())?, &["cancel"]);
             let cancelled: Cancelled = ctx.calcifer().await?.post(&path, &Cancel { names }, None).await?;
             if ctx.json {
                 output::json(&cancelled);
@@ -356,8 +331,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Reclaim { yes } => {
-            let opened = open(ctx, args.project.as_ref()).await?;
-            let path = format!("/v1/projects/{}/reclaim", opened.id);
+            let path = at(&named(args.project.as_ref())?, &["reclaim"]);
             let reclaimed: Reclaimed = ctx.calcifer().await?.post(&path, &Reclaim { yes }, None).await?;
             if ctx.json {
                 output::json(&reclaimed);
@@ -392,8 +366,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Status { name: None } => return status(ctx, args.project.as_ref()).await,
         Verb::Wait => return wait(ctx, args.project.as_ref()).await,
         Verb::Rename { from, to } => {
-            let opened = open(ctx, args.project.as_ref()).await?;
-            let path = format!("/v1/projects/{}/rename", opened.id);
+            let path = at(&named(args.project.as_ref())?, &["rename"]);
             let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
             match ctx.json {
                 true => output::json(&renamed),
@@ -433,8 +406,7 @@ fn by(by: &By) -> String {
 
 /// `GET /v1/projects/{id}/history`.
 async fn history(ctx: &Context, at: Option<&String>, limit: usize) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
-    let listed: History = ctx.calcifer().await?.get(&format!("/v1/projects/{}/history?limit={limit}", opened.id)).await?;
+    let listed: History = ctx.calcifer().await?.get_query(&self::at(&named(at)?, &["history"]), &[("limit", limit)]).await?;
     if ctx.json {
         output::json(&listed);
         return Ok(ExitCode::SUCCESS);
@@ -459,8 +431,7 @@ async fn history(ctx: &Context, at: Option<&String>, limit: usize) -> Result<Exi
 
 /// `POST /v1/projects/{id}/history/<verb>`, and what it did.
 async fn step(ctx: &Context, at: Option<&String>, verb: &str, asked: HistoryStep) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
-    let stepped: HistoryStepped = ctx.calcifer().await?.post(&format!("/v1/projects/{}/history/{verb}", opened.id), &asked, None).await?;
+    let stepped: HistoryStepped = ctx.calcifer().await?.post(&self::at(&named(at)?, &["history", verb]), &asked, None).await?;
     if ctx.json {
         output::json(&stepped);
         return Ok(ExitCode::SUCCESS);
@@ -470,7 +441,8 @@ async fn step(ctx: &Context, at: Option<&String>, verb: &str, asked: HistoryStep
         output::say(ctx, &format!("nothing to {verb}: that's {done} already"));
     }
     for entry in &stepped.entries {
-        output::say(ctx, &format!("{done} {}: {}", entry.id, entry.words));
+        // Its answer, on stdout, as every write's is.
+        println!("{done} {}: {}", entry.id, entry.words);
     }
     if let Some(stopped) = &stepped.stopped {
         output::warn(&stopped.message);
@@ -500,11 +472,11 @@ fn skipped(done: &Transferred) -> ExitCode {
 
 /// `POST /v1/projects/{id}/<verb>`, followed on the project's events to its end, which `--json` prints.
 async fn transfer(ctx: &Context, at: Option<&String>, verb: &str, moved: &str) -> Result<Transferred, Error> {
-    let opened = open(ctx, at).await?;
+    let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
-    let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
+    let mut events = calcifer.watch::<Event>(&self::at(&project, &["events"])).await?;
     let ask = At { hub: Some(ctx.hub().to_string()) };
-    let _: Opened = calcifer.post(&format!("/v1/projects/{}/{verb}", opened.id), &ask, None).await?;
+    let _: Opened = calcifer.post(&self::at(&project, &[verb]), &ask, None).await?;
     while let Some(event) = events.next().await {
         match event {
             Event::Moved { file: Some(file), bytes } => output::say(ctx, &format!("{moved} {file} ({} so far)", output::bytes(bytes))),
@@ -520,18 +492,18 @@ async fn transfer(ctx: &Context, at: Option<&String>, verb: &str, moved: &str) -
         }
     }
     let said = format!("Calcifer stopped before the {verb} ended; run it again and it goes on from what landed");
-    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.name)))
+    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project{} {verb}", from(at))))
 }
 
 /// `POST /v1/projects/{id}/imports`, and the name it got.
 async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
+    let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     if is_yaml(&args.source) && args.into.is_none() {
         let file = cwd.join(&args.source);
         let text = std::fs::read_to_string(&file).map_err(|e| Error::new(Kind::Usage, "import_unreadable", format!("{}: {e}", file.display())))?;
-        calcifer.put_text(&format!("/v1/projects/{}/yaml", opened.id), &text).await?;
+        calcifer.put_text(&self::at(&project, &["yaml"]), &text).await?;
         if !ctx.json {
             output::say(ctx, &format!("imported {}", file.display()));
         }
@@ -551,7 +523,7 @@ async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<
         }
     };
     if let Some(box_name) = args.into {
-        let joined: VersionMoved = calcifer.post(&crate::calcifer_client::path(&["v1", "projects", &opened.id, "assets", &box_name, "versions"]), &NewVersion { source }, None).await?;
+        let joined: VersionMoved = calcifer.post(&self::at(&project, &["assets", &box_name, "versions"]), &NewVersion { source }, None).await?;
         if ctx.json {
             output::json(&joined);
         } else {
@@ -559,7 +531,7 @@ async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<
         }
         return Ok(ExitCode::SUCCESS);
     }
-    let path = format!("/v1/projects/{}/imports", opened.id);
+    let path = self::at(&project, &["imports"]);
     let ask = Import { source, name, at: None, description: args.description, exact, moves: Default::default(), placed: Default::default() };
     let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
@@ -572,8 +544,7 @@ async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<
 
 /// `GET /v1/projects/{id}/yaml`: the project as YAML, to stdout or `out`.
 async fn export(ctx: &Context, at: Option<&String>, out: Option<PathBuf>) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
-    let text = ctx.calcifer().await?.text(&format!("/v1/projects/{}/yaml", opened.id)).await?;
+    let text = ctx.calcifer().await?.text(&self::at(&named(at)?, &["yaml"])).await?;
     match out {
         Some(out) => {
             std::fs::write(&out, &text).map_err(|e| Error::new(Kind::Unavailable, "export_write", format!("{}: {e}", out.display())))?;
@@ -613,14 +584,13 @@ fn pickup_of(names: &mut Vec<String>) -> Result<Option<Pickup>, Error> {
 
 async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<ExitCode, Error> {
     let pickup = pickup_of(&mut args.names)?;
-    let opened = open(ctx, at).await?;
+    let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
     let queued = args.queue;
-    let args_plain = args.plain;
     // Opened before the ask, so nothing it sets going is missed.
     let mut events = match queued {
         true => None,
-        false => Some(calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?),
+        false => Some(calcifer.watch::<Event>(&self::at(&project, &["events"])).await?),
     };
     // Named, it's held to what this OS can do. Unnamed it's every rental of yours and this computer last, as the page sends it, each job going
     // where it ends first; with none, `local`, and Calcifer says so only of what needs a machine: an Edit needs none.
@@ -629,7 +599,7 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         false => args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?,
     };
     if matches!(on.as_slice(), [only] if only.is_local()) {
-        poorly_here(&calcifer, &opened.id, &args.names, args.outdated).await;
+        poorly_here(&calcifer, &project, &args.names, args.outdated).await;
     }
     let runs = Runs {
         outdated: args.outdated,
@@ -641,7 +611,7 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         missing: args.missing,
         pickup,
     };
-    let path = format!("/v1/projects/{}/runs", opened.id);
+    let path = self::at(&project, &["runs"]);
     let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
     match asked.skipped.as_slice() {
         [] => {}
@@ -666,25 +636,25 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         return Ok(ExitCode::SUCCESS);
     }
     if asked.joined {
-        let name = &opened.name;
+        let name = &project;
         output::say(ctx, &match asked.added {
             0 => format!("a render is already going in {name}, and this adds nothing to it: joining it"),
             _ => format!("a render is already going in {name}: joining it"),
         });
     }
     let events = events.take().expect("following");
-    let status = format!("cozy project -p {} status", opened.name);
+    let status = format!("cozy project{} status", from(at));
     if ctx.json {
         return following_json(ctx, events, &status, asked.ask.as_deref()).await;
     }
-    render::follow(ctx, render::Rendering::new(opened.path.clone(), asked.board, asked.ask), events, args_plain, &status).await
+    render::follow(ctx, render::Rendering::new(asked.path.clone(), asked.board, asked.ask), events, &status).await
 }
 
 /// What this computer would render poorly, in the line the page asks with, said once as a warning: this never asks, and goes on. A
 /// Calcifer that can't say says nothing.
-async fn poorly_here(calcifer: &crate::calcifer_client::Client, id: &str, names: &[String], outdated: bool) {
+async fn poorly_here(calcifer: &crate::calcifer_client::Client, project: &str, names: &[String], outdated: bool) {
     let asked = FitAsk { names: names.to_vec(), outdated };
-    let Ok(fit) = calcifer.post::<_, Fit>(&format!("/v1/projects/{id}/fit"), &asked, None).await else { return };
+    let Ok(fit) = calcifer.post::<_, Fit>(&at(project, &["fit"]), &asked, None).await else { return };
     if fit.tools.is_empty() {
         return;
     }
@@ -734,8 +704,7 @@ pub(crate) const FIELDS: &[&str] = &[
 /// `cozy project status`: an asset a row, what makes it and how it stands, the totals, then what to know and do. `--full`:
 /// every column and line, each file's path among them.
 async fn status(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
-    let state: State = ctx.calcifer().await?.get(&format!("/v1/projects/{}", opened.id)).await?;
+    let state: State = ctx.calcifer().await?.get(&self::at(&named(at)?, &[])).await?;
     shown(ctx, &state);
     Ok(ExitCode::SUCCESS)
 }
@@ -743,15 +712,15 @@ async fn status(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
 /// `cozy project wait`: the render going, followed as `render` follows its own. None going: the project as `status` shows
 /// it, failing when an asset's last try did.
 async fn wait(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
+    let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
     // Opened before the read, so nothing between the two is missed.
-    let events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
-    let state: State = calcifer.get(&format!("/v1/projects/{}", opened.id)).await?;
-    let status = format!("cozy project -p {} status", opened.name);
+    let events = calcifer.watch::<Event>(&self::at(&project, &["events"])).await?;
+    let state: State = calcifer.get(&self::at(&project, &[])).await?;
+    let status = format!("cozy project{} status", from(at));
     match state.board.clone().filter(|_| state.busy) {
         Some(_) if ctx.json => following_json(ctx, events, &status, None).await,
-        Some(board) => render::follow(ctx, render::Rendering::new(opened.path.clone(), board, None), events, false, &status).await,
+        Some(board) => render::follow(ctx, render::Rendering::new(state.path.clone(), board, None), events, &status).await,
         None => {
             shown(ctx, &state);
             let failed = state.assets.iter().any(|asset| asset.failure.is_some());
@@ -914,12 +883,23 @@ fn retimes(retimed: &[String], fps: f64) -> String {
     }
 }
 
-/// The project `at` names, else COZY_PROJECT's, as Calcifer opens it.
-pub(crate) async fn open(ctx: &Context, at: Option<&String>) -> Result<Opened, Error> {
-    let project = chosen(at).ok_or_else(api::calcifer::project::unnamed)?;
-    let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &Open { project: Some(project), ..Open::default() }, None).await?;
-    opened.said.iter().for_each(|said| output::warn(said));
-    Ok(opened)
+/// The project a verb works in, as its routes name it; none named is refused.
+pub(crate) fn named(at: Option<&String>) -> Result<String, Error> {
+    chosen(at).ok_or_else(api::calcifer::project::unnamed)
+}
+
+/// `/v1/projects/<project>[/<rest>…]`: a route takes a project's name, id or folder.
+pub(crate) fn at(project: &str, rest: &[&str]) -> String {
+    let segments: Vec<&str> = ["v1", "projects", project].into_iter().chain(rest.iter().copied()).collect();
+    crate::calcifer_client::path(&segments)
+}
+
+/// ` -p <project>` when it was given, as a command that's printed has to work from here.
+pub(crate) fn from(at: Option<&String>) -> String {
+    at.map_or_else(String::new, |at| match at.contains(' ') {
+        true => format!(" -p '{at}'"),
+        false => format!(" -p {at}"),
+    })
 }
 
 /// The project a verb works in, as it's named (`api::calcifer::project::NAMED_BY`): `-p`, else `COZY_PROJECT`. Never the folder this

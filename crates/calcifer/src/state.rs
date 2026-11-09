@@ -147,11 +147,6 @@ impl Store {
         })
     }
 
-    /// Forgets project `id`: whether it was known.
-    pub(crate) fn forget_project(&self, id: &str) -> Result<bool> {
-        self.write(|tx| Ok(tx.execute("DELETE FROM projects WHERE id = ?1", [id])? > 0))
-    }
-
     /// The sessions used after `since_ms`; the rest have ended, and go.
     pub(crate) fn sessions(&self, since_ms: i64) -> Result<Vec<SessionRow>> {
         self.write(|tx| {

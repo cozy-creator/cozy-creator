@@ -248,7 +248,7 @@ impl Held {
 /// Which release a run binds against and runs, once, before binding, and why, with a line when it
 /// moved off a yanked one: the one asked; else the newest its machine holds that the Hub still has and
 /// hasn't yanked; else the Hub's newest, which the machine installs. So inputs bind against what will run, the run is
-/// pinned to it, and a release moves under a machine only by `cozy package update`. With no machine
+/// pinned to it, and a release moves under a machine only by `cozy package install`. With no machine
 /// (`held`), the newest as this computer last read it.
 async fn release_of(
     api: &Arc<Api>,

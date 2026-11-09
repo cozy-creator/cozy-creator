@@ -5,10 +5,9 @@
 # its TensorD to the pod, and `runtime` the Runtime with `Node`. A completed run is no pass: each output is measured, its frames kept for
 # a person to judge in $OUT/frames, and each call's input is checked against what crossed its mentions. One rental (a 4090). params:
 #   runtime     the Runtime wheel with Node, https://…#sha256=<hex> (default: the session's RUNTIME_WHEEL, from rc/<x>)
-#   caption     also ask a local qwen3.5 for a description, 9 GB more ("true")
 . "$(dirname "$0")/lib.sh"
-URL=$(param runtime) PK=$PACKAGES/pk CAPTION=$(param caption true)
-for p in qwen-image-2 minimax-h3 birefnet seedvr2 qwen3.5; do [ -f "$PK/$p/pyproject.toml" ] || fail "no packages_refs checkout pk/$p"; done
+URL=$(param runtime) PK=$PACKAGES/pk
+for p in qwen-image-2 minimax-h3 birefnet seedvr2; do [ -f "$PK/$p/pyproject.toml" ] || fail "no packages_refs checkout pk/$p"; done
 grep -q 'fill={"continue_from": "take"}' "$PK/minimax-h3/h3.py" || fail "pk is not rc/web-ui: minimax-h3's generate is no node"
 mkdir -p "$OUT/wheel" "$OUT/frames"
 if [ -n "$URL" ]; then
@@ -162,19 +161,6 @@ J '(.target | test("/generate_turbo(@|$)")) and .input.aspect_ratio == "3:2" and
 J '(.target | test("/generate(@|$)")) and .input.beats[0].duration == 5 and (.input.summary | contains("High-quality Unreal"))' <<< "$(call lab_shot)" || fail "the shot's call: $(call lab_shot)"
 pic=$(file_of lab_sheet image); cp "$pic" "$OUT/frames/lab-sheet.${pic##*.}"
 vid=$(file_of lab_shot video); keep_frames lab "$vid"; say "lab shape: $(size "$pic"), $(size "$vid") $(seconds "$vid") s"
-
-if [ "$CAPTION" = true ]; then
-  say "Caption: what the package says to ask, nothing written"
-  cat >> "$P/project.yaml" <<YAML
-  names_qwen35:
-    tool: $PK/qwen3.5
-YAML
-  before=$(sha256sum "$P/project.yaml")
-  timeout 1800 curl -sS -H "Authorization: Bearer $TOKEN" -X POST -d "$(jq -n --arg o "$NAME" '{on: $o}')" "http://$ADDR/v1/projects/$ID/assets/cut/caption" > "$OUT/caption.json"
-  J '.text | length > 10' "$OUT/caption.json" || fail "caption: $(head -c 400 "$OUT/caption.json")"
-  [ "$before" = "$(sha256sum "$P/project.yaml")" ] || fail "caption wrote to the file"
-  say "caption: $(jq -r .text "$OUT/caption.json" | cut -c1-300)"
-fi
 
 say "--take and --in: a longer shot, kept to a join and the rest made again"
 drop long "$PK/minimax-h3/generate" '{"summary": "<clean> stands in a quiet studio.", "beats": [{"description": "<clean> looks left.", "duration": 8}, {"description": "<clean> looks right.", "duration": 8}], "soundscape": "Soft room tone."}' video

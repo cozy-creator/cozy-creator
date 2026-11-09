@@ -1,5 +1,5 @@
-//! The one binder: a box's written fields, by its tool's types, as the call its function gets. Render, `cozy project render`, `cozy run` and
-//! Caption all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions; a slot takes only what's
+//! The one binder: a box's written fields, by its tool's types, as the call its function gets. Render, `cozy project render` and `cozy run`
+//! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions; a slot takes only what's
 //! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model.
 use std::collections::BTreeSet;
 

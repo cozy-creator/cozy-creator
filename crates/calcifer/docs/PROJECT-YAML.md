@@ -149,7 +149,7 @@ Putting a tool on a text asset moves its `text` to `instructions`. On a picture,
 | `approve <name> <version>` | Sets that version's hash as its `approved` |
 | `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
 | `unapprove <name>` | Takes `approved` away. A dropped file keeps it: it's all it is |
-| `delete <name> --version <n>` | Discards that take, repeatable, and prints the `restore` line for each: see [Discarded takes](#discarded-takes) |
+| `delete <name>.<n>…` | Discards that take, and prints the `undo` line for each: see [Discarded takes](#discarded-takes) |
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
 | `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
 | `rename <old> <new>` | Renames an asset and every `<mention>` of it, `<old.2>` too, and keeps its versions. A box renamed in an imported YAML keeps its versions too. A name is no input: nothing that reads it goes out of date |
@@ -157,10 +157,9 @@ Putting a tool on a text asset moves its `text` to `instructions`. On a picture,
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here |
 | `export [-o <file>]`, `import <file>.yaml` | The project as this YAML, and back: see the top |
 | `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |
-| `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it and `tool=` with nothing takes it off, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |
+| `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it and `tool=` with nothing takes it off, and `at=x,y[,w]` is where it sits, as dragging it. An Edit's tracks and clips are its `timeline`, in a file |
 | `status <name>` | One asset: its fields and each take or version |
-| `delete <name>…` | As the X on its box: its work stops and it goes, and this prints the `restore` line that brings it back |
-| `restore <name> <kept>` | That line: back as it was, where it was, with what it made |
+| `delete <name>…` | As the X on its box: its work stops and it goes, and this prints the `undo <id>` line that brings it back as it was, where it was, with what it made |
 
 Everything the page does has a command, each the same route with the same fields, and what either does shows on the other within a second. Caption is `cozy run` of a function that reads a picture, then `set <name> description=…`.
 
@@ -192,7 +191,7 @@ An asset no longer named in the project keeps its versions and files until `recl
 
 ## Discarded takes
 
-Discarding a take takes it off its asset at once. Nothing runs and no bytes go: it stays on record, discarded, until `reclaim`, and `cozy project restore <name> --version <n>` or Undo brings it back. Its number is never given again, so a list can have gaps.
+Discarding a take takes it off its asset at once. Nothing runs and no bytes go: it stays on record, discarded, until `reclaim`, and undo brings it back (`cozy project undo <id>`, the line its discard printed; `cozy project history` lists it). Its number is never given again, so a list can have gaps.
 
 - **The approved take:** its `approved:` goes with it, and the asset stands on its newest take left. Undo brings both back, unless another take has been approved since.
 - **The last take:** the asset stays, with no take, and a render makes it again like anything with no state.
@@ -212,7 +211,7 @@ cozy project render clash
 
 ## Functions
 
-A box is a call of its tool, by one binder, the same for Render, `cozy project render`, `cozy run` and Caption. A tool is a function its package declares with `@app.tool`, taking one struct: its fields are the box (`tracker/design/tools.md`). Each written field goes by its type:
+A box is a call of its tool, by one binder, the same for Render, `cozy project render` and `cozy run`. A tool is a function its package declares with `@app.tool`, taking one struct: its fields are the box (`tracker/design/tools.md`). Each written field goes by its type:
 
 - **Words** (`str`): as written, each text box in place as its words; a box with a file it mentions goes as its name, with a warning.
 - **A prompt** (`Prompt`, or `Prompt[Image]`): its text as written, each mention spelled as its box spells itself, with the boxes it mentions as its own references, in the order first mentioned. What it doesn't take (a video in a `Prompt[Image]`) goes as its name, with a warning.

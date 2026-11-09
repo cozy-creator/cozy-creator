@@ -501,7 +501,7 @@ ${local ? `  card:
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = (asset, wait = true) => {
-    const words = ['project', '-p', folder, 'render', asset, ...(local ? ['--on', 'local'] : []), '--plain'];
+    const words = ['project', '-p', folder, 'render', asset, ...(local ? ['--on', 'local'] : [])];
     if (!wait) return spawn(COZY, words, { stdio: 'ignore' });
     try {
       execFileSync(COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: RUN_MS });

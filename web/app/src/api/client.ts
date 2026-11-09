@@ -36,12 +36,10 @@ import type {
   ModelEdited,
   ModelReleased,
   ModelSearch,
-  ModelUploading,
   NewAsset,
   Opened,
   OrgClaim,
   PackageDetail,
-  PackageRemovals,
   PackageSearch,
   Play,
   ProjectState,
@@ -486,8 +484,22 @@ export class Client {
     return this.json(`/v1/targets?target=${encodeURIComponent(target)}`, { signal })
   }
 
-  runQuote(request: RunRequest): Promise<RunQuote> {
+  /** `null`: it rents nothing, as what Calcifer does itself. */
+  runQuote(request: RunRequest): Promise<RunQuote | null> {
     return this.write("POST", "/v1/run-quotes", request)
+  }
+
+  /** One of Calcifer's own jobs (`cozy/…`) as the run request it is: `asked` is its fields, but for where it goes. */
+  private jobRequest(target: string, { on, agreed, gpus, ...input }: Record<string, unknown>): RunRequest {
+    return { target, input, ...(on ? { on } : {}), ...(agreed ? { agreed } : {}), ...(gpus ? { gpus } : {}) } as RunRequest
+  }
+
+  jobQuote(target: string, asked: object): Promise<RunQuote | null> {
+    return this.runQuote(this.jobRequest(target, asked as Record<string, unknown>))
+  }
+
+  job(target: string, asked: object, key: string): Promise<Submitted> {
+    return this.submit(this.jobRequest(target, asked as Record<string, unknown>), key)
   }
 
   submit(request: RunRequest, key: string): Promise<Submitted> {
@@ -544,18 +556,6 @@ export class Client {
     return this.json(pkg(name), { signal })
   }
 
-  packageInstallQuote<T>(ask: T): Promise<RunQuote> {
-    return this.write("POST", "/v1/package-install-quotes", ask)
-  }
-
-  packageInstall<T>(ask: T, key: string): Promise<Submitted> {
-    return this.write("POST", "/v1/package-installs", ask, key)
-  }
-
-  packageRemove(name: string, on: string, key: string): Promise<PackageRemovals> {
-    return this.write("POST", "/v1/package-removals", { packages: [name], machine: on }, key)
-  }
-
   yank(name: string, release: string): Promise<unknown> {
     return this.write("POST", `${pkg(name)}/releases/${encodeURIComponent(release)}/yank`, {})
   }
@@ -590,31 +590,6 @@ export class Client {
 
   editModel(name: string, edit: ModelEdit): Promise<ModelEdited> {
     return this.write("PATCH", model(name), edit)
-  }
-
-  modelDownloadQuote<T>(ask: T): Promise<RunQuote> {
-    return this.write("POST", "/v1/model-download-quotes", ask)
-  }
-
-  modelDownload<T>(ask: T, key: string): Promise<Submitted> {
-    return this.write("POST", "/v1/model-downloads", ask, key)
-  }
-
-  /** `null` when nothing would rent: a Hub commit is only recorded. */
-  modelUploadQuote<T>(ask: T): Promise<RunQuote | null> {
-    return this.write("POST", "/v1/model-upload-quotes", ask)
-  }
-
-  modelUpload<T>(ask: T, key: string): Promise<ModelUploading> {
-    return this.write("POST", "/v1/model-uploads", ask, key)
-  }
-
-  modelQuantizeQuote<T>(ask: T): Promise<RunQuote> {
-    return this.write("POST", "/v1/model-quantization-quotes", ask)
-  }
-
-  modelQuantize<T>(ask: T, key: string): Promise<Submitted> {
-    return this.write("POST", "/v1/model-quantizations", ask, key)
   }
 
   /** The Hub never reuses a version, so asking again is safe and takes no key. */

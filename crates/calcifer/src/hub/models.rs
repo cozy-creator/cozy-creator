@@ -259,7 +259,7 @@ pub(super) async fn edit(
     let mut warnings = Vec::new();
     if edit.family.is_some() || edit.tags_change() {
         let family = edit.family.as_deref().map(str::trim).map(|f| (if f.eq_ignore_ascii_case("none") { "" } else { f }).to_owned());
-        let update = types::ModelUpdate { family, tags: edit.tags, add_tags: edit.add_tags, remove_tags: edit.remove_tags };
+        let update = types::ModelUpdate { family, tags: None, add_tags: edit.add_tags, remove_tags: edit.remove_tags };
         let answer = (client.update_model(&repo.org, &repo.name, &update).await).map_err(|e| refusal(&hub, e))?;
         warnings = answer.warnings;
     }

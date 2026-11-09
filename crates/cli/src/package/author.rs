@@ -5,40 +5,14 @@ use std::process::ExitCode;
 
 use api::{
     error::{Error, Kind},
-    calcifer::hub::{At, Authoring, AuthoringEvent, LockAsk, PackageDeleted, PackageUnyanked, PackageYanked, PublishAsk, WorkState},
+    calcifer::hub::{At, Locked, PackageDeleted, PackageLock, PackagePublish, PackageUnyanked, PackageYanked, Published, job},
 };
-use serde::Serialize;
 
 use super::PackageRef;
-use crate::{Context, calcifer_client::path, output};
+use crate::{Context, calcifer_client::path, output, run};
 
 fn here() -> Result<std::path::PathBuf, Error> {
     std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))
-}
-
-/// Starts the work at `route` and follows it to its end, saying its notices as they come.
-async fn authored(ctx: &Context, route: &str, ask: &impl Serialize) -> Result<Authoring, Error> {
-    let calcifer = ctx.calcifer().await?;
-    let started: Authoring = calcifer.post(route, ask, Some(&crate::run::mint_key())).await?;
-    let at = format!("{route}/{}", path(&[&started.id]).trim_start_matches('/'));
-    let mut events = calcifer.watch::<AuthoringEvent>(&format!("{at}/events")).await?;
-    while let Some(event) = events.next().await {
-        match event {
-            AuthoringEvent::Notice { message } => output::warn(&message),
-            _ => break,
-        }
-    }
-    let done: Authoring = calcifer.get(&at).await?;
-    match (done.state, done.error) {
-        (WorkState::Failed, Some(error)) => Err(error),
-        (WorkState::Running, _) | (WorkState::Failed, None) => Err(Error::new(
-            Kind::Unavailable,
-            "authoring_interrupted",
-            format!("Calcifer stopped before {} ended", started.id),
-        )
-        .remedy("run it again: it is safe")),
-        (WorkState::Done, _) => Ok(Authoring { error: None, ..done }),
-    }
 }
 
 /// The package folder `path` names (else this one), sent by content.
@@ -61,9 +35,9 @@ fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::PathBuf, Erro
 
 pub(crate) async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
     let (dir, code) = sent(ctx, path).await?;
-    let ask = LockAsk { hub: Some(ctx.hub().to_string()), code, root, upgrade: upgrade.to_vec() };
-    let done = authored(ctx, "/v1/package-locks", &ask).await?;
-    let result = done.locked.ok_or_else(|| Error::new(Kind::Internal, "untyped_answer", "a lock that ended with no lock"))?;
+    // Calcifer's own run, which says uv's notices as it goes.
+    let going = run::job(ctx, job::PACKAGE_LOCK, &PackageLock { root, upgrade: upgrade.to_vec() }, None, Some(code)).await?;
+    let result: Locked = run::done(ctx, going).await?;
     let lock = match result.changed {
         true => written(&dir, &result.lock)?,
         false => dir.join("uv.lock"),
@@ -81,10 +55,8 @@ pub(crate) async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrad
 
 pub(crate) async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode, Error> {
     let (dir, code) = sent(ctx, None).await?;
-    let ask = PublishAsk { hub: Some(ctx.hub().to_string()), code, root, yanked };
-    let done = authored(ctx, "/v1/package-publications", &ask).await?;
-    let result = (done.published)
-        .ok_or_else(|| Error::new(Kind::Internal, "untyped_answer", "a publication that ended with no release"))?;
+    let going = run::job(ctx, job::PACKAGE_PUBLISH, &PackagePublish { root, yanked }, None, Some(code)).await?;
+    let result: Published = run::done(ctx, going).await?;
     // Locked first, it holds the lock it was published with.
     if let Some(lock) = &result.lock {
         let path = written(&dir, lock)?;

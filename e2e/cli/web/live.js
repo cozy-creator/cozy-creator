@@ -345,13 +345,13 @@ function linesOf(text, name) {
   const renamed = await timed('rename', { all: [{ name: 'live_b', x: place.x, y: place.y }, { gone: 'live_a' }] }, () => project('rename', 'live_a', 'live_b'));
   check('rename_does_not_land', !(await page.evaluate(() => Boolean(window.boxOf('live_b')?.querySelector('.card.landing')))), renamed);
 
-  // Deleted by a command, which prints the command that restores it. That brings it back where it was.
+  // Deleted by a command, which prints the command that undoes it. That brings it back where it was.
   const deleted = await timed('delete', { gone: 'live_b' }, () => project('delete', 'live_b'));
   const back = deleted.stdout.trim().split('\n').at(-1);
-  check('delete_prints_what_restores', back.startsWith(`cozy project -p ${folder} restore live_b `), deleted.stdout);
+  check('delete_prints_its_undo', back.startsWith(`cozy project -p ${folder} undo `) && /^\d+$/.test(back.split(' ').at(-1)), deleted.stdout);
   check('delete_gone_from_the_status', !(await held('live_b')));
-  await timed('restore', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('restore', 'live_b', back.split(' ').at(-1)));
-  check('restore_in_the_status', (await held('live_b'))?.fields?.description === 'Hand words two');
+  await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back.split(' ').at(-1)));
+  check('undo_in_the_status', (await held('live_b'))?.fields?.description === 'Hand words two');
 
   // By hand: a row from the CLI, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
   place = await spot();
@@ -543,8 +543,8 @@ function linesOf(text, name) {
     const stopped = await timed('delete_while_rendering', { gone: 'live_shot' }, () => project('delete', 'live_shot'));
     const going = await until('nothing owed', async () => (await status()).queue ?? [], (queue) => queue.length === 0, 30_000);
     check('delete_stops_its_render', going.length === 0, going);
-    await timed('restore_after_a_render', { name: 'live_shot' }, () => project('restore', 'live_shot', stopped.stdout.trim().split(' ').at(-1)));
-    check('restore_keeps_its_takes', (await held('live_shot')).versions === 3, await held('live_shot'));
+    await timed('undo_after_a_render', { name: 'live_shot' }, () => project('undo', stopped.stdout.trim().split(' ').at(-1)));
+    check('undo_keeps_its_takes', (await held('live_shot')).versions === 3, await held('live_shot'));
 
   }
   // A description, on what has a picture. It says its words when it's open.

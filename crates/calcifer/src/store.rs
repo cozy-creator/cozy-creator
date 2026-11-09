@@ -770,11 +770,16 @@ impl Store {
                         .ok_or_else(|| StoreError::UnknownMachine(name.clone()))?,
                 ),
             };
+            // Calcifer's own run is no machine's to accept: it is going from the row that records it.
+            let (state, began) = match new.kind {
+                Kind::Here => ("accepted", Some(now_ms())),
+                _ => ("queued", None),
+            };
             tx.execute(
                 "INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec,
-                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays, batch)
+                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays, batch, accepted_at, started_at)
                  VALUES (?1, (SELECT COALESCE(MAX(number), 0) + 1 FROM runs), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                     ?10, 'queued', ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                     ?10, ?18, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?19, ?19)",
                 params![
                     new.id.as_str(),
                     key,
@@ -793,6 +798,8 @@ impl Store {
                     new.agreed.map(|agreed| serde_json::to_string(&agreed).expect("serializes")),
                     serde_json::to_string(&new.stays).expect("serializes"),
                     new.batch,
+                    state,
+                    began,
                 ],
             )?;
             Ok((new.id.to_string(), true))
@@ -876,17 +883,26 @@ impl Store {
         })
     }
 
-    /// The runs not yet settled, oldest first: what a starting Calcifer drives.
+    /// The machines' runs not yet settled, oldest first: what a starting Calcifer drives.
     pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
             let mut statement =
-                conn.prepare("SELECT id FROM runs WHERE state <> 'settled' ORDER BY number")?;
+                conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' ORDER BY number")?;
             let ids = statement
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             ids.into_iter()
                 .map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into())))
                 .collect()
+        })
+    }
+
+    /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
+    pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' ORDER BY number")?;
+            let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.into_iter().map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))).collect()
         })
     }
 

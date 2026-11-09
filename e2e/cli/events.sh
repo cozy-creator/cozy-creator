@@ -10,5 +10,4 @@ hub_checked() { :; }
 ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
 event_stream
 live_views
-forget_all
 finish events

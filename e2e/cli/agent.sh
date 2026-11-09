@@ -12,7 +12,7 @@ budget() {
   case $1 in
     home) echo 650 ;; home-out) echo 550 ;; project-status) echo 650 ;; project-empty) echo 100 ;; machine-ls) echo 300 ;; run-ls) echo 600 ;; run-ls-empty) echo 100 ;;
     run-show) echo 300 ;; run-show-failed) echo 1500 ;; json-home) echo 2000 ;; json-project-status) echo 1300 ;; json-machine-ls) echo 500 ;; json-run-ls) echo 3500 ;;
-    json-run-show) echo 700 ;; wait-idle) echo 650 ;; set) echo 100 ;; delete) echo 450 ;; restore) echo 100 ;; status-one) echo 900 ;; json-status-one) echo 2000 ;;
+    json-run-show) echo 700 ;; wait-idle) echo 650 ;; set) echo 100 ;; delete) echo 450 ;; undo) echo 100 ;; status-one) echo 900 ;; json-status-one) echo 2000 ;;
   esac
 }
 
@@ -136,15 +136,15 @@ while IFS= read -r line; do
   "$COZY" "${words[@]:1}" --help > /dev/null 2>&1 || check "agent: next: $line does not parse"
 done < "$A/next.txt"
 
-# Writes answer on stdout, and one asset's view is bounded: set, delete and the restore line it prints, status <name>.
+# Writes answer on stdout, and one asset's view is bounded: set, delete and the undo line it prints, status <name>.
 view set "$F" project set sea instructions="A calm sea under <sky>, at dusk."
 grep -q '^sea: set instructions' "$A/set.out" || check "agent: set's answer isn't on stdout: $(cat "$A/set.out")"
 view status-one "$F" project status sky
 view json-status-one "$F" --json project status sky
 J '(.asset.name == "sky") and (.versions | length > 0) and all(.versions[]; has("text") | not)' "$A/json-status-one.out" || check "agent: status sky --json: $(head -c 300 "$A/json-status-one.out")"
 view delete "$F" project delete later
-line=$(grep -oE '^cozy project restore later [A-Za-z0-9_-]+$' "$A/delete.out") || check "agent: delete printed no restore line on stdout: $(cat "$A/delete.out")"
+line=$(grep -oE '^cozy project undo [0-9]+$' "$A/delete.out") || check "agent: delete printed no undo line on stdout: $(cat "$A/delete.out")"
 read -ra words <<< "$line"
-view restore "$F" "${words[@]:1}"
-grep -q '^later is back' "$A/restore.out" || check "agent: restore's answer isn't on stdout: $(cat "$A/restore.out")"
+view undo "$F" "${words[@]:1}"
+grep -qE '^undid [0-9]+: Deleted later$' "$A/undo.out" || check "agent: undo's answer isn't on stdout: $(cat "$A/undo.out")"
 }

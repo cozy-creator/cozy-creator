@@ -5,13 +5,12 @@
 //! Hub: nothing moves.
 use std::process::ExitCode;
 
-use api::calcifer::{MachineModels, Run, Status};
+use api::calcifer::{Kind as RunKind, MachineModels, Run, Status};
 use api::error::Error;
-use api::calcifer::hub::{Displayed, Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit};
+use api::calcifer::hub::{Displayed, ModelDownload, ModelUpload, RecordedCommit, job};
 
 use super::{Download, Upload};
 use crate::Context;
-use crate::ask::start;
 use crate::output::{self, Record, Table};
 
 /// What the machine made (TensorD's `result.models[0]`), after `follow`'s record; `--json`
@@ -53,29 +52,18 @@ fn made(ctx: &Context, run: &Run) {
 
 pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
-    let mut ask = ModelDownload {
-        hub: Some(ctx.hub().to_string()),
-        model: args.model.clone(),
-        name: None,
-        alias: args.alias,
-        lane: args.lane,
-        source_format: args.format,
-        on: on.clone(),
-        agreed: None,
-    };
+    let mut ask = ModelDownload { model: args.model.clone(), name: None, alias: args.alias, lane: args.lane, source_format: args.format };
     crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
-    let submitted: api::calcifer::Submitted =
-        start(ctx, "/v1/model-downloads", "/v1/model-download-quotes", &on, &mut ask, |a, agreed| a.agreed = Some(agreed)).await?;
-    let run = crate::run::follow(ctx, submitted.run).await?;
+    let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None).await?;
+    let run = crate::run::follow(ctx, run).await?;
     made(ctx, &run);
     Ok(crate::run::exit_code(&run))
 }
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
-    let on = args.placement.named();
+    let on = args.placement.on()?;
     let from_run = args.source.starts_with("run:");
     let mut ask = ModelUpload {
-        hub: Some(ctx.hub().to_string()),
         source: args.source.clone(),
         name: None,
         destination: args.destination,
@@ -86,20 +74,14 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         trigger: args.trigger,
         strength: args.strength,
         base: args.base,
-        on: on.clone(),
-        agreed: None,
     };
     crate::send::held(ctx, &mut ask.source, &mut ask.name, true).await?;
-    let uploading: ModelUploading =
-        start(ctx, "/v1/model-uploads", "/v1/model-upload-quotes", &on, &mut ask, |a, agreed| a.agreed = Some(agreed)).await?;
-    if let Some(mirrored) = &uploading.mirrored {
-        mirror(ctx, mirrored);
-    }
-    if let Some(made) = &uploading.recorded {
-        recorded(ctx, made);
+    let run = crate::run::job(ctx, job::MODEL_UPLOAD, &ask, on, None).await?;
+    // A Hub commit is recorded there by Calcifer: no machine ran.
+    if run.kind == RunKind::Here {
+        recorded(ctx, &crate::run::done(ctx, run).await?);
         return Ok(ExitCode::SUCCESS);
     }
-    let run = uploading.run.ok_or_else(|| Error::internal("model_upload_answer", "Calcifer answered an upload with neither a run nor a commit"))?;
     let run = crate::run::follow(ctx, run).await?;
     if !from_run {
         made(ctx, &run);
@@ -145,15 +127,6 @@ fn recorded(ctx: &Context, made: &RecordedCommit) {
     output::nexts(ctx, &made.next);
     if let Some(shown) = &made.display {
         display(ctx, shown);
-    }
-}
-
-/// The destination as a mirror of its author's model, recorded before anything uploaded.
-fn mirror(ctx: &Context, mirrored: &Mirrored) {
-    let by = mirrored.by.as_ref().map(|b| format!(". {b}")).unwrap_or_default();
-    output::say(ctx, &format!("{} mirrors {}{by}", mirrored.model, mirrored.source));
-    if let Some(handle) = &mirrored.added_handle {
-        output::say(ctx, &format!("added {handle} to {}'s claim handles", mirrored.org));
     }
 }
 

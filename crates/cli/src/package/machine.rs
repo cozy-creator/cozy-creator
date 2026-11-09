@@ -4,11 +4,11 @@
 use std::process::ExitCode;
 
 use api::{
-    calcifer::{HeldPackage, Machine, MachinePackages, MachineState, On, Run, Status, Submitted, package_source},
+    calcifer::{HeldPackage, Machine, MachinePackages, MachineState, On, Status, package_source},
     error::{Error, Kind},
-    calcifer::hub::{AfterRun, PackageInstall, PackageRemoval, PackageRemovals},
+    calcifer::hub::{AfterRun, PackageInstall, PackageRemove, PackagesRemoved, job},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
     Context,
@@ -16,27 +16,6 @@ use crate::{
     output::{self, Table},
     run,
 };
-
-/// Waits for `run` to settle, quietly: the verb reports the outcome itself.
-async fn settle(ctx: &Context, run: Run) -> Result<Run, Error> {
-    let calcifer = ctx.calcifer().await?;
-    let mut events = calcifer.events(run.id.as_str(), 0);
-    while let Some(event) = events.next().await {
-        if event?.is_terminal() {
-            break;
-        }
-    }
-    calcifer.run(run.id.as_str()).await
-}
-
-/// Why a settled run did not succeed, as `machine: reason (code)`.
-fn failure(run: &Run) -> String {
-    let machine = run.machine.as_deref().unwrap_or("the machine");
-    match &run.reason {
-        Some(reason) => format!("{machine}: {} ({})", reason.message, reason.code),
-        None => format!("{machine}: the run ended {:?}", run.status).to_lowercase(),
-    }
-}
 
 #[derive(Deserialize)]
 struct Installed {
@@ -52,18 +31,9 @@ struct Installed {
 
 /// Installs `package` (`org/name`), or local code by content, on a machine through Calcifer: its environment, no weights.
 /// Calcifer names the newest release when none is given, and retires the older ones the machine holds once it is in.
-pub(crate) async fn install(ctx: &Context, package: String, code: Option<api::code::LocalCode>, release: Option<String>, on: On) -> Result<ExitCode, Error> {
-    let mut ask = PackageInstall { hub: Some(ctx.hub().to_string()), package, code, release, on: on.clone(), agreed: None };
-    let submitted: Submitted = crate::ask::start(
-        ctx,
-        "/v1/package-installs",
-        "/v1/package-install-quotes",
-        &on,
-        &mut ask,
-        |a, agreed| a.agreed = Some(agreed),
-    )
-    .await?;
-    let settled = run::follow(ctx, submitted.run).await?;
+pub(crate) async fn install(ctx: &Context, package: String, code: Option<api::code::LocalCode>, release: Option<String>, on: Option<On>) -> Result<ExitCode, Error> {
+    let submitted = run::job(ctx, job::PACKAGE_INSTALL, &PackageInstall { package, release }, on, code).await?;
+    let settled = run::follow(ctx, submitted).await?;
     if ctx.json || settled.status != Status::Completed {
         return Ok(run::exit_code(&settled));
     }
@@ -172,64 +142,23 @@ pub(crate) async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Res
     Ok(ExitCode::SUCCESS)
 }
 
-#[derive(Deserialize, Default)]
-struct Removal {
-    #[serde(default)]
-    removed: Vec<Removed>,
-    #[serde(default)]
-    reclaimed_bytes: u64,
-    #[serde(default)]
-    retained: Vec<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct Removed {
-    package: String,
-    release: String,
-    #[serde(default)]
-    hub: String,
-}
-
-/// Removes every release of each package from a machine: Calcifer sends one remove run per
-/// package and Hub the machine holds it from; each is followed quietly and summed here.
-pub(crate) async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode, Error> {
-    let ask = PackageRemoval {
-        hub: Some(ctx.hub().to_string()),
-        packages: names.to_vec(),
-        machine: named(&on)?.to_ascii_lowercase(),
-    };
-    let calcifer = ctx.calcifer().await?;
-    let removals: PackageRemovals = calcifer.post("/v1/package-removals", &ask, Some(&run::mint_key())).await?;
-    let (mut removed, mut reclaimed, mut retained, mut failed) = (vec![], 0, false, vec![]);
-    for ran in removals.runs {
-        let ran = settle(ctx, ran).await?;
-        if ran.status != Status::Completed {
-            failed.push(format!("{}: {}", ran.target, failure(&ran)));
-            continue;
-        }
-        let result: Removal = ran.result.and_then(|r| serde_json::from_value(r).ok()).unwrap_or_default();
-        reclaimed += result.reclaimed_bytes;
-        retained |= !result.retained.is_empty();
-        removed.extend(result.removed);
-    }
-    let machine = removals.machine;
+/// Removes every release of each package from a machine: one run of Calcifer's, which sends a remove run per package and Hub
+/// the machine holds it from and sums what they answer.
+pub(crate) async fn remove(ctx: &Context, names: &[String], on: Option<On>) -> Result<ExitCode, Error> {
+    let run = run::job(ctx, job::PACKAGE_REMOVE, &PackageRemove { packages: names.to_vec() }, on, None).await?;
+    let done: PackagesRemoved = run::done(ctx, run).await?;
     if ctx.json {
-        output::json(&serde_json::json!({
-            "machine": machine, "removed": removed, "reclaimed_bytes": reclaimed, "failed": failed,
-        }));
-    } else {
-        let mut table = Table::new(ctx, ["PACKAGE", "RELEASE", "SOURCE"]);
-        for row in &removed {
-            table = table.row([row.package.clone(), row.release.clone(), package_source(&row.hub, ctx.hub().as_str())]);
-        }
-        table = table.note(format!("{} reclaimed on {machine}", output::bytes(reclaimed)));
-        if retained {
-            table = table.note("Files a running executor still uses stay until it ends.");
-        }
-        for failure in &failed {
-            table = table.note(format!("not removed: {failure}"));
-        }
-        table.print();
+        output::json(&done);
+        return Ok(ExitCode::SUCCESS);
     }
-    Ok(if failed.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    let mut table = Table::new(ctx, ["PACKAGE", "RELEASE", "SOURCE"]);
+    for row in &done.removed {
+        table = table.row([row.package.clone(), row.release.clone(), package_source(&row.hub, ctx.hub().as_str())]);
+    }
+    table = table.note(format!("{} reclaimed on {}", output::bytes(done.reclaimed_bytes), done.machine));
+    if done.retained {
+        table = table.note("Files a running executor still uses stay until it ends.");
+    }
+    table.print();
+    Ok(ExitCode::SUCCESS)
 }

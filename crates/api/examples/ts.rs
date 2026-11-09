@@ -77,9 +77,7 @@ fn main() {
     v.visit::<project::AssetPatch>();
     v.visit::<project::AssetPatched>();
     v.visit::<project::AssetDeleted>();
-    v.visit::<project::AssetBack>();
     v.visit::<project::VersionMoved>();
-    v.visit::<project::VersionBack>();
     v.visit::<project::Approve>();
     v.visit::<project::Approved>();
     v.visit::<project::Unpin>();
@@ -110,10 +108,15 @@ fn main() {
     v.visit::<hub::ModelEdited>();
     v.visit::<hub::ModelReleaseAsk>();
     v.visit::<hub::ModelReleased>();
-    v.visit::<hub::ModelUploading>();
+    v.visit::<hub::ModelDownload>();
+    v.visit::<hub::ModelUpload>();
+    v.visit::<hub::ModelQuantize>();
+    v.visit::<hub::RecordedCommit>();
     v.visit::<hub::PackageSearch>();
     v.visit::<hub::PackageDetail>();
-    v.visit::<hub::PackageRemovals>();
+    v.visit::<hub::PackageInstall>();
+    v.visit::<hub::PackageRemove>();
+    v.visit::<hub::PackagesRemoved>();
     v.visit::<report::Report>();
     v.visit::<tool::Tools>();
     v.visit::<tool::ToolList>();

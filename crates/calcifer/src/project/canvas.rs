@@ -126,6 +126,7 @@ pub(super) async fn patch(
         super::history::quiet();
     }
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     let kept = set_from(&project.folder, &id, asked.cards, &asked.placed).map_err(Refusal)?;
     Ok(Json(CanvasPatched { seq: project.folder.seq(), kept }))
 }

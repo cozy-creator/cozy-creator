@@ -701,7 +701,7 @@ function linesOf(text, name) {
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
     await box('mentioning').waitFor();
-    execFileSync(COZY, ['project', '-p', folder, 'render', 'mentioning', '--on', 'local', '--plain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+    execFileSync(COZY, ['project', '-p', folder, 'render', 'mentioning', '--on', 'local'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     // A project's status counts an asset's versions; one asset's status lists them.
     const madeBy = JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status', 'mentioning'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).versions.at(-1).runs.at(-1);
     const sent = JSON.parse(execFileSync(COZY, ['--json', '--full', 'run', 'show', String(madeBy), '--once'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).request.input;
@@ -756,10 +756,9 @@ function linesOf(text, name) {
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const [heldFile, heldTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
     const filesThen = readdirSync(join(folder, 'files')).length;
-    const stood = (await rows())['source-a'];
     const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a'));
     await deleteBox('source-a');
-    const deleted = await (await deleting).json();
+    const edit = (await deleting).request().headers()['cozy-edit'];
     await until('gone at once', () => box('source-a').count(), (n) => n === 0);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
     const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
@@ -805,8 +804,8 @@ function linesOf(text, name) {
     check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.dot.s-failed').count()) === 0);
 
     // Undo: back with its row, and nothing is missing. Its note has gone by now (10 s, Paul 11-05), so this is what its Undo sends; the button's own below.
-    const back = await api(`/v1/projects/${id}/assets/source-a`, { method: 'PUT', body: JSON.stringify({ text: deleted.text, at: stood }) });
-    check('put_back', back.status === 200, back);
+    const back = await api(`/v1/projects/${id}/history/undo`, { method: 'POST', body: JSON.stringify({ edit }) });
+    check('put_back', Boolean(edit) && back.status === 200 && back.body?.entries?.length === 1, { edit, back });
     await box('source-a').waitFor();
     await until('back in the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), Boolean);
     check('undo_keeps_its_description', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);

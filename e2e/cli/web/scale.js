@@ -31,8 +31,8 @@ const HOLE = { col: 3, row: 1 };
 const PAN_MS = 3000;
 const REST_MS = 2000;
 const PICTURES = 1000;
-/** How long after its project is forgotten Calcifer's memory is read. */
-const FORGOTTEN_MS = 10_000;
+/** How long after its project is closed Calcifer's memory is read. */
+const CLOSED_MS = 10_000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
 // What a person would feel, on a runner slower than their computer. A command you'd run without thinking; a project that opens as a page does;
@@ -61,7 +61,7 @@ const BARS = {
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
   asks_status_s: 5,
   calcifer_asks_mb: 2048,
-  // Its project forgotten, what Calcifer kept of it and of working it: a quarter of what the open project may cost. glibc's arenas kept
+  // Its project closed, what Calcifer kept of it and of working it: a quarter of what the open project may cost. glibc's arenas kept
   // ~1,500 MB of each run, and the next run's on top (cl-822).
   calcifer_kept_mb: 256,
   page_heap_mb: 512,
@@ -236,8 +236,7 @@ function calciferMb() {
     keyed = await status(keying);
   }
   const inputs = Object.fromEntries(keyed.state.assets.filter((asset) => asset.name.startsWith('shot_')).map((asset) => [asset.name, asset.inputs]));
-  // Forgotten now; its folder goes at the end, with the small one.
-  await fetch(`${base}/v1/projects/${keyed.state.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}` } });
+  // Its folder goes at the end, with the small one.
   seen.keyed = Object.keys(inputs).length;
   generated(folder, inputs);
   const first = await status();
@@ -408,7 +407,6 @@ function calciferMb() {
   await page.goto(`${base}/#/projects/${small.id}`);
   await page.waitForSelector('.react-flow__node .nm');
   numbers.pan_small = await measuredPan();
-  await fetch(`${base}/v1/projects/${small.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
 
   // Opening it: boxes on screen, then the page settled, its frames short.
   const opening = Date.now();
@@ -638,12 +636,10 @@ function calciferMb() {
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
   await browser.close();
 
-  // Forgotten, as web_proof forgets each cell's project: what Calcifer built and dropped for 5,000 assets goes back.
-  const forgot = await fetch(`${base}/v1/projects/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-  check('it_is_forgotten', forgot.status === 204, forgot.status);
-  await new Promise((done) => setTimeout(done, FORGOTTEN_MS));
-  memory.forgotten = calciferMb();
-  check('calcifer_gives_back_a_forgotten_project', memory.forgotten <= memory.before + BARS.calcifer_kept_mb, memory);
+  // Closed once nothing reads it, the browser gone: what Calcifer built and dropped for 5,000 assets goes back.
+  await new Promise((done) => setTimeout(done, CLOSED_MS));
+  memory.closed = calciferMb();
+  check('calcifer_gives_back_a_closed_project', memory.closed <= memory.before + BARS.calcifer_kept_mb, memory);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);
 })().catch(died);

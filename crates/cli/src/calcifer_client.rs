@@ -237,6 +237,16 @@ impl Client {
         self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key)).await
     }
 
+    /// A PATCH that is part of the edit `edit` (`Cozy-Edit`): those that share one are one entry of a project's history.
+    pub(crate) async fn patch_as<B, T>(&self, path: &str, body: &B, edit: &str) -> Result<T, Error>
+    where
+        B: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        let key = write_key();
+        self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key).header("cozy-edit", edit)).await
+    }
+
     /// A text body PUT, as an export read back, under its call's key; its answer's body isn't read.
     pub(crate) async fn put_text(&self, path: &str, body: &str) -> Result<(), Error> {
         let key = write_key();

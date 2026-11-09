@@ -19,7 +19,7 @@ use crate::{
     Context, output,
     send::{Paths, Sender},
 };
-pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, stalled_words, watched};
+pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled, stalled_words, watched};
 
 pub(crate) mod fetch;
 mod follow;
@@ -113,22 +113,18 @@ struct RunArgs {
 /// Where a run goes; shared by every verb that submits one.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct Placement {
-    /// `local` (the default), a machine's name, `any`, or `new[:sku]` to rent one.
+    /// `local`, a machine's name, `any`, or `new[:sku]` to rent one. None: Calcifer says. A run goes where it finishes
+    /// soonest; an install, a download or the like to this computer's machine, else to a rental you have.
     #[arg(long = "on", value_name = "MACHINE")]
     on: Option<String>,
 }
 
 impl Placement {
-    /// Where the run goes; `local` refused where this OS runs no models itself.
-    pub(crate) fn on(&self) -> Result<On, Error> {
-        let on = self.named();
-        api::calcifer::local_usable(&on.to_string())?;
-        Ok(on)
-    }
-
-    /// Where it would go, for Calcifer to judge.
-    pub(crate) fn named(&self) -> On {
-        On::from(self.on.clone().unwrap_or_else(|| "local".to_owned()))
+    /// Where the run goes when the command says; `local` refused where this OS runs no models itself.
+    pub(crate) fn on(&self) -> Result<Option<On>, Error> {
+        let Some(on) = &self.on else { return Ok(None) };
+        api::calcifer::local_usable(on)?;
+        Ok(Some(On::from(on.clone())))
     }
 }
 
@@ -214,10 +210,13 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             limit,
             all,
         }) => {
-            // A project named: only its runs.
+            // A project named: only its runs. One named by its folder is listed by its id, which a run's record says.
             let project = match within.filter(|_| !all) {
-                Some(named) => Some(crate::project::open(ctx, Some(&named)).await?.id),
-                None => None,
+                Some(named) if api::target::written_as_path(&named) => {
+                    let state: serde_json::Value = ctx.calcifer().await?.get(&format!("{}?assets=false", crate::project::at(&named, &[]))).await?;
+                    state["id"].as_str().map(str::to_owned)
+                }
+                named => named,
             };
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await

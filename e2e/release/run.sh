@@ -223,7 +223,7 @@ PY
 held=$(sha256sum "$OUT/tiny-c.safetensors" | cut -c1-64) addr=$(jq -r .address ~/.cozy/calcifer/calcifer.lock.holder) token=$(jq -r .token ~/.cozy/calcifer/calcifer.lock.holder)
 curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $token" --data-binary "@$OUT/tiny-c.safetensors" "http://$addr/v1/files/sha256:$held" || check "PUT the held model file failed"
 curl -sS -X POST -H "Authorization: Bearer $token" -H "Idempotency-Key: held-$run" \
-  -d "$(jq -n --arg s "sha256:$held" --arg d "$model" --arg o "$ON" '{source: $s, destination: $d, lane: "f16", source_format: "as-is", on: $o}')" "http://$addr/v1/model-uploads" > "$OUT/upload-held.json"
+  -d "$(jq -n --arg s "sha256:$held" --arg d "$model" --arg o "$ON" '{target: "cozy/model_upload", on: $o, input: {source: $s, destination: $d, lane: "f16", source_format: "as-is"}}')" "http://$addr/v1/runs" > "$OUT/upload-held.json"
 held_run=$(jq -r '.run.number // empty' "$OUT/upload-held.json")
 if [ -n "$held_run" ]; then
   cozy --json run show "$held_run" > /dev/null 2>&1 || true
@@ -241,12 +241,12 @@ PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capab
 # The rental reads the private commit through its run capability; on Linux it never held it (the upload was local's).
 watched download-private model download "$model@$commit" --on "$M" \
   || check "model download $model@$commit --on $M: the rental did not read the private commit: $(run_get "$OUT" download-private '.reason.message' | head -c 300)"
-cozy --json model edit "$model" --family e2e-family --tags 'E2E Tag,nsfw' --tag anime --untag nsfw --trigger e2e --strength 0.8 > /dev/null \
+cozy --json model edit "$model" --family e2e-family --tag 'E2E Tag' --tag nsfw --tag anime --untag nsfw --trigger e2e --strength 0.8 > /dev/null \
   && cozy --json model info "$model" | J '.family == "e2e-family" and .family_from == "owner" and .tags == ["anime", "e2e-tag"] and .trigger == "e2e" and .strength == 0.8' \
   || check "model edit: family, tags, trigger or strength not set"
-cozy --json model edit "$model" --family none --tags '' --trigger '' --strength none > /dev/null \
+cozy --json model edit "$model" --family none --untag e2e-tag --untag anime --trigger '' --strength none > /dev/null \
   && cozy --json model info "$model" | J '.family == null and (.tags // []) == [] and .trigger == null and .strength == null' \
-  || check "model edit --family none --tags '' --trigger '' --strength none: not cleared"
+  || check "model edit --family none --untag e2e-tag --untag anime --trigger '' --strength none: not cleared"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
 cozy --json model info "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \

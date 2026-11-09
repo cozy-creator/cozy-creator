@@ -87,9 +87,6 @@ pub(crate) struct Edit {
     /// Remove a tag; repeat it for several.
     #[arg(long = "untag", value_name = "TAG")]
     untag: Vec<String>,
-    /// Every tag, comma-separated, in place of its tags; empty clears them.
-    #[arg(long, value_name = "A,B,…")]
-    tags: Option<String>,
     /// The words its prompts use; empty clears them.
     #[arg(long)]
     trigger: Option<String>,

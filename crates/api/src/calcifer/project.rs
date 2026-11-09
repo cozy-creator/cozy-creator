@@ -9,15 +9,12 @@ use serde_json::{Map, Value};
 
 use crate::{calcifer::On, error::Error};
 
-/// `POST /v1/projects`: by `project`, an existing one, by its id or name, or its folder on Calcifer's computer (absolute), which
-/// it opens; else a new one called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is taken) or at
-/// `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in its
-/// `project.db`: the folder is only where it lives.
+/// `POST /v1/projects`: a new project called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is
+/// taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
+/// its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Open {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -26,7 +23,7 @@ pub struct Open {
     pub starter: bool,
 }
 
-/// The project `POST /v1/projects` opened or made: its id, folder and name.
+/// The project `POST /v1/projects` made: its id, folder and name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Opened {
@@ -146,7 +143,7 @@ pub struct Known {
     pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
-    /// Its folder holds no project.db any more (moved or deleted); `DELETE` forgets it.
+    /// Its folder holds no project.db any more (moved or deleted).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
     /// Its runs are being made, or asked and not yet sent.
@@ -695,9 +692,6 @@ pub struct AssetPatch {
     pub fields: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
-    /// Where its box sits, set with its fields.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<Card>,
 }
 
 /// What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
@@ -711,27 +705,16 @@ pub struct AssetPatched {
     pub warnings: Vec<String>,
 }
 
-/// What `DELETE /v1/projects/{id}/assets/{name}` took: `PUT` on the same name with `text` and `at` puts it back, and its versions with it.
+/// What `DELETE /v1/projects/{id}/assets/{name}` took, and where its box sat: undo puts it back, its versions with it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AssetDeleted {
     pub name: String,
-    /// Opaque to a client.
-    pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Card>,
 }
 
-/// `PUT /v1/projects/{id}/assets/{name}`: a deleted asset back.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct AssetBack {
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<Card>,
-}
-
-/// `DELETE` and `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: a version discarded, or back.
+/// `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` and `POST …/versions`: a version discarded, or joined.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VersionMoved {
@@ -739,7 +722,7 @@ pub struct VersionMoved {
     pub number: u32,
     /// `take` or `version`.
     pub noun: String,
-    /// It's the approved one: `approved:` went with it, or came back with it.
+    /// It was the approved one: `approved:` went with it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approved: bool,
     /// What the asset stands on now, else its newest. None: it has none left.
@@ -760,14 +743,6 @@ pub struct VersionMoved {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NewVersion {
     pub source: String,
-}
-
-/// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` answered.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct VersionBack {
-    #[serde(default)]
-    pub approved: bool,
 }
 
 /// One version (a take, if it holds a video).
@@ -1288,25 +1263,6 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         asks: Vec<String>,
     },
-}
-
-/// `POST /v1/projects/{id}/assets/{name}/caption`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct CaptionAsked {
-    /// The machine it runs on; absent: as a run with none named goes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<String>,
-}
-
-/// A node's description as a package would say it. Nothing is written: it's for the page to put in the field.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Captioned {
-    pub name: String,
-    pub text: String,
-    /// The run that answered.
-    pub run: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 /// Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.

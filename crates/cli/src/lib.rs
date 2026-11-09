@@ -10,7 +10,6 @@ use api::{
 };
 
 mod account;
-mod ask;
 mod calcifer_client;
 mod completion;
 mod context;

@@ -3,7 +3,7 @@ import { useDeferredValue, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
-import type { ModelCommit, ModelDetail, ModelEdit, ModelUploading, Submitted } from "../../api/calcifer"
+import type { ModelCommit, ModelDetail, ModelEdit, Submitted } from "../../api/calcifer"
 import { say } from "../../ui/notes"
 import { NSFW, ShowNsfw, Tags, isNsfw, useShowNsfw } from "../../ui/Tags"
 import { Confirm, Failure, Section, useAsk, useSignedIn } from "../common"
@@ -12,14 +12,11 @@ import { bytes, shown } from "../format"
 import { OnMachine } from "../machines/OnMachine"
 import { LibraryFrame } from "./Library"
 
-/** Follows what the ask became. A Hub commit is only recorded, with no run. */
+/** Follows the run the ask became. A Hub commit is only recorded there: Calcifer's own run, on no machine. */
 function useFollowRun() {
   const navigate = useNavigate()
   const to = useTo()
-  return (answer: Submitted | ModelUploading) => {
-    if (answer.run) navigate(to(`runs/${answer.run.number}`))
-    else if ("recorded" in answer && answer.recorded) say(`Recorded as a ${answer.recorded.lane} commit of ${shown(answer.recorded.model)}. Nothing moved.`)
-  }
+  return ({ run }: Submitted) => navigate(to(`runs/${run.number}`))
 }
 
 /** A dropped file becomes a private commit of a model, on a machine that makes and uploads it. */
@@ -48,8 +45,8 @@ function Upload({ destination }: { destination?: string }) {
         body={{ source: file?.digest ?? "", destination: to, lane: lane.trim() }}
         label="Upload"
         disabled={!file?.digest || !to || !lane.trim()}
-        quote={(body) => client.modelUploadQuote(body)}
-        ask={(body, key) => client.modelUpload(body, key)}
+        quote={(body) => client.jobQuote("cozy/model_upload", body)}
+        ask={(body, key) => client.job("cozy/model_upload", body, key)}
         onDone={follow}
       />
     </div>
@@ -357,8 +354,8 @@ export function ModelDrawer() {
         <OnMachine
           body={{ model, ...(lane ? { lane } : {}) }}
           label="Download"
-          quote={(body) => client.modelDownloadQuote(body)}
-          ask={(body, key) => client.modelDownload(body, key)}
+          quote={(body) => client.jobQuote("cozy/model_download", body)}
+          ask={(body, key) => client.job("cozy/model_download", body, key)}
           onDone={follow}
         />
       </Section>
@@ -381,8 +378,8 @@ export function ModelDrawer() {
               body={{ model, lane: quantizeLane.trim(), package: quantizePackage.trim() }}
               label="Quantize"
               disabled={!quantizeLane.trim() || !quantizePackage.trim()}
-              quote={(body) => client.modelQuantizeQuote(body)}
-              ask={(body, key) => client.modelQuantize(body, key)}
+              quote={(body) => client.jobQuote("cozy/model_quantize", body)}
+              ask={(body, key) => client.job("cozy/model_quantize", body, key)}
               onDone={follow}
             />
           </details>

@@ -1,17 +1,16 @@
 //! The Hub's resources through Calcifer (CALCIFER-API.md "Packages, models, account and orgs"):
 //! the account this computer signs in as, orgs, models and packages, read and changed as this
-//! computer's device key. Every call names its Hub; absent, the configured one.
+//! computer's device key. Every call names its Hub; absent, the configured one. What takes long is a run (`jobs`).
 mod account;
 pub(crate) mod after;
-mod asks;
 mod author;
 pub(crate) mod checkpoints;
+pub(crate) mod jobs;
 mod models;
 mod orgs;
 mod packages;
 mod quantize;
 mod weights;
-mod work;
 
 use std::sync::Arc;
 
@@ -22,16 +21,12 @@ use axum::{
     routing::{delete, get, patch, post, put},
 };
 use ::api::hub::{Client, DeviceKey};
-use api::{
-    config::Origin,
-    calcifer::hub::{ModelDownload, PackageInstall},
-};
+use api::config::Origin;
 use serde::de::DeserializeOwned;
 
 use crate::api::{Api, Refusal, parse};
 
 pub(crate) use account::Codes;
-pub(crate) use work::Works;
 
 pub(crate) fn routes() -> Router<Arc<Api>> {
     Router::new()
@@ -49,21 +44,6 @@ pub(crate) fn routes() -> Router<Arc<Api>> {
         .route("/v1/models/{org}/{name}/releases", post(models::release))
         .route("/v1/models/{org}/{name}/releases/{version}", delete(models::delete_release))
         .route("/v1/models/{org}/{name}/commits/{commit}", delete(models::delete_commit))
-        .route("/v1/model-downloads", post(asks::create::<ModelDownload>))
-        .route("/v1/model-download-quotes", post(asks::quote::<ModelDownload>))
-        .route("/v1/model-uploads", post(weights::upload))
-        .route("/v1/model-upload-quotes", post(weights::quote))
-        .route("/v1/model-quantizations", post(quantize::create))
-        .route("/v1/model-quantization-quotes", post(quantize::quote))
-        .route("/v1/package-installs", post(asks::create::<PackageInstall>))
-        .route("/v1/package-install-quotes", post(asks::quote::<PackageInstall>))
-        .route("/v1/package-removals", post(packages::remove))
-        .route("/v1/package-locks", post(work::lock))
-        .route("/v1/package-locks/{id}", get(work::show_lock))
-        .route("/v1/package-locks/{id}/events", get(work::lock_events))
-        .route("/v1/package-publications", post(work::publish))
-        .route("/v1/package-publications/{id}", get(work::show_publication))
-        .route("/v1/package-publications/{id}/events", get(work::publication_events))
         .route("/v1/packages", get(packages::search))
         .route("/v1/packages/{org}/{name}", get(packages::info).delete(packages::delete))
         .route("/v1/packages/{org}/{name}/releases/{release}/yank", post(packages::yank).delete(packages::unyank))

@@ -185,8 +185,8 @@ enum Fresh {
 }
 
 /// Follows a render to its end, or until Ctrl-C leaves it going: the live view on a terminal, else line by line.
-pub(super) async fn follow(ctx: &Context, mut rendering: Rendering, events: Watch<Event>, plain: bool, status: &str) -> Result<ExitCode, Error> {
-    let live = !plain && ctx.term.stdout && !rendering.board.jobs.is_empty() && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
+pub(super) async fn follow(ctx: &Context, mut rendering: Rendering, events: Watch<Event>, status: &str) -> Result<ExitCode, Error> {
+    let live = ctx.term.stdout && !rendering.board.jobs.is_empty() && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
     let mut events = events;
     if live {
         let mut view = View { rendering, events: events.quiet(), selected: None, left: false, closed: false };

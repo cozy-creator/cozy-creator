@@ -321,14 +321,12 @@ function held(folder) {
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
   await browser.close();
   console.log(JSON.stringify({ failures, seen }, null, 2));
-  await forgetAll(ids, folders);
+  dropAll(folders);
   process.exit(failures.length ? 1 : 0);
 })().catch(died);
 
-/** Each project it made, forgotten, and its folder gone. */
-async function forgetAll(ids, folders) {
-  const base = calcifer();
-  for (const id of ids) await fetch(`${base}/v1/projects/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${HOLDER.token}` } }).catch(() => {});
+/** Each project it made, its folder gone. */
+function dropAll(folders) {
   for (const folder of folders) rmSync(folder, { recursive: true, force: true });
 }
 
@@ -336,6 +334,6 @@ async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen, during }, null, 2));
-  if (seen.project) await forgetAll(seen.project.ids, seen.project.folders);
+  if (seen.project) dropAll(seen.project.folders);
   process.exit(2);
 }

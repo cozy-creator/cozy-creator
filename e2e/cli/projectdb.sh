@@ -314,22 +314,22 @@ echo "latency: $takes takes joined in $((SECONDS - began)) s"
 field() { api -o /dev/null -w '%{time_total}\n' -X PATCH -H 'Content-Type: application/json' -H "Idempotency-Key: f-$RANDOM$RANDOM" -d "{\"fields\": {\"instructions\": \"Words $1.\"}}" "http://$ADDR/v1/projects/$ID/assets/kyogre"; }
 move() { api -o /dev/null -w '%{time_total}\n' -X PATCH -H 'Content-Type: application/json' -H "Idempotency-Key: m-$RANDOM$RANDOM" -d "{\"cards\": {\"groudon\": {\"x\": $1, \"y\": 5}}}" "http://$ADDR/v1/projects/$ID/canvas"; }
 discard() { api -o /dev/null -w '%{time_total}\n' -X DELETE -H "Idempotency-Key: d-$RANDOM$RANDOM" "http://$ADDR/v1/projects/$ID/assets/take/versions/$((2 + $1))"; }
-restore() { api -o /dev/null -w '%{time_total}\n' -X PUT -H 'Content-Type: application/json' -H "Idempotency-Key: r-$RANDOM$RANDOM" -d '{}' "http://$ADDR/v1/projects/$ID/assets/take/versions/$((2 + $1))"; }
+undo() { api -o /dev/null -w '%{time_total}\n' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: u-$RANDOM$RANDOM" -d '{}' "http://$ADDR/v1/projects/$ID/history/undo"; }
 approve() { api -o /dev/null -w '%{time_total}\n' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: a-$RANDOM$RANDOM" -d "{\"name\": \"take\", \"version\": \"$((2 + $1))\"}" "http://$ADDR/v1/projects/$ID/approve"; }
 local op
-for op in field move discard restore approve; do : > "$OUT/db-latency-$op.txt"; done
+for op in field move discard undo approve; do : > "$OUT/db-latency-$op.txt"; done
 for ((t = 0; t < 40; t++)); do
   field "$t" >> "$OUT/db-latency-field.txt"
   move "$t" >> "$OUT/db-latency-move.txt"
   discard "$t" >> "$OUT/db-latency-discard.txt"
-  restore "$t" >> "$OUT/db-latency-restore.txt"
+  undo >> "$OUT/db-latency-undo.txt"
   approve "$t" >> "$OUT/db-latency-approve.txt"
 done
 python3 - "$OUT" "$(cozy --version)" "$takes" <<'PY' | tee "$OUT/db-latency.json"
 import json, statistics, sys
 out, version, takes = sys.argv[1], sys.argv[2], int(sys.argv[3])
 said = {"cozy": version, "takes": takes}
-for op in ["join", "field", "move", "discard", "restore", "approve"]:
+for op in ["join", "field", "move", "discard", "undo", "approve"]:
     ms = sorted(float(line) * 1000 for line in open(f"{out}/db-latency-{op}.txt") if line.strip())
     if ms:
         said[op] = {"n": len(ms), "p50_ms": round(statistics.median(ms), 1), "p95_ms": round(ms[int(len(ms) * 0.95) - 1], 1), "max_ms": round(ms[-1], 1)}
