@@ -429,8 +429,7 @@ impl FileId {
             use windows_sys::Win32::Storage::FileSystem::{
                 BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
             };
-            // SAFETY: plain-old-data; all-zero is a valid value.
-            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
             // SAFETY: a handle this File owns and keeps open, and the struct the call fills.
             if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
                 return Err(io::Error::last_os_error().into());
@@ -533,8 +532,7 @@ pub fn links(path: &Path) -> Result<u64> {
             BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
         };
         let file = itself(path)?;
-        // SAFETY: plain-old-data; all-zero is a valid value.
-        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: a handle this File owns and keeps open, and the struct the call fills.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
             return Err(io::Error::last_os_error().into());
@@ -579,8 +577,7 @@ pub fn changed(path: &Path) -> Result<std::time::SystemTime> {
             FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx,
         };
         let file = itself(path)?;
-        // SAFETY: plain-old-data; all-zero is a valid value.
-        let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+        let mut info = FILE_BASIC_INFO::default();
         let size = std::mem::size_of::<FILE_BASIC_INFO>() as u32;
         // SAFETY: a handle this File owns and keeps open; FileBasicInfo fills a FILE_BASIC_INFO,
         // and `size` is that struct's size.

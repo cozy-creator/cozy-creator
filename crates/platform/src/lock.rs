@@ -228,12 +228,13 @@ mod sys {
         // Ranges still to test; a test answers one conflicting lock, maybe not the lowest.
         let mut ranges: Vec<(i64, i64)> = vec![(0, 0)];
         while let Some((start, len)) = ranges.pop() {
-            // SAFETY: plain-old-data the call fills, on a descriptor the probe keeps open.
-            let mut lock: libc::flock = unsafe { mem::zeroed() };
-            lock.l_type = libc::F_RDLCK as _;
-            lock.l_whence = libc::SEEK_SET as _;
-            lock.l_start = start as _;
-            lock.l_len = len as _;
+            let mut lock = libc::flock {
+                l_type: libc::F_RDLCK as _,
+                l_whence: libc::SEEK_SET as _,
+                l_start: start as _,
+                l_len: len as _,
+                l_pid: 0,
+            };
             // SAFETY: a lock query on a descriptor we hold, into a writable flock.
             if unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_GETLK, &mut lock) } != 0 {
                 return Err(io::Error::last_os_error().into());
@@ -280,8 +281,7 @@ mod sys {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::LockFileEx;
         use windows_sys::Win32::System::IO::OVERLAPPED;
-        // SAFETY: plain-old-data.
-        let mut at: OVERLAPPED = unsafe { std::mem::zeroed() };
+        let mut at = OVERLAPPED::default();
         at.Anonymous.Anonymous.Offset = u32::MAX - 1;
         at.Anonymous.Anonymous.OffsetHigh = i32::MAX as u32;
         // SAFETY: a handle this File owns and an OVERLAPPED that outlives the call.

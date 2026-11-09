@@ -45,8 +45,7 @@ impl Scope {
 
     /// Live processes in the scope.
     pub fn processes(&self) -> Result<usize> {
-        // SAFETY: plain-old-data the call fills.
-        let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { mem::zeroed() };
+        let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
         self.query(JobObjectBasicAccountingInformation, &mut accounting)
             .map_err(Error::os("count a scope's processes"))?;
         Ok(accounting.ActiveProcesses as usize)
@@ -100,8 +99,7 @@ impl Scope {
             head: JOBOBJECT_BASIC_PROCESS_ID_LIST,
             more: [usize; 255],
         }
-        // SAFETY: plain-old-data the call fills.
-        let mut list: List = unsafe { mem::zeroed() };
+        let mut list = List { head: JOBOBJECT_BASIC_PROCESS_ID_LIST::default(), more: [0; 255] };
         self.query(JobObjectBasicProcessIdList, &mut list)
             .map_err(Error::os("list a scope's processes"))?;
         let count = list.head.NumberOfProcessIdsInList as usize;

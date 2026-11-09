@@ -487,10 +487,26 @@ fn write(buffer: &DeviceBuffer, bytes: &[u8], stream: usize) -> Result<()> {
     Ok(())
 }
 
-fn bytes<T>(values: &[T]) -> &[u8] {
-    // SAFETY: used only for initialized fixed-width integer/float arrays in the kernel ABI.
-    unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
+/// A kernel argument array's bytes, in this machine's order, as the device reads them.
+fn bytes<T: Plain>(values: &[T]) -> Vec<u8> {
+    values.iter().flat_map(|value| value.bytes()).collect()
 }
+
+/// A fixed-width number a kernel argument array holds.
+trait Plain: std::marker::Copy {
+    fn bytes(self) -> impl IntoIterator<Item = u8>;
+}
+
+macro_rules! plain {
+    ($($t:ty),*) => {$(
+        impl Plain for $t {
+            fn bytes(self) -> impl IntoIterator<Item = u8> {
+                self.to_ne_bytes()
+            }
+        }
+    )*};
+}
+plain!(f32, i32, u32, u64);
 
 struct Module {
     context: usize,
@@ -631,7 +647,7 @@ fn factor_input(
     parts: &[Part<'_>],
 ) -> Result<u64> {
     let (index, dtype, count) = match factors {
-        Factors::Host(values) => return owned_input(hold, device, bytes(values)),
+        Factors::Host(values) => return owned_input(hold, device, &bytes(values)),
         Factors::Slot {
             index,
             dtype,
@@ -661,8 +677,8 @@ fn factor_input(
     let out = buffer.ptr();
     hold.scratch.push(buffer);
     let table = decode::elem::table(dtype).unwrap_or_else(|| vec![0.0]);
-    let table = owned_input(hold, device, bytes(&table))?;
-    let params = owned_input(hold, device, bytes(&[count as u64, mode]))?;
+    let table = owned_input(hold, device, &bytes(&table))?;
+    let params = owned_input(hold, device, &bytes(&[count as u64, mode]))?;
     let binary = launch
         .stage_binary(family, "cast_metadata")
         .ok_or_else(|| Failure {
@@ -915,7 +931,7 @@ fn prepare_execute(
         None => owned_input(&mut hold, device, launch.words.host()?)?,
     };
     let mut stages = Vec::new();
-    let slots = owned_input(&mut hold, device, bytes(&launch.slots))?;
+    let slots = owned_input(&mut hold, device, &bytes(&launch.slots))?;
     let scale = factor_input(
         &mut hold,
         &mut stages,
@@ -961,9 +977,9 @@ fn prepare_execute(
         &launch.post,
         parts,
     )?;
-    let index = owned_input(&mut hold, device, bytes(&launch.index))?;
-    let error = owned_input(&mut hold, device, bytes(&[0i32]))?;
-    let params = owned_input(&mut hold, device, bytes(&launch.params))?;
+    let index = owned_input(&mut hold, device, &bytes(&launch.index))?;
+    let error = owned_input(&mut hold, device, &bytes(&[0i32]))?;
+    let params = owned_input(&mut hold, device, &bytes(&launch.params))?;
     let output = match destination {
         Some(Dst::Device { ptr, .. }) => ptr,
         None => hold.output.as_ref().expect("decode output").ptr(),
@@ -1008,7 +1024,7 @@ fn prepare_execute(
             while stride < launch.params[28] {
                 let mut next = launch.params;
                 next[31] = stride;
-                let parameters = owned_input(&mut hold, device, bytes(&next))?;
+                let parameters = owned_input(&mut hold, device, &bytes(&next))?;
                 stages.push(call(
                     "regular_h4",
                     hold.scratch[start + 1 - current].ptr(),

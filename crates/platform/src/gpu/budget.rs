@@ -128,8 +128,19 @@ fn each(factory: &Com) -> Result<Vec<(Adapter, Com)>> {
             return Err(failed("IDXGIFactory1::EnumAdapters1", hr));
         }
         let adapter = Com(adapter);
-        // SAFETY: plain-old-data the call fills.
-        let mut desc: AdapterDesc1 = unsafe { std::mem::zeroed() };
+        let mut desc = AdapterDesc1 {
+            description: [0; 128],
+            vendor: 0,
+            device: 0,
+            subsystem: 0,
+            revision: 0,
+            dedicated_video: 0,
+            dedicated_system: 0,
+            shared_system: 0,
+            luid_low: 0,
+            luid_high: 0,
+            flags: 0,
+        };
         // SAFETY: a live IDXGIAdapter1 and a description of the documented layout.
         let hr = unsafe { method::<GetDesc1>(adapter.0, GET_DESC1)(adapter.0, &mut desc) };
         if hr < 0 {
