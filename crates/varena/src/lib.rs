@@ -528,6 +528,9 @@ pub struct Device {
     reservation: OnceLock<usize>,
     /// That charge at the last sample: what the card uses beyond our own bytes.
     outside: AtomicUsize,
+    /// The least of it any sample read: this process's own context and what was there before it.
+    /// What `outside` holds past it came since, and can go again (a game's, a peer's).
+    outside_floor: AtomicUsize,
     pages: AtomicUsize,
     working: AtomicUsize,
     // The most weight bytes held for use at once this request.
@@ -573,6 +576,7 @@ impl Device {
             total: AtomicUsize::new(usize::MAX),
             reservation: OnceLock::new(),
             outside: AtomicUsize::new(0),
+            outside_floor: AtomicUsize::new(usize::MAX),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
@@ -689,6 +693,7 @@ impl Device {
             self.reservation.get_or_init(|| cooperative::driver_reservation(self.ordinal, total));
         }
         let outside = total.saturating_sub(free).saturating_sub(self.owned());
+        self.outside_floor.fetch_min(outside, Ordering::AcqRel);
         if outside > self.outside.swap(outside, Ordering::AcqRel) {
             self.room_outside.fetch_add(1, Ordering::Relaxed);
             self.room_shrank();
@@ -1241,7 +1246,9 @@ impl Region {
     /// Demand: anything idle may go to make room, in the one reclaim order.
     fn prepare(self: &Arc<Self>) -> Result<Preparation> {
         let protected = std::collections::BTreeSet::from([self.id]);
-        let protect = reclaim::Protect { regions: Some(&protected), keep_phase: true, into: Some(self.id), ..Default::default() };
+        let protect = reclaim::Protect {
+            regions: Some(&protected), keep_phase: true, into: Some(self.id), outside: true, ..Default::default()
+        };
         let result = (|| loop {
             let prepared = reclaim::acquire(self.gpu.ordinal, self.rounded, reclaim::Wait::Yes, protect, || {
                 let gate = gate(self.gpu.ordinal)?;

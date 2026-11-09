@@ -155,7 +155,7 @@ mod imp {
         }
         ask.bytes = ask.bytes.max(bytes);
         host.ask.notify_one();
-        host.table.held_idle_elsewhere(host.row)
+        host.table.idle_elsewhere(host.row)
     }
 
     pub(super) fn ask_idle(bytes: u64) -> bool {
@@ -190,8 +190,7 @@ pub(super) fn boundary(begin: bool) {
 
 /// A tier of a process in a request is `bytes` short: idle peers give pages back, then TensorD
 /// ends an idle process. Never waits: the asking thread does, and the tiers look again after. What
-/// processes in no request hold, which the ask or TensorD's end brings back: 0 out of a request, or
-/// once an ask came back final.
+/// idle peers hold that the ask may bring back: 0 out of a request, or once an ask came back final.
 pub(super) fn short(bytes: u64) -> u64 {
     #[cfg(target_os = "linux")]
     return imp::short(bytes);
