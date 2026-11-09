@@ -65,8 +65,8 @@ paths:
   /v1/objects/held:
     post:
       summary: >-
-        What the machine holds of many objects in one request, in the order asked: each stored object whole
-        (renewed, as a `HEAD` renews it), else the ranges its upload has landed.
+        What the machine holds of each object asked, in the order asked: a stored object whole (asking
+        renews it, so a run sent next finds it), else the ranges its upload has landed.
       operationId: held_objects
       requestBody:
         content: {application/json: {schema: {$ref: '#/components/schemas/HeldRequest'}}}
@@ -124,24 +124,12 @@ paths:
         '507':
           description: '`machine_disk_full`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-    head:
-      summary: >-
-        The byte ranges of the object the machine holds for this signer, in `Cozy-Held`. A stored object is
-        held whole, and asking renews it, so a run sent next finds it.
-      operationId: head_object
-      parameters:
-        - {name: digest, in: path, description: '`sha256:<hex>`', required: true, schema: {type: string}}
-      responses:
-        '200':
-          description: What is held
-          headers:
-            Cozy-Held: {schema: {type: string}, description: '`first-last,…` inclusive; empty: nothing'}
   /v1/runs:
     post:
       summary: >-
-        Submits a run, idempotent on its id per signer: the same id with the same spec answers its state; with
-        another spec, `run_id_conflict`. An update's activation and a rental's idle release wait for it.
-      operationId: submit
+        Submits a machine update (`kind: update`), idempotent on its id per signer. It is the one request a
+        controller of another release sends; work goes to `POST /v1/runs/batch`.
+      operationId: update
       requestBody:
         content: {application/json: {schema: {$ref: '#/components/schemas/RunRequest'}}}
         required: true
@@ -153,7 +141,7 @@ paths:
           description: Accepted
           content: {application/json: {schema: {$ref: '#/components/schemas/RunState'}}}
         '400':
-          description: An invalid spec
+          description: An invalid spec, or `invalid_kind` for a run that is not an update
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '409':
           description: '`run_id_conflict`, or a refusal of the run'
@@ -175,10 +163,11 @@ paths:
   /v1/runs/batch:
     post:
       summary: >-
-        `run-batch/1` (cl-816): runs admitted as one. Each new one is accepted with the others before any
-        prepares, so the machine packs them together as `POST /v1/estimate` quoted them. Each is answered as
-        `POST /v1/runs` would answer it alone. `POST /v1/runs` is a batch of one. An update goes alone.
-      operationId: submit_batch
+        Work, admitted as one (cl-816). Each new run is accepted with the others before any prepares, so the
+        machine packs them together as `POST /v1/estimate` quoted them. Each is idempotent on its id per
+        signer: the same id with the same spec answers its state; with another spec, `run_id_conflict`. An
+        update's activation and a rental's idle release wait for them.
+      operationId: submit
       requestBody:
         content: {application/json: {schema: {$ref: '#/components/schemas/RunBatch'}}}
         required: true
@@ -187,7 +176,7 @@ paths:
           description: Each run's state or refusal, in the order sent
           content: {application/json: {schema: {$ref: '#/components/schemas/RunBatchAnswer'}}}
         '400':
-          description: An invalid run id, or an update with other runs
+          description: An invalid run id
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '503':
           description: '`machine_updating` or `machine_released`'
@@ -195,7 +184,7 @@ paths:
   /v1/estimate:
     post:
       summary: >-
-        `estimate/1` (cl-816): when each job would run here were the caller to send them all now, packed with the
+        When each job would run here were the caller to send them all now, packed with the
         machine's queue by the model its scheduler gives each root its width by. A quote: nothing is reserved.
       operationId: estimate
       requestBody:
@@ -290,20 +279,10 @@ paths:
         '416':
           description: '`range_unsatisfiable`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-  /v1/runs/{id}/triage:
-    get:
-      summary: A failed attempt's retained triage bundle.
-      operationId: triage
-      parameters: [{name: id, in: path, description: The run id, required: true, schema: {type: string}}]
-      responses:
-        '200': {description: The bundle, content: {application/json: {schema: {type: object}}}}
-        '404':
-          description: None retained
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/status:
     get:
       summary: >-
-        The machine's picture. Without a machine-scope cap: identity, version, capabilities and the sealed
+        The machine's picture. Without a machine-scope cap: identity, version and the sealed
         readiness receipt only (what a Hub reads). With one: all of it, and with `Accept: text/event-stream`
         an SSE stream of `status` events, each the whole frame, sent again when it changes.
       operationId: status
@@ -543,7 +522,7 @@ components:
       type: object
       description: >-
         What the machine holds of each object asked, in the order asked; a stored object is held whole, and
-        asking renews it, as a `HEAD` does.
+        asking renews it.
       properties: {held: {type: array, items: {$ref: '#/components/schemas/HeldObject'}}}
     HeldBytes:
       type: object
@@ -716,7 +695,6 @@ components:
           description: The result, canonical JSON, assets as digests.
           oneOf: [{$ref: '#/components/schemas/Json'}, {type: 'null'}]
         status: {type: string, description: 'succeeded, failed, canceled'}
-        triage: {type: boolean, description: '`GET /v1/runs/{id}/triage` answers its bundle.'}
         unmemoized:
           type: string
           description: >-
@@ -950,7 +928,7 @@ components:
           oneOf: [{$ref: '#/components/schemas/ProviderAccess'}, {type: 'null'}]
         set:
           description: >-
-            `warm/2`: the caller's whole warm set, replacing its previous one; no items clears it. The run
+            The caller's whole warm set, replacing its previous one; no items clears it. The run
             installs and downloads every member, and its result lists each one's `level` and `held_back`.
             Absent: the set is left as it is.
           oneOf: [{$ref: '#/components/schemas/WarmSet'}, {type: 'null'}]
@@ -1002,7 +980,7 @@ components:
       type: object
       description: >-
         The machine's picture. Without a machine-scope cap, `GET /v1/status` answers identity, version,
-        capabilities, the workload key and the sealed readiness `receipt` only. With one it answers all of it, and as SSE
+        the workload key and the sealed readiness `receipt` only. With one it answers all of it, and as SSE
         (`Accept: text/event-stream`) sends the whole frame again whenever it changes. An open stream is not
         activity.
       properties:
@@ -1012,7 +990,6 @@ components:
             While the machine starts: the step it is on, answered before anything else, so a watcher tells a
             slow start from none. Absent once it serves.
           oneOf: [{$ref: '#/components/schemas/Booting'}, {type: 'null'}]
-        capabilities: {type: array, items: {type: string}}
         commit: {type: string, description: The commit its `cozy` binary was built from.}
         dev:
           type: boolean

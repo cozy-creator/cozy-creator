@@ -89,8 +89,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   its plan, then any other permitted lane. A waiting standalone call
   claims the GPUs it waits for. A prefetch loads only
   inside its root's bound lane, after queued requests of that root and older ones, and ends at
-  its release. A new executor's GPU is logged as `{"event": "place"}` in the memory log;
-  `loads.jsonl` and `invokes.jsonl` name each line's `gpus`.
+  its release. A new executor's GPU is logged as `{"event": "place"}` in the memory log.
 - Memory observations, ended executors and placements are lines of the store's
   `logs/memory.log` (rotated once past 4 MiB), machine log `memory`
   (`cozy machine logs <name> memory`; `local` names this computer's). Each call's own memory is
@@ -128,8 +127,8 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   `--warm off` takes a member out of the set; what it holds stays until something needs the room.
 - An executor's failed terminal (its own refusal before entry, or a failed invoke) first keeps a
   triage bundle (`triage.rs`: terminal, traceback, executor pid and stderr tail; canonical JSON
-  under `execution/triage/`, fsynced) and binds it in the journal; the outcome body names it as
-  `triage_bundle`, and `ReadMachineExecutionTriage` returns its bytes.
+  under `execution/triage/`, fsynced) and binds it in the journal; its detail is the outcome's
+  `reason.detail`.
 - A call whose executor cannot settle (a follower that died mid-call, the leader's poisoned
   latch, or no quiescence) always keeps a bundle, before its kill, with its `fault` (`GPU 1's
   process 5163 ended`, else the latch) beside the stderr tail. Every rank writes the leader's

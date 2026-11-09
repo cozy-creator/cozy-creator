@@ -231,8 +231,6 @@ pub(crate) struct Measured<'a> {
     pub gpus: Vec<Gpu>,
     pub listener_bound: bool,
     pub foreign_credential_refused: bool,
-    /// What it serves on `cozy.machine.v1`, as Status names it.
-    pub capabilities: Vec<String>,
     /// The port `cozy/1` is served on; the Hub derives its pin from the leaf.
     pub webrtc_port: Option<u16>,
 }
@@ -247,7 +245,6 @@ impl Measured<'_> {
             "tls_certificate_der_base64": STANDARD.encode(self.cert_der),
             "runtime_gpus": self.gpus,
             "machine_version": env!("CARGO_PKG_VERSION"),
-            "machine_capabilities": self.capabilities,
         });
         if let Some(port) = self.webrtc_port {
             value["webrtc"] = serde_json::json!({ "port": port });

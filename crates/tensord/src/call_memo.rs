@@ -5,7 +5,7 @@
 //! Runtime/TensorFS build), its request as given (files by content), its attention pin and lane
 //! and the models it runs with. An author's condition (`memo_requires`) names the parameters a
 //! request must give for it to be memoizable at all.
-use crate::{api::domain::ModelChoice, catalog::Generation, gpu_service::Plan, journal::InputFile};
+use crate::{stored::ModelChoice, catalog::Generation, gpu_service::Plan, journal::InputFile};
 use serde_json::{json, Value};
 use tensorfs::sha256;
 
@@ -107,7 +107,7 @@ pub(crate) fn models(plan: Option<&Plan>, choices: &[ModelChoice]) -> Value {
         None => {
             let mut chosen: Vec<_> = choices
                 .iter()
-                .map(|choice| sha256::hex_digest(&crate::archive::encode_model_choice(choice)))
+                .map(|choice| sha256::hex_digest(&crate::stored::encode(choice)))
                 .collect();
             chosen.sort();
             json!(chosen)

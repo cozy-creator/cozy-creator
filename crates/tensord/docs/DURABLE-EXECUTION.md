@@ -157,7 +157,8 @@ then takes the bytes. A root written just before a crash ages from its own mtime
 
 Triage: every run whose executor ended, failed to start or was killed
 without writing its own terminal, keeps a bundle (`triage.rs`) before it settles: the reason, which
-carries any kill measurement, the process id and the end of its stderr. `Read{triage}` serves it.
+carries any kill measurement, the process id and the end of its stderr. The outcome's
+`reason.detail` is read from it.
 
 Journal: `machine_metadata.journal_format` records the layout (1). A newer journal still opens;
 a row this machine cannot decode is skipped (logged) instead of failing every list, and a state

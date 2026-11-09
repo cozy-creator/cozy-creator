@@ -6,19 +6,20 @@ and a run's own child runs. A laptop's machine and a rental's are the same.
 **HTTP + JSON** on the machine's one pinned-TLS listener (`api/server.rs`, `api/http.rs`):
 control and SSE over HTTP/2, bulk bytes over HTTP/1.1. The routes, bodies and events are
 `crates/tensord/api/openapi.yaml`, written by hand and changed in the same PR as the server
-(`scripts/machine-routes.sh` holds the router and the client to it); how each former gRPC call maps
+; how each former gRPC call maps
 onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
 
 - `GET /v1/status` (identity and readiness receipt without a cap; the whole picture, as SSE on
   change, with one), `POST /v1/keepalive`;
-- `POST /v1/runs` (idempotent on id per signer), `POST /v1/runs/batch` (`run-batch/1`: runs admitted
-  as one, `POST /v1/runs` being a batch of one), `GET /v1/runs/{id}/events` (SSE after
+- `POST /v1/runs/batch` (work, admitted as one, each run idempotent on its id per signer),
+  `POST /v1/runs` (a machine update only: the one request a controller of another release sends),
+  `GET /v1/runs/{id}/events` (SSE after
   `Last-Event-ID`; closing it never cancels), `POST /v1/runs/{id}/cancel`;
-- `POST /v1/estimate` (`estimate/1`): when each job would run if all were sent now, a quote;
+- `POST /v1/estimate`: when each job would run if all were sent now, a quote;
 - `GET /v1/runs/{id}/outputs/{output}` (ranged, `ETag` = revision, readable while it grows),
-  `GET /v1/runs/{id}/triage`, `GET /v1/logs/{name}`;
-- `PUT`/`HEAD /v1/objects/sha256:<hex>`: content-addressed parts in any order, side by side,
-  resumable from `Cozy-Held`; verified once whole.
+  `GET /v1/logs/{name}`;
+- `PUT /v1/objects/sha256:<hex>`: content-addressed parts in any order, side by side, resumable
+  from what `POST /v1/objects/held` says is held; verified once whole.
 
 **One browser channel**: WebRTC `cozy/1` (ICE-lite, passive ICE-TCP, DTLS pinned to the leaf,
 the cap in its hello) serves a run's output log and bytes, live or finished. **One credential**:
@@ -53,7 +54,7 @@ warning each). A model-only upload's lane labels the commit it makes.
 
 ## What disappears
 
-- **Prepare and warm-up** are runs (`kind: warm`); uninstall is `kind: remove` (`remove/1`).
+- **Prepare and warm-up** are runs (`kind: warm`); uninstall is `kind: remove`.
 - **Acknowledge** is deleted. A run's outputs are held, whether or not anything read them, and bound to
   their signer, so a later run may name one by its hash. They go after 7 days unused, or on a disk still low
   after every cache, least recently used first; a run using one, or a read within 10 min, keeps it.

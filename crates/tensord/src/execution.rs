@@ -263,7 +263,7 @@ impl Engine {
         self.notify_activity();
         Ok(record.state == State::Starting)
     }
-    pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<crate::journal::PublicTerminal>> {
+    pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
         self.journal.lock().unwrap().public_terminal(id)
     }
     pub(crate) fn bind_native_output(&self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
@@ -389,12 +389,12 @@ impl Engine {
     pub(crate) fn commit_public_terminal(
         &self,
         id: &str,
-        record: crate::journal::PublicTerminal,
-    ) -> io::Result<crate::journal::PublicTerminal> {
+        events: Vec<u8>,
+    ) -> io::Result<Vec<u8>> {
         self.journal
             .lock()
             .unwrap()
-            .commit_public_terminal(id, record)
+            .commit_public_terminal(id, events)
     }
 
     /// See `Journal::accept_runs`: one admission, which the dispatcher sees whole.
@@ -486,9 +486,6 @@ impl Engine {
         limit: usize,
     ) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.actor_page(actor, after, before, newest, states, limit))
-    }
-    pub(crate) fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
-        self.journal.lock().unwrap().actor_head(actor)
     }
     /// See `Journal::jobs`.
     pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {

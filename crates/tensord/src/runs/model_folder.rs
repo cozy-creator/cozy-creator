@@ -4,7 +4,7 @@ use std::{fs::{self, File}, io::{self, Read, Write}, path::{Path, PathBuf}};
 
 use tensorfs::{format::ObjectRef, store::{Checkpoint, Store}};
 
-use super::{domain, refused, InputFile, Refused, Runs, Source, Spec, Stoppable};
+use super::{stored, refused, InputFile, Refused, Runs, Source, Spec, Stoppable};
 
 pub(super) struct Folder {
     pub store: Store,
@@ -88,7 +88,7 @@ impl Drop for Staging {
     }
 }
 
-pub(super) fn input<'a>(spec: &'a Spec, choice: &domain::ModelChoice) -> Result<Option<&'a InputFile>, Refused> {
+pub(super) fn input<'a>(spec: &'a Spec, choice: &stored::ModelChoice) -> Result<Option<&'a InputFile>, Refused> {
     let Some(field) = choice.source.strip_prefix("input://") else { return Ok(None) };
     let invalid = || refused("model_folder_invalid", "a folder upload names one retained tree input, without model selectors or conversion profiles");
     let destination = spec.weights_destination.trim_start_matches("model://");
@@ -109,7 +109,7 @@ pub(super) fn input<'a>(spec: &'a Spec, choice: &domain::ModelChoice) -> Result<
 }
 
 pub(super) fn prepare(
-    runs: &Runs, actor: &str, spec: &Spec, choice: &domain::ModelChoice, stoppable: &Stoppable,
+    runs: &Runs, actor: &str, spec: &Spec, choice: &stored::ModelChoice, stoppable: &Stoppable,
 ) -> Result<Option<Folder>, Refused> {
     let Some(input) = input(spec, choice)? else { return Ok(None) };
     let missing = || refused("model_folder_absent", "the retained model folder input is absent or changed");

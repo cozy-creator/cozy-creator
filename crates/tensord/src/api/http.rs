@@ -3,10 +3,10 @@
 //! `error::Envelope`.
 use super::{
     auth::{StreamAuthority, VerifiedActor},
-    backend::{MachineBackend, OutputSnapshot},
     capability::{self, Grant},
-    domain, v1, MachineIdentity,
+    v1, MachineIdentity,
 };
+use crate::runs::{actor_id, OutputSnapshot, Runs};
 use platform::tail as logs;
 use axum::{
     body::{Body, Bytes},
@@ -37,11 +37,6 @@ impl From<Error> for Refusal {
         Self(error, None)
     }
 }
-impl From<crate::objects::Refused> for Error {
-    fn from(refusal: crate::objects::Refused) -> Self {
-        refused(refusal.code, refusal.message)
-    }
-}
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
         let status = self.1.unwrap_or_else(|| {
@@ -51,51 +46,33 @@ impl IntoResponse for Refusal {
     }
 }
 
-/// A typed refusal of the run layer (`runs`, `objects`) as the error its code names.
-pub(crate) fn refused(code: &str, message: impl Into<String>) -> Error {
-    match code {
-        "run_id_conflict" => Error::conflict(code, message),
-        "machine_disk_full" => Error::capacity(code, message),
-        "object_storage_failed" | "machine_released" | "machine_updating" => {
-            Error::unavailable(code, message)
-        }
-        c if c.starts_with("invalid") || c.starts_with("object_") => Error::validation(code, message),
-        _ => Error::conflict(code, message),
-    }
-}
-
 type Answer = Result<Response, Refusal>;
 
-pub(super) struct Machine<B> {
+#[derive(Clone)]
+pub(super) struct Machine {
     identity: Arc<MachineIdentity>,
-    backend: Arc<B>,
-}
-impl<B> Clone for Machine<B> {
-    fn clone(&self) -> Self {
-        Self { identity: self.identity.clone(), backend: self.backend.clone() }
-    }
+    runs: Arc<Runs>,
 }
 
-pub(super) fn router<B: MachineBackend>(identity: Arc<MachineIdentity>, backend: Arc<B>) -> Router {
+pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router {
     Router::new()
-        .route(path::STATUS, get(status::<B>))
-        .route(path::KEEPALIVE, post(keepalive::<B>))
-        .route(path::RUNS, post(submit::<B>).layer(DefaultBodyLimit::max(16 << 20)).get(runs::<B>))
-        .route(path::RUNS_BATCH, post(submit_batch::<B>).layer(DefaultBodyLimit::max(64 << 20)))
-        .route(path::EVENTS, get(events::<B>))
-        .route(path::CANCEL, post(cancel::<B>))
-        .route(path::OUTPUT, get(output::<B>))
-        .route(path::TRIAGE, get(triage::<B>))
-        .route(path::LOG, get(log::<B>))
-        .route(path::OBJECT, put(put_object::<B>).head(head_object::<B>).get(follow_object::<B>))
-        .route(path::OBJECTS_HELD, post(held_objects::<B>).layer(DefaultBodyLimit::max(16 << 20)))
-        .route(path::ESTIMATE, post(estimate::<B>))
+        .route(path::STATUS, get(status))
+        .route(path::KEEPALIVE, post(keepalive))
+        .route(path::RUNS, post(update).layer(DefaultBodyLimit::max(16 << 20)).get(list))
+        .route(path::RUNS_BATCH, post(submit).layer(DefaultBodyLimit::max(64 << 20)))
+        .route(path::EVENTS, get(events))
+        .route(path::CANCEL, post(cancel))
+        .route(path::OUTPUT, get(output))
+        .route(path::LOG, get(log))
+        .route(path::OBJECT, put(put_object).get(follow_object))
+        .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
+        .route(path::ESTIMATE, post(estimate))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
         .method_not_allowed_fallback(|| async {
             Refusal(Error::validation("method_not_allowed", "this path takes another method"), Some(StatusCode::METHOD_NOT_ALLOWED))
         })
-        .with_state(Machine { identity, backend })
+        .with_state(Machine { identity, runs })
 }
 
 /// Who may do what: a machine-scope cap does everything as its signer; a run-scope cap (a play
@@ -129,7 +106,7 @@ impl Caller {
     }
 }
 
-impl<B: MachineBackend> Machine<B> {
+impl Machine {
     fn caller(&self, headers: &HeaderMap) -> Result<Caller, Error> {
         let token = headers
             .get(header::AUTHORIZATION)
@@ -156,25 +133,25 @@ impl<B: MachineBackend> Machine<B> {
     }
 
     /// Holds idle release, and an update's activation, while a call that may start work runs.
-    fn admit(&self) -> Result<Option<crate::machine::lifecycle::Admission>, Error> {
-        self.identity.lifecycle.as_ref().map(|l| l.admit()).transpose()
+    fn admit(&self) -> Result<crate::machine::lifecycle::Admission, Error> {
+        self.identity.lifecycle.admit()
     }
 
     pub(super) async fn call<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&B) -> Result<T, Error> + Send + 'static,
+        f: impl FnOnce(&Arc<Runs>) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
-        blocking(&self.backend, f).await
+        blocking(&self.runs, f).await
     }
 }
 
-/// `f` on the blocking pool: the backend's journal and files are synchronous.
-pub(super) async fn blocking<B: Send + Sync + 'static, T: Send + 'static>(
-    backend: &Arc<B>,
-    f: impl FnOnce(&B) -> Result<T, Error> + Send + 'static,
+/// `f` on the blocking pool: the journal and files are synchronous.
+pub(super) async fn blocking<T: Send + 'static>(
+    runs: &Arc<Runs>,
+    f: impl FnOnce(&Arc<Runs>) -> Result<T, Error> + Send + 'static,
 ) -> Result<T, Error> {
-    let backend = backend.clone();
-    tokio::task::spawn_blocking(move || f(&backend))
+    let runs = runs.clone();
+    tokio::task::spawn_blocking(move || f(&runs))
         .await
         .map_err(|_| Error::internal("machine_operation_stopped", "machine operation stopped"))?
 }
@@ -211,7 +188,7 @@ fn wants_events(headers: &HeaderMap) -> bool {
 
 /// `GET /v1/status`: anyone gets the identity frame with the sealed readiness receipt; a
 /// machine-scope cap gets the whole picture, as SSE (sent again on change) when it asks.
-async fn status<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap) -> Answer {
+async fn status(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     let caller = match headers.contains_key(header::AUTHORIZATION) {
         false => None,
         true => Some(m.caller(&headers)?).filter(|c| c.machine().is_ok()),
@@ -220,10 +197,10 @@ async fn status<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderM
         return Ok(json(StatusCode::OK, &super::machine_status::identity_frame(&m.identity)));
     };
     if !wants_events(&headers) {
-        let frame = super::machine_status::frame(&m.identity, &m.backend, caller.actor).await?;
+        let frame = super::machine_status::frame(&m.identity, &m.runs, caller.actor).await?;
         return Ok(json(StatusCode::OK, &frame));
     }
-    let frames = super::machine_status::watch(m.identity.clone(), m.backend.clone(), caller.actor)
+    let frames = super::machine_status::watch(m.identity.clone(), m.runs.clone(), caller.actor)
         .map(|frame| frame.and_then(|frame| event("status", &frame)));
     Ok(sse(m.authority(&caller), frames))
 }
@@ -237,14 +214,13 @@ pub(super) fn event<T: Serialize>(name: &str, value: &T) -> Result<Event, Error>
 }
 
 /// `POST /v1/keepalive`: restarts the idle clock once; answers the frame with the new deadline.
-async fn keepalive<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap) -> Answer {
+async fn keepalive(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    let lifecycle = (m.identity.lifecycle.clone())
-        .ok_or_else(|| Error::conflict("idle_deadline_absent", "this machine has no idle deadline"))?;
+    let lifecycle = m.identity.lifecycle.clone();
     // The idle ledger is written durably, so on the blocking pool.
     m.call(move |_| lifecycle.renew()).await?;
-    let frame = super::machine_status::frame(&m.identity, &m.backend, caller.actor).await?;
+    let frame = super::machine_status::frame(&m.identity, &m.runs, caller.actor).await?;
     Ok(json(StatusCode::OK, &frame))
 }
 
@@ -255,21 +231,39 @@ fn run_id(id: &str) -> Result<(), Error> {
     }
 }
 
-/// `POST /v1/runs`: accepts a run (201), or answers the one the same id and spec name (200): an
-/// admission of one (`admit`).
-async fn submit<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
+/// `POST /v1/runs`: a machine update, the one request a controller of another release sends:
+/// accepted (201), or answered as the one its id names (200).
+async fn update(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
     let request: v1::RunRequest = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("the run request is not JSON: {e}")))?;
-    let (created, state) = admit(&m, &headers, vec![request]).await?.pop().expect("one run answered")?;
+    run_id(&request.id)?;
+    if request.spec.kind != v1::RunKind::Update {
+        return Err(Error::validation("invalid_kind", format!("work is sent to POST {}", path::RUNS_BATCH)).into());
+    }
+    let (created, state) = super::machine_update::submit(m.identity.clone(), m.runs.clone(), caller.actor, request).await?;
     let status = if created { StatusCode::CREATED } else { StatusCode::OK };
     Ok(json(status, &state))
 }
 
-/// `POST /v1/runs/batch` (`run-batch/1`): runs admitted as one (`admit`), each answered alone.
-async fn submit_batch<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
+/// `POST /v1/runs/batch`: the one admission of work (cl-816). The runs are accepted together
+/// before any prepares, so the scheduler packs them as the machine's quote did; each is new or
+/// answered as the one its id and spec name, or refused alone. They are admitted before they are
+/// accepted: an update's activation and a rental's idle release wait for them.
+async fn submit(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
     let batch: v1::RunBatch = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("the run batch is not JSON: {e}")))?;
-    let runs = (admit(&m, &headers, batch.runs).await?.into_iter())
+    for request in &batch.runs {
+        run_id(&request.id)?;
+    }
+    let admitted = m.admit()?;
+    let actor = caller.actor;
+    let accepted = m.call(move |runs| runs.accept(actor, batch.runs)).await?;
+    drop(admitted);
+    let runs = (accepted.into_iter())
         .map(|admitted| match admitted {
             Ok((created, state)) => v1::Admitted { created, state: Some(state), refusal: None },
             Err(error) => v1::Admitted { refusal: Some(error), ..Default::default() },
@@ -278,40 +272,15 @@ async fn submit_batch<B: MachineBackend>(State(m): State<Machine<B>>, headers: H
     Ok(json(StatusCode::OK, &v1::RunBatchAnswer { runs }))
 }
 
-/// The one admission of runs sent (cl-816): accepted together before any prepares, so the
-/// scheduler packs them as the machine's quote did; each new or answered as the one its id and
-/// spec name, or refused alone. They are admitted before they are accepted: an update's activation
-/// and a rental's idle release wait for them. An update goes alone.
-async fn admit<B: MachineBackend>(m: &Machine<B>, headers: &HeaderMap, requests: Vec<v1::RunRequest>)
-    -> Result<Vec<Result<(bool, v1::RunState), Error>>, Error> {
-    let caller = m.caller(headers)?;
-    caller.machine()?;
-    for request in &requests {
-        run_id(&request.id)?;
-    }
-    if requests.iter().any(|request| request.spec.kind == v1::RunKind::Update) {
-        let Ok([request]) = <[v1::RunRequest; 1]>::try_from(requests) else {
-            return Err(Error::validation("invalid_request", "an update is sent alone"));
-        };
-        let updated = super::machine_update::submit(m.identity.clone(), m.backend.clone(), caller.actor, request).await?;
-        return Ok(vec![Ok(updated)]);
-    }
-    let admitted = m.admit()?;
-    let accepted = super::machine_runs::submit(&m.backend, caller.actor, requests).await?;
-    drop(admitted);
-    Ok(accepted)
-}
-
 /// `POST /v1/estimate`: when each job would run here, packed with the machine's queue by the
 /// model its scheduler gives each run its width by (`estimate`). It reserves nothing.
-async fn estimate<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
+async fn estimate(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
     let request: v1::EstimateRequest = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("the estimate request is not JSON: {e}")))?;
-    let runs = m.backend.runs().ok_or_else(|| Error::unavailable("machine_runs_unavailable", "this machine runs nothing yet"))?;
-    let actor = crate::machine_api::actor_id(caller.actor);
-    let answer = m.call(move |_| crate::estimate::quote(&runs, &actor, request)).await?;
+    let actor = actor_id(caller.actor);
+    let answer = m.call(move |runs| crate::estimate::quote(runs, &actor, request)).await?;
     Ok(json(StatusCode::OK, &answer))
 }
 
@@ -324,11 +293,11 @@ struct Page {
 }
 
 /// `GET /v1/runs`: the runs the caller reads, newest first, before the run numbered `?before=`.
-async fn runs<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, page: Result<Query<Page>, QueryRejection>) -> Answer {
+async fn list(State(m): State<Machine>, headers: HeaderMap, page: Result<Query<Page>, QueryRejection>) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
     let (Page { before, limit }, actor) = (query(page)?, caller.actor);
-    let list = m.call(move |backend| super::machine_runs::list(backend, actor, before, limit)).await?;
+    let list = m.call(move |runs| runs.list(actor, before, limit)).await?;
     Ok(json(StatusCode::OK, &list))
 }
 
@@ -340,8 +309,8 @@ struct After {
 
 /// `GET /v1/runs/{id}/events`: the run's log as SSE after `Last-Event-ID` (or `?after=`), its
 /// snapshot first. Closing it never cancels; it holds no admission, only the idle clock.
-async fn events<B: MachineBackend>(
-    State(m): State<Machine<B>>,
+async fn events(
+    State(m): State<Machine>,
     Path(id): Path<String>,
     headers: HeaderMap,
     after: Result<Query<After>, QueryRejection>,
@@ -351,13 +320,13 @@ async fn events<B: MachineBackend>(
     let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.trim().parse().ok());
     let after = last.unwrap_or(query(after)?.after);
     let (identity, actor, owned) = (m.identity.clone(), caller.actor, id.clone());
-    if m.call(move |backend| super::machine_update::owns(&identity, backend, actor, &owned)).await? {
+    if m.call(move |runs| super::machine_update::owns(&identity, runs, actor, &owned)).await? {
         caller.machine()?;
         let events = super::machine_update::events(m.identity.clone(), id, after).await?;
         let events = followed(&m.identity, events.map(|e| e.and_then(|e| run_event(&e))));
         return Ok(sse(m.authority(&caller), events));
     }
-    let events = super::machine_runs::follow(m.backend.clone(), caller.actor, id, after, caller.limit()).await?;
+    let events = super::machine_runs::follow(m.runs.clone(), caller.actor, id, after, caller.limit()).await?;
     let events = received(events);
     Ok(sse(m.authority(&caller), followed(&m.identity, events.map(|e| e.and_then(|e| run_event(&e))))))
 }
@@ -369,7 +338,7 @@ pub(super) fn received<T>(mut receiver: tokio::sync::mpsc::Receiver<T>) -> impl 
 
 /// `events` holding the machine's idle clock while a client follows them.
 fn followed<S: Stream + Send + 'static>(identity: &MachineIdentity, events: S) -> impl Stream<Item = S::Item> + Send + 'static {
-    let held = identity.lifecycle.as_ref().map(|lifecycle| lifecycle.follow());
+    let held = identity.lifecycle.follow();
     events.map(move |event| {
         let _held = &held;
         event
@@ -385,23 +354,15 @@ pub(super) fn run_event(event: &v1::RunEvent) -> Result<Event, Error> {
 }
 
 /// `POST /v1/runs/{id}/cancel`. An unknown id is tombstoned as canceled.
-async fn cancel<B: MachineBackend>(State(m): State<Machine<B>>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+async fn cancel(State(m): State<Machine>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
     run_id(&id)?;
     let (identity, actor, owned) = (m.identity.clone(), caller.actor, id.clone());
-    if m.call(move |backend| super::machine_update::owns(&identity, backend, actor, &owned)).await? {
+    if m.call(move |runs| super::machine_update::owns(&identity, runs, actor, &owned)).await? {
         return Ok(json(StatusCode::OK, &super::machine_update::cancel(&m.identity, &id).await?));
     }
-    let run = id.clone();
-    let changed = m
-        .call(move |backend| {
-            let execution = Some(super::machine_runs::query(backend, actor, &run)?);
-            let action = domain::MachineExecutionAction::Cancel as i32;
-            backend.control(actor, domain::MachineExecutionControl { execution, action })
-        })
-        .await?;
-    Ok(json(StatusCode::OK, &super::machine_runs::state(&id, &changed)))
+    Ok(json(StatusCode::OK, &m.call(move |runs| runs.cancel(actor, &id)).await?))
 }
 
 #[derive(Deserialize)]
@@ -414,8 +375,8 @@ struct Item {
 
 /// `GET /v1/runs/{id}/outputs/{output}`: an output's current bytes, ranged, readable while it
 /// grows. `ETag` is its revision; `If-Match` refuses once the output moved past it.
-async fn output<B: MachineBackend>(
-    State(m): State<Machine<B>>,
+async fn output(
+    State(m): State<Machine>,
     Path((id, output)): Path<(String, String)>,
     item: Result<Query<Item>, QueryRejection>,
     headers: HeaderMap,
@@ -426,12 +387,9 @@ async fn output<B: MachineBackend>(
     caller.run(&id, Some((&output, index)))?;
     let actor = caller.actor;
     let snapshot = m
-        .call(move |backend| {
-            let run = backend.get(actor, super::machine_runs::query(backend, actor, &id)?)?;
-            match member.as_str() {
-                "" => backend.open_output(actor, run.number, &output, index),
-                member => backend.open_member(actor, run.number, &output, index, member),
-            }
+        .call(move |runs| match member.as_str() {
+            "" => runs.open_output(actor, &id, &output, index),
+            member => runs.open_member(actor, &id, &output, index, member),
         })
         .await?;
     let tag = format!("\"{}\"", snapshot.rev);
@@ -484,7 +442,7 @@ fn ranged(
     parts: Parts,
     length: u64,
     authority: StreamAuthority,
-    lifecycle: Option<Arc<crate::machine::lifecycle::Lifecycle>>,
+    lifecycle: Arc<crate::machine::lifecycle::Lifecycle>,
 ) -> Answer {
     let range = range(headers, length)?;
     let (start, end) = range.unwrap_or((0, length));
@@ -511,7 +469,7 @@ fn ranged(
         }
     });
     let chunks = received(receiver).map(move |chunk| {
-        if let (Ok(_), Some(lifecycle)) = (&chunk, &lifecycle) {
+        if chunk.is_ok() {
             lifecycle.transferred();
         }
         chunk
@@ -545,23 +503,6 @@ fn from_offset(parts: Parts, mut offset: u64) -> std::io::Result<Box<dyn Read + 
     Ok(reader)
 }
 
-/// `GET /v1/runs/{id}/triage`: a failed attempt's retained bundle, the run owner's only.
-async fn triage<B: MachineBackend>(State(m): State<Machine<B>>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
-    let caller = m.caller(&headers)?;
-    caller.run(&id, None)?;
-    if caller.limit().is_some() {
-        return Err(Error::forbidden("capability_scope", "triage is the run owner's").into());
-    }
-    let actor = caller.actor;
-    let triage = m
-        .call(move |backend| {
-            let execution = Some(super::machine_runs::query(backend, actor, &id)?);
-            backend.read_triage(actor, domain::MachineExecutionTriageQuery { execution, attempt_ordinal: 0 })
-        })
-        .await?;
-    Ok(([(header::CONTENT_TYPE, "application/json")], triage.bundle_canonical_bytes).into_response())
-}
-
 #[derive(Deserialize)]
 struct Last {
     #[serde(default)]
@@ -571,15 +512,22 @@ struct Last {
 /// `GET /v1/logs/{name}?lines=N`: a machine log's newest N whole lines (0: all it keeps). As SSE,
 /// those and then each batch as it is appended, each event's id the place after it: a
 /// `Last-Event-ID` resumes there.
-async fn log<B: MachineBackend>(
-    State(m): State<Machine<B>>,
+async fn log(
+    State(m): State<Machine>,
     Path(name): Path<String>,
     last: Result<Query<Last>, QueryRejection>,
     headers: HeaderMap,
 ) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    let log = m.backend.log(&name)?;
+    // TensorFS and TensorD's memory notes append to the store's logs, each rotating to one older
+    // file; TensorD's own log rolls daily.
+    let log = match name.as_str() {
+        "tensorfs-transport" => logs::Log::rotated(m.identity.store_logs.clone(), "transport.log"),
+        "memory" => logs::Log::rotated(m.identity.store_logs.clone(), "memory.log"),
+        "tensord" => logs::Log::daily(m.identity.logs.clone(), "tensord"),
+        _ => return Err(Error::not_found("log_not_found", format!("this machine keeps no log {name}")).into()),
+    };
     let start = match headers.get("last-event-id") {
         None => logs::Start::Last(query(last)?.lines),
         Some(id) => logs::Start::After(
@@ -618,22 +566,8 @@ async fn log<B: MachineBackend>(
     Ok(sse(m.authority(&caller), followed(&m.identity, lines)))
 }
 
-fn runs_of<B: MachineBackend>(m: &Machine<B>) -> Result<Arc<crate::runs::Runs>, Error> {
-    m.backend.runs().ok_or_else(|| Error::not_found("capability_unavailable", "this machine takes no objects"))
-}
-
 fn held(ranges: &[(u64, u64)]) -> HeaderValue {
     HeaderValue::from_str(&v1::spell_held(ranges)).expect("ranges are ASCII")
-}
-
-/// `HEAD /v1/objects/sha256:<hex>`: the ranges this signer holds (all of it once stored, its
-/// roots renewed so a run sent next finds it).
-async fn head_object<B: MachineBackend>(State(m): State<Machine<B>>, Path(digest): Path<String>, headers: HeaderMap) -> Answer {
-    let caller = m.caller(&headers)?;
-    caller.machine()?;
-    let (runs, actor) = (runs_of(&m)?, crate::machine_api::actor_id(caller.actor));
-    let ranges = blocking(&runs, move |runs| runs.objects.held(&actor, &digest).map_err(Into::into)).await?;
-    Ok((StatusCode::OK, [(v1::HELD, held(&ranges))]).into_response())
 }
 
 #[derive(Deserialize)]
@@ -644,8 +578,8 @@ struct Length {
 /// `GET /v1/objects/sha256:<hex>?length=N` as SSE: `held` events, the bytes this signer's upload of
 /// the object holds as they land (after each MiB more), ending once it holds all N. A stored object
 /// answers N at once.
-async fn follow_object<B: MachineBackend>(
-    State(m): State<Machine<B>>,
+async fn follow_object(
+    State(m): State<Machine>,
     Path(digest): Path<String>,
     length: Result<Query<Length>, QueryRejection>,
     headers: HeaderMap,
@@ -653,7 +587,7 @@ async fn follow_object<B: MachineBackend>(
     let caller = m.caller(&headers)?;
     caller.machine()?;
     let length = query(length)?.length;
-    let (runs, actor) = (runs_of(&m)?, crate::machine_api::actor_id(caller.actor));
+    let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
     let upload = blocking(&runs, move |runs| runs.objects.upload(&actor, &digest, length).map_err(Into::into)).await?;
     let mut landed = match &upload {
         Some(upload) => upload.follow(),
@@ -681,13 +615,14 @@ async fn follow_object<B: MachineBackend>(
     Ok(sse(m.authority(&caller), received(held)))
 }
 
-/// `POST /v1/objects/held`: `HEAD`'s answer for many objects in one request, in the order asked.
-async fn held_objects<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap, body: Bytes) -> Answer {
+/// `POST /v1/objects/held`: the ranges this signer holds of each object (all of one once stored,
+/// its roots renewed so a run sent next finds it), in the order asked.
+async fn held_objects(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
     let ask: v1::HeldRequest = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("the held request is not JSON: {e}")))?;
-    let (runs, actor) = (runs_of(&m)?, crate::machine_api::actor_id(caller.actor));
+    let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
     let held = blocking(&runs, move |runs| {
         let held = ask.digests.into_iter().map(|digest| {
             let ranges = runs.objects.held(&actor, &digest)?;
@@ -702,8 +637,8 @@ async fn held_objects<B: MachineBackend>(State(m): State<Machine<B>>, headers: H
 /// `PUT /v1/objects/sha256:<hex>`: lands the body at the offset its `Content-Range` names (the
 /// whole object without one). What landed is synced and recorded when the body ends, however it
 /// ends; the object is verified and stored once every byte is held. Uploads hold no admission.
-async fn put_object<B: MachineBackend>(
-    State(m): State<Machine<B>>,
+async fn put_object(
+    State(m): State<Machine>,
     Path(digest): Path<String>,
     headers: HeaderMap,
     body: Body,
@@ -712,7 +647,7 @@ async fn put_object<B: MachineBackend>(
     caller.machine()?;
     drop(m.admit()?);
     let (start, end, length) = span(&headers)?;
-    let (runs, actor) = (runs_of(&m)?, crate::machine_api::actor_id(caller.actor));
+    let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
     let objects = runs.clone();
     let Some(upload) = blocking(&objects, move |runs| runs.objects.upload(&actor, &digest, length).map_err(Into::into)).await? else {
         return Ok((StatusCode::NO_CONTENT, [(v1::HELD, held(&[(0, length)]))]).into_response());
@@ -749,9 +684,7 @@ async fn put_object<B: MachineBackend>(
             // A refused writer drops its receiver; its refusal is the answer.
             Ok(data) => {
                 // An upload moving bytes holds the idle clock, as an output read does; a stalled one does not.
-                if let Some(lifecycle) = &m.identity.lifecycle {
-                    lifecycle.transferred();
-                }
+                m.identity.lifecycle.transferred();
                 if sender.send(data).await.is_err() {
                     break;
                 }

@@ -8,7 +8,8 @@
 //! proves readiness, or rolls back. Its log is the update's state history, so a client
 //! that lost the stream across the restart follows its events again after its cursor and reads the
 //! outcome.
-use super::{auth::VerifiedActor, backend::MachineBackend, v1, MachineIdentity};
+use super::{auth::VerifiedActor, v1, MachineIdentity};
+use crate::runs::{actor_id, Runs};
 use crate::machine::update::{Choice, Request, Status as Update, Updates, BINARY};
 use api::error::Error;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -17,28 +18,21 @@ use futures_util::Stream;
 /// Whether run `id` is an update this machine holds or reserved.
 pub(super) fn owns(
     identity: &MachineIdentity,
-    backend: &impl MachineBackend,
+    runs: &Runs,
     actor: VerifiedActor,
     id: &str,
 ) -> Result<bool, Error> {
-    if let Some(runs) = backend.runs() {
-        let actor = crate::machine_api::actor_id(actor);
-        // Another signer's machine-wide update never shadows this actor's own run.
-        match runs.service.engine.get_public(Some(&actor), id) {
-            Ok(_) => return Ok(false),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(Error::internal("journal_unreadable", error.to_string())),
-        }
-        if runs
-            .service
-            .engine
-            .with_journal(|journal| journal.update_run_reserved(&actor, id))
-            .map_err(|error| Error::internal("journal_unreadable", error.to_string()))?
-        {
-            return Ok(true);
-        }
+    let actor = actor_id(actor);
+    // Another signer's machine-wide update never shadows this actor's own run.
+    match runs.service.engine.get_public(Some(&actor), id) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(Error::internal("journal_unreadable", error.to_string())),
     }
-    Ok(identity.updates.as_ref().is_some_and(|u| u.update(id).is_some()))
+    let reserved = (runs.service.engine)
+        .with_journal(|journal| journal.update_run_reserved(&actor, id))
+        .map_err(|error| Error::internal("journal_unreadable", error.to_string()))?;
+    Ok(reserved || identity.updates.update(id).is_some())
 }
 
 /// An update's payload: each component a release version the machine fetches, or (with its input
@@ -114,31 +108,22 @@ impl Member {
 
 static SUBMITTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn updates(identity: &MachineIdentity) -> Result<Arc<Updates>, Error> {
-    identity
-        .updates
-        .clone()
-        .ok_or_else(|| Error::conflict("update_unsupported", "this machine does not update in place"))
-}
-
 /// Submits update `request` (whether it is new, and its state), or answers the one its id
 /// names.
-pub(super) async fn submit<B: MachineBackend>(
+pub(super) async fn submit(
     identity: Arc<MachineIdentity>,
-    backend: Arc<B>,
+    runs: Arc<Runs>,
     actor: VerifiedActor,
     request: v1::RunRequest,
 ) -> Result<(bool, v1::RunState), Error> {
-    let updates = updates(&identity)?;
+    let updates = identity.updates.clone();
     let id = request.id.clone();
     // SQLite serializes this ID's ownership with ordinary acceptance and cancellation.
-    let runs = backend
-        .runs()
-        .ok_or_else(|| Error::not_found("capability_unavailable", "this machine reserves no update run ids"))?;
-    let owner = crate::machine_api::actor_id(actor);
+    let owner = actor_id(actor);
     let stopped = |_| Error::internal("machine_operation_stopped", "machine operation stopped");
+    let (reserving, reserved) = (runs.clone(), id.clone());
     tokio::task::spawn_blocking(move || {
-        runs.service.engine.with_journal(|journal| journal.reserve_update_run(&owner, &request.id))
+        reserving.service.engine.with_journal(|journal| journal.reserve_update_run(&owner, &reserved))
     })
     .await
     .map_err(stopped)?
@@ -155,7 +140,7 @@ pub(super) async fn submit<B: MachineBackend>(
             return Ok((false, state(&id, &update)));
         }
         // A machine still starting queues it, as an update in progress does: never refused.
-        stage(&updates, &*backend, actor, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
+        stage(&updates, &runs, actor, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
         let update = updates.update(&id).ok_or_else(|| Error::internal("update_unrecorded", "the update was not recorded"))?;
         Ok((true, state(&id, &update)))
     })
@@ -169,7 +154,7 @@ pub(super) async fn events(
     id: String,
     after: u64,
 ) -> Result<impl Stream<Item = Result<v1::RunEvent, Error>>, Error> {
-    let updates = updates(&identity)?;
+    let updates = identity.updates.clone();
     let absent = || Error::not_found("run_not_found", "this machine has no such run");
     let first = updates.update(&id).ok_or_else(absent)?;
     let (sender, receiver) = tokio::sync::mpsc::channel(16);
@@ -205,7 +190,7 @@ pub(super) async fn events(
 
 fn stage(
     updates: &Arc<Updates>,
-    backend: &impl MachineBackend,
+    runs: &Runs,
     actor: VerifiedActor,
     id: &str,
     spec: v1::RunSpec,
@@ -233,7 +218,7 @@ fn stage(
             .strip_prefix("sha256:")
             .filter(|h| h.len() == 64)
             .ok_or_else(|| Error::validation("invalid_digest", "an input digest is sha256:<64 hex>"))?;
-        let mut object = backend.object(actor, sha256).map_err(|e| {
+        let mut object = runs.object(actor, sha256).map_err(|e| {
             Error::conflict(
                 "input_unwritten",
                 format!("the {member} file {} is not held here; PUT it first: {}", input.digest, e.message),
@@ -292,7 +277,7 @@ fn stage(
 
 /// Cancels update `id` before it activates; one activating refuses (`cancel_unavailable`).
 pub(super) async fn cancel(identity: &MachineIdentity, id: &str) -> Result<v1::RunState, Error> {
-    let updates = updates(identity)?;
+    let updates = identity.updates.clone();
     let operation = id.to_string();
     let canceled = tokio::task::spawn_blocking(move || updates.cancel(&operation))
         .await

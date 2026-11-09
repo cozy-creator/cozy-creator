@@ -541,8 +541,6 @@ struct Session {
     used: Instant,
     /// How this executor was launched (fork or spawn) and its start's timings.
     launch: Launch,
-    /// The constructions it has served a call of: their next one is not their first.
-    invoked: std::collections::BTreeSet<String>,
     /// Its row of `Serving`: the manifests its constructions read.
     serving: u64,
 }
@@ -1507,7 +1505,6 @@ impl Pool {
         if gpu_request_queued(engine, None) {
             return "a request is queued; it loads after";
         }
-        let asked = Instant::now();
         let mut result = self.prewarm(engine, held, plan.clone(), start, member.fetch.clone(), preparation);
         if preparation.is_some_and(|preparation| preparation.stop.is_cancelled()) {
             if member.payload.is_some() { *member.prepared.lock().unwrap() = Some(false); }
@@ -1516,7 +1513,6 @@ impl Pool {
         if let (Ok("loaded" | "already loaded"), Level::Gpu | Level::Host) = (&result, level) {
             result = self.map_member(engine, plan, start, member, preparation);
         }
-        self.note_prewarm(&plan.construction, Default::default(), asked.elapsed(), &result);
         match result {
             Ok("loaded" | "already loaded" | "mapped") => "",
             Ok(held_back) => held_back,
@@ -1904,7 +1900,7 @@ impl Pool {
         &self,
         installed: &crate::journal::Installation,
         entrypoint: &str,
-        choices: &[crate::api::domain::ModelChoice],
+        choices: &[crate::stored::ModelChoice],
         payload: Option<&serde_json::Value>,
         grants: &[ModelGrant],
         degree: u32,
@@ -2343,72 +2339,6 @@ impl Pool {
             result
         })
     }
-    /// One line per Load in `loads.jsonl`: the executor's load facts, the machine's and executor's
-    /// RSS/PSS, and its process: its key and the constructions it held before (none: a new one).
-    #[allow(clippy::too_many_arguments)]
-    fn record_load(
-        &self,
-        plan: &str,
-        gpus: &str,
-        took: std::time::Duration,
-        loaded: &Frame,
-        executor: u32,
-        launch: &Launch,
-        (env, beside): (&str, &[&str]),
-    ) -> io::Result<()> {
-        use platform::contain::host_memory::{process, ProcessMemory};
-        #[derive(Serialize)]
-        struct Line<'a> {
-            plan: &'a str,
-            gpus: &'a str,
-            load_ms: f64,
-            facts: &'a Option<device_executor::LoadFacts>,
-            machine: ProcessMemory,
-            executor: ProcessMemory,
-            launch: &'a Launch,
-            env: &'a str,
-            beside: &'a [&'a str],
-        }
-        let line = Line {
-            env,
-            beside,
-            plan,
-            gpus,
-            load_ms: took.as_secs_f64() * 1e3,
-            facts: &loaded.facts,
-            machine: process(std::process::id()).unwrap_or_default(),
-            executor: process(executor).unwrap_or_default(),
-            launch,
-        };
-        let mut bytes = serde_json::to_vec(&line)?;
-        bytes.push(b'\n');
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.root.join("loads.jsonl"))?
-            .write_all(&bytes)
-    }
-    /// One line per call in `invokes.jsonl`: wall time, whether it was the executor's first,
-    /// and the executor's weight-movement facts and metrics.
-    fn record_invoke(&self, plan: &str, gpus: &str, first: bool, took: std::time::Duration, reply: &Frame) {
-        let line = serde_json::json!({
-            "plan": plan,
-            "gpus": gpus,
-            "first": first,
-            "invoke_ms": took.as_secs_f64() * 1e3,
-            "memory": reply.memory,
-            "metrics": reply.metrics,
-        });
-        let written = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.root.join("invokes.jsonl"))
-            .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
-        if let Err(error) = written {
-            tracing::warn!("invokes.jsonl: {error}");
-        }
-    }
-
     /// The host watcher looks now (a nudge; the host's own events wake it too).
     fn nudge_host(&self) {
         if let Some(host) = &self.host {
@@ -2444,7 +2374,6 @@ impl Pool {
                     record.state == State::Running && record.cancel_actor.is_none()
                 });
                 if !active() { return; }
-                let asked = Instant::now();
                 if let Some((zygote, start)) = pool.zygote(&held) {
                     if start {
                         pool.start_parent(&zygote, &held);
@@ -2453,7 +2382,7 @@ impl Pool {
                 }
                 let key = plan.construction.clone();
                 if pool.hosting(&plan).iter().any(|(_, loaded)| *loaded) {
-                    return pool.note_prewarm(&key, asked.elapsed(), Default::default(), &Ok("already loaded"));
+                    return;
                 }
                 // Queued requests of its root and older roots go first; a released lane ends
                 // the hint.
@@ -2480,8 +2409,7 @@ impl Pool {
                 pool.notes.note(serde_json::json!({"event": "prefetch_prewarm", "plan": key, "owner": owner, "gpu": start}));
                 let stop = engine.stoppable(&format!("prefetch:{owner}:{key}"));
                 let done = std::sync::atomic::AtomicBool::new(false);
-                let waited = asked.elapsed();
-                let result = std::thread::scope(|scope| {
+                let _ = std::thread::scope(|scope| {
                     scope.spawn(|| loop {
                         let epoch = engine.activity_epoch();
                         if done.load(std::sync::atomic::Ordering::Acquire) { return; }
@@ -2496,34 +2424,9 @@ impl Pool {
                     engine.notify_activity();
                     result
                 });
-                pool.note_prewarm(&key, waited, asked.elapsed() - waited, &result);
             });
         if let Err(error) = started {
             tracing::warn!("executor prefetch: {error}");
-        }
-    }
-
-    /// One line per prewarm in `prewarm.jsonl`: what it did and how long it waited first.
-    fn note_prewarm(
-        &self,
-        plan: &str,
-        waited: std::time::Duration,
-        took: std::time::Duration,
-        result: &io::Result<&'static str>,
-    ) {
-        let line = serde_json::json!({
-            "plan": plan,
-            "outcome": result.as_ref().map_or_else(|e| format!("failed: {e}"), |o| o.to_string()),
-            "waited_ms": waited.as_secs_f64() * 1e3,
-            "took_ms": took.as_secs_f64() * 1e3,
-        });
-        let written = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.root.join("prewarm.jsonl"))
-            .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
-        if let Err(error) = written {
-            tracing::warn!("prewarm.jsonl: {error}");
         }
     }
 
@@ -3306,7 +3209,6 @@ impl Pool {
             executor,
             used: Instant::now(),
             launch,
-            invoked: Default::default(),
             serving: id,
         })
     }
@@ -3469,18 +3371,7 @@ impl Pool {
                     }))
                 }
             };
-            let started = std::time::Instant::now();
-            let loaded = command_ok(session.executor.command(&load, &mut callbacks).map_err(before_entry)?)?;
-            let beside: Vec<&str> = session.loaded.keys().map(String::as_str).collect();
-            self.record_load(
-                &construction,
-                &lane,
-                started.elapsed(),
-                &loaded,
-                session.executor.birth.pid,
-                &session.launch,
-                (&session.env, &beside),
-            )?;
+            command_ok(session.executor.command(&load, &mut callbacks).map_err(before_entry)?)?;
             session.loaded.insert(construction.clone(), Level::Host);
             if let Some(leader) = self.leaders.lock().unwrap().get_mut(&session.executor.birth.pid) {
                 leader.constructions.insert(construction.clone());
@@ -3587,8 +3478,6 @@ impl Pool {
             .map(|(operation, _)| operation)
             .unwrap_or_default();
         session.executor.codec().prestart();
-        let invoked = Instant::now();
-        let first = session.invoked.insert(construction.clone());
         let invoking = session.executor.lookahead().invoking(id);
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
         let reply = session.executor.command(
@@ -3630,7 +3519,6 @@ impl Pool {
             "device_lease_ms": metrics.device_lease_ms, "d2h_wait_ms": metrics.d2h_wait_ms}));
         dispatched.record(&reply, &self.config.inventory);
         session.loaded.insert(construction.clone(), Level::Gpu);
-        self.record_invoke(&construction, &lane, first, invoked.elapsed(), &reply);
         self.note_decisions(id, session.executor.birth.pid, &lane, &reply);
         record_measurements(engine, id, &plan, &reply, &driver.map(platform::gpu::Peak::end).unwrap_or_default());
         phase(serde_json::json!({"phase": "measurements_recorded"}));

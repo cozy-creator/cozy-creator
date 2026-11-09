@@ -5,7 +5,7 @@
 //! them). A restart before it completes prepares it again, from its kept spec or, sent with tokens,
 //! as its controller sends it again (`journal::interrupt_preparations`).
 use crate::{
-    api::domain,
+    stored,
     call_memo::{self, Memo},
     execution::Stoppable,
     catalog::HeldGeneration,
@@ -28,6 +28,10 @@ use std::{
 };
 
 mod model_folder;
+mod read;
+mod sent;
+pub(crate) use read::{actor_id, Log, OutputSnapshot};
+pub(crate) use sent::{choices, resume};
 
 pub(crate) enum Source {
     /// A published release by name (th-245); empty: the Hub's newest.
@@ -47,7 +51,7 @@ type Published = (String, String);
 pub(crate) struct SetItem {
     pub source: Source,
     pub entrypoint: String,
-    pub models: Vec<domain::ModelChoice>,
+    pub models: Vec<stored::ModelChoice>,
     pub payload: Option<api::machine::Json>,
     /// As `Spec::lane`, for this member's main model.
     pub lane: String,
@@ -69,7 +73,7 @@ pub(crate) struct Spec {
     pub entrypoint: String,
     pub input: Value,
     pub inputs: Vec<InputFile>,
-    pub models: Vec<domain::ModelChoice>,
+    pub models: Vec<stored::ModelChoice>,
     pub attention_kernel: String,
     pub gpus: u32,
     /// The main model's lane; empty, and every other slot: the Hub's pick for the hardware. A
@@ -113,6 +117,8 @@ pub(crate) struct Runs {
     /// Unfinished runs' preparation: their children prepare with it, and their weights are
     /// fetched and published with its access.
     pub contexts: Mutex<HashMap<String, RunContext>>,
+    /// Held while a finished run's log is made: one maker of an output's custody at a time.
+    pub projection: Mutex<()>,
 }
 
 /// What a run's children prepare with: its installation, Hub access, owner, catalog revision,
@@ -129,13 +135,13 @@ pub(crate) struct RunContext {
     pub(crate) attention_kernel: String,
     pub(crate) gpus: u32,
     pub(crate) lane: String,
-    pub(crate) models: Vec<domain::ModelChoice>,
+    pub(crate) models: Vec<stored::ModelChoice>,
     /// What its weights come under before its call's executor reads them (`Fetch::ahead`).
     pub(crate) ahead: Option<Arc<crate::access::Fetch>>,
 }
 
 /// A choice for the run's own slots: a bare parameter, or one under its own name.
-fn own_choice(choice: &domain::ModelChoice, entrypoint: &str) -> bool {
+fn own_choice(choice: &stored::ModelChoice, entrypoint: &str) -> bool {
     match choice.parameter.split_once(".models.") {
         None => true,
         Some((callable, _)) => callable == entrypoint,
@@ -246,7 +252,7 @@ fn repo_files(store: &tensorfs::store::Store, tree: Option<&ObjectRef>) -> Resul
 
 /// A named commit (tree) or header already held for an upload; a local one never falls back to a
 /// remote repository or its newest release.
-fn held_tree(store: &crate::storage::Store, choice: &domain::ModelChoice) -> Result<Option<crate::published::Named>, Refused> {
+fn held_tree(store: &crate::storage::Store, choice: &stored::ModelChoice) -> Result<Option<crate::published::Named>, Refused> {
     let Some(manifest) = choice.manifest.as_ref().filter(|_| !choice.repository.is_empty()) else {
         return Ok(None);
     };
@@ -530,7 +536,7 @@ impl Runs {
     ) -> Result<Vec<Value>, Refused> {
         let destination = spec.weights_destination.trim_start_matches("model://");
         // A composition by reference: choice `base[:<component>,…]` is the model the one upload starts from.
-        let (bases, choices): (Vec<&domain::ModelChoice>, Vec<&domain::ModelChoice>) =
+        let (bases, choices): (Vec<&stored::ModelChoice>, Vec<&stored::ModelChoice>) =
             spec.models.iter().partition(|choice| choice.parameter.split(':').next() == Some(api::machine::BASE));
         if !destination.is_empty() && choices.len() != 1 {
             return Err(refused("invalid_request", "a weights destination takes one model"));
@@ -627,7 +633,7 @@ impl Runs {
         actor: &str,
         id: &str,
         spec: &Spec,
-        choice: &domain::ModelChoice,
+        choice: &stored::ModelChoice,
         structure: bool,
         observe: &(dyn Fn(&str, u64, u64) + Sync),
         stoppable: &Stoppable,
@@ -1316,7 +1322,7 @@ impl Runs {
         hub: Option<hub::Source>,
         spec: &Spec,
         entrypoint: &str,
-        choices: &[domain::ModelChoice],
+        choices: &[stored::ModelChoice],
         payload: Option<Value>,
         lane: &str,
         observe: Option<crate::published::Observer>,
@@ -1358,7 +1364,7 @@ impl Runs {
         entrypoint: &str,
         input: Value,
         inputs: Vec<InputFile>,
-        passed: Vec<domain::ModelChoice>,
+        passed: Vec<stored::ModelChoice>,
     ) -> Result<Execution, Refused> {
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         // A call the same attempt made already is its run: nothing prepares.
@@ -1401,7 +1407,7 @@ impl Runs {
         input: Value,
         inputs: Vec<InputFile>,
         digest: &str,
-        passed: &[domain::ModelChoice],
+        passed: &[stored::ModelChoice],
     ) -> Result<Spec, Refused> {
         let context = self.contexts.lock().unwrap().get(parent).cloned().ok_or_else(|| {
             refused("child_call_refused", "the caller's preparation context is gone")
@@ -1431,7 +1437,7 @@ impl Runs {
                 .filter_map(|choice| {
                     let path = addressed(&choice.parameter, &installed.package, &callee_interface)
                         .filter(|path| path.starts_with(&prefix))?;
-                    Some(domain::ModelChoice { parameter: path, ..choice })
+                    Some(stored::ModelChoice { parameter: path, ..choice })
                 })
                 .collect(),
             attention_kernel: context.attention_kernel,
@@ -1469,11 +1475,11 @@ impl Runs {
             let names_model = !choice.repository.is_empty() || choice.manifest.is_some() || !choice.source.is_empty();
             let mut chosen = match prior {
                 Some(prior) if !names_model => prior,
-                _ => domain::ModelChoice { parameter: path, adapters: vec![], ..choice.clone() },
+                _ => stored::ModelChoice { parameter: path, adapters: vec![], ..choice.clone() },
             };
             for adapter in &choice.adapters {
-                let named = |held: &&mut domain::DownloadAdapterRef| {
-                    domain::DownloadAdapterRef { scale: adapter.scale.clone(), ..(*held).clone() } == *adapter
+                let named = |held: &&mut stored::DownloadAdapterRef| {
+                    stored::DownloadAdapterRef { scale: adapter.scale.clone(), ..(*held).clone() } == *adapter
                 };
                 match chosen.adapters.iter_mut().find(named) {
                     Some(held) => held.scale = adapter.scale.clone(),
@@ -1491,7 +1497,7 @@ impl Runs {
     /// to prewarm a Runtime construction when admitted.
     pub(crate) fn prefetch(
         self: &Arc<Self>, parent: &Execution, application: &str, entrypoint: &str,
-        passed: Vec<domain::ModelChoice>,
+        passed: Vec<stored::ModelChoice>,
     ) -> Result<(), Refused> {
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         let spec = self.child_spec(&actor, &parent.id, application, entrypoint,

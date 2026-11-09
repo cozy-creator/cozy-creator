@@ -6,7 +6,7 @@
 pub(crate) mod environment;
 pub(crate) mod layer;
 use crate::{
-    api::domain,
+    stored,
     gpu_service::{Plan, Pool, ModelGrant},
     hub::{self, Catalog},
     journal::{Installation, Preparation},
@@ -114,7 +114,7 @@ pub(crate) struct Request {
     pub entrypoint: String,
     /// Only explicitly marked fields enter the model resolution key.
     pub payload: Option<Value>,
-    pub choices: Vec<domain::ModelChoice>,
+    pub choices: Vec<stored::ModelChoice>,
     /// 0 selects the widest supported machine group; otherwise exactly this many GPUs.
     pub gpus: u32,
     /// The main model's lane; empty lets the Hub pick for the hardware.
@@ -463,7 +463,7 @@ impl Publisher {
         &self,
         installation: &Installation,
         path: &str,
-        choice: &domain::ModelChoice,
+        choice: &stored::ModelChoice,
         providers: &Providers,
         job: &Job,
     ) -> Result<ModelGrant, Failure> {
@@ -499,7 +499,7 @@ impl Publisher {
     }
 
     /// A slot's model this machine's store holds, by its header or its tree.
-    fn held_grant(&self, installation: &Installation, path: &str, reference: &domain::Ref) -> Result<ModelGrant, Failure> {
+    fn held_grant(&self, installation: &Installation, path: &str, reference: &stored::Ref) -> Result<ModelGrant, Failure> {
         let named = format!("sha256:{}", sha256::hex(&reference.digest));
         let absent = |_| ("checkpoint_absent", format!("{path} names checkpoint {named}, which this machine does not hold: run what made it on this machine, or name a model of the Hub's"));
         let checkpoint = storage::checkpoint(&self.store, &named).map_err(absent)?;
@@ -1382,7 +1382,7 @@ fn warnings_key(resolution: &str) -> String {
 
 /// A Hub model slot's commit as its choice names it (th-245): by hash, else `repository` at
 /// `release` in the choice's lane; no lane is the Hub's pick (`resolve`).
-pub(crate) fn choose(choice: &domain::ModelChoice, path: &str) -> Result<Named, Failure> {
+pub(crate) fn choose(choice: &stored::ModelChoice, path: &str) -> Result<Named, Failure> {
     if choice.repository.is_empty() {
         return Err(("model_choice_absent", format!("{path}'s choice names no model repository")));
     }
@@ -1548,7 +1548,7 @@ const VIEWS: [(&str, &str, &str); 2] = [("cozy-runtime", "Runtime", "0.35.5"), (
 
 /// A LoRA'd call runs only where the installation's environment opens adapter views: one on an
 /// older lock's pair does not.
-fn opens_views(service: &Service, installation: &Installation, choice: &domain::ModelChoice) -> Result<(), Failure> {
+fn opens_views(service: &Service, installation: &Installation, choice: &stored::ModelChoice) -> Result<(), Failure> {
     if choice.adapters.is_empty() {
         return Ok(());
     }
@@ -1575,7 +1575,7 @@ fn apply_adapters(
     publisher: &Publisher,
     source: Option<&hub::Source>,
     resolve: &dyn Fn(&hub::Source, Named) -> Result<Named, Failure>,
-    choice: &domain::ModelChoice,
+    choice: &stored::ModelChoice,
     grant: &mut ModelGrant,
     runs: &[String],
     providers: &Providers,
@@ -1818,7 +1818,7 @@ pub(crate) fn io_failure(error: io::Error) -> Failure {
 /// A slot's declared default as a choice (its `default`: `[org/]model@release`, or a local
 /// model `local/<name>`, its newest): what a run that names no model for the slot gets, in its
 /// declared `lane`, else the Hub's pick. A model with no org is first-party, the root's (xs-071).
-pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<domain::ModelChoice> {
+pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<stored::ModelChoice> {
     let default = slot.get("default")?.as_str()?;
     let (model, release) = match default.split_once('@') {
         Some(named) => named,
@@ -1829,7 +1829,7 @@ pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<domain::ModelCh
         false => format!("{}/{model}", api::names::ROOT),
     };
     let lane = slot.get("lane").and_then(Value::as_str).unwrap_or_default().into();
-    Some(domain::ModelChoice { parameter: path.into(), repository, release: release.into(), lane, ..Default::default() })
+    Some(stored::ModelChoice { parameter: path.into(), repository, release: release.into(), lane, ..Default::default() })
 }
 
 fn local_aliases(installation: &Installation, request: &Request) -> io::Result<bool> {

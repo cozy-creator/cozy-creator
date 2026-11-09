@@ -35,7 +35,7 @@ Plan of record and workstream IDs (A–F):
 ## Process picture
 
 ```
-Calcifer ──HTTPS (Cozy-Cap)──> api::http ─> machine_api::NativeBackend
+Calcifer ──HTTPS (Cozy-Cap)──> api::http ─> runs::Runs
                                                         │
                                                         ▼
                                           service::Service (dispatch policy)
@@ -77,14 +77,12 @@ code is still not sandboxed.
 | `api/server.rs` | The pinned-TLS listener (h2 and http/1.1) and the readiness self-probe | `MachineIdentity`, `serve` | D1 |
 | `api/http.rs` | The machine API's Router (`MACHINE-API.md`): auth, refusals as the error envelope, SSE, ranged outputs, object parts | `router`, `Refusal` | H |
 | `api/auth.rs` | Admitted keys (a rental's Hub lease) and each open stream's authority | `Authority`, `Keys`, `StreamAuthority` | D1 |
-| `api/domain.rs` | Current typed native execution/backend values; no RPC or version identity | Native queries, state, model and custody values | APIM |
-| `archive.rs` | Private stored model/product/terminal codecs, preserving existing byte tags | Stored records and codec functions | APIM |
-| `api/backend.rs` | The one backend trait the server calls | `MachineBackend`, `Observation` | D1 |
-| `api/machine_runs.rs` | Runs: submit (idempotent per signer), the engine's pages as a run's events | `submit`, `follow` | G |
+| `stored.rs` | What the journal stores as JSON: model choices, products, a finished run's log | `ModelChoice`, `RunProduct`, `LogPage` | APIM |
+| `api/machine_runs.rs` | A run's log as a stream, and what an output-limited grant sees of it | `follow` | G |
 | `api/machine_status.rs` | Status: identity and receipt to anyone, the whole machine to a machine cap as it changes | `frame`, `watch` | D2 |
 | `api/machine_update.rs` | Runs of `kind: update`: a software cohort from versions or held wheel objects; its log is the update's state history | `submit`, `events`, `owns` | D2 |
 | `api/capability.rs` | `Cozy-Cap` grants (the Go agent's token) for run outputs and maintenance | `Grant`, `verify`, `mint` | G |
-| `machine_api.rs` | `MachineBackend` implementation: submit, events, collect, list, inventory | `NativeBackend` | D1 |
+| `runs/sent.rs`, `runs/read.rs` | A run as sent made the machine's own and admitted; a run as its client reads it: state, log, outputs, and what the machine holds for a caller | `Runs::accept`, `Runs::read`, `Log` | D1 |
 | `products.rs` | Run output log: `Outputs.publish` custody and `product` events (SET/APPEND, composite parts) | `publish`, `retain`, `document` | G |
 | `triage.rs` | One bounded triage bundle per failed attempt, named by its outcome | `TriageRef`, `Facts` | G |
 | `hub.rs` | Hub access (th-245): the package catalog read anonymously; models through TensorFS's distribution `Endpoint` under the signer's run capability (`Capability`: per signer and Hub, redeemed for DPoP-bound tokens with the in-memory workload key and renewed while its runs live; cl-675), else anonymously | `Source`, `Catalog`, `Capability`, `workload_key`, `Refusal` | D1 |

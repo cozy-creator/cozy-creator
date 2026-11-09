@@ -6,7 +6,7 @@
 //! what the log does not already show. Runtime checkpoint outputs carry immutable TensorFS
 //! references only; TensorD records them without adopting or uploading their bytes.
 use crate::{
-    api::domain,
+    stored,
     catalog::Generation,
     device_executor::{Answer, CheckpointItem, Publish, SavedFile},
     execution::Engine,
@@ -38,7 +38,7 @@ pub(crate) fn retain(
     owner: &str,
     source: &mut File,
     object: &ObjectRef,
-) -> io::Result<domain::NativeByteRetentionRequest> {
+) -> io::Result<stored::NativeByteRetentionRequest> {
     // Bytes already held (a product published while the run made it, a memoized or child
     // result) are not read again.
     let cas = engine.cas();
@@ -46,11 +46,11 @@ pub(crate) fn retain(
         cas.put(source, Some(object))?;
     }
     let tree = crate::trees::put(&cas, owner, [("payload".to_string(), object.clone())].into())?;
-    let native = domain::NativeByteRetentionRequest {
-        source: Some(domain::NativeByteTreeRef {
+    let native = stored::NativeByteRetentionRequest {
+        source: Some(stored::NativeByteTreeRef {
             producer_root_id: tree.hold,
             receipt_digest: unhex(&tree.manifest.sha256)?,
-            manifest: Some(domain::Ref {
+            manifest: Some(stored::Ref {
                 digest: unhex(&tree.manifest.sha256)?,
                 length: tree.manifest.length,
             }),
@@ -58,7 +58,7 @@ pub(crate) fn retain(
         }),
         retention_id: owner.into(),
     };
-    engine.bind_native_output(actor, owner, &crate::archive::encode_native_byte_retention_request(&native))?;
+    engine.bind_native_output(actor, owner, &crate::stored::encode(&native))?;
     // The signer's own, so a later run of it may name these bytes by their hash, with nothing written.
     engine.with_journal(|j| j.adopt_object(actor, run, object))?;
     Ok(native)
@@ -177,7 +177,7 @@ pub(crate) fn present(schema: &Value) -> &Value {
 
 /// How a declared result field takes products: a single asset is SET, a list of assets grows
 /// by APPEND, optional or not. Anything else is not a publishable output.
-fn output_op(result: &Value, output: &str) -> Option<domain::RunProductOp> {
+fn output_op(result: &Value, output: &str) -> Option<stored::RunProductOp> {
     let mut schema = result;
     for name in output.split('.') {
         schema = present(schema)
@@ -189,16 +189,16 @@ fn output_op(result: &Value, output: &str) -> Option<domain::RunProductOp> {
     }
     let schema = present(schema);
     if schema.get("asset").is_some() {
-        Some(domain::RunProductOp::Set)
+        Some(stored::RunProductOp::Set)
     } else if schema.get("list")?.get("asset").is_some() {
-        Some(domain::RunProductOp::Append)
+        Some(stored::RunProductOp::Append)
     } else {
         None
     }
 }
 
-pub(crate) fn decode(stored: &StoredProduct) -> io::Result<domain::RunProduct> {
-    crate::archive::decode_run_product(stored.product.as_slice())
+pub(crate) fn decode(stored: &StoredProduct) -> io::Result<stored::RunProduct> {
+    crate::stored::decode(stored.product.as_slice())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "journaled product is corrupt"))
 }
 
@@ -262,9 +262,9 @@ pub(crate) fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq
             None => (item.repo_id.clone(), item.revision.clone()),
         };
         let reference = api::machine::CheckpointRef { repo_id, revision, lane: item.output.clone() };
-        let product = domain::RunProduct {
+        let product = stored::RunProduct {
             output: item.output.clone(), checkpoint: Some(reference.clone()),
-            op: domain::RunProductOp::Set as i32, ..Default::default()
+            op: stored::RunProductOp::Set as i32, ..Default::default()
         };
         engine.append_product(id, |prior| {
             let prior = prior.iter().map(decode).collect::<io::Result<Vec<_>>>()?;
@@ -287,7 +287,7 @@ fn commit(
     id: &str,
     spool: &Path,
     publish: &Publish,
-) -> io::Result<(domain::Ref, u64)> {
+) -> io::Result<(stored::Ref, u64)> {
     let (context, entry) = declared(engine, generation, id)?;
     let result = api::interface::result(&entry).ok_or_else(|| io::Error::other("declared result schema absent"))?;
     let op = output_op(result, &publish.output).ok_or_else(|| {
@@ -302,7 +302,7 @@ fn commit(
     if publish.parts.len() > MAX_PARTS {
         return Err(storage(format!("a product has at most {MAX_PARTS} parts")));
     }
-    let retain_file = |path: &Path| -> io::Result<(domain::Ref, domain::NativeByteRetentionRequest)> {
+    let retain_file = |path: &Path| -> io::Result<(stored::Ref, stored::NativeByteRetentionRequest)> {
         let object = hash_file(path)?;
         // One hold per distinct byte string of the run; TensorFS names owners by digest.
         let named = format!(
@@ -321,14 +321,14 @@ fn commit(
             &object,
         )?;
         Ok((
-            domain::Ref {
+            stored::Ref {
                 digest: unhex(&object.sha256)?,
                 length: object.length,
             },
             source,
         ))
     };
-    let mut product = domain::RunProduct {
+    let mut product = stored::RunProduct {
         output: publish.output.clone(),
         op: op as i32,
         media_type: publish.media_type.clone(),
@@ -348,13 +348,13 @@ fn commit(
             let mut file = File::open(&path)?;
             length += io::copy(&mut file, &mut whole)?;
             let (content, source) = retain_file(&path)?;
-            product.parts.push(domain::RunProductPart {
+            product.parts.push(stored::RunProductPart {
                 content: Some(content),
                 source: Some(source),
                 duration_us: part.duration_us,
             });
         }
-        product.content = Some(domain::Ref {
+        product.content = Some(stored::Ref {
             digest: whole.finalize().to_vec(),
             length,
         });
@@ -362,7 +362,7 @@ fn commit(
     let content = product.content.clone().unwrap_or_default();
     let sequence = engine.append_product(id, |prior| {
         let prior = prior.iter().map(decode).collect::<io::Result<Vec<_>>>()?;
-        if op == domain::RunProductOp::Append {
+        if op == stored::RunProductOp::Append {
             let items = prior
                 .iter()
                 .filter(|p| p.output == product.output && p.op == op as i32)
@@ -382,10 +382,10 @@ fn commit(
 }
 
 /// The canonical body of one product event.
-pub(crate) fn document(product: &domain::RunProduct) -> io::Result<Value> {
+pub(crate) fn document(product: &stored::RunProduct) -> io::Result<Value> {
     let missing = || io::Error::new(io::ErrorKind::InvalidData, "product reference absent");
-    let reference = |content: &domain::Ref| json!({"digest":format!("sha256:{}",sha256::hex(&content.digest)),"length":content.length});
-    let source = |source: &domain::NativeByteRetentionRequest| -> io::Result<Value> {
+    let reference = |content: &stored::Ref| json!({"digest":format!("sha256:{}",sha256::hex(&content.digest)),"length":content.length});
+    let source = |source: &stored::NativeByteRetentionRequest| -> io::Result<Value> {
         let tree = source.source.as_ref().ok_or_else(missing)?;
         let manifest = tree.manifest.as_ref().ok_or_else(missing)?;
         Ok(
@@ -430,8 +430,8 @@ pub(crate) fn document(product: &domain::RunProduct) -> io::Result<Value> {
 
 /// Whether the log already shows a returned product: the same bytes as the last SET of that
 /// output, or an APPEND at an index the log already holds.
-pub(crate) fn shown(log: &[domain::RunProduct], product: &domain::RunProduct) -> bool {
-    if product.op == domain::RunProductOp::Append as i32 {
+pub(crate) fn shown(log: &[stored::RunProduct], product: &stored::RunProduct) -> bool {
+    if product.op == stored::RunProductOp::Append as i32 {
         log.iter()
             .any(|p| p.output == product.output && p.op == product.op && p.index == product.index)
     } else {
@@ -443,4 +443,4 @@ pub(crate) fn shown(log: &[domain::RunProduct], product: &domain::RunProduct) ->
 }
 
 /// The product bytes held by the execution journal.
-pub(crate) fn encode(product: &domain::RunProduct) -> Vec<u8> { crate::archive::encode_run_product(product) }
+pub(crate) fn encode(product: &stored::RunProduct) -> Vec<u8> { crate::stored::encode(product) }

@@ -1,0 +1,296 @@
+//! A run as it was sent (`api::machine::RunRequest`) made this machine's own (`Spec`), and admitted.
+use super::Runs;
+use crate::{
+    api::auth::VerifiedActor,
+    gpu_service::Level,
+    objects::refusal as refused,
+    stored,
+};
+use api::{error::Error, machine as v1};
+use serde_json::Value;
+use std::sync::Arc;
+
+/// A run's model choices as the preparation path reads them.
+pub(crate) fn choices(sent: Vec<v1::ModelChoice>) -> Result<Vec<stored::ModelChoice>, Error> {
+    sent.into_iter()
+        .map(|choice| -> Result<stored::ModelChoice, Error> {
+            Ok(stored::ModelChoice {
+                parameter: choice.parameter,
+                repository: choice.repository,
+                release: choice.release,
+                lane: choice.lane,
+                manifest: if choice.manifest.is_empty() {
+                    None
+                } else {
+                    Some(stored::Ref {
+                        digest: digest(&choice.manifest)?,
+                        length: choice.manifest_length,
+                    })
+                },
+                source: choice.source,
+                profiles: choice.profiles,
+                trained_on: choice.trained_on,
+                adapters: choice
+                    .adapters
+                    .into_iter()
+                    .map(|a| stored::DownloadAdapterRef {
+                        component: a.component,
+                        model: a.model,
+                        release: a.release,
+                        lane: a.lane,
+                        manifest: a.manifest,
+                        scale: a.scale,
+                        source: a.source,
+                        profiles: a.profiles,
+                        ..Default::default()
+                    })
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+/// A published release by name (th-245): empty is the Hub's newest.
+fn release_source(release: v1::Release) -> crate::runs::Source {
+    crate::runs::Source::Release { package: release.package, release: release.release }
+}
+
+/// One warm set member, kept as it was sent for Status; None for one at `off`, which leaves
+/// the set.
+fn member(mut item: v1::WarmItem) -> Result<Option<crate::runs::SetItem>, Error> {
+    (item.holds, item.held_back) = Default::default();
+    let level = match item.level {
+        v1::WarmLevel::Off => return Ok(None),
+        v1::WarmLevel::Installed => Level::Installed,
+        v1::WarmLevel::Downloaded => Level::Downloaded,
+        v1::WarmLevel::Imported => Level::Imported,
+        v1::WarmLevel::Host => Level::Host,
+        v1::WarmLevel::Gpu => Level::Gpu,
+    };
+    if item.payload.is_some() && level != Level::Gpu {
+        return Err(Error::validation("invalid_warm_set", "a prepared program requires GPU warming"));
+    }
+    let sent = serde_json::to_vec(&item).expect("a warm item serializes");
+    let source = match item.source {
+        Some(v1::WarmSource::Release(release)) => release_source(release),
+        Some(v1::WarmSource::Installation(alias)) => crate::runs::Source::Installation(alias),
+        None => {
+            return Err(Error::validation(
+                "invalid_warm_set",
+                "a warm set member names a release or an installation",
+            ))
+        }
+    };
+    Ok(Some(crate::runs::SetItem {
+        source,
+        entrypoint: item.entrypoint,
+        models: choices(item.models)?,
+        payload: item.payload,
+        lane: item.lane,
+        level,
+        sent,
+    }))
+}
+
+/// A Run spec as this machine's run sources (`runs`), and the Hub it reads. Its digest (the
+/// Hub's origin alone) makes the id idempotent: the same id with another spec is refused.
+fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAccess>), Error> {
+    let (warm, remove) = match spec.kind {
+        v1::RunKind::Call => (false, false),
+        v1::RunKind::Warm => (true, false),
+        v1::RunKind::Remove => (false, true),
+        v1::RunKind::Update => return Err(Error::validation("invalid_kind", "an update is not a run of code")),
+    };
+    // Kept while it prepares, for a restart to prepare it again. Tokens stay in memory: a run sent
+    // with them keeps nothing, and its controller sends it again (`interrupt_preparations`).
+    let tokens = spec.providers.as_ref().is_some_and(|p| !p.huggingface.is_empty() || !p.civitai.is_empty())
+        || spec.tensorfs.as_ref().is_some_and(|options| !options.token.is_empty())
+        || spec.hub.as_ref().is_some_and(|hub| !hub.capability.is_empty());
+    let journaled = if tokens { vec![] } else { serde_json::to_vec(&spec).unwrap_or_default() };
+    let input: Value = match &spec.payload {
+        None => serde_json::json!({}),
+        Some(payload) => crate::boundary_json::parse(payload.get().as_bytes())
+            .map_err(|_| Error::validation("invalid_payload", "the payload is not JSON"))?,
+    };
+    let hub = spec.hub.take();
+    let providers = spec.providers.take();
+    let tensorfs = spec.tensorfs.take();
+    // What the run is, not how it reaches its sources: a spec re-sent with other access,
+    // another catalog revision or a reformatted payload names the same run.
+    let identity_digest = {
+        let mut identity = spec.clone();
+        identity.catalog_revision.clear();
+        identity.payload = None;
+        identity.hub = hub.as_ref().map(|hub| v1::HubAccess {
+            origin: hub.origin.trim_end_matches('/').into(),
+            ..Default::default()
+        });
+        identity.tensorfs = tensorfs.as_ref().map(|options| v1::TensorFSOptions {
+            endpoint: options.endpoint.trim_end_matches('/').into(),
+            ..Default::default()
+        });
+        // Auto transport for the existing Hub is the same run as the older caller's None.
+        // A genuinely distinct endpoint remains part of the identity.
+        if identity.tensorfs.as_ref().is_some_and(|options| {
+            identity.hub.as_ref().is_some_and(|hub| hub.origin == options.endpoint)
+        }) {
+            identity.tensorfs = None;
+        }
+        // A JSON value's objects are sorted maps and its numbers exact: one spelling per spec.
+        let mut identity = serde_json::to_value(&identity).expect("a run spec serializes");
+        identity["payload"] = input.clone();
+        let encoded = crate::boundary_json::exact(&identity);
+        format!("sha256:{}", tensorfs::sha256::hex_digest(&encoded))
+    };
+    if hub.as_ref().is_some_and(|hub| !crate::hub::valid_origin(&hub.origin)) {
+        return Err(Error::validation("invalid_hub_origin", "the run's Hub origin is invalid"));
+    }
+    if tensorfs.as_ref().is_some_and(|options| !crate::hub::valid_origin(&options.endpoint)) {
+        return Err(Error::validation("invalid_tensorfs_endpoint", "the TensorFS endpoint is invalid"));
+    }
+    let source = match spec.source {
+        Some(v1::Source::Release(release)) => release_source(release),
+        Some(v1::Source::Installation(alias)) => crate::runs::Source::Installation(alias),
+        Some(v1::Source::Local(local)) => crate::runs::Source::Local(local.manifest),
+        // A warm run of model choices alone makes them (and uploads to its destination).
+        None if warm => crate::runs::Source::Models,
+        None => return Err(Error::validation("invalid_source", "a run spec names its source")),
+    };
+    // The caller's whole warm set, each member kept as it was sent for Status.
+    let set = match spec.set.take().filter(|_| warm) {
+        None => None,
+        Some(set) => Some(set.items.into_iter().filter_map(|item| member(item).transpose()).collect::<Result<_, _>>()?),
+    };
+    let models = choices(spec.models)?;
+    if remove && !matches!(source, crate::runs::Source::Release { .. } | crate::runs::Source::Installation(_)) {
+        return Err(Error::validation("invalid_source", "a removal names a release or an installation"));
+    }
+    Ok((crate::runs::Spec {
+        warm,
+        remove,
+        set,
+        parent: String::new(),
+        source,
+        entrypoint: spec.entrypoint,
+        input,
+        inputs: spec
+            .inputs
+            .into_iter()
+            .map(|file| crate::journal::InputFile {
+                input_id: file.field,
+                digest: file.digest,
+                length: file.length,
+                media_type: file.media_type,
+                order: file.order,
+            })
+            .collect(),
+        models,
+        attention_kernel: spec.attention_kernel,
+        gpus: spec.gpus,
+        lane: spec.lane,
+        hub: None,
+        tensorfs,
+        providers: providers
+            .map(|p| crate::published::Providers {
+                huggingface: p.huggingface,
+                civitai: p.civitai,
+            })
+            .unwrap_or_default(),
+        weights_destination: spec.weights_destination,
+        owner: spec.owner,
+        catalog_revision: spec.catalog_revision,
+        application: String::new(),
+        digest: identity_digest,
+        journaled,
+    }, hub))
+}
+
+fn digest(text: &str) -> Result<Vec<u8>, Error> {
+    let invalid = || Error::validation("invalid_digest", "a digest is sha256:<64 hex>");
+    let hex = text
+        .strip_prefix("sha256:")
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(invalid)?;
+    (0..64)
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| invalid()))
+        .collect()
+}
+
+/// `spec` reading `hub`, under `actor`'s run capability there when the request carried one.
+fn reach(actor: &str, mut spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -> Result<crate::runs::Spec, Error> {
+    if let Some(hub) = hub {
+        // Refused before its capability is offered: an offered one is served at once.
+        if !crate::hub::valid_origin(&hub.origin) {
+            return Err(refused("hub_access_invalid", format!("{} is not an HTTPS origin", hub.origin)));
+        }
+        let capability = crate::hub::Capability::offer(actor, &hub).map_err(|(code, message)| match code {
+            "workload_key_changed" => Error::conflict(code, message),
+            _ => Error::validation(code, message),
+        })?;
+        let ca = Some(hub.ca_der).filter(|der| !der.is_empty());
+        let source = crate::hub::Source::new(&hub.origin, ca, capability).map_err(|e| refused("hub_access_invalid", &e.0))?;
+        spec.hub = Some(source);
+    }
+    Ok(spec)
+}
+
+/// The runs a restart interrupted while they prepared: each prepares again from its journaled
+/// spec, or ends FAILED with why it cannot.
+pub(crate) fn resume(runs: &Arc<crate::runs::Runs>) -> std::io::Result<()> {
+    for (run, actor, sent) in runs.service.engine.interrupted()? {
+        let spec = serde_json::from_slice(&sent)
+            .map_err(|e| refused("preparation_interrupted", format!("its kept spec is unreadable: {e}")))
+            .and_then(spec_of)
+            .and_then(|(spec, hub)| reach(&actor, spec, hub));
+        let failure = match spec {
+            Ok(spec) => {
+                runs.prepare_later(&actor, &run, spec)?;
+                continue;
+            }
+            Err(error) => crate::journal::Failure::machine(&error.code, error.message),
+        };
+        runs.service.engine.end_preparation(&run, crate::journal::Outcome::Failed(failure))?;
+    }
+    Ok(())
+}
+
+/// Whether a run sent is new, and its state; or why it was refused.
+pub(crate) type Accepted = Result<(bool, v1::RunState), Error>;
+
+impl Runs {
+    /// Accepts the runs `requests` name as one admission (`Runs::admit`): each whether it is new and
+    /// its state, or why it was refused. A run reads its Hub's public content anonymously, and private
+    /// content under its signer's run capability there, which a re-sent spec's may replace and which is
+    /// renewed while the run lives.
+    pub(crate) fn accept(
+        self: &Arc<Self>,
+        actor: VerifiedActor,
+        requests: Vec<v1::RunRequest>,
+    ) -> Result<Vec<Accepted>, Error> {
+        let signer = super::read::actor_id(actor);
+        let (mut answers, mut sent, mut serving) = (vec![], vec![], vec![]);
+        for request in requests {
+            match spec_of(request.spec).and_then(|(spec, hub)| reach(&signer, spec, hub)) {
+                Ok(spec) => {
+                    // Renewed from before it prepares: its first reads wait for the token.
+                    let capability = spec.hub.as_ref().and_then(|hub| hub.capability.as_ref());
+                    serving.extend(capability.map(|capability| capability.serves(&request.id, &self.service.engine)));
+                    sent.push((answers.len(), (request.id.clone(), spec)));
+                    answers.push((request.id, None));
+                }
+                Err(error) => answers.push((request.id, Some(Err(error)))),
+            }
+        }
+        let (at, sent): (Vec<usize>, Vec<_>) = sent.into_iter().unzip();
+        let admitted = self.admit(&signer, sent).map_err(crate::objects::Refused::from)?;
+        for (at, admitted) in at.into_iter().zip(admitted) {
+            answers[at].1 = Some(admitted.map(|(_, new)| new).map_err(Error::from));
+        }
+        drop(serving);
+        Ok(answers
+            .into_iter()
+            .map(|(id, admitted)| Ok((admitted.expect("each run answered")?, self.state(actor, &id)?)))
+            .collect())
+    }
+}
