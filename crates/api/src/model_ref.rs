@@ -22,6 +22,7 @@ pub struct Repo {
     pub name: String,
 }
 
+/// One parsed model reference: a Hub release, a commit, a local alias or a provider source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelRef {
     Hub {
@@ -86,6 +87,7 @@ pub fn commit(value: &str) -> Result<String, Error> {
 }
 
 impl Repo {
+    /// `name` or `org/name`, lowercased; no org is [`ROOT`].
     pub fn parse(raw: &str) -> Result<Self, Error> {
         let lower = raw.trim().to_ascii_lowercase();
         match lower.split_once('/').unwrap_or((ROOT, &lower)) {
@@ -122,6 +124,7 @@ impl fmt::Display for Repo {
 }
 
 impl ModelRef {
+    /// One reference in this module's grammar; `@latest` is the same as naming no release.
     pub fn parse(raw: &str) -> Result<Self, Error> {
         let raw = raw.trim();
         if let Some((scheme, _)) = raw.split_once("://") {

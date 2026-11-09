@@ -4,6 +4,7 @@ use std::fmt;
 
 macro_rules! codes {
     ($($v:ident),* $(,)?) => {
+        /// What a refusal disagrees about; `as_str` gives its stable name.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[allow(non_camel_case_types)]
         pub enum Code { $($v),* }
@@ -191,6 +192,7 @@ codes![
     REVISION_ABSENT,
 ];
 
+/// A refusal: its code and a detail naming the first disagreeing thing.
 #[derive(Debug, Clone)]
 pub struct Refusal {
     pub code: Code,
@@ -205,8 +207,10 @@ impl fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
+/// A result that fails with a `Refusal`.
 pub type Result<T> = std::result::Result<T, Refusal>;
 
+/// Returns `Err` with a refusal of this code and detail.
 pub fn refuse<T>(code: Code, detail: impl Into<String>) -> Result<T> {
     Err(Refusal {
         code,

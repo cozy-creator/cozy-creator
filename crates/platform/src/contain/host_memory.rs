@@ -13,6 +13,7 @@ mod sys;
 #[cfg(target_os = "linux")]
 pub(crate) use sys::{cgroups, number};
 
+/// The memory this process can still allocate now, and the figures that bound it.
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HostMemory {
     /// Bytes left before the tightest limit on this process's cgroup path, or the host's
@@ -62,6 +63,7 @@ pub struct ProcessMemory {
     pub pss_shmem: u64,
 }
 
+/// Reads `pid`'s [`ProcessMemory`] now.
 pub fn process(pid: u32) -> io::Result<ProcessMemory> {
     sys::process(pid)
 }
@@ -78,6 +80,7 @@ pub struct Resident {
     pub peak: u64,
 }
 
+/// Reads `pid`'s [`Resident`] now; `Unsupported` off Linux.
 pub fn resident(pid: u32) -> io::Result<Resident> {
     sys::resident(pid)
 }

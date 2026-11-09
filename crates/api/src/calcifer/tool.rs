@@ -61,6 +61,7 @@ pub struct BrowsedPackage {
     pub tools: Vec<String>,
 }
 
+/// `GET /v1/tools/browse`: a page of the Hub's packages that make media.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Browsed {
@@ -69,6 +70,7 @@ pub struct Browsed {
     pub older: i64,
 }
 
+/// One tool, as `GET /v1/tools` lists it: what it makes and what its box asks for.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Tool {
@@ -131,6 +133,7 @@ pub struct ToolUi {
     pub module: String,
 }
 
+/// The control a box draws for a field.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]

@@ -24,6 +24,7 @@ pub struct Request<'a> {
     pub payload: Option<&'a str>,
 }
 
+/// What authorizes requests: the headers for each one, and whether an answer earns a retry.
 #[async_trait]
 pub trait TokenProvider: Send + Sync {
     /// The headers that authorize `request`.

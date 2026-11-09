@@ -30,6 +30,7 @@ pub enum Credential {
     },
 }
 
+/// One Hub, at its origin, and the credential every call speaks as.
 #[derive(Clone)]
 pub struct Client {
     origin: String,

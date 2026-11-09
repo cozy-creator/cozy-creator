@@ -38,6 +38,7 @@ pub fn is_header(path: &str) -> bool {
     path.rsplit('/').next().is_some_and(|name| name.ends_with(".cozytensors"))
 }
 
+/// Why a document or tensor cannot be read, decoded or encoded.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// The bytes are not a valid document of the expected kind.
@@ -63,8 +64,10 @@ pub enum Error {
 impl Error {
 }
 
+/// A result that fails with a format `Error`.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Returns `Err(Error::Invalid)` with this detail.
 pub fn invalid<T>(detail: impl Into<String>) -> Result<T> {
     Err(Error::Invalid(detail.into()))
 }

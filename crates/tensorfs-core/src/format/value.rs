@@ -7,6 +7,7 @@ use std::fmt;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// A metadata or scheme param value: no null, integers only.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     Bool(bool),

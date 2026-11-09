@@ -7,6 +7,7 @@ use crate::format::decode::plan::{Bytes, Core, Elems, Plan, Post, Term};
 use crate::format::decode::{round, Geometry};
 use crate::format::{Dtype, Error, Result};
 
+/// One prebuilt kernel: its sm family, stage, dtype, entry symbol, launch shape and module image.
 pub struct Binary {
     pub family: u32,
     pub kind: &'static str,

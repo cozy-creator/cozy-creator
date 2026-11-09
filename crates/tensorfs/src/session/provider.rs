@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use crate::failure::{Failure, Kind, Result};
 pub use crate::fetch::token::HeaderMap;
 
+/// A request about to be sent: method, URL, headers and the body's hex SHA-256 when known.
 pub struct Request<'a> {
     pub method: &'a str,
     pub url: &'a str,
@@ -12,6 +13,7 @@ pub struct Request<'a> {
     pub payload: Option<&'a str>,
 }
 
+/// What authorizes requests: the headers for each one, and whether an answer earns a retry.
 #[async_trait]
 pub trait TokenProvider: Send + Sync {
     async fn headers(&self, request: &Request<'_>) -> Result<Vec<(String, String)>>;
@@ -20,6 +22,7 @@ pub trait TokenProvider: Send + Sync {
     }
 }
 
+/// A provider that sends `Authorization: Bearer <token>`.
 pub fn bearer(token: impl Into<String>) -> Arc<dyn TokenProvider> {
     Arc::new(Bearer(token.into()))
 }

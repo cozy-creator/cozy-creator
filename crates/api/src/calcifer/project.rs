@@ -26,6 +26,7 @@ pub struct Open {
     pub starter: bool,
 }
 
+/// The project `POST /v1/projects` opened or made: its id, folder and name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Opened {
@@ -199,6 +200,7 @@ pub struct State {
     pub unsent: Vec<Error>,
 }
 
+/// An asset out of date, and why.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Stale {
@@ -216,10 +218,12 @@ pub struct Warning {
 }
 
 impl Warning {
+    /// A warning about the asset or entity `name`.
     pub fn of(name: &str, message: String) -> Self {
         Self { name: Some(name.to_owned()), message }
     }
 
+    /// A warning about the project file as a whole.
     pub fn of_file(message: String) -> Self {
         Self { name: None, message }
     }
@@ -332,6 +336,7 @@ pub struct CanvasPatch {
     pub placed: BTreeMap<String, u64>,
 }
 
+/// What a canvas patch left: the new revision and the `placed` rows it kept.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CanvasPatched {
@@ -348,6 +353,7 @@ pub struct Timeline {
     pub tracks: Vec<Track>,
 }
 
+/// One track of an Edit's timeline: its clips in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     #[serde(default)]
@@ -382,6 +388,7 @@ pub struct TimelineNow {
     pub tracks: Vec<TrackNow>,
 }
 
+/// One track's clips as they read now.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TrackNow {
@@ -890,6 +897,7 @@ pub struct Approve {
     pub version: String,
 }
 
+/// What an approve pinned: the asset's version and files, and what that put out of date.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Approved {
@@ -916,6 +924,7 @@ pub struct Unpin {
     pub name: String,
 }
 
+/// What an unpin left: the version it had pinned and what that put out of date.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Unpinned {
@@ -939,6 +948,7 @@ pub struct Rename {
     pub to: String,
 }
 
+/// A rename done: `from`, `to`, and how many versions it kept.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Renamed {
@@ -955,6 +965,7 @@ pub struct Reclaim {
     pub yes: bool,
 }
 
+/// What a reclaim listed or deleted: orphans' versions, files nothing names, and their bytes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Reclaimed {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1326,6 +1337,7 @@ pub struct HistoryEntry {
     pub undone: Option<Undone>,
 }
 
+/// When a history entry was undone, and by whom.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Undone {

@@ -11,6 +11,7 @@ use super::{Copy, Dst, Issued, ReadControl, ReadOpts, ReadStats, Src};
 use crate::failure::{Failure, Kind};
 use crate::format::ObjectRef;
 
+/// `len` bytes from `source`, placed at `offset`; `part_end` marks a part's last item.
 #[derive(Debug, Clone)]
 pub struct Item {
     pub offset: u64,
@@ -27,6 +28,7 @@ pub struct Placement<'a> {
     pub dst: Dst,
 }
 
+/// Bytes read so far, by path: cached, direct, buffered and inline.
 #[derive(Debug, Default)]
 pub struct IoTally {
     pub cached_bytes: AtomicU64,
@@ -36,6 +38,7 @@ pub struct IoTally {
     pub direct_refused: AtomicU64,
 }
 
+/// How a read goes: only `Cache` may use O_DIRECT; `Buffered` tallies its cached bytes as buffered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Cache,
@@ -43,6 +46,7 @@ pub enum Mode {
     Cached,
 }
 
+/// A placement read's failure: a bad item or source, or the engine's read error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -89,6 +93,7 @@ fn invalid(detail: impl Into<String>) -> Error {
     .into()
 }
 
+/// The verified objects placements read from: open files, or a checkpoint's chunks opened on read.
 pub struct Source {
     view: Option<super::view::View>,
     /// What the source's views borrow from (a `tensorfs::Checkpoint`), kept alive with it.

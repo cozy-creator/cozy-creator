@@ -95,6 +95,7 @@ impl Command {
     }
 }
 
+/// Bring the executor up before any Load: its GPUs, its package and what its attempts may call.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Start {
@@ -153,6 +154,7 @@ impl Default for DisplayPace {
     }
 }
 
+/// Construct models and register their weights: one model in `binding`, several in `models`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Load {
@@ -176,12 +178,14 @@ pub struct Load {
     pub attention_pin: String,
 }
 
+/// Make a loaded construction the active one; switching moves no weights.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Activate {
     pub construction: String,
 }
 
+/// Resolve one request before entry and keep it for its Invoke; no device is touched.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct PrepareRequest {
@@ -201,12 +205,14 @@ pub struct PrepareRequest {
     pub input_metadata: BTreeMap<String, InputMetadata>,
 }
 
+/// The queued preparation to discard, by its request id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Cancel {
     pub request_id: String,
 }
 
+/// Run one prepared request in its own spool, with its inputs, checkpoints and output allowances.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Invoke {
@@ -251,6 +257,7 @@ pub struct Invoke {
     pub family: String,
 }
 
+/// Warm a loaded construction at `level`; with a `payload`, also prepare its entrypoint's program.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Map {
@@ -275,12 +282,14 @@ pub enum Level {
     Ram,
 }
 
+/// Drop one construction: its weight sets, its leases and every reference to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Unload {
     pub construction: String,
 }
 
+/// Ask for the executor's state: device memory, residency, RSS, processes and poison.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Probe {
@@ -289,6 +298,7 @@ pub struct Probe {
     pub collect: bool,
 }
 
+/// Where the forked executor runs: its seam's socket, its root directory and its environment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Fork {
@@ -298,6 +308,7 @@ pub struct Fork {
     pub environment: BTreeMap<String, String>,
 }
 
+/// A signer's newer run capability for one TensorFS endpoint.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Capability {
@@ -306,6 +317,7 @@ pub struct Capability {
     pub tensorfs: TensorFSOptions,
 }
 
+/// One adapter on a binding's model: a LoRA unless `kind` says otherwise, at `scale`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 #[serde(default)]
@@ -531,6 +543,7 @@ pub enum Event {
     Unknown,
 }
 
+/// What a `progress` frame carries: a progress update or a retained `log` observation.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -559,12 +572,14 @@ pub struct Hello {
     pub sealed: BTreeMap<String, String>,
 }
 
+/// The result document the invoke wrote to its spool (`RESULT_DOCUMENT`): its digest and length.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ResultRef {
     pub digest: String,
     pub length: u64,
 }
 
+/// An invocation's typed outcome: its terminal, origin, code and message.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Outcome {
     pub terminal: String,
@@ -579,6 +594,7 @@ pub struct Outcome {
     pub traceback: String,
 }
 
+/// One file of the invoke's result, by field path (`output_id`): its spool handle, kind and size.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Output {
     pub output_id: String,
@@ -590,6 +606,7 @@ pub struct Output {
     pub size_bytes: Option<u64>,
 }
 
+/// A saved output TensorD encodes after the reply: its raw spool snapshot, codec and facts.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HostFrame {
     pub handle: String,
@@ -602,6 +619,7 @@ pub struct HostFrame {
     pub facts: BTreeMap<String, Value>,
 }
 
+/// An invoke reply's `metrics`: its timings, memory peaks and end RSS.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Metrics {
@@ -620,6 +638,7 @@ pub struct Metrics {
     pub shape_cell: Option<String>,
 }
 
+/// A load reply's `facts`: its timings and the device and host memory after it.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LoadFacts {
@@ -794,6 +813,7 @@ pub enum Request {
     StageMemoStore(StageMemoStore),
 }
 
+/// Ask for the child-call nudge socket; it has no fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ChildEvents {}
@@ -809,6 +829,7 @@ pub struct SavedFile {
     pub media_type: String,
 }
 
+/// Start a child call: its callee, its request and the files passed to it, once per `call_index`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ChildCall {
@@ -823,28 +844,33 @@ pub struct ChildCall {
     pub saved: Vec<SavedFile>,
 }
 
+/// Ask a child call's state (its answer's `CallState`), by index.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ChildPoll {
     pub call_index: u64,
 }
 
+/// Cancel a child call, by index; its answer is `pending`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ChildCancel {
     pub call_index: u64,
 }
 
+/// Drop a child call's record, by index, once it has ended.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ChildForget {
     pub call_index: u64,
 }
 
+/// A deviceless root giving up its GPUs; it has no fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct GpuRelease {}
 
+/// A future call's callee and its model choices, for TensorD to prepare.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ModelPrefetch {
@@ -855,6 +881,7 @@ pub struct ModelPrefetch {
     pub payload: String,
 }
 
+/// One product to show now: the result file field it belongs to, its spool file or `parts`, its kind.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Publish {
@@ -874,6 +901,7 @@ pub struct Publish {
     pub parts: Vec<PublishPart>,
 }
 
+/// A weights output's commit: its repository, revision and the tag moved to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct CheckpointItem {
@@ -888,6 +916,7 @@ pub struct CheckpointItem {
     pub variant: String,
 }
 
+/// A memoized method's key and the scope (`stage`, `numerics`) it is looked up in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct StageMemoLookup {
@@ -1021,6 +1050,7 @@ impl Default for Answer {
 }
 
 impl Answer {
+    /// A refusal of a request this side does not serve (`capability_unavailable`).
     pub fn unavailable(seq: u64) -> Self {
         Self {
             seq,
@@ -1029,9 +1059,11 @@ impl Answer {
             ..Self::default()
         }
     }
+    /// A bare success under `seq`.
     pub fn ok(seq: u64) -> Self {
         Self { ok: true, code: String::new(), detail: String::new(), ..Self::unavailable(seq) }
     }
+    /// A refusal under `seq` with its `code` and `detail`.
     pub fn refused(seq: u64, code: &str, detail: impl Into<String>) -> Self {
         Self { code: code.into(), detail: detail.into(), ..Self::unavailable(seq) }
     }
@@ -1369,10 +1401,12 @@ pub mod base64_bytes {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
 
+    /// The bytes as standard base64 text.
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&STANDARD.encode(bytes))
     }
 
+    /// Bytes from standard base64 text; text that is not base64 is an error.
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
         STANDARD
             .decode(String::deserialize(deserializer)?)

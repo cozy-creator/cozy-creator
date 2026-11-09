@@ -14,6 +14,7 @@ use std::{
 #[cfg_attr(windows, path = "windows.rs")]
 mod sys;
 
+/// A user service to run: its name, command line and early log.
 #[derive(Clone, Debug)]
 pub struct ServiceSpec {
     /// `calcifer`, `tensord`.
@@ -24,6 +25,7 @@ pub struct ServiceSpec {
     pub log: Option<PathBuf>,
 }
 
+/// One home's user services, defined for this OS's manager (systemd, launchd, the `Run` key).
 #[derive(Clone, Debug)]
 pub struct Services {
     /// Where this OS's definitions (or, on Windows, the births of what it started) are kept.

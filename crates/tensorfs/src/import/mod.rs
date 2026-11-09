@@ -315,6 +315,7 @@ impl Imported {
     }
 }
 
+/// One import: its sources, how to convert them, where to stage, and how to report and stop.
 pub struct Request<'a> {
     pub sources: &'a [String],
     /// The format to convert with ([`AS_IS`]: none); required for a table whose layout headers

@@ -30,6 +30,7 @@ use crate::format::ObjectRef;
 /// Bytes per read or write call into the volume: each call is progress.
 pub(crate) const STEP: usize = 8 << 20;
 
+/// A directory in the static-origin layout, read before the origin and filled from fetches.
 #[derive(Clone)]
 pub struct VolumeOrigin(Arc<Inner>);
 

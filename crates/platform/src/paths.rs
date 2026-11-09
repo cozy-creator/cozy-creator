@@ -11,6 +11,7 @@ pub struct Home {
 }
 
 impl Home {
+    /// The home at `.cozy` in `user_home`.
     pub fn under(user_home: &Path) -> Self {
         Self::at(user_home.join(".cozy"))
     }

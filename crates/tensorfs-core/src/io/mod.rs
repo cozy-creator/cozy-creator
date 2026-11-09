@@ -58,6 +58,7 @@ pub struct Copy<'a> {
     pub dst: Dst,
 }
 
+/// Where a copy's bytes come from.
 #[derive(Clone, Copy, Debug)]
 pub enum Src<'a> {
     /// Fill the destination with zeroes, without a file or a host staging slab.
@@ -74,6 +75,7 @@ pub enum Src<'a> {
     },
 }
 
+/// Where a copy's bytes go: host or device memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dst {
     Host {
@@ -243,6 +245,7 @@ impl std::fmt::Debug for Landed {
     }
 }
 
+/// How `read` runs: threads, request size, device streams, O_DIRECT and a landing hook.
 #[derive(Clone, Debug)]
 pub struct ReadOpts {
     /// Reads in flight at once.
@@ -269,6 +272,7 @@ impl Default for ReadOpts {
     }
 }
 
+/// What a `read` did: bytes and time, split by direct, cached and bounced bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReadStats {
     pub bytes: u64,

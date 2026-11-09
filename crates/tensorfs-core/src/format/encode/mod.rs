@@ -29,6 +29,7 @@ pub use svdq::{
 };
 pub use w4a8::W4A8_STRATEGY;
 
+/// What a producer encodes: the logical tensor, the target encoding and the source arrays by name.
 pub struct Input<'a> {
     /// The logical tensor's dtype and shape.
     pub dtype: &'a Dtype,
@@ -95,6 +96,7 @@ impl QuantizationStats {
     }
 }
 
+/// A producer's output: the encoded parts and their acceptance facts.
 pub struct Quantized {
     pub parts: Vec<OwnedPart>,
     pub stats: QuantizationStats,

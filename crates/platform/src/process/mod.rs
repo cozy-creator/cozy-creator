@@ -36,6 +36,7 @@ pub struct Birth {
     pub start_ticks: u64,
 }
 
+/// What a [`Birth`] is doing now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     /// Exited (a zombie included) or never this birth.
@@ -48,10 +49,12 @@ pub enum State {
 }
 
 impl Birth {
+    /// The birth of the process that has `pid` now.
     pub fn of(pid: u32) -> Result<Birth> {
         sys::birth(pid).map_err(Error::os("read a process's birth"))
     }
 
+    /// This process's birth.
     pub fn own() -> Result<Birth> {
         Self::of(std::process::id())
     }
@@ -412,6 +415,7 @@ pub struct Tree {
     reaped: bool,
 }
 
+/// Starts `command` as the leader of a new [`Tree`].
 pub fn spawn(mut command: Command) -> Result<Tree> {
     let (child, group) = tree::spawn(&mut command).map_err(Error::os("spawn"))?;
     Ok(Tree {
@@ -436,6 +440,7 @@ pub fn detach(program: &Path, args: &[OsString], log: Option<&Path>) -> Result<D
     Ok(Detached(child))
 }
 
+/// A process [`detach`] started; dropping this leaves it running.
 #[derive(Debug)]
 pub struct Detached(tree::Detached);
 

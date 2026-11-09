@@ -87,6 +87,7 @@ impl Access {
     }
 }
 
+/// A parsed source: a Hugging Face repo path, a Civitai version, a plain URL or a local path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Spec {
     Hf {
@@ -103,6 +104,7 @@ pub enum Spec {
     Local(PathBuf),
 }
 
+/// The host a remote member is fetched from, which picks its base URL and credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Hf,
@@ -110,6 +112,7 @@ pub enum Provider {
     Web,
 }
 
+/// One file a source may select: its path, where it is, and its length and sha256 when known.
 #[derive(Debug, Clone)]
 pub struct Member {
     /// Path in the source tree.
@@ -119,6 +122,7 @@ pub struct Member {
     pub sha256: Option<String>,
 }
 
+/// Where a member is: a local file, or a URL at a provider.
 #[derive(Debug, Clone)]
 pub enum At {
     Local(PathBuf),
@@ -133,6 +137,7 @@ fn hex40(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Parses `hf://`, `civitai://`, a URL or a local path into a `Spec`.
 pub fn parse(raw: &str) -> Result<Spec> {
     let raw = raw.trim();
     if let Some(rest) = raw.strip_prefix("hf://") {
@@ -442,6 +447,7 @@ pub struct Listing {
     pub trigger: Vec<String>,
 }
 
+/// Pins `spec` and lists every member it may select from.
 pub fn list(spec: &Spec, access: &Access) -> Result<Listing> {
     list_in(spec, &Scope::new(access, None))
 }

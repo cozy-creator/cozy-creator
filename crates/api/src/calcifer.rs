@@ -109,6 +109,7 @@ pub struct Alternative {
     pub usd_micros_per_hour: i64,
 }
 
+/// Something noticed about a run that did not stop it: a stable code and a message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Warning {
@@ -340,6 +341,7 @@ pub struct Note {
     pub message: String,
 }
 
+/// A note's weight: information or a warning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -348,6 +350,7 @@ pub enum NoteLevel {
     Warning,
 }
 
+/// Where a run is: queued, in progress, or completed, failed or canceled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RunStatus"))]
 #[serde(rename_all = "snake_case")]
@@ -510,6 +513,7 @@ pub struct Call {
 /// Calcifer did.
 pub use crate::machine::Reason;
 
+/// Where an output is: still arriving, complete, or final in a run that did not complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -912,6 +916,7 @@ pub enum StreamEvent {
     Resync,
 }
 
+/// What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -924,6 +929,7 @@ pub enum MachineKind {
     Added,
 }
 
+/// Where a machine is in its life, as Calcifer sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -941,6 +947,7 @@ pub enum MachineState {
     Unknown,
 }
 
+/// One machine as Calcifer knows it: its kind, state, address, rental, latest status and runs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Machine {
@@ -1045,6 +1052,7 @@ pub struct Attempt {
     pub replaced: Option<Replaced>,
 }
 
+/// The attempt a newer one replaced: its number, why it failed, and when it ended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Replaced {
@@ -1214,6 +1222,7 @@ pub struct LiveRun {
     pub run: Option<Run>,
 }
 
+/// One of a machine's GPUs: its name, memory, driver and family.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Gpu {
@@ -1246,6 +1255,7 @@ pub struct Model {
     pub checkpoints: Vec<Checkpoint>,
 }
 
+/// One checkpoint of a held model: its release, lane, precision and header.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Checkpoint {
@@ -1257,7 +1267,6 @@ pub struct Checkpoint {
     pub manifest: String,
 }
 
-/// A package environment the machine holds for this controller.
 /// `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1381,6 +1390,7 @@ impl Machine {
     }
 }
 
+/// A package environment the machine holds for this controller.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Environment {
@@ -1505,6 +1515,7 @@ pub(crate) fn weakest(held: &str, next: &str, settled: &str) -> String {
     if rank(next) > rank(held) { next } else { held }.to_owned()
 }
 
+/// When a Hub last answered a machine listing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HubListing {
@@ -1512,6 +1523,7 @@ pub struct HubListing {
     pub listed_at_ms: i64,
 }
 
+/// A Hub whose last machine listing failed, and why.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HubProblem {
@@ -1766,6 +1778,7 @@ pub struct RentalSku {
     pub widths: Vec<RentalSkuWidth>,
 }
 
+/// A Python interpreter a product offers, as the Hub lists it: its version and ABI.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -1826,6 +1839,7 @@ pub struct RentalHistory {
     pub total: RentalSum,
 }
 
+/// One rental in the history: its product, state, times and what it cost.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RentalRow {
     pub rental_id: String,
@@ -1966,6 +1980,7 @@ impl Kind {
         }
     }
 
+    /// The kind [`Self::as_str`] spells as `text`; none for any other.
     pub fn parse(text: &str) -> Option<Self> {
         [Kind::Call, Kind::Warm, Kind::Update, Kind::Remove]
             .into_iter()

@@ -118,6 +118,7 @@ pub enum View {
     Matrix,
 }
 
+/// A param a scheme's decode reads: its key and the values it may take.
 pub struct Param {
     pub key: &'static str,
     pub allowed: Allowed,
@@ -134,6 +135,7 @@ pub enum Allowed {
     Check(fn(&Value) -> bool, &'static str),
 }
 
+/// A part a scheme stores: its role, whether it is required, its dtypes and shape.
 pub struct Part {
     pub role: &'static str,
     pub required: bool,
@@ -581,6 +583,7 @@ pub(crate) fn round(dtype: &Dtype, xs: &[f32]) -> Vec<u8> {
     }
 }
 
+/// The BF16 bits of `x`, nearest even, NaN canonical.
 pub fn bf16(x: f32) -> u16 {
     if x.is_nan() {
         return 0x7fc0;

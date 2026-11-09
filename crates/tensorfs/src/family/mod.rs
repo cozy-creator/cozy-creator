@@ -47,6 +47,7 @@ pub(crate) const FAMILY: &str = "family";
 /// Header metadata: each LoRA component's base, [`Adapter`], by the LoRA's component name.
 pub(crate) const ADAPTER: &str = "adapter";
 
+/// A built-in family, from its `families/<name>.json`: reference, components, forms and probe.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Family {

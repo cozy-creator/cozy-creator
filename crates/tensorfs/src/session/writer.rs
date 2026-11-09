@@ -18,6 +18,7 @@ pub struct PartData<'a> {
     pub data: &'a mut dyn Read,
 }
 
+/// Options for `Client::writer`: a header file `dest` or a `repo_id` commit, a base, a resume key.
 #[derive(Default)]
 pub struct WriterOptions<'a> {
     pub dest: Option<&'a Path>,
@@ -53,6 +54,7 @@ pub struct Writer {
     context: Context,
 }
 
+/// One component of a `Writer`: put, copy and order its tensors, and add its assets.
 pub struct ComponentWriter<'a> {
     writer: &'a mut Writer,
     name: String,

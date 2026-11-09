@@ -42,6 +42,7 @@ pub struct QuantizeFit {
     pub rows: String,
 }
 
+/// Options for `Writer::quantize`: the selection, calibration, buffer and byte bounds, error bound.
 pub struct Quantization<'a> {
     /// Full immutable selection, including entries already completed by this Writer.
     pub tensors: &'a [QuantizeTensor],
@@ -56,6 +57,7 @@ pub struct Quantization<'a> {
     pub control: &'a ConversionControl,
 }
 
+/// One encoded tensor: bytes read and written, relative Frobenius error, measured stats, any fit.
 #[derive(Debug, Serialize)]
 pub struct QuantizedTensor {
     pub component: String,
@@ -68,6 +70,7 @@ pub struct QuantizedTensor {
     pub fit: Option<FitDetails>,
 }
 
+/// An SVDQ fit: the chosen alpha, residual stats, calibration errors, buffer bytes, workers, time.
 #[derive(Debug, Serialize)]
 pub struct FitDetails {
     pub strategy: String,
@@ -82,6 +85,7 @@ pub struct FitDetails {
     pub fit_seconds: f64,
 }
 
+/// What `Writer::quantize` did: identity, keys encoded and reused, bytes, saturation, worst error.
 #[derive(Default, Debug, Serialize)]
 pub struct QuantizationResult {
     pub identity: String,

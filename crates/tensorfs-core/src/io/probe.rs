@@ -26,6 +26,7 @@ pub(super) const KEEP: u64 = 256 << 20;
 const BLOCK: usize = 1 << 20;
 const THREADS: usize = 8;
 
+/// The measured ceilings for a volume and, optionally, a GPU.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ceiling {
     /// Sequential read GB/s of the volume.

@@ -88,6 +88,7 @@ pub struct Follow {
 }
 
 impl Log {
+    /// The log `name` in `dir`, rotated by a rename to `name.1`.
     pub fn rotated(dir: PathBuf, name: &'static str) -> Self {
         Self {
             dir,
@@ -95,6 +96,7 @@ impl Log {
         }
     }
 
+    /// The log `<prefix>.<date>.log` in `dir`, a file a day; only the newest two are read.
     pub fn daily(dir: PathBuf, prefix: &'static str) -> Self {
         Self {
             dir,

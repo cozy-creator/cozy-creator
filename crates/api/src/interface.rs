@@ -158,6 +158,7 @@ pub fn weights_outputs(entry: &Value) -> impl Iterator<Item = (&str, Option<u64>
 // build cannot read is unavailable alone, with why; the rest of the package still runs. Members it does not
 // know are ignored, so newer Runtimes' cards load.
 
+/// A package's parsed interface: its callables, those this build cannot read, and its quantize recipes.
 #[derive(Debug, Default)]
 pub struct Interface {
     pub callables: Vec<Callable>,
@@ -176,6 +177,7 @@ pub struct Recipe {
     pub model: RecipeModel,
 }
 
+/// The model a recipe reads: its class and the components it reads, by use.
 #[derive(Debug, Deserialize)]
 pub struct RecipeModel {
     pub class: String,
@@ -195,6 +197,7 @@ impl Recipe {
     }
 }
 
+/// One function of the interface: its models, request and result types, outputs and how it runs.
 #[derive(Debug, Deserialize)]
 pub struct Callable {
     pub name: String,
@@ -287,6 +290,7 @@ impl Default for Snap {
     }
 }
 
+/// A weights output a callable declares, by id.
 #[derive(Debug, Deserialize)]
 pub struct WeightsOutput {
     pub output_id: String,
@@ -300,6 +304,7 @@ pub struct AssetsSlot {
     pub kinds: Vec<AssetsKind>,
 }
 
+/// One kind of file the collection takes, with its media types and limits.
 #[derive(Debug, Deserialize)]
 pub struct AssetsKind {
     pub kind: String,
@@ -311,6 +316,7 @@ pub struct AssetsKind {
     pub max_count: Option<u64>,
 }
 
+/// Where a callable is declared, and its author's defaults.
 #[derive(Debug, Default, Deserialize)]
 pub struct Invocable {
     /// The module that declares it, dotted, from its package's root.
@@ -334,6 +340,7 @@ pub struct Struct {
     pub tag: Option<Value>,
 }
 
+/// One field of a struct: its name, type, wire presence, default and bounds.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Field {
     pub name: String,
@@ -353,6 +360,7 @@ pub struct Field {
     pub extra: Map<String, Value>,
 }
 
+/// Whether a field must be sent: required, optional, or omissible for the model to choose.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Wire {
@@ -365,6 +373,7 @@ pub enum Wire {
     Other,
 }
 
+/// A field's declared length bounds, numeric bounds and step.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Constraints {
     pub min_length: Option<u64>,
@@ -376,6 +385,7 @@ pub struct Constraints {
     pub multiple_of: Option<f64>,
 }
 
+/// A file field's declared size limit and media types.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AssetBound {
     pub max_bytes: Option<u64>,

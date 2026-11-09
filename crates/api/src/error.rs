@@ -4,6 +4,7 @@
 //! `code` is the stable specific name (`idempotency_conflict`, `machine_not_found`).
 use serde::{Deserialize, Serialize};
 
+/// A refusal's class: what a program branches on; it sets the HTTP status and exit code.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ErrorKind"))]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +28,7 @@ pub enum Kind {
     Internal,
 }
 
+/// A typed refusal: its class, stable code and message, with an optional remedy and next commands.
 #[derive(
     Clone, Debug, Deserialize, Serialize, PartialEq, Eq, thiserror::Error,
 )]
@@ -60,6 +62,7 @@ pub struct Envelope {
 }
 
 impl Error {
+    /// A refusal with no remedy, next commands, cause, wait or metadata.
     pub fn new(kind: Kind, code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             kind,
@@ -73,27 +76,35 @@ impl Error {
         }
     }
 
+    /// A refusal of a typed payload, its schema or its bounds.
     pub fn validation(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Validation, code, message)
     }
+    /// A refusal naming something that does not exist.
     pub fn not_found(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::NotFound, code, message)
     }
+    /// A refusal for a missing or refused credential.
     pub fn credential(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Credential, code, message)
     }
+    /// A refusal for a caller that may not do this here.
     pub fn forbidden(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Forbidden, code, message)
     }
+    /// A refusal for a concurrent writer, an existing target or a reused idempotency key.
     pub fn conflict(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Conflict, code, message)
     }
+    /// A refusal for too little memory, disk or GPUs anywhere the ask may go.
     pub fn capacity(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Capacity, code, message)
     }
+    /// A refusal because Calcifer, a machine or the Hub is unreachable.
     pub fn unavailable(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Unavailable, code, message)
     }
+    /// A refusal from a bug, never a user condition.
     pub fn internal(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Internal, code, message)
     }

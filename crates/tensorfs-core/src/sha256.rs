@@ -3,6 +3,7 @@
 
 use sha2::Digest;
 
+/// An incremental SHA-256.
 #[derive(Clone, Default)]
 pub struct Sha256(sha2::Sha256);
 
@@ -20,10 +21,12 @@ impl Sha256 {
     }
 }
 
+/// The SHA-256 of `data`.
 pub fn digest(data: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(data).into()
 }
 
+/// `bytes` as lowercase hex.
 pub fn hex(bytes: &[u8]) -> String {
     const D: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -34,6 +37,7 @@ pub fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// The SHA-256 of `data`, as lowercase hex.
 pub fn hex_digest(data: &[u8]) -> String {
     hex(&digest(data))
 }

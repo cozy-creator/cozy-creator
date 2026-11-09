@@ -139,6 +139,7 @@ impl Landed {
     }
 }
 
+/// How a `Fetcher` runs: its budget of requests in flight.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The most requests in flight at once, across every object; the ramp reaches it while that pays.
@@ -194,6 +195,7 @@ pub struct Pulled {
     pub landed: Landed,
 }
 
+/// A fetcher's counts since it started: requests, retries, steals, bytes, statuses, volume writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stats {
     pub requests: u64,

@@ -10,6 +10,7 @@ use super::token::TokenProvider;
 use crate::err::Result;
 use crate::format::ObjectRef;
 
+/// A source of objects: it says where each can be read, and whether anyone may read them.
 #[async_trait]
 pub trait Origin: Send + Sync {
     /// Where each of `objects` can be read, in order. The Fetcher asks once per object as it

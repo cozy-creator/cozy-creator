@@ -29,6 +29,7 @@ static LIVE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// Killed members an end found stuck in the kernel, until each exits.
 static STUCK: Mutex<Vec<(Birth, Stuck)>> = Mutex::new(Vec::new());
 
+/// One executor's containment: a delegated cgroup-v2 of its own, else a process-tree token.
 #[derive(Debug)]
 pub struct Scope(Backend);
 

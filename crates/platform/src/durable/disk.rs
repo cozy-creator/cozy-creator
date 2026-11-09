@@ -19,6 +19,7 @@
 #![allow(unsafe_code)]
 use std::{fs::File, path::Path};
 
+/// What a crash can take from a filesystem's bytes, by the rule in the module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiskClass {
     Ephemeral,
@@ -43,6 +44,7 @@ pub struct Filesystem {
     pub kind: &'static str,
 }
 
+/// The filesystem holding `path`, from `statfs`; Persistent and `unknown` when that fails.
 #[cfg(target_os = "linux")]
 pub fn filesystem(path: &Path) -> Filesystem {
     #[allow(clippy::unnecessary_cast)] // f_type's width differs by target

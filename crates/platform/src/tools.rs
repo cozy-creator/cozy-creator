@@ -42,6 +42,7 @@ pub enum Install {
     Note(&'static str),
 }
 
+/// One tool: where it matters, whether work needs it, what its absence costs, how it is found.
 pub struct Tool {
     pub name: &'static str,
     pub side: Side,
@@ -53,6 +54,7 @@ pub struct Tool {
     pub probe: fn(tools: &Path, path: &[PathBuf]) -> Option<Found>,
 }
 
+/// A tool a probe found: its path and version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
     pub path: PathBuf,
@@ -66,6 +68,7 @@ macro_rules! looked_for {
     };
 }
 
+/// Every tool cozy uses, in the order `cozy doctor` lists them.
 pub const TOOLS: &[Tool] = &[
     Tool {
         name: "uv",

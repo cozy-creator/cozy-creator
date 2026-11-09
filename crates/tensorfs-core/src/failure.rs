@@ -5,6 +5,7 @@ use crate::err::{Code, Refusal};
 use crate::format;
 use crate::store;
 
+/// The thirteen error families, each with a stable `code`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A document, argument or tensor breaks the format or a grammar.
@@ -70,6 +71,7 @@ impl Kind {
     }
 }
 
+/// An error: its family and the cause in the detail.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{}: {detail}", kind.code())]
 pub struct Failure {
@@ -77,8 +79,10 @@ pub struct Failure {
     pub detail: String,
 }
 
+/// A result that fails with a `Failure`.
 pub type Result<T> = std::result::Result<T, Failure>;
 
+/// Returns `Err` with a failure of this kind and detail.
 pub fn fail<T>(kind: Kind, detail: impl Into<String>) -> Result<T> {
     Err(Failure {
         kind,

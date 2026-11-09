@@ -16,12 +16,14 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Whether a lock admits one holder or many that share it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Exclusive,
     Shared,
 }
 
+/// A lock on the file at a path, created on first take; its holder's record is `<path>.holder`.
 #[derive(Clone, Debug)]
 pub struct LockFile {
     path: PathBuf,
@@ -36,6 +38,7 @@ pub struct Held {
 }
 
 impl LockFile {
+    /// The lock at `path`; nothing is opened until it is taken.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
@@ -135,6 +138,7 @@ impl Drop for Held {
 /// canonical path on Windows, whose directories take no byte-range locks. Waits for a holder.
 pub struct DirLock(#[allow(dead_code)] sys::DirLock, PhantomData<*const ()>);
 
+/// Takes a [`DirLock`] on `path`, waiting while another holds it.
 pub fn dir(path: &Path) -> Result<DirLock> {
     Ok(DirLock(sys::dir(path)?, PhantomData))
 }

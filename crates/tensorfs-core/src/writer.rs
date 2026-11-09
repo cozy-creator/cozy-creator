@@ -63,6 +63,7 @@ pub enum Data<'a> {
     },
 }
 
+/// One part of an encoded tensor for `put`: its role, stored dtype and shape, and its bytes.
 pub struct PartData<'a> {
     pub role: String,
     pub dtype: Dtype,
@@ -70,6 +71,7 @@ pub struct PartData<'a> {
     pub data: Source<'a>,
 }
 
+/// A temporary part file in the writer's directory, removed on drop.
 #[cfg(feature = "quantize")]
 pub struct Scratch {
     file: Option<File>,
@@ -238,6 +240,7 @@ enum Dest {
     },
 }
 
+/// One cozytensors being written into a store, a folder or an upload; sealed at `commit`.
 pub struct Writer {
     dest: Dest,
     dir: PathBuf,

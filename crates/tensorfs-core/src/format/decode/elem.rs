@@ -19,6 +19,7 @@ fn signed(negative: bool, v: f32) -> f32 {
     }
 }
 
+/// E4M3: no infinity; exponent 15 with mantissa 7 is NaN.
 pub fn e4m3(b: u8) -> f32 {
     let (e, m) = ((b >> 3) & 15, b & 7);
     let v = match (e, m) {
@@ -29,6 +30,7 @@ pub fn e4m3(b: u8) -> f32 {
     signed(b & 0x80 != 0, v)
 }
 
+/// E5M2: exponent 31 is infinity (mantissa 0) or NaN.
 pub fn e5m2(b: u8) -> f32 {
     let (e, m) = ((b >> 2) & 31, b & 3);
     let v = match (e, m) {
@@ -64,6 +66,7 @@ pub(crate) fn ue4m3(b: u8) -> f32 {
     }
 }
 
+/// IEEE half precision.
 pub fn f16(h: u16) -> f32 {
     let (e, m) = (((h >> 10) & 31) as i32, (h & 0x3ff) as u32);
     let v = match (e, m) {
@@ -75,6 +78,7 @@ pub fn f16(h: u16) -> f32 {
     signed(h & 0x8000 != 0, v)
 }
 
+/// BF16: the high 16 bits of an f32.
 pub fn bf16(h: u16) -> f32 {
     f32::from_bits((h as u32) << 16)
 }

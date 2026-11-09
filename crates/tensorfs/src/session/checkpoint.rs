@@ -449,6 +449,7 @@ pub struct ReadInto<'a> {
     pub offset: u64,
 }
 
+/// One component of an open checkpoint: its tensors' bytes and its assets.
 #[derive(Clone)]
 pub struct Component {
     data: Arc<Data>,

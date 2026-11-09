@@ -5,6 +5,7 @@
 use super::{Input, QuantizationStats, Quantized, affine, elem, encoding, int8::hadamard256, part};
 use crate::format::{Dtype, Encoding, Error, Result};
 
+/// Runtime's fixed-codebook W4A8 producer: H256 rotation, Lloyd-Max levels per 16-group.
 pub const W4A8_STRATEGY: &str = "w4a8-convrot256-fixed/1";
 
 impl Encoding {

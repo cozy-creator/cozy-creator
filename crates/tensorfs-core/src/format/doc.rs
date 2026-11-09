@@ -163,6 +163,7 @@ pub struct Pipeline {
     pub config: Config,
 }
 
+/// One model component, named by its folder: its class, config, tensors and assets.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Component {
     pub name: String,
@@ -195,6 +196,7 @@ pub struct Tensor {
     pub body: Body,
 }
 
+/// Where a tensor's bytes are: one plain range, or an encoding's parts.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Body {
     /// Plain: the bytes at `data` are the tensor, little-endian, row-major.

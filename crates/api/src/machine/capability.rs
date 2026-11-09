@@ -50,6 +50,7 @@ pub struct Grant {
     pub binding: String,
 }
 
+/// Why [`verify`] refused a token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
     #[error("the capability is malformed or not signed by an authorized key")]

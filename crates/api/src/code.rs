@@ -223,6 +223,7 @@ pub fn pep723(text: &str) -> Result<toml::Table, Error> {
     Err(refuse("script_metadata_invalid", "the `# /// script` block has no closing `# ///`"))
 }
 
+/// Whether `path` exists with any execute bit set.
 #[cfg(unix)]
 pub fn executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;

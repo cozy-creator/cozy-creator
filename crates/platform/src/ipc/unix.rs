@@ -12,12 +12,14 @@ use std::{
     path::Path,
 };
 
+/// One end of a connected Unix socket.
 pub type LocalStream = UnixStream;
 
 /// A listener at a path an executor dials.
 pub struct LocalListener(UnixListener);
 
 impl LocalListener {
+    /// Listens on a Unix socket at `path`.
     pub fn bind(path: &Path) -> Result<Self> {
         UnixListener::bind(path)
             .map(Self)

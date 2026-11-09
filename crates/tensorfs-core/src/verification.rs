@@ -22,6 +22,7 @@ impl VerificationReport {
     }
 }
 
+/// Rehashes the checkpoint's header and `objects` on disk; lists the missing and corrupt ones.
 pub fn verify(
     checkpoint: &Checkpoint,
     objects: impl IntoIterator<Item = ObjectRef>,

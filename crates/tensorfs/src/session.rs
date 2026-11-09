@@ -120,6 +120,7 @@ pub(crate) fn commit_id(text: &str) -> bool {
     text.strip_prefix("sha256:").is_some_and(is_digest)
 }
 
+/// How `Client::open` picks and loads a checkpoint: lane, GPUs, release, endpoint, offline, lazy.
 #[derive(Clone, Debug)]
 pub struct Open {
     /// The lane asked (a label: `bf16`, `fp8`, …): only it answers; none lets the endpoint pick
@@ -150,6 +151,7 @@ impl Default for Open {
 /// A failing progress callback cancels this fetch. Values are held and total bytes.
 pub type Progress<'a> = dyn Fn(u64, u64) -> Result<()> + Sync + 'a;
 
+/// What to fetch or check: everything, some components, some tensors, one part's range, or assets.
 #[derive(Clone, Debug, Default)]
 pub enum Selection {
     #[default]
@@ -171,6 +173,7 @@ pub enum Selection {
     },
 }
 
+/// A download: its selection, its place in the queue (smaller first) and its progress callback.
 #[derive(Default)]
 pub struct Download<'a> {
     pub selection: Selection,

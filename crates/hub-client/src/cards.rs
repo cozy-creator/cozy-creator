@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::Client;
 
+/// A release's card: its release and package interface, read from the Hub's answer.
 #[derive(Debug)]
 pub struct Card {
     pub release: String,

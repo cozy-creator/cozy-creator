@@ -297,6 +297,7 @@ impl Mode for OpenOptions {
     }
 }
 
+/// Sets a path's permission bits; a no-op on Windows, which keeps an ACL instead.
 pub fn set_mode(path: &Path, mode: u32) -> Result<()> {
     #[cfg(unix)]
     {
@@ -308,6 +309,7 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Sets an open file's permission bits; a no-op on Windows.
 pub fn set_file_mode(file: &File, mode: u32) -> Result<()> {
     #[cfg(unix)]
     {
@@ -340,6 +342,7 @@ pub struct FileId {
 }
 
 impl FileId {
+    /// The identity of an open file.
     pub fn of(file: &File) -> Result<FileId> {
         #[cfg(unix)]
         {
@@ -615,6 +618,7 @@ pub struct Space {
     pub free_inodes: u64,
 }
 
+/// The [`Space`] of the filesystem holding `path`; `free` counts only what this user may write.
 pub fn space(path: &Path) -> Result<Space> {
     #[cfg(unix)]
     {

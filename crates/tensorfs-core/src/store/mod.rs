@@ -77,6 +77,7 @@ impl Durability {
     }
 }
 
+/// Why a store operation failed: I/O, a full disk, an absent or mismatched object, a bad document.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{op} {}: {source}", path.display())]
@@ -125,6 +126,7 @@ impl Error {
     }
 }
 
+/// A result that fails with a store `Error`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) fn fail(op: &'static str, path: impl Into<PathBuf>) -> impl FnOnce(io::Error) -> Error {
@@ -169,6 +171,7 @@ pub(crate) fn same_family(tag: &str, want: &str) -> bool {
     tag.split_once('/').map(|t| t.0) == want.split_once('/').map(|w| w.0)
 }
 
+/// A handle on the store at one root; clones share its sync, collection and reclaim state.
 #[derive(Clone, Debug)]
 pub struct Store {
     root: PathBuf,

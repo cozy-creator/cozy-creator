@@ -6,6 +6,7 @@
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::sync::OnceLock;
 
+/// A CUDA failure: an allocation refused, no driver, or a driver call's error code.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]

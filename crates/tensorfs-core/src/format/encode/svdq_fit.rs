@@ -26,6 +26,7 @@ use std::sync::OnceLock;
 use super::super::{OwnedPart, QuantizationStats, elem, nvfp4};
 use crate::format::{Dtype, Error, Result};
 
+/// The SVDQuant producer: a rank-32 branch fitted with faer over an NVFP4 residual.
 pub const SVDQ_FIT_STRATEGY: &str = "svdq-nvfp4-r32-faer/1";
 const RANK: usize = 32;
 const Q: usize = RANK + 16;
@@ -136,6 +137,7 @@ fn padded(rows: usize, cols: usize) -> Result<usize> {
     mul(rows.div_ceil(TILE) * TILE, cols.div_ceil(TILE) * TILE)
 }
 
+/// The working bytes `svdq_fit` needs for an `[N, K]` weight and `samples` calibration rows.
 pub fn svdq_fit_workspace(rows: usize, cols: usize, samples: usize) -> Result<usize> {
     add(shared_workspace(rows, cols, samples)?, alpha_workspace(rows, cols, samples)?)
 }
