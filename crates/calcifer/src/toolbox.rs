@@ -258,18 +258,6 @@ async fn read_all(api: &Arc<Api>, hub: &str, wanted: Vec<(String, String)>) -> V
     stream::iter(reads).buffered(READS).collect::<Vec<_>>().await.into_iter().flatten().collect()
 }
 
-/// Every package a machine-side call could use, what `on` holds first, then the Hub's first page: each at its release.
-pub(crate) async fn candidates(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
-    let mut found = installed_releases(api, hub, on).await;
-    let listed = async { api.machines.hubs.reader(hub).ok()?.search_packages(None, LISTED).await.ok() };
-    if let Ok(Some(listed)) = tokio::time::timeout(HUB_LATE, listed).await {
-        let new = listed.packages.into_iter().filter_map(|row| Some((format!("{}/{}", row.org, row.name), row.latest_release?)));
-        let held: BTreeSet<String> = found.iter().map(|(package, _)| package.clone()).collect();
-        found.extend(new.filter(|(package, _)| !held.contains(package)));
-    }
-    found
-}
-
 /// What a box of `tool` asks for, read as `read` reads it. None: it can't be read.
 pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<Vec<tool::ToolField>> {
     let hub = api.machines.hubs.default_origin();

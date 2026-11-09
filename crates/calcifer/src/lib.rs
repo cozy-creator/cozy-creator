@@ -105,6 +105,23 @@ pub(crate) struct Calcifer {
     opened_ms: std::sync::atomic::AtomicI64,
 }
 
+/// Calcifer's own run, as its work holds it.
+#[derive(Clone)]
+pub(crate) struct Here {
+    calcifer: Arc<Calcifer>,
+    pub(crate) id: RunId,
+}
+
+impl Here {
+    /// A line of the run's log, said as the work goes: a warning, which every follower shows.
+    pub(crate) fn say(&self, message: &str) {
+        match self.calcifer.store.note(self.id.as_str(), "warning", message) {
+            Ok(events) => self.calcifer.publish(&self.id, events),
+            Err(e) => warn!(run = %self.id, "{message}: unrecorded: {e}"),
+        }
+    }
+}
+
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
 type Turn = Arc<(tokio::sync::Mutex<()>, Mutex<u64>)>;
 
@@ -221,8 +238,85 @@ impl Calcifer {
         for id in unsettled {
             self.drive(id);
         }
+        // Its own work stopped with the Calcifer that was doing it.
+        for id in self.store.unsettled_here()? {
+            let stopped = ::api::error::Error::new(::api::error::Kind::Unavailable, "calcifer_stopped", "Calcifer stopped before this ended")
+                .remedy("ask again: it is safe");
+            self.ended_here(&id, Err(stopped));
+        }
         self.export_outputs()?;
         Ok(resumed)
+    }
+
+    /// Records a run Calcifer carries out itself (`Kind::Here`) under `key` as the ask `digest` names, and starts `work` on it,
+    /// which says what it does as it goes (`Here::say`) and answers the run's result. The same key again answers the recorded
+    /// run and starts nothing; another ask under it is a conflict. Canceled, `work` is dropped where it stands.
+    pub(crate) async fn here<F, Fut>(self: &Arc<Self>, key: &str, digest: &str, target: String, hub: &Origin, work: F) -> Result<Submitted, Error>
+    where
+        F: FnOnce(Here) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
+    {
+        let new = NewRun {
+            id: RunId::mint(random()),
+            kind: ::api::calcifer::Kind::Here,
+            out_dir: outputs::package_outputs(&self.outputs, &target),
+            target,
+            hub: Some(hub.clone()),
+            machine: None,
+            pinned: true,
+            spec: v1::RunSpec::default(),
+            warnings: vec![],
+            inputs: vec![],
+            wants: None,
+            agreed: None,
+            stays: vec![],
+            batch: String::new(),
+        };
+        let (row, fresh) = self.store.submit(key, digest, new)?;
+        if fresh {
+            self.publish(&row.id, self.store.events_after(row.id.as_str(), 0)?);
+            let wake = Arc::new(Notify::new());
+            lock(&self.drivers).insert(row.id.clone(), wake.clone());
+            let (me, id) = (self.clone(), row.id.clone());
+            let mut tasks = lock(&self.tasks);
+            while tasks.try_join_next().is_some() {}
+            tasks.spawn(async move {
+                let canceled = async {
+                    loop {
+                        wake.notified().await;
+                        if me.store.run(id.as_str()).ok().flatten().is_none_or(|row| row.cancel_requested) {
+                            return;
+                        }
+                    }
+                };
+                let end = tokio::select! {
+                    end = work(Here { calcifer: me.clone(), id: id.clone() }) => end,
+                    () = canceled => Err(::api::error::Error::new(::api::error::Kind::Conflict, "canceled", "canceled")),
+                };
+                me.ended_here(&id, end);
+                lock(&me.drivers).remove(&id);
+            });
+        }
+        Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false })
+    }
+
+    /// Settles Calcifer's own run `id` as its work ended: completed with its result, canceled, or failed with the refusal, which
+    /// its result keeps whole as `error`.
+    fn ended_here(&self, id: &RunId, end: Result<serde_json::Value, ::api::error::Error>) {
+        let json = |value: &serde_json::Value| v1::Json::parse(value.to_string()).ok();
+        let outcome = match end {
+            Ok(result) => v1::Outcome { status: "succeeded".into(), result: json(&result), ..Default::default() },
+            Err(error) => v1::Outcome {
+                status: if error.code == "canceled" { "canceled" } else { "failed" }.into(),
+                result: json(&serde_json::json!({ "error": error })),
+                reason: Some(Reason { code: error.code, message: error.message, next: error.next, origin: "calcifer".into(), ..Default::default() }),
+                ..Default::default()
+            },
+        };
+        match self.store.settle(id.as_str(), &outcome, 0) {
+            Ok(events) => self.publish(id, events),
+            Err(e) => warn!(run = %id, "its end is unrecorded: {e}"),
+        }
     }
 
     /// Stops every driver where it stands, as if the process ended. Machines keep their runs.

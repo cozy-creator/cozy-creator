@@ -7,7 +7,7 @@ use clap::ValueEnum;
 use api::{
     calcifer::{CalciferStatus, Holder, MachineState},
     error::{Error, Kind},
-    calcifer::project::{Open, Opened, State},
+    calcifer::project::State,
 };
 use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
@@ -108,11 +108,7 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
 /// COZY_PROJECT's project, as Calcifer reads it: none when none is named.
 async fn project(client: &Client) -> Option<Result<State, Error>> {
     let project = crate::project::chosen(None)?;
-    let opened: Result<Opened, Error> = client.post("/v1/projects", &Open { project: Some(project), ..Open::default() }, None).await;
-    match opened {
-        Ok(opened) => Some(client.get(&format!("/v1/projects/{}", opened.id)).await),
-        Err(error) => Some(Err(error)),
-    }
+    Some(client.get(&crate::project::at(&project, &[])).await)
 }
 
 /// Which of a machine's logs, and how much of it.

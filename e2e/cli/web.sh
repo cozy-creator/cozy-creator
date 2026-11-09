@@ -6,8 +6,8 @@
 # models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), a box from its tool's fields (web/tools.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and a save past project.db held by another program (web/held.js).
-# Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
-# projects it made, and leaves Calcifer running: this computer's is shared.
+# Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, and leaves
+# Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 
@@ -46,7 +46,6 @@ addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock") base=http://$ad
 # One red pixel.
 base64 -d > "$pic" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
 web_signed_in
-curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "$base/v1/projects/$id" || true
 step "web-place: dropped and chosen files on the canvas, a rename, a move, a reload"
 web_proof place "$chrome" "$pw" ''
 step "web-reconnect: one stream across tabs, and kill -9 of Calcifer with no reload"
@@ -169,10 +168,10 @@ web_start() {
 }
 
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, signed in by its own
-# `cozy open --no-open` once its browser is up (page.js: signIn), on a project of its own by name, which it forgets, folder and all,
-# whatever happened.
+# `cozy open --no-open` once its browser is up (page.js: signIn), on a project of its own by name, whose folder it deletes whatever
+# happened.
 web_proof() {
-  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot code=0 id folder lock addr token
+  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot code=0 folder
   json=$OUT/web-$pass.json shot=$(web_path "$OUT/web-$pass")
   # A screenshot in WebKit sets off the CSP on any page, with an inline style of Playwright's: its pass keeps its last look, past caring, and no others.
   [ "${ENGINE:-}" != webkit ] || shot=''
@@ -181,14 +180,11 @@ web_proof() {
   [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$pass.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
-  lock=$HOME/.cozy/calcifer/calcifer.lock.holder
-  addr=$(jq -r .address "$lock" 2> /dev/null) token=$(jq -r .token "$lock" 2> /dev/null)
-  id=$(jq -r '.seen.project.id // empty' "$json" 2> /dev/null) folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
-  [ -z "$id" ] || curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "http://$addr/v1/projects/$id" || true
+  folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
   case $folder in */web-*) rm -rf "$folder" ;; esac
 }
 
-# web_serves's own, on its project, which it forgets whatever happens here.
+# web_serves's own, on its project.
 web_signed_in() {
 local code=0 wait expires
 HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \

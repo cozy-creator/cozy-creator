@@ -34,11 +34,14 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
     let calcifer = ctx.calcifer().await?;
     let mut ask = ask.clone();
     if matches!(ask.on, Some(On::New(_))) && ask.agreed.is_none() {
-        let quoted: RunQuote = calcifer.post("/v1/run-quotes", &ask, None).await?;
-        if !crate::machine::agree(ctx, &quoted)? {
-            return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
+        // None: it rents nothing, as what Calcifer does itself.
+        let quoted: Option<RunQuote> = calcifer.post("/v1/run-quotes", &ask, None).await?;
+        if let Some(quoted) = quoted {
+            if !crate::machine::agree(ctx, &quoted)? {
+                return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
+            }
+            ask.agreed = Some(quoted.quote.agreed);
         }
-        ask.agreed = Some(quoted.quote.agreed);
     }
     let submitted: Submitted = calcifer.post("/v1/runs", &ask, Some(key)).await?;
     for note in &submitted.notes {
@@ -49,6 +52,39 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
     }
     replayed(ctx, &submitted);
     Ok(submitted)
+}
+
+/// Asks Calcifer's job `target` (`api::calcifer::hub::job`) with `input` as its fields, under a fresh key, quoted and agreed first
+/// when it rents: the run it became. Local code not yet ready on its machine is installed first, then asked again under that key.
+pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Serialize, on: Option<On>, code: Option<api::code::LocalCode>) -> Result<Run, Error> {
+    let ask = RunRequest::job(target, input, on, ctx.hub().to_string(), code);
+    let key = mint_key();
+    loop {
+        let submitted = submit_request(ctx, &ask, &key).await?;
+        if !submitted.preparing {
+            return Ok(submitted.run);
+        }
+        let install = settle(ctx, submitted.run).await?;
+        if !settled(&install) {
+            // Following stopped: the install goes on, and nothing more is asked.
+            return Ok(install);
+        }
+    }
+}
+
+/// One of Calcifer's own runs (`Kind::Here`), followed quietly to its end: its result, or the refusal it ended with, whole.
+pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run) -> Result<T, Error> {
+    let run = settle(ctx, run).await?;
+    let show = format!("cozy run show {}", run.name());
+    let result = run.result.clone().unwrap_or_default();
+    match run.status {
+        Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", run.name()))),
+        Status::Failed | Status::Canceled => Err(serde_json::from_value(result["error"].clone()).unwrap_or_else(|_| {
+            let reason = run.reason.clone().unwrap_or_default();
+            Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
+        })),
+        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("run {} goes on, no longer followed", run.name())).next(&show)),
+    }
 }
 
 /// Says that the key named a run submitted before.

@@ -54,17 +54,17 @@ if [[ " $a " == *" anima@$AOLD "* && " $b " == *" anima@$ANEW "* && " $c " == *"
 else
   expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
 fi
-# An unversioned run stays on what the machine holds and `package update` moves it, with nothing published (cl-748).
+# An unversioned run stays on what the machine holds and `package install` of it, unversioned, moves it, with nothing published (cl-748).
 read -r newest older <<< "$(released anima)"
 if [ -n "$older" ]; then
   "$CLI" package remove anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
   "$CLI" package install "anima@$older" --on "$M" -y > "$T/unversioned-install.log" 2>&1
   n1=$(submit anima/generate prompt="masterpiece, anime illustration of $CHAR, whatever is installed" seed:=$((R + 37))); until_status "$n1" terminal
-  "$CLI" package update anima --on "$M" -y > "$T/unversioned-update.log" 2>&1
+  "$CLI" package install anima --on "$M" -y > "$T/unversioned-update.log" 2>&1
   n2=$(submit anima/generate prompt="masterpiece, anime illustration of $SCENE, after the update" seed:=$((R + 38))); until_status "$n2" terminal
   t1=$(get "$n1" target) t2=$(get "$n2" target)
   [[ $t1 == *"@$older" && $t2 == *"@$newest" ]] && [ "$(get "$n1" status)$(get "$n2" status)" = completedcompleted ] \
-    && expect tensord-unversioned-installed PASS "anima $older installed: run $n1 took it; package update: run $n2 took $newest" \
+    && expect tensord-unversioned-installed PASS "anima $older installed: run $n1 took it; package install: run $n2 took $newest" \
     || expect tensord-unversioned-installed FAIL "with $older installed run $n1 took $t1 ($(get "$n1" status)); updated, run $n2 took $t2 ($(get "$n2" status))"
 fi
 if [ -n "$RWF$TWF" ]; then

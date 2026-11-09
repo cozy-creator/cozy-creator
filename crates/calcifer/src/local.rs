@@ -164,17 +164,6 @@ impl Local {
         self.home.keys().join("authorized")
     }
 
-    /// The keys `keys_file` holds, without comments.
-    pub(crate) fn keys(&self) -> Result<Vec<String>, Error> {
-        let file = self.keys_file();
-        let text = match std::fs::read_to_string(&file) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(keys_error(&file, e)),
-        };
-        Ok(text.lines().map(uncommented).filter(|key| !key.is_empty()).map(str::to_owned).collect())
-    }
-
     /// Adds (`add`) or takes back `key` in `keys_file`: true when the file changed. TensorD reads
     /// the file again at its next call.
     pub(crate) fn authorize(&self, key: &str, add: bool) -> Result<bool, Error> {

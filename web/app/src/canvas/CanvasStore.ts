@@ -1940,7 +1940,7 @@ export class CanvasStore {
           if (this.deleting.has(name)) this.deleting.set(name, performance.now())
         },
         // Its answer was lost: its first try did it.
-        landed: (error) => (error.status === 404 ? { name, text: "" } : undefined),
+        landed: (error) => (error.status === 404 ? { name } : undefined),
         refused: (error) => {
           this.deleting.delete(name)
           this.bringBack(box)

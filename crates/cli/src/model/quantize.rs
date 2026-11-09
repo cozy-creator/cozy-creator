@@ -5,14 +5,14 @@
 //! Runtime's) runs on the machine, which uploads the output as a commit of the model in that lane.
 use std::process::ExitCode;
 
-use api::calcifer::{On, Run, RunQuote, Status, Submitted};
+use api::calcifer::{Run, Status};
 use api::error::{Error, Kind};
-use api::calcifer::hub::ModelQuantize;
+use api::calcifer::hub::{ModelQuantize, job};
 
 use super::Quantize;
 use crate::Context;
 use crate::output::{self, Record};
-use crate::run::{exit_code, follow, mint_key};
+use crate::run::{exit_code, follow, settled};
 
 pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
@@ -23,32 +23,10 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
         Some((path, _)) => (String::new(), Some(crate::send::Sender::new(ctx).await?.code(&path).await?)),
         None => (args.package, None),
     };
-    let mut ask = ModelQuantize {
-        hub: Some(ctx.hub().to_string()),
-        model: args.model,
-        lane: args.lane.clone(),
-        package,
-        code,
-        on: on.clone(),
-        agreed: None,
-    };
-    let calcifer = ctx.calcifer().await?;
-    if matches!(on, On::New(_)) {
-        let quoted: RunQuote = calcifer.post("/v1/model-quantization-quotes", &ask, None).await?;
-        if !crate::machine::agree(ctx, &quoted)? {
-            return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
-        }
-        ask.agreed = Some(quoted.quote.agreed);
-    }
-    // Local code not yet ready on its machine is installed first, then asked again.
-    let key = mint_key();
-    let run = loop {
-        let submitted: Submitted = calcifer.post("/v1/model-quantizations", &ask, Some(&key)).await?;
-        if !submitted.preparing {
-            break follow(ctx, submitted.run).await?;
-        }
-        crate::run::settle(ctx, submitted.run).await?;
-    };
+    let ask = ModelQuantize { model: args.model, lane: args.lane.clone(), package };
+    let run = crate::run::job(ctx, job::MODEL_QUANTIZE, &ask, on, code).await?;
+    // Its install, no longer followed: nothing was called.
+    let run = if settled(&run) { run } else { follow(ctx, run).await? };
     if !ctx.json && run.status == Status::Completed
         && let Some(written) = written(&run, &args.lane)
     {

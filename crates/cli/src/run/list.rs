@@ -35,7 +35,7 @@ pub(crate) struct Query {
     pub package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
-    /// A project's id: only its runs.
+    /// A project's id or name: only its runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,7 +148,8 @@ pub(crate) fn matches(query: &Query, run: &Run) -> bool {
         .machine
         .as_ref()
         .is_none_or(|m| run.machine.as_ref() == Some(m));
-    let project = query.project.as_ref().is_none_or(|p| run.project_id.as_ref() == Some(p));
+    let named = |p: &String| run.project_id.as_ref() == Some(p) || run.project.as_ref().is_some_and(|name| name.eq_ignore_ascii_case(p));
+    let project = query.project.as_ref().is_none_or(named);
     state && package && machine && project
 }
 

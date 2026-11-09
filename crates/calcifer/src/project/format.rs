@@ -730,7 +730,7 @@ impl Doc {
             let listed: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
             let said = &read.said;
             let why = match (deleted, listed.as_slice()) {
-                (true, _) => format!("<{said}> was deleted: cozy project restore {} --version {number} brings it back", of.name),
+                (true, _) => format!("<{said}> was deleted: `cozy project history` lists it, and `undo <id>` brings {}'s {number} back", of.name),
                 (_, []) => format!("<{said}>: {} has no versions yet", of.name),
                 (_, listed) => format!("<{said}>: {} has no version {number}, only {}", of.name, listed.join(", ")),
             };

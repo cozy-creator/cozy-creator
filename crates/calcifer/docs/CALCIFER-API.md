@@ -164,10 +164,10 @@ a spec.
 
 - `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or name, or the folder on this computer holding one: without it `400 not_in_a_project`, an unknown one `404 project_unknown`, and its outputs land in that project's `files/`, listed as its runs'; a file it's given joins `files/` at submit, so it can be asked again once what held it is gone. Answers `202` (`200` when the key had made it) with
   `Submitted {run, replay, notes, preparing}`:
-  - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
+  - `target`: one of Calcifer's own jobs, `cozy/…` ("Jobs"), which needs no project; else `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y).
     With `code`, local code by content (Local code), `target` is the function of it, empty for none named. A target written as a path is `400 target_by_path`.
-  - `on` (`local`, a machine, `any`, `new[:sku]`; absent: where a render's job would go, the set `cozy project render` sends with no `--on`, on whichever quotes the soonest finish ("Placement")), `hub`, `gpus` (a count the machine honours; absent, the machine chooses), `lane`, `attention_kernel`, `project`, `warm`
+  - `on` (`local`, a machine, `any`, `new[:sku]`; absent, Calcifer's to say, and no client picks a default: where a render's job would go, the set `cozy project render` sends with no `--on`, on whichever quotes the soonest finish ("Placement")), `hub`, `gpus` (a count the machine honours; absent, the machine chooses), `lane`, `attention_kernel`, `project`, `warm`
     (a level, instead of running), `agreed` (a `new` run's quote).
   - The payload: `input` (an object) or `input_text` (the same as JSON or YAML text); then `terms` override it (`key=value` typed as declared, `key:=<json>`, `model.<slot>=<ref>`, one
     positional value, input files), `loras` (`[slot=]ref[,strength]`), `files` (`{name?, file}`: an input's
@@ -192,7 +192,7 @@ a spec.
     `machine_unreachable` records nothing: ask again under the same key (the CLI does, five times with backoff, saying
     each); `machine_offline` and `machine_ended` are the Hub's word, and asking again won't help.
 - `POST /v1/run-quotes`: a `RunRequest` whose `on` is `new[:sku]`: what it would rent and its price
-  (`RunQuote`). Nothing is rented or recorded.
+  (`RunQuote`), or `null` for one that rents nothing, as Calcifer's own work does. Nothing is rented or recorded.
 - `POST /v1/run-estimates?count=` (`Idempotency-Key`): a `RunRequest`, bound as a run is: `RunEstimate {machines, soonest?, notes, preparing?}`,
   each machine it may go to (its `on`, else the render set) as it quotes it now, soonest finish first, for each of `count` copies
   (1 to 32, default 1) sent at once: `{machine, job, fits, refusal?, width, start_ms?, finish_ms?, prepare_ms, queue_position, basis}`,
@@ -350,10 +350,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - With `Accept: text/event-stream`, each batch follows as `{"type": "lines", after, text}`, with `id:` set to
     `after`. Resume with `?after=` or `Last-Event-ID`.
   - A machine that cannot answer is answered from the copy Calcifer kept.
-- `GET /v1/machines/local/authorized-keys`: `AuthorizedKeys {file, keys}`. These are other computers'
-  controllers that this computer's machine admits.
 - `PUT /v1/machines/local/authorized-keys/{key}` and `DELETE …/{key}` answer `Authorized {key, file, changed,
-  machine, image}`.
+  machine, image}`: the controllers of other computers that this computer's machine admits.
   - `key` is an Ed25519 public key, 32 bytes of unpadded base64url.
   - The answer comes at once. `local` reads its keys again on the call this makes, then listens on every
     interface once it is idle, and `machine.reach` says where other computers add it.
@@ -437,37 +435,51 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
 - `DELETE /v1/models/{org}/{name}`, `…/releases/{version}`, `…/commits/{commit}` (`?hub=`):
   `ModelDeleted`.
 
-**Asks that become runs.** Each is a POST with an `Idempotency-Key`, `202` with the run
-(`calcifer::Submitted`), followed on `GET /v1/runs/{id}/events` like any run. Each has a quote route
-taking exactly its body, which answers a `new` run's `RunQuote` and rents nothing. What Calcifer does
-once the machine completes the run happens before the run settles and is in its result
-(`result.after`, `AfterRun`), so a client that stops following never skips it.
-- `POST /v1/model-downloads` `ModelDownload` (quote: `/v1/model-download-quotes`): a warm run that
+**Jobs.** What takes long is a run (cl-841), asked as any is: `POST /v1/runs` of a reserved target of the package `cozy`, its
+fields as `input` and `on`, `hub`, `code` and `agreed` the request's own, `202` with the run (`Submitted`); quoted by `POST
+/v1/run-quotes`; listed, shown, followed and canceled as a run. `terms`, `files` and the like are `400 job_input`. With no `on` it goes
+to this computer's machine, else any rental there is. Records: `api::calcifer::hub` (`job`). What Calcifer does once a machine
+completes one happens before the run settles and is in its result (`result.after`, `AfterRun`), so a client that stops following never
+skips it. Some are Calcifer's own work, on no machine (`kind: here`, `machine` none): each says what it does in the run's log, its
+result is its record, one that fails keeps the refusal whole as `result.error`, a cancel drops it where it stands (after the step in
+hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again is safe.
+- `cozy/model_download` `ModelDownload`: a warm run that
   makes a model present in a machine's store. A `.safetensors` file of a client's is held (`PUT /v1/files`), named by its `sha256:<hex>`
   and its client's `name`, and kept under an alias, `local/<name>`, its name's stem when none is given.
-- `POST /v1/model-uploads` `ModelUpload` (quote: `/v1/model-upload-quotes`): a warm run that makes
-  the source and uploads it as a private commit of `destination` in `lane`; `ModelUploading`, the run
-  and the mirror recorded before it (`mirror`). `source` is a provider source, a Hub model, a
+- `cozy/model_upload` `ModelUpload`: a warm run that makes
+  the source and uploads it as a private commit of `destination` in `lane`; its mirror is recorded before it (`mirror`), and `notes`
+  say so. `source` is a provider source, a Hub model, a
   `local/` alias, a held file's `sha256:<hex>` (`PUT /v1/files`, `404 file_not_held`; `name` its client's name for it): a `.safetensors` file, or a
   CozyTensors folder's tree document, its files held too, or `run:N[#output]`, which runs
   on the machine that holds the output. A commit, `org/name@sha256:…`, on no `base` is at the Hub
   already: it's recorded as a commit of `destination` when the caller may read its whole closure,
-  checked against `lane` before the mirror is recorded. That answers `200` with `recorded`
-  (`RecordedCommit`) and no run, and its quote answers `null`, since nothing rents. Its trigger and strength (the flags, else the source's own)
+  checked against `lane` before anything is recorded. That is Calcifer's own run, its result a `RecordedCommit`, and its quote
+  `null`, since nothing rents. Its trigger and strength (the flags, else the source's own)
   are set at the Hub once it completes (`result.after.display`).
-- `POST /v1/model-quantizations` `ModelQuantize` (quote: `/v1/model-quantization-quotes`, published
+- `cozy/model_quantize` `ModelQuantize` (quoted for published
   packages only): Calcifer picks the commit (a release's original weights, else the commit named),
   reads its header's components, matches the package's recipe for the lane and the calibration
   models it builds, and calls the package's `quantize`. The package is `package`, or local code's `code`. Local code not yet ready
   answers its install (`preparing`): follow it, then send the same request under the same key.
-- `POST /v1/package-installs` `PackageInstall` (quote: `/v1/package-install-quotes`): a warm run of a
+- `cozy/package_install` `PackageInstall`: a warm run of a
   package's environment, no weights; the Hub's newest release when none is named. Once it is in, the
   older releases of the package the machine holds from the same Hub are removed, one remove run each
   (`result.after.retired`). Local code goes by content as `code`, and retires nothing; what its machine read of it is kept
   as a run's install keeps it, so a read of it next (`GET /v1/tools`, `fit`) has it at once.
-- `POST /v1/package-removals` `{hub, packages, machine}`: `PackageRemovals {machine, runs}`, one
-  remove run per package and Hub the machine holds it from, every release; a name the machine does
-  not hold is refused before any run. Each run's result is `{removed, reclaimed_bytes, retained}`.
+- `cozy/package_remove` `{packages}`, `on` one machine: Calcifer's own run, which sends one
+  remove run per package and Hub the machine holds it from, every release, and sums them: `PackagesRemoved {machine, removed,
+  reclaimed_bytes, retained?}`. A name the machine does not hold is refused before anything is recorded; a remove run that
+  does not complete fails it `package_remove_incomplete`, saying what went.
+- `cozy/package_lock` `{root, upgrade}`, of `code`: Calcifer's own run. It locks local code a client sent (Local code) with uv
+  (fetched when missing), in its copy, never running its code, for the Hub and account it publishes to (`root`: the root
+  namespace), and writes nothing into the client's folder; its copy leaves Torch to the machine (`exclude-dependencies`: torch,
+  torchvision, torchaudio, triton; a cap or exact pin on one is a notice). Its result is `Locked {lock, account_index, changed}`,
+  `lock` the new `uv.lock`'s text, which the client writes into the package's folder (`changed`: it differs from the one sent).
+- `cozy/package_publish` `{root, yanked}`, of `code`: Calcifer's own run. It locks first when it has no `uv.lock`, answering that
+  one as `lock` for the client to write; stages, relocks for this Hub's account
+  index, builds, carries its git dependencies' wheels, describes, uploads what the Hub lacks and
+  finalizes (`yanked`: committed yanked, never the newest release). Its result is `Published`
+  (`status: already published` for a version the Hub holds).
 
 **Packages.**
 - `GET /v1/packages?q=&limit=` (1–200, 20): `PackageSearch {packages, total, older}`.
@@ -477,26 +489,9 @@ once the machine completes the run happens before the run settles and is in its 
   only an exact pin installs it. `DELETE` on the same path un-yanks it: `PackageUnyanked`.
 - `DELETE /v1/packages/{org}/{name}?hub=`: `PackageDeleted`, every release, its name free again.
 
-**Authoring.** Calcifer locks and publishes local code a client sent (`code`, Local code) with uv (fetched when missing), in its
-copy, never running its code, and writes nothing into the client's folder. Its copy leaves Torch to the machine (`exclude-dependencies`:
-torch, torchvision, torchaudio, triton; a cap or exact pin on one is a notice). Each is long work:
-`202` with `Authoring {id, state, notices, locked | published | error}`, kept while this Calcifer
-runs; asking again after a restart is safe.
-- `POST /v1/package-locks` `{hub, code, root, upgrade}`: locks for the Hub and account it publishes to
-  (`root`: the root namespace); ends `locked {lock, account_index, changed}`, `lock` the new `uv.lock`'s text, which the client
-  writes into the package's folder (`changed`: it differs from the one sent).
-- `POST /v1/package-publications` `{hub, code, root, yanked}`: locks first when it has no `uv.lock`, answering that one as
-  `published.lock` for the client to write; stages, relocks for this Hub's account
-  index, builds, carries its git dependencies' wheels, describes, uploads what the Hub lacks and
-  finalizes (`yanked`: committed yanked, never the newest release); ends `published`
-  (`status: already published` for a version the Hub holds).
-- `GET /v1/package-locks/{id}`, `GET /v1/package-publications/{id}`: the work as it stands.
-- `GET …/{id}/events`: `notice {message}` events (uv's warnings, an upload sent again), then one of
-  `locked`, `published` or `failed {error}`; each with its number as its `id:`.
-
 ### Local code
 Local code is a package folder or a PEP 723 script nobody published. It comes by content (cl-819), as `code` `{tree, at}`
-on a run, `GET /v1/targets`, an install, a quantization and authoring: `tree` is a tree document (`api::tree`, each
+on a run, `GET /v1/targets`, and the jobs that install, quantize, lock and publish it: `tree` is a tree document (`api::tree`, each
 file's `executable` kept) of the package and the path dependencies its sources name, under their common folder, each file
 and then the document sent first by `PUT /v1/files`; `at` is the package's folder or script in it (empty: the tree itself).
 What goes is `api::code`'s rule: no VCS, caches, virtualenvs, credentials, keys, weights or links; the CLI says what it
@@ -518,8 +513,9 @@ path gave it. A moved folder is the same project, its walk going on, and the ind
 holds takes a new id, and its walk's paid work doesn't go on. Calcifer holds a project open, its parts, history and `project.db`
 connection, while anything reads it: a call on it, its `/events` stream, a page showing it (`PUT /v1/events/{stream}`), its render (until
 nothing is owed, waiting for a machine too). It closes when the last of these ends, and the next call opens it again (cl-823). `POST
-/v1/projects` names one and reads none of it. Names are unique in the index (`_2`), and a client names a project by its
-name or id, or by its folder on this computer (`api::calcifer::project::NAMED_BY`): never the folder the client is in. Every file the
+/v1/projects` makes one. Names are unique in the index (`_2`), and every route's `{id}` takes a project's
+name or id, or its folder on this computer, percent-encoded (`api::calcifer::project::NAMED_BY`): never the folder the client is in. A folder holding a project the index
+doesn't list is listed by the first call that names it. Every file the
 project uses is a real file in `files/<sha256>.<ext>`, flat, and a file the database has a row for says only what a file can't: where it
 stays and its parts. YAML is its export (`PROJECT-YAML.md`): `GET …/yaml` writes it and `PUT …/yaml` reads it back. A folder of the files
 from before (`project.yaml`, `project.lock`, `project.canvas.yaml`, `.measured.json`, `.history.json`, `.keys.json`, `.runs/walk.json`) is
@@ -531,40 +527,35 @@ its fields as written, after defaults, each box they mention replaced by its num
 
 A mention reads an asset's state, and moves with it: `<abr>`. `<abr.2>` reads that version, fixed, its number never reused, and `<self.2>` a version of the asset whose text it is. Neither is a dependency: what's named is a file that's there, so it waits for nothing, closes no cycle, and a render of the asset that reads it makes none of what it names. A name holds no `.`: `<name.N>` is a version, `<name.word>` an extra output of its version (`<page.cleaned>`), and `<name:48-120>` frames 48 up to 120 of a video, `<name:48->` to its end, cut here before it's sent. Names match in any case, with `_` and `-` alike. `<self>` alone would change its own input on each render, so it fails like a mention of nothing, `input_missing`, with the fix; so does a version deleted or never made, whose name is in `missing`.
 
-An operation is a tool (`[org/]package/function[@release]`, or local code, `./dir/function`), and its `kind` is the file type it produces, `image`, `video` or `audio`, by its output, its file or its version, never by the file saying so. `x/y` is root package x's function y where the Hub has one, else account x's package y, as `GET /v1/targets` resolves it. Its function is called directly, with no CPU run first, by one binder, the same for Render, `cozy project render`, `cozy run` and Caption, by the fields' types: a `str` takes words, a mentioned box with a file going as its name, with a warning; a prompt goes as `{text, references}`, its text as written with each mention spelled as its box spells itself, and `references` a list in order of first mention, `[{key, type, file, description}]`, `key` that spelling (`Amy`, `Amy.2`, `walk:48-120`), only of the kinds it takes: another goes as its name, with a warning; a slot takes only the file written in it, with its `description` and its version's extras of the same name (`latents`) when it's a `described` slot and the same package made it, and `own` true for one of the box's own versions; a slot written with a file of another kind is left empty for that render, with a warning naming it; a pickup comes only from `runs`' `pickup`, never the file: `{take, out_frame, …}`, its frame on the tool's `Snap`; a text box is put in as its words, anywhere. A tool naming a package with one public function that makes its kind calls that one. A number past its bounds is clamped, a choice it doesn't offer is its default, a shape the nearest it takes and a list cut to its count, each with a warning; a mention of nothing, a required field left empty, or one of a type this cozy can't fill (`next`: `cozy update`) fails that box before anything is sent. A failed call stops the list and makes no version; a function taking `seed` gets the one Calcifer drew, kept for the next try when the
+An operation is a tool (`[org/]package/function[@release]`, or local code, `./dir/function`), and its `kind` is the file type it produces, `image`, `video` or `audio`, by its output, its file or its version, never by the file saying so. `x/y` is root package x's function y where the Hub has one, else account x's package y, as `GET /v1/targets` resolves it. Its function is called directly, with no CPU run first, by one binder, the same for Render, `cozy project render` and `cozy run`, by the fields' types: a `str` takes words, a mentioned box with a file going as its name, with a warning; a prompt goes as `{text, references}`, its text as written with each mention spelled as its box spells itself, and `references` a list in order of first mention, `[{key, type, file, description}]`, `key` that spelling (`Amy`, `Amy.2`, `walk:48-120`), only of the kinds it takes: another goes as its name, with a warning; a slot takes only the file written in it, with its `description` and its version's extras of the same name (`latents`) when it's a `described` slot and the same package made it, and `own` true for one of the box's own versions; a slot written with a file of another kind is left empty for that render, with a warning naming it; a pickup comes only from `runs`' `pickup`, never the file: `{take, out_frame, …}`, its frame on the tool's `Snap`; a text box is put in as its words, anywhere. A tool naming a package with one public function that makes its kind calls that one. A number past its bounds is clamped, a choice it doesn't offer is its default, a shape the nearest it takes and a list cut to its count, each with a warning; a mention of nothing, a required field left empty, or one of a type this cozy can't fill (`next`: `cozy update`) fails that box before anything is sent. A failed call stops the list and makes no version; a function taking `seed` gets the one Calcifer drew, kept for the next try when the
 `models` and `lora` go on its call: a tool's `model` is what they mean with no slot named, the one model its function runs, its `slot` the key in `models` and `family` what the header of its `default` says. A tool whose function runs several, or none, has no `model`. The version records its run, and each file by its output's name. The package `cozy` is reserved: `cozy/edit`, a video, and `cozy/frame`, a picture, run here, free, with no machine, once what they
 read settles and on `approve`, reading each asset's state, else its newest version, which they say. An edit keeps its versions, each with the clips that made it, and the same edit isn't rendered again; a frame keeps one and its approved one.
 
-- `POST /v1/projects` `{project}`: the project it names, its id or name, or the folder on this computer holding it (absolute; the nearest up
-  with a `project.db`, or files to import), opened: `404 project_unknown`, `409 project_ambiguous` for a name two projects share (they never
-  do once each is opened here), `400 project_path` for a relative path, `404 project_not_found` for a folder in none. `{name, path?, starter?}`: a
+- `POST /v1/projects` `{name, path?, starter?}`: a
   new project called `name`, at `~/<name>` in this person's home folder, through `as_name` with `.` as `_` (`untitled` when nothing is left),
   taking `<name>_2` when anything is there, a project or not, which stays as it is and `said` says so; or at `path`, a folder of this
-  computer's by its absolute path (`409 project_exists`, its name the folder's unless given); `starter`: it holds the starter film. The same
-  `Idempotency-Key` again answers the same project. Answers `{id, path, name, next?, said?}` and records it in the index as used now. A folder of
-  files from before `project.db` is imported here, a format 2 one upgraded first with `said` saying so once; `GET /v1/projects/{id}` says it in
-  `warnings` if that came first. What can't convert refuses with why, its files as they were.
+  computer's by its absolute path (`409 project_exists`, its name the folder's unless given; `400 project_path` for a relative one); `starter`: it holds the starter film. The same
+  `Idempotency-Key` again answers the same project. Answers `{id, path, name, next, said?}` and records it in the index as used now. An existing
+  project needs no call here: a route names it, and `404 project_unknown`, `409 project_ambiguous` (a name two projects share, which they never
+  do once each is opened here) or `404 project_not_found` (a folder in none) refuse one that names none. A folder of
+  files from before `project.db` is imported by the first call that names it, a format 2 one upgraded first, and `GET /v1/projects/{id}` says it in
+  `warnings`. What can't convert refuses with why, its files as they were.
 - `POST /v1/projects/{id}/imports` `{source, name?, at?: {x, y, w?}, description?, exact?, moves?, placed?}`, with an `Idempotency-Key`: `{name, sha256, field, path, already?, kept?}`. One call, one transaction, makes an element: the file in `files/`, a box `{approved, description?}` under its name, with `at` its row on the canvas, and `moves`, the rows its drop pushed aside, each with its revision in `placed` as `PATCH /canvas` takes it (`kept` the ones another wrote since, as they are). `source` is `sha256:<hex>` (a held file, moved rather than copied, or one the project has; else `404 file_not_held`), the start of the hash of a file the project has, or an `http(s)` URL (64 MiB at most, public addresses only at every hop); a client's own file comes held, never by its path. `name` absent: the stem of a URL, lower-cased, else `file`; the CLI sends a file's stem, lower-cased. It goes through `as_name`, and a name the project has, by the rule names match, gets `_2`, so `name` in the answer is the one it got. With `exact`, a person typed it: `409 asset_exists`, naming what has it. The same file twice is a second element with no new bytes, `already` saying so. `field` is `image`, `video` or `audio`, from the bytes; anything else is `400 import_failed`.
 - `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path (where it last was), used_at_ms,
   missing?, busy?}], older}`. `missing`: the folder no longer holds `project.db`.
-- `DELETE /v1/projects/{id}`: `204`, forgotten from the index, and nothing more is said of it on `GET /v1/events`; the folder is
-  untouched. It closes as any does, once nothing reads it. `409 project_busy` while it renders.
 - `GET /v1/projects/{id}` (`?assets=false`: all but its assets; `unsent`: what kept its last render from reaching a machine, each error once, until another is asked): worked out once per revision, so another read costs only its answer. `{id, path, board?, assets, queue?: [{name, running, run?}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
   absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?, without?}], warnings: [{name?, message}], next?}`. `next` is the commands to run given what it holds and lacks. Each asset is `{name, standing, making?, kind, noun, tool?, versions, prefixes?: [{number, prefix, pickup?, latents?, execution_ms?, run?, main?, from?, without?}],
   version?, approved?, pinned?, inputs?, files, path?, sha256?, field?, width?, height?, duration_ms?, alpha?, absent?, machine?, made_by?, status, reads?: [{name, version?, at, key?}], fields?, etag?, failure?, changed?, missing?}`: `standing` is `current`, `out_of_date`, `missing` or `making`, for a client that shows it, `making` the runs making it now, `version` the version that is its state, `approved` is the version a pin is, `pinned` that its `approved` is its state,
   `files` its state by output name, each `{path, sha256, absent?, machine?}`, `absent` that its bytes aren't on this computer and `machine` the machine that keeps them when one does; `path` its main file, `sha256` and `field` that file's hash and the field naming its type, `width`, `height` and `duration_ms` what is measured of it so far, `alpha` that part of it is fully transparent, `absent` and `machine` as for a file, and `status` is for people, in the asset's noun. A prefix's `pickup` is the take it picked up from, `{take, out_frame, beats_from?}`, and `latents` the machine keeping its latents, which a pickup of it needs. Its `main` is that version's main file, `{output, path, sha256, field, width?, height?, duration_ms?, fps?, alpha?, absent?, machine?}`, `output` being what `GET /v1/runs/{id}/play` takes of its `run`; `execution_ms` is how long its runs took. `from` and `without` are a cut's: what that version was cut from, and what it was cut without, each `<piece>: <why>`. `reads` is what its text mentions that names something, with `version` the one a `<name.N>` fixes, `at` the places that say it (`summary`, `beats.0.description`, `tracks.0.clips.1`), and `key` twelve hex digits of what that read sends now (its version's files and its box's description, or a text box's words), which moves only when what it reads does. `fields` is its inputs, flat, each by a control's `field`, as they apply now, its text as `instructions`, `tool` what makes it, `etag` what `PATCH`'s `If-Match` names: the digest of its name and fields. `failure` is what stopped its last try, the one error envelope: it stands until a version lands, it's tried again or its inputs change, and canceling is none. `changed` is a pin's: what changed since the version it holds, and it stands as `out_of_date` until `runs` with `outdated` (or naming it) re-runs it. An input gone from the project isn't a change: it is in `missing`, and `outdated` leaves that pin alone. `input_missing` is a `<name>` in its text, or a file link of an entity it reads, that names nothing and is no tag of its package: nothing was sent, so nothing was charged. `missing` is those names, once its package's tags are known; a pin lists them too, for its text, though it stands until it is run again. A warning's `name` is the asset or entity it's about, and it has none when it's about the file. A box renamed in an imported YAML keeps its versions, approval and canvas row (decision 6): a name with no versions takes the row of a name gone from it when exactly that row holds a version of the same content, by its name-blind key or the file it approves, and no other new name claims it. An orphan is an asset whose versions the project keeps and that it no longer names; its `bytes` count what `reclaim` would free of it, each file once; `renamed_to` the one new asset of
   its kind with none. A project's `absent` counts files the lock names that are not here and no machine keeps. `warnings` holds what reading its boxes said, what each
   state's version says, and each asset whose tool names a published package, as last heard of, with no one function that makes it. A read waits on no Hub and never writes: a package not heard of yet is asked of in the background, and a later read or a render says it.
-- `GET /v1/projects/{id}/assets/{name}?call=`: `{asset, versions: [{number, files, made_by?, seed?, runs, approved?, warnings?, pickup?, execution_ms?, text?}], discarded?: [number], call?, call_warnings?}`. With `call=true`, `call` is what its binder would send now, the JSON `cozy run --input` takes, with what binding said (`cozy project status <name>` prints it); what can't make one, a package the Hub doesn't have among them, is no `call` and why in `call_warnings`, never a refusal of the read. `text`: the words that version was made from. `discarded`: what `PUT` on a version can still bring back.
+- `GET /v1/projects/{id}/assets/{name}?call=`: `{asset, versions: [{number, files, made_by?, seed?, runs, approved?, warnings?, pickup?, execution_ms?, text?}], discarded?: [number], call?, call_warnings?}`. With `call=true`, `call` is what its binder would send now, the JSON `cozy run --input` takes, with what binding said (`cozy project status <name>` prints it); what can't make one, a package the Hub doesn't have among them, is no `call` and why in `call_warnings`, never a refusal of the read. `text`: the words that version was made from. `discarded`: what's set aside until `reclaim`, which undo of its discard brings back.
 - `POST /v1/projects/{id}/assets` `{tool?, at?: {x, y, w?}, name?, fields?, exact?, kind?, moves?, placed?}`, with an `Idempotency-Key`: `201 {name, etag, kept?}`. A tool dropped on a canvas: an asset, with `at` its row and `moves` what its drop pushed aside (as an import's), in one transaction. `tool` is an `id` from `GET /v1/tools`, and `name` and `kind` what its row says, so a page's drop waits on no read. With no `kind` that isn't held already, or no `name`, the tool is read, refusing what can't be one (`400 tool_names_no_function`, `400 tool_makes_no_media`), and a Hub that's away refuses nothing: its render says. With none it's a text asset, `kind` `text`, its words in `fields.text` (`400 asset_says_nothing`, and `400 asset_name_reserved` for a tag of a package the project uses). `exact` says a person typed `name`: `409 asset_exists` if the project has it, naming what does, not `_2`. `name` goes through `as_name`, a `.` staying a character like any other but for an ending of `.` and digits, which says a version and is `_` instead, `400 project_name` with `exact`; `self` is taken; absent, it's the tool's function. A taken name, or one whose versions the project keeps, gets `_2`, chosen in the transaction that writes it.
 - An Edit's `fields.timeline` is `{tracks: [{clips: [{clip: "<name>", in?, out?} | {clip: "<name>", frames?}]}]}`: one track for now, a clip's place in the list its place on the track, with no gaps. `in` and `out` count a video's frames from 0 at the Edit's rate, `out` exclusive, as OTIO and an EDL do, and no `out` is its end; `frames` is how long a still is held, 3 s when absent. Its row and each of its `prefixes` also say `timeline: {fps, tracks: [{clips: [{clip, in?, out?, frames?, name, field?, path?, sha256?, holds?, width?, height?, missing?}]}]}`: the clips as they read now, or as they read when that version was rendered. `holds` is how many frames a video has at that rate, and `missing` why a render goes on without the clip (`no longer in the project`, `no version yet`, `not on this computer`). `rendering`, 0 to 1, is how far a render here is, with `standing: making`; each change says `project.changed`.
-- `PATCH /v1/projects/{id}/assets/{name}` `{fields?: {<field>: value | null}, tool?, at?}`, with `If-Match` if it should not write over another's edit: `{name, etag, was, warnings?}`. `at` is its row, written with its fields in one transaction (`cozy project set … at=`). `field` is exactly a control's `field`, or any key of the asset's `fields`, `description` among them; a null clears it. `tool` changes what makes it, and `""` takes it off, its fields with it (Paul, 11-06; Undo writes them back): its versions, their numbers, `approved`, `description`, `models`, `lora` and its words stay. Only a box with no versions and no `approved` moves its words: `text` to `instructions` as a tool goes on, `instructions` or `summary` to `text` as it comes off. A tool going on a picture no version holds lists it as the next version, as if it had made it, and starts from what the box shows, approved else newest: `<self.N>` in its first required picture slot, else at the start of its first prompt. Its approval, or none, stays as it was: a tool approves nothing. Naming `instructions` or `text` in `fields` says what they are instead. Only the fields it names change. Setting what it holds changes nothing, and a render going keeps the text it was asked with. `If-Match` is the asset's `etag`, so an edit of another asset never conflicts: `409 asset_changed` when it moved, and the answer's `was` tells a window whether a write of its own is all that moved it.
-- `DELETE /v1/projects/{id}/assets/{name}`: `{name, text, at?}`, it and its row gone, in one transaction, and what it made stands. Its versions wait as an orphan's, its name free, for `rename`, for `PUT`, or for `reclaim`. `text` is opaque, and is what puts it back, not a render it stopped: what a render still owes of it stops, queued with its row saying so, running canceled, and landing nothing. `404 asset_unknown`.
-- `PUT /v1/projects/{id}/assets/{name}` `{text, at?}`: `{name, etag}`. What `DELETE` answered, back under its name, its versions with it. `409 asset_exists` if the project has that name again; `400 asset_text` if `text` isn't what deleting it answered.
+- `PATCH /v1/projects/{id}/assets/{name}` `{fields?: {<field>: value | null}, tool?}`, with `If-Match` if it should not write over another's edit: `{name, etag, was, warnings?}`. Its row moves by `PATCH …/canvas`, the page's drag and `cozy project set … at=` alike. `field` is exactly a control's `field`, or any key of the asset's `fields`, `description` among them; a null clears it. `tool` changes what makes it, and `""` takes it off, its fields with it (Paul, 11-06; Undo writes them back): its versions, their numbers, `approved`, `description`, `models`, `lora` and its words stay. Only a box with no versions and no `approved` moves its words: `text` to `instructions` as a tool goes on, `instructions` or `summary` to `text` as it comes off. A tool going on a picture no version holds lists it as the next version, as if it had made it, and starts from what the box shows, approved else newest: `<self.N>` in its first required picture slot, else at the start of its first prompt. Its approval, or none, stays as it was: a tool approves nothing. Naming `instructions` or `text` in `fields` says what they are instead. Only the fields it names change. Setting what it holds changes nothing, and a render going keeps the text it was asked with. `If-Match` is the asset's `etag`, so an edit of another asset never conflicts: `409 asset_changed` when it moved, and the answer's `was` tells a window whether a write of its own is all that moved it.
+- `DELETE /v1/projects/{id}/assets/{name}`: `{name, at?}`, it and its row gone, in one transaction, and what it made stands. Its versions wait as an orphan's, its name free, for undo, for `rename`, or for `reclaim`. Undo (`POST …/history/undo`) puts it back as it was, where it was, with its versions, but not a render it stopped: what a render still owes of it stops, queued with its row saying so, running canceled, and landing nothing. `404 asset_unknown`.
 - `POST /v1/projects/{id}/assets/{name}/versions` `{source}`: the same answer as below, with `already` when a version holds that file, then that version. A file joins the asset as its next version, so versions of one thing live on one box. `source` is an import's, and a file it holds with no version is a version first. What's approved stays. `404 asset_unknown`, `404 file_not_held`, `400 import_failed`.
-- `DELETE /v1/projects/{id}/assets/{name}/versions/{number}`: `{name, number, noun, approved?, stands?, stale?, read_by?}`, that version off the asset at once, local, its number never given again and its files on record until `reclaim`. `approved`: it was the approved one, and `approved:` went with it. `stands`: what the asset stands on now, else its newest; absent, it has none left and stays with no take. `stale`: what is out of date now and wasn't. `read_by`: what fixes this version in its text: it doesn't go out of date, and a render of it fails until the version is back. A take that picked up from it (`pickup`) stands. `404 version_unknown` if it has no such version or it's discarded already; `409 version_running` while that number is being made, with `next` the `cancel`.
-- `PUT /v1/projects/{id}/assets/{name}/versions/{number}` `{approved?}`: the same answer. What `DELETE` set aside, back in its place, and with `approved` from its answer its approval too, unless another has come since (`approved` absent). `404 version_unknown` once `reclaim` has cleared it.
-- `POST /v1/projects/{id}/assets/{name}/caption` `{on?}` (`Idempotency-Key`, optional): `{name, text, run, warnings?}`, its description as a package would say it, for the page to put in the field. It writes nothing. It runs on a machine that's up (`409 caption_no_machine`), on the asset's state, else its newest version (`409 caption_no_file` with neither), and answers when the run ends. The package is the first that declares `project-adapter-text` of the local code this project's assets name, what that machine holds, and the Hub's first page (`404 caption_no_tool`). Its adapter, told the file as a read, says what to ask, so the words are the package's; the answer is the first text of the function's output. `caption_failed`: a run failed, and `next` names it.
+- `DELETE /v1/projects/{id}/assets/{name}/versions/{number}`: `{name, number, noun, approved?, stands?, stale?, read_by?}`, that version off the asset at once, local, its number never given again and its files on record until `reclaim`. `approved`: it was the approved one, and `approved:` went with it. `stands`: what the asset stands on now, else its newest; absent, it has none left and stays with no take. `stale`: what is out of date now and wasn't. `read_by`: what fixes this version in its text: it doesn't go out of date, and a render of it fails until the version is back, which undo of this does. A take that picked up from it (`pickup`) stands. `404 version_unknown` if it has no such version or it's discarded already; `409 version_running` while that number is being made, with `next` the `cancel`.
 - `GET /v1/projects/{id}/yaml` (`cozy project export`): the project as YAML, format 4 (`PROJECT-YAML.md`), each section, then each box and its fields in order, its `ETag` the digest of it (`If-None-Match` is `304`). It holds what the project says; versions, takes, files and rows stay in `project.db`.
 - `PUT /v1/projects/{id}/yaml` (`cozy project import <file>.yaml`), with `If-Match` optional: the body is the project, each section, box and field that differs from it written in one transaction and one history entry, a box renamed in it keeping its versions (decision 6). With `If-Match`, only while the export is what that ETag read, else `409 project_changed`. `204`, the new `ETag`. A body that doesn't read as a project of format 4 is `400 project_yaml` (or `project_format`), with its line, and nothing changes. Comments aren't kept: the database holds values. It renders nothing, though a render going keeps the text it was asked with.
 - `GET /v1/projects/{id}/history?limit=` (50, at most 200): `{entries, undo?, redo?}`, newest first, each `{id, at_ms, by: {via, client?}, words, names?, edits?, undone?: {at_ms, by}}`. Every edit of the project is one entry, a row of `project.db`'s `ops` written in the edit's own transaction: each route below that changes a box, a canvas row, a take or a name (imports, assets, versions, approve, unpin, rename, canvas, yaml). `by` is what the request's `Cozy-Client` says, `page <tab>` or `cli`, else `api`. A request's `Cozy-Edit: <id>[, <id>…]` names what the client calls it: requests that share one are one entry, and undo and redo take it as `edit`. A canvas `PATCH` whose every row is `placed` is the page arranging its own boxes, and none. `words` say it plainly (`Deleted kyogre_3`, `Merged green into red`, `Switched image_2 to generate_turbo`, `Set instructions on image_2`, `Discarded take 3 of fight`, `Moved image_2`). The last 200 are kept, across restarts. Renders, cancels, reclaim, push and pull are no entry: nothing is rendered, rented or ended by undoing.
@@ -600,33 +591,31 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 
 ## CLI verbs and their calls
 
-A verb in a project names it with `-p <project>`, else `COZY_PROJECT` (`api::calcifer::project::NAMED_BY`); none named is `not_in_a_project`.
+A verb in a project names it with `-p <project>`, else `COZY_PROJECT` (`api::calcifer::project::NAMED_BY`), which goes as its routes' `{id}`; none named is `not_in_a_project`.
 
 | Verb | Calls |
 |---|---|
 | `cozy status` | `GET /v1/status`, `GET /v1/machines`, `GET /v1/runs?status=…` |
-| `cozy open [project] [--no-open]` | naming one, `POST /v1/projects {project}`, `GET /v1/projects/{id}?assets=false`; then `GET /`, `POST /v1/session-codes` |
+| `cozy open [project] [--no-open]` | naming one, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
 | `cozy project new <name\|folder>` | `POST /v1/projects {name, starter: true}`, or a folder of Calcifer's computer `{path, starter: true}` |
 | `cozy project ls` | `GET /v1/projects` |
-| `cozy project render …` | `POST /v1/projects {project}`, `GET /v1/projects/{id}/events`, with no `--on` `GET /v1/machines` for the machines, `POST /v1/projects/{id}/fit` on `local` alone (each line once, as a warning: it never asks), `POST /v1/projects/{id}/runs`; the live view and its lines draw the `board` and each `job`; `--json` follows each `started` run on `GET /v1/runs/{id}/events` |
-| `cozy project approve <node> <n>` | `POST /v1/projects {project}`, `POST /v1/projects/{id}/approve` |
-| `cozy project push`, `pull` | `POST /v1/projects {project}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull`; exits 3 when `skipped` names a file |
-| `cozy project status` | `POST /v1/projects {project}`, `GET /v1/projects/{id}` |
-| `cozy project rename <old> <new>` | `POST /v1/projects {project}`, `POST /v1/projects/{id}/rename` |
-| `cozy project history [-n N]` | `POST /v1/projects {project}`, `GET /v1/projects/{id}/history` |
-| `cozy project undo [ID \| --to ID]`, `cozy project redo [ID \| --to ID]` | `POST /v1/projects {project}`, `POST /v1/projects/{id}/history/undo` or `…/redo`; every CLI request says `Cozy-Client: cli` |
-| `cozy project import <file\|hash> [name] [--description <words>]` | `POST /v1/projects {project}`, a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/projects/{id}/imports` |
-| `cozy project export [-o <file>]` | `POST /v1/projects {project}`, `GET /v1/projects/{id}/yaml` |
-| `cozy project import <file>.yaml` | `POST /v1/projects {project}`, `PUT /v1/projects/{id}/yaml` |
-| `cozy project add <tool\|text> [name] [field=value…]` | `POST /v1/projects {project}`, `POST /v1/projects/{id}/assets`; `at=` its `at` |
-| `cozy project set <name> field=value…` | `POST /v1/projects {project}`, `PATCH /v1/projects/{id}/assets/{name}`, `tool=` its `tool`, empty to take it off, `at=` its `at` |
-| `cozy project import <file> --into <name>` | `POST /v1/projects {project}`, `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/projects/{id}/assets/{name}/versions` |
-| `cozy project status <name>` | `POST /v1/projects {project}`, `GET /v1/projects/{id}/assets/{name}` |
-| `cozy project delete <name>…` | `POST /v1/projects {project}`, `DELETE /v1/projects/{id}/assets/{name}`; prints the `restore` line, its `text` and `at` as one word |
-| `cozy project restore <name> <kept>` | `POST /v1/projects {project}`, `PUT /v1/projects/{id}/assets/{name}` |
-| `cozy project delete <name> --version <n>…` | `POST /v1/projects {project}`, `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` for each; prints each `restore` line |
-| `cozy project restore <name> --version <n>… [--approved]` | `POST /v1/projects {project}`, `PUT /v1/projects/{id}/assets/{name}/versions/{number}` for each |
-| `cozy project unapprove <name>` | `POST /v1/projects {project}`, `POST /v1/projects/{id}/unpin` |
+| `cozy project render …` | `GET /v1/projects/{id}/events`, with no `--on` `GET /v1/machines` for the machines, `POST /v1/projects/{id}/fit` on `local` alone (each line once, as a warning: it never asks), `POST /v1/projects/{id}/runs`; the live view and its lines draw the `board` and each `job`; `--json` follows each `started` run on `GET /v1/runs/{id}/events` |
+| `cozy project approve <node> <n>` | `POST /v1/projects/{id}/approve` |
+| `cozy project push`, `pull` | `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull`; exits 3 when `skipped` names a file |
+| `cozy project status` | `GET /v1/projects/{id}` |
+| `cozy project rename <old> <new>` | `POST /v1/projects/{id}/rename` |
+| `cozy project history [-n N]` | `GET /v1/projects/{id}/history` |
+| `cozy project undo [ID \| --to ID]`, `cozy project redo [ID \| --to ID]` | `POST /v1/projects/{id}/history/undo` or `…/redo`; every CLI request says `Cozy-Client: cli` |
+| `cozy project import <file\|hash> [name] [--description <words>]` | a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/projects/{id}/imports` |
+| `cozy project export [-o <file>]` | `GET /v1/projects/{id}/yaml` |
+| `cozy project import <file>.yaml` | `PUT /v1/projects/{id}/yaml` |
+| `cozy project add <tool\|text> [name] [field=value…]` | `POST /v1/projects/{id}/assets`; `at=` its `at` |
+| `cozy project set <name> field=value…` | `PATCH /v1/projects/{id}/assets/{name}`, `tool=` its `tool`, empty to take it off; `at=`, `PATCH /v1/projects/{id}/canvas`, both under one `Cozy-Edit` |
+| `cozy project import <file> --into <name>` | `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/projects/{id}/assets/{name}/versions` |
+| `cozy project status <name>` | `GET /v1/projects/{id}/assets/{name}` |
+| `cozy project delete <name>…` | `DELETE /v1/projects/{id}/assets/{name}`, then `GET /v1/projects/{id}/history` for the entry: it prints `cozy project undo <id>` |
+| `cozy project delete <name>.<n>…` | `DELETE /v1/projects/{id}/assets/{name}/versions/{number}`, and the same line |
+| `cozy project unapprove <name>` | `POST /v1/projects/{id}/unpin` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` |
 | `cozy run <target> --describe`, `cozy run <package>` | local code's tree `PUT`, `GET /v1/targets` (`tree`, `at`) |
@@ -648,18 +637,18 @@ A verb in a project names it with `-p <project>`, else `COZY_PROJECT` (`api::cal
 | `cozy model edit` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |
 | `cozy model delete` | `DELETE /v1/models/{org}/{name}[/releases/{v}\|/commits/{c}]` |
-| `cozy model download` | a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/model-downloads` (`/v1/model-download-quotes` first for `new`); `GET /v1/runs/{id}/events` |
-| `cozy model upload` | a file or folder `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/model-uploads` (`/v1/model-upload-quotes` first for `new`); `GET /v1/runs/{id}/events` unless it answers `recorded` |
-| `cozy model quantize` | `--package ./dir`, its tree `PUT`; `POST /v1/model-quantizations` (`/v1/model-quantization-quotes` first for `new`), again while `preparing`; `GET /v1/runs/{id}/events` |
+| `cozy model download` | a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/runs` of `cozy/model_download` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
+| `cozy model upload` | a file or folder `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/runs` of `cozy/model_upload` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
+| `cozy model quantize` | `--package ./dir`, its tree `PUT`; `POST /v1/runs` of `cozy/model_quantize` (`POST /v1/run-quotes` first for `new`), again while `preparing`; `GET /v1/runs/{id}/events` |
 | `cozy package ls [query]` | `GET /v1/packages` |
 | `cozy package ls --on` | `GET /v1/machines/{name}`, `GET /v1/machines/{name}/packages?fresh=true`; `--on all`: `GET /v1/machines` |
 | `cozy package info` | `GET /v1/packages/{org}/{name}` |
-| `cozy package install`, `update` | local code's tree `PUT`, `POST /v1/package-installs` (`/v1/package-install-quotes` first for `new`); `GET /v1/runs/{id}/events` |
-| `cozy package remove` | `POST /v1/package-removals`; `GET /v1/runs/{id}/events` for each |
+| `cozy package install` | local code's tree `PUT`, `POST /v1/runs` of `cozy/package_install` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
+| `cozy package remove` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
 | `cozy package delete` | `DELETE /v1/packages/{org}/{name}` |
-| `cozy package lock` | the package's tree `PUT`, `POST /v1/package-locks`, `GET /v1/package-locks/{id}/events`, `GET /v1/package-locks/{id}`; the CLI writes the `uv.lock` it answers |
-| `cozy package publish` | the package's tree `PUT`, `POST /v1/package-publications`, `GET /v1/package-publications/{id}/events`, `GET /v1/package-publications/{id}`; a `lock` it answers, the CLI writes |
+| `cozy package lock` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_lock`, `GET /v1/runs/{id}/events`; the CLI writes the `uv.lock` its result holds |
+| `cozy package publish` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_publish`, `GET /v1/runs/{id}/events`; a `lock` its result holds, the CLI writes |
 <!-- each PR adds its verbs' rows -->
 | `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/events`, then `GET /v1/machines` |
 | `machine ls --history [--since D]` | `GET /v1/rentals?since_ms=` |

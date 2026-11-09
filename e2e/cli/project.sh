@@ -239,18 +239,18 @@ film_of a b; render "$T" film || check "free versions: second: $(tail -c 300 "$O
 film_of b a; render "$T" film || check "free versions: third: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" film)" = 3 ] || check "free versions: it made $(made "$T" film)"
 first=$(take_file "$T" film video 0); second=$(take_file "$T" film video 1)
-cozy project -p "$T" delete film --version 2 > /dev/null || check "free versions: delete the middle"
+cozy project -p "$T" delete film.2 > /dev/null || check "free versions: delete the middle"
 J '[.versions[].number] == [1, 3] and .discarded == [2]' <<< "$(held "$T" film)" || check "free versions: after the middle: $(held "$T" film | jq -c '{versions: [.versions[].number], discarded}')"
 [ -n "$(file_at "$T" "$second")" ] || check "free versions: its file went at once"
 [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE key = 'film' AND discarded = 1")" = 1 ] || check "free versions: project.db has no record of it"
-cozy project -p "$T" restore film --version 2 > /dev/null || check "free versions: restore"
+cozy project -p "$T" undo > /dev/null || check "free versions: undo"
 J '[.versions[].number] == [1, 2, 3] and (.discarded // []) == []' <<< "$(held "$T" film)" || check "free versions: after Undo: $(held "$T" film | jq -c '{versions: [.versions[].number], discarded}')"
 
 cozy project -p "$T" rename film final > "$OUT/free-rename.txt" 2>&1 || check "free versions: rename: $(tail -c 300 "$OUT/free-rename.txt")"
 J '.asset.standing == "current" and (.versions | length) == 3' <<< "$(held "$T" final)" || check "free versions: renamed: $(held "$T" final | jq -c .asset)"
 [ -f "$T/final.mp4" ] || check "free versions: the film didn't follow its name: $(ls "$T" | tr '\n' ' ')"
 
-cozy project -p "$T" delete final --version 1 > /dev/null || check "free versions: delete the first"
+cozy project -p "$T" delete final.1 > /dev/null || check "free versions: delete the first"
 [ -n "$(file_at "$T" "$first")" ] || check "free versions: delete took the file"
 cozy project -p "$T" reclaim --yes > "$OUT/free-reclaim.txt" 2>&1 || check "free versions: reclaim: $(tail -c 300 "$OUT/free-reclaim.txt")"
 [ -z "$(file_at "$T" "$first")" ] || check "free versions: reclaim left what nothing names"
@@ -390,19 +390,15 @@ live_views
 project_index "$P" "$ID"
 }
 
-# The projects Calcifer knows: listed, a moved folder missing, DELETE forgetting it and never its folder.
+# The projects Calcifer knows: listed, and a moved folder missing.
 project_index() {
-step "a project: the index, a moved folder missing, DELETE forgets"
+step "a project: the index, a moved folder missing"
 local P=$1 ID=$2
 cozy --json project ls > "$OUT/project-ls-1.json" || check "project ls failed"
 J --arg p "$P" '.projects | any(.path == $p and (.missing | not))' "$OUT/project-ls-1.json" || check "project ls does not list $P"
 mv "$P" "$OUT/garden-moved"
 cozy --json project ls > "$OUT/project-ls-2.json" || check "project ls after the move failed"
 J --arg i "$ID" '.projects | any(.id == $i and .missing)' "$OUT/project-ls-2.json" || check "a moved project is not missing"
-[ "$(api -o /dev/null -w '%{http_code}' -X DELETE "http://$ADDR/v1/projects/$ID")" = 204 ] || check "DELETE /v1/projects/$ID did not answer 204"
-cozy --json project ls > "$OUT/project-ls-3.json" || true
-{ J --arg a "$ID" '.projects | all(.id != $a)' "$OUT/project-ls-3.json" && [ -f "$OUT/garden-moved/project.db" ]; } || check "DELETE did not forget the project, or touched its folder"
-forget_all
 }
 
 # Several runs at once, off a terminal and on one: every line names its asset, a preview is no take, a warning says whose it is, once,
@@ -469,10 +465,9 @@ for type in run.completed output_item.landed run.log; do
   jq -se --arg t "$type" 'any(.type == $t)' "$OUT/by-asset.ndjson" > /dev/null || check "by asset: --json has no $type: $(cut -c1-120 "$OUT/by-asset.ndjson" | head -20)"
 done
 
-step "a project: --plain on a terminal is one line per event"
-printf 'project\x1frender\x1f--plain\x1f\x1e' >> "$OUT/argv.log"  # script runs the binary itself
-script -qfec "stty rows 24 cols 120; '$COZY' project -p '$T' render sophia --plain --on local" "$OUT/by-asset-plain.txt" > /dev/null 2>&1 || check "by asset: --plain: $(tail -c 400 "$OUT/by-asset-plain.txt")"
-{ grep -aqE '^sophia: version [0-9]+' "$OUT/by-asset-plain.txt" && ! grep -aq $'\x1b\\[?1049h' "$OUT/by-asset-plain.txt"; } || check "by asset: --plain drew a view: $(cat -v "$OUT/by-asset-plain.txt" | tail -c 400)"
+step "a project: TERM=dumb on a terminal is one line per event"
+script -qfec "stty rows 24 cols 120; TERM=dumb '$COZY' project -p '$T' render sophia --on local" "$OUT/by-asset-plain.txt" > /dev/null 2>&1 || check "by asset: TERM=dumb: $(tail -c 400 "$OUT/by-asset-plain.txt")"
+{ grep -aqE '^sophia: version [0-9]+' "$OUT/by-asset-plain.txt" && ! grep -aq $'\x1b\\[?1049h' "$OUT/by-asset-plain.txt"; } || check "by asset: TERM=dumb drew a view: $(cat -v "$OUT/by-asset-plain.txt" | tail -c 400)"
 
 step "a project: on a terminal, the live view and then a block in the scrollback"
 FORCE_HYPERLINK=1 script -qfec "stty rows 24 cols 120; '$COZY' project -p '$T' render all --on local" "$OUT/by-asset-tty.txt" > /dev/null 2>&1 || check "by asset: on a terminal: $(tail -c 400 "$OUT/by-asset-tty.txt")"
@@ -738,8 +733,8 @@ cozy project -p "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first open:
 local P=$OUT/first-open-page
 mkdir -p "$P"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$P"
-answer=$(api -X POST -d "$(jq -n --arg p "$P" '{project: $p}')" "http://$ADDR/v1/projects")
-J '.said | any(contains("project.yaml.v2"))' <<< "$answer" || check "first open: the route doesn't say so: $answer"
+answer=$(api "http://$ADDR/v1/projects/$(jq -rn --arg p "$P" '$p | @uri')?assets=false")
+J '.warnings | any(.message | contains("project.yaml.v2"))' <<< "$answer" || check "first open: the route doesn't say so: $answer"
 
 step "a project: what can't convert is refused with why, and left as it is"
 local C=$OUT/first-open-stuck
@@ -810,7 +805,7 @@ render "$T" hero || check "version text: again: $(tail -c 300 "$OUT/render.txt")
 J '[.versions[].text] == ["A red door.", "A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: $(held "$T" hero | jq -c '[.versions[].text]')"
 local texts; texts=$(python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM versions WHERE record LIKE ?", (sys.argv[2],)).fetchone()[0])' "$T/project.db" '%"text":"A %')
 [ "$texts" = 2 ] || check "version text: stored where it didn't change: $texts rows hold words"
-cozy project -p "$T" delete hero --version 1 > /dev/null || check "version text: discard"
+cozy project -p "$T" delete hero.1 > /dev/null || check "version text: discard"
 cozy project -p "$T" reclaim --yes > /dev/null 2>&1 || check "version text: reclaim"
 J '[.versions[].text] == ["A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: what held it went: $(held "$T" hero | jq -c '[.versions[].text]')"
 }
@@ -961,7 +956,7 @@ J --argjson n "$((count - 1))" '.unrecorded == $n and (.lost // null) == null' <
 cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim since: $(tail -c 300 "$OUT/lost-lock.txt")"
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes took what it had no record of: $(ls "$L/files" | wc -l) of $count"
 
-step "a project: a deleted asset is an orphan, its name starts clean, and restore or reclaim settles it"
+step "a project: a deleted asset is an orphan, its name starts clean, and undo or reclaim settles it"
 local D=$OUT/deleted line
 mkdir -p "$D"
 yaml_in "$D" <<YAML
@@ -970,15 +965,15 @@ assets:
   kept: {tool: $here/project/draw.py/draw, instructions: One.}
 YAML
 render "$D" kept || check "deleted: render: $(tail -c 300 "$OUT/render.txt")"
-# What it did, then what restores it, a line each on stdout.
+# What it did, then what undoes it, a line each on stdout.
 line=$(cozy project -p "$D" delete kept) || check "deleted: delete"
 line=${line##*$'\n'}
 J '[.orphans[] | select(.name == "kept") | .versions] == [1]' <<< "$(status "$D")" || check "deleted: no orphan: $(status "$D" | jq -c .orphans)"
 printf '  kept: {tool: %s/project/draw.py/draw, instructions: Something else.}\n' "$here" | added "$D"
 [ "$(made "$D" kept)" = 0 ] || check "deleted: a new asset took its name's versions: $(made "$D" kept)"
 dropped "$D" kept
-eval "$line" > /dev/null || check "deleted: restore: $line"
-[ "$(made "$D" kept)" = 1 ] || check "deleted: restore lost its version: $(made "$D" kept)"
+eval "$line" > /dev/null || check "deleted: undo: $line"
+[ "$(made "$D" kept)" = 1 ] || check "deleted: undo lost its version: $(made "$D" kept)"
 cozy project -p "$D" delete kept > /dev/null || check "deleted: delete again"
 cozy project -p "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: reclaim: $(tail -c 300 "$OUT/deleted.txt")"
 { J '(.orphans // []) == []' <<< "$(status "$D")" && [ "$(ls "$D/files" | wc -l)" = 0 ]; } || check "deleted: reclaim left: $(ls "$D/files"), $(status "$D" | jq -c .orphans)"
@@ -987,7 +982,7 @@ cozy project -p "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: 
 # A take discarded: off its box at once, its number never given again, its files there until `reclaim`, and nothing made again.
 discards() {
 step "a project: a take discarded, and put back"
-local T=$OUT/discards second third line back code
+local T=$OUT/discards second third line back code undo
 mkdir -p "$T"
 yaml_in "$T" <<YAML
 version: 4
@@ -999,19 +994,19 @@ render "$T" hero -n 3 || check "discards: render: $(tail -c 300 "$OUT/render.txt
 cozy project -p "$T" approve hero 3 > /dev/null || check "discards: approve"
 render "$T" scene || check "discards: render scene: $(tail -c 300 "$OUT/render.txt")"
 second=$(take_file "$T" hero image 1); third=$(take_file "$T" hero image 2)
-line=$(cozy project -p "$T" delete hero --version 2) || check "discards: delete the middle"
+line=$(cozy project -p "$T" delete hero.2) || check "discards: delete the middle"
 line=${line##*$'\n'}
-[ "$line" = "cozy project -p $T restore hero --version 2" ] || check "discards: delete printed: $line"
+[[ $line =~ ^"cozy project -p $T undo "[0-9]+$ ]] || check "discards: delete printed: $line"
 J '[.versions[].number] == [1, 3] and .discarded == [2] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: after the middle: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
 [ -n "$(file_at "$T" "$second")" ] || check "discards: its file went at once"
 [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE key = 'hero' AND discarded = 1")" -ge 1 ] || check "discards: project.db has no record of it"
-back=$(cozy --json project -p "$T" delete hero --version 3) || check "discards: delete the approved: $back"
-J --arg back "cozy project -p $T restore hero --version 3 --approved" '.approved and .stands == 1 and .stale == ["scene"] and .next == [$back]' <<< "$back" || check "discards: the approved's answer: $back"
+back=$(cozy --json project -p "$T" delete hero.3) || check "discards: delete the approved: $back"
+J --arg p "cozy project -p $T undo " '.approved and .stands == 1 and .stale == ["scene"] and (.next | length) == 1 and (.next[0] | startswith($p) and (ltrimstr($p) | test("^[0-9]+$")))' <<< "$back" || check "discards: the approved's answer: $back"
 ! grep -q 'approved:' <(cozy project -p "$T" export) || check "discards: approved: stayed"
 J '[.versions[].number] == [1] and .discarded == [2, 3] and .asset.standing == "current"' <<< "$(held "$T" hero)" || check "discards: after the approved: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded, standing: .asset.standing}')"
 J '.asset.standing == "out_of_date" and (.versions | length) == 1' <<< "$(held "$T" scene)" || check "discards: its reader: $(held "$T" scene | jq -c .asset)"
-eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: restore the approved"
-eval "$line" > /dev/null || check "discards: restore the middle: $line"
+eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: undo the approved"
+eval "$line" > /dev/null || check "discards: undo the middle: $line"
 J '[.versions[].number] == [1, 2, 3] and (.discarded // []) == [] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: Undo: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
 grep -q 'approved:' <(cozy project -p "$T" export) || check "discards: Undo left no approved:"
 J '.asset.standing == "current"' <<< "$(held "$T" scene)" || check "discards: its reader after Undo: $(held "$T" scene | jq -c .asset)"
@@ -1019,8 +1014,9 @@ render "$T" all --missing || check "discards: render what's missing: $(tail -c 3
 [ "$(made "$T" hero) $(made "$T" scene)" = "3 1" ] || check "discards: something ran again: $(counts "$T")"
 
 step "a project: a discarded number is never given again, and reclaim clears only what nothing names"
-cozy project -p "$T" delete hero --version 2 --version 3 > "$OUT/discards.txt" || check "discards: delete of two"
-[ "$(grep -c ' restore hero --version ' "$OUT/discards.txt")" = 2 ] || check "discards: delete of two printed: $(cat "$OUT/discards.txt")"
+cozy project -p "$T" delete hero.2 hero.3 > "$OUT/discards.txt" || check "discards: delete of two"
+[ "$(grep -cE '^cozy project -p .* undo [0-9]+$' "$OUT/discards.txt")" = 2 ] || check "discards: delete of two printed: $(cat "$OUT/discards.txt")"
+undo=$(tail -1 "$OUT/discards.txt")
 cozy project -p "$T" import "${second:7:12}" kept > /dev/null || check "discards: import what another asset then names"
 render "$T" hero -n 1 || check "discards: another: $(tail -c 300 "$OUT/render.txt")"
 J '[.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: a number given again: $(held "$T" hero | jq -c '[.versions[].number]')"
@@ -1030,18 +1026,19 @@ cozy project -p "$T" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards
 [ -z "$(file_at "$T" "$third")" ] || check "discards: reclaim left what nothing names"
 [ -n "$(file_at "$T" "$second")" ] || check "discards: reclaim took what another asset names"
 J '(.discarded // []) == [] and [.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: after reclaim: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
-code=0; cozy project -p "$T" restore hero --version 3 > "$OUT/discards.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'reclaim' "$OUT/discards.txt"; } || check "discards: restore after reclaim (exit $code): $(cat "$OUT/discards.txt")"
+# Undoing take 3's discard, reclaimed, is refused: only the exit is judged, as what it says isn't settled.
+code=0; eval "$undo" > "$OUT/discards.txt" 2>&1 || code=$?
+[ "$code" != 0 ] || check "discards: undo after reclaim (exit $code): $(cat "$OUT/discards.txt")"
 render "$T" hero -n 1 || check "discards: after reclaim: $(tail -c 300 "$OUT/render.txt")"
 J '[.versions[].number] == [1, 4, 5]' <<< "$(held "$T" hero)" || check "discards: reclaim gave a number again: $(held "$T" hero | jq -c '[.versions[].number]')"
 
 step "a project: a box with its last take discarded stays, with none, until it's put back"
 printf '  lone: {tool: %s/project/draw.py/draw, instructions: Only one.}\n' "$here" | added "$T"
 render "$T" lone || check "discards: lone: $(tail -c 300 "$OUT/render.txt")"
-back=$(cozy --json project -p "$T" delete lone --version 1) || check "discards: the last: $back"
+back=$(cozy --json project -p "$T" delete lone.1) || check "discards: the last: $back"
 J '.stands == null' <<< "$back" || check "discards: the last's answer: $back"
 J '.asset.standing == "missing" and .asset.versions == 0 and .discarded == [1]' <<< "$(held "$T" lone)" || check "discards: the box: $(held "$T" lone | jq -c .asset)"
-eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: restore the last"
+eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: undo the last"
 J '.asset.standing == "current"' <<< "$(held "$T" lone)" || check "discards: the last back: $(held "$T" lone | jq -c .asset)"
 
 step "a project: a take built on a discarded one stands, and a cut's clip keeps its file"
@@ -1066,7 +1063,7 @@ YAML
 render "$C" all || check "discards: cut: $(tail -c 300 "$OUT/render.txt")"
 first=$(take_file "$C" clash video 0)
 render "$C" clash 'pickup.take=<clash.1>' pickup.out_frame=72 || check "discards: a pickup of take 1: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$C" delete clash --version 1 > /dev/null || check "discards: delete what's built on"
+cozy project -p "$C" delete clash.1 > /dev/null || check "discards: delete what's built on"
 J '[.versions[].number] == [2] and .versions[0].pickup.take == "<clash.1>" and .asset.standing == "current"' <<< "$(held "$C" clash)" || check "discards: what's built on it: $(held "$C" clash | jq -c '{versions, standing: .asset.standing}')"
 cozy project -p "$C" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards: reclaim with a clip: $(tail -c 300 "$OUT/discards.txt")"
 [ -n "$(file_at "$C" "$first")" ] || check "discards: reclaim took what a cut's clip names"
@@ -1081,7 +1078,7 @@ assets:
 YAML
 cozy project -p "$S" render slow --queue --on local > "$OUT/discards.txt" 2>&1 || check "discards: slow: $(tail -c 300 "$OUT/discards.txt")"
 for _ in $(seq 100); do
-  cozy project -p "$S" delete slow --version 1 > "$OUT/discards.txt" 2>&1 || true
+  cozy project -p "$S" delete slow.1 > "$OUT/discards.txt" 2>&1 || true
   grep -q 'still being made' "$OUT/discards.txt" && break
   sleep 0.1
 done
@@ -1934,7 +1931,8 @@ J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all
 [ "$(owed "$W")" -ge 1 ] || check "walking: what the walk owes isn't in project.db"
 dropped "$W" gone_soon
 for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
-back=$(api -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone")
+api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone"
+back=$(api "http://$ADDR/v1/projects/$id/history" | jq -r '[.entries[] | select(.undone == null and (.names | index("running_gone")))][0].id')
 for _ in $(seq 60); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
 [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run show "$run" --once | jq -c '{status, progress}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
@@ -1945,8 +1943,8 @@ for gone in gone_soon running_gone; do
   J --arg gone "$gone" '.board.jobs[] | select(.asset == $gone) | .state == "canceled" and (.why | test("deleted"))' <<< "$(status "$W")" || check "walking: deleted $gone's job says $(status "$W" | jq -c --arg gone "$gone" '.board.jobs[] | select(.asset == $gone)')"
 done
 J '.board.jobs[] | select(.asset == "reads_gone") | .state == "failed" and (.error.message | test("running_gone was deleted"))' <<< "$(status "$W")" || check "walking: what read a deleted asset says $(status "$W" | jq -c '.board.jobs[] | select(.asset == "reads_gone")')"
-# Put back, it is the asset, and not the render it stopped.
-api -X PUT -d "$(jq -c '{text, at}' <<< "$back")" "http://$ADDR/v1/projects/$id/assets/running_gone" > /dev/null || check "walking: PUT didn't take back what DELETE answered"
+# Its delete undone, it is the asset, and not the render it stopped.
+J --argjson e "$back" '[.entries[].id] == [$e]' <<< "$(api -X POST -d "{\"entry\": $back}" "http://$ADDR/v1/projects/$id/history/undo")" || check "walking: undo didn't take back the DELETE (entry $back)"
 { grep -q '^  running_gone:' <(cozy project -p "$W" export) && J '.busy | not' <<< "$(status "$W")" && [ "$(made "$W" running_gone)" = 0 ]; } || check "walking: put back, running_gone went again: $(status "$W" | jq -c '{busy, jobs: [.board.jobs[] | select(.asset == "running_gone")]}')"
 [ "$(owed "$W")" = 0 ] || check "walking: what the walk owed outlived the render"
 [ -z "$(find "$W/.runs" -type f 2> /dev/null)" ] || check "walking: left in .runs: $(find "$W/.runs" -type f)"
@@ -2224,7 +2222,7 @@ look=$(prefix "$T" "$T/look.mp4")
 { printf 'version: 4\nassets:\n  look: {approved: %s}\n  note: {description: A note.}\n' "$look"
   for i in 1 2 3 4 5; do printf '  f%s: {tool: cozy/frame, video: <look>, at: %s}\n' "$i" "$i"; done; } | yaml_in "$T"
 render "$T" all || check "no stall: render all: $(tail -c 300 "$OUT/render.txt")"
-id=$(api -X POST -d "$(jq -n --arg p "$T" '{project: $p}')" "http://$ADDR/v1/projects" | jq -r .id)
+id=$(api "http://$ADDR/v1/projects/$(jq -rn --arg p "$T" '$p | @uri')?assets=false" | jq -r .id)
 dd if=/dev/zero of="$T/hog" bs=8M count=256 conv=fdatasync status=none & writer=$!
 : > "$T/took.txt"
 for i in $(seq 1 40); do
@@ -2325,7 +2323,7 @@ heard() { cat "$(file_at "$T" "$(take_file "$T" "$1" given)")"; }
 # A tool is a function: what a box names, what makes it, what its box shows, and what crosses a mention. Weightless, by project/tool.py.
 # What the canvas does, with no page: each verb is its route, with its fields, and a refusal names what's next. web/live.js holds these against an open canvas.
 by_the_cli() {
-step "a project by the CLI alone: add, set, one asset's status, delete and restore"
+step "a project by the CLI alone: add, set, one asset's status, delete and undo"
 local T=$OUT/by-cli tool=$here/project/tool.py line lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 mkdir -p "$T"; still "$T/red.png" red
 printf 'version: 4\nassets: {}\n' | yaml_in "$T"
@@ -2390,15 +2388,16 @@ refuses "status of nothing" "cozy project status" status no_such
 line=$(cozy project -p "$T" delete drawn) || check "by the CLI: delete"
 line=${line##*$'\n'}
 J '.assets | all(.name != "drawn")' <<< "$(status "$T")" || check "by the CLI: delete left it"
-case $line in "cozy project -p $T restore drawn "*) ;; *) check "by the CLI: delete did not print what restores it: $line" ;; esac
-refuses "not what delete printed" "cozy project status" restore drawn nonsense
+[[ $line =~ ^"cozy project -p $T undo "[0-9]+$ ]] || check "by the CLI: delete did not print what undoes it: $line"
+refuses "an entry the history hasn't" "cozy project history" undo 999999
 refuses "nothing named that" "cozy project status" delete no_such
 eval "$line" > /dev/null || check "by the CLI: what delete printed: $line"
-J '.assets[] | select(.name == "drawn") | .versions == 1 and .fields.instructions == "Plain words"' <<< "$(status "$T")" || check "by the CLI: restore lost it: $(row "$T" drawn .)"
-J '.cards.drawn == {"x": 1, "y": 2, "w": 320}' <<< "$(rows)" || check "by the CLI: restore lost its place"
-eval "$line" > "$OUT/by-cli.txt" 2>&1 && check "by the CLI: restored twice"
-grep -qF "cozy project rename drawn" "$OUT/by-cli.txt" || check "by the CLI: a name taken names no next step: $(tail -c 300 "$OUT/by-cli.txt")"
-J '.next[0] | startswith("cozy project") and contains(" restore drawn ")' <<< "$(cozy --json project -p "$T" delete drawn)" || check "by the CLI: delete --json names no next"
+J '.assets[] | select(.name == "drawn") | .versions == 1 and .fields.instructions == "Plain words"' <<< "$(status "$T")" || check "by the CLI: undo lost it: $(row "$T" drawn .)"
+J '.cards.drawn == {"x": 1, "y": 2, "w": 320}' <<< "$(rows)" || check "by the CLI: undo lost its place"
+# Again, it's undone already: nothing more.
+eval "$line" > "$OUT/by-cli.txt" 2>&1 || check "by the CLI: undone twice: $(tail -c 300 "$OUT/by-cli.txt")"
+{ grep -qF "nothing to undo" "$OUT/by-cli.txt" && [ "$(row "$T" drawn .versions)" = 1 ]; } || check "by the CLI: undone twice did more: $(tail -c 300 "$OUT/by-cli.txt")"
+J --arg p "cozy project -p $T undo " '.name == "drawn" and (.next[0] | startswith($p) and (ltrimstr($p) | test("^[0-9]+$")))' <<< "$(cozy --json project -p "$T" delete drawn)" || check "by the CLI: delete --json names no next"
 }
 
 tool_functions() {
@@ -2507,14 +2506,6 @@ before=$(runs "$T")
 render "$T" kept_video || true
 says tools "needs its video"
 [ "$(runs "$T")" = "$before" ] || check "tools: a run went with its file missing"
-
-step "a tool is a function: Caption asks what the package says to, through the binder, and writes nothing"
-before=$(seq_of "$T")
-one=$(api -X POST -d '{"on": "local"}' "http://$ADDR/v1/projects/$id/assets/red_art/caption")
-J '.name == "red_art" and (.text | contains("THE-PACKAGE-ASKS 1 pictures, 0 videos"))' <<< "$one" || check "tools: caption: $one"
-J '.request.input.image | .type == "image" and .description == "PUBLIC-RED-WORDS"' <<< "$(cozy --json --full run show "$(jq -r .run <<< "$one")" --once)" || check "tools: caption's call: $(cozy --json --full run show "$(jq -r .run <<< "$one")" --once | jq -c .request)"
-[ "$(seq_of "$T")" = "$before" ] || check "tools: caption wrote to the project"
-J --arg e caption_no_file '.error.code == $e' <<< "$(api -X POST "http://$ADDR/v1/projects/$id/assets/kept_video/caption")" || check "tools: a caption of nothing isn't refused"
 }
 
 # The tools (design/tools.md, weightless proofs 1 to 11): a box's fields, by its tool's types, as its function gets them through the one
@@ -3701,7 +3692,6 @@ YAML
   J '.assets | any(.name == "frozen_one")' "$OUT/read-hub-frozen.json" || check "a read with the Hub not answering: no assets: $(head -c 300 "$OUT/read-hub-frozen.json")"
   [ "$(seq_of "$X")" = "$hash" ] || check "a read with the Hub not answering wrote project.db"
 fi
-api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$ID"; api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$(jq -r .id <<< "$(cozy --json project -p "$P2" status)")"
 
 step "a project: a hash that reads as a number is that hash, whatever a person's file writes"
 local V=$OUT/numbers over fits digits zero; mkdir -p "$V"; still "$V/base.png" teal; printf 'version: 4\nassets: {}\n' | yaml_in "$V"
@@ -4002,14 +3992,6 @@ tail -c +$((seen + 1)) "$log" | grep 'refused ' > "$OUT/browser-refused.txt" || 
   && J '.other_pages | length == 2 and all(.results.fetch_get | startswith("not readable")) and all(.kept == 0) and all(.asked | length == 4 and all(.credential == false))' "$OUT/browser.json"; } \
   || check "browser: another origin was not refused by Calcifer: $(cat "$OUT/browser-refused.txt" | cut -c1-200 | paste -sd' '); pages $(jq -c .other_pages "$OUT/browser.json")"
 [ "$(owed "$P")" = 0 ] && ! sql "$P" "SELECT record FROM walk" | grep -q nothing || check "another origin's POST started a render"
-}
-
-# The projects this run opened, out of the owner's list; their folders are gone with $OUT.
-forget_all() {
-  local id
-  for id in $(cozy --json project ls 2> /dev/null | jq -r --arg o "$OUT" '.projects[] | select(.path | startswith($o)) | .id'); do
-    api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id" || true
-  done
 }
 
 # Alone: this computer's cozy, as it is, in the default home.

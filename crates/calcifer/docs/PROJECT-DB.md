@@ -52,8 +52,8 @@ applies its change to what is there when its turn comes.
 | `POST /imports` | the box, its row, the push-aside `moves`, the lock's file row, the key, the entry |
 | `POST /assets` | the box, its row, `moves`, the key, the entry |
 | `PATCH /assets/{name}` | its fields (and with a tool on a picture, the version it lists), the entry |
-| `DELETE /assets/{name}`, `PUT` | the box, its row, its record set aside or back, the stopped jobs' walk rows, the entry |
-| `POST /assets/{name}/versions`, `DELETE`/`PUT …/versions/{n}` | the version, `approved` where it goes, the entry |
+| `DELETE /assets/{name}` | the box, its row, its record set aside, the stopped jobs' walk rows, the entry |
+| `POST /assets/{name}/versions`, `DELETE …/versions/{n}` | the version, `approved` where it goes, the entry |
 | `POST /approve`, `/unpin` | the field, the entry (a cut it settles is a render, after) |
 | `POST /rename` | the box key, every mention, its record, its row, the walk's rename, the entry |
 | `PATCH /canvas` | the rows, the entry (none when every row is `placed`) |

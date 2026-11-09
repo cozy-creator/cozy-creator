@@ -44,20 +44,12 @@ enum Command {
         package: String,
     },
     /// Install a published package ([org/]name[@release]), a directory or a script on a machine:
-    /// its environment, no weights. Without a release, the newest; over an installed package, its
-    /// older releases there go. Follows the install; Ctrl-C stops following, never it.
+    /// its environment, no weights. Without a release, the newest; over an installed package, it moves
+    /// to that release and its older ones there go: a run with no version stays on what is installed
+    /// until this. Follows the install; Ctrl-C stops following, never it.
     Install {
         /// [org/]name[@release], a directory such as `.` or `./project`, or a `script.py`.
         #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
-        package: String,
-        #[command(flatten)]
-        placement: Placement,
-    },
-    /// Move a package on a machine to its newest release (or the one named), installing it if it
-    /// isn't there; the older ones there go. A run with no version stays on what is installed
-    /// until this.
-    Update {
-        /// [org/]name[@release]
         package: String,
         #[command(flatten)]
         placement: Placement,
@@ -126,10 +118,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 machine::install(ctx, named.package(), None, named.release, placement.on()?).await
             }
         },
-        Command::Update { package, placement } => {
-            let named = PackageRef::parse(&package)?;
-            machine::install(ctx, named.package(), None, named.release, placement.on()?).await
-        }
         Command::Remove {
             packages,
             placement,

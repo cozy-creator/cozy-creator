@@ -84,10 +84,9 @@ while read -r token; do
 done < <(jq -r .token "$S/signed")
 [ ${#lost[@]} = 0 ] || check "state crash: after the restart, not answered as kept: ${lost[*]:0:5}"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(printf '0%.0s' {1..64})" "http://$ADDR/v1/status")" = 401 ] || check "state crash: a token never given admits"
-# As it was: the tools back on, the sessions ended, the projects forgotten.
+# As it was: the tools back on, the sessions ended.
 api -sS -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"add": "qwen-image-2"}' "http://$ADDR/v1/tools/list" || true
 while read -r token; do curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "http://$ADDR/v1/session" || true; done < <(jq -r .token "$S/signed")
-for id in $(jq -r --arg s "$S/" '.projects[] | select(.path | startswith($s)) | .id' "$S/ls.json"); do api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id" || true; done
 }
 
 state_files() {

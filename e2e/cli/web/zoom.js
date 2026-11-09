@@ -185,7 +185,6 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1);
     await tab.close();
   } finally {
-    await api(`/v1/projects/${made.id}`, { method: 'DELETE' }).catch(() => {});
     if (made.path?.includes('web-zoom-')) rmSync(made.path, { recursive: true, force: true });
     rmSync(scratch, { recursive: true, force: true });
   }

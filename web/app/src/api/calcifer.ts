@@ -260,18 +260,9 @@ timeline?: TimelineNow | null,
 rendering?: number | null, };
 
 /**
- * `PUT /v1/projects/{id}/assets/{name}`: a deleted asset back.
+ * What `DELETE /v1/projects/{id}/assets/{name}` took, and where its box sat: undo puts it back, its versions with it.
  */
-export type AssetBack = { text: string, at?: Card | null, };
-
-/**
- * What `DELETE /v1/projects/{id}/assets/{name}` took: `PUT` on the same name with `text` and `at` puts it back, and its versions with it.
- */
-export type AssetDeleted = { name: string, 
-/**
- * Opaque to a client.
- */
-text: string, at?: Card | null, };
+export type AssetDeleted = { name: string, at?: Card | null, };
 
 /**
  * What a write of an asset answers: its name, and what `If-Match` names from here on.
@@ -286,11 +277,7 @@ kept?: { [key in string]: Card | null }, };
  * `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
  * `tool` changes what makes it.
  */
-export type AssetPatch = { fields?: { [key in string]: JsonValue }, tool?: string | null, 
-/**
- * Where its box sits, set with its fields.
- */
-at?: Card | null, };
+export type AssetPatch = { fields?: { [key in string]: JsonValue }, tool?: string | null, };
 
 /**
  * What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
@@ -974,7 +961,7 @@ export type KnownProject = { id: string,
  */
 name: string, path: string, used_at_ms: number, 
 /**
- * Its folder holds no project.db any more (moved or deleted); `DELETE` forgets it.
+ * Its folder holds no project.db any more (moved or deleted).
  */
 missing?: boolean, 
 /**
@@ -1338,23 +1325,6 @@ memoized: boolean,
 basis?: string, };
 
 /**
- * A destination recorded as a mirror of its author's model, before anything uploads.
- */
-export type Mirrored = { model: string, source: string, 
-/**
- * The author it credits, or its parked org's line.
- */
-by: string | null, 
-/**
- * The org it credits.
- */
-org: string, 
-/**
- * The source's handle (`site:handle`), when it was new to the org's claim handles.
- */
-added_handle?: string | null, };
-
-/**
  * A model repository the machine holds.
  */
 export type Model = { repository: string, total_bytes: number, unique_bytes: number, checkpoints: Array<Checkpoint>, };
@@ -1424,11 +1394,37 @@ releases: Array<ModelRelease>,
 commits: Array<ModelCommit>, };
 
 /**
- * `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
- * clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `tags`
- * replaces its tags (empty clears them), then `add_tags` are added and `remove_tags` removed.
+ * `cozy/model_download`'s input.
  */
-export type ModelEdit = { hub?: string | null, family?: string | null, trigger?: string | null, strength?: number | null | null, tags?: Array<string> | null, add_tags?: Array<string>, remove_tags?: Array<string>, };
+export type ModelDownload = { 
+/**
+ * `org/name[@release]`, `org/name@sha256:<commit>`, `hf://…`, `civitai://…`, `https://…`, or
+ * a held `.safetensors` file's `sha256:<hex>` (`PUT /v1/files`).
+ */
+model: string, 
+/**
+ * A held file's name where its client has it: the object's name, and its alias's when none is given.
+ */
+name?: string | null, 
+/**
+ * `local/<alias>`: the name the machine keeps it under (required for a file).
+ */
+alias?: string | null, 
+/**
+ * A Hub model's lane; absent, the Hub picks what the machine runs best.
+ */
+lane?: string | null, 
+/**
+ * The source's convention, a reviewed TensorFS format (`h3.lora`); usually detected.
+ */
+source_format?: string | null, };
+
+/**
+ * `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
+ * clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `add_tags`
+ * are added and `remove_tags` removed.
+ */
+export type ModelEdit = { hub?: string | null, family?: string | null, trigger?: string | null, strength?: number | null | null, add_tags?: Array<string>, remove_tags?: Array<string>, };
 
 /**
  * What `PATCH /v1/models/{org}/{name}` leaves: the model as `GET` reads it, and what the Hub clamped.
@@ -1456,6 +1452,25 @@ kinds: Array<string>,
  * The recipe that wrote it, as its header records.
  */
 provenance: Provenance | null, };
+
+/**
+ * `cozy/model_quantize`'s input: a new commit of `model` in `lane`, written from a commit (or a release's original weights) by
+ * the recipe the package declares for that lane, as a run of its `quantize` on the machine, which uploads it. The package is
+ * `package`, or the request's `code`.
+ */
+export type ModelQuantize = { 
+/**
+ * `org/name@sha256:<commit>`, or `org/name[@release]` (none: the newest).
+ */
+model: string, 
+/**
+ * The lane to write: a recipe the package declares for this model.
+ */
+lane: string, 
+/**
+ * `org/name[@release]`; empty with `code`.
+ */
+package?: string, };
 
 /**
  * One release of a model: its version, each lane's commit, and whether it is a mirror.
@@ -1509,10 +1524,36 @@ total: number,
 older: number, };
 
 /**
- * `POST /v1/model-uploads` answered: the run, as `calcifer::Submitted` says it, or for a Hub commit what was
- * recorded, with no run; and the mirror recorded before either.
+ * `cozy/model_upload`'s input. Its trigger and strength are set at the Hub once it completes (`result.after.display`).
  */
-export type ModelUploading = { run?: Run | null, replay: boolean, mirrored?: Mirrored | null, recorded?: RecordedCommit | null, };
+export type ModelUpload = { 
+/**
+ * A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
+ * CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
+ * machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and no machine runs.
+ */
+source: string, 
+/**
+ * A held source's name where its client has it.
+ */
+name?: string | null, 
+/**
+ * `org/name`.
+ */
+destination: string, lane: string, source_format?: string | null, 
+/**
+ * It mirrors its author's model (admins): the upstream page; empty, the hf:// or civitai://
+ * source itself.
+ */
+mirror?: string | null, 
+/**
+ * The base component a LoRA was trained on, when its file does not declare it.
+ */
+trained_on?: string | null, trigger?: string | null, strength?: number | null, 
+/**
+ * `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
+ */
+base?: string | null, };
 
 /**
  * Bytes moved and, when they took time, their rate and its share of the measured ceiling.
@@ -1592,15 +1633,14 @@ export type NoteLevel = "info" | "warning";
 export type On = string;
 
 /**
- * `POST /v1/projects`: by `project`, an existing one, by its id or name, or its folder on Calcifer's computer (absolute), which
- * it opens; else a new one called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is taken) or at
- * `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in its
- * `project.db`: the folder is only where it lives.
+ * `POST /v1/projects`: a new project called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is
+ * taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
+ * its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
  */
-export type Open = { project?: string | null, name?: string | null, path?: string | null, starter?: boolean, };
+export type Open = { name?: string | null, path?: string | null, starter?: boolean, };
 
 /**
- * The project `POST /v1/projects` opened or made: its id, folder and name.
+ * The project `POST /v1/projects` made: its id, folder and name.
  */
 export type Opened = { id: string, 
 /**
@@ -1733,14 +1773,28 @@ export type PackageDetail = {
 package: string, latest_release: string | null, releases: Array<PackageRelease>, warnings?: Array<string>, };
 
 /**
+ * `cozy/package_install`'s input: the Hub's newest release when none is named. A published package's older releases on its
+ * machine go once it is in (`result.after.retired`). With the request's `code`, local code, and `package` is empty.
+ */
+export type PackageInstall = { 
+/**
+ * `org/name`; empty with `code`.
+ */
+package?: string, release?: string | null, };
+
+/**
  * One release of a package: when it was published and whether it is yanked.
  */
 export type PackageRelease = { release: string, published: string | null, yanked: boolean, };
 
 /**
- * What `POST /v1/package-removals` answers: the machine and one remove run per package and Hub.
+ * `cozy/package_remove`'s input: every release of each package off the machine the request's `on` names.
  */
-export type PackageRemovals = { machine: string, runs: Array<Run>, };
+export type PackageRemove = { 
+/**
+ * `org/name`, or `local/name`.
+ */
+packages: Array<string>, };
 
 /**
  * `GET /v1/packages?q=&limit=`: the Hub's packages the caller can see.
@@ -1750,6 +1804,19 @@ export type PackageSearch = { packages: Array<FoundPackage>, total: number,
  * How many matched beyond those shown.
  */
 older: number, };
+
+/**
+ * `cozy/package_remove`'s result: what left the machine, what that freed, and what did not go.
+ */
+export type PackagesRemoved = { machine: string, removed: Array<RemovedRelease>, reclaimed_bytes: number, 
+/**
+ * Files a running executor still uses stay until it ends.
+ */
+retained?: boolean, 
+/**
+ * Each remove run that did not complete, as `package: machine: reason (code)`.
+ */
+failed?: Array<string>, };
 
 /**
  * Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
@@ -2037,6 +2104,15 @@ next?: Array<string>, warnings?: Array<string>, };
  * Why a run binds and runs the release it does.
  */
 export type ReleaseFrom = "asked" | "installed" | "latest" | "local";
+
+/**
+ * One release a machine no longer holds.
+ */
+export type RemovedRelease = { package: string, release: string, 
+/**
+ * The Hub it was installed from; empty for local code.
+ */
+hub: string, };
 
 /**
  * `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no
@@ -2353,9 +2429,9 @@ export type RunEvent = { "type": "run.created", sequence_number: number, run: Ru
 export type RunId = string;
 
 /**
- * What a run does on its machine (`RunSpec.kind`).
+ * What a run does on its machine (`RunSpec.kind`), or that Calcifer carries it out itself, on no machine.
  */
-export type RunKind = "call" | "warm" | "update" | "remove";
+export type RunKind = "call" | "warm" | "update" | "remove" | "here";
 
 /**
  * `GET /v1/runs`, newest first.
@@ -2381,7 +2457,7 @@ others?: Array<Run>, };
 
 /**
  * `POST /v1/run-quotes`: what a `new` run would rent, and its price; when the Hub placed it, why,
- * and two other machines it would rent instead.
+ * and two other machines it would rent instead. `null` for a run that rents nothing: one Calcifer carries out itself.
  */
 export type RunQuote = { sku: string, gpus?: number | null, quote: Quote, why?: string | null, alternatives?: Array<Alternative>, 
 /**
@@ -2396,7 +2472,8 @@ warnings?: Array<string>, };
  */
 export type RunRequest = { 
 /**
- * `[org/]pkg/fn[@release]`; with `code`, the function of it (empty: none named).
+ * `[org/]pkg/fn[@release]`; with `code`, the function of it (empty: none named). Or one of Calcifer's own jobs
+ * (`hub::job`, `cozy/…`), its fields in `input`.
  */
 target: string, 
 /**
@@ -2404,7 +2481,8 @@ target: string,
  */
 code?: LocalCode | null, 
 /**
- * `local` (the default), a machine's name, `any`, or `new[:sku]`.
+ * `local`, a machine's name, `any`, or `new[:sku]`. Absent, Calcifer's to say: a call goes where it finishes soonest, and a
+ * job that makes something present on a machine to this computer's, else any rental it has.
  */
 on?: On | null, 
 /**
@@ -2995,12 +3073,7 @@ execution_ms?: number | null,
 text?: string | null, };
 
 /**
- * `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` answered.
- */
-export type VersionBack = { approved: boolean, };
-
-/**
- * `DELETE` and `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: a version discarded, or back.
+ * `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` and `POST …/versions`: a version discarded, or joined.
  */
 export type VersionMoved = { name: string, number: number, 
 /**
@@ -3008,7 +3081,7 @@ export type VersionMoved = { name: string, number: number,
  */
 noun: string, 
 /**
- * It's the approved one: `approved:` went with it, or came back with it.
+ * It was the approved one: `approved:` went with it.
  */
 approved?: boolean, 
 /**

@@ -1,20 +1,15 @@
-//! `/v1/model-quantizations`: a new commit in a lane, written from a commit (or a release's
+//! `cozy/model_quantize`: a new commit in a lane, written from a commit (or a release's
 //! original weights) by the recipe a named package declares for that lane. The package is always
 //! named, a release or local code: packages that serve the same model can each declare a recipe
 //! for it. Its `quantize` (the Runtime's) runs on the machine, which uploads the output as a
 //! commit of the model in that lane.
 use std::sync::Arc;
 
-use axum::{
-    Json,
-    body::Bytes,
-    extract::{State, rejection::BytesRejection},
-    http::StatusCode,
-};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hub_client::types::ModelCard;
 use api::{
-    calcifer::{Run, RunQuote, RunRequest, Submitted},
+    calcifer::{Agreed, On, RunRequest},
+    code::LocalCode,
     config::Origin,
     error::{Error, Kind},
     calcifer::hub::ModelQuantize,
@@ -27,9 +22,9 @@ use tensorfs::{
     format::{Dtype, Header, ObjectRef},
 };
 
-use super::{origin, reader, refusal, signed_in};
+use super::{jobs::Planned, reader, refusal, signed_in};
 use crate::{
-    api::{Api, IdempotencyKey, Refusal, parse},
+    api::{Api, Refusal},
     runs::target::{Resolved, resolve},
 };
 
@@ -44,68 +39,24 @@ struct Source {
     components: Vec<String>,
 }
 
-/// What an ask becomes: the run of the package's `quantize`, or local code's install first.
-enum Planned {
-    Run(RunRequest),
-    Install(Box<Run>),
-}
-
-/// `POST /v1/model-quantizations`.
-pub(super) async fn create(
-    State(api): State<Arc<Api>>,
-    IdempotencyKey(key): IdempotencyKey,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<Submitted>), Refusal> {
-    let ask: ModelQuantize = parse(&body?)?;
-    let submitted = match plan(&api, &key, ask).await? {
-        Planned::Install(run) => Submitted { run: *run, replay: false, notes: vec![], preparing: true },
-        Planned::Run(request) => crate::runs::request(&api, &key, request).await.map_err(Refusal)?,
-    };
-    let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
-    Ok((status, Json(submitted)))
-}
-
-/// `POST /v1/model-quantization-quotes`: a published package's run only; local code runs where it
-/// was made ready.
-pub(super) async fn quote(
-    State(api): State<Arc<Api>>,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<Json<RunQuote>, Refusal> {
-    let ask: ModelQuantize = parse(&body?)?;
-    if ask.code.is_some() {
-        return Err(Refusal(Error::new(
-            Kind::Usage,
-            "quote_local",
-            "local code runs where it was made ready; a `new` machine takes a published release",
-        )
-        .next("cozy machine rent")));
-    }
-    let Planned::Run(request) = plan(&api, "quote", ask).await? else {
-        unreachable!("a published package installs nothing first");
-    };
-    let body = serde_json::to_vec(&request).expect("a request serializes");
-    crate::runs::quote(State(api), Ok(Bytes::from(body))).await
-}
-
 /// The run of `package`'s `quantize` that writes `lane` from the commit `model` names into the
 /// commit's own model, with each calibration model it builds bound to that commit.
-async fn plan(api: &Arc<Api>, key: &str, ask: ModelQuantize) -> Result<Planned, Refusal> {
-    let hub = origin(api, ask.hub.as_deref())?;
+pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed: Option<Agreed>, code: Option<LocalCode>, ask: ModelQuantize) -> Result<Planned, Refusal> {
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let model = ModelRef::parse(&ask.model).map_err(Refusal)?;
-    let (target, code) = match &ask.code {
-        Some(code) => (RECIPES.to_owned(), Some(code.clone())),
+    let target = match &code {
+        Some(_) => RECIPES.to_owned(),
         None if api::target::written_as_path(&ask.package) => return Err(Refusal(crate::runs::target::by_path(&ask.package))),
-        None => (published(&ask.package)?, None),
+        None => published(&ask.package)?,
     };
-    let (package, interface, release) = match resolve(api, &hub, &target, code.as_ref(), &ask.on, false, true, key, ask.agreed).await.map_err(Refusal)? {
+    let (package, interface, release) = match resolve(api, hub, &target, code.as_ref(), &on, false, true, key, agreed).await.map_err(Refusal)? {
         Resolved::Release { package, card, .. } => (package, card.interface, card.release),
         Resolved::Local { local, interface: None, .. } => {
-            return Ok(Planned::Install(Box::new(local.install.expect("an uninstalled local target is being installed"))));
+            return Ok(Planned::Preparing(Box::new(local.install.expect("an uninstalled local target is being installed"))));
         }
         Resolved::Local { local, interface: Some(interface), .. } => (local.package, interface, local.source.manifest),
     };
-    let source = commit(api, &hub, &model, &lane).await?;
+    let source = commit(api, hub, &model, &lane).await?;
     let found = recipes(&interface, &lane, &source.components);
     let named = match release.starts_with("sha256:") {
         true => package.clone(),
@@ -130,16 +81,7 @@ async fn plan(api: &Arc<Api>, key: &str, ask: ModelQuantize) -> Result<Planned, 
         format!("release={release}"),
     ];
     terms.extend(calibration(&interface, &found, &source.spelled));
-    Ok(Planned::Run(RunRequest {
-        target,
-        code,
-        on: Some(ask.on),
-        hub: hub.to_string(),
-        terms,
-        recipes: true,
-        agreed: ask.agreed,
-        ..Default::default()
-    }))
+    Ok(Planned::Request(Box::new(RunRequest { target, code, on: Some(on), hub: hub.to_string(), terms, recipes: true, agreed, ..Default::default() })))
 }
 
 /// `org/name[@release]` as the target of its `quantize`.

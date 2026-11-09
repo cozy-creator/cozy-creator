@@ -77,9 +77,9 @@ function Remove({ name }: { name: string }) {
           if (asked.current?.on !== on) asked.current = { on, key: `remove-${crypto.randomUUID()}` }
           const { key } = asked.current
           void ask.run(async () => {
-            const { runs } = await client.packageRemove(name, on, key)
+            const { run } = await client.job("cozy/package_remove", { packages: [name], on }, key)
             asked.current = null
-            if (runs[0]) navigate(to(`runs/${runs[0].number}`))
+            navigate(to(`runs/${run.number}`))
           })
         }}
       />
@@ -142,8 +142,8 @@ export function PackageDrawer() {
         <OnMachine
           body={{ package: name, ...(release ? { release } : {}) }}
           label="Install"
-          quote={(body) => client.packageInstallQuote(body)}
-          ask={(body, key) => client.packageInstall(body, key)}
+          quote={(body) => client.jobQuote("cozy/package_install", body)}
+          ask={(body, key) => client.job("cozy/package_install", body, key)}
           onDone={({ run }) => navigate(to(`runs/${run.number}`))}
         >
           <select className="field releasepick" aria-label="Which release" value={release} onChange={(event) => setRelease(event.target.value)}>

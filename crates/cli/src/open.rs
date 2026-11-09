@@ -25,18 +25,14 @@ async fn route(ctx: &Context, named: Option<&String>) -> Result<Option<String>, 
     if project::chosen(named).is_none() {
         return Ok(None);
     }
-    let opened = match project::open(ctx, named).await {
-        Ok(opened) => opened,
+    let project = project::named(named)?;
+    match ctx.calcifer().await?.get::<Value>(&format!("{}?assets=false", project::at(&project, &[]))).await {
+        Ok(state) => Ok(state["id"].as_str().map(|id| format!("/projects/{id}"))),
         Err(error) if error.code == "project_not_found" => {
-            let named = project::chosen(named).unwrap_or_default();
-            output::say(ctx, &format!("{named} is in no project, so this is the home; to make one there: cozy project new {named}"));
-            return Ok(None);
+            output::say(ctx, &format!("{project} is in no project, so this is the home; to make one there: cozy project new {project}"));
+            Ok(None)
         }
-        Err(error) => return Err(error),
-    };
-    match ctx.calcifer().await?.get::<Value>(&format!("/v1/projects/{}?assets=false", opened.id)).await {
-        Err(error) if matches!(error.code.as_str(), "project_format" | "lock_format") => Err(error),
-        _ => Ok(Some(format!("/projects/{}", opened.id))),
+        Err(error) => Err(error),
     }
 }
 

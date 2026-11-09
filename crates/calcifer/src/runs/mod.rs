@@ -49,32 +49,41 @@ pub(crate) async fn submit(
     Ok((status, Json(submitted)))
 }
 
-/// `POST /v1/run-quotes`: what a `new` run would rent and its price. Nothing is rented or recorded.
+/// `POST /v1/run-quotes`: what a `new` run would rent and its price; `null` for one that rents nothing, as Calcifer's own work
+/// does. Nothing is rented or recorded.
 pub(crate) async fn quote(
     State(api): State<Arc<Api>>,
     body: Result<Bytes, BytesRejection>,
-) -> Result<Json<RunQuote>, Refusal> {
+) -> Result<Json<Option<RunQuote>>, Refusal> {
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
+    Ok(Json(priced(&api, ask).await.map_err(Refusal)?))
+}
+
+/// What `ask` would rent.
+pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
+    if crate::hub::jobs::is(&ask.target) {
+        return crate::hub::jobs::quote(api, ask).await;
+    }
     let bound = match &ask.code {
         // Local code rents with its install, which the call then follows to its machine.
         Some(code) => {
-            let on = ask.on.clone().unwrap_or_else(|| default_on(&api));
-            let hub = hub(&api, &ask.hub);
+            let on = ask.on.clone().unwrap_or_else(|| default_on(api));
+            let hub = hub(api, &ask.hub);
             let home = api.machines.hubs.home();
-            let origin = api::config::Origin::parse(&hub).map_err(Refusal)?;
-            let reader = api.machines.hubs.reader(&hub).map_err(Refusal)?;
-            let source = crate::local_code::source(home, code, (&reader, &origin)).await.map_err(Refusal)?;
+            let origin = api::config::Origin::parse(&hub)?;
+            let reader = api.machines.hubs.reader(&hub)?;
+            let source = crate::local_code::source(home, code, (&reader, &origin)).await?;
             crate::local_code::install_run(home, &hub, on, &source)
         }
-        None => match prepare(&api, "quote", &ask, For::Quote).await.map_err(Refusal)? {
+        None => match prepare(api, "quote", &ask, For::Quote).await? {
             Prepared::Run { submit, .. } => submit,
             Prepared::Install(_) => unreachable!("a published target installs nothing first"),
         },
     };
-    api.machines.hubs.client(&bound.hub).map_err(Refusal)?;
-    Ok(Json(api.machines.run_quote(&bound).await.map_err(Refusal)?))
+    api.machines.hubs.client(&bound.hub)?;
+    Ok(Some(api.machines.run_quote(&bound).await?))
 }
 
 /// `POST /v1/run-estimates` (`Idempotency-Key`; cl-816): when each machine the run may go to would finish it, as each says now.
@@ -182,6 +191,9 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
 /// The files it's given join its project, so asking it again still finds them once what held them is gone.
 pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
     let digest = digest(&ask);
+    if crate::hub::jobs::is(&ask.target) {
+        return crate::hub::jobs::request(api, key, &digest, ask).await;
+    }
     let calcifer = &api.calcifer;
     if let Some((row, recorded)) = calcifer.store().recorded(key).map_err(store)? {
         if recorded != digest {
@@ -628,7 +640,7 @@ fn store(e: crate::store::StoreError) -> Error {
     refused(crate::Error::Store(e))
 }
 
-fn refused(e: crate::Error) -> Error {
+pub(crate) fn refused(e: crate::Error) -> Error {
     Refusal::from(e).0
 }
 

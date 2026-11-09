@@ -8,7 +8,7 @@ use axum::{
     extract::{Path as UrlPath, State},
 };
 use api::{
-    calcifer::{Authorized, AuthorizedKeys},
+    calcifer::Authorized,
     error::{Error, Kind},
 };
 
@@ -48,18 +48,6 @@ fn only_local(name: &str) -> Result<(), Refusal> {
             .next("on that computer: cozy machine authorize <key>"),
         )),
     }
-}
-
-pub(crate) async fn list(
-    State(api): State<Arc<Api>>,
-    UrlPath(name): UrlPath<String>,
-) -> Result<Json<AuthorizedKeys>, Refusal> {
-    only_local(&name)?;
-    let local = &api.machines.local;
-    Ok(Json(AuthorizedKeys {
-        file: local.keys_file(),
-        keys: local.keys().map_err(Refusal)?,
-    }))
 }
 
 pub(crate) async fn add(

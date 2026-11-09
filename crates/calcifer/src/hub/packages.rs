@@ -9,15 +9,15 @@ use axum::{
         Path, Query, State,
         rejection::{BytesRejection, QueryRejection},
     },
-    http::StatusCode,
 };
 use api::{
-    calcifer::{Environment, Kind as RunKind, On, SubmitRun},
+    calcifer::{Agreed, Environment, Kind as RunKind, On, Status, SubmitRun},
+    code::LocalCode,
     config::Origin,
     error::{Error, Kind},
     calcifer::hub::{
-        At, FoundPackage, PackageDeleted, PackageDetail, PackageInstall, PackageRelease, PackageRemoval, PackageRemovals,
-        PackageSearch, PackageUnyanked, PackageYanked,
+        At, FoundPackage, PackageDeleted, PackageDetail, PackageInstall, PackageRelease, PackageRemove, PackageSearch, PackageUnyanked,
+        PackageYanked, PackagesRemoved, RemovedRelease,
     },
     machine::{self as v1, Source},
     names::shown,
@@ -25,11 +25,12 @@ use api::{
 use serde::Deserialize;
 
 use super::{
-    after::After,
-    asks::{Ask, Prepared},
-    body, origin, reader, refusal, signed_in,
+    after::{After, failure, settled},
+    body,
+    jobs::{Planned, Work},
+    origin, reader, refusal, signed_in,
 };
-use crate::api::{Api, IdempotencyKey, Refusal, parse};
+use crate::api::{Api, Refusal};
 
 #[derive(Deserialize)]
 pub(super) struct Search {
@@ -202,43 +203,41 @@ fn newest_first<T>(mut items: Vec<T>, version: impl Fn(&T) -> &str) -> Vec<T> {
     sorted
 }
 
-impl Ask for PackageInstall {
-    async fn prepare(self, api: &Arc<Api>) -> Result<Prepared, Refusal> {
-        let hub = origin(api, self.hub.as_deref())?;
-        let home = api.machines.hubs.home();
-        if let Some(code) = &self.code {
-            // Local code: installed as it is now; it retires nothing.
-            let reader = reader(api, &hub)?;
-            let source = crate::local_code::source(home, code, (&reader, &hub)).await.map_err(Refusal)?;
-            let mut submit = crate::local_code::install_run(home, hub.as_str(), self.on, &source);
-            submit.agreed = self.agreed;
-            return Ok(Prepared { submit, after: Some(After::Keep(source.filed())) });
-        }
-        if api::target::written_as_path(&self.package) {
-            return Err(Refusal(crate::runs::target::by_path(&self.package)));
-        }
-        let package = self.package.trim().to_ascii_lowercase();
-        if package.split('/').count() != 2 {
-            return Err(Refusal(Error::new(Kind::Usage, "package_ref_invalid", format!("{package:?} is not org/name"))));
-        }
-        let reader = reader(api, &hub)?;
-        let root = home.root().to_owned();
-        let chosen = match self.release {
-            Some(release) => release,
-            None => api.releases.now(api, &hub, &package).await.and_then(|read| read.newest(&package)).map_err(Refusal)?,
-        };
-        // The release's card, kept while its machine installs: the first run after an install
-        // binds against it with no Hub read on its path (an RTX 4090's cold SDXL run waited 0.55 s
-        // on it). A failed read is the run's to repeat.
-        tokio::spawn({
-            let (hub, package, release) = (hub.to_string(), package.clone(), chosen.clone());
-            async move {
-                let _ = hub_client::cards::card(|| Ok(reader), &root, &hub, &package, &release).await;
-            }
-        });
-        let submit = release_install(hub.as_str(), self.on, &package, &chosen, self.agreed);
-        Ok(Prepared { submit, after: Some(After::Retire { package }) })
+/// `cozy/package_install`: the warm run that installs a package's environment on `on`, the request's `code` when it is local
+/// code, which retires nothing.
+pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<Agreed>, code: Option<LocalCode>, ask: PackageInstall) -> Result<Planned, Refusal> {
+    let home = api.machines.hubs.home();
+    if let Some(code) = &code {
+        let reader = reader(api, hub)?;
+        let source = crate::local_code::source(home, code, (&reader, hub)).await.map_err(Refusal)?;
+        let mut submit = crate::local_code::install_run(home, hub.as_str(), on, &source);
+        submit.agreed = agreed;
+        return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes: vec![], mirror: None });
     }
+    if api::target::written_as_path(&ask.package) {
+        return Err(Refusal(crate::runs::target::by_path(&ask.package)));
+    }
+    let package = ask.package.trim().to_ascii_lowercase();
+    if package.split('/').count() != 2 {
+        return Err(Refusal(Error::new(Kind::Usage, "package_ref_invalid", format!("{package:?} is not org/name"))));
+    }
+    let reader = reader(api, hub)?;
+    let root = home.root().to_owned();
+    let chosen = match ask.release {
+        Some(release) => release,
+        None => api.releases.now(api, hub, &package).await.and_then(|read| read.newest(&package)).map_err(Refusal)?,
+    };
+    // The release's card, kept while its machine installs: the first run after an install
+    // binds against it with no Hub read on its path (an RTX 4090's cold SDXL run waited 0.55 s
+    // on it). A failed read is the run's to repeat.
+    tokio::spawn({
+        let (hub, package, release) = (hub.to_string(), package.clone(), chosen.clone());
+        async move {
+            let _ = hub_client::cards::card(|| Ok(reader), &root, &hub, &package, &release).await;
+        }
+    });
+    let submit = release_install(hub.as_str(), on, &package, &chosen, agreed);
+    Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Retire { package }), notes: vec![], mirror: None })
 }
 
 /// The run that installs `release` of `package` on a machine: a warm one naming no function.
@@ -262,55 +261,88 @@ fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Opti
     }
 }
 
-/// `POST /v1/package-removals`: one remove run per package and Hub the machine holds it from,
-/// every release of it; a name the machine does not hold is refused before any run.
-pub(super) async fn remove(
-    State(api): State<Arc<Api>>,
-    IdempotencyKey(key): IdempotencyKey,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<PackageRemovals>), Refusal> {
-    let PackageRemoval { hub, packages, machine } = parse(&body?)?;
-    let hub = origin(&api, hub.as_deref())?;
+/// Every release of some packages to take off a machine: one remove run per package and Hub it holds it from.
+pub(super) struct Removal {
+    machine: String,
+    /// Each package, and the Hub the machine holds it from.
+    targets: Vec<(String, String)>,
+}
+
+/// `cozy/package_remove`: what it removes from the machine `on` names; a name that machine does not hold is refused before
+/// anything is recorded.
+pub(super) async fn removal(api: &Arc<Api>, hub: &Origin, on: &On, ask: PackageRemove) -> Result<Planned, Refusal> {
+    let machine = super::jobs::machine(on, "a removal")?;
     let held = crate::machines::fresh(&api.machines, &machine).await.map_err(Refusal)?;
     let envs: Vec<&Environment> = held.status.iter().flat_map(|s| &s.environments).collect();
-    if let Some(name) = packages.iter().find(|name| !envs.iter().any(|env| &&env.package == name)) {
+    if let Some(name) = ask.packages.iter().find(|name| !envs.iter().any(|env| &&env.package == name)) {
         return Err(Refusal(
             Error::not_found("package_not_installed", format!("{name} is not installed on {}", held.name))
                 .next(format!("cozy package ls --on {}", held.name)),
         ));
     }
     let canonical = |hub: &str| Origin::parse(hub).map_or_else(|_| hub.to_owned(), String::from);
-    let mut targets: Vec<(&str, String)> = (envs.iter())
-        .filter(|env| packages.contains(&env.package))
-        .map(|env| (env.package.as_str(), canonical(&env.hub)))
-        .collect();
+    // Local code's installations name no Hub.
+    let from = |env: &Environment| if env.hub.is_empty() { hub.to_string() } else { canonical(&env.hub) };
+    let mut targets: Vec<(String, String)> = envs.iter().filter(|env| ask.packages.contains(&env.package)).map(|env| (env.package.clone(), from(env))).collect();
     targets.sort();
     targets.dedup();
-    let (mut runs, mut replay) = (vec![], true);
-    for (i, (package, from)) in targets.into_iter().enumerate() {
-        // Local code's installations name no Hub.
-        let from = if from.is_empty() { hub.to_string() } else { from };
-        let submit = SubmitRun {
-            agreed: None,
-            stays: vec![],
-            on: On::Machine(held.name.clone()),
-            hub: from,
-            kind: RunKind::Remove,
-            target: package.to_owned(),
-            spec: v1::RunSpec {
-                kind: v1::RunKind::Remove,
-                source: Some(Source::Release(v1::Release { package: package.to_owned(), release: String::new() })),
-                ..Default::default()
-            },
-            inputs: vec![],
-            held: vec![],
-            out: None,
-            warnings: vec![],
-        };
-        let submitted = api.calcifer.submit(&format!("{key}-{i}"), submit).await?;
-        replay &= submitted.replay;
-        runs.push(submitted.run);
+    let target = format!("remove {}", ask.packages.join(", "));
+    Ok(Planned::Here { target, work: Work::Remove(Removal { machine: held.name, targets }) })
+}
+
+impl Removal {
+    /// Sends each remove run under a key named for `key`, so asking again repeats none, and sums what they answer. One that did
+    /// not complete fails the removal, saying what did go.
+    pub(super) async fn run(self, api: &Arc<Api>, key: &str) -> Result<PackagesRemoved, Error> {
+        #[derive(Deserialize, Default)]
+        struct Removed {
+            #[serde(default)]
+            removed: Vec<RemovedRelease>,
+            #[serde(default)]
+            reclaimed_bytes: u64,
+            #[serde(default)]
+            retained: Vec<String>,
+        }
+        let runs = self.targets.iter().enumerate().map(|(i, (package, from))| {
+            let submit = SubmitRun {
+                agreed: None,
+                stays: vec![],
+                on: On::Machine(self.machine.clone()),
+                hub: from.clone(),
+                kind: RunKind::Remove,
+                target: package.clone(),
+                spec: v1::RunSpec {
+                    kind: v1::RunKind::Remove,
+                    source: Some(Source::Release(v1::Release { package: package.clone(), release: String::new() })),
+                    ..Default::default()
+                },
+                inputs: vec![],
+                held: vec![],
+                out: None,
+                warnings: vec![],
+            };
+            let key = format!("{key}-{i}");
+            async move { settled(&api.calcifer, &key, submit).await }
+        });
+        let mut done = PackagesRemoved { machine: self.machine.clone(), ..Default::default() };
+        for ((package, _), ran) in self.targets.iter().zip(futures_util::future::join_all(runs).await) {
+            match ran {
+                Ok(run) if run.status == Status::Completed => {
+                    let result: Removed = run.result.and_then(|result| serde_json::from_value(result).ok()).unwrap_or_default();
+                    done.reclaimed_bytes += result.reclaimed_bytes;
+                    done.retained |= !result.retained.is_empty();
+                    done.removed.extend(result.removed);
+                }
+                Ok(run) => done.failed.push(format!("{package}: {}", failure(&run))),
+                Err(e) => done.failed.push(format!("{package}: {e}")),
+            }
+        }
+        if done.failed.is_empty() {
+            return Ok(done);
+        }
+        let went: Vec<String> = done.removed.iter().map(|gone| format!("{}@{}", gone.package, gone.release)).collect();
+        let went = if went.is_empty() { String::new() } else { format!("removed {}; ", went.join(", ")) };
+        let said = format!("{went}not removed: {}", done.failed.join("; "));
+        Err(Error::new(Kind::Unavailable, "package_remove_incomplete", said).next(format!("cozy package ls --on {}", done.machine)))
     }
-    let status = if replay && !runs.is_empty() { StatusCode::OK } else { StatusCode::ACCEPTED };
-    Ok((status, Json(PackageRemovals { machine: held.name, runs })))
 }

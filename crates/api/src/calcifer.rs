@@ -23,7 +23,7 @@ pub mod project;
 pub mod report;
 pub mod tool;
 
-/// What a run does on its machine (`RunSpec.kind`).
+/// What a run does on its machine (`RunSpec.kind`), or that Calcifer carries it out itself, on no machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RunKind"))]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +32,9 @@ pub enum Kind {
     Warm,
     Update,
     Remove,
+    /// Calcifer's own work (`hub::job`): a lock, a publication, a commit recorded at the Hub, a removal. It has no machine,
+    /// and one a Calcifer stopped under fails `calcifer_stopped`: asking again is safe.
+    Here,
 }
 
 /// Where a run goes: `local`, a machine's name, `any`, or `new[:sku]`.
@@ -79,7 +82,7 @@ pub struct SubmitRun {
 }
 
 /// `POST /v1/run-quotes`: what a `new` run would rent, and its price; when the Hub placed it, why,
-/// and two other machines it would rent instead.
+/// and two other machines it would rent instead. `null` for a run that rents nothing: one Calcifer carries out itself.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RunQuote {
@@ -142,12 +145,14 @@ pub struct StagedInput {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RunRequest {
-    /// `[org/]pkg/fn[@release]`; with `code`, the function of it (empty: none named).
+    /// `[org/]pkg/fn[@release]`; with `code`, the function of it (empty: none named). Or one of Calcifer's own jobs
+    /// (`hub::job`, `cozy/…`), its fields in `input`.
     pub target: String,
     /// Local code, sent by content (cl-819): Calcifer reads no client's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<crate::code::LocalCode>,
-    /// `local` (the default), a machine's name, `any`, or `new[:sku]`.
+    /// `local`, a machine's name, `any`, or `new[:sku]`. Absent, Calcifer's to say: a call goes where it finishes soonest, and a
+    /// job that makes something present on a machine to this computer's, else any rental it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<On>,
     /// The Tensorhub origin; empty: Calcifer's.
@@ -199,6 +204,17 @@ pub struct RunRequest {
     /// The quote a `new` run's renter agreed to (`POST /v1/run-quotes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agreed: Option<Agreed>,
+}
+
+impl RunRequest {
+    /// One of Calcifer's own jobs (`hub::job`): `target` with `input` as its fields.
+    pub fn job(target: &str, input: &impl Serialize, on: Option<On>, hub: String, code: Option<crate::code::LocalCode>) -> Self {
+        let input = match serde_json::to_value(input) {
+            Ok(serde_json::Value::Object(input)) => Some(input),
+            _ => None,
+        };
+        Self { target: target.to_owned(), input, on, hub, code, ..Self::default() }
+    }
 }
 
 /// One attached file: `name` is an input's field path (`image`, `frames.0`) or a label, absent for
@@ -1748,14 +1764,6 @@ pub struct Updating {
     pub warnings: Vec<String>,
 }
 
-/// `GET /v1/machines/local/authorized-keys`: the controllers' public keys this computer's machine
-/// admits, and the file that holds them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuthorizedKeys {
-    pub file: PathBuf,
-    pub keys: Vec<String>,
-}
-
 /// `PUT` or `DELETE /v1/machines/local/authorized-keys/{key}`: whether the file changed, and
 /// `local` as it then is: once a key is added, where other computers add it (`reach`), unless it
 /// is busy and moves there once idle.
@@ -1991,12 +1999,13 @@ impl Kind {
             Kind::Warm => "warm",
             Kind::Update => "update",
             Kind::Remove => "remove",
+            Kind::Here => "here",
         }
     }
 
     /// The kind [`Self::as_str`] spells as `text`; none for any other.
     pub fn parse(text: &str) -> Option<Self> {
-        [Kind::Call, Kind::Warm, Kind::Update, Kind::Remove]
+        [Kind::Call, Kind::Warm, Kind::Update, Kind::Remove, Kind::Here]
             .into_iter()
             .find(|kind| kind.as_str() == text)
     }

@@ -25,8 +25,8 @@ function check(name, ok, detail) {
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
 const FIRST_RUN_MS = 300_000;
-/** What it made besides its own project: forgotten however it ends, or the next cell's page lands on one that can't be read. */
-let forgetMade = async () => {};
+/** What it made besides its own project: its folders gone however it ends. */
+let dropMade = async () => {};
 
 /** Another writer of project.db (argv 1), as fast as a process can be: the moment box argv 2's field argv 3 is argv 4, it's argv 5 instead. */
 const OUTSIDE = `
@@ -286,12 +286,9 @@ async function loseAnswers(page, method, path, times) {
   // still there, and what's dropped on it comes back with one line.
   const made = async (word) => (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-instant-${word}-${Date.now()}` }), headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${word}-${Date.now()}` } })).body;
   const [second_project, old] = [await made('tab'), await made('old')];
-  forgetMade = async () => {
-    forgetMade = async () => {};
-    for (const project of [second_project, old]) {
-      await api(`/v1/projects/${project.id}`, { method: 'DELETE' });
-      rmSync(project.path, { recursive: true, force: true });
-    }
+  dropMade = async () => {
+    dropMade = async () => {};
+    for (const project of [second_project, old]) rmSync(project.path, { recursive: true, force: true });
   };
   // One a newer cozy has written, its schema one this cozy doesn't read, as after a downgrade. Calcifer reads a schema as it opens a project, so
   // it's opened again by a Calcifer that starts after: on a shared computer, with no restart, that half isn't asked.
@@ -333,7 +330,7 @@ async function loseAnswers(page, method, path, times) {
     await page.getByTitle(folder, { exact: true }).click();
     await box(name).waitFor();
   }
-  await forgetMade();
+  await dropMade();
 
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
@@ -341,7 +338,7 @@ async function loseAnswers(page, method, path, times) {
   process.exit(failures.length ? 1 : 0);
 })().catch(async (error) => {
   console.error(`during ${during}:`, error);
-  await forgetMade().catch(() => {});
+  await dropMade().catch(() => {});
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);

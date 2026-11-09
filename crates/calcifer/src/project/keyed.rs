@@ -10,7 +10,7 @@ use std::{
 
 use axum::{
     body::{Body, to_bytes},
-    extract::{Request, State},
+    extract::{FromRequestParts as _, RawPathParams, Request, State},
     http::{HeaderValue, Method, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -42,10 +42,11 @@ pub(super) fn claimed() -> Option<(String, String)> {
     CLAIM.try_with(|claim| claim.borrow_mut().take()).ok().flatten()
 }
 
-/// The project a write's path names, if it names one this Calcifer knows.
-fn project_of(api: &Arc<Api>, path: &str) -> Option<Arc<super::Project>> {
-    let id = path.strip_prefix("/v1/projects/")?.split('/').next().filter(|id| id.starts_with("project-"))?;
-    api.projects.get(api, id).ok()
+/// The project a write's route names (`{id}`), if it names one this Calcifer knows.
+async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> Option<Arc<super::Project>> {
+    let params = RawPathParams::from_request_parts(parts, &()).await.ok()?;
+    let named = params.iter().find(|(key, _)| *key == "id").map(|(_, named)| named.to_owned())?;
+    api.projects.get(api, &named).ok()
 }
 
 /// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was.
@@ -55,7 +56,7 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, request: Request, next
     }
     let key = request.headers().get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned);
     let Some(key) = key else { return next.run(request).await };
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, MOST).await else {
         return Refusal(Error::new(Kind::Validation, "body_too_large", format!("a write is at most {MOST} bytes"))).into_response();
     };
@@ -68,7 +69,7 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, request: Request, next
     let digest = hex::encode(hasher.finalize());
     let one = Arc::clone(GOING.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_default());
     let held = one.lock().await;
-    let project = project_of(&api, parts.uri.path());
+    let project = project_of(&api, &mut parts).await;
     let response = match &project {
         Some(project) => {
             let folder = &project.folder;

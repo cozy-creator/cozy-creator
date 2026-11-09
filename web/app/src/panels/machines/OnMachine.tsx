@@ -11,7 +11,8 @@ import { lost } from "./order"
 import { gpusWords } from "./words"
 
 export interface Placed {
-  on: string
+  /** Absent: Calcifer says where. */
+  on?: string
   agreed?: Agreed
   gpus?: number
 }
@@ -46,12 +47,11 @@ export function OnMachine<Body extends object, Answer>({
   const { data: skus } = useQuery({ ...rentalSkusQuery(client), enabled: signedIn })
   const machines = list?.machines.filter((machine) => machine.state === "ready" || machine.state === "booting" || (machine.kind === "local" && machine.state === "stopped")) ?? []
 
-  const fallback = status.local_usable ? "local" : (machines.find((machine) => machine.state === "ready")?.name ?? machines[0]?.name ?? (signedIn ? "new" : ""))
-  const [chosen, setChosen] = useState<string | null>(null)
+  // Unchosen, none is sent: Calcifer says where it goes.
+  const [on, setChosen] = useState("")
   const [gpus, setGpus] = useState<number | undefined>()
-  const on = chosen ?? fallback
 
-  const placed = (agreed?: Agreed): Body & Placed => ({ ...body, on, ...(gpus ? { gpus } : {}), ...(agreed ? { agreed } : {}) })
+  const placed = (agreed?: Agreed): Body & Placed => ({ ...body, ...(on ? { on } : {}), ...(gpus ? { gpus } : {}), ...(agreed ? { agreed } : {}) })
   const asked = JSON.stringify(placed())
   const pricing = useAsk()
   const sending = useAsk()
@@ -83,7 +83,7 @@ export function OnMachine<Body extends object, Answer>({
   const stated = current?.answer
   const priced = stated && `${stated.gpus ?? 1}× ${stated.sku.toUpperCase()} at ${usd(stated.quote.usd_micros_per_hour)}/h`
   const busy = pricing.busy || sending.busy
-  const blocked = disabled || busy || !on || (isNew(on) && Boolean(stated) && !stated?.quote.agreed)
+  const blocked = disabled || busy || (isNew(on) && Boolean(stated) && !stated?.quote.agreed)
 
   return (
     <div className="onmachine">
@@ -99,7 +99,7 @@ export function OnMachine<Body extends object, Answer>({
               setGpus(undefined)
             }}
           >
-            {!on && <option value="">No machine</option>}
+            <option value="">where Calcifer picks</option>
             {status.local_usable && <option value="local">this computer</option>}
             {machines
               .filter((machine) => machine.kind !== "local")

@@ -1,5 +1,5 @@
-//! `/v1/projects/{id}/assets`: what a project holds, in the page's words. A tool dropped on the canvas, its inputs set one by one, gone
-//! and back. Each is one call, one transaction, that the CLI sees at once.
+//! `/v1/projects/{id}/assets`: what a project holds, in the page's words. A tool dropped on the canvas, its inputs set one by one, gone;
+//! undo brings it back. Each is one call, one transaction, that the CLI sees at once.
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -14,7 +14,7 @@ use axum::{
 use serde::Deserialize;
 use api::{
     error::{Error, Kind},
-    calcifer::project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionBack, VersionMoved},
+    calcifer::project::{NewAsset, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionMoved},
     calcifer::tool::{self, FieldType},
 };
 
@@ -48,6 +48,7 @@ pub(super) async fn create(
         format::new_name(name).map_err(Refusal)?;
     }
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     let folder = &project.folder;
     // With no tool, it's a text asset.
     let text_asset = asked.tool.is_empty();
@@ -190,10 +191,6 @@ pub(super) async fn patch(
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
             written.with_tool(&name, tool, *holds, start.clone(), &mut fields)?;
         }
-        if let Some(card) = asked.at {
-            let named = written.get(&name).map_or_else(|| name.clone(), |held| held.name.clone());
-            canvas::set(folder, &id, BTreeMap::from([(named, Some(card))]))?;
-        }
         let mut edited = written.clone();
         let warnings = edited.set(&name, &fields)?;
         // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.
@@ -248,9 +245,10 @@ fn constant_numbered(folder: &folder::Folder, asset: &format::Asset, pin: &str) 
 }
 
 /// `DELETE /v1/projects/{id}/assets/{name}`: it and its row gone, at once, and what it made stands. Its versions wait as an orphan's, its name free,
-/// for `rename`, for `PUT` with what this answers, or for `reclaim`. A render going still makes what it was asked.
+/// for undo, for `rename`, or for `reclaim`. A render going still makes what it was asked.
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     deleted(&api, &project, &id, &name).map(Json)
 }
 
@@ -264,7 +262,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
         let (name, approved) = held.ok_or_else(unknown)?;
         let pin = folder.reading_lock(|lock| format::approved_file(approved.as_ref(), lock))?;
         let at = canvas::row(folder, &name)?;
-        let back = folder.edit(|written| written.removed(&name))?;
+        folder.edit(|written| written.removed(&name).map(drop))?;
         // Gone from the project, what lands of it lands nothing.
         cancelled(api, project, std::slice::from_ref(&name), &deleted_why).map_err(|Refusal(why)| why)?;
         // A box that never made anything has no row: nothing to rewrite.
@@ -278,8 +276,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
             })?;
         }
         canvas::set(folder, id, BTreeMap::from([(name.clone(), None)]))?;
-        let text = serde_json::to_string(&back).expect("what's deleted serializes");
-        Ok(AssetDeleted { name, text, at })
+        Ok(AssetDeleted { name, at })
     });
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
@@ -345,39 +342,6 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     moved(&api, &project, name, number, noun, false, &before).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
 }
 
-/// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` set aside, back in its place. Its approval too, unless another has come since.
-pub(super) async fn undiscard(
-    State(api): State<Arc<Api>>,
-    Path((id, name, number)): Path<(String, String, String)>,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<Json<VersionMoved>, Refusal> {
-    let asked: VersionBack = parse(&body?)?;
-    let project = api.projects.get(&api, &id)?;
-    let folder = &project.folder;
-    let number = number.parse().unwrap_or(0);
-    let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
-    let i = find(&doc, &name).map_err(Refusal)?;
-    let name = doc.assets[i].name.clone();
-    let noun = noun(&doc, &lock, i);
-    let Some(version) = lock.asset(&name).and_then(|held| held.on_record().find(|version| version.number == number)) else {
-        let said = format!("{name} has no {noun} {number} to put back: `reclaim` clears what's discarded");
-        return Err(Refusal(Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy project status {name}"))));
-    };
-    let main = version.main().filter(|_| asked.approved && doc.assets[i].pin.is_none()).cloned();
-    let before = stale_names(&doc, &doc.stand(&lock));
-    folder
-        .act(|| {
-            if let Some(sha256) = &main {
-                folder.edit(|written| written.approved(&name, sha256))?;
-            }
-            folder.update_lock(|lock| lock.asset_mut(&name, "").undiscard(number))?;
-            history::take(folder, &name, number, noun, Took::Discarded, Took::Listed);
-            Ok(())
-        })
-        .map_err(Refusal)?;
-    moved(&api, &project, name, number, noun, main.is_some(), &before).await
-}
-
 /// Why `name` has no version `number` to discard.
 fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error {
     let key = name_key(name);
@@ -388,7 +352,7 @@ fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error
     let held = lock.asset(name);
     if held.is_some_and(|held| held.discarded.iter().any(|version| version.number == number)) {
         let said = format!("{name}'s {noun} {number} is already discarded");
-        return Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy project restore {name} --version {number}"));
+        return Error::new(Kind::NotFound, "version_unknown", said).next("cozy project history");
     }
     let numbers: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
     let said = match numbers.as_slice() {
@@ -414,20 +378,7 @@ async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32
 }
 
 fn taken(name: &str) -> Error {
-    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy("rename that one, then put this one back").next(format!("cozy project rename {name} <another name>"))
-}
-
-/// `PUT /v1/projects/{id}/assets/{name}`: what `DELETE` answered, back under its name, its versions with it. Taken since, it's refused and says so.
-pub(super) async fn put_back(
-    State(api): State<Arc<Api>>,
-    Path((id, name)): Path<(String, String)>,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<Json<AssetMade>, Refusal> {
-    let asked: AssetBack = parse(&body?)?;
-    let project = api.projects.get(&api, &id)?;
-    let back: Boxed = serde_json::from_str(&asked.text).ok().filter(|back: &Boxed| name_key(&back.name) == name_key(&name)).ok_or_else(|| Refusal(Error::new(Kind::Validation, "asset_text", format!("that isn't what deleting {name} answered"))))?;
-    let etag = put_back_box(&project, &id, back, asked.at)?;
-    Ok(Json(AssetMade { name, etag, kept: BTreeMap::new() }))
+    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy("rename that one, then undo again").next(format!("cozy project rename {name} <another name>"))
 }
 
 /// A box back as `removed` took it, its versions with it, and with `at` its row, in one transaction: its new ETag.

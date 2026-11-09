@@ -21,8 +21,8 @@ function check(name, ok, detail) {
   if (!ok) failures.push(name);
 }
 const QUICK = join(__dirname, '..', 'project', 'quick.py');
-/** What it made besides its own project: forgotten however it ends. */
-let forget = async () => {};
+/** What it made besides its own project: its folder gone however it ends. */
+let dropOther = async () => {};
 /** The first list of local code installs its Runtime to read it. */
 const DESCRIBED_MS = 300_000;
 
@@ -109,7 +109,7 @@ const DESCRIBED_MS = 300_000;
   await closeBox(page);
   // Another project, for a tab to go to and come back from while Calcifer's away.
   const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}` }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
-  forget = () => api(`/v1/projects/${other.id}`, { method: 'DELETE' }).then(() => rmSync(other.path, { recursive: true, force: true }), () => {});
+  dropOther = async () => rmSync(other.path, { recursive: true, force: true });
   // Read again, as the tabs list what's read at the start.
   await page.goto(`${base}/#/projects/${other.id}`);
   await page.reload();
@@ -204,7 +204,7 @@ const DESCRIBED_MS = 300_000;
   check('read_back_as_shown', (await turbo.isChecked()) && (await prompt.innerText()).trim() === 'a lighthouse at dawn');
   check('nothing_refused', !(await notes()).some((line) => /Couldn't/.test(line)), await notes());
   check('no_page_errors', errors.length === 0, errors);
-  await forget();
+  await dropOther();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
@@ -214,7 +214,7 @@ async function died(error) {
   console.error(error);
   // Whatever happened, Calcifer runs again for what comes after.
   try { execSync(process.env.START, { shell: 'bash', stdio: 'ignore' }); } catch {}
-  await forget().catch(() => {});
+  await dropOther().catch(() => {});
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);

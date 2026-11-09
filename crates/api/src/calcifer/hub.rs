@@ -356,8 +356,8 @@ pub struct ModelCommit {
 }
 
 /// `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
-/// clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `tags`
-/// replaces its tags (empty clears them), then `add_tags` are added and `remove_tags` removed.
+/// clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `add_tags`
+/// are added and `remove_tags` removed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelEdit {
@@ -369,8 +369,6 @@ pub struct ModelEdit {
     pub trigger: Option<String>,
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub strength: Option<Option<f64>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -380,7 +378,7 @@ pub struct ModelEdit {
 impl ModelEdit {
     /// Whether it changes a model's tags.
     pub fn tags_change(&self) -> bool {
-        self.tags.is_some() || !self.add_tags.is_empty() || !self.remove_tags.is_empty()
+        !self.add_tags.is_empty() || !self.remove_tags.is_empty()
     }
 }
 
@@ -543,13 +541,37 @@ pub struct Retired {
     pub reason: Option<String>,
 }
 
-/// `POST /v1/model-downloads` (an `Idempotency-Key`): a warm run that makes a model present in a
-/// machine's store, `202` with the run (`calcifer::Submitted`). `POST /v1/model-download-quotes`
-/// takes the same body and answers a `new` run's `calcifer::RunQuote`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Calcifer's own jobs (cl-841): each is a run, asked as any is, by `POST /v1/runs` of a reserved target of the package `cozy`
+/// whose `input` is the record named here, quoted by `POST /v1/run-quotes`, and listed, shown, followed and canceled as a run.
+/// A run's `on`, `hub`, `code` (local code, by content) and `agreed` are the request's own.
+pub mod job {
+    /// `input`: [`super::ModelDownload`]. A warm run that makes a model present in a machine's store.
+    pub const MODEL_DOWNLOAD: &str = "cozy/model_download";
+    /// `input`: [`super::ModelUpload`]. A warm run that makes the source and uploads it as a private commit; a Hub commit on no
+    /// base is recorded at the Hub by Calcifer, with no machine: its result is a [`super::RecordedCommit`].
+    pub const MODEL_UPLOAD: &str = "cozy/model_upload";
+    /// `input`: [`super::ModelQuantize`]. A run of a package's `quantize`, the request's `code` when it is local code.
+    pub const MODEL_QUANTIZE: &str = "cozy/model_quantize";
+    /// `input`: [`super::PackageInstall`]. A warm run of a package's environment, no weights; the request's `code` installs
+    /// local code as it is now.
+    pub const PACKAGE_INSTALL: &str = "cozy/package_install";
+    /// `input`: [`super::PackageRemove`]. Calcifer's run: one remove run per package and Hub the machine `on` holds it from,
+    /// summed in its result, a [`super::PackagesRemoved`].
+    pub const PACKAGE_REMOVE: &str = "cozy/package_remove";
+    /// `input`: [`super::PackageLock`], of the request's `code`. Calcifer's run, with uv in its copy; its result is a
+    /// [`super::Locked`].
+    pub const PACKAGE_LOCK: &str = "cozy/package_lock";
+    /// `input`: [`super::PackagePublish`], of the request's `code`. Calcifer's run; its result is a [`super::Published`].
+    pub const PACKAGE_PUBLISH: &str = "cozy/package_publish";
+
+    /// Every job, by its target.
+    pub const ALL: [&str; 7] = [MODEL_DOWNLOAD, MODEL_UPLOAD, MODEL_QUANTIZE, PACKAGE_INSTALL, PACKAGE_REMOVE, PACKAGE_LOCK, PACKAGE_PUBLISH];
+}
+
+/// `cozy/model_download`'s input.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelDownload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
     /// `org/name[@release]`, `org/name@sha256:<commit>`, `hf://…`, `civitai://…`, `https://…`, or
     /// a held `.safetensors` file's `sha256:<hex>` (`PUT /v1/files`).
     pub model: String,
@@ -565,24 +587,15 @@ pub struct ModelDownload {
     /// The source's convention, a reviewed TensorFS format (`h3.lora`); usually detected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_format: Option<String>,
-    pub on: crate::calcifer::On,
-    /// The quote a `new` run's renter agreed to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agreed: Option<crate::calcifer::Agreed>,
 }
 
-/// `POST /v1/model-uploads` (an `Idempotency-Key`): a warm run on the machine that makes the source
-/// and uploads it as a new private commit of `destination` in `lane`, `202` with the run. Its
-/// trigger and strength are set at the Hub once it completes (`result.after.display`).
-/// `POST /v1/model-upload-quotes` takes the same body.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `cozy/model_upload`'s input. Its trigger and strength are set at the Hub once it completes (`result.after.display`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelUpload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
     /// A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
     /// CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
-    /// machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and nothing
-    /// runs.
+    /// machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and no machine runs.
     pub source: String,
     /// A held source's name where its client has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -606,9 +619,6 @@ pub struct ModelUpload {
     /// `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
-    pub on: crate::calcifer::On,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agreed: Option<crate::calcifer::Agreed>,
 }
 
 /// A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
@@ -628,86 +638,58 @@ pub struct RecordedCommit {
     pub warnings: Vec<String>,
 }
 
-/// A destination recorded as a mirror of its author's model, before anything uploads.
+/// `cozy/package_install`'s input: the Hub's newest release when none is named. A published package's older releases on its
+/// machine go once it is in (`result.after.retired`). With the request's `code`, local code, and `package` is empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Mirrored {
-    pub model: String,
-    pub source: String,
-    /// The author it credits, or its parked org's line.
-    pub by: Option<String>,
-    /// The org it credits.
-    pub org: String,
-    /// The source's handle (`site:handle`), when it was new to the org's claim handles.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub added_handle: Option<String>,
-}
-
-/// `POST /v1/model-uploads` answered: the run, as `calcifer::Submitted` says it, or for a Hub commit what was
-/// recorded, with no run; and the mirror recorded before either.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ModelUploading {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<crate::calcifer::Run>,
-    pub replay: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mirrored: Option<Mirrored>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recorded: Option<RecordedCommit>,
-}
-
-/// `POST /v1/package-installs` (an `Idempotency-Key`): a warm run that installs a package's
-/// environment on a machine, no weights, `202` with it. A published package's older releases there
-/// go once it is in (`result.after.retired`). `POST /v1/package-install-quotes` takes the same body.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PackageInstall {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
     /// `org/name`; empty with `code`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub package: String,
-    /// Local code, by content: installed as it is now.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<crate::code::LocalCode>,
-    /// Absent, the Hub's newest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<String>,
-    pub on: crate::calcifer::On,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agreed: Option<crate::calcifer::Agreed>,
 }
 
-/// `POST /v1/package-removals` (an `Idempotency-Key`): one remove run per package and Hub the
-/// machine holds it from, every release; `202` with them. Each run's result is a
-/// `{removed, reclaimed_bytes, retained}`.
+/// `cozy/package_remove`'s input: every release of each package off the machine the request's `on` names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PackageRemoval {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PackageRemove {
     /// `org/name`, or `local/name`.
     pub packages: Vec<String>,
-    pub machine: String,
 }
 
-/// What `POST /v1/package-removals` answers: the machine and one remove run per package and Hub.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `cozy/package_remove`'s result: what left the machine, what that freed, and what did not go.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct PackageRemovals {
+pub struct PackagesRemoved {
     pub machine: String,
-    pub runs: Vec<crate::calcifer::Run>,
+    pub removed: Vec<RemovedRelease>,
+    pub reclaimed_bytes: u64,
+    /// Files a running executor still uses stay until it ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retained: bool,
+    /// Each remove run that did not complete, as `package: machine: reason (code)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<String>,
 }
 
-/// `POST /v1/model-quantizations` (an `Idempotency-Key`): a new commit of `model` in `lane`,
-/// written from a commit (or a release's original weights) by the recipe `package` declares for
-/// that lane, as a run of its `quantize` on the machine, which uploads it. `202` with the run
-/// (`calcifer::Submitted`); local code not yet made ready answers its install (`preparing`):
-/// follow it, then ask again under the same key. `POST /v1/model-quantization-quotes` takes the
-/// same body.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One release a machine no longer holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RemovedRelease {
+    pub package: String,
+    pub release: String,
+    /// The Hub it was installed from; empty for local code.
+    #[serde(default)]
+    pub hub: String,
+}
+
+/// `cozy/model_quantize`'s input: a new commit of `model` in `lane`, written from a commit (or a release's original weights) by
+/// the recipe the package declares for that lane, as a run of its `quantize` on the machine, which uploads it. The package is
+/// `package`, or the request's `code`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelQuantize {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
     /// `org/name@sha256:<commit>`, or `org/name[@release]` (none: the newest).
     pub model: String,
     /// The lane to write: a recipe the package declares for this model.
@@ -715,23 +697,12 @@ pub struct ModelQuantize {
     /// `org/name[@release]`; empty with `code`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub package: String,
-    /// Local code nobody published, by content.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<crate::code::LocalCode>,
-    pub on: crate::calcifer::On,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agreed: Option<crate::calcifer::Agreed>,
 }
 
-/// `POST /v1/package-locks` (an `Idempotency-Key`): locks the package `code` is for the Hub and the
-/// account it publishes to (`root`: the root namespace, Hub admins), with uv in Calcifer's copy, and
-/// answers the new `uv.lock` for the client to write. `202` with the work (`Authoring`); followed on
-/// `GET /v1/package-locks/{id}/events`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockAsk {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
-    pub code: crate::code::LocalCode,
+/// `cozy/package_lock`'s input: the package the request's `code` is, locked for the Hub and the account it publishes to
+/// (`root`: the root namespace, Hub admins), with uv in Calcifer's copy.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageLock {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
     /// Dependencies that may move to their newest compatible release.
@@ -739,15 +710,11 @@ pub struct LockAsk {
     pub upgrade: Vec<String>,
 }
 
-/// `POST /v1/package-publications` (an `Idempotency-Key`): publishes the package `code` is as
-/// `<account>/<name>@<version>` (`root`: `<name>@<version>`): staged, relocked for this Hub, built,
-/// described statically, uploaded and finalized. `202` with the work (`Authoring`); followed on
-/// `GET /v1/package-publications/{id}/events`. A version already published is answered as it is.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublishAsk {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
-    pub code: crate::code::LocalCode,
+/// `cozy/package_publish`'s input: the package the request's `code` is, published as `<account>/<name>@<version>` (`root`:
+/// `<name>@<version>`): staged, relocked for this Hub, built, described statically, uploaded and finalized. A version already
+/// published is answered as it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackagePublish {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
     /// Published yanked: a gated candidate, never the package's newest release.
@@ -755,49 +722,7 @@ pub struct PublishAsk {
     pub yanked: bool,
 }
 
-/// Where a lock or publication stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkState {
-    Running,
-    Done,
-    Failed,
-}
-
-/// A lock or publication as it stands (`GET /v1/package-locks/{id}`,
-/// `GET /v1/package-publications/{id}`), kept while Calcifer runs.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Authoring {
-    /// `lock-…` or `publication-…`.
-    pub id: String,
-    pub state: WorkState,
-    /// What it said as it went (uv's refusals are its `error`).
-    pub notices: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub locked: Option<Locked>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub published: Option<Published>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<crate::error::Error>,
-}
-
-/// One event of a lock's or publication's stream; the last is `locked`, `published` or `failed`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum AuthoringEvent {
-    Notice { message: String },
-    Locked { locked: Locked },
-    Published { published: Published },
-    Failed { error: crate::error::Error },
-}
-
-impl AuthoringEvent {
-    pub fn is_terminal(&self) -> bool {
-        !matches!(self, Self::Notice { .. })
-    }
-}
-
-/// A finished lock: the new `uv.lock` and whether it changed.
+/// `cozy/package_lock`'s result: the new `uv.lock` and whether it changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Locked {
     /// The new `uv.lock`, for the client to write into the package's folder.
@@ -807,7 +732,7 @@ pub struct Locked {
     pub changed: bool,
 }
 
-/// A finished publication: the release, its status, bytes uploaded and the Hub's warnings.
+/// `cozy/package_publish`'s result: the release, its status, bytes uploaded and the Hub's warnings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Published {
     pub package: String,

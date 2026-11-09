@@ -57,8 +57,6 @@ pub(crate) struct Api {
     pub(crate) releases: crate::runs::target::Releases,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
-    /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
-    pub(crate) works: crate::hub::Works,
     pub(crate) sessions: crate::sessions::Sessions,
     /// The components packages ship, as read for the page.
     pub(crate) tool_uis: crate::tool_ui::Held,
@@ -82,7 +80,6 @@ impl Api {
             projects: Default::default(),
             releases: Default::default(),
             codes: Default::default(),
-            works: Default::default(),
             tool_uis: Default::default(),
             bearer: Sha256::digest(token).into(),
             stopping: RwLock::new(false),
@@ -152,7 +149,6 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/machines/{name}/packages", get(machines::packages))
         .route("/v1/machines/{name}/models", get(machines::models))
         .route("/v1/machines/{name}/update", post(crate::update::update))
-        .route("/v1/machines/{name}/authorized-keys", get(crate::authorized::list))
         .route(
             "/v1/machines/{name}/authorized-keys/{key}",
             put(crate::authorized::add).delete(crate::authorized::remove),

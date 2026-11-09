@@ -23,13 +23,11 @@ function check(name, ok, detail) {
   during = name;
   if (!ok) failures.push(name);
 }
-let forget = async () => {};
 let last = () => null;
 async function died(why) {
   failures.push(`${during}: ${why}`);
   seen.file = last();
   await lastLook();
-  await forget();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(1);
 }
@@ -74,7 +72,8 @@ async function died(why) {
   const asset = async (name) => (await state()).assets.find((row) => row.name === name);
   const folder = (await state()).path;
   seen.project = { id, folder };
-  forget = () => api(at, { method: 'DELETE' }).catch(() => {});
+  /** Undo of the newest edit of `name` that stands, as the line `cozy project delete` prints does. */
+  const undoOf = async (name) => post(`${at}/history/undo`, { entry: (await api(`${at}/history`)).body?.entries?.find((entry) => !entry.undone && entry.names?.some((held) => held.toLowerCase() === name.toLowerCase()))?.id });
   const yamlAt = join(folder, 'project.yaml');
   const yaml = () => yamlOf(folder);
   last = yaml;
@@ -175,7 +174,7 @@ async function died(why) {
   await until('it says so', () => asset('fixed'), (row) => row.missing?.includes('Ada.2'));
   const reclaimed = await post(`${at}/reclaim`, { yes: true });
   check('reclaim_keeps_a_named_version', reclaimed.status === 200 && rowsOf(folder, 'SELECT count(*) FROM versions WHERE discarded = 1')[0][0] > 0 && (await api(`${at}/assets/Ada`)).body.discarded?.includes(2), [reclaimed, (await api(`${at}/assets/Ada`)).body.discarded]);
-  const back = await api(`${at}/assets/Ada/versions/2`, { method: 'PUT', body: '{}' });
+  const back = await undoOf('Ada');
   check('undo_brings_it_back', back.status === 200 && !(await until('it reads again', () => asset('fixed'), (row) => !row.missing?.includes('Ada.2'))).missing?.length, back);
 
   // On the page: numbers, and a take into text.
@@ -947,7 +946,7 @@ async function died(why) {
     const refused = await until('it refused', () => asset('fixed'), (row) => row?.failure, 2 * STEP_MS);
     check('a_deleted_version_fails_clearly', refused.failure.code === 'input_missing' && refused.failure.message.includes('was deleted'), refused.failure);
     check('that_failure_is_a_toast', (await toast('fixed didn\'t render')) === true);
-    await api(`${at}/assets/Ada/versions/2`, { method: 'PUT', body: '{}' });
+    await undoOf('Ada');
     check('no_approval_or_number_moved', approved === 1, first);
 
     // A version reaches its function: `<self.1>` and `<Ada.2>`, each that file and nothing else.
@@ -980,7 +979,6 @@ async function died(why) {
   await shut();
   check('no_node_on_screen', !/\bnode\b/i.test(await page.evaluate(() => document.body.innerText)));
   check('no_page_errors', errors.length === 0, errors);
-  await forget();
   await browser.close();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);

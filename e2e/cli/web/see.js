@@ -595,7 +595,6 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     seen.scale.move_70 = { ...(await onScreen(tab)), ...summary(frames) };
     await tab.close();
   } finally {
-    await api(`/v1/projects/${made.id}`, { method: 'DELETE' }).catch(() => {});
     if (made.path?.includes('web-see-scale-')) rmSync(made.path, { recursive: true, force: true });
   }
 
@@ -697,7 +696,6 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await until('+ names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus', true), (error) => check('tabs_plus', false, error.message));
     await tab.close();
   } finally {
-    for (const row of ours) await api(`/v1/projects/${row.id}`, { method: 'DELETE' }).catch(() => {});
     rmSync(forest, { recursive: true, force: true });
   }
 

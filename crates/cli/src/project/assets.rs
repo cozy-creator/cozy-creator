@@ -1,22 +1,21 @@
-//! What the canvas does, as an agent types it: `add`, `set`, `delete`, `restore`, and one asset of `status`. Each is the route the page
-//! calls, with its fields, so what either does shows on the other at once.
+//! What the canvas does, as an agent types it: `add`, `set`, `delete`, and one asset of `status`. Each is the route the page calls,
+//! with its fields, so what either does shows on the other at once; `undo` takes any of them back.
 use std::{
     io::Read as _,
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use api::{
     error::{Error, Kind},
-    calcifer::project::{AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Card, NewAsset, VersionBack, VersionMoved},
+    calcifer::project::{AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, CanvasPatch, CanvasPatched, Card, History, NewAsset, VersionMoved},
 };
 use api::calcifer::tool::{FieldType, Tools};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Number, Value};
 
-use super::open;
-use crate::{Context, calcifer_client::{Client, path as route}, output, run::mint_key};
+use super::{at as route, from, named};
+use crate::{Context, calcifer_client::{Client, path}, output, run::mint_key};
 
 /// What `tool=` is: what makes it, not one of its inputs.
 const TOOL: &str = "tool";
@@ -92,7 +91,7 @@ async fn as_declared(calcifer: &Client, project: &str, tool: &str, fields: &mut 
     if !fields.values().any(looks) {
         return;
     }
-    let Ok(listed) = calcifer.get_query::<_, Tools>(&route(&["v1", "tools"]), &[("project", project)]).await else { return };
+    let Ok(listed) = calcifer.get_query::<_, Tools>(&path(&["v1", "tools"]), &[("project", project)]).await else { return };
     let plain = tool.trim_start_matches("./");
     let Some(held) = listed.tools.iter().find(|held| held.id == tool || held.id.ends_with(plain)) else { return };
     for declared in held.fields.iter().filter(|declared| matches!(declared.ty, FieldType::Group) || declared.multiple) {
@@ -121,7 +120,7 @@ pub(super) struct Add {
 }
 
 pub(super) async fn add(ctx: &Context, at: Option<&String>, args: Add) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
+    let project = named(at)?;
     let (names, terms): (Vec<String>, Vec<String>) = args.terms.into_iter().partition(|term| !term.contains('='));
     if names.len() > 1 {
         return Err(input_error("field_term", format!("one name, not {}: a field is field=value", names.join(" and "))));
@@ -131,9 +130,9 @@ pub(super) async fn add(ctx: &Context, at: Option<&String>, args: Add) -> Result
     // `text`, no tool: a text asset.
     let tool = if args.tool == "text" { String::new() } else { args.tool };
     let calcifer = ctx.calcifer().await?;
-    as_declared(&calcifer, &opened.id, &tool, &mut fields).await;
+    as_declared(&calcifer, &project, &tool, &mut fields).await;
     let ask = NewAsset { tool, exact, at: place(&mut fields)?, name: names.into_iter().next(), fields, kind: None, moves: Default::default(), placed: Default::default() };
-    let made: AssetMade = calcifer.post(&route(&["v1", "projects", &opened.id, "assets"]), &ask, Some(&mint_key())).await?;
+    let made: AssetMade = calcifer.post(&route(&project, &["assets"]), &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&made);
     } else {
@@ -179,72 +178,78 @@ pub(super) async fn set(ctx: &Context, at: Option<&String>, args: Set) -> Result
         Some(other) => return Err(input_error("field_term", format!("tool is a function, not {other}")).next("cozy package ls")),
         None => None,
     };
-    let opened = open(ctx, at).await?;
+    let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
-    let path = route(&["v1", "projects", &opened.id, "assets", &args.name]);
+    let asset = route(&project, &["assets", &args.name]);
     if fields.values().any(|value| value.as_str().is_some_and(|text| text.starts_with(['[', '{']))) {
-        let held: AssetVersions = calcifer.get(&path).await?;
+        let held: AssetVersions = calcifer.get(&asset).await?;
         if let Some(of) = tool.as_deref().or(held.asset.tool.as_deref()) {
-            as_declared(&calcifer, &opened.id, of, &mut fields).await;
+            as_declared(&calcifer, &project, of, &mut fields).await;
         }
     }
-    // Its fields and its row in one step: one transaction, one entry.
-    let patched: AssetPatched = calcifer.patch(&path, &AssetPatch { fields, tool, at: card }).await?;
+    // Its fields, then its row as dragging it moves it: under one edit, so they're one entry of the history.
+    let edit = mint_key();
+    let patched = match fields.is_empty() && tool.is_none() {
+        true => None,
+        false => Some(calcifer.patch_as::<_, AssetPatched>(&asset, &AssetPatch { fields, tool }, &edit).await?),
+    };
+    if let Some(card) = card {
+        // The box by its own name, which a row is of: one that isn't there is refused here.
+        let name = match &patched {
+            Some(patched) => patched.name.clone(),
+            None => calcifer.get::<AssetVersions>(&asset).await?.asset.name,
+        };
+        let moved = CanvasPatch { cards: [(name, Some(card))].into(), placed: Default::default() };
+        let _: CanvasPatched = calcifer.patch_as(&route(&project, &["canvas"]), &moved, &edit).await?;
+    }
     match ctx.json {
         true => output::json(&patched),
         false => {
             println!("{}: set {names}", args.name);
-            patched.warnings.iter().for_each(|warning| println!("warning: {warning}"));
+            patched.iter().flat_map(|patched| &patched.warnings).for_each(|warning| println!("warning: {warning}"));
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// What `restore` puts back, on one line that any shell passes whole.
-#[derive(Serialize, Deserialize)]
-struct Kept {
-    text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    at: Option<Card>,
-}
-
 /// `delete --json`: what the route answers, and the command that undoes it.
 #[derive(Serialize)]
-struct Deleted<'a> {
+struct Deleted<'a, T: Serialize> {
     #[serde(flatten)]
-    deleted: &'a AssetDeleted,
+    answer: &'a T,
     next: [String; 1],
 }
 
-/// `delete --version --json`: what the route answers, and the command that undoes it.
-#[derive(Serialize)]
-struct VersionDeleted<'a> {
-    #[serde(flatten)]
-    moved: &'a VersionMoved,
-    next: [String; 1],
+/// `<name>.<n>`: take or version `n` of `name`. A name never ends so.
+fn version_of(written: &str) -> Option<(&str, u32)> {
+    let (name, number) = written.rsplit_once('.')?;
+    Some((name, number.parse().ok()?)).filter(|(name, _)| !name.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// The words of `-p` when it was given, as what's printed has to work from here.
-fn from(at: Option<&String>) -> String {
-    at.map_or_else(String::new, |at| match at.contains(' ') {
-        true => format!(" -p '{at}'"),
-        false => format!(" -p {at}"),
-    })
-}
-
-/// `names` deleted, each printing the command that restores it.
-pub(super) async fn delete(ctx: &Context, at: Option<&String>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
-    if !versions.is_empty() {
-        return discard(ctx, at, names, versions).await;
+/// The command that undoes the newest edit of `name` that stands: the delete or discard just made, as its history lists it.
+async fn undo_of(calcifer: &Client, project: &str, at: Option<&String>, name: &str) -> String {
+    let listed = calcifer.get_query::<_, History>(&route(project, &["history"]), &[("limit", 20)]).await.ok();
+    let same = |held: &String| held.eq_ignore_ascii_case(name);
+    let entry = listed.and_then(|listed| listed.entries.into_iter().find(|entry| entry.undone.is_none() && entry.names.iter().any(same)));
+    match entry {
+        Some(entry) => format!("cozy project{} undo {}", from(at), entry.id),
+        None => format!("cozy project{} undo", from(at)),
     }
-    let opened = open(ctx, at).await?;
+}
+
+/// `names` deleted, and `<name>.<n>` discarded, each printing the command that undoes it.
+pub(super) async fn delete(ctx: &Context, at: Option<&String>, names: Vec<String>) -> Result<ExitCode, Error> {
+    let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
-    for name in names {
-        let deleted: AssetDeleted = calcifer.delete(&route(&["v1", "projects", &opened.id, "assets", &name])).await?;
-        let kept = serde_json::to_vec(&Kept { text: deleted.text.clone(), at: deleted.at }).expect("it serializes");
-        let back = format!("cozy project{} restore {} {}", from(at), deleted.name, URL_SAFE_NO_PAD.encode(kept));
+    for written in names {
+        if let Some((name, number)) = version_of(&written) {
+            discard(ctx, &calcifer, &project, at, name, number).await?;
+            continue;
+        }
+        let deleted: AssetDeleted = calcifer.delete(&route(&project, &["assets", &written])).await?;
+        let back = undo_of(&calcifer, &project, at, &deleted.name).await;
         match ctx.json {
-            true => output::json(&Deleted { deleted: &deleted, next: [back] }),
+            true => output::json(&Deleted { answer: &deleted, next: [back] }),
             false => {
                 println!("deleted {}: what it made stays until `cozy project reclaim`, and what's going was canceled", deleted.name);
                 anstream::println!("{back}");
@@ -254,77 +259,31 @@ pub(super) async fn delete(ctx: &Context, at: Option<&String>, names: Vec<String
     Ok(ExitCode::SUCCESS)
 }
 
-/// `versions` of one asset discarded, each printing the command that brings it back.
-async fn discard(ctx: &Context, at: Option<&String>, names: Vec<String>, versions: Vec<u32>) -> Result<ExitCode, Error> {
-    let [name] = names.as_slice() else {
-        return Err(input_error("project_usage", "--version is of one asset".to_owned()).next(format!("cozy project delete {} --version {}", names[0], versions[0])));
-    };
-    let opened = open(ctx, at).await?;
-    let calcifer = ctx.calcifer().await?;
-    for number in versions {
-        let moved: VersionMoved = calcifer.delete(&route(&["v1", "projects", &opened.id, "assets", name, "versions", &number.to_string()])).await?;
-        let back = format!("cozy project{} restore {} --version {number}{}", from(at), moved.name, if moved.approved { " --approved" } else { "" });
-        if ctx.json {
-            output::json(&VersionDeleted { moved: &moved, next: [back] });
-            continue;
-        }
-        let (name, noun) = (&moved.name, &moved.noun);
-        let approval = if moved.approved { ", and its approval with it" } else { "" };
-        let stands = moved.stands.map_or_else(|| format!("it has no {noun} now"), |stands| format!("it's on {noun} {stands} now"));
-        println!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy project reclaim`");
-        if !moved.read_by.is_empty() {
-            println!("warning: {} read {noun} {number} by name: a render of them fails until it's back", moved.read_by.join(", "));
-        }
-        say_stale(&moved);
-        anstream::println!("{back}");
+/// Take or version `number` of `name` discarded, printing the command that brings it back.
+async fn discard(ctx: &Context, calcifer: &Client, project: &str, at: Option<&String>, name: &str, number: u32) -> Result<(), Error> {
+    let moved: VersionMoved = calcifer.delete(&route(project, &["assets", name, "versions", &number.to_string()])).await?;
+    let back = undo_of(calcifer, project, at, &moved.name).await;
+    if ctx.json {
+        output::json(&Deleted { answer: &moved, next: [back] });
+        return Ok(());
     }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn say_stale(moved: &VersionMoved) {
+    let (name, noun) = (&moved.name, &moved.noun);
+    let approval = if moved.approved { ", and its approval with it" } else { "" };
+    let stands = moved.stands.map_or_else(|| format!("it has no {noun} now"), |stands| format!("it's on {noun} {stands} now"));
+    println!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy project reclaim`");
+    if !moved.read_by.is_empty() {
+        println!("warning: {} read {noun} {number} by name: a render of them fails until it's back", moved.read_by.join(", "));
+    }
     if !moved.stale.is_empty() {
         println!("out of date now: {}", moved.stale.join(", "));
     }
-}
-
-/// `delete`'s line: the asset back as it was, where it was, with what it made, or a take it discarded.
-pub(super) async fn restore(ctx: &Context, at: Option<&String>, name: String, kept: Option<String>, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
-    let Some(kept) = kept else { return undiscard(ctx, at, name, versions, approved).await };
-    let unreadable = |why: String| input_error("restore_unreadable", format!("that isn't what deleting {name} printed: {why}")).next("cozy project status");
-    let bytes = URL_SAFE_NO_PAD.decode(kept.trim()).map_err(|why| unreadable(why.to_string()))?;
-    let kept: Kept = serde_json::from_slice(&bytes).map_err(|why| unreadable(why.to_string()))?;
-    let opened = open(ctx, at).await?;
-    let made: AssetMade = ctx.calcifer().await?.put(&route(&["v1", "projects", &opened.id, "assets", &name]), &AssetBack { text: kept.text, at: kept.at }).await?;
-    match ctx.json {
-        true => output::json(&made),
-        false => println!("{} is back", made.name),
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-async fn undiscard(ctx: &Context, at: Option<&String>, name: String, versions: Vec<u32>, approved: bool) -> Result<ExitCode, Error> {
-    if approved && versions.len() > 1 {
-        return Err(input_error("project_usage", "--approved is of one --version: the one `delete` printed it for".to_owned()).next(format!("cozy project restore {name} --version {} --approved", versions[0])));
-    }
-    let opened = open(ctx, at).await?;
-    let calcifer = ctx.calcifer().await?;
-    for number in versions {
-        let moved: VersionMoved = calcifer.put(&route(&["v1", "projects", &opened.id, "assets", &name, "versions", &number.to_string()]), &VersionBack { approved }).await?;
-        if ctx.json {
-            output::json(&moved);
-            continue;
-        }
-        let approval = if moved.approved { ", approved" } else { "" };
-        println!("{}'s {} {number} is back{approval}", moved.name, moved.noun);
-        say_stale(&moved);
-    }
-    Ok(ExitCode::SUCCESS)
+    anstream::println!("{back}");
+    Ok(())
 }
 
 /// `status <name>`: its fields and each take or version.
 pub(super) async fn one(ctx: &Context, at: Option<&String>, name: String) -> Result<ExitCode, Error> {
-    let opened = open(ctx, at).await?;
-    let path = route(&["v1", "projects", &opened.id, "assets", &name]);
+    let path = route(&named(at)?, &["assets", &name]);
     let mut held: AssetVersions = ctx.calcifer().await?.get_query(&path, &[("call", "true")]).await?;
     // The newest `SHOWN`, unless --full; `asset.versions` counts them all.
     let all = held.versions.len();
@@ -355,7 +314,7 @@ pub(super) async fn one(ctx: &Context, at: Option<&String>, name: String) -> Res
     }
     if !held.discarded.is_empty() {
         let numbers: Vec<String> = held.discarded.iter().map(u32::to_string).collect();
-        println!("discarded, until `cozy project reclaim`: {}. To bring one back: cozy project restore {} --version <n>", numbers.join(", "), asset.name);
+        println!("discarded, until `cozy project reclaim`: {}. `cozy project history` lists each, and `undo <id>` brings it back", numbers.join(", "));
     }
     // What a render would send now: the JSON `cozy run --input` takes.
     if let Some(call) = &held.call {

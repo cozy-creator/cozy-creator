@@ -20,7 +20,6 @@ mod keyed;
 pub(crate) mod model;
 mod remote;
 mod thumbs;
-mod caption;
 mod binder;
 mod tools;
 mod upgrade;
@@ -152,9 +151,8 @@ pub(crate) struct Reader(#[allow(dead_code, reason = "held for its drop")] Arc<P
 pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
-        .route("/v1/projects/{id}", get(state).delete(forget))
+        .route("/v1/projects/{id}", get(state))
         .route("/v1/projects/{id}/imports", post(import))
-        .route("/v1/projects/{id}/assets/{name}/caption", post(caption::caption))
         .route("/v1/projects/{id}/canvas", get(canvas::read).patch(canvas::patch))
         .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
         .route("/v1/projects/{id}/runs", post(runs))
@@ -170,9 +168,9 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
-        .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete).put(assets::put_back))
+        .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete))
         .route("/v1/projects/{id}/assets/{name}/versions", post(assets::join))
-        .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard).put(assets::undiscard))
+        .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/history", get(history::list))
@@ -211,20 +209,23 @@ impl Projects {
         self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
     }
 
-    /// Project `id`: open, else opened from the index. It stays open while the answer is held.
-    fn get(&self, api: &Arc<Api>, id: &str) -> Result<Arc<Project>, Refusal> {
-        if let Some(project) = self.open_now(id) {
+    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id or name, or its folder on this computer. Open,
+    /// else opened from the index. It stays open while the answer is held.
+    fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
+        if let Some(project) = self.open_now(named) {
             return Ok(project);
         }
-        let Some(entry) = api.calcifer.store().known_project(id)? else {
-            let said = format!("this computer knows no project {id}");
-            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
-        };
+        if api::target::written_as_path(named.trim()) {
+            return self.open(api, &self::named(api, named).map_err(Refusal)?).map_err(Refusal);
+        }
+        let entry = known(api, named.trim()).map_err(Refusal)?;
         let project = self.open(api, &entry.path).map_err(Refusal)?;
-        if project.id != id {
-            let said = format!("{id} was in {}, which holds another project now", entry.path.display());
+        if project.id != entry.id {
+            let said = format!("{named} was in {}, which holds another project now", entry.path.display());
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
         }
+        // Opened for a call: used now, which the index lists by.
+        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()))?;
         Ok(project)
     }
 
@@ -995,21 +996,19 @@ fn status_next(folder: &Folder) -> Vec<String> {
     vec![format!("cozy project -p {} status", identity(&folder.dir).1)]
 }
 
-/// By `project`, opens the project it names (`named`). Else makes a new one called `name`: in this person's home folder, or at
-/// `path`, a folder of this computer's. Either way it is recorded in the index as used now.
+/// Makes a new project called `name`: in this person's home folder, or at `path`, a folder of this computer's, recorded in the index as
+/// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
     let open: Open = parse(&body?)?;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let mut moved_on = None;
-    let made = open.project.is_none();
-    let dir = match (&open.project, &open.path) {
-        (Some(project), _) => named(&api, project).map_err(Refusal)?,
-        (None, Some(path)) if !path.is_absolute() => {
+    let dir = match &open.path {
+        Some(path) if !path.is_absolute() => {
             let said = format!("{} is relative: a project is made at a folder of Calcifer's computer by its absolute path", path.display());
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
         }
-        (None, Some(path)) => {
+        Some(path) => {
             if Folder::is_project(path) {
                 let said = format!("{} is a project already", path.display());
                 return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
@@ -1018,9 +1017,9 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             let name = open.name.clone().unwrap_or_else(|| folder_name(path));
             made_new(&api, path, &name, open.starter).map_err(Refusal)?
         }
-        (None, None) => {
+        None => {
             let Some(name) = &open.name else {
-                return Err(Refusal(Error::new(Kind::Usage, "project_path", format!("name {}, or a new one by its name", api::calcifer::project::NAMED_BY))));
+                return Err(Refusal(Error::new(Kind::Usage, "project_path", "a new project needs a `name`, or a `path`")));
             };
             match key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned()) {
                 Some(dir) => dir,
@@ -1051,7 +1050,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     };
     let opened = opened(id, &dir);
     api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()))?;
-    let next = made.then(|| format!("cozy project -p {} render all --on <machine>", opened.name)).into_iter().collect();
+    let next = vec![format!("cozy project -p {} render all --on <machine>", opened.name)];
     let said = moved_on.into_iter().chain(said).collect();
     Ok(Json(Opened { next, said, ..opened }))
 }
@@ -1148,29 +1147,10 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     Ok(Json(Listed { projects, older }))
 }
 
-/// Forgets project `id`: out of the index, never its folder, and nothing more is said of it. Refused while it renders. It closes as
-/// any project does, once nothing reads it: a page still showing it holds it until it stops.
-async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<StatusCode, Refusal> {
-    let mut open = api.projects.open.lock().expect("projects lock");
-    let project = open.get(&id).and_then(Weak::upgrade);
-    if project.as_ref().is_some_and(|project| *project.walking.lock().expect("walking lock")) {
-        let said = format!("{id} is rendering: forget it once its runs land");
-        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
-    }
-    open.remove(&id);
-    drop(open);
-    drop(project);
-    IDENTITIES.lock().expect("identities lock").retain(|_, (held, _)| *held != id);
-    crate::events::project_forgotten(&id);
-    match api.calcifer.store().forget_project(&id)? {
-        true => Ok(StatusCode::NO_CONTENT),
-        false => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
-    }
-}
-
 /// Its assets as they stand.
 async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked): Query<Read>) -> Result<Json<ProjectState>, Refusal> {
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     let folder = &project.folder;
     let model = match model::of(&api, &project).await {
         Ok(model) => model,
@@ -1607,6 +1587,7 @@ async fn reclaim(
 ) -> Result<Json<Reclaimed>, Refusal> {
     let asked: Reclaim = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     let folder = &project.folder;
     let filter = crate::store::RunFilter {
         status: None,
@@ -1673,6 +1654,7 @@ async fn rename(
 ) -> Result<Json<Renamed>, Refusal> {
     let asked: Rename = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     rename_now(&project, &id, asked).map(Json)
 }
 
@@ -1896,6 +1878,7 @@ async fn runs(
     };
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its export kept by digest until the render ends.
     let text = project.folder.text().map_err(Refusal)?;
@@ -2270,6 +2253,7 @@ async fn import(
 ) -> Result<Json<Imported>, Refusal> {
     let asked: Import = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
     let folder = &project.folder;
     let wanted = element_name(asked.name.as_deref(), &asked.source);
     if asked.exact {
