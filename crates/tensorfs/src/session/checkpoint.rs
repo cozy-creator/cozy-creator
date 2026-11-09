@@ -411,6 +411,11 @@ impl Checkpoint {
         Ok(crate::io::view::plan(self.header(), regions)?.0)
     }
 
+    /// The stored dtype and shape of the part `component/key#role` (`#value`: plain data).
+    pub fn stored_part(&self, name: &str) -> Option<crate::io::StoredPart> {
+        crate::io::view::part(self.header(), name)
+    }
+
     /// This checkpoint's chunks as a read-engine source. A read fetches the chunks it needs
     /// and lacks on the process runtime, so call it from outside an async context.
     pub fn source(&self, direct_io: bool) -> crate::io::source::Source {

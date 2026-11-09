@@ -29,7 +29,8 @@ pub struct Span {
     pub source: ItemSource,
 }
 
-pub(crate) struct StoredPart {
+/// A stored part's place in its checkpoint: component, key, role, and its stored dtype and shape.
+pub struct StoredPart {
     pub component: String,
     pub key: String,
     pub role: String,
@@ -171,7 +172,8 @@ pub fn plan(header: &Header, regions: &[Vec<String>]) -> Result<(Vec<Span>, Vec<
     Ok((items, chunks))
 }
 
-pub(crate) fn part(header: &Header, name: &str) -> Option<StoredPart> {
+/// `header`'s part `component/key#role` (`#value`: plain data), when it has one.
+pub fn part(header: &Header, name: &str) -> Option<StoredPart> {
     let (tensor, role) = name.rsplit_once('#')?;
     let (component, key) = tensor.split_once('/')?;
     let tensor = header.tensor(component, key)?;

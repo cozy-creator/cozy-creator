@@ -63,6 +63,15 @@ impl Checkpoint {
 
 impl CheckpointFile {
 
+    /// Its length in bytes: the last object's end.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Up to `buf.len()` bytes from `at`, through the read engine; 0 at or past the end.
     #[allow(unsafe_code)]
     fn read_at(&mut self, at: u64, buf: &mut [u8]) -> Result<usize> {

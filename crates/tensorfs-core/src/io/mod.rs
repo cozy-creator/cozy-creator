@@ -21,7 +21,7 @@ pub mod view;
 pub use device::DeviceBuffer;
 pub use plan::Target;
 pub use probe::{ceiling, disk, keep_ceilings_in, Ceiling};
-pub use view::Span;
+pub use view::{Span, StoredPart};
 
 /// `[ptr, ptr + len)` registered with this device's context: a copy from it is one DMA.
 ///
@@ -115,7 +115,7 @@ impl Dst {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
