@@ -559,10 +559,11 @@ impl Default for Disposition {
     fn default() -> Self { Self::Unknown(vec![]) }
 }
 
-/// Quiescent GPU work has handed these host bytes to the managed worker. No executor or
-/// GPU permit is retained here; the codec and generation outlive any idle-session teardown.
+/// Quiescent GPU work has handed these host bytes to the managed worker, its frames encoding
+/// since the reply. No executor or GPU permit is retained here; the codec and generation
+/// outlive any idle-session teardown.
 struct Postprocess {
-    codec: Arc<device_executor::Codec>,
+    encoding: device_executor::Encoding,
     spool: crate::execution::Spool,
     reply: Frame,
     _generation: Arc<File>,
@@ -573,13 +574,12 @@ impl Postprocess {
             engine.finish(id, Outcome::Canceled)?;
             return Ok(());
         }
-        let note = |state: &str, ok: Option<bool>| {
-            let text = serde_json::json!({"phase": "output_encoding", "state": state, "ok": ok}).to_string();
-            if let Err(error) = engine.append_log(id, "info", &text) { tracing::warn!("run {id}: {error}"); }
-        };
-        note("begin", None);
-        let encoded = device_executor::postprocess(&self.codec, &self.spool.0, &self.reply);
-        note("end", Some(encoded.is_ok()));
+        let (began, waited) = (self.encoding.began(), Instant::now());
+        let encoded = self.encoding.wait()
+            .and_then(|media| device_executor::postprocess(&media, &self.spool.0, &self.reply));
+        let text = serde_json::json!({"phase": "output_encoding", "state": "end", "ok": encoded.is_ok(),
+            "ms": began.elapsed().as_secs_f64() * 1e3, "waited_ms": waited.elapsed().as_secs_f64() * 1e3}).to_string();
+        if let Err(error) = engine.append_log(id, "info", &text) { tracing::warn!("run {id}: {error}"); }
         let outcome = if engine.get(id)?.cancel_actor.is_some() {
             Outcome::Canceled
         } else {
@@ -3311,7 +3311,13 @@ impl Pool {
                         }
                         return Ok(None);
                     }
-                    session => session?,
+                    session => {
+                        let session = session?;
+                        let accepted = engine.get(id).map_or(0, |record| record.accepted_at_ms as i64);
+                        tracing::info!("run {id}: executor {} in {:.0} ms, {} ms after acceptance", session.launch.mode,
+                            session.launch.ms, crate::machine::lifecycle::now_ms() - accepted);
+                        session
+                    }
                 }
             }
         };
@@ -3798,6 +3804,9 @@ impl Pool {
         );
         drop(invoking);
         let reply = reply?;
+        // A success's frames encode from its reply on, beside the bookkeeping below.
+        let succeeded = reply.ok && reply.outcome.as_ref().is_some_and(|outcome| outcome.terminal == "succeeded");
+        let mut encoding = succeeded.then(|| session.executor.codec().start(&spool, &reply.frames));
         // When the reply came (with the executor's handler and device-lease times) and when it
         // was recorded: the executor's tail after its last stage and TensorD's before
         // `gpu_returned`, apart.
@@ -3806,6 +3815,9 @@ impl Pool {
                 tracing::warn!("run {id}: {error}");
             }
         };
+        if succeeded {
+            phase(serde_json::json!({"phase": "output_encoding", "state": "begin"}));
+        }
         let metrics = reply.metrics.clone().unwrap_or_default();
         phase(serde_json::json!({"phase": "executor_replied", "handler_ms": metrics.handler_ms,
             "device_lease_ms": metrics.device_lease_ms, "d2h_wait_ms": metrics.d2h_wait_ms}));
@@ -3868,7 +3880,8 @@ impl Pool {
                     // Validation and durable custody belong to CPU postprocessing below.
                     let codec = session.executor.codec();
                     codec.retain_log()?;
-                    Ok::<_, io::Error>(Postprocess { codec, spool: spool_owner, reply, _generation: held.retention() })
+                    let encoding = encoding.take().unwrap_or_else(|| codec.start(&spool, &reply.frames));
+                    Ok::<_, io::Error>(Postprocess { encoding, spool: spool_owner, reply, _generation: held.retention() })
                 })();
                 match result {
                     Ok(post) => return Ok(Some(post)),

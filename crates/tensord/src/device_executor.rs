@@ -426,7 +426,7 @@ impl Codec {
         }
     }
     /// Start the helper now if none runs, so a call's first output does not wait for its
-    /// interpreter and imports (0.4-0.6 s on a pod); `encode` starts one if this could not.
+    /// interpreter and imports (0.4-0.6 s on a pod); `start` starts one if this could not.
     pub fn prestart(&self) {
         let mut helper = self.helper.lock().unwrap();
         if helper.is_none() {
@@ -494,43 +494,65 @@ impl Codec {
             output: std::io::BufReader::new(output),
         })
     }
-    /// Encodes `frames` with the Runtime's `cozy-runtime frame-codec`, each into its owned spool
-    /// name: the media type of each, by handle.
-    fn encode(&self, spool: &Path, frames: &[HostFrame]) -> io::Result<BTreeMap<String, String>> {
-        use std::io::BufRead;
+    /// Sends `frames` to the Runtime's `cozy-runtime frame-codec` now, each into its owned spool
+    /// name, on a helper of its own until [`Encoding::wait`]: they encode while the call's
+    /// bookkeeping runs.
+    pub fn start(self: &Arc<Self>, spool: &Path, frames: &[HostFrame]) -> Encoding {
         #[derive(Serialize)]
         struct Encode<'a> {
             #[serde(flatten)]
             frame: &'a HostFrame,
             name: String,
         }
-        let frames = (frames.iter())
-            .map(|frame| Ok(Encode { frame, name: spool_name(&frame.handle)? }))
-            .collect::<io::Result<Vec<_>>>()?;
-        let mut helper = self.helper.lock().unwrap();
-        if helper.is_none() {
-            *helper = Some(self.spawn()?);
-        }
-        let request = serde_json::json!({"spool": spool, "frames": frames});
-        let mut line = serde_json::to_vec(&request)?;
-        line.push(b'\n');
-        let mut answer = String::new();
-        let exchanged = (|| {
-            let current = helper.as_mut().expect("spawned codec helper");
-            current.input.write_all(&line)?;
-            current.input.flush()?;
-            current.output.read_line(&mut answer)
-        })();
-        match exchanged {
-            Ok(n) if n > 0 => {}
-            Ok(_) | Err(_) => {
-                helper.take(); // the next output starts a fresh helper
-                return Err(io::Error::other(format!(
-                    "selected SDK encoder stopped; {}: {}",
-                    self.log.display(), self.stderr_tail()
-                )));
+        let began = std::time::Instant::now();
+        let mut helper = None;
+        let sent = (|| {
+            if frames.is_empty() {
+                return Ok(());
             }
+            let frames = (frames.iter())
+                .map(|frame| Ok(Encode { frame, name: spool_name(&frame.handle)? }))
+                .collect::<io::Result<Vec<_>>>()?;
+            let mut line = serde_json::to_vec(&serde_json::json!({"spool": spool, "frames": frames}))?;
+            line.push(b'\n');
+            let idle = self.helper.lock().unwrap().take();
+            let current = helper.insert(match idle {
+                Some(idle) => idle,
+                None => self.spawn()?,
+            });
+            current.input.write_all(&line).and_then(|()| current.input.flush()).map_err(|_| self.stopped())
+        })();
+        Encoding { codec: self.clone(), helper, sent, began }
+    }
+    fn stopped(&self) -> io::Error {
+        io::Error::other(format!("selected SDK encoder stopped; {}: {}", self.log.display(), self.stderr_tail()))
+    }
+}
+
+/// Frames sent to their helper (`Codec::start`). Dropped unanswered, the helper is killed, so no
+/// stale answer reaches a later output.
+pub struct Encoding {
+    codec: Arc<Codec>,
+    helper: Option<CodecHelper>,
+    sent: io::Result<()>,
+    began: std::time::Instant,
+}
+impl Encoding {
+    pub fn began(&self) -> std::time::Instant {
+        self.began
+    }
+    /// The media type of each frame, by handle, once its helper answers; the helper then serves
+    /// the executor's next output.
+    pub fn wait(self) -> io::Result<BTreeMap<String, String>> {
+        use std::io::BufRead;
+        let Encoding { codec, helper, sent, .. } = self;
+        sent?;
+        let Some(mut helper) = helper else { return Ok(BTreeMap::new()) };
+        let mut answer = String::new();
+        if !matches!(helper.output.read_line(&mut answer), Ok(n) if n > 0) {
+            return Err(codec.stopped());
         }
+        *codec.helper.lock().unwrap() = Some(helper);
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Answer {
@@ -602,8 +624,10 @@ pub fn adjustments(id: &str, reply: &Frame) -> Vec<crate::journal::Adjustment> {
         .collect()
 }
 
+/// The result and its bindings, `media` the type of each frame the SDK's one encoder (the one an
+/// author's test runs) encoded (`Codec::start`).
 pub fn postprocess(
-    codec: &Codec,
+    media: &BTreeMap<String, String>,
     spool: &Path,
     reply: &Frame,
 ) -> io::Result<(Value, Vec<AssetBinding>)> {
@@ -616,12 +640,7 @@ pub fn postprocess(
         outputs: files,
         ..reply.clone()
     };
-    // Every frame is encoded by the SDK's one encoder, the one an author's test runs.
-    let media = match reply.frames.is_empty() {
-        true => BTreeMap::new(),
-        false => codec.encode(spool, &reply.frames)?,
-    };
-    let mut bindings = bind(spool, reply, &media)?;
+    let mut bindings = bind(spool, reply, media)?;
     for tree in &trees {
         bindings.push(tree_binding(spool, tree)?);
     }
