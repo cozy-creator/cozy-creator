@@ -1805,8 +1805,11 @@ impl Journal {
             if was_unprepared && !unprepared(&record) {
                 tx.execute("DELETE FROM run_specs WHERE execution=?1", [id]).map_err(db_error)?;
             }
+            // Its time is for later quotes: one that can't be kept never fails the run.
             if !was_terminal && record.state == State::Completed {
-                Self::timed(&tx, &record)?;
+                if let Err(error) = Self::timed(&tx, &record) {
+                    tracing::warn!(run = %record.id, "its time for later estimates isn't kept: {error}");
+                }
             }
             also(&tx, &record)?;
         }
