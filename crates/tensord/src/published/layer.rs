@@ -14,11 +14,11 @@ use std::{
 };
 
 /// What the layer is built from: what these require, transitively, as the base holds it.
-pub const ROOTS: [&str; 4] = ["torch", "torchvision", "torchaudio", "triton"];
+pub(crate) const ROOTS: [&str; 4] = ["torch", "torchvision", "torchaudio", "triton"];
 
 /// Where a machine's layer comes from.
 #[derive(Clone, Debug)]
-pub enum Torch {
+pub(crate) enum Torch {
     /// An image's base interpreter, which moves with its image.
     Image(PathBuf),
     /// The machine's own bases beside its engine's state (`torch-<version>`), each a venv. The
@@ -29,7 +29,7 @@ pub enum Torch {
 
 impl Torch {
     /// The base packages build on now; none while a machine's own is not installed.
-    pub fn base(&self) -> Option<PathBuf> {
+    pub(crate) fn base(&self) -> Option<PathBuf> {
         let order = |v: &str| public(v).split('.').map(|part| part.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
         match self {
             Torch::Image(base) => Some(base.clone()),
@@ -41,7 +41,7 @@ impl Torch {
     }
 
     /// The version a machine's Hub names for its own base; none from an older Hub, or not asked yet.
-    pub fn wanted(&self) -> Option<&str> {
+    pub(crate) fn wanted(&self) -> Option<&str> {
         match self {
             Torch::Own { wanted, .. } => wanted.get()?.as_deref(),
             Torch::Image(_) => None,
@@ -49,13 +49,13 @@ impl Torch {
     }
 
     /// Its version: the base's, else the one a machine installs at its next package.
-    pub fn version(&self) -> String {
+    pub(crate) fn version(&self) -> String {
         self.base().and_then(|base| torch_version(&base)).or_else(|| self.wanted().map(String::from)).unwrap_or_default()
     }
 }
 
 /// A machine's own bases under `engine`, each with its torch version.
-pub fn bases(engine: &Path) -> Vec<(PathBuf, String)> {
+pub(crate) fn bases(engine: &Path) -> Vec<(PathBuf, String)> {
     let named = |e: &fs::DirEntry| e.file_name().to_string_lossy().starts_with("torch") && e.path().join("pyvenv.cfg").is_file();
     fs::read_dir(engine).into_iter().flatten().flatten().filter(named)
         .filter_map(|e| Some((e.path(), torch_version(&e.path())?)))
@@ -63,7 +63,7 @@ pub fn bases(engine: &Path) -> Vec<(PathBuf, String)> {
 }
 
 /// The torch version the venv at `base` holds (`2.15.0+cu132`).
-pub fn torch_version(base: &Path) -> Option<String> {
+pub(crate) fn torch_version(base: &Path) -> Option<String> {
     let site = platform::paths::venv_site_packages(base)?;
     fs::read_dir(site).ok()?.flatten()
         .find_map(|e| Some(e.file_name().to_str()?.strip_prefix("torch-")?.strip_suffix(".dist-info")?.to_owned()))
@@ -75,7 +75,7 @@ fn public(version: &str) -> &str {
 }
 
 #[derive(Debug)]
-pub struct Layer {
+pub(crate) struct Layer {
     site: PathBuf,
     /// Each distribution of the layer: its version, dist-info and links.
     dists: BTreeMap<String, Dist>,
@@ -91,7 +91,7 @@ struct Dist {
 
 impl Layer {
     /// The layer the base environment at `base` holds; none without torch.
-    pub fn read(base: &Path) -> io::Result<Option<Layer>> {
+    pub(crate) fn read(base: &Path) -> io::Result<Option<Layer>> {
         let Some(site) = platform::paths::venv_site_packages(base) else {
             return Ok(None);
         };
@@ -146,26 +146,26 @@ impl Layer {
     }
 
     /// `name==version` for each distribution: what an environment built on it is built from.
-    pub fn pins(&self) -> Vec<String> {
+    pub(crate) fn pins(&self) -> Vec<String> {
         self.dists.iter().map(|(name, dist)| format!("{name}=={}", dist.version)).collect()
     }
 
-    pub fn version(&self, name: &str) -> Option<&str> {
+    pub(crate) fn version(&self, name: &str) -> Option<&str> {
         self.dists.get(name).map(|dist| dist.version.as_str())
     }
 
     /// Whether `name` (normalized) is one of the layer's distributions.
-    pub fn holds(&self, name: &str) -> bool {
+    pub(crate) fn holds(&self, name: &str) -> bool {
         self.dists.contains_key(name)
     }
 
     /// What a package never installs while the machine provides it (`provides`).
-    pub fn provided(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn provided(&self) -> impl Iterator<Item = &str> {
         self.dists.keys().map(String::as_str).filter(|name| provides(name))
     }
 
     /// Links the layer into the environment at `env`, every distribution it does not hold itself.
-    pub fn link(&self, env: &Path) -> io::Result<()> {
+    pub(crate) fn link(&self, env: &Path) -> io::Result<()> {
         let site = platform::paths::venv_site_packages(env).ok_or_else(|| io::Error::other("the environment has no site-packages"))?;
         let held: BTreeSet<String> = fs::read_dir(&site)?.flatten()
             .filter_map(|e| e.file_name().to_str()?.strip_suffix(".dist-info")?.rsplit_once('-').map(|(n, _)| normalized(n)))
@@ -202,7 +202,7 @@ impl Layer {
 
 /// Whether `name`, when Torch brings it, is the machine's: the roots and CUDA wheels. Torch's
 /// general dependencies (sympy, jinja2, …) stay the lock's.
-pub fn provides(name: &str) -> bool {
+pub(crate) fn provides(name: &str) -> bool {
     ROOTS.contains(&name) || name.starts_with("nvidia-") || name.starts_with("cuda-")
 }
 

@@ -4,8 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 file=web/app/src/api/calcifer.ts
-# tensorfs builds only with `store` (its family module reads `import`), which api never needs elsewhere.
-fresh=$(cargo run --quiet --locked -p api --features ts,tensorfs/store --example ts)
+fresh=$(cargo run --quiet --locked -p api --features ts --example ts)
 if [ "${1:-}" = --write ]; then
   printf '%s\n' "$fresh" >"$file"
   echo "web-types: wrote $file"

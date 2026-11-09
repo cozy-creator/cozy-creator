@@ -18,7 +18,7 @@ use std::{
 
 /// What one public submission calls on its generation.
 #[derive(Default)]
-pub struct Call {
+pub(crate) struct Call {
     pub entrypoint: String,
     pub input: Value,
     pub attention_kernel: String,
@@ -35,7 +35,7 @@ pub struct Call {
     pub application: String,
 }
 
-pub struct Service {
+pub(crate) struct Service {
     pub engine: Arc<Engine>,
     pub catalog: Catalog,
     parallelism: usize,
@@ -75,7 +75,7 @@ fn holds_gpus(birth: &Birth, before: u64) -> bool {
     !left.is_empty() && !platform::contain::all_stuck(&left)
 }
 impl Service {
-    pub fn open(root: &Path, generations: &Path, parallelism: usize) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize) -> io::Result<Arc<Self>> {
         if parallelism == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -164,34 +164,34 @@ impl Service {
         Ok(service)
     }
     /// The executor pool every run runs on, once configured.
-    pub fn pool(&self) -> Option<Arc<Pool>> {
+    pub(crate) fn pool(&self) -> Option<Arc<Pool>> {
         self.pool.lock().unwrap().clone()
     }
     /// The pool when this machine has GPUs.
-    pub fn gpu(&self) -> Option<Arc<Pool>> {
+    pub(crate) fn gpu(&self) -> Option<Arc<Pool>> {
         self.pool().filter(|pool| pool.width() > 0)
     }
-    pub fn calls(&self) -> Option<Arc<crate::calls::Calls>> {
+    pub(crate) fn calls(&self) -> Option<Arc<crate::calls::Calls>> {
         self.calls.lock().unwrap().clone()
     }
     pub(crate) fn publisher(&self) -> Option<Arc<crate::published::Publisher>> {
         self.publisher.lock().unwrap().clone()
     }
-    pub fn configure_publisher(&self, publisher: Arc<crate::published::Publisher>) {
+    pub(crate) fn configure_publisher(&self, publisher: Arc<crate::published::Publisher>) {
         *self.publisher.lock().unwrap() = Some(publisher);
     }
-    pub fn configure_calls(&self, calls: Arc<crate::calls::Calls>) {
+    pub(crate) fn configure_calls(&self, calls: Arc<crate::calls::Calls>) {
         *self.calls.lock().unwrap() = Some(calls);
         self.engine.notify_activity();
     }
     /// Observation only. Unknown births stay reserved; CPU dispatch stays available.
-    pub fn gpu_startup_fences(&self) -> usize {
+    pub(crate) fn gpu_startup_fences(&self) -> usize {
         let mut births = self.startup_gpu_births.lock().unwrap();
         // A group's followers die with their leader (one group kill); each exit is observed.
         births.retain(|birth| holds_gpus(birth, self.started_ticks));
         births.len()
     }
-    pub fn configure_pool(&self, pool: Arc<Pool>) -> io::Result<()> {
+    pub(crate) fn configure_pool(&self, pool: Arc<Pool>) -> io::Result<()> {
         let mut current = self.pool.lock().unwrap();
         if current.is_some() {
             return Err(io::Error::new(
@@ -227,7 +227,7 @@ impl Service {
 
     /// A run prepared inside itself (`runs`) names its generation, call and model plan, and how
     /// the machine memo met it; one the memo answered (`answer`) completes with that result.
-    pub fn bind_prepared(
+    pub(crate) fn bind_prepared(
         &self,
         id: &str,
         generation: &str,
@@ -258,14 +258,14 @@ impl Service {
         }
     }
     /// An install or GPU configuration changed what can dispatch.
-    pub fn changed_environment(&self) -> io::Result<()> {
+    pub(crate) fn changed_environment(&self) -> io::Result<()> {
         self.engine.notify_activity();
         Ok(())
     }
     /// A package installed, release or local: its environment's bytecode and kernels compile and
     /// its import-only parent imports now, while its weights come, so its first call forks
     /// (`Pool::installed`).
-    pub fn installed(&self, held: &crate::catalog::HeldGeneration) {
+    pub(crate) fn installed(&self, held: &crate::catalog::HeldGeneration) {
         crate::published::environment::compile_bytecode(&held.record.python);
         if let Some(gpu) = self.gpu() {
             gpu.installed(held.clone());
@@ -276,37 +276,37 @@ impl Service {
     /// the most recently used first, while the host has room for them, and the rest's import
     /// pages are read ahead; a shared one reads ahead its few most recently used
     /// (`Pool::import_recent`).
-    pub fn import_installed(&self) -> io::Result<()> {
+    pub(crate) fn import_installed(&self) -> io::Result<()> {
         let Some(gpu) = self.gpu() else { return Ok(()) };
         let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
         gpu.import_recent(self.catalog.recent(bound));
         Ok(())
     }
-    pub fn idle(&self) -> io::Result<bool> {
+    pub(crate) fn idle(&self) -> io::Result<bool> {
         Ok(self.engine.nonterminal(1)?.is_empty())
     }
-    pub fn hold_while(&self, held: impl Fn() -> bool + Send + Sync + 'static) {
+    pub(crate) fn hold_while(&self, held: impl Fn() -> bool + Send + Sync + 'static) {
         let _ = self.held.set(Box::new(held));
     }
     /// This computer's machine idle a while: every idle executor outside the warm sets ends, and
     /// what it held goes back.
-    pub fn release_idle(&self) {
+    pub(crate) fn release_idle(&self) {
         if let Some(pool) = self.pool() {
             pool.release_idle();
         }
     }
     /// This computer's machine idle its whole window yet kept up: a shared one's idle import-only
     /// parents end too.
-    pub fn release_parents(&self) {
+    pub(crate) fn release_parents(&self) {
         if let Some(pool) = self.pool() {
             pool.release_parents();
         }
     }
     /// A warm set member is kept in memory here: this computer's machine stays up for it.
-    pub fn keeps_warm(&self) -> bool {
+    pub(crate) fn keeps_warm(&self) -> bool {
         self.pool().is_some_and(|pool| pool.keeps_warm())
     }
-    pub fn stop(&self) -> io::Result<bool> {
+    pub(crate) fn stop(&self) -> io::Result<bool> {
         let mut stopped = self.stopped.lock().unwrap();
         if !self.idle()? {
             return Ok(false);
@@ -377,7 +377,7 @@ impl Service {
     /// `actor`'s installations `named` leave the journal, their warm set members and the GPU
     /// pool. Each environment no installation or unfinished run names any more is deleted,
     /// its idle executors ended first; one a process still holds is `retained` for reclaim.
-    pub fn uninstall(
+    pub(crate) fn uninstall(
         &self,
         actor: &str,
         named: impl Fn(&crate::journal::Installation) -> bool,
@@ -411,14 +411,14 @@ impl Service {
 
     /// Caches manage themselves (`reclaim`): a TTL and a low disk, never a purge verb. Each
     /// sweep logs what it freed.
-    pub fn reclaim(&self) -> crate::reclaim::Swept {
+    pub(crate) fn reclaim(&self) -> crate::reclaim::Swept {
         self.sweep(0, true)
     }
     /// The machine's garbage for a store admit of `incoming` bytes that finds the disk short,
     /// before the store evicts a model (`Store::on_short`): never kernels, memoized stages or
     /// run objects. Then the idle executors whose open models alone keep the room it needs end
     /// (`end_idle_for_disk`), so the store's eviction can take those models.
-    pub fn reclaim_for(&self, incoming: u64) {
+    pub(crate) fn reclaim_for(&self, incoming: u64) {
         self.sweep(incoming, false);
         if let Some(store) = self.store() {
             let ended = self.end_idle_for_disk(&store, incoming);
@@ -433,7 +433,7 @@ impl Service {
     /// those idle executors hold open too (ended first), never one in use. What it evicted is the
     /// run's warning. Refused, with the sizes and what would hold it, only when even all of that
     /// would not fit; a disk it cannot measure is said and not judged.
-    pub fn room_for(&self, run: &str, missing: u64) -> Result<(), String> {
+    pub(crate) fn room_for(&self, run: &str, missing: u64) -> Result<(), String> {
         let Some(store) = self.store().filter(|_| missing > 0) else {
             return Ok(());
         };

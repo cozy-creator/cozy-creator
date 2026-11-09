@@ -12,6 +12,7 @@ use super::{provider, Checkpoint, Client};
 /// A failing callback stops conversion before finalization starts.
 pub type ConvertProgress<'a> = dyn Fn(&str, u64, u64) -> Result<()> + Sync + 'a;
 
+/// Options for `convert_to_cozytensors`: the converter, the source variant and a progress callback.
 #[derive(Default)]
 pub struct Convert<'a> {
     pub converter: Option<&'a str>,
@@ -20,6 +21,7 @@ pub struct Convert<'a> {
     pub progress: Option<&'a ConvertProgress<'a>>,
 }
 
+/// Cancels a running conversion and reports its progress: bytes read, tensors and bytes written.
 #[derive(Default)]
 pub struct ConversionControl {
     cancelled: Arc<AtomicBool>,
@@ -187,7 +189,7 @@ impl Client {
                 progress: &report,
                 stop: Some(&stopped),
             };
-            let mut writer = store.writer(None, None)?;
+            let mut writer = crate::writer(&store, None, None)?;
             import::convert(&request, &mut writer).map_err(provider::from_native)?;
             worker_control.check()?;
             let header = writer.committed().ok_or_else(|| Failure {

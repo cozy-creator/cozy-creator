@@ -39,10 +39,6 @@ impl Scope {
         None
     }
 
-    pub fn trampoline_args(&self) -> Vec<String> {
-        vec!["--scope-backend".into(), "inherit".into()]
-    }
-
     /// Live processes in the scope.
     pub fn processes(&self) -> Result<usize> {
         let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
@@ -67,7 +63,7 @@ impl Scope {
         Ok(())
     }
 
-    pub fn kill(&self) -> Result<()> {
+    pub(crate) fn kill(&self) -> Result<()> {
         // SAFETY: a live job handle.
         if unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) } == 0 {
             return Err(Error::os("end a process scope")(io::Error::last_os_error()));

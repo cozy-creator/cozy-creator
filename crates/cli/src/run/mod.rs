@@ -49,7 +49,7 @@ A run is followed to its end: Ctrl-C stops following, never the run; `cozy run s
 
 #[derive(clap::Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
-pub struct Args {
+pub(crate) struct Args {
     /// The project a run belongs to: its name or id, or its folder on Calcifer's computer by its absolute path. Default:
     /// COZY_PROJECT. `ls` lists that project's.
     #[arg(short = 'p', value_name = "PROJECT", global = true)]
@@ -112,7 +112,7 @@ struct RunArgs {
 
 /// Where a run goes; shared by every verb that submits one.
 #[derive(clap::Args, Debug, Clone)]
-pub struct Placement {
+pub(crate) struct Placement {
     /// `local` (the default), a machine's name, `any`, or `new[:sku]` to rent one.
     #[arg(long = "on", value_name = "MACHINE")]
     on: Option<String>,
@@ -120,14 +120,14 @@ pub struct Placement {
 
 impl Placement {
     /// Where the run goes; `local` refused where this OS runs no models itself.
-    pub fn on(&self) -> Result<On, Error> {
+    pub(crate) fn on(&self) -> Result<On, Error> {
         let on = self.named();
         api::calcifer::local_usable(&on.to_string())?;
         Ok(on)
     }
 
     /// Where it would go, for Calcifer to judge.
-    pub fn named(&self) -> On {
+    pub(crate) fn named(&self) -> On {
         On::from(self.on.clone().unwrap_or_else(|| "local".to_owned()))
     }
 }
@@ -204,7 +204,7 @@ fn run_state(text: &str) -> Result<String, String> {
     }
 }
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let within = crate::project::chosen(args.project.as_ref());
     match args.verb {
         Some(Verb::Ls {

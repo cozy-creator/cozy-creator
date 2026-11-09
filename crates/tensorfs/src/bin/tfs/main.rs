@@ -1,5 +1,6 @@
 //! `tfs`: the Python verbs on the command line (`import`, `download`, `upload`, `export`,
 //! `inspect`, `verify`), plus `ceiling`, `conform endpoint`, `dev ckpt` and `version`.
+#![deny(unreachable_pub)]
 
 mod dev;
 
@@ -10,7 +11,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value as Json};
-use tensorfs::failure::{fail, Failure, Kind, Result};
+use tensorfs::{Failure, Kind, Result};
+use tensorfs_core::failure::fail;
 use tensorfs::format::{Body, ClassRef, ObjectRef, Tree};
 use tensorfs::store::Store;
 use tensorfs::{fetch, Checkpoint, Client, Config, Convert, Download, Format, Open, Ref, Selection};
@@ -333,7 +335,7 @@ fn version(json: bool) -> Result<(Json, String)> {
     let bytes = std::env::current_exe()
         .and_then(fs::read)
         .map_err(|e| Failure { kind: Kind::Io, detail: format!("read this binary: {e}") })?;
-    let digest = tensorfs::sha256::hex_digest(&bytes);
+    let digest = tensorfs_core::sha256::hex_digest(&bytes);
     let human = format!("tfs {} sha256:{digest}", env!("CARGO_PKG_VERSION"));
     let doc = json!({"version": env!("CARGO_PKG_VERSION"), "sha256": digest, "store_format": tensorfs::STORE_FORMAT});
     Ok(match json {
@@ -405,7 +407,7 @@ async fn conform(url: &str, write: bool, token_env: Option<&str>, json: bool) ->
     let _ = fs::remove_dir_all(&scratch);
     let policy = fetch::SourcePolicy {
         any_host: true,
-        allow_local: fetch::policy::is_loopback_origin(url),
+        allow_local: fetch::is_loopback_origin(url),
         max_redirects: 5,
         ..Default::default()
     };

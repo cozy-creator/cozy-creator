@@ -22,7 +22,7 @@ const TIE: f64 = 0.02;
 
 /// One job to place.
 #[derive(Clone, Debug, Default)]
-pub struct Job {
+pub(crate) struct Job {
     pub key: String,
     /// As its run's record names its target, for eta's history: `org/pkg/fn@release`, `local/pkg/fn`.
     pub target: String,
@@ -40,7 +40,7 @@ pub struct Job {
 
 /// When one machine would run one job, on this computer's clock.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Offer {
+pub(crate) struct Offer {
     pub machine: On,
     pub fits: bool,
     pub refusal: Option<v1::Reason>,
@@ -54,12 +54,12 @@ pub struct Offer {
 
 impl Offer {
     /// How long past its preparation it waits for GPUs, from `now`.
-    pub fn waits_ms(&self, now: i64) -> i64 {
+    pub(crate) fn waits_ms(&self, now: i64) -> i64 {
         (self.start_at_ms - now - self.prepare_ms as i64).max(0)
     }
 
     /// As `POST /v1/run-estimates` answers it, from `now`: one that can't run there has no times.
-    pub fn shown(&self, now: i64) -> MachineEstimate {
+    pub(crate) fn shown(&self, now: i64) -> MachineEstimate {
         let from = |at: i64| self.fits.then(|| (at - now).max(0) as u64);
         MachineEstimate {
             machine: self.machine.to_string(),
@@ -76,7 +76,7 @@ impl Offer {
     }
 
     /// What eta's clock takes of it once its run is sent.
-    pub fn quoted(&self) -> crate::eta::Quoted {
+    pub(crate) fn quoted(&self) -> crate::eta::Quoted {
         crate::eta::Quoted { start_at: self.start_at_ms as f64, finish_at: self.finish_at_ms as f64, basis: self.basis }
     }
 }
@@ -84,7 +84,7 @@ impl Offer {
 /// Each job's offers, one from each of its machines that answered, in the order the jobs name them; and a line for each machine that
 /// didn't. Each machine is asked once, for every job that may go to it. `update`: work is going now, so a machine on another minor
 /// is updated to this one (its quote comes once it is); else it is only said.
-pub async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offer>>, Vec<String>) {
     let mut machines: Vec<&On> = vec![];
     for on in jobs.iter().flat_map(|job| &job.on).filter(|on| matches!(on, On::Machine(_))) {
         if !machines.contains(&on) {
@@ -112,7 +112,7 @@ pub async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offe
 
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
 /// of it, one on its own measured runs before one that isn't, and a rental before this computer.
-pub fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
+pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);

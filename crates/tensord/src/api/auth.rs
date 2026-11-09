@@ -11,7 +11,7 @@ use api::error::Error;
 use futures_util::Stream;
 
 #[derive(Clone)]
-pub struct Authority {
+pub(crate) struct Authority {
     pub worker_id: String,
     pub boot_id: String,
     pub keys: Keys,
@@ -25,7 +25,7 @@ pub struct Authority {
 /// a laptop and on a pod alike, read again when a signer is unknown. Losing authority never
 /// cancels accepted work.
 #[derive(Clone)]
-pub struct Keys {
+pub(crate) struct Keys {
     granted: Arc<RwLock<Vec<VerifyingKey>>>,
     home: Arc<RwLock<Vec<VerifyingKey>>>,
     changes: Arc<tokio::sync::watch::Sender<u64>>,
@@ -36,7 +36,7 @@ pub struct Keys {
 }
 type Stamp = [Option<std::time::SystemTime>; 2];
 impl Keys {
-    pub fn fixed(keys: Vec<VerifyingKey>) -> Self {
+    pub(crate) fn fixed(keys: Vec<VerifyingKey>) -> Self {
         Self {
             granted: Arc::new(RwLock::new(keys)),
             home: Arc::default(),
@@ -49,7 +49,7 @@ impl Keys {
     /// `granted`, and the home's keys `source` reads: read again when `stamp` says the home's
     /// files changed (`cozy machine authorize`, `--remove`: the next call), and when a signer is
     /// unknown.
-    pub fn read(
+    pub(crate) fn read(
         granted: Vec<VerifyingKey>,
         source: impl Fn() -> std::io::Result<Vec<VerifyingKey>> + Send + Sync + 'static,
         stamp: impl Fn() -> Stamp + Send + Sync + 'static,
@@ -79,13 +79,13 @@ impl Keys {
         }
     }
     /// Told each time the admitted set changes.
-    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changes.subscribe()
     }
     /// `check` over the admitted keys; when it refuses and the home has a source, once more with
     /// the home's current keys. A concurrent check may have read them meanwhile (a controller's
     /// first calls, as its key is written): the set read decides, not the one refused.
-    pub fn check<T, E>(&self, check: impl Fn(&[VerifyingKey]) -> Result<T, E>) -> Result<T, E> {
+    pub(crate) fn check<T, E>(&self, check: impl Fn(&[VerifyingKey]) -> Result<T, E>) -> Result<T, E> {
         self.fresh();
         let before = self.home.read().unwrap().clone();
         let first = check(&self.admitted());
@@ -109,25 +109,25 @@ impl Keys {
         self.changes.send_modify(|generation| *generation += 1);
     }
     /// The Hub's current answer: these keys.
-    pub fn renew(&self, keys: Vec<VerifyingKey>) {
+    pub(crate) fn renew(&self, keys: Vec<VerifyingKey>) {
         *self.granted.write().unwrap() = keys;
         self.changed();
     }
     /// The Hub denied this rental: its keys go; the home's stay.
-    pub fn revoke(&self) {
+    pub(crate) fn revoke(&self) {
         self.renew(vec![]);
     }
     /// Whether `key` is one the grant names: on a rental, the Hub's, all of them its one owner's.
-    pub fn granted(&self, key: &VerifyingKey) -> bool {
+    pub(crate) fn granted(&self, key: &VerifyingKey) -> bool {
         self.granted.read().unwrap().contains(key)
     }
     /// The keys that may authorize a new control now.
-    pub fn admitted(&self) -> Vec<VerifyingKey> {
+    pub(crate) fn admitted(&self) -> Vec<VerifyingKey> {
         [self.granted.read().unwrap().as_slice(), self.home.read().unwrap().as_slice()].concat()
     }
     /// Resolves once `key` left the set. Ends only that key's open transports; accepted work
     /// is never cancelled.
-    pub async fn revoked(&self, key: [u8; 32]) {
+    pub(crate) async fn revoked(&self, key: [u8; 32]) {
         let mut changes = self.changes.subscribe();
         while self.admitted().iter().any(|k| k.to_bytes() == key) {
             if changes.changed().await.is_err() {
@@ -241,7 +241,7 @@ impl<T> Stream for Authorized<T> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VerifiedActor {
+pub(crate) struct VerifiedActor {
     pub public_key: [u8; 32],
     /// A key the grant names: on a rental its owner's (each device the account signed in on, and
     /// the order's own key), so it reads every run on the machine, whichever of them sent it.

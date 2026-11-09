@@ -17,11 +17,11 @@ use std::{
 use tensorfs::{
     err::{refuse, Code, Refusal, Result},
     fetch::{Client, Config, Fetcher, Landed, Origin, Progress, Pulled, SourcePolicy, VolumeOrigin, Want},
-    format::{ObjectRef, Tree},
+    format::ObjectRef,
     store::Store,
 };
 
-pub use hub::{object, remote, resolve};
+pub(crate) use hub::{object, remote, resolve};
 
 use crate::stop::Stop;
 
@@ -32,21 +32,21 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const TICK: Duration = Duration::from_millis(100);
 
 /// Queue order: smaller first.
-pub mod priority {
+pub(crate) mod priority {
     /// A reader is blocked on it.
-    pub const NOW: u64 = 0;
+    pub(crate) const NOW: u64 = 0;
     /// Next for `run` (by acceptance), `rank` within it.
-    pub fn next(run: u64, rank: u32) -> u64 {
+    pub(crate) fn next(run: u64, rank: u32) -> u64 {
         1 + (run.min((1 << 31) - 1) << 32 | u64::from(rank))
     }
     /// Kept for later (a warm set's `downloaded`).
-    pub const BEHIND: u64 = u64::MAX;
+    pub(crate) const BEHIND: u64 = u64::MAX;
 }
 
 /// A checkpoint's origin, with the CAs its hosts may present beyond the public roots (a PEM
 /// bundle) and whether its deployment declared itself local (loopback plaintext allowed).
 #[derive(Clone)]
-pub struct Remote {
+pub(crate) struct Remote {
     pub origin: Arc<dyn Origin>,
     pub trust: Option<Arc<Vec<u8>>>,
     pub local: bool,
@@ -69,7 +69,7 @@ impl<F: FnOnce(&Result<Landed>)> Drop for FetchCompletion<F> {
 }
 
 /// The machine's downloader: one `Fetcher` per trust (in practice one).
-pub struct Machine {
+pub(crate) struct Machine {
     store: Arc<Store>,
     runtime: Arc<tokio::runtime::Runtime>,
     volume: Option<VolumeOrigin>,
@@ -78,18 +78,18 @@ pub struct Machine {
 
 impl Machine {
     /// Fetches into `store`, reading the datacenter volume mounted at `volume` first.
-    pub fn new(store: Arc<Store>, volume: Option<&Path>) -> io::Result<Arc<Machine>> {
+    pub(crate) fn new(store: Arc<Store>, volume: Option<&Path>) -> io::Result<Arc<Machine>> {
         let runtime = tensorfs::fetch::runtime().map_err(io::Error::other)?;
         let volume = volume.and_then(|path| VolumeOrigin::mounted(path, VOLUME_TTL));
         Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default() }))
     }
 
-    pub fn store(&self) -> &Arc<Store> {
+    pub(crate) fn store(&self) -> &Arc<Store> {
         &self.store
     }
 
     /// The client objects of a remote with this trust are fetched over (for an `Endpoint`).
-    pub fn client(&self, trust: Option<&Arc<Vec<u8>>>, local: bool) -> Result<Client> {
+    pub(crate) fn client(&self, trust: Option<&Arc<Vec<u8>>>, local: bool) -> Result<Client> {
         Ok(self.fetcher(&(trust.cloned(), local))?.client().clone())
     }
 
@@ -106,14 +106,14 @@ impl Machine {
             None => Client::new(policy),
         };
         let _entered = self.runtime.enter();
-        let store: Arc<dyn tensorfs::fetch::ObjectStore> = self.store.clone();
+        let store = self.store.clone();
         let fetcher = Arc::new(Fetcher::new(store, client, self.volume.clone(), Config::default()));
         fetchers.push((key.clone(), fetcher.clone()));
         Ok(fetcher)
     }
 
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.
-    pub fn received(&self) -> (u64, Duration) {
+    pub(crate) fn received(&self) -> (u64, Duration) {
         self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
             (0, Duration::ZERO),
             |(bytes, time), stats| (bytes + stats.received, time + stats.receiving),
@@ -150,23 +150,10 @@ impl Machine {
         answer.recv().unwrap_or_else(|_| refuse(Code::TRANSFER_FAILED, "the fetch runtime ended"))
     }
 
-    /// The tree document `tree`, landed here (its repo files are not: nothing on a machine reads
-    /// them).
-    pub fn tree(&self, remote: &Remote, tree: &ObjectRef, stop: &Stop) -> Result<Tree> {
-        let (fetcher, store, origin) = (self.of(remote)?, self.store.clone(), remote.origin.clone());
-        let tree = tree.clone();
-        self.block(stop, async move {
-            fetcher.objects(&origin, std::slice::from_ref(&tree), &Want { priority: priority::NOW, ..Want::default() }).await?;
-            tokio::task::spawn_blocking(move || store.tree(&tree).map_err(|e| e.refusal()))
-                .await
-                .map_err(|e| Refusal { code: Code::IO_FAILED, detail: e.to_string() })?
-        })
-    }
-
     /// The cozytensors whose header is `header`, the `components` given (all when `None`): its
     /// header, then the chunks and assets the components read (the store refuses what its
     /// disk cannot take).
-    pub fn pull(
+    pub(crate) fn pull(
         &self,
         remote: &Remote,
         header: &ObjectRef,
@@ -191,7 +178,7 @@ impl Machine {
     }
 
     /// Each of `objects` here, fetched from `remote` when absent.
-    pub fn objects(&self, remote: &Remote, objects: &[ObjectRef], priority: u64, stop: &Stop) -> Result<Landed> {
+    pub(crate) fn objects(&self, remote: &Remote, objects: &[ObjectRef], priority: u64, stop: &Stop) -> Result<Landed> {
         let (fetcher, origin) = (self.of(remote)?, remote.origin.clone());
         let objects = objects.to_vec();
         self.block(stop, async move {
@@ -222,7 +209,7 @@ impl Machine {
 
 /// Runs `work`, telling `report` the bytes `progress` has of its total every quarter second
 /// meanwhile, and once more at the end.
-pub fn watched<T>(progress: &Progress, report: &(dyn Fn(u64, u64) + Sync), work: impl FnOnce() -> T) -> T {
+pub(crate) fn watched<T>(progress: &Progress, report: &(dyn Fn(u64, u64) + Sync), work: impl FnOnce() -> T) -> T {
     use std::sync::atomic::Ordering::Relaxed;
     let done = Stop::default();
     std::thread::scope(|scope| {

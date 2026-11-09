@@ -2,6 +2,7 @@
 //! the page call; `machine` is a machine's (TensorD's), which Calcifer calls; the rest are the pieces and formats
 //! they share. No HTTP, TLS or async runtime: each client brings its own.
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 
 pub mod calcifer;
 pub mod choices;

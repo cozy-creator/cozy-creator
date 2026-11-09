@@ -13,6 +13,7 @@ mod sys;
 #[cfg(target_os = "linux")]
 pub(crate) use sys::{cgroups, number};
 
+/// The memory this process can still allocate now, and the figures that bound it.
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HostMemory {
     /// Bytes left before the tightest limit on this process's cgroup path, or the host's
@@ -32,7 +33,7 @@ pub struct HostMemory {
 }
 
 /// Physical memory; -1 when unreadable.
-pub fn total() -> i64 {
+pub(crate) fn total() -> i64 {
     sys::total()
 }
 
@@ -62,6 +63,7 @@ pub struct ProcessMemory {
     pub pss_shmem: u64,
 }
 
+/// Reads `pid`'s [`ProcessMemory`] now.
 pub fn process(pid: u32) -> io::Result<ProcessMemory> {
     sys::process(pid)
 }
@@ -78,21 +80,7 @@ pub struct Resident {
     pub peak: u64,
 }
 
+/// Reads `pid`'s [`Resident`] now; `Unsupported` off Linux.
 pub fn resident(pid: u32) -> io::Result<Resident> {
     sys::resident(pid)
-}
-
-/// Starts `pid`'s high-water over from its use now.
-pub fn reset_peak(pid: u32) -> io::Result<()> {
-    sys::reset_peak(pid)
-}
-
-/// Private bytes (PSS less shared pages) of `pid` and every process descended from it: what a
-/// process tree holds that no one else counts.
-pub fn tree_private(pid: u32) -> u64 {
-    std::iter::once(pid)
-        .chain(crate::process::descendants(pid))
-        .filter_map(|pid| process(pid).ok())
-        .map(|m| m.pss.saturating_sub(m.pss_shmem))
-        .sum()
 }

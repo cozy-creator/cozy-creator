@@ -17,7 +17,7 @@ use crate::{Context, calcifer_client::Client, output};
 /// (`DELETE /v1/machines/{name}`). Calcifer carries the end out once the outputs of its runs have
 /// landed here, unless `force`; this follows it on the machine's stream. Ctrl-C stops following,
 /// never the end.
-pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Error> {
+pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let path = route(name)?;
     let asked = match force {
@@ -147,7 +147,7 @@ async fn ended(
 }
 
 /// Resets a rental's idle clock once; it answers only after the machine acknowledged.
-pub async fn keepalive(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
+pub(crate) async fn keepalive(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
     let path = format!("{}/keepalive", route(name)?);
     let answer: Keepalive = ctx
         .calcifer()
@@ -175,7 +175,7 @@ pub async fn keepalive(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
 /// cozy-creator checkout to build here). With none named, each moves to its Hub's target. The
 /// update is a numbered run, followed like any run; Calcifer fails it unless the machine then
 /// runs what it asked for.
-pub async fn update(
+pub(crate) async fn update(
     ctx: &Context,
     name: &str,
     runtime: Option<String>,

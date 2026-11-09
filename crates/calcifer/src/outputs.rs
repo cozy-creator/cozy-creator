@@ -606,7 +606,7 @@ impl Calcifer {
 
 /// Which item of a list output; 0 (the default) for a single output. A folder's `member`: one of its files, by its tree path.
 #[derive(Deserialize)]
-pub struct Item {
+pub(crate) struct Item {
     #[serde(default)]
     index: u32,
     #[serde(default)]
@@ -616,7 +616,7 @@ pub struct Item {
 /// `GET /v1/runs/{id|number}/outputs/{name}[?index=i]`: the output's exported file, whole or one
 /// `Range` of it, with `ETag: "r<rev>"` naming the revision it holds; otherwise why not. A folder's is its tree document
 /// (`api::tree`), and `?member=` one of its files: a client fetches what it asks for, by content.
-pub async fn serve(
+pub(crate) async fn serve(
     State(api): State<Arc<Api>>,
     Route((run, name)): Route<(String, String)>,
     query: Result<Query<Item>, QueryRejection>,
@@ -725,7 +725,7 @@ async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, heade
 /// the Go CLI named it (`fidika-minimax-h3`, `local-my-script`), from a target
 /// `<org>/<name>/<function>[@release]` (a root package's: `<name>`); the outputs folder itself for
 /// any other target.
-pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
+pub(crate) fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
     let named = |part: &&str| {
         !part.is_empty()
             && !part.starts_with('.')
@@ -747,7 +747,7 @@ pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
 }
 
 /// The item's name in its run's output directory (`api::calcifer::output_file_name`).
-pub fn file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
+pub(crate) fn file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
     ::api::calcifer::output_file_name(number, name, index, media_type)
 }
 

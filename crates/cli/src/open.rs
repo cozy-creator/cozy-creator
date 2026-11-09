@@ -11,7 +11,7 @@ use crate::{Context, output, project};
 /// Open the canvas in your browser: the project you name (else COZY_PROJECT's), or the home.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:\n  cozy open garden\n  cozy open           COZY_PROJECT's, else the home\n  cozy open --no-open   only prints the link: for an agent, or over SSH")]
-pub struct Args {
+pub(crate) struct Args {
     /// The project: its name or id, or its folder on Calcifer's computer by its absolute path.
     project: Option<String>,
     /// Only print the link, which works once, for 60 s.
@@ -47,7 +47,7 @@ fn in_front_of_someone() -> bool {
 }
 
 /// A build without its page is refused here, saying how to build it.
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let to = route(ctx, args.project.as_ref()).await?;
     let calcifer = ctx.calcifer().await?;
     calcifer.text("/").await?;

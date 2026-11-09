@@ -27,7 +27,7 @@ pub struct Stuck {
 }
 
 /// Runtime `child_env.EXECUTOR_SCOPE_ENV`: one complete inherited environment entry.
-pub const TOKEN_ENV: &str = "COZY_EXECUTOR_SCOPE";
+pub(crate) const TOKEN_ENV: &str = "COZY_EXECUTOR_SCOPE";
 
 /// Opaque, stable per state root, so a machine only ever sweeps its own scopes.
 pub fn namespace(state: &Path) -> String {

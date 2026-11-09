@@ -59,7 +59,7 @@ pub(crate) const TABLES: &str = "
 
 /// A project Calcifer opened, by its id: its name, and where it last was.
 #[derive(Clone, Debug)]
-pub struct KnownProject {
+pub(crate) struct KnownProject {
     pub id: String,
     pub name: String,
     pub path: PathBuf,
@@ -70,7 +70,7 @@ pub struct KnownProject {
 
 /// A browser session, by its secrets' digests.
 #[derive(Clone, Debug)]
-pub struct SessionRow {
+pub(crate) struct SessionRow {
     pub token: String,
     pub media: String,
     pub used_at_ms: i64,
@@ -112,12 +112,12 @@ fn digest(key: &str) -> String {
 }
 
 impl Store {
-    pub fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
+    pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
         self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name FROM projects WHERE id = ?1", [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
-    pub fn known_projects(&self) -> Result<Vec<KnownProject>> {
+    pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
             let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name FROM projects ORDER BY used_at_ms DESC, id")?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
@@ -125,7 +125,7 @@ impl Store {
     }
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last); whether it was walking stands.
-    pub fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>) -> Result<()> {
+    pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>) -> Result<()> {
         self.write(|tx| {
             tx.execute(
                 "INSERT INTO projects (id, path, used_at_ms, name) VALUES (?1, ?2, ?3, ?4)
@@ -137,7 +137,7 @@ impl Store {
     }
 
     /// Whether each project is being walked, which the next start walks again.
-    pub fn projects_walking(&self, walking: &[(String, bool)]) -> Result<()> {
+    pub(crate) fn projects_walking(&self, walking: &[(String, bool)]) -> Result<()> {
         self.write(|tx| {
             let mut statement = tx.prepare("UPDATE projects SET walking = ?2 WHERE id = ?1 AND walking <> ?2")?;
             for (id, walking) in walking {
@@ -148,12 +148,12 @@ impl Store {
     }
 
     /// Forgets project `id`: whether it was known.
-    pub fn forget_project(&self, id: &str) -> Result<bool> {
+    pub(crate) fn forget_project(&self, id: &str) -> Result<bool> {
         self.write(|tx| Ok(tx.execute("DELETE FROM projects WHERE id = ?1", [id])? > 0))
     }
 
     /// The sessions used after `since_ms`; the rest have ended, and go.
-    pub fn sessions(&self, since_ms: i64) -> Result<Vec<SessionRow>> {
+    pub(crate) fn sessions(&self, since_ms: i64) -> Result<Vec<SessionRow>> {
         self.write(|tx| {
             tx.execute("DELETE FROM sessions WHERE used_at_ms <= ?1", [since_ms])?;
             let mut statement = tx.prepare("SELECT token_sha256, media_sha256, used_at_ms FROM sessions")?;
@@ -163,7 +163,7 @@ impl Store {
     }
 
     /// A new session; those unused since `since_ms` end with it.
-    pub fn session_started(&self, session: &SessionRow, since_ms: i64) -> Result<()> {
+    pub(crate) fn session_started(&self, session: &SessionRow, since_ms: i64) -> Result<()> {
         self.write(|tx| {
             tx.execute("DELETE FROM sessions WHERE used_at_ms <= ?1", [since_ms])?;
             tx.execute(
@@ -174,14 +174,14 @@ impl Store {
         })
     }
 
-    pub fn session_used(&self, token: &str, at_ms: i64) -> Result<()> {
+    pub(crate) fn session_used(&self, token: &str, at_ms: i64) -> Result<()> {
         self.write(|tx| {
             tx.execute("UPDATE sessions SET used_at_ms = ?2 WHERE token_sha256 = ?1", params![token, at_ms])?;
             Ok(())
         })
     }
 
-    pub fn session_ended(&self, token: &str) -> Result<()> {
+    pub(crate) fn session_ended(&self, token: &str) -> Result<()> {
         self.write(|tx| {
             tx.execute("DELETE FROM sessions WHERE token_sha256 = ?1", [token])?;
             Ok(())
@@ -189,13 +189,13 @@ impl Store {
     }
 
     /// Your tool list; none until it's changed.
-    pub fn tool_list(&self) -> Result<Option<ToolList>> {
+    pub(crate) fn tool_list(&self) -> Result<Option<ToolList>> {
         self.read(tool_list_in)
     }
 
     /// One change of your tool list, `defaults` until its first: `add`, a package and its tools' prefix, on it with all its tools, and
     /// `off` taken off.
-    pub fn change_tool_list(&self, defaults: &[&str], add: Option<(&str, &str)>, off: &[String]) -> Result<ToolList> {
+    pub(crate) fn change_tool_list(&self, defaults: &[&str], add: Option<(&str, &str)>, off: &[String]) -> Result<ToolList> {
         self.write(|tx| {
             if tool_list_in(tx)?.is_none() {
                 for package in defaults {
@@ -214,7 +214,7 @@ impl Store {
     }
 
     /// Each tool kept as rendered on `machine`, by the weights it was said for.
-    pub fn rendered_here(&self, machine: &str) -> Result<HashMap<String, u64>> {
+    pub(crate) fn rendered_here(&self, machine: &str) -> Result<HashMap<String, u64>> {
         self.read(|conn| {
             let mut statement = conn.prepare("SELECT tool, bytes FROM rendered_here WHERE machine = ?1")?;
             let rows = statement.query_map([machine], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
@@ -223,7 +223,7 @@ impl Store {
     }
 
     /// Each of `tools` kept as rendered on `machine`, for the weights it has now.
-    pub fn keep_rendered_here(&self, machine: &str, tools: &[(String, u64)]) -> Result<()> {
+    pub(crate) fn keep_rendered_here(&self, machine: &str, tools: &[(String, u64)]) -> Result<()> {
         self.write(|tx| {
             let mut statement = tx.prepare("INSERT OR REPLACE INTO rendered_here (tool, machine, bytes) VALUES (?1, ?2, ?3)")?;
             for (tool, bytes) in tools {
@@ -234,7 +234,7 @@ impl Store {
     }
 
     /// What each header read here said, by Hub and sha256, while TensorFS's families are `families`: what others said goes.
-    pub fn header_facts(&self, families: &str) -> Result<HashMap<(String, String), Facts>> {
+    pub(crate) fn header_facts(&self, families: &str) -> Result<HashMap<(String, String), Facts>> {
         self.write(|tx| {
             tx.execute("DELETE FROM headers WHERE families <> ?1", [families])?;
             let mut statement = tx.prepare("SELECT hub, sha256, lora, family FROM headers")?;
@@ -244,7 +244,7 @@ impl Store {
     }
 
     /// What headers said, by Hub and sha256, read under `families`.
-    pub fn keep_header_facts(&self, families: &str, read: &[((String, String), Facts)]) -> Result<()> {
+    pub(crate) fn keep_header_facts(&self, families: &str, read: &[((String, String), Facts)]) -> Result<()> {
         self.write(|tx| {
             let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family) VALUES (?1, ?2, ?3, ?4, ?5)")?;
             for ((hub, sha256), facts) in read {
@@ -255,18 +255,18 @@ impl Store {
     }
 
     /// Keeps `step` (JSON) for the ask under `key`, before its run is submitted.
-    pub fn plan_after(&self, key: &str, step: &str) -> Result<()> {
+    pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
         self.write(|tx| {
             tx.execute("INSERT OR REPLACE INTO after_steps (key_sha256, step) VALUES (?1, ?2)", params![digest(key), step])?;
             Ok(())
         })
     }
 
-    pub fn after_step(&self, key: &str) -> Result<Option<String>> {
+    pub(crate) fn after_step(&self, key: &str) -> Result<Option<String>> {
         self.read(|conn| Ok(conn.query_row("SELECT step FROM after_steps WHERE key_sha256 = ?1", [digest(key)], |r| r.get(0)).optional()?))
     }
 
-    pub fn forget_after(&self, key: &str) -> Result<()> {
+    pub(crate) fn forget_after(&self, key: &str) -> Result<()> {
         self.write(|tx| {
             tx.execute("DELETE FROM after_steps WHERE key_sha256 = ?1", [digest(key)])?;
             Ok(())

@@ -31,7 +31,7 @@ const LORA_MODE: &str = "lora_mode";
 
 /// What a run's request gave (`RunRequest`).
 #[derive(Debug)]
-pub struct Terms {
+pub(crate) struct Terms {
     /// The payload as an object; the terms override it.
     pub input: Option<Map<String, Value>>,
     /// The terms: `key=value`, `key:=json`, `model.<slot>=<ref>`, positionals.
@@ -103,7 +103,7 @@ impl Terms {
 }
 
 #[derive(Debug, Default, PartialEq)]
-pub struct Bound {
+pub(crate) struct Bound {
     pub payload: Map<String, Value>,
     pub files: Vec<InputFile>,
     pub models: Vec<Choice>,
@@ -124,7 +124,7 @@ pub struct Bound {
 /// A file bound to a payload field, whose value is its digest: `path` holds it here, and `shown` is
 /// how people named it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InputFile {
+pub(crate) struct InputFile {
     pub field: String,
     pub path: PathBuf,
     pub shown: String,
@@ -134,19 +134,19 @@ pub struct InputFile {
     pub order: u32,
 }
 
-pub use api::choices::Choice;
+pub(crate) use api::choices::Choice;
 use api::choices::Choices;
 
 impl Bound {
     /// The warning for the fields that were dropped, if any.
-    pub fn warning(&self, target: &str) -> Option<String> {
+    pub(crate) fn warning(&self, target: &str) -> Option<String> {
         ignored_warning(target, &self.ignored)
     }
 }
 
 impl Bound {
     /// The payload's canonical JSON: sorted keys, no whitespace, exact integers.
-    pub fn canonical_payload(&self) -> api::machine::Json {
+    pub(crate) fn canonical_payload(&self) -> api::machine::Json {
         let text = canonical(&Value::Object(self.payload.clone()));
         api::machine::Json::parse(text).expect("canonical JSON is JSON")
     }
@@ -174,7 +174,7 @@ fn canonical(value: &Value) -> String {
 
 /// A warm run's model choices: `model.<slot>=`, `--lora` and a conversion's input model. It
 /// carries no payload, so any other term is refused.
-pub async fn warm_choices(
+pub(crate) async fn warm_choices(
     target: &str, release: Option<&str>, interface: &Interface, callable: &Callable,
     terms: &Terms, program: bool, notes: &mut Vec<Note>,
 ) -> Result<(Vec<Choice>, Option<api::machine::Json>), Error> {
@@ -227,7 +227,7 @@ pub async fn warm_choices(
 
 /// Binds `terms` for `callable`; `target` names it in messages (`org/pkg/fn`) and `release` the
 /// one its interface is (none for local code).
-pub async fn bind(
+pub(crate) async fn bind(
     target: &str,
     release: Option<&str>,
     interface: &Interface,

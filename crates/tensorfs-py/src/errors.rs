@@ -3,7 +3,7 @@
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::create_exception;
-use tensorfs::failure::{Failure, Kind};
+use tensorfs::{Failure, Kind};
 
 create_exception!(
     tensorfs,
@@ -52,7 +52,7 @@ pub(crate) fn raise(py: Python<'_>, f: Failure) -> PyErr {
     err
 }
 
-pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add("Error", py.get_type::<Error>())?;
     for kind in Kind::ALL {

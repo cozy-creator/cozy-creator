@@ -19,7 +19,8 @@ use std::{
     io::{self, Read},
     path::{Component, Path, PathBuf},
 };
-use tensorfs::{format::ObjectRef, sha256};
+use tensorfs::format::ObjectRef;
+use tensorfs_core::sha256;
 
 const MAX_PARTS: usize = 128;
 
@@ -30,7 +31,7 @@ fn storage(error: impl std::fmt::Display) -> io::Error {
 /// Retain one byte string as a one-file tree named by `owner`, bound to `actor` so a reader
 /// with that actor's capability can fetch it, and to `run`, so nothing evicts it while that goes on.
 /// Idempotent per owner.
-pub fn retain(
+pub(crate) fn retain(
     engine: &Engine,
     actor: &str,
     run: &str,
@@ -196,13 +197,13 @@ fn output_op(result: &Value, output: &str) -> Option<domain::RunProductOp> {
     }
 }
 
-pub fn decode(stored: &StoredProduct) -> io::Result<domain::RunProduct> {
+pub(crate) fn decode(stored: &StoredProduct) -> io::Result<domain::RunProduct> {
     crate::archive::decode_run_product(stored.product.as_slice())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "journaled product is corrupt"))
 }
 
 /// The SDK's `publish` request during a running attempt: answers `Published`.
-pub fn publish(engine: &Engine, generation: &Generation, id: &str, spool: &Path, seq: u64, publish: &Publish) -> Answer {
+pub(crate) fn publish(engine: &Engine, generation: &Generation, id: &str, spool: &Path, seq: u64, publish: &Publish) -> Answer {
     let mut answer = Answer::unavailable(seq);
     match commit(engine, generation, id, spool, publish) {
         Ok((content, sequence)) => {
@@ -244,7 +245,7 @@ fn declared(engine: &Engine, generation: &Generation, id: &str) -> io::Result<(c
 /// Record the commit the Runtime wrote for a weights output, in lane `item.output`; with a Hub
 /// destination, `publish` uploads it and the output names the destination's commit instead.
 #[allow(clippy::type_complexity)]
-pub fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, item: &CheckpointItem,
+pub(crate) fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, item: &CheckpointItem,
     publish: &dyn Fn(&str) -> Result<Option<(String, tensorfs::format::ObjectRef)>, crate::objects::Refused>) -> Answer {
     let record = || -> io::Result<u64> {
         let (_, entry) = declared(engine, generation, id)?;
@@ -381,7 +382,7 @@ fn commit(
 }
 
 /// The canonical body of one product event.
-pub fn document(product: &domain::RunProduct) -> io::Result<Value> {
+pub(crate) fn document(product: &domain::RunProduct) -> io::Result<Value> {
     let missing = || io::Error::new(io::ErrorKind::InvalidData, "product reference absent");
     let reference = |content: &domain::Ref| json!({"digest":format!("sha256:{}",sha256::hex(&content.digest)),"length":content.length});
     let source = |source: &domain::NativeByteRetentionRequest| -> io::Result<Value> {
@@ -429,7 +430,7 @@ pub fn document(product: &domain::RunProduct) -> io::Result<Value> {
 
 /// Whether the log already shows a returned product: the same bytes as the last SET of that
 /// output, or an APPEND at an index the log already holds.
-pub fn shown(log: &[domain::RunProduct], product: &domain::RunProduct) -> bool {
+pub(crate) fn shown(log: &[domain::RunProduct], product: &domain::RunProduct) -> bool {
     if product.op == domain::RunProductOp::Append as i32 {
         log.iter()
             .any(|p| p.output == product.output && p.op == product.op && p.index == product.index)
@@ -442,4 +443,4 @@ pub fn shown(log: &[domain::RunProduct], product: &domain::RunProduct) -> bool {
 }
 
 /// The product bytes held by the execution journal.
-pub fn encode(product: &domain::RunProduct) -> Vec<u8> { crate::archive::encode_run_product(product) }
+pub(crate) fn encode(product: &domain::RunProduct) -> Vec<u8> { crate::archive::encode_run_product(product) }

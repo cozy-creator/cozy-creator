@@ -40,10 +40,6 @@ pub(super) fn resident(_: u32) -> io::Result<super::Resident> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
-pub(super) fn reset_peak(_: u32) -> io::Result<()> {
-    Err(io::ErrorKind::Unsupported.into())
-}
-
 fn available() -> i64 {
     // SAFETY: plain-old-data the call fills.
     let mut stats: libc::vm_statistics64 = unsafe { mem::zeroed() };

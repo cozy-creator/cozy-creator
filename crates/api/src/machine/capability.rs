@@ -50,6 +50,7 @@ pub struct Grant {
     pub binding: String,
 }
 
+/// Why [`verify`] refused a token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
     #[error("the capability is malformed or not signed by an authorized key")]
@@ -63,7 +64,7 @@ pub enum Refusal {
 }
 
 /// A public key's compact name: base64url of the first 16 bytes of its SHA-256.
-pub fn key_id(key: &VerifyingKey) -> String {
+pub(crate) fn key_id(key: &VerifyingKey) -> String {
     URL_SAFE_NO_PAD.encode(&Sha256::digest(key.as_bytes())[..16])
 }
 
@@ -119,11 +120,6 @@ pub fn verify(
         _ => {}
     }
     Ok((grant, signer))
-}
-
-/// The token of an `authorization` value, when it carries one.
-pub fn from_authorization(value: &str) -> Option<&str> {
-    value.strip_prefix(SCHEME)
 }
 
 impl Grant {

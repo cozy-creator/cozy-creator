@@ -55,14 +55,9 @@ fn reference(class: &str) -> Option<&'static Reference> {
     refs.get(class)
 }
 
-/// The classes with a reference.
-pub fn classes() -> impl Iterator<Item = &'static str> {
-    ORDERS.iter().map(|(class, _)| *class)
-}
-
 /// `keys` in a class's construction order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ordered {
+pub(crate) struct Ordered {
     /// Positions into the keys, in construction order.
     pub order: Vec<usize>,
     /// Positions of keys whose path the reference does not hold (or every key, without a
@@ -73,7 +68,7 @@ pub struct Ordered {
 /// `keys` in `class`'s construction order. `data` is each key's place in the source (the order
 /// of its bytes). Indices ascend; a child the reference lacks, or every key of a class without
 /// a reference, keeps the data order and is reported in `unknown`.
-pub fn constructor_order<D: Ord + Copy>(class: Option<&str>, keys: &[(&str, D)]) -> Ordered {
+pub(crate) fn constructor_order<D: Ord + Copy>(class: Option<&str>, keys: &[(&str, D)]) -> Ordered {
     let reference = class.and_then(reference);
     let paths: Vec<Vec<&str>> = keys.iter().map(|(k, _)| k.split('.').collect()).collect();
     let mut order = Vec::with_capacity(keys.len());

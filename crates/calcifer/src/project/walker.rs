@@ -10,7 +10,7 @@ use super::graph::name_key;
 
 /// One thing a project's text says, all the walker knows of it. A render's nodes never change: its text is frozen when it is asked.
 #[derive(Clone, Debug, Default)]
-pub struct Node {
+pub(crate) struct Node {
     pub name: String,
     /// What it says of itself, as a digest: two renders' jobs with the same one make the same thing.
     pub spec: String,
@@ -29,7 +29,7 @@ pub struct Node {
 }
 
 /// What the walker reads of one frozen render, and what stands now.
-pub trait Frozen {
+pub(crate) trait Frozen {
     fn nodes(&self) -> &[Node];
     /// Every node, each after what it reads.
     fn order(&self) -> &[usize];
@@ -41,7 +41,7 @@ pub trait Frozen {
 
 /// What a job is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
+pub(crate) enum Kind {
     /// A new version asked of it by name.
     Take,
     /// It has no state, and what the render covers reads it.
@@ -54,7 +54,7 @@ pub enum Kind {
 
 /// How a job stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
+pub(crate) enum State {
     /// For what it needs, or its turn.
     Waiting,
     /// It was given its turn: it is being sent, is on its machine, or Calcifer is making it.
@@ -63,7 +63,7 @@ pub enum State {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum End {
+pub(crate) enum End {
     Done,
     Failed,
     /// It stopped before it went: canceled, or its asset was deleted.
@@ -74,7 +74,7 @@ pub enum End {
 
 /// One version of one asset being made.
 #[derive(Clone, Debug)]
-pub struct Job {
+pub(crate) struct Job {
     /// The key its first run is sent under: one job, one run, ever.
     pub key: String,
     pub ask: String,
@@ -97,7 +97,7 @@ pub struct Job {
 
 /// One new version a render asked by name.
 #[derive(Clone, Debug)]
-pub struct Named {
+pub(crate) struct Named {
     pub key: String,
     pub asset: String,
     pub approve: bool,
@@ -105,7 +105,7 @@ pub struct Named {
 
 /// What a render owes as it stands: what it asked, less what it has sent.
 #[derive(Clone, Debug, Default)]
-pub struct Asked {
+pub(crate) struct Asked {
     /// Every asset with no state.
     pub all: bool,
     /// What it has tried, by name key: each is tried once.
@@ -115,7 +115,7 @@ pub struct Asked {
 
 /// What a job's turn came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Turn {
+pub(crate) enum Turn {
     Go,
     /// It waits for something that came up since it was made.
     Wait,
@@ -127,7 +127,7 @@ pub enum Turn {
 
 /// A project's jobs, all its renders' at once.
 #[derive(Default)]
-pub struct Graph {
+pub(crate) struct Graph {
     pub jobs: Vec<Job>,
     by_key: HashMap<String, usize>,
     /// Jobs not ended, by asset's name key.
@@ -143,43 +143,43 @@ pub struct Graph {
 }
 
 impl Graph {
-    pub fn job(&self, key: &str) -> Option<&Job> {
+    pub(crate) fn job(&self, key: &str) -> Option<&Job> {
         self.by_key.get(key).map(|&id| &self.jobs[id])
     }
 
-    pub fn id(&self, key: &str) -> Option<usize> {
+    pub(crate) fn id(&self, key: &str) -> Option<usize> {
         self.by_key.get(key).copied()
     }
 
     /// Whether render `ask` has anything left.
-    pub fn owes(&self, ask: &str) -> bool {
+    pub(crate) fn owes(&self, ask: &str) -> bool {
         self.left.get(ask).is_some_and(|left| *left > 0)
     }
 
     /// How many jobs are going.
-    pub fn going(&self) -> usize {
+    pub(crate) fn going(&self) -> usize {
         self.open.values().flatten().filter(|&&id| self.jobs[id].state == State::Going).count()
     }
 
     /// The name keys of the assets with jobs not ended.
-    pub fn open_names(&self) -> impl Iterator<Item = &String> {
+    pub(crate) fn open_names(&self) -> impl Iterator<Item = &String> {
         self.open.keys()
     }
 
     /// Whether a job is ready for its turn.
-    pub fn has_ready(&self) -> bool {
+    pub(crate) fn has_ready(&self) -> bool {
         !self.ready.is_empty()
     }
 
     /// Jobs not ended, in the order they go: what is going, then what waits.
-    pub fn open_jobs(&self) -> Vec<usize> {
+    pub(crate) fn open_jobs(&self) -> Vec<usize> {
         let mut open: Vec<usize> = self.open.values().flatten().copied().collect();
         open.sort_by_key(|&id| (self.jobs[id].state != State::Going, self.jobs[id].rank, id));
         open
     }
 
     /// Those of its needs that have not ended, by name: what a person reads of what it waits for.
-    pub fn waits_for(&self, id: usize) -> Vec<&str> {
+    pub(crate) fn waits_for(&self, id: usize) -> Vec<&str> {
         let mut names: Vec<&str> = vec![];
         for &need in &self.jobs[id].needs {
             let job = &self.jobs[need];
@@ -191,7 +191,7 @@ impl Graph {
     }
 
     /// A job that was on its way before this graph: a run a walker before this one sent. It goes on as it was.
-    pub fn adopt(&mut self, ask: &str, key: &str, asset: &str, node: &Node, approve: bool) -> usize {
+    pub(crate) fn adopt(&mut self, ask: &str, key: &str, asset: &str, node: &Node, approve: bool) -> usize {
         let id = self.make(Job {
             key: key.to_owned(),
             ask: ask.to_owned(),
@@ -213,7 +213,7 @@ impl Graph {
     }
 
     /// Render `ask`: a job for each take it names and each thing it owes, with what each needs.
-    pub fn add(&mut self, ask: &str, frozen: &mut dyn Frozen, asked: &Asked) -> Vec<usize> {
+    pub(crate) fn add(&mut self, ask: &str, frozen: &mut dyn Frozen, asked: &Asked) -> Vec<usize> {
         let nodes: Vec<Node> = frozen.nodes().to_vec();
         let order: Vec<usize> = frozen.order().to_vec();
         let keys: Vec<String> = nodes.iter().map(|node| name_key(&node.name)).collect();
@@ -316,7 +316,7 @@ impl Graph {
     }
 
     /// A job's turn, looking only at what it reads.
-    pub fn turn(&mut self, id: usize, frozen: &mut dyn Frozen) -> Turn {
+    pub(crate) fn turn(&mut self, id: usize, frozen: &mut dyn Frozen) -> Turn {
         let (ask, node, kind) = (self.jobs[id].ask.clone(), self.jobs[id].node, self.jobs[id].kind);
         let nodes = frozen.nodes();
         let free = nodes[node].free;
@@ -354,13 +354,13 @@ impl Graph {
     }
 
     /// Back to waiting for its turn: a machine isn't free for it yet, or sending it found out what it is.
-    pub fn put_back(&mut self, id: usize) {
+    pub(crate) fn put_back(&mut self, id: usize) {
         self.jobs[id].state = State::Waiting;
         self.ready.insert((self.jobs[id].rank, id));
     }
 
     /// What the jobs not ended of the renders `asks` names are, now their text is read knowing more.
-    pub fn read_again(&mut self, asks: impl Fn(&str) -> bool, nodes: &[Node]) {
+    pub(crate) fn read_again(&mut self, asks: impl Fn(&str) -> bool, nodes: &[Node]) {
         let open: Vec<usize> = self.open.values().flatten().copied().filter(|&id| asks(&self.jobs[id].ask)).collect();
         for id in open {
             let job = &mut self.jobs[id];
@@ -372,12 +372,12 @@ impl Graph {
     }
 
     /// The jobs `take_ready` would take, left ready.
-    pub fn ready(&self, room: usize) -> Vec<usize> {
+    pub(crate) fn ready(&self, room: usize) -> Vec<usize> {
         self.ready.iter().take(room).map(|(_, id)| *id).collect()
     }
 
     /// The jobs ready for their turn, smallest rank first, at most `room`. Each stays the caller's until `going`, `end` or it waits again.
-    pub fn take_ready(&mut self, room: usize) -> Vec<usize> {
+    pub(crate) fn take_ready(&mut self, room: usize) -> Vec<usize> {
         let taken: Vec<(u64, usize)> = self.ready.iter().take(room).copied().collect();
         for entry in &taken {
             self.ready.remove(entry);
@@ -386,12 +386,12 @@ impl Graph {
     }
 
     /// Its turn came to something that goes.
-    pub fn go(&mut self, id: usize) {
+    pub(crate) fn go(&mut self, id: usize) {
         self.jobs[id].state = State::Going;
     }
 
     /// It ended: what it holds up may be ready now.
-    pub fn end(&mut self, id: usize, end: End) {
+    pub(crate) fn end(&mut self, id: usize, end: End) {
         if matches!(self.jobs[id].state, State::Ended(_)) {
             return;
         }
@@ -420,7 +420,7 @@ impl Graph {
     }
 
     /// Those waiting that `wanted` names leave, and what reads them finds it at its turn. Answers them, and those going, whose runs are the caller's to cancel.
-    pub fn cancel(&mut self, wanted: impl Fn(&str) -> bool) -> (Vec<usize>, Vec<usize>) {
+    pub(crate) fn cancel(&mut self, wanted: impl Fn(&str) -> bool) -> (Vec<usize>, Vec<usize>) {
         let named: Vec<usize> = (0..self.jobs.len()).filter(|&id| !matches!(self.jobs[id].state, State::Ended(_)) && wanted(&self.jobs[id].asset)).collect();
         let (going, dropped): (Vec<usize>, Vec<usize>) = named.into_iter().partition(|&id| self.jobs[id].state == State::Going);
         dropped.iter().for_each(|&id| self.end(id, End::Dropped));
@@ -428,7 +428,7 @@ impl Graph {
     }
 
     /// Asset `from` is called `to` now: its jobs, what waits for it, and what each render tried of it.
-    pub fn renamed(&mut self, from: &str, to: &str) {
+    pub(crate) fn renamed(&mut self, from: &str, to: &str) {
         let (key, new) = (name_key(from), name_key(to));
         self.jobs.iter_mut().filter(|job| name_key(&job.asset) == key).for_each(|job| to.clone_into(&mut job.asset));
         if let Some(open) = self.open.remove(&key) {
@@ -442,7 +442,7 @@ impl Graph {
     }
 
     /// Whether render `ask` tried `name` already: it isn't tried again.
-    pub fn tried(&self, ask: &str, name: &str) -> bool {
+    pub(crate) fn tried(&self, ask: &str, name: &str) -> bool {
         self.tried.get(ask).is_some_and(|tried| tried.contains(&name_key(name)))
     }
 
@@ -541,7 +541,7 @@ impl Graph {
 }
 
 /// What a render owes of the asset with this name key goes under one key, restart or not.
-pub fn owed_key(ask: &str, name_key: &str) -> String {
+pub(crate) fn owed_key(ask: &str, name_key: &str) -> String {
     format!("project-{}", &hex::encode(Sha256::digest(format!("{ask}\n{name_key}")))[..32])
 }
 

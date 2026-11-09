@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct Endpoint {
+pub(crate) struct Endpoint {
     pub public_host: String,
     /// Private TCP port to its public port, as the provider mapped them.
     pub ports: BTreeMap<String, u16>,
@@ -13,7 +13,7 @@ pub struct Endpoint {
 
 /// RunPod (`RUNPOD_PUBLIC_IP`, `RUNPOD_TCP_PORT_<port>`) or vast.ai (`PUBLIC_IPADDR`,
 /// `VAST_TCP_PORT_<port>`); None anywhere else.
-pub fn from_env(vars: impl IntoIterator<Item = (String, String)>) -> Option<Endpoint> {
+pub(crate) fn from_env(vars: impl IntoIterator<Item = (String, String)>) -> Option<Endpoint> {
     let vars: BTreeMap<String, String> = vars.into_iter().collect();
     [("RUNPOD_PUBLIC_IP", "RUNPOD_TCP_PORT_"), ("PUBLIC_IPADDR", "VAST_TCP_PORT_")]
         .into_iter()

@@ -29,6 +29,7 @@ static LIVE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// Killed members an end found stuck in the kernel, until each exits.
 static STUCK: Mutex<Vec<(Birth, Stuck)>> = Mutex::new(Vec::new());
 
+/// One executor's containment: a delegated cgroup-v2 of its own, else a process-tree token.
 #[derive(Debug)]
 pub struct Scope(Backend);
 
@@ -155,7 +156,7 @@ impl Scope {
     }
 
     /// Live processes in the scope.
-    pub fn processes(&self) -> crate::Result<usize> {
+    pub(crate) fn processes(&self) -> crate::Result<usize> {
         match &self.0 {
             Backend::Cgroup { relative, inode } => Ok(procs(&Self::path(relative, *inode)?)?.len()),
             Backend::Tree { token } => {
@@ -178,7 +179,7 @@ impl Scope {
         }
     }
 
-    pub fn kill(&self) -> crate::Result<()> {
+    pub(crate) fn kill(&self) -> crate::Result<()> {
         match &self.0 {
             Backend::Cgroup { relative, inode } => Ok(OpenOptions::new()
                 .write(true)

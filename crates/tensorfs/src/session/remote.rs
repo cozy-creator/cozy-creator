@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::failure::{fail, Failure, Kind, Result};
-use crate::fetch::{self, Fetcher, Hardware, ObjectStore, Origin, VolumeOrigin, Want};
+use crate::fetch::{self, Fetcher, Hardware, Origin, VolumeOrigin, Want};
 use crate::format::{Header, ObjectRef, Repo, Tree};
 use crate::store::Store;
 
@@ -28,7 +28,7 @@ pub(super) struct Remote {
 }
 
 impl Remote {
-    pub async fn fetch(&self, objects: &[ObjectRef], want: &Download<'_>) -> Result<Fetched> {
+    pub(crate) async fn fetch(&self, objects: &[ObjectRef], want: &Download<'_>) -> Result<Fetched> {
         let unique: BTreeMap<_, _> = objects.iter().map(|o| (&o.sha256, o.clone())).collect();
         let objects: Vec<_> = unique.into_values().collect();
         let _hold = self.store.hold(&objects)?;
@@ -50,7 +50,7 @@ impl Remote {
                 ..Fetched::default()
             });
         }
-        let store: Arc<dyn ObjectStore> = Arc::new(self.store.clone());
+        let store = Arc::new(self.store.clone());
         let mirror = self
             .mirror
             .as_ref()
@@ -185,7 +185,7 @@ impl Remote {
     }
 
     /// The commit (or bare header) `reference` names, opened: its header fetched.
-    pub async fn open(&self, mut reference: Ref, hardware: &Hardware) -> Result<Checkpoint> {
+    pub(crate) async fn open(&self, mut reference: Ref, hardware: &Hardware) -> Result<Checkpoint> {
         let root = self.root(&reference, hardware).await?;
         let _root_hold = self.store.hold(std::slice::from_ref(&root.object))?;
         self.fetch(std::slice::from_ref(&root.object), &Download::default()).await?;
@@ -219,7 +219,7 @@ impl Remote {
 
     /// The commit `reference` names as a plain folder: its repo files and header, and the
     /// objects `want` selects.
-    pub async fn snapshot(&self, reference: &Ref, want: &Download<'_>, local_dir: Option<&Path>) -> Result<PathBuf> {
+    pub(crate) async fn snapshot(&self, reference: &Ref, want: &Download<'_>, local_dir: Option<&Path>) -> Result<PathBuf> {
         let root = self.root(reference, &Hardware::default()).await?;
         let commit = root.object.clone();
         let _root_hold = self.store.hold(std::slice::from_ref(&commit))?;
@@ -249,7 +249,7 @@ impl Remote {
         Ok(dest)
     }
 
-    pub async fn file(
+    pub(crate) async fn file(
         &self,
         reference: &Ref,
         filename: &str,

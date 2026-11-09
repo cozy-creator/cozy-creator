@@ -28,7 +28,7 @@ const CELL: usize = 72;
 
 /// `GET /v1/runs`' filters.
 #[derive(Clone, Debug, Default, Serialize)]
-pub struct Query {
+pub(crate) struct Query {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,7 +44,7 @@ pub struct Query {
     pub limit: Option<u64>,
 }
 
-pub async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
     let limit = query.limit.unwrap_or(SHOWN);
     query.limit = (limit > 0).then_some(limit);
     if !ctx.json && ctx.term.stdout {

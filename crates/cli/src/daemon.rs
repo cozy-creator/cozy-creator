@@ -28,11 +28,11 @@ pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct Status {}
+pub(crate) struct Status {}
 
 /// This cozy, Calcifer, COZY_PROJECT's project, the runs not yet settled, the machines and what they cost:
 /// `cozy` alone too. Never starts Calcifer.
-pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
+pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     let exe = std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default();
     let Some(client) = Client::running(ctx).await? else {
         if ctx.json {
@@ -117,7 +117,7 @@ async fn project(client: &Client) -> Option<Result<State, Error>> {
 
 /// Which of a machine's logs, and how much of it.
 #[derive(clap::Args, Debug)]
-pub struct LogQuery {
+pub(crate) struct LogQuery {
     /// The machine's own log, the TensorFS transport or memory log it keeps, or (on `local`)
     /// Calcifer's, this computer's controller.
     #[arg(value_enum, ignore_case = true, default_value_t = LogName::Tensord)]

@@ -30,6 +30,9 @@ key_refused?: boolean,
  */
 logged_in: boolean, orgs: Array<string>, };
 
+/**
+ * A LoRA on a model: its strength and the components it applies to.
+ */
 export type Adapter = { model: string, strength: number, components: Array<string>, };
 
 /**
@@ -92,6 +95,9 @@ export type Alternative = { sku: string, gpus: number, label?: string, time: num
  */
 export type Approve = { name: string, version: string, };
 
+/**
+ * What an approve pinned: the asset's version and files, and what that put out of date.
+ */
 export type Approved = { name: string, noun: string, 
 /**
  * The version it is; 0 for a file that is none of its versions.
@@ -341,6 +347,9 @@ shots: number, jobs?: Array<Job>,
  */
 ahead?: Array<Ahead>, };
 
+/**
+ * `GET /v1/tools/browse`: a page of the Hub's packages that make media.
+ */
 export type Browsed = { packages: Array<BrowsedPackage>, 
 /**
  * How many more a bigger `limit` reads.
@@ -424,6 +433,9 @@ seq: number, cards: { [key in string]: Card }, };
  */
 export type CanvasPatch = { cards: { [key in string]: Card | null }, placed?: { [key in string]: number }, };
 
+/**
+ * What a canvas patch left: the new revision and the `placed` rows it kept.
+ */
 export type CanvasPatched = { seq: number, 
 /**
  * Each of `placed` another wrote since, left as it is: its row now (null: none).
@@ -435,6 +447,9 @@ kept?: { [key in string]: Card | null }, };
  */
 export type Card = { x: number, y: number, w?: number | null, };
 
+/**
+ * One checkpoint of a held model: its release, lane, precision and header.
+ */
 export type Checkpoint = { release: string, lane: string, precision?: string, manifest: string, };
 
 /**
@@ -578,6 +593,9 @@ abandoned?: Array<string>, };
  */
 export type Envelope = { error: ErrorBody, };
 
+/**
+ * A package environment the machine holds for this controller.
+ */
 export type Environment = { installation: string, package: string, release: string, hub: string, 
 /**
  * The cozy-runtime installed in it: the machine's, or a newer one its package needs.
@@ -593,6 +611,9 @@ level: string,
  */
 warning: string, };
 
+/**
+ * A typed refusal: its class, stable code and message, with an optional remedy and next commands.
+ */
 export type ErrorBody = { kind: ErrorKind, code: string, message: string, remedy?: string | null, 
 /**
  * Commands to try next; at most two.
@@ -611,6 +632,9 @@ retry_after_s?: number | null,
  */
 metadata?: JsonValue | null, };
 
+/**
+ * A refusal's class: what a program branches on; it sets the HTTP status and exit code.
+ */
 export type ErrorKind = "usage" | "validation" | "not_found" | "credential" | "forbidden" | "conflict" | "capacity" | "unavailable" | "internal";
 
 /**
@@ -627,6 +651,9 @@ export type ExportedKey = { email: string, device_key: string,
  */
 key: string, };
 
+/**
+ * A GEMM kernel that served below its lane: what served, what was wanted, and why.
+ */
 export type Fallback = { 
 /**
  * What served instead, when it was not the kernel itself.
@@ -643,6 +670,9 @@ export type Families = { families: Array<string>, };
  */
 export type FamilyFrom = "owner" | "weights";
 
+/**
+ * The control a box draws for a field.
+ */
 export type FieldType = "words" | "prompt" | "toggle" | "number" | "choice" | "shape" | "slot" | "group" | "seed" | "timeline";
 
 /**
@@ -668,6 +698,9 @@ rent?: RentFor | null, };
  */
 export type FitAsk = { names: Array<string>, outdated?: boolean, };
 
+/**
+ * One model a search found, with its newest release, lanes, author and kind.
+ */
 export type FoundModel = { model: string, 
 /**
  * The label its owner gave it, else what its header verifies as.
@@ -690,6 +723,9 @@ kind?: ModelKind | null,
  */
 tags?: Array<string>, };
 
+/**
+ * One package a search found, with its newest release.
+ */
 export type FoundPackage = { package: string, latest_release: string | null, created_at: string, };
 
 /**
@@ -697,6 +733,9 @@ export type FoundPackage = { package: string, latest_release: string | null, cre
  */
 export type Gemm = { kernel: string, format: string, fallback?: Fallback | null, };
 
+/**
+ * One of a machine's GPUs: its name, memory, driver and family.
+ */
 export type Gpu = { index: number, name: string, memory_bytes: number, driver: string, family?: string | null, memory_class?: string | null, 
 /**
  * The most of `memory_bytes` the machine uses; 0: all of it.
@@ -772,8 +811,14 @@ export type HistoryStepped = { entries: Array<HistoryEntry>, already?: boolean,
  */
 stopped?: ErrorBody | null, undo?: number | null, redo?: number | null, };
 
+/**
+ * When a Hub last answered a machine listing.
+ */
 export type HubListing = { hub: string, listed_at_ms: number, };
 
+/**
+ * A Hub whose last machine listing failed, and why.
+ */
 export type HubProblem = { hub: string, code: string, message: string, };
 
 /**
@@ -812,6 +857,9 @@ already?: boolean,
  */
 kept?: { [key in string]: Card | null }, };
 
+/**
+ * Where an output is: still arriving, complete, or final in a run that did not complete.
+ */
 export type ItemStatus = "in_progress" | "completed" | "incomplete";
 
 /**
@@ -938,6 +986,9 @@ missing?: boolean,
  */
 busy?: boolean, };
 
+/**
+ * One named leg of a stage, and its time.
+ */
 export type Leg = { name: string, ms: number, };
 
 /**
@@ -985,6 +1036,9 @@ export type LocalCode = { tree: Digest,
  */
 at?: string, };
 
+/**
+ * One machine as Calcifer knows it: its kind, state, address, rental, latest status and runs.
+ */
 export type Machine = { name: string, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null, 
 /**
  * The name it had before its Hub named it; it keeps resolving.
@@ -1057,6 +1111,9 @@ reach?: string | null,
  */
 ending?: string | null, };
 
+/**
+ * What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.
+ */
 export type MachineKind = "local" | "rental" | "added";
 
 /**
@@ -1113,6 +1170,9 @@ stored_bytes: number, };
  */
 export type MachinePackages = { machine: string, packages: Array<HeldPackage>, };
 
+/**
+ * Where a machine is in its life, as Calcifer sees it.
+ */
 export type MachineState = "booting" | "ready" | "ending" | "ended" | "stopped" | "unknown";
 
 /**
@@ -1222,6 +1282,9 @@ absent?: boolean,
  */
 machine?: string | null, };
 
+/**
+ * One make_room that took bytes: its step, what asked, what it needed and freed, and its waits.
+ */
 export type MakeRoom = { gpu: number, step: number, 
 /**
  * What asked.
@@ -1300,6 +1363,9 @@ added_handle?: string | null, };
  */
 export type Model = { repository: string, total_bytes: number, unique_bytes: number, checkpoints: Array<Checkpoint>, };
 
+/**
+ * Who made a model: the org it credits, and whether that org is parked.
+ */
 export type ModelAuthor = { org: string, 
 /**
  * The author's display name.
@@ -1314,6 +1380,9 @@ parked: boolean,
  */
 reserved: string | null, };
 
+/**
+ * One commit of a model: its lane, size and the releases naming it.
+ */
 export type ModelCommit = { commit: string, lane: string, bytes: number, 
 /**
  * The releases naming it; none while private.
@@ -1375,6 +1444,9 @@ export type ModelEdited = { model: ModelDetail, warnings?: Array<string>, };
  */
 export type ModelKind = "lora" | "weights" | "component";
 
+/**
+ * One lane of a release: its commit, size, header kinds and provenance.
+ */
 export type ModelLane = { lane: string, 
 /**
  * `sha256:<hex>`.
@@ -1389,6 +1461,9 @@ kinds: Array<string>,
  */
 provenance: Provenance | null, };
 
+/**
+ * One release of a model: its version, each lane's commit, and whether it is a mirror.
+ */
 export type ModelRelease = { version: string, created_at: string, 
 /**
  * Published while its org was parked: not its author's.
@@ -1409,6 +1484,9 @@ export type ModelReleaseAsk = { hub?: string | null, version: string,
  */
 commits: Array<string>, };
 
+/**
+ * The release a publish made: its version and each lane's commit.
+ */
 export type ModelReleased = { model: string, version: string, created_at: string, 
 /**
  * Each lane's commit.
@@ -1507,6 +1585,9 @@ fingerprint: Digest, };
  */
 export type Note = { level: NoteLevel, message: string, };
 
+/**
+ * A note's weight: information or a warning.
+ */
 export type NoteLevel = "info" | "warning";
 
 /**
@@ -1522,6 +1603,9 @@ export type On = string;
  */
 export type Open = { project?: string | null, name?: string | null, path?: string | null, starter?: boolean, };
 
+/**
+ * The project `POST /v1/projects` opened or made: its id, folder and name.
+ */
 export type Opened = { id: string, 
 /**
  * Where it lives on Calcifer's computer.
@@ -1587,6 +1671,9 @@ runs: Array<number>, };
  */
 export type OrgClaim = { claimed: boolean, code: string | null, org: string, proofs: Array<OrgProof>, proven_by: string | null, };
 
+/**
+ * One of the org's handles to post the claim code at: where, and the Hub's check of it.
+ */
 export type OrgProof = { checked: string, handle: string, where: string, };
 
 /**
@@ -1649,8 +1736,14 @@ export type PackageDetail = {
  */
 package: string, latest_release: string | null, releases: Array<PackageRelease>, warnings?: Array<string>, };
 
+/**
+ * One release of a package: when it was published and whether it is yanked.
+ */
 export type PackageRelease = { release: string, published: string | null, yanked: boolean, };
 
+/**
+ * What `POST /v1/package-removals` answers: the machine and one remove run per package and Hub.
+ */
 export type PackageRemovals = { machine: string, runs: Array<Run>, };
 
 /**
@@ -1917,6 +2010,9 @@ at?: Array<string>,
  */
 key?: string | null, };
 
+/**
+ * Why a run or call did not succeed: a stable code, message and origin, with detail and next commands.
+ */
 export type Reason = { code: string, message: string, 
 /**
  * request, runtime, author, machine
@@ -1952,6 +2048,9 @@ export type ReleaseFrom = "asked" | "installed" | "latest" | "local";
  */
 export type Rename = { from: string, to: string, };
 
+/**
+ * A rename done: `from`, `to`, and how many versions it kept.
+ */
 export type Renamed = { from: string, to: string, versions: number, };
 
 /**
@@ -2011,6 +2110,9 @@ ssh?: string | null, };
  */
 export type RentalPriceEstimate = { hours: number, download_gb: number, gpu_usd_micros: number, disk_usd_micros: number, download_usd_micros: number, total_usd_micros: number, };
 
+/**
+ * A Python interpreter a product offers, as the Hub lists it: its version and ABI.
+ */
 export type RentalPythonInterpreter = { version: string, abi: string, };
 
 /**
@@ -2046,8 +2148,14 @@ export type Rented = { machine: Machine,
  */
 quote: Quote, replay: boolean, };
 
+/**
+ * The attempt a newer one replaced: its number, why it failed, and when it ended.
+ */
 export type Replaced = { number: number, failure: string, ended_at_ms: number, };
 
+/**
+ * What a run's machine measured: the attention kernels it pinned and each executor's measurements.
+ */
 export type Report = { 
 /**
  * The attention kernels the run pinned, as its executors recorded them.
@@ -2063,6 +2171,9 @@ measured?: Array<Measured>, };
  */
 export type ReportComponent = { component: string, attention: Array<string>, gemm: Array<Gemm>, };
 
+/**
+ * One attention kernel on a GPU: its state, whether it served, and its compile.
+ */
 export type ReportKernel = { 
 /**
  * None: the executor did not say.
@@ -2073,6 +2184,9 @@ gpu: number | null, arch: string, kernel: string, state: string, served: boolean
  */
 progress: number | null, compile_ms: number, detail: string, };
 
+/**
+ * One GPU's memory over the request: bytes moved by source, stall, peaks, what make_room took and what was left.
+ */
 export type ReportMemory = { gpu: number, 
 /**
  * What its allocator figures cover: `request`, or the process.
@@ -2109,6 +2223,9 @@ manifest: string, lane: string,
  */
 precision: string, adapters: Array<Adapter>, };
 
+/**
+ * Where part of an executor's span went: a stage's time, its longest legs and its steps.
+ */
 export type ReportStage = { 
 /**
  * The stage, `executor start`, `construction`, `loading <slot>`, or `unaccounted`.
@@ -2359,6 +2476,9 @@ recipes?: boolean,
  */
 agreed?: Agreed | null, };
 
+/**
+ * Where a run is: queued, in progress, or completed, failed or canceled.
+ */
 export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "canceled";
 
 /**
@@ -2416,7 +2536,6 @@ export type Skipped = { path: string, why: string, };
 export type Snap = { every: number, offset: number, first: number, };
 
 /**
- * A package environment the machine holds for this controller.
  * `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
  */
 export type Ssh = { 
@@ -2429,6 +2548,9 @@ args: Array<string>,
  */
 line: string, };
 
+/**
+ * An asset out of date, and why.
+ */
 export type Stale = { name: string, why: string, };
 
 /**
@@ -2458,6 +2580,9 @@ idle_deadline_ms?: number | null, };
  */
 export type Step = { gpu: number, step: number, capacity: number | null, hit: number, kept: number, store: number, derived: number, prefetched: number, evicted: Array<Taken> | null, };
 
+/**
+ * How many steps a stage took, and each one's mean time.
+ */
 export type Steps = { count: number, each_ms: number, };
 
 /**
@@ -2563,6 +2688,9 @@ export type TargetFunction = { function: string, description?: string, };
  */
 export type TimelineNow = { fps: number, tracks: Array<TrackNow>, };
 
+/**
+ * One tool, as `GET /v1/tools` lists it: what it makes and what its box asks for.
+ */
 export type Tool = { 
 /**
  * What a box names as its `tool`: `qwen-image-2/image`, `acme/sketchlab/draw`.
@@ -2781,6 +2909,9 @@ export type Tools = { tools: Array<Tool>,
  */
 note?: string | null, };
 
+/**
+ * One track's clips as they read now.
+ */
 export type TrackNow = { clips: Array<ClipNow>, };
 
 /**
@@ -2805,6 +2936,9 @@ skipped?: Array<Skipped>,
  */
 kept_in?: string | null, commit?: string | null, };
 
+/**
+ * When a history entry was undone, and by whom.
+ */
 export type Undone = { at_ms: number, by: By, };
 
 /**
@@ -2812,6 +2946,9 @@ export type Undone = { at_ms: number, by: By, };
  */
 export type Unpin = { name: string, };
 
+/**
+ * What an unpin left: the version it had pinned and what that put out of date.
+ */
 export type Unpinned = { name: string, 
 /**
  * The version it had pinned.
@@ -2959,4 +3096,7 @@ level: string, holds: string, held_back?: string, };
  */
 export type WarmLevel = "off" | "installed" | "downloaded" | "imported" | "host" | "gpu";
 
+/**
+ * Something noticed about a run that did not stop it: a stable code and a message.
+ */
 export type Warning = { code: string, message: string, };

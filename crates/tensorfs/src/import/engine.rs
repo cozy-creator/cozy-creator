@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub const TABLES: [&str; 16] = [
+pub(crate) const TABLES: [&str; 16] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("qwenimage21.comfy"),
@@ -44,7 +44,7 @@ pub const TABLES: [&str; 16] = [
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Table {
+pub(crate) struct Table {
     pub name: String,
     /// A pinned repository (`hf://org/repo@<commit>`) whose index, configs and tokenizers the
     /// output takes when its source carries none.
@@ -77,7 +77,7 @@ pub struct Table {
 /// `__metadata__` fields.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Producer {
+pub(crate) struct Producer {
     pub name: String,
     /// Most of a source's keys start with one of these.
     pub keys: Vec<String>,
@@ -89,7 +89,7 @@ pub struct Producer {
 /// A `__metadata__` value a producer writes.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum Match {
+pub(crate) enum Match {
     Is(String),
     Prefix { prefix: String },
     /// A JSON object holding these fields (ai-toolkit's `software`).
@@ -98,7 +98,7 @@ pub enum Match {
 
 impl Producer {
     /// Whether `group` is this producer's file.
-    pub fn wrote(&self, group: &Group) -> bool {
+    pub(crate) fn wrote(&self, group: &Group) -> bool {
         let its = (group.tensors.keys()).filter(|k| self.keys.iter().any(|p| k.starts_with(p.as_str()))).count();
         its * 2 > group.tensors.len() && self.metadata.iter().all(|(field, want)| {
             let Some(value) = group.metadata.get(field) else { return false };
@@ -115,7 +115,7 @@ impl Producer {
 /// A fixed tensor stated in the table: its bytes (base64) and their digest.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Constant {
+pub(crate) struct Constant {
     pub dtype: Dtype,
     pub shape: Vec<u64>,
     pub sha256: String,
@@ -126,7 +126,7 @@ pub struct Constant {
 /// per-output-channel magnitude (`[out]` or `[out, 1]`), stored as `<module>.lora_magnitude_vector` `[out]`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Lora {
+pub(crate) struct Lora {
     pub a: Vec<String>,
     pub b: Vec<String>,
     pub alpha: Vec<String>,
@@ -135,7 +135,7 @@ pub struct Lora {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Component {
+pub(crate) struct Component {
     pub name: String,
     /// The source keys this component owns in a shared file (longest prefix wins).
     #[serde(default)]
@@ -201,7 +201,7 @@ fn rows<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<Row>,
 
 #[derive(Debug, Deserialize)]
 #[serde(from = "RowRepr")]
-pub struct Row {
+pub(crate) struct Row {
     pub target: String,
     pub source: Src,
     pub ops: Ops,
@@ -232,7 +232,7 @@ impl From<RowRepr> for Row {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum Src {
+pub(crate) enum Src {
     Key(String),
     /// A byte range of a file the source set holds, found by its digest (no parser runs).
     Raw(Raw),
@@ -240,7 +240,7 @@ pub enum Src {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Raw {
+pub(crate) struct Raw {
     pub sha256: String,
     pub length: u64,
     pub offset: u64,
@@ -250,7 +250,7 @@ pub struct Raw {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Ops {
+pub(crate) struct Ops {
     #[serde(default)]
     pub view: Option<Vec<i64>>,
     #[serde(default)]
@@ -275,7 +275,7 @@ pub struct Ops {
 }
 
 /// Every built-in table, parsed once.
-pub fn tables() -> &'static [Table] {
+pub(crate) fn tables() -> &'static [Table] {
     static PARSED: std::sync::OnceLock<Vec<Table>> = std::sync::OnceLock::new();
     PARSED.get_or_init(|| {
         TABLES
@@ -295,7 +295,7 @@ pub fn tables_digest() -> &'static str {
 
 /// One table component matched to one source group.
 #[derive(Debug, Clone)]
-pub struct Claim {
+pub(crate) struct Claim {
     pub table: usize,
     pub component: usize,
     pub group: usize,
@@ -304,7 +304,7 @@ pub struct Claim {
 }
 
 #[derive(Debug, Default)]
-pub struct Recognized {
+pub(crate) struct Recognized {
     pub claims: Vec<Claim>,
     /// Table indices used, in order.
     pub tables: Vec<usize>,
@@ -316,7 +316,7 @@ pub struct Recognized {
 
 impl Recognized {
     /// The tables used, each with the producer that chose it: `h3.lora (musubi-tuner)`.
-    pub fn formats(&self, tables: &[Table]) -> Vec<String> {
+    pub(crate) fn formats(&self, tables: &[Table]) -> Vec<String> {
         (self.tables.iter())
             .map(|t| match self.producers.get(t) {
                 Some(p) => format!("{} ({p})", tables[*t].name),
@@ -327,7 +327,7 @@ impl Recognized {
 }
 
 /// The format a caller names to keep a source's keys as they are, for code that reads them raw.
-pub const AS_IS: &str = "as-is";
+pub(crate) const AS_IS: &str = "as-is";
 
 fn lora_split<'k>(lora: &Lora, key: &'k str) -> Option<(&'k str, Factor)> {
     let mut best: Option<(&str, Factor)> = None;
@@ -525,7 +525,7 @@ fn output_name(c: &Component, folder: &str) -> String {
 
 /// Which tables claim which groups. `named` restricts recognition to that table and makes
 /// a mismatch a refusal ([`AS_IS`]: to none); otherwise an unmatched group is unclaimed.
-pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Result<Recognized> {
+pub(crate) fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Result<Recognized> {
     if named == Some(AS_IS) {
         let unclaimed = (0..set.groups.len()).collect();
         return Ok(Recognized { unclaimed, ..Recognized::default() });
@@ -637,7 +637,7 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
 
 /// The family whose LoRA tables claim a LoRA's tensors, by key and shape as recognition does: one kept as its
 /// source spelled it (stored before a table read it) says its family too. None when no family's do, or two's.
-pub fn lora_family<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> Option<&'static crate::family::Family> {
+pub(crate) fn lora_family<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> Option<&'static crate::family::Family> {
     let tensor = |shape: &[u64]| Tensor { dtype: Dtype::BF16, shape: shape.to_vec(), file: 0, start: 0, len: 0, encoded: None, derive: None };
     let tensors = tensors.map(|(key, shape)| (key.to_owned(), tensor(shape))).collect();
     let group = Group { folder: String::new(), stem: String::new(), tensors, metadata: BTreeMap::new() };
@@ -649,7 +649,7 @@ pub fn lora_family<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> O
 
 /// The tables that know any of `group`'s keys, by how many, most first: `h3.lora (580 of 600
 /// keys)`.
-pub fn closest(group: &Group, tables: &[Table]) -> Vec<String> {
+pub(crate) fn closest(group: &Group, tables: &[Table]) -> Vec<String> {
     let knows = |table: &Table, key: &str| {
         table.components.iter().any(|c| {
             let Some(rest) = key.strip_prefix(c.prefix.as_str()) else { return false };
@@ -680,7 +680,7 @@ fn raw_present(set: &SourceSet, c: &Component) -> bool {
 
 /// One output tensor and how its bytes are read.
 #[derive(Debug, Clone)]
-pub struct Planned {
+pub(crate) struct Planned {
     pub component: String,
     pub key: String,
     pub dtype: Dtype,
@@ -691,7 +691,7 @@ pub struct Planned {
 }
 
 #[derive(Debug, Clone)]
-pub struct PlannedPart {
+pub(crate) struct PlannedPart {
     pub role: String,
     pub dtype: Dtype,
     pub shape: Vec<u64>,
@@ -699,7 +699,7 @@ pub struct PlannedPart {
 }
 
 #[derive(Debug, Clone)]
-pub struct Reading {
+pub(crate) struct Reading {
     pub file: usize,
     /// The source tensor's first byte in `file`, and its length.
     pub start: u64,
@@ -758,7 +758,7 @@ impl Reading {
 
 /// The output as contiguous source runs: `base + Σ index·stride` over the outer dims.
 #[derive(Debug, Clone)]
-pub struct Runs {
+pub(crate) struct Runs {
     pub run: u64,
     base: u64,
     outer: Vec<Dim>,
@@ -772,12 +772,12 @@ struct Dim {
 }
 
 impl Runs {
-    pub fn count(&self) -> u64 {
+    pub(crate) fn count(&self) -> u64 {
         self.outer.iter().map(|d| d.size).product()
     }
 
     /// Element offset of run `n`.
-    pub fn offset(&self, mut n: u64) -> u64 {
+    pub(crate) fn offset(&self, mut n: u64) -> u64 {
         let mut at = self.base;
         for d in self.outer.iter().rev() {
             let i = n % d.size;
@@ -808,7 +808,7 @@ fn resolve_dims(what: &str, dims: &[i64], numel: u64) -> Result<Vec<u64>> {
 }
 
 /// The output shape and source runs of `ops` over a contiguous `shape`.
-pub fn layout(what: &str, shape: &[u64], ops: &Ops) -> Result<(Vec<u64>, Runs)> {
+pub(crate) fn layout(what: &str, shape: &[u64], ops: &Ops) -> Result<(Vec<u64>, Runs)> {
     let numel: u64 = shape.iter().product();
     let dims = match &ops.view {
         Some(v) => resolve_dims(what, v, numel)?,
@@ -1050,7 +1050,7 @@ fn planned(
 /// Every output tensor, in construction order: claimed groups through their tables' rows in
 /// row order (the target's `state_dict()` order), then unclaimed groups as they are, under
 /// `identity(group)`'s component name.
-pub fn plan(
+pub(crate) fn plan(
     set: &SourceSet,
     tables: &[Table],
     r: &Recognized,
@@ -1339,7 +1339,7 @@ fn constant(table: &Table, name: &str, component: &str, key: &str) -> Result<Pla
 // ------------------------------------------------------------------------------ bytes
 
 /// Streams one planned part's bytes out of its source file.
-pub struct TensorReader<'f> {
+pub(crate) struct TensorReader<'f> {
     file: &'f File,
     r: &'f Reading,
     what: String,
@@ -1361,7 +1361,7 @@ const STEP: u64 = 8 << 20;
 
 impl<'f> TensorReader<'f> {
     /// `what` names the tensor in errors.
-    pub fn new(file: &'f File, r: &'f Reading, what: String) -> Result<TensorReader<'f>> {
+    pub(crate) fn new(file: &'f File, r: &'f Reading, what: String) -> Result<TensorReader<'f>> {
         let whole = if let Some(bytes) = &r.inline {
             Some(bytes.clone())
         } else if let Some(d) = &r.derive {
@@ -1472,7 +1472,7 @@ fn io(what: &str, e: std::io::Error) -> Refusal {
 }
 
 /// numpy's `astype(float16)` from f32 bits: round to nearest even, NaN payload kept.
-pub fn f32_to_f16(f: u32) -> u16 {
+pub(crate) fn f32_to_f16(f: u32) -> u16 {
     let sign = ((f & 0x8000_0000) >> 16) as u16;
     let exp = f & 0x7f80_0000;
     if exp >= 0x4780_0000 {

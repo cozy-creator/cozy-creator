@@ -16,47 +16,47 @@ const SPIN: [char; 29] = [
 /// Updates closer together than this draw once.
 const PACE: Duration = Duration::from_millis(50);
 /// Where the line's bar goes: it takes the width the rest leaves.
-pub const WIDE_BAR: char = '\0';
+pub(crate) const WIDE_BAR: char = '\0';
 
 /// What a line's layout reads.
-pub struct Shown<'a> {
+pub(crate) struct Shown<'a> {
     state: &'a State,
 }
 
 impl Shown<'_> {
-    pub fn spinner(&self) -> char {
+    pub(crate) fn spinner(&self) -> char {
         match self.state.finished {
             true => ' ',
             false => SPIN[(self.state.tick % SPIN.len() as u64) as usize],
         }
     }
 
-    pub fn msg(&self) -> &str {
+    pub(crate) fn msg(&self) -> &str {
         &self.state.msg
     }
 
     /// Bytes moved, `12.50 MiB`.
-    pub fn bytes(&self) -> Bytes {
+    pub(crate) fn bytes(&self) -> Bytes {
         Bytes(self.state.pos)
     }
 
-    pub fn total_bytes(&self) -> Bytes {
+    pub(crate) fn total_bytes(&self) -> Bytes {
         Bytes(self.state.len.unwrap_or(0))
     }
 
     /// The recent rate, `12.50 MiB/s`.
-    pub fn bytes_per_sec(&self) -> String {
+    pub(crate) fn bytes_per_sec(&self) -> String {
         format!("{}/s", Bytes(self.state.rate as u64))
     }
 
     /// Time since the line began, in its largest unit: `5s`, `2m`, `3h`.
-    pub fn elapsed(&self) -> String {
+    pub(crate) fn elapsed(&self) -> String {
         elapsed(self.state.started.elapsed())
     }
 }
 
 /// `n` bytes in binary units, two decimals past 1 KiB.
-pub struct Bytes(pub u64);
+pub(crate) struct Bytes(pub u64);
 
 impl std::fmt::Display for Bytes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -128,11 +128,11 @@ impl Drop for Shared {
 
 /// A status line; clones draw the same one.
 #[derive(Clone)]
-pub struct Line(Option<Arc<Shared>>);
+pub(crate) struct Line(Option<Arc<Shared>>);
 
 impl Line {
     /// A line on stderr when `shown`, laid out by `layout` ([`WIDE_BAR`] marks the bar), else hidden.
-    pub fn stderr(shown: bool, len: Option<u64>, layout: fn(&Shown) -> String) -> Self {
+    pub(crate) fn stderr(shown: bool, len: Option<u64>, layout: fn(&Shown) -> String) -> Self {
         let now = Instant::now();
         let state = State {
             msg: String::new(),
@@ -150,7 +150,7 @@ impl Line {
     }
 
     /// Redraws every `every` from a thread of its own, the spinner turning, until finished.
-    pub fn steady(&self, every: Duration) {
+    pub(crate) fn steady(&self, every: Duration) {
         let Some(shared) = &self.0 else { return };
         shared.state.lock().unwrap_or_else(|e| e.into_inner()).steady = true;
         let weak = Arc::downgrade(shared);
@@ -168,24 +168,24 @@ impl Line {
         });
     }
 
-    pub fn set_message(&self, msg: impl Into<String>) {
+    pub(crate) fn set_message(&self, msg: impl Into<String>) {
         self.update(|state| state.msg = msg.into(), true);
     }
 
-    pub fn set_length(&self, len: u64) {
+    pub(crate) fn set_length(&self, len: u64) {
         self.update(|state| state.len = Some(len), true);
     }
 
-    pub fn set_position(&self, pos: u64) {
+    pub(crate) fn set_position(&self, pos: u64) {
         self.update(|state| state.pos = pos, false);
     }
 
-    pub fn inc(&self, delta: u64) {
+    pub(crate) fn inc(&self, delta: u64) {
         self.update(|state| state.pos = state.pos.saturating_add(delta), false);
     }
 
     /// `text` on a line of its own above the status line.
-    pub fn println(&self, text: impl AsRef<str>) {
+    pub(crate) fn println(&self, text: impl AsRef<str>) {
         let Some(shared) = &self.0 else { return };
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let finished = state.finished;
@@ -193,7 +193,7 @@ impl Line {
     }
 
     /// Clears the line; nothing draws it again.
-    pub fn finish_and_clear(&self) {
+    pub(crate) fn finish_and_clear(&self) {
         let Some(shared) = &self.0 else { return };
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.finished = true;

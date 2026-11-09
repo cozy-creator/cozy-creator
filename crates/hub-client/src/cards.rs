@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::Client;
 
+/// A release's card: its release and package interface, read from the Hub's answer.
 #[derive(Debug)]
 pub struct Card {
     pub release: String,
@@ -33,11 +34,6 @@ impl Card {
         &self.document["package_interface"]
     }
 
-    /// A callable's request struct as its card spells it, with `accelerator: false` for a CPU
-    /// function: what `--describe --json` prints.
-    pub fn request(&self, name: &str) -> Value {
-        api::interface::request(&self.document["package_interface"], name)
-    }
 }
 
 /// Where `(hub, package)`'s cards live under `root`, the cozy home.
@@ -128,7 +124,7 @@ fn absent(error: Error, what: &str) -> Error {
 }
 
 /// The kept card of `release`.
-pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card> {
+pub(crate) fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card> {
     let path = file(&dir(root, hub, package), release);
     let document: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     read(&document).ok()
@@ -141,7 +137,7 @@ pub fn kept_releases(root: &Path, hub: &str, package: &str) -> Vec<String> {
 }
 
 /// Keeps a release card as the Hub answered it.
-pub fn keep(root: &Path, hub: &str, package: &str, document: &Value) -> Result<Card, Error> {
+pub(crate) fn keep(root: &Path, hub: &str, package: &str, document: &Value) -> Result<Card, Error> {
     let card = read(document)?;
     let dir = dir(root, hub, package);
     let kept = durable::private_dir(&dir).and_then(|()| {
@@ -161,7 +157,7 @@ fn file(dir: &Path, release: &str) -> PathBuf {
 }
 
 /// A release card: `{release: {release, …}, package_interface, …}`.
-pub fn read(document: &Value) -> Result<Card, Error> {
+pub(crate) fn read(document: &Value) -> Result<Card, Error> {
     let release = document["release"]["release"].as_str().unwrap_or_default();
     if release.is_empty() {
         return Err(Error::new(

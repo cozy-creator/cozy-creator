@@ -13,6 +13,7 @@ use crate::format::ObjectRef;
 /// What an async method of a `dyn` trait returns: `async fn` in a trait object is boxed by hand.
 pub type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// A source of objects: it says where each can be read, and whether anyone may read them.
 pub trait Origin: Send + Sync {
     /// Where each of `objects` can be read, in order. The Fetcher asks once per object as it
     /// starts it; an origin whose answer costs a round trip batches and caches.

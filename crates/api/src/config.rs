@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::error::{Error, Kind};
 
-pub const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
+pub(crate) const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
 
 /// Every environment variable the load reads, with its key: credentials for model sources, by the
 /// names their own tools use; the Hub (dev and CI point one command elsewhere with it); where
@@ -45,6 +45,7 @@ pub const ENV: [(&str, &str); 19] = [
 /// other one empty is unset.
 const EMPTY_IS_A_VALUE: [&str; 1] = ["CUDA_VISIBLE_DEVICES"];
 
+/// The loaded config: the Hub, `[calcifer]`, `[machine]`, model-source tokens and where releases come from.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -59,6 +60,7 @@ pub struct Config {
     pub download_url: Option<Url>,
 }
 
+/// `[calcifer]`: Calcifer's own settings.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct CalciferConfig {
@@ -264,6 +266,7 @@ impl<'de> Deserialize<'de> for Origin {
 }
 
 impl Origin {
+    /// `text` in its one spelling; refuses all but an http or https URL without credentials, query or fragment.
     pub fn parse(text: &str) -> Result<Self, Error> {
         let text = text.trim();
         let url = Url::parse(text).ok().filter(|u| {
@@ -361,7 +364,7 @@ pub fn load() -> Result<Loaded, Error> {
 }
 
 /// The load over a given environment and user home (what tests drive).
-pub fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> Result<Loaded, Error> {
+pub(crate) fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> Result<Loaded, Error> {
     let home = Home::under(&user_home);
     let path = home.config();
     let file = path.display().to_string();

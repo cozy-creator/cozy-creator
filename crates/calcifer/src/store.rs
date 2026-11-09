@@ -20,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehav
 
 /// The store's version (`PRAGMA user_version`), and the schema a new store is made with. A store
 /// at another version is not read.
-pub const VERSION: i64 = 7;
+pub(crate) const VERSION: i64 = 7;
 const SCHEMA: &str = "
     CREATE TABLE machines (
         name TEXT PRIMARY KEY,
@@ -168,14 +168,14 @@ fn measured_columns(writer: &mut Connection) -> Result<()> {
 
 /// What is measured of an output: 0 for what doesn't apply or couldn't be read.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Measured {
+pub(crate) struct Measured {
     pub width: u32,
     pub height: u32,
     pub duration_ms: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum StoreError {
+pub(crate) enum StoreError {
     #[error("Calcifer's store: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("Calcifer's store is at version {0}: this cozy reads version {current}", current = VERSION)]
@@ -192,7 +192,7 @@ pub(crate) type Result<T> = std::result::Result<T, StoreError>;
 
 /// Where a run is between its submission and its end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
+pub(crate) enum State {
     /// In the outbox: never sent to its current machine.
     Queued,
     /// Crossed the send boundary: its machine may hold it.
@@ -203,7 +203,7 @@ pub enum State {
 }
 
 #[derive(Clone, Debug)]
-pub struct RunRow {
+pub(crate) struct RunRow {
     pub id: RunId,
     pub number: u64,
     pub kind: Kind,
@@ -242,7 +242,7 @@ pub struct RunRow {
 
 /// Which runs a listing answers, newest first.
 #[derive(Debug, Default)]
-pub struct RunFilter {
+pub(crate) struct RunFilter {
     pub status: Option<Status>,
     /// A prefix of the run's target (`org/pkg`).
     pub target: Option<String>,
@@ -255,7 +255,7 @@ pub struct RunFilter {
 }
 
 /// A new run, recorded under its idempotency key.
-pub struct NewRun {
+pub(crate) struct NewRun {
     pub id: RunId,
     pub kind: Kind,
     pub target: String,
@@ -301,7 +301,7 @@ pub struct MachineRow {
 
 /// Durable effects of a run of machine frames, recorded in one transaction.
 #[derive(Debug, Default)]
-pub struct Batch {
+pub(crate) struct Batch {
     /// The highest durable sequence among the frames.
     pub cursor: u64,
     pub logs: Vec<(i64, String, String)>,
@@ -312,7 +312,7 @@ pub struct Batch {
 }
 
 impl Batch {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.cursor == 0
             && self.logs.is_empty()
             && self.products.is_empty()
@@ -323,7 +323,7 @@ impl Batch {
 
 /// What recording a machine's acceptance found.
 #[derive(Debug, PartialEq)]
-pub enum Acceptance {
+pub(crate) enum Acceptance {
     /// Recorded now.
     Fresh(Vec<Event>),
     /// Recorded before (a reattach).
@@ -334,7 +334,7 @@ pub enum Acceptance {
 
 /// An output whose newest revision has not landed on this computer, which Calcifer still owes.
 #[derive(Clone, Debug)]
-pub struct OwedExport {
+pub(crate) struct OwedExport {
     pub run: RunId,
     pub number: u64,
     pub name: String,
@@ -344,7 +344,7 @@ pub struct OwedExport {
 
 /// One output item at its newest revision, as its export sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutputRow {
+pub(crate) struct OutputRow {
     pub name: String,
     pub index: u32,
     pub rev: u64,
@@ -363,13 +363,13 @@ pub struct OutputRow {
 
 /// The store: writes on one connection, one at a time, each commit durable; reads on their own,
 /// which WAL lets go on while a commit waits on the disk, so a slow flush never holds up a read.
-pub struct Store {
+pub(crate) struct Store {
     writer: Mutex<Connection>,
     reader: Mutex<Connection>,
 }
 
 impl Store {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
@@ -424,7 +424,7 @@ impl Store {
     }
 
     /// What the write under `key` answered, if it was kept.
-    pub fn answer(&self, key: &str) -> Result<Option<Answer>> {
+    pub(crate) fn answer(&self, key: &str) -> Result<Option<Answer>> {
         self.read(|conn| {
             let row = conn.query_row("SELECT digest, status, content_type, body FROM answers WHERE key = ?1", [key], |r| {
                 Ok(Answer { digest: r.get(0)?, status: r.get(1)?, content_type: r.get(2)?, body: r.get(3)? })
@@ -434,7 +434,7 @@ impl Store {
     }
 
     /// Keeps what the write under `key` answered; answers older than a day go.
-    pub fn keep_answer(&self, key: &str, answer: &Answer) -> Result<()> {
+    pub(crate) fn keep_answer(&self, key: &str, answer: &Answer) -> Result<()> {
         let now = now_ms();
         self.write(|tx| {
             tx.execute("DELETE FROM answers WHERE at_ms < ?1", [now - ANSWER_KEPT_MS])?;
@@ -446,11 +446,11 @@ impl Store {
         })
     }
 
-    pub fn put_machine(&self, machine: &MachineRow) -> Result<()> {
+    pub(crate) fn put_machine(&self, machine: &MachineRow) -> Result<()> {
         self.write(|tx| put_machine_in(tx, machine))
     }
 
-    pub fn machine(&self, name: &str) -> Result<Option<MachineRow>> {
+    pub(crate) fn machine(&self, name: &str) -> Result<Option<MachineRow>> {
         self.read(|conn| {
             conn.query_row(
                 &format!("SELECT {MACHINE_COLUMNS} FROM machines WHERE name = ?1"),
@@ -462,7 +462,7 @@ impl Store {
         })
     }
 
-    pub fn machines(&self) -> Result<Vec<MachineRow>> {
+    pub(crate) fn machines(&self) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {MACHINE_COLUMNS} FROM machines ORDER BY name"
@@ -476,7 +476,7 @@ impl Store {
 
     /// The machines a name, a former name (alias) or a rental id names, in any state; one with
     /// that very name first.
-    pub fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
+    pub(crate) fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {MACHINE_COLUMNS} FROM machines
@@ -491,7 +491,7 @@ impl Store {
     }
 
     /// The name a renamed machine had before.
-    pub fn alias(&self, name: &str) -> Result<Option<String>> {
+    pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
         self.read(|conn| {
             Ok(conn
                 .query_row("SELECT alias FROM machines WHERE name = ?1", [name], |r| {
@@ -505,7 +505,7 @@ impl Store {
     /// Renames a machine that has not served (its Hub named it): its runs move with it, and the
     /// old name stays its alias. An ended machine that held the name gives it up: its history
     /// keeps it as `<name>@<when it was recorded>`.
-    pub fn rename_machine(&self, old: &str, new: &str) -> Result<bool> {
+    pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool> {
         self.write(|tx| {
             let renamable: bool = tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM machines WHERE name = ?1 AND served = 0 AND state <> 'ended')
@@ -532,7 +532,7 @@ impl Store {
     /// Records a rental another client of the account ordered, under its name; an ended machine that
     /// held the name gives it up (as in `rename_machine`), and a live one keeps it, so this one is
     /// named by its rental id. The row as recorded; none when its rental is recorded already.
-    pub fn adopt(&self, machine: &MachineRow) -> Result<Option<MachineRow>> {
+    pub(crate) fn adopt(&self, machine: &MachineRow) -> Result<Option<MachineRow>> {
         self.write(|tx| {
             let known: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM machines WHERE rental_id = ?1)", [&machine.rental_id], |r| r.get(0))?;
             if known {
@@ -553,7 +553,7 @@ impl Store {
     }
 
     /// Unsettled runs by machine: how many it accepted, and how many wait to be sent or accepted.
-    pub fn machine_load(&self) -> Result<std::collections::HashMap<String, (u32, u32)>> {
+    pub(crate) fn machine_load(&self) -> Result<std::collections::HashMap<String, (u32, u32)>> {
         self.read(|conn| {
             let mut statement = conn.prepare(
                 "SELECT machine, SUM(state = 'accepted'), SUM(state <> 'accepted') FROM runs
@@ -565,7 +565,7 @@ impl Store {
     }
 
     /// How many runs `machine` has been sent and hasn't settled, an update's aside: its work going.
-    pub fn working(&self, machine: &str) -> Result<u32> {
+    pub(crate) fn working(&self, machine: &str) -> Result<u32> {
         self.read(|conn| {
             let going = conn.query_row(
                 "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted')",
@@ -577,7 +577,7 @@ impl Store {
     }
 
     /// Whether an update of `machine` is yet to end: what's sent to it waits for that.
-    pub fn updating(&self, machine: &str) -> Result<bool> {
+    pub(crate) fn updating(&self, machine: &str) -> Result<bool> {
         self.read(|conn| {
             let held = conn.query_row(
                 "SELECT EXISTS (SELECT 1 FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled')",
@@ -589,7 +589,7 @@ impl Store {
     }
 
     /// Unsettled runs no machine was chosen for, oldest first, with where each may go.
-    pub fn unplaced(&self) -> Result<Vec<RunRow>> {
+    pub(crate) fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL ORDER BY number"
@@ -603,7 +603,7 @@ impl Store {
 
     /// Records an ask of a Hub under its key before it is made; the same key again answers the
     /// recorded ask (`false`), and with another intent (`digest`) is a conflict.
-    pub fn begin_ask(&self, ask: &Ask) -> Result<(Ask, bool)> {
+    pub(crate) fn begin_ask(&self, ask: &Ask) -> Result<(Ask, bool)> {
         self.write(|tx| {
             if let Some(recorded) = ask_in(tx, &ask.key)? {
                 return if recorded.digest == ask.digest {
@@ -631,7 +631,7 @@ impl Store {
     }
 
     /// The rent ask that made the machine.
-    pub fn rent_ask(&self, machine: &str) -> Result<Option<Ask>> {
+    pub(crate) fn rent_ask(&self, machine: &str) -> Result<Option<Ask>> {
         self.read(|conn| {
             conn.query_row(
                 &format!("SELECT {ASK_COLUMNS} FROM asks WHERE machine = ?1 AND kind = 'rent' AND state = 'done'"),
@@ -644,24 +644,24 @@ impl Store {
     }
 
     /// Asks a failed ask again.
-    pub fn reopen_ask(&self, key: &str) -> Result<()> {
+    pub(crate) fn reopen_ask(&self, key: &str) -> Result<()> {
         self.write(|tx| {
             tx.execute("UPDATE asks SET state = 'pending', reason = NULL WHERE key = ?1 AND state = 'failed'", [key])?;
             Ok(())
         })
     }
 
-    pub fn ask(&self, key: &str) -> Result<Option<Ask>> {
+    pub(crate) fn ask(&self, key: &str) -> Result<Option<Ask>> {
         self.read(|conn| ask_in(conn, key))
     }
 
     /// When the ask under `key` was first made.
-    pub fn ask_made_at(&self, key: &str) -> Result<Option<i64>> {
+    pub(crate) fn ask_made_at(&self, key: &str) -> Result<Option<i64>> {
         self.read(|conn| Ok(conn.query_row("SELECT created_at FROM asks WHERE key = ?1", [key], |r| r.get(0)).optional()?))
     }
 
     /// Replaces a pending ask's body: what it is to do, changed by its asker while it waits.
-    pub fn rewrite_ask(&self, key: &str, body: &[u8]) -> Result<()> {
+    pub(crate) fn rewrite_ask(&self, key: &str, body: &[u8]) -> Result<()> {
         self.write(|tx| {
             tx.execute("UPDATE asks SET body = ?2 WHERE key = ?1 AND state = 'pending'", params![key, body])?;
             Ok(())
@@ -669,7 +669,7 @@ impl Store {
     }
 
     /// Asks not yet answered: what a starting Calcifer asks again.
-    pub fn pending_asks(&self) -> Result<Vec<Ask>> {
+    pub(crate) fn pending_asks(&self) -> Result<Vec<Ask>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {ASK_COLUMNS} FROM asks WHERE state = 'pending' ORDER BY created_at"
@@ -683,7 +683,7 @@ impl Store {
 
     /// Ends an ask: `done` with the machine it made, or `failed` with why. A rent ask that is
     /// done records its machine in the same transaction.
-    pub fn settle_ask(
+    pub(crate) fn settle_ask(
         &self,
         key: &str,
         outcome: std::result::Result<Option<&MachineRow>, &str>,
@@ -710,7 +710,7 @@ impl Store {
     /// Records `new` under `key`, once: the same key again answers the recorded run (`false`), and
     /// with another submission (`digest`) is a conflict.
     /// The run recorded under `key`, if one is.
-    pub fn keyed(&self, key: &str) -> Result<Option<RunRow>> {
+    pub(crate) fn keyed(&self, key: &str) -> Result<Option<RunRow>> {
         self.read(|db| {
             let id = db.query_row("SELECT id FROM runs WHERE idempotency_key = ?1", [key], |r| r.get::<_, String>(0));
             id.optional()?.map_or(Ok(None), |id| run_in(db, &id))
@@ -719,7 +719,7 @@ impl Store {
 
     /// How many runs wait ahead of run `number` for `machine` (none: for any machine to be chosen):
     /// in the outbox, or in that machine's line.
-    pub fn queued_ahead(&self, machine: Option<&str>, number: u64) -> Result<u32> {
+    pub(crate) fn queued_ahead(&self, machine: Option<&str>, number: u64) -> Result<u32> {
         self.read(|db| {
             Ok(db.query_row(
                 "SELECT COUNT(*) FROM runs WHERE machine IS ?1 AND state <> 'settled' AND number < ?2
@@ -731,7 +731,7 @@ impl Store {
     }
 
     /// The run recorded under `key`, and the digest of what it asked.
-    pub fn recorded(&self, key: &str) -> Result<Option<(RunRow, String)>> {
+    pub(crate) fn recorded(&self, key: &str) -> Result<Option<(RunRow, String)>> {
         self.read(|db| {
             let found = db
                 .query_row("SELECT id, digest FROM runs WHERE idempotency_key = ?1", [key], |r| {
@@ -744,14 +744,14 @@ impl Store {
     }
 
     /// The idempotency key run `id` was submitted under.
-    pub fn key(&self, id: &str) -> Result<Option<String>> {
+    pub(crate) fn key(&self, id: &str) -> Result<Option<String>> {
         self.read(|db| {
             let key = db.query_row("SELECT idempotency_key FROM runs WHERE id = ?1", [id], |r| r.get(0));
             Ok(key.optional()?)
         })
     }
 
-    pub fn submit(&self, key: &str, digest: &str, new: NewRun) -> Result<(RunRow, bool)> {
+    pub(crate) fn submit(&self, key: &str, digest: &str, new: NewRun) -> Result<(RunRow, bool)> {
         let (id, fresh) = self.write(|tx| {
             let recorded: Option<(String, String)> = tx
                 .query_row("SELECT id, digest FROM runs WHERE idempotency_key = ?1", [key], |r| {
@@ -803,12 +803,12 @@ impl Store {
         Ok((row, fresh))
     }
 
-    pub fn run(&self, id: &str) -> Result<Option<RunRow>> {
+    pub(crate) fn run(&self, id: &str) -> Result<Option<RunRow>> {
         self.read(|conn| run_in(conn, id))
     }
 
     /// Run `id` and the others of its batch its machine hasn't accepted (queued or sent there), in their order.
-    pub fn batched(&self, id: &str) -> Result<Vec<RunRow>> {
+    pub(crate) fn batched(&self, id: &str) -> Result<Vec<RunRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1 OR (state IN ('queued', 'sent') AND batch <> ''
@@ -819,7 +819,7 @@ impl Store {
         })
     }
 
-    pub fn run_by_number(&self, number: u64) -> Result<Option<RunRow>> {
+    pub(crate) fn run_by_number(&self, number: u64) -> Result<Option<RunRow>> {
         self.read(|conn| {
             conn.query_row(
                 &format!("SELECT {RUN_COLUMNS} FROM runs WHERE number = ?1"),
@@ -833,7 +833,7 @@ impl Store {
 
     /// The runs `filter` names, newest first; how many more match beyond its limit; and each
     /// matching run it cannot read, as `run N: why`, left out.
-    pub fn runs(&self, filter: &RunFilter) -> Result<(Vec<RunRow>, u64, Vec<String>)> {
+    pub(crate) fn runs(&self, filter: &RunFilter) -> Result<(Vec<RunRow>, u64, Vec<String>)> {
         // A run of a project adapter, from when there were any, is no one's to read in a list, though `run show` has it.
         const MATCHING: &str = "FROM runs WHERE number < ?1
             AND target NOT LIKE '%/project-adapter-%'
@@ -877,7 +877,7 @@ impl Store {
     }
 
     /// The runs not yet settled, oldest first: what a starting Calcifer drives.
-    pub fn unsettled(&self) -> Result<Vec<RunId>> {
+    pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
             let mut statement =
                 conn.prepare("SELECT id FROM runs WHERE state <> 'settled' ORDER BY number")?;
@@ -891,7 +891,7 @@ impl Store {
     }
 
     /// Whether any unsettled run is written the staged object `digest`.
-    pub fn input_in_use(&self, digest: &Digest) -> Result<bool> {
+    pub(crate) fn input_in_use(&self, digest: &Digest) -> Result<bool> {
         self.read(|conn| {
             Ok(conn.query_row(
                 "SELECT EXISTS (SELECT 1 FROM runs, json_each(runs.inputs)
@@ -903,7 +903,7 @@ impl Store {
     }
 
     /// The run with what `?detail=full` adds: its measurements and its settled calls.
-    pub fn detail(&self, row: &RunRow) -> Result<Run> {
+    pub(crate) fn detail(&self, row: &RunRow) -> Result<Run> {
         self.read(|conn| {
             let mut run = record(conn, row)?;
             run.measurements = row
@@ -924,7 +924,7 @@ impl Store {
 
     /// Drops the measurements of the next runs past number `after` that settled before `before_ms`,
     /// in one short write. The number to go on from; None: no run past `after` is that old.
-    pub fn drop_measurements(&self, after: i64, before_ms: i64) -> Result<Option<i64>> {
+    pub(crate) fn drop_measurements(&self, after: i64, before_ms: i64) -> Result<Option<i64>> {
         self.write(|tx| {
             let mut next = tx.prepare("SELECT number, created_at FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
             let next = next
@@ -953,7 +953,7 @@ impl Store {
     }
 
     /// Places an unplaced run on `machine`.
-    pub fn place(&self, id: &str, machine: &str) -> Result<bool> {
+    pub(crate) fn place(&self, id: &str, machine: &str) -> Result<bool> {
         self.write(|tx| {
             Ok(tx.execute(
                 "UPDATE runs SET machine = ?2 WHERE id = ?1 AND machine IS NULL AND state = 'queued'",
@@ -963,7 +963,7 @@ impl Store {
     }
 
     /// Returns an unsent `any` run to the outbox, to be placed again.
-    pub fn unplace(&self, id: &str) -> Result<Vec<Event>> {
+    pub(crate) fn unplace(&self, id: &str) -> Result<Vec<Event>> {
         self.write(|tx| {
             let unplaced = tx.execute(
                 "UPDATE runs SET machine = NULL WHERE id = ?1 AND state = 'queued' AND wants = 'any'",
@@ -977,7 +977,7 @@ impl Store {
     }
 
     /// The send boundary: the run may reach `machine` only if this wins against a cancel.
-    pub fn mark_sent(&self, id: &str, machine: &str) -> Result<bool> {
+    pub(crate) fn mark_sent(&self, id: &str, machine: &str) -> Result<bool> {
         self.write(|tx| {
             Ok(tx.execute(
                 "UPDATE runs SET state = 'sent'
@@ -988,7 +988,7 @@ impl Store {
     }
 
     /// Records `machine`'s first `RunState` of the run.
-    pub fn accept(&self, id: &str, machine: &str, state: &v1::RunState) -> Result<Acceptance> {
+    pub(crate) fn accept(&self, id: &str, machine: &str, state: &v1::RunState) -> Result<Acceptance> {
         self.write(|tx| {
             let row = run_in(tx, id)?.ok_or_else(|| StoreError::Corrupt(format!("no run {id}")))?;
             if row.machine.as_deref() != Some(machine) || row.state == State::Queued {
@@ -1007,7 +1007,7 @@ impl Store {
     }
 
     /// An accepted run its machine forgot was sent again: the machine numbers its events anew.
-    pub fn sent_again(&self, id: &str, state: &v1::RunState) -> Result<()> {
+    pub(crate) fn sent_again(&self, id: &str, state: &v1::RunState) -> Result<()> {
         self.write(|tx| {
             tx.execute(
                 "UPDATE runs SET cursor = 0, machine_number = ?2, machine_state = ?3 WHERE id = ?1",
@@ -1018,7 +1018,7 @@ impl Store {
     }
 
     /// Records a batch of an accepted run's frames and moves its cursor past them.
-    pub fn observe(&self, id: &str, batch: Batch) -> Result<Vec<Event>> {
+    pub(crate) fn observe(&self, id: &str, batch: Batch) -> Result<Vec<Event>> {
         self.write(|tx| {
             let Some(row) = run_in(tx, id)?.filter(|row| row.state == State::Accepted) else {
                 return Ok(vec![]);
@@ -1050,7 +1050,7 @@ impl Store {
 
     /// A line of Calcifer's own in the run's log, whatever its machine has said yet (the inputs it
     /// reused); none once it settled.
-    pub fn note(&self, id: &str, level: &str, text: &str) -> Result<Vec<Event>> {
+    pub(crate) fn note(&self, id: &str, level: &str, text: &str) -> Result<Vec<Event>> {
         self.write(|tx| {
             if run_in(tx, id)?.is_none_or(|row| row.state == State::Settled) {
                 return Ok(vec![]);
@@ -1065,7 +1065,7 @@ impl Store {
     }
 
     /// Ends an accepted run with its machine's outcome.
-    pub fn settle(&self, id: &str, outcome: &v1::Outcome, cursor: u64) -> Result<Vec<Event>> {
+    pub(crate) fn settle(&self, id: &str, outcome: &v1::Outcome, cursor: u64) -> Result<Vec<Event>> {
         self.write(|tx| {
             let Some(row) = run_in(tx, id)?.filter(|row| row.state == State::Accepted) else {
                 return Ok(vec![]);
@@ -1099,7 +1099,7 @@ impl Store {
 
     /// Settles a run its machine answered it has no record of: canceled when that was asked, else
     /// failed. It is never sent again, since the machine may have run part of it.
-    pub fn lost(&self, id: &str, machine: &str) -> Result<Vec<Event>> {
+    pub(crate) fn lost(&self, id: &str, machine: &str) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
             Some(row) if row.state == State::Settled => Ok(vec![]),
             Some(row) if row.cancel_requested => {
@@ -1116,7 +1116,7 @@ impl Store {
 
     /// Settles a run its machine keeps answering an internal failure about: canceled when that was asked, else failed, saying where
     /// to look, as it may have gone on there. It is never sent again.
-    pub fn gave_up(&self, id: &str, machine: &str, code: &str, message: &str) -> Result<Vec<Event>> {
+    pub(crate) fn gave_up(&self, id: &str, machine: &str, code: &str, message: &str) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
             Some(row) if row.state == State::Settled => Ok(vec![]),
             Some(row) if row.cancel_requested => {
@@ -1133,7 +1133,7 @@ impl Store {
     }
 
     /// Ends a run its machine never accepted, with `reason`.
-    pub fn fail(&self, id: &str, reason: Reason) -> Result<Vec<Event>> {
+    pub(crate) fn fail(&self, id: &str, reason: Reason) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
             Some(row) if matches!(row.state, State::Queued | State::Sent) => {
                 end(tx, id, Status::Failed, Some(reason))
@@ -1143,12 +1143,12 @@ impl Store {
     }
 
     /// Adds a warning to an unsettled run, answered as its lifecycle event.
-    pub fn warn(&self, id: &str, warning: &Warning) -> Result<Vec<Event>> {
+    pub(crate) fn warn(&self, id: &str, warning: &Warning) -> Result<Vec<Event>> {
         self.warning(id, warning, false)
     }
 
     /// `warn`, of a run that may have ended: what comes of its outputs lands after it does.
-    pub fn warned(&self, id: &str, warning: &Warning) -> Result<Vec<Event>> {
+    pub(crate) fn warned(&self, id: &str, warning: &Warning) -> Result<Vec<Event>> {
         self.warning(id, warning, true)
     }
 
@@ -1169,7 +1169,7 @@ impl Store {
 
     /// Records the intent to cancel. Unsent work ends canceled here, in the transaction that the
     /// send boundary races; sent work keeps the intent until its machine's outcome arrives.
-    pub fn request_cancel(&self, id: &str) -> Result<Vec<Event>> {
+    pub(crate) fn request_cancel(&self, id: &str) -> Result<Vec<Event>> {
         self.write(|tx| {
             let Some(row) = run_in(tx, id)? else {
                 return Ok(vec![]);
@@ -1198,7 +1198,7 @@ impl Store {
     /// ends canceled when that was asked) and is never run again; one it never confirmed goes back
     /// to the outbox under the same id when Calcifer placed it and the machine had served, and
     /// otherwise fails. Answers the events, by run.
-    pub fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
+    pub(crate) fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
         self.write(|tx| {
             let served: Option<bool> = tx
                 .query_row("SELECT served FROM machines WHERE name = ?1", [machine], |r| r.get(0))
@@ -1238,13 +1238,13 @@ impl Store {
     }
 
     /// The run as the API answers it.
-    pub fn record(&self, row: &RunRow) -> Result<Run> {
+    pub(crate) fn record(&self, row: &RunRow) -> Result<Run> {
         self.read(|conn| record(conn, row))
     }
 
     /// The run's durable events after `after`, as a reconnecting stream gets them: its current
     /// lifecycle event, each output item changed since at its newest revision, and its log lines.
-    pub fn events_after(&self, id: &str, after: u64) -> Result<Vec<Event>> {
+    pub(crate) fn events_after(&self, id: &str, after: u64) -> Result<Vec<Event>> {
         self.read(|conn| {
             let Some(row) = run_in(conn, id)? else { return Ok(vec![]) };
             let run = record(conn, &row)?;
@@ -1295,7 +1295,7 @@ impl Store {
 
     /// The runs, by id and number, with an output whose file lacks its newest revision that
     /// Calcifer has not given up.
-    pub fn exports_owed(&self) -> Result<Vec<(RunId, u64)>> {
+    pub(crate) fn exports_owed(&self) -> Result<Vec<(RunId, u64)>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT DISTINCT runs.id, runs.number FROM outputs JOIN runs ON runs.id = outputs.run
@@ -1312,7 +1312,7 @@ impl Store {
 
     /// The outputs of runs on `machine` whose file lacks its newest revision and that Calcifer has
     /// not given up, by run and appearance.
-    pub fn exports_owed_on(&self, machine: &str) -> Result<Vec<OwedExport>> {
+    pub(crate) fn exports_owed_on(&self, machine: &str) -> Result<Vec<OwedExport>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT runs.id, runs.number, outputs.name, outputs.idx, outputs.length
@@ -1347,7 +1347,7 @@ impl Store {
     }
 
     /// The run's outputs to export, in the order they first appeared.
-    pub fn outputs_to_export(&self, run: &str) -> Result<Vec<OutputRow>> {
+    pub(crate) fn outputs_to_export(&self, run: &str) -> Result<Vec<OutputRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {OUTPUT_COLUMNS} FROM outputs WHERE run = ?1 AND {OWED} ORDER BY created_seq"
@@ -1359,7 +1359,7 @@ impl Store {
     }
 
     /// The newest run on `machine` that made these bytes, with its output: what can read them from there.
-    pub fn making(&self, digest: &str, machine: &str) -> Result<Option<(RunRow, OutputRow)>> {
+    pub(crate) fn making(&self, digest: &str, machine: &str) -> Result<Option<(RunRow, OutputRow)>> {
         let found: Option<(String, String, i64)> = self.read(|conn| {
             Ok(conn
                 .query_row(
@@ -1374,7 +1374,7 @@ impl Store {
         Ok(self.run(&run)?.zip(self.output(&run, &name, index as u32)?))
     }
 
-    pub fn output(&self, run: &str, name: &str, index: u32) -> Result<Option<OutputRow>> {
+    pub(crate) fn output(&self, run: &str, name: &str, index: u32) -> Result<Option<OutputRow>> {
         self.read(|conn| {
             Ok(conn
                 .query_row(
@@ -1388,7 +1388,7 @@ impl Store {
 
     /// Records the output's file at `path` as holding revision `rev`, and what was measured of it; while that is its current
     /// revision, the run's next event says it landed.
-    pub fn exported(
+    pub(crate) fn exported(
         &self,
         run: &str,
         name: &str,
@@ -1408,7 +1408,7 @@ impl Store {
 
     /// Records why revision `rev` of the output will not be exported; while that is its current
     /// revision, the run's next event is the item done again, carrying why.
-    pub fn export_failed(
+    pub(crate) fn export_failed(
         &self,
         run: &str,
         name: &str,
@@ -1703,7 +1703,7 @@ fn move_machine(tx: &Transaction, from: &str, to: &str, alias: Option<&str>) -> 
 
 /// What a Hub is asked to do, recorded before it is asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AskKind {
+pub(crate) enum AskKind {
     Rent,
     End,
 }
@@ -1718,7 +1718,7 @@ impl AskKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AskState {
+pub(crate) enum AskState {
     Pending,
     Done,
     Failed,
@@ -1726,7 +1726,7 @@ pub enum AskState {
 
 /// What a project write answered under its `Idempotency-Key`, and the digest of the ask (method, path and body).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Answer {
+pub(crate) struct Answer {
     pub digest: String,
     pub status: u16,
     pub content_type: String,
@@ -1735,7 +1735,7 @@ pub struct Answer {
 
 /// One ask of a Hub: its key is the idempotency key the Hub gets, and `body` the exact bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ask {
+pub(crate) struct Ask {
     pub key: String,
     pub kind: AskKind,
     pub hub: String,

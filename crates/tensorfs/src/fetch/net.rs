@@ -52,21 +52,21 @@ impl From<Refusal> for GetError {
 }
 
 impl Answer {
-    pub fn status(&self) -> u16 {
+    pub(crate) fn status(&self) -> u16 {
         self.response.status().as_u16()
     }
 
-    pub fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.response.headers().get(name)?.to_str().ok()
     }
 
     /// The wait an answer states (`Retry-After` in seconds).
-    pub fn stated_wait(&self) -> Option<Duration> {
+    pub(crate) fn stated_wait(&self) -> Option<Duration> {
         self.header("retry-after")?.trim().parse().ok().map(Duration::from_secs)
     }
 
     /// `Content-Range: bytes <first>-<last>/<total>`: its first byte, and its total unless `*`.
-    pub fn content_range(&self) -> Option<(u64, Option<u64>)> {
+    pub(crate) fn content_range(&self) -> Option<(u64, Option<u64>)> {
         let (span, total) = self.header("content-range")?.strip_prefix("bytes ")?.split_once('/')?;
         let first = span.split_once('-')?.0.trim().parse().ok()?;
         let total = match total.trim() {
@@ -77,12 +77,12 @@ impl Answer {
     }
 
     /// The next piece of body, `None` at the end.
-    pub async fn frame(&mut self) -> Result<Option<Bytes>> {
+    pub(crate) async fn frame(&mut self) -> Result<Option<Bytes>> {
         self.response.chunk().await.map_err(|error| Refusal { code: Code::TRANSFER_FAILED, detail: format!("the body failed: {}", chain(&error)) })
     }
 
     /// The start of the body, its whitespace collapsed: what the server said.
-    pub async fn said(&mut self) -> String {
+    pub(crate) async fn said(&mut self) -> String {
         let mut body = Vec::new();
         while body.len() < 512 {
             match self.frame().await {
@@ -177,7 +177,7 @@ impl Client {
         Client { inner, policy }
     }
 
-    pub fn policy(&self) -> &SourcePolicy {
+    pub(crate) fn policy(&self) -> &SourcePolicy {
         &self.policy
     }
 

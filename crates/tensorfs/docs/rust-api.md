@@ -13,6 +13,10 @@ are separate documents.
 
 The [type reference](rust-api-types.md) lists every declaration.
 
+Two crates: `tensorfs-core` is the format, the store, its writer and the read engine, with no
+network or async runtime; `tensorfs` adds fetch, import, model families and this Client API, and
+re-exports the core's `format`, `store`, `writer`, `io` and `err`.
+
 ## Rust: create a client and read a model
 
 Inside an async Rust function, create one client and reuse it:

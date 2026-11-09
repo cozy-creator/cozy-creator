@@ -48,7 +48,7 @@ const PROVIDER: &[&str] = &[
 const PROVIDER_PREFIXES: &[&str] = &["RUNPOD_TCP_PORT_", "VAST_TCP_PORT_"];
 
 /// One machine's configuration.
-pub struct Config {
+pub(crate) struct Config {
     pub grant: Grant,
     /// CUDA_VISIBLE_DEVICES as the launcher set it: indices or UUIDs; empty is no GPU.
     pub visible_devices: Option<String>,
@@ -70,7 +70,7 @@ pub struct Config {
 }
 
 /// The one load.
-pub fn load(lifetime: Lifetime) -> io::Result<Config> {
+pub(crate) fn load(lifetime: Lifetime) -> io::Result<Config> {
     let loaded = shared::load().map_err(|e| invalid(&named(&e.message)))?;
     from_loaded(lifetime, loaded, shared::environment())
 }
@@ -78,7 +78,7 @@ pub fn load(lifetime: Lifetime) -> io::Result<Config> {
 /// `machine.gpu_memory_limit` and `machine.mode` as config.toml says them now. The service reads
 /// them at each start: it is forked from a parent that loaded the config before an update wrote
 /// the limit or a hand edit the mode.
-pub fn reread(config: &mut Config) -> io::Result<()> {
+pub(crate) fn reread(config: &mut Config) -> io::Result<()> {
     let loaded = shared::load().map_err(|e| invalid(&named(&e.message)))?;
     config.gpu_memory_limit = loaded.config.machine.gpu_memory_limit;
     config.mode = mode(config.grant.lifetime, &loaded.config.machine);
@@ -102,7 +102,7 @@ fn mode(lifetime: Lifetime, machine: &MachineConfig) -> MachineMode {
 
 /// Takes the readiness key out of the environment, so nothing this machine starts inherits it.
 /// Call before any thread starts, after a provider's re-execution (which still needs it).
-pub fn forget_receipt_key() {
+pub(crate) fn forget_receipt_key() {
     for name in RECEIPT_KEYS {
         std::env::remove_var(name);
     }
@@ -111,17 +111,11 @@ pub fn forget_receipt_key() {
 /// What a process this service leaves running inherits. A rental's Calcifer never holds the worker
 /// credential, and reads its rental's Hub. Called in the service alone, before any thread: its stable
 /// parent keeps the credential for the machine it may exec again.
-pub fn for_what_it_starts(grant: &Grant) {
+pub(crate) fn for_what_it_starts(grant: &Grant) {
     std::env::remove_var("COZY_WORKER_AUTH_TOKEN");
     if let Some(hub) = &grant.hub {
         std::env::set_var("COZY_HUB_URL", &hub.origin);
     }
-}
-
-/// The load over a given environment and user home (what the tests drive).
-pub fn load_from(lifetime: Lifetime, environment: &BTreeMap<String, String>, user_home: PathBuf) -> io::Result<Config> {
-    let loaded = shared::load_from(environment, user_home).map_err(|e| invalid(&named(&e.message)))?;
-    from_loaded(lifetime, loaded, environment)
 }
 
 fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String, String>) -> io::Result<Config> {
@@ -169,7 +163,7 @@ fn named(message: &str) -> String {
 
 /// Logs to stderr, and to `<dir>/tensord.<date>.log` when a directory is given: rolled daily,
 /// the newest seven kept.
-pub fn init_logs(dir: Option<&Path>) {
+pub(crate) fn init_logs(dir: Option<&Path>) {
     use tracing_subscriber::fmt::writer::MakeWriterExt;
     let builder = tracing_subscriber::fmt().with_ansi(false);
     let file = dir.and_then(|dir| {

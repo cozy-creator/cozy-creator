@@ -9,7 +9,7 @@ use std::{
 
 use tensorfs::{
     err::{refuse, Code, Refusal, Result},
-    fetch::{policy::is_loopback_origin, Boxed, Location, Origin},
+    fetch::{is_loopback_origin, Boxed, Location, Origin},
     format::ObjectRef,
 };
 
@@ -20,7 +20,7 @@ use crate::{
 
 const MAX_REDIRECTS: usize = 8;
 
-pub fn wheel(distribution: &str, version: &str, uv: &super::uv::Uv, python: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
+pub(crate) fn wheel(distribution: &str, version: &str, uv: &super::uv::Uv, python: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
     let project = distribution.replace('_', "-");
     if version.is_empty() || !version.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-+!".contains(&c)) {
         return Err(io::Error::other("a published wheel requires a concrete version"));
@@ -77,7 +77,7 @@ fn selected(plan: &str, distribution: &str, version: &str) -> io::Result<Artifac
 /// The newest GitHub prerelease of `distribution` whose version `meets` admits and that holds a wheel
 /// for this machine, landed in `dir`: its version and path. None: no release meets it. Err: the
 /// releases couldn't be read, which says nothing of what is published.
-pub fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
+pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
     #[derive(serde::Deserialize)]
     struct Release { tag_name: String, #[serde(default)] draft: bool }
     let http = reqwest::Client::builder().user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION"))).build().map_err(io::Error::other)?;

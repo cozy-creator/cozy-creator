@@ -8,55 +8,36 @@ publish.workspace = true
 [[bin]]
 name = "tfs"
 path = "src/bin/tfs/main.rs"
-required-features = ["store"]
 
 [features]
-# The store, fetch, convert and everything that opens one. Without it: the format and the
-# read engine only.
-default = ["store"]
-# GPU destinations through Varena: the wheel's. `cozy` opens no CUDA and links no native core.
-cuda = ["dep:varena", "dep:rustix"]
-# `Writer::quantize` and its SVDQ fit: faer and its tree. The wheel's; `cozy` never quantizes.
-quantize = ["store", "dep:faer", "dep:rayon", "dep:pulp", "dep:rand", "dep:rand_chacha", "dep:rand_distr"]
-store = ["dep:aws-lc-rs", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:reqwest", "dep:bytes", "dep:futures-util", "dep:tracing-subscriber"]
+# GPU destinations through Varena (the wheel's).
+cuda = ["tensorfs-core/cuda"]
+# `Writer::quantize` (the wheel's).
+quantize = ["tensorfs-core/quantize"]
 
 [dependencies]
-# SVDQ producer revision pins its factorization and random-sketch implementation.
-faer = { version = "=0.24.4", path = "../../vendor/faer", default-features = false, features = ["std", "linalg"], optional = true }
-# The SVDQ fit's one pool of the machine's cores; faer itself stays sequential per call.
-rayon = { version = "1.12.0", optional = true }
-# The fit's products: faer's own SIMD dispatch, the arithmetic of its 16-cubed nano-GEMM.
-pulp = { version = "0.22.3", default-features = false, features = ["std", "x86-v3"], optional = true }
-rand = { version = "=0.9.5", default-features = false, features = ["std"], optional = true }
-rand_chacha = { version = "=0.9.0", default-features = false, features = ["std"], optional = true }
-rand_distr = { version = "=0.5.1", default-features = false, features = ["std"], optional = true }
+tensorfs-core.workspace = true
 base64.workspace = true
 platform.workspace = true
-varena = { workspace = true, optional = true }
-libloading.workspace = true
-# Public tag names are PEP 440 versions, ordered as pip orders them (src/format/repo.rs).
-pep440_rs = { version = "0.7.3", default-features = false }
 serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2.workspace = true
-thiserror.workspace = true
-rustix = { workspace = true, features = ["net", "event"], optional = true }
+rustix = { workspace = true, features = ["net", "event"] }
 # The one HTTP client (src/fetch/net.rs): reqwest, over rustls with the webpki roots.
-reqwest = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
-webpki-roots = { workspace = true, optional = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
 # Requests in flight are tasks, never a thread each.
-tokio = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
-futures-util = { workspace = true, features = ["std"], optional = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true, features = ["std"] }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true }
 # Endpoint credentials (src/fetch/token.rs): S3 SigV4's HMAC, from the TLS stack's own crypto.
-aws-lc-rs = { workspace = true, optional = true }
+aws-lc-rs = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { workspace = true, features = ["fs", "process", "thread"], optional = true }
 
 [lints]
 workspace = true

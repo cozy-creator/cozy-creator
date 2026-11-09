@@ -33,13 +33,15 @@ use strict; use warnings;
 my ($doc, $held, $undocumented, $crates) = @ARGV;
 sub slurp { local (@ARGV, $/) = @_; <> }
 my ($client, $protocol) = map { slurp("$crates/$_") } 'hub-client/src/types.rs', 'api/src/calcifer.rs';
-my %reexported = map { $_ => 1 } (($client =~ /pub use api::calcifer::\{([^}]*)\}/)[0] // '') =~ /(\w+)/g;
+my %reexported = map { $_ => 1 } (($client =~ /pub(?:\(crate\))? use api::calcifer::\{([^}]*)\}/)[0] // '') =~ /(\w+)/g;
 my ($schemas) = slurp($doc) =~ /^  schemas:\n(.*?)(?=^ {0,2}\S|\z)/ms or die "hub-fields: no components.schemas\n";
 my %excused = map { $_ => 1 } split ' ', $undocumented;
 my ($bad, $count) = (0, 0);
 for (split ' ', $held) {
   my ($type, $schema) = split /=/; $schema //= $type;
-  my @found = ($reexported{$type} ? $protocol : $client) =~ /^((?:#\[[^\n]*\]\n)*)pub struct \Q$type\E \{\n(.*?)^\}/msg;
+  my $struct = qr/^((?:#\[[^\n]*\]\n)*)pub(?:\(crate\))? struct \Q$type\E \{\n(.*?)^\}/ms;
+  my @found = ($reexported{$type} ? $protocol : $client) =~ /$struct/g;
+  @found = $protocol =~ /$struct/g unless @found;
   @found == 2 or die "hub-fields: no one `pub struct $type`\n";
   my ($attrs, $body) = @found;
   $attrs =~ /rename_all|flatten/ and die "hub-fields: $type renames its fields\n";

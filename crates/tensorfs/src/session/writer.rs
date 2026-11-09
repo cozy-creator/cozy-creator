@@ -18,6 +18,7 @@ pub struct PartData<'a> {
     pub data: &'a mut dyn Read,
 }
 
+/// Options for `Client::writer`: a header file `dest` or a `repo_id` commit, a base, a resume key.
 #[derive(Default)]
 pub struct WriterOptions<'a> {
     pub dest: Option<&'a Path>,
@@ -53,6 +54,7 @@ pub struct Writer {
     context: Context,
 }
 
+/// One component of a `Writer`: put, copy and order its tensors, and add its assets.
 pub struct ComponentWriter<'a> {
     writer: &'a mut Writer,
     name: String,
@@ -124,11 +126,9 @@ impl Client {
                 detail: "a streaming Writer needs the caller's active Tokio runtime".into(),
             })?;
             let stream = Arc::new(crate::fetch::Stream::new(endpoint.inner, runtime));
-            store
-                .streaming_writer(stream, repo_id, &lane, base, options.resume)
-                .map_err(from_writer)?
+            crate::fetch::streaming_writer(&store, stream, repo_id, &lane, base, options.resume).map_err(from_writer)?
         } else {
-            store.writer(base, options.resume).map_err(from_writer)?
+            crate::writer(&store, base, options.resume).map_err(from_writer)?
         };
         Ok(Writer {
             state: Arc::new(Mutex::new(State {

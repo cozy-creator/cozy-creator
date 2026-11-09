@@ -25,7 +25,7 @@ use crate::{
 const PLAYER: &str = "https://cozy-creator.github.io/cozy-creator/play/";
 
 #[derive(Deserialize)]
-pub struct Ask {
+pub(crate) struct Ask {
     /// `name`, or `name/i` for a list's item `i`.
     output: String,
     /// How long the link works, such as `30m`, `24h` or `7d`.
@@ -68,7 +68,7 @@ fn link(address: &str, fingerprint: &str, token: &str, run: &RunId, output: &str
     format!("{PLAYER}#{fragment}")
 }
 
-pub async fn play(
+pub(crate) async fn play(
     State(api): State<Arc<Api>>,
     Path(key): Path<String>,
     query: Result<Query<Ask>, QueryRejection>,

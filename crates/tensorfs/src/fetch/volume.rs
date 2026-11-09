@@ -22,13 +22,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use platform::durable::Mode;
 
 use super::origin::{Boxed, Location, Origin};
-use super::ObjectStore;
+use crate::store::Store;
 use crate::err::Result;
 use crate::format::ObjectRef;
 
 /// Bytes per read or write call into the volume: each call is progress.
 pub(crate) const STEP: usize = 8 << 20;
 
+/// A directory in the static-origin layout, read before the origin and filled from fetches.
 #[derive(Clone)]
 pub struct VolumeOrigin(Arc<Inner>);
 
@@ -55,7 +56,7 @@ const ABANDONED: u8 = 2;
 
 impl VolumeOrigin {
     /// The directory at `root`; an unused blob stays at least `ttl`.
-    pub fn new(root: impl Into<PathBuf>, ttl: Duration) -> VolumeOrigin {
+    pub(crate) fn new(root: impl Into<PathBuf>, ttl: Duration) -> VolumeOrigin {
         VolumeOrigin(Arc::new(Inner {
             root: root.into(),
             ttl,
@@ -70,10 +71,6 @@ impl VolumeOrigin {
         let root = root.into();
         let device = |path: &Path| platform::durable::device(path).ok();
         (device(&root)? != device(root.parent()?)?).then(|| VolumeOrigin::new(root, ttl))
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.0.root
     }
 
     pub(crate) fn blob(&self, object: &ObjectRef) -> PathBuf {
@@ -94,7 +91,7 @@ impl VolumeOrigin {
     /// `replace` is not asked.
     pub(crate) fn write(
         &self,
-        store: &dyn ObjectStore,
+        store: &Store,
         object: &ObjectRef,
         replace: bool,
     ) -> Wrote {
@@ -125,12 +122,12 @@ impl VolumeOrigin {
 
     fn copy(
         &self,
-        store: &dyn ObjectStore,
+        store: &Store,
         object: &ObjectRef,
         path: &Path,
     ) -> std::io::Result<()> {
         static UNIQUE: AtomicU64 = AtomicU64::new(0);
-        let mut source = store.open(object)?;
+        let mut source = open(store, object)?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -269,4 +266,13 @@ impl Origin for VolumeOrigin {
     fn public(&self) -> bool {
         false
     }
+}
+
+/// A held object's bytes, or why not as an I/O error.
+pub(super) fn open(store: &Store, object: &ObjectRef) -> std::io::Result<std::fs::File> {
+    store.file(object).map_err(|error| match error {
+        crate::store::Error::Absent(_) => std::io::Error::new(std::io::ErrorKind::NotFound, error.to_string()),
+        crate::store::Error::Io { source, .. } => source,
+        other => std::io::Error::other(other.to_string()),
+    })
 }

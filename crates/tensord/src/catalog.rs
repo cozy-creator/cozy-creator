@@ -10,15 +10,15 @@ use std::{
 };
 
 /// The package a Runtime's built-in operations run as: every environment holds them.
-pub const BUILTIN_PACKAGE: &str = "runtime/operations";
+pub(crate) const BUILTIN_PACKAGE: &str = "runtime/operations";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Dependency {
+pub(crate) struct Dependency {
     pub name: String,
     pub version: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Generation {
+pub(crate) struct Generation {
     pub identity: String,
     pub package: String,
     pub version: String,
@@ -53,7 +53,7 @@ pub struct Generation {
 /// Another package's App installed in an environment: its calls run as child runs of its own
 /// package, from the caller's environment.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Callee {
+pub(crate) struct Callee {
     pub distribution: String,
     pub version: String,
     pub application: String,
@@ -69,7 +69,7 @@ impl Generation {
 
     /// The GPU groups the constructing entrypoints of this environment (its own App's and its
     /// callees') run on `available` GPUs, smallest first: a workflow's allocation widths. None: no GPU.
-    pub fn groups(&self, available: usize) -> Vec<u32> {
+    pub(crate) fn groups(&self, available: usize) -> Vec<u32> {
         let mut groups: Vec<u32> = std::iter::once(&self.interface)
             .chain(self.callees.iter().map(|callee| &callee.interface))
             .flat_map(api::interface::entrypoints)
@@ -82,12 +82,12 @@ impl Generation {
         groups
     }
     /// The widest of `groups`. 0: none.
-    pub fn widest_group(&self, available: usize) -> u32 {
+    pub(crate) fn widest_group(&self, available: usize) -> u32 {
         self.groups(available).last().copied().unwrap_or(0)
     }
     /// The package an application of this environment belongs to (the root's or a callee's),
     /// its release and its interface.
-    pub fn app(&self, application: &str) -> Option<(&str, &str, &serde_json::Value)> {
+    pub(crate) fn app(&self, application: &str) -> Option<(&str, &str, &serde_json::Value)> {
         if application.is_empty() || application == self.application {
             return Some((&self.package, &self.version, &self.interface));
         }
@@ -98,12 +98,12 @@ impl Generation {
     }
 }
 #[derive(Clone)]
-pub struct HeldGeneration {
+pub(crate) struct HeldGeneration {
     pub record: Generation,
     hold: Arc<File>,
 }
 #[derive(Clone)]
-pub struct Catalog {
+pub(crate) struct Catalog {
     root: PathBuf,
 }
 fn invalid(detail: &str) -> io::Error {
@@ -121,13 +121,13 @@ pub(crate) fn normalized(name: &str) -> String {
     out
 }
 impl Catalog {
-    pub fn new(root: &Path) -> io::Result<Self> {
+    pub(crate) fn new(root: &Path) -> io::Result<Self> {
         fs::create_dir_all(root)?;
         Ok(Self {
             root: platform::durable::canonical(root)?,
         })
     }
-    pub fn resolve(&self, identity: &str) -> io::Result<HeldGeneration> {
+    pub(crate) fn resolve(&self, identity: &str) -> io::Result<HeldGeneration> {
         let directory = self.directory(identity)?;
         if directory.symlink_metadata()?.file_type().is_symlink()
             || platform::durable::canonical(&directory)? != directory
@@ -167,7 +167,7 @@ impl Catalog {
         })
     }
     /// The generation's record, read only: no hold is taken and it is not marked used.
-    pub fn record(&self, identity: &str) -> io::Result<Generation> {
+    pub(crate) fn record(&self, identity: &str) -> io::Result<Generation> {
         self.read(&self.directory(identity)?, identity)
     }
     fn directory(&self, identity: &str) -> io::Result<PathBuf> {
@@ -191,12 +191,12 @@ impl Catalog {
         }
         Ok(record)
     }
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
     /// `identities`, the most recently used first (their `.hold`'s time, which `resolve` sets).
     /// They resolve least recent first, so the times this sets keep that order.
-    pub fn recent(&self, identities: impl IntoIterator<Item = String>) -> Vec<HeldGeneration> {
+    pub(crate) fn recent(&self, identities: impl IntoIterator<Item = String>) -> Vec<HeldGeneration> {
         let used = |identity: &str| {
             let hold = self.directory(identity).ok()?.join(".hold");
             hold.metadata().ok()?.modified().ok()
@@ -210,7 +210,7 @@ impl Catalog {
 }
 impl HeldGeneration {
     /// One App's executor view, with the environment and lifetime hold unchanged.
-    pub fn application(&self, application: &str) -> io::Result<Self> {
+    pub(crate) fn application(&self, application: &str) -> io::Result<Self> {
         if application.is_empty() || application == self.record.application {
             return Ok(self.clone());
         }
@@ -225,11 +225,11 @@ impl HeldGeneration {
         held.record.closures.clear();
         Ok(held)
     }
-    pub fn retention(&self) -> Arc<File> {
+    pub(crate) fn retention(&self) -> Arc<File> {
         self.hold.clone()
     }
     /// A call of `application` (empty: the root's; else a callee's) in this environment.
-    pub fn invocation_of(
+    pub(crate) fn invocation_of(
         &self,
         application: &str,
         entrypoint: &str,

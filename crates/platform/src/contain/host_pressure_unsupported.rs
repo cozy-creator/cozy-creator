@@ -17,10 +17,6 @@ impl Pressure {
         Err(Error::unsupported(Seam::Pressure))
     }
 
-    pub fn how(&self) -> &str {
-        ""
-    }
-
     pub fn nudge(&self) -> Nudge {
         Nudge(())
     }

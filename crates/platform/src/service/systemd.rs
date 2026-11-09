@@ -62,13 +62,6 @@ pub(super) fn announce(_: &Path, _: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn stop(dir: &Path, name: &str) -> Result<()> {
-    if !dir.join(unit(name)).exists() {
-        return Ok(());
-    }
-    run(MANAGER, systemctl().args(["stop", &unit(name)]))
-}
-
 /// `spec` in a transient scope of its own (`systemd-run --scope` execs it in place), out of the
 /// cgroup of the unit that starts it, which systemd ends whole when that unit stops.
 pub(super) fn scope(spec: &ServiceSpec) -> Option<(PathBuf, Vec<OsString>)> {

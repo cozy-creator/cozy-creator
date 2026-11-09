@@ -12,14 +12,14 @@ use std::{
 
 use anstyle::{AnsiColor, Style};
 use comfy_table::{ContentArrangement, presets};
-use api::error::{Envelope, Error, Kind};
+use api::error::{Envelope, Error};
 use api::names::shown;
 use serde::Serialize;
 
 use crate::Context;
 
 /// The exit of a follower that heard its run stop moving (Calcifer's word, after 10 minutes with no progress): the run goes on.
-pub const STALLED: u8 = 4;
+pub(crate) const STALLED: u8 = 4;
 
 const KEY: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
@@ -28,7 +28,7 @@ const FAIL: Style = AnsiColor::Red.on_default().bold();
 
 /// What the terminal can show, read once at the entry.
 #[derive(Clone, Copy, Debug)]
-pub struct Term {
+pub(crate) struct Term {
     /// stdout is a terminal: tables fit its width and paths become links.
     pub stdout: bool,
     /// stderr is a terminal: live progress may redraw there.
@@ -37,7 +37,7 @@ pub struct Term {
 }
 
 impl Term {
-    pub fn detect() -> Self {
+    pub(crate) fn detect() -> Self {
         let stdout = std::io::stdout().is_terminal();
         Self {
             stdout,
@@ -47,7 +47,7 @@ impl Term {
     }
 
     /// Whether a path can be shown as a link.
-    pub fn links(&self) -> bool {
+    pub(crate) fn links(&self) -> bool {
         self.hyperlinks
     }
 }
@@ -69,7 +69,7 @@ fn hyperlinks() -> bool {
 }
 
 /// Prints one JSON document on stdout: indented for a terminal, one line for anything else.
-pub fn json<T: Serialize + ?Sized>(document: &T) {
+pub(crate) fn json<T: Serialize + ?Sized>(document: &T) {
     let text = match std::io::stdout().is_terminal() {
         true => serde_json::to_string_pretty(document),
         false => serde_json::to_string(document),
@@ -78,7 +78,7 @@ pub fn json<T: Serialize + ?Sized>(document: &T) {
 }
 
 /// Prints `document` as `--json` does for a view: only the fields `paths` name, or all with `--full`.
-pub fn view<T: Serialize + ?Sized>(ctx: &Context, document: &T, paths: &[&str]) {
+pub(crate) fn view<T: Serialize + ?Sized>(ctx: &Context, document: &T, paths: &[&str]) {
     match ctx.full {
         true => json(document),
         false => json(&pick(serde_json::to_value(document).expect("a document serializes"), paths)),
@@ -118,7 +118,7 @@ const TEXT: usize = 800;
 
 /// `text` as a view shows it: past a quarter more than `TEXT` characters, its first `TEXT`, or its last
 /// when `tail` (a traceback ends with what failed), saying how long it is.
-pub fn cut(ctx: &Context, text: &str, tail: bool) -> String {
+pub(crate) fn cut(ctx: &Context, text: &str, tail: bool) -> String {
     let count = text.chars().count();
     if ctx.full || count <= TEXT + TEXT / 4 {
         return text.to_owned();
@@ -131,21 +131,15 @@ pub fn cut(ctx: &Context, text: &str, tail: bool) -> String {
 }
 
 /// Prints one NDJSON line on stdout, flushed: a follower's reader sees it at once.
-pub fn ndjson<T: Serialize + ?Sized>(event: &T) {
+pub(crate) fn ndjson<T: Serialize + ?Sized>(event: &T) {
     let mut out = anstream::stdout().lock();
     let line = serde_json::to_string(event).expect("an event serializes");
     let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }
 
 /// Prints a refusal on stdout (the envelope with `--json`) and answers its exit code.
-pub fn refusal(ctx: &Context, error: &Error) -> ExitCode {
+pub(crate) fn refusal(ctx: &Context, error: &Error) -> ExitCode {
     refuse(ctx.json, error)
-}
-
-/// A verb this platform does not have, refused as `unsupported` (the envelope with `--json`).
-pub fn unsupported(message: &str) -> ExitCode {
-    let json = std::env::args_os().any(|arg| arg == "--json");
-    refuse(json, &Error::new(Kind::Usage, "unsupported", message))
 }
 
 pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
@@ -166,7 +160,7 @@ pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
 }
 
 /// A failure in one line and where to read more; `--json` has the record.
-pub fn failure_of(ctx: &Context, error: &Error) {
+pub(crate) fn failure_of(ctx: &Context, error: &Error) {
     if !ctx.json
         && let Some(remedy) = &error.remedy
     {
@@ -175,7 +169,7 @@ pub fn failure_of(ctx: &Context, error: &Error) {
     failure(ctx, &error.message, &error.next);
 }
 
-pub fn failure(ctx: &Context, message: &str, next: &[String]) {
+pub(crate) fn failure(ctx: &Context, message: &str, next: &[String]) {
     if ctx.json {
         return;
     }
@@ -186,30 +180,30 @@ pub fn failure(ctx: &Context, message: &str, next: &[String]) {
 }
 
 /// What the command is doing, for a person on stderr; silent with `--json`.
-pub fn say(ctx: &Context, message: &str) {
+pub(crate) fn say(ctx: &Context, message: &str) {
     if !ctx.json {
         anstream::eprintln!("{}", shown(message));
     }
 }
 
 /// A warning on stderr: the command goes on.
-pub fn warn(message: &str) {
+pub(crate) fn warn(message: &str) {
     anstream::eprintln!("{WARN}warning{WARN:#}: {}", shown(message));
 }
 
 /// A line that is a warning, said as written.
-pub fn warned(line: &str) {
+pub(crate) fn warned(line: &str) {
     anstream::eprintln!("{}", shown(line));
 }
 
 /// Whether `name` holds every one of `words`, in any case: `ls` words over what a machine holds.
-pub fn names(name: &str, words: &[String]) -> bool {
+pub(crate) fn names(name: &str, words: &[String]) -> bool {
     let name = name.to_lowercase();
     words.iter().all(|word| name.contains(&word.to_lowercase()))
 }
 
 /// `value` held between 1 and `most`, said when that moved it.
-pub fn at_most(flag: &str, value: u32, most: u32) -> u32 {
+pub(crate) fn at_most(flag: &str, value: u32, most: u32) -> u32 {
     let held = value.clamp(1, most);
     if held != value {
         warn(&format!("{flag} {value}: using {held}"));
@@ -218,7 +212,7 @@ pub fn at_most(flag: &str, value: u32, most: u32) -> u32 {
 }
 
 /// At most two commands to try next, for a person; a JSON document carries its own.
-pub fn next(ctx: &Context, commands: &[&str]) {
+pub(crate) fn next(ctx: &Context, commands: &[&str]) {
     if ctx.json {
         return;
     }
@@ -228,25 +222,25 @@ pub fn next(ctx: &Context, commands: &[&str]) {
 }
 
 /// The commands Calcifer's answer names, every one.
-pub fn nexts(ctx: &Context, commands: &[String]) {
+pub(crate) fn nexts(ctx: &Context, commands: &[String]) {
     for command in commands {
         next(ctx, &[command]);
     }
 }
 
 /// A local path, as an OSC 8 link on a terminal that opens them; the bare path anywhere else.
-pub fn link(ctx: &Context, path: &Path) -> String {
+pub(crate) fn link(ctx: &Context, path: &Path) -> String {
     link_on(ctx.term, path)
 }
 
 /// `path` as `term` can show it: a link where it can.
-pub fn link_on(term: Term, path: &Path) -> String {
+pub(crate) fn link_on(term: Term, path: &Path) -> String {
     let shown = path.display().to_string();
     hyperlink(term, path, &shown).unwrap_or(shown)
 }
 
 /// `shown` as an OSC 8 link to the absolute `path`, on a terminal that opens them.
-pub fn hyperlink(term: Term, path: &Path, shown: &str) -> Option<String> {
+pub(crate) fn hyperlink(term: Term, path: &Path, shown: &str) -> Option<String> {
     if !term.hyperlinks || !path.is_absolute() {
         return None;
     }
@@ -255,24 +249,24 @@ pub fn hyperlink(term: Term, path: &Path, shown: &str) -> Option<String> {
 }
 
 /// A link to `path` that reads `shown`, where the terminal opens links; elsewhere `plain`, as what isn't a link must name the file itself.
-pub fn named_link(ctx: &Context, path: &Path, shown: &str, plain: &str) -> String {
+pub(crate) fn named_link(ctx: &Context, path: &Path, shown: &str, plain: &str) -> String {
     hyperlink(ctx.term, path, shown).unwrap_or_else(|| plain.to_owned())
 }
 
 /// `key  value` lines, keys aligned, then notes.
 #[derive(Default)]
-pub struct Record {
+pub(crate) struct Record {
     fields: Vec<(String, String)>,
     notes: Vec<String>,
 }
 
 impl Record {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// One line per top-level key of `value`'s JSON: the same view `--json` prints whole.
-    pub fn of<T: Serialize + ?Sized>(value: &T) -> Self {
+    pub(crate) fn of<T: Serialize + ?Sized>(value: &T) -> Self {
         let mut record = Self::new();
         if let Ok(serde_json::Value::Object(map)) = serde_json::to_value(value) {
             for (key, value) in map {
@@ -282,24 +276,24 @@ impl Record {
         record
     }
 
-    pub fn field(mut self, key: &str, value: impl Display) -> Self {
+    pub(crate) fn field(mut self, key: &str, value: impl Display) -> Self {
         self.fields.push((key.to_owned(), shown(&value.to_string())));
         self
     }
 
-    pub fn note(mut self, note: impl Into<String>) -> Self {
+    pub(crate) fn note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(shown(&note.into()));
         self
     }
 
-    pub fn print(self, _ctx: &Context) {
+    pub(crate) fn print(self, _ctx: &Context) {
         for line in self.styled(KEY, DIM) {
             anstream::println!("{line}");
         }
     }
 
     /// The lines `print` writes, unstyled: keys aligned, then the notes.
-    pub fn lines(&self) -> Vec<String> {
+    pub(crate) fn lines(&self) -> Vec<String> {
         self.styled(Style::new(), Style::new())
     }
 
@@ -322,7 +316,7 @@ fn plain(value: &serde_json::Value) -> String {
 }
 
 /// A byte count in binary units: `512 B`, `6.9 GiB`.
-pub fn bytes(n: u64) -> String {
+pub(crate) fn bytes(n: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     let mut value = n as f64;
     let mut unit = 0;
@@ -339,7 +333,7 @@ pub fn bytes(n: u64) -> String {
 
 /// How long ago a Unix-milliseconds instant was, in its two largest units: `42s`, `3m12s`,
 /// `5h3m`, `2d4h`.
-pub fn age(at_ms: i64) -> String {
+pub(crate) fn age(at_ms: i64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64);
@@ -347,7 +341,7 @@ pub fn age(at_ms: i64) -> String {
 }
 
 /// `s` seconds in their two largest units: `42s`, `3m12s`, `5h3m`, `2d4h`.
-pub fn span(s: i64) -> String {
+pub(crate) fn span(s: i64) -> String {
     match s {
         0..60 => format!("{s}s"),
         60..3600 => format!("{}m{}s", s / 60, s % 60),
@@ -358,13 +352,13 @@ pub fn span(s: i64) -> String {
 
 /// Columns without borders. On a terminal rows wrap to its width; elsewhere each row is one
 /// whole line, for grep and awk.
-pub struct Table {
+pub(crate) struct Table {
     table: comfy_table::Table,
     notes: Vec<String>,
 }
 
 impl Table {
-    pub fn new<S: Display>(ctx: &Context, header: impl IntoIterator<Item = S>) -> Self {
+    pub(crate) fn new<S: Display>(ctx: &Context, header: impl IntoIterator<Item = S>) -> Self {
         let mut table = comfy_table::Table::new();
         table.load_style(presets::NOTHING);
         if ctx.term.stdout {
@@ -386,18 +380,18 @@ impl Table {
         }
     }
 
-    pub fn row<S: Display>(mut self, cells: impl IntoIterator<Item = S>) -> Self {
+    pub(crate) fn row<S: Display>(mut self, cells: impl IntoIterator<Item = S>) -> Self {
         self.table.add_row(cells.into_iter().map(|c| shown(&c.to_string())));
         self
     }
 
     /// A line under the table, such as "12 more: cozy run ls --before 40".
-    pub fn note(mut self, note: impl Into<String>) -> Self {
+    pub(crate) fn note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(shown(&note.into()));
         self
     }
 
-    pub fn print(mut self) {
+    pub(crate) fn print(mut self) {
         for column in self.table.column_iter_mut() {
             column.set_padding((0, 2));
         }

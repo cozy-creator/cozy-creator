@@ -33,7 +33,7 @@ fn bounded(text: &str, max: usize) -> String {
     format!("{}…", &text[..end])
 }
 
-pub struct Engine {
+pub(crate) struct Engine {
     pub root: PathBuf,
     journal: Mutex<Journal>,
     /// Held while a run takes object references, and while unneeded roots are released.
@@ -60,17 +60,17 @@ struct Preparation {
     halt: Option<Halt>,
 }
 
-pub struct Stoppable {
+pub(crate) struct Stoppable {
     engine: Arc<Engine>,
     id: String,
     pub stop: Cancel,
 }
 impl Stoppable {
-    pub fn id(&self) -> &str { &self.id }
+    pub(crate) fn id(&self) -> &str { &self.id }
 
     /// Bind cancellation only while a preparation borrows an exact executor. The caller
     /// disables its executor cancellation before returning it to the pool.
-    pub fn during(&self, halt: impl Fn() -> io::Result<()> + Send + Sync + 'static) -> PreparationHalt {
+    pub(crate) fn during(&self, halt: impl Fn() -> io::Result<()> + Send + Sync + 'static) -> PreparationHalt {
         let halt: Halt = Arc::new(halt);
         let canceled = {
             let mut preparations = self.engine.preparations.lock().unwrap();
@@ -85,7 +85,7 @@ impl Stoppable {
 
     /// Stop it from inside the machine (a prefetch whose owner ended): its bound executor is
     /// killed now, or at bind when none is bound yet.
-    pub fn halt(&self) {
+    pub(crate) fn halt(&self) {
         let halt = {
             let mut preparations = self.engine.preparations.lock().unwrap();
             let Some(preparation) = preparations.get_mut(&self.id) else { return };
@@ -97,7 +97,7 @@ impl Stoppable {
 
     /// From here on the run cannot stop (an upload finalizing at its Hub): it refuses
     /// cancellation. False when it was canceled first.
-    pub fn commit(&self) -> bool {
+    pub(crate) fn commit(&self) -> bool {
         let mut preparations = self.engine.preparations.lock().unwrap();
         let Some(preparation) = preparations.get_mut(&self.id) else {
             return false;
@@ -114,7 +114,7 @@ impl Drop for Stoppable {
 
 /// Removes only this scoped delivery. A cloned callback may be in flight; the executor's
 /// Cancellation::disable joins it before that executor is published idle.
-pub struct PreparationHalt {
+pub(crate) struct PreparationHalt {
     engine: Arc<Engine>,
     id: String,
     halt: Halt,
@@ -153,7 +153,7 @@ type Halt = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
 impl Engine {
 
-    pub fn open(root: &Path) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(root: &Path) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         platform::durable::set_mode(root, 0o700)?;
         for name in ["staging", "results"] {
@@ -179,7 +179,7 @@ impl Engine {
 
     /// Registers run `id`'s preparation until the answer is dropped. A cancel journaled before
     /// it registered stops it at once.
-    pub fn stoppable(self: &Arc<Self>, id: &str) -> Stoppable {
+    pub(crate) fn stoppable(self: &Arc<Self>, id: &str) -> Stoppable {
         let stop = Cancel::default();
         self.preparations.lock().unwrap().insert(id.into(), Preparation { stop: stop.clone(), committed: false, halt: None });
         if self.get(id).is_ok_and(|record| record.cancel_actor.is_some()) {
@@ -189,32 +189,32 @@ impl Engine {
     }
 
     /// A memoizable run's success is kept by `objects` from now on (`Objects::keep`).
-    pub fn hold_memos(&self, objects: &Arc<crate::objects::Objects>) {
+    pub(crate) fn hold_memos(&self, objects: &Arc<crate::objects::Objects>) {
         let _ = self.memo.set(Arc::downgrade(objects));
     }
 
-    pub fn get(&self, id: &str) -> io::Result<Execution> {
+    pub(crate) fn get(&self, id: &str) -> io::Result<Execution> {
         let owned = self.owned.lock().unwrap();
         let progress = self.progress.lock().unwrap();
         let mut record = self.journal.lock().unwrap().get(id)?;
         overlay_observation(&mut record, &owned, &progress);
         Ok(record)
     }
-    pub fn workspace_id(&self) -> String {
+    pub(crate) fn workspace_id(&self) -> String {
         self.journal.lock().unwrap().workspace_id().into()
     }
     /// The run objects' store (`cas`), beside the journal.
-    pub fn cas(&self) -> crate::cas::Cas {
+    pub(crate) fn cas(&self) -> crate::cas::Cas {
         crate::cas::Cas::new(self.root.join("objects"))
     }
-    pub fn installation(
+    pub(crate) fn installation(
         &self,
         actor: &str,
         alias: &str,
     ) -> io::Result<Option<crate::journal::Installation>> {
         self.journal.lock().unwrap().installation(actor, alias)
     }
-    pub fn installation_for_generation(
+    pub(crate) fn installation_for_generation(
         &self,
         actor: &str,
         generation: &str,
@@ -224,24 +224,24 @@ impl Engine {
             .unwrap()
             .installation_for_generation(actor, generation)
     }
-    pub fn bound_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+    pub(crate) fn bound_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         self.journal.lock().unwrap().bound_generations()
     }
-    pub fn installations(&self, actor: &str) -> io::Result<Vec<crate::journal::Installation>> {
+    pub(crate) fn installations(&self, actor: &str) -> io::Result<Vec<crate::journal::Installation>> {
         self.journal.lock().unwrap().installations(actor)
     }
     /// Short journal reads and writes that need no execution state transition.
-    pub fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
+    pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
     }
-    pub fn bind_installation(
+    pub(crate) fn bind_installation(
         &self,
         record: crate::journal::Installation,
     ) -> io::Result<crate::journal::Installation> {
         self.journal.lock().unwrap().bind_installation(record)
     }
 
-    pub fn preparation(
+    pub(crate) fn preparation(
         &self,
         actor: &str,
         id: &str,
@@ -249,7 +249,7 @@ impl Engine {
         self.journal.lock().unwrap().preparation(actor, id)
     }
 
-    pub fn bind_preparation(
+    pub(crate) fn bind_preparation(
         &self,
         record: crate::journal::Preparation,
     ) -> io::Result<crate::journal::Preparation> {
@@ -263,10 +263,10 @@ impl Engine {
         self.notify_activity();
         Ok(record.state == State::Starting)
     }
-    pub fn public_terminal(&self, id: &str) -> io::Result<Option<crate::journal::PublicTerminal>> {
+    pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<crate::journal::PublicTerminal>> {
         self.journal.lock().unwrap().public_terminal(id)
     }
-    pub fn bind_native_output(&self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
+    pub(crate) fn bind_native_output(&self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
         self.journal
             .lock()
             .unwrap()
@@ -274,7 +274,7 @@ impl Engine {
     }
     /// Journal one product. `decide` sees the run's earlier products and returns the product
     /// to append, or `None` when it would change nothing (sequence 0).
-    pub fn append_product(
+    pub(crate) fn append_product(
         &self,
         id: &str,
         decide: impl FnOnce(&[crate::journal::StoredProduct]) -> io::Result<Option<Vec<u8>>>,
@@ -290,11 +290,11 @@ impl Engine {
         self.notify_activity();
         Ok(sequence)
     }
-    pub fn products(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
+    pub(crate) fn products(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
         self.journal.lock().unwrap().products(id)
     }
     /// A line the machine writes to the run's log (`{"level", "text"}`).
-    pub fn append_log(&self, id: &str, level: &str, text: &str) -> io::Result<u64> {
+    pub(crate) fn append_log(&self, id: &str, level: &str, text: &str) -> io::Result<u64> {
         let line = serde_json::to_vec(&serde_json::json!({"level": level, "text": text}))?;
         let progress = self.progress.lock().unwrap();
         let sequence = self
@@ -320,7 +320,7 @@ impl Engine {
         Ok(first)
     }
 
-    pub fn append_warning(&self, id: &str, text: &str) -> io::Result<u64> {
+    pub(crate) fn append_warning(&self, id: &str, text: &str) -> io::Result<u64> {
         let record = self.get(id)?;
         match record.invocation.root.as_str() {
             "" => self.append_log(id, "warning", text),
@@ -331,7 +331,7 @@ impl Engine {
     /// `run show` displays: a call's lines lead with its function. A line keeps at most
     /// `PACKAGE_LOG_LINE` bytes of text; past the root log's bound the first line becomes one
     /// notice and later ones are dropped (`Journal::append_package_log`).
-    pub fn append_package_log(&self, id: &str, level: &str, text: &str) -> io::Result<()> {
+    pub(crate) fn append_package_log(&self, id: &str, level: &str, text: &str) -> io::Result<()> {
         let progress = self.progress.lock().unwrap();
         let mut journal = self.journal.lock().unwrap();
         let record = journal.get(id)?;
@@ -351,10 +351,10 @@ impl Engine {
     }
     /// A root's GPU allocation changed: a `gpu` entry in its log (`gpu_service::note_gpus`).
     /// See `Journal::fetched`.
-    pub fn fetched(&self, id: &str, from: u64, to: u64) -> io::Result<()> {
+    pub(crate) fn fetched(&self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.journal.lock().unwrap().fetched(id, from, to)
     }
-    pub fn append_gpu(&self, id: &str, entry: &serde_json::Value) -> io::Result<u64> {
+    pub(crate) fn append_gpu(&self, id: &str, entry: &serde_json::Value) -> io::Result<u64> {
         let line = serde_json::to_vec(entry)?;
         let progress = self.progress.lock().unwrap();
         let sequence = self.journal.lock().unwrap().append_log(id, progress.get(id), &line)?;
@@ -363,14 +363,14 @@ impl Engine {
         Ok(sequence)
     }
     /// A call of the run applied its attention pin (its executor said so).
-    pub fn apply_attention(&self, id: &str) -> io::Result<()> {
+    pub(crate) fn apply_attention(&self, id: &str) -> io::Result<()> {
         self.journal.lock().unwrap().apply_attention(id)
     }
-    pub fn logs(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
+    pub(crate) fn logs(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
         self.journal.lock().unwrap().logs(id)
     }
     /// A settled call of the run (`call` names it), recorded in the run's log once.
-    pub fn append_call(&self, id: &str, call: &str, body: &[u8]) -> io::Result<Option<u64>> {
+    pub(crate) fn append_call(&self, id: &str, call: &str, body: &[u8]) -> io::Result<Option<u64>> {
         let progress = self.progress.lock().unwrap();
         let sequence = self
             .journal
@@ -383,10 +383,10 @@ impl Engine {
         }
         Ok(sequence)
     }
-    pub fn calls(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
+    pub(crate) fn calls(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
         self.journal.lock().unwrap().calls(id)
     }
-    pub fn commit_public_terminal(
+    pub(crate) fn commit_public_terminal(
         &self,
         id: &str,
         record: crate::journal::PublicTerminal,
@@ -398,7 +398,7 @@ impl Engine {
     }
 
     /// See `Journal::accept_runs`: one admission, which the dispatcher sees whole.
-    pub fn accept_runs(&self, actor: &str, runs: Vec<crate::journal::Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
+    pub(crate) fn accept_runs(&self, actor: &str, runs: Vec<crate::journal::Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
         let mut owned = self.owned.lock().unwrap();
         let accepted = self.journal.lock().unwrap().accept_runs(actor, runs)?;
         owned.extend(accepted.iter().flatten().filter(|(_, new)| *new).map(|(record, _)| record.id.clone()));
@@ -412,7 +412,7 @@ impl Engine {
     /// dispatcher claims under: a claim made the moment the run is queued keeps its ownership
     /// (else `reconcile` takes the attempt for an orphan). Weights it still waits on stay shown
     /// over its own progress: its meter goes on observing them (`observe_weights`).
-    pub fn bind_prepared(
+    pub(crate) fn bind_prepared(
         &self,
         id: &str,
         invocation: Invocation,
@@ -456,7 +456,7 @@ impl Engine {
     }
 
     /// The preparing run ends undispatched (warm success or preparation failure).
-    pub fn end_preparation(&self, id: &str, outcome: Outcome) -> io::Result<Execution> {
+    pub(crate) fn end_preparation(&self, id: &str, outcome: Outcome) -> io::Result<Execution> {
         let record = self.journal.lock().unwrap().end_preparation(id, outcome);
         self.end_observation(id);
         record
@@ -468,7 +468,7 @@ impl Engine {
         self.notify_activity();
     }
 
-    pub fn get_public(&self, actor: Option<&str>, request_id: &str) -> io::Result<Execution> {
+    pub(crate) fn get_public(&self, actor: Option<&str>, request_id: &str) -> io::Result<Execution> {
         let owned = self.owned.lock().unwrap();
         let progress = self.progress.lock().unwrap();
         let mut record = self.journal.lock().unwrap().get_public(actor, request_id)?;
@@ -476,7 +476,7 @@ impl Engine {
         Ok(record)
     }
 
-    pub fn actor_page(
+    pub(crate) fn actor_page(
         &self,
         actor: Option<&str>,
         after: u64,
@@ -487,20 +487,20 @@ impl Engine {
     ) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.actor_page(actor, after, before, newest, states, limit))
     }
-    pub fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
+    pub(crate) fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
         self.journal.lock().unwrap().actor_head(actor)
     }
     /// See `Journal::jobs`.
-    pub fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
+    pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
         self.journal.lock().unwrap().jobs(since)
     }
     /// Whether this machine run supervises `id`.
-    pub fn owns(&self, id: &str) -> bool {
+    pub(crate) fn owns(&self, id: &str) -> bool {
         self.owned.lock().unwrap().contains(id)
     }
 
     /// See `Journal::fail_unstarted`.
-    pub fn fail_unstarted(&self, id: &str, code: &str, reason: impl Into<String>) -> io::Result<Execution> {
+    pub(crate) fn fail_unstarted(&self, id: &str, code: &str, reason: impl Into<String>) -> io::Result<Execution> {
         let failure = crate::journal::Failure::machine(code, reason);
         let record = self.journal.lock().unwrap().fail_unstarted(id, failure)?;
         self.notify_activity();
@@ -508,7 +508,7 @@ impl Engine {
     }
 
     /// Every run ready to dispatch, by its root's acceptance, then its own.
-    pub fn ready(&self) -> io::Result<Vec<Execution>> {
+    pub(crate) fn ready(&self) -> io::Result<Vec<Execution>> {
         self.journal.lock().unwrap().ready()
     }
     pub(crate) fn gpu_births_after(
@@ -519,13 +519,13 @@ impl Engine {
         self.journal.lock().unwrap().gpu_births_after(after, limit)
     }
     /// See `Journal::run_times`.
-    pub fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<crate::journal::RunTime>> {
+    pub(crate) fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<crate::journal::RunTime>> {
         self.journal.lock().unwrap().run_times(function, limit)
     }
-    pub fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
+    pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.nonterminal(limit))
     }
-    pub fn active(&self, limit: usize) -> io::Result<Vec<Execution>> {
+    pub(crate) fn active(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.active(limit))
     }
     fn select(
@@ -542,12 +542,12 @@ impl Engine {
     }
 
     /// In-process wake cursor, separate from durable execution/status revisions.
-    pub fn activity_epoch(&self) -> u64 {
+    pub(crate) fn activity_epoch(&self) -> u64 {
         *self.activity.lock().unwrap()
     }
 
     /// Optional duration bounds observation only; it never changes execution state.
-    pub fn wait_activity(&self, observed: u64, wait: Option<Duration>) -> u64 {
+    pub(crate) fn wait_activity(&self, observed: u64, wait: Option<Duration>) -> u64 {
         let epoch = self.activity.lock().unwrap();
         if *epoch != observed || *epoch == u64::MAX {
             return *epoch;
@@ -567,7 +567,7 @@ impl Engine {
         *epoch
     }
 
-    pub fn notify_activity(&self) {
+    pub(crate) fn notify_activity(&self) {
         let mut epoch = self.activity.lock().unwrap();
         *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
         self.activity_changed.notify_all();
@@ -626,7 +626,7 @@ impl Engine {
     }
 
     /// The durable actor record precedes delivery. Transport loss never calls this.
-    pub fn cancel(&self, id: &str, actor: &str) -> io::Result<Execution> {
+    pub(crate) fn cancel(&self, id: &str, actor: &str) -> io::Result<Execution> {
         let (record, halt) = {
             let preparations = self.preparations.lock().unwrap();
             let owned = self.owned.lock().unwrap();
@@ -644,7 +644,7 @@ impl Engine {
     }
 
     /// Explicit native cancellation also fences an actor/ID not yet accepted by Run.
-    pub fn cancel_run(&self, actor: &str, id: &str) -> io::Result<Execution> {
+    pub(crate) fn cancel_run(&self, actor: &str, id: &str) -> io::Result<Execution> {
         let (record, halt) = {
             let preparations = self.preparations.lock().unwrap();
             let owned = self.owned.lock().unwrap();
@@ -684,12 +684,12 @@ impl Engine {
         self.finish(id, Outcome::Canceled)
     }
 
-    pub fn children(&self, parent: &str) -> io::Result<Vec<Execution>> {
+    pub(crate) fn children(&self, parent: &str) -> io::Result<Vec<Execution>> {
         self.journal.lock().unwrap().children(parent)
     }
 
     /// Run `id` as its caller names it (the id it was submitted under), else as this machine does.
-    pub fn caller_id(&self, id: &str) -> String {
+    pub(crate) fn caller_id(&self, id: &str) -> String {
         self.get(id)
             .ok()
             .and_then(|record| record.submission.map(|s| s.request_id))
@@ -700,7 +700,7 @@ impl Engine {
     /// Why queued run `id` waits, for people (another run's install, its place in the queue); `None`
     /// once it no longer does. Shown in the run's state while it is queued; nothing durable is
     /// written.
-    pub fn waiting(&self, id: &str, reason: Option<String>) -> io::Result<()> {
+    pub(crate) fn waiting(&self, id: &str, reason: Option<String>) -> io::Result<()> {
         let mut progress = self.progress.lock().unwrap();
         if progress.get(id).map_or(reason.is_none(), |held| held.waiting == reason) {
             return Ok(());
@@ -736,7 +736,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn observe_progress(
+    pub(crate) fn observe_progress(
         &self,
         id: &str,
         completed_units: u64,
@@ -802,7 +802,7 @@ impl Engine {
     /// progress; `None` once they are here, when its own shows again. A queued run keeps why it
     /// waits. A dispatchable run waits for its weights queued and owned by no dispatcher yet, so
     /// a queued run is observed whoever owns it (cl-691: its bytes froze at their first value).
-    pub fn observe_weights(&self, id: &str, weights: Option<Weights>) -> io::Result<()> {
+    pub(crate) fn observe_weights(&self, id: &str, weights: Option<Weights>) -> io::Result<()> {
         let owned = self.owned.lock().unwrap().contains(id);
         let mut progress = self.progress.lock().unwrap();
         let held = progress.get(id);
@@ -1039,7 +1039,7 @@ impl Engine {
 
     /// Write and bind a failed attempt's triage bundle before the run settles. A failure to
     /// keep it is reported, never fatal to the settlement.
-    pub fn record_triage(&self, id: &str, facts: &crate::triage::Facts) {
+    pub(crate) fn record_triage(&self, id: &str, facts: &crate::triage::Facts) {
         let executor = self.get(id).ok().and_then(|record| record.executor);
         let result = crate::triage::write(&self.root, facts, executor.as_ref())
             .and_then(|triage| self.journal.lock().unwrap().bind_triage(id, &triage));
@@ -1053,7 +1053,7 @@ impl Engine {
             crate::triage::masked(text.trim()));
     }
     /// The run's triage bundle bytes and their reference, if it kept one.
-    pub fn triage(&self, id: &str) -> io::Result<Option<(crate::triage::TriageRef, Vec<u8>)>> {
+    pub(crate) fn triage(&self, id: &str) -> io::Result<Option<(crate::triage::TriageRef, Vec<u8>)>> {
         let Some(triage) = self.journal.lock().unwrap().triage(id)? else {
             return Ok(None);
         };
@@ -1090,7 +1090,7 @@ impl Engine {
 
     /// Reconcile a previous service incarnation without adopting or repeating authored work.
     /// A live/unknown process birth keeps its obligation charged and nonterminal.
-    pub fn reconcile(&self) -> io::Result<Vec<Execution>> {
+    pub(crate) fn reconcile(&self) -> io::Result<Vec<Execution>> {
         let owned = self.owned.lock().unwrap();
         let mut journal = self.journal.lock().unwrap();
         let mut changed = false;
@@ -1197,7 +1197,7 @@ impl Engine {
             let mut output =
                 platform::durable::Mode::mode(OpenOptions::new().write(true).create_new(true), 0o600)
                     .open(&temporary)?;
-            let mut hash = tensorfs::sha256::Sha256::new();
+            let mut hash = tensorfs_core::sha256::Sha256::new();
             let mut length = 0;
             let mut buffer = [0; 64 * 1024];
             loop {
@@ -1209,7 +1209,7 @@ impl Engine {
                 hash.update(&buffer[..count]);
                 length += count as u64;
             }
-            let digest = tensorfs::sha256::hex(&hash.finish());
+            let digest = tensorfs_core::sha256::hex(&hash.finish());
             platform::durable::set_file_mode(&output, 0o400)?;
             output.sync_all()?;
             let filename = format!("{index}-{digest}");
@@ -1234,7 +1234,7 @@ impl Engine {
     /// A held result file. Custody hashed it once as it took it (`custody`); a read serves it.
     /// Whether nothing reads a run's result copies any more: its outputs are held and its outcome kept for its client
     /// (`commit_public_terminal`), or, for a call, its parent ended, having read them.
-    pub fn result_copies_spent(&self, id: &str) -> io::Result<bool> {
+    pub(crate) fn result_copies_spent(&self, id: &str) -> io::Result<bool> {
         let record = self.get(id)?;
         if !record.state.terminal() {
             return Ok(false);
@@ -1245,7 +1245,7 @@ impl Engine {
         }
     }
 
-    pub fn open_result(&self, id: &str, index: usize) -> io::Result<File> {
+    pub(crate) fn open_result(&self, id: &str, index: usize) -> io::Result<File> {
         let record = self.get(id)?;
         let artifact = record
             .result

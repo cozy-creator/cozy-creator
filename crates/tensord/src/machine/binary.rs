@@ -15,11 +15,11 @@ use std::{
 };
 
 /// The service's exit status asking its parent to exec the binary at the launch path.
-pub const EXEC_EXIT: i32 = 76;
+pub(crate) const EXEC_EXIT: i32 = 76;
 
 /// Where this process was started from, and that file's identity then: a swap renames a new
 /// file into place, after which `/proc/self/exe` names a deleted inode.
-pub struct Launch {
+pub(crate) struct Launch {
     pub path: PathBuf,
     id: FileId,
 }
@@ -27,7 +27,7 @@ pub struct Launch {
 static LAUNCH: OnceLock<Launch> = OnceLock::new();
 
 /// Records the launch path, first thing at start.
-pub fn record() -> io::Result<()> {
+pub(crate) fn record() -> io::Result<()> {
     let path = std::env::current_exe()?;
     let id = FileId::at(&path)?;
     let _ = LAUNCH.set(Launch { path, id });
@@ -35,39 +35,39 @@ pub fn record() -> io::Result<()> {
 }
 
 /// The launch, once recorded; `None` in a process that never started as a machine (tests).
-pub fn launch() -> Option<&'static Launch> {
+pub(crate) fn launch() -> Option<&'static Launch> {
     LAUNCH.get()
 }
 
 impl Launch {
     /// Whether the file at the launch path is no longer the one this process runs.
-    pub fn swapped(&self) -> bool {
+    pub(crate) fn swapped(&self) -> bool {
         FileId::at(&self.path).is_ok_and(|id| id != self.id)
     }
 }
 
 /// The binary a rollback restores, beside the launch path: the one `cozy update` replaced, or the
 /// image this machine ran when something else replaced it (`keep_running`).
-pub fn previous(launch: &Path) -> PathBuf {
+pub(crate) fn previous(launch: &Path) -> PathBuf {
     launch.with_file_name(".cozy-previous")
 }
 
 /// Writes this running image at `previous`, whole or not at all. Linux reads it through
 /// `/proc/self/exe` even once its file left the launch path.
-pub fn keep_running(previous: &Path) -> io::Result<()> {
+pub(crate) fn keep_running(previous: &Path) -> io::Result<()> {
     let temp = previous.with_file_name(".cozy-keep");
     std::fs::copy("/proc/self/exe", &temp)?;
     std::fs::rename(&temp, previous).inspect_err(|_| drop(std::fs::remove_file(&temp)))
 }
 
 /// The release a dev binary (`cozy machine update --tensord <path>`) first replaced, beside the launch path.
-pub fn release(launch: &Path) -> PathBuf {
+pub(crate) fn release(launch: &Path) -> PathBuf {
     launch.with_file_name(".cozy-release")
 }
 
 /// Keeps the binary at the launch path for a rollback, and as the release when a dev binary
 /// first replaces it.
-pub fn keep(launch: &Path, release: bool) -> io::Result<()> {
+pub(crate) fn keep(launch: &Path, release: bool) -> io::Result<()> {
     let copies = [Some(previous(launch)), release.then(|| self::release(launch))];
     for copy in copies.into_iter().flatten() {
         match std::fs::remove_file(&copy) {
@@ -81,14 +81,14 @@ pub fn keep(launch: &Path, release: bool) -> io::Result<()> {
 
 /// Puts `staged` at the launch path, by the path and never `current_exe`, which names
 /// `<path> (deleted)` once something replaced the launch path.
-pub fn swap(launch: &Path, staged: &Path) -> io::Result<()> {
+pub(crate) fn swap(launch: &Path, staged: &Path) -> io::Result<()> {
     platform::durable::replace_program(launch, staged)
 }
 
 /// The release `path` says it is, once this machine can run it: its header's OS and arch are
 /// this machine's, its loader finds the glibc it needs, and it answers `--version`. Err names
 /// the mismatch.
-pub fn check(path: &Path) -> Result<String, String> {
+pub(crate) fn check(path: &Path) -> Result<String, String> {
     use std::io::Read as _;
     let mut head = vec![0u8; 512];
     let n = std::fs::File::open(path)
@@ -156,7 +156,7 @@ fn glibc_needed(_: &Path) -> Option<(String, String)> {
 }
 
 /// The release a `cozy` binary says it is (`cozy 0.10.1`): it also proves the file runs here.
-pub fn version(path: &Path) -> io::Result<String> {
+pub(crate) fn version(path: &Path) -> io::Result<String> {
     let out = Command::new(path).arg("--version").stdin(Stdio::null()).output()?;
     let text = String::from_utf8_lossy(&out.stdout);
     match (out.status.success(), text.trim().strip_prefix("cozy ")) {
@@ -173,7 +173,7 @@ pub fn version(path: &Path) -> io::Result<String> {
 /// Replaces this process with the binary at `path`, with this process's arguments; a rental's
 /// provider credential is handed on as at its first start. Returns only on failure.
 #[cfg(unix)]
-pub fn exec(path: &Path, provider: Option<&super::provider::ProviderSelf>) -> io::Error {
+pub(crate) fn exec(path: &Path, provider: Option<&super::provider::ProviderSelf>) -> io::Error {
     if provider.is_some_and(|own| !super::provider::hand_on(own)) {
         return io::Error::other("cannot place the provider credential");
     }

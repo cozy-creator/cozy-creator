@@ -175,11 +175,6 @@ pub(super) fn resident(pid: u32) -> io::Result<super::Resident> {
     Ok(super::Resident { anon, file, shmem, peak: field("VmHWM")?.max(anon + file + shmem) })
 }
 
-/// `clear_refs` 5: the resident high-water becomes the process's use now.
-pub(super) fn reset_peak(pid: u32) -> io::Result<()> {
-    fs::write(format!("/proc/{pid}/clear_refs"), b"5")
-}
-
 pub(super) fn process(pid: u32) -> io::Result<ProcessMemory> {
     let text = fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))?;
     let field = |name: &str| {

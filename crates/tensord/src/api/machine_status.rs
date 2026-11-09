@@ -24,7 +24,7 @@ use futures_util::{future::ready, Stream, StreamExt};
 /// they name.
 /// `estimate/1`: `POST /v1/estimate` quotes jobs packed with the queue. `run-batch/1`:
 /// `POST /v1/runs/batch` admits runs as one, which the machine packs together as it quoted them.
-pub const CAPABILITIES: &[&str] = &[
+pub(crate) const CAPABILITIES: &[&str] = &[
     "status/1",
     "run/1",
     "run-gpus/1",

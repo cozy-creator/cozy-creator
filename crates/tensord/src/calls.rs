@@ -22,7 +22,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-pub struct Calls {
+pub(crate) struct Calls {
     service: Weak<Service>,
     /// Children prepare as runs do, with their parent's context.
     runs: Weak<Runs>,
@@ -149,7 +149,7 @@ struct Received {
 
 impl Calls {
     /// The machine's call broker; `runs` prepares children (none: no children).
-    pub fn configure(
+    pub(crate) fn configure(
         service: &Arc<Service>,
         machine: Arc<crate::origin::Machine>,
         runs: Option<&Arc<Runs>>,
@@ -230,7 +230,7 @@ impl Calls {
     }
 
     /// Write roots no unfinished run needs (`objects::Objects::sweep`).
-    pub fn sweep_objects(&self) -> io::Result<(usize, u64)> {
+    pub(crate) fn sweep_objects(&self) -> io::Result<(usize, u64)> {
         match self.runs.upgrade() {
             Some(runs) => runs.objects.sweep(),
             None => Ok((0, 0)),
@@ -238,7 +238,7 @@ impl Calls {
     }
 
     /// A disk still low after every cache (`objects::Objects::make_room`).
-    pub fn make_room(&self) -> io::Result<(usize, u64)> {
+    pub(crate) fn make_room(&self) -> io::Result<(usize, u64)> {
         match self.runs.upgrade() {
             Some(runs) => runs.objects.make_room(),
             None => Ok((0, 0)),
@@ -276,7 +276,7 @@ impl Calls {
 
     /// A cancel reached a run: its fetches end at once, and when no attempt runs (it was
     /// queued) its children end too.
-    pub fn canceled(&self, record: &Execution) {
+    pub(crate) fn canceled(&self, record: &Execution) {
         if record.cancel_actor.is_none() {
             return;
         }
@@ -956,7 +956,7 @@ fn receive(
 /// A child call's intent: its callable and its input, numbers exact.
 fn child_intent(module: &str, export: &str, input: &Value) -> String {
     let semantic = crate::boundary_json::exact(&json!([module, export, input]));
-    format!("sha256:{}", tensorfs::sha256::hex_digest(&semantic))
+    format!("sha256:{}", tensorfs_core::sha256::hex_digest(&semantic))
 }
 
 

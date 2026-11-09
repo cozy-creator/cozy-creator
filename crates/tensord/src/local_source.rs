@@ -21,11 +21,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 use crate::{cas::Cas, stop::Stop};
-use tensorfs::{format::ObjectRef, sha256};
+use tensorfs::format::ObjectRef;
+use tensorfs_core::sha256;
 
 /// The manifest object (JSON). Members are objects the same signer wrote.
 #[derive(Deserialize)]
-pub struct Manifest {
+pub(crate) struct Manifest {
     pub package: String,
     #[serde(default)]
     pub release: String,
@@ -51,7 +52,7 @@ pub struct Manifest {
     pub locals: Vec<String>,
 }
 #[derive(Deserialize)]
-pub struct Member {
+pub(crate) struct Member {
     #[serde(default)]
     pub name: String,
     pub digest: String,
@@ -102,7 +103,7 @@ impl Drop for Holder<'_> {
     }
 }
 
-pub struct LocalSources {
+pub(crate) struct LocalSources {
     pub objects: Arc<Objects>,
     /// Local code's environments are built as releases' are.
     publisher: Arc<Publisher>,
@@ -214,7 +215,7 @@ fn open_manifest(
 }
 
 impl LocalSources {
-    pub fn new(objects: Arc<Objects>, publisher: Arc<Publisher>, generations: &Path) -> Self {
+    pub(crate) fn new(objects: Arc<Objects>, publisher: Arc<Publisher>, generations: &Path) -> Self {
         Self {
             editable: generations.with_file_name("editable"),
             generations: generations.to_path_buf(),
@@ -239,7 +240,7 @@ impl LocalSources {
     /// it is accepted. Every captured member is retained: a cached generation may be collected
     /// while this run waits to install. The caller's object cache still avoids reuploading
     /// unchanged bytes. One the signer did not write is `local_source_incomplete`, naming it.
-    pub fn written(&self, actor: &str, digest: &str) -> Result<Vec<ObjectRef>, Refused> {
+    pub(crate) fn written(&self, actor: &str, digest: &str) -> Result<Vec<ObjectRef>, Refused> {
         let (manifest, own) = open_manifest(&self.objects, actor, digest)?;
         self.home(actor, &manifest.package)?;
         let mut written = vec![own];
@@ -431,12 +432,12 @@ impl LocalSources {
     }
 
     /// `run` ended its preparation: bound, the journal names its generation; else nothing does.
-    pub fn prepared(&self, run: &str) {
+    pub(crate) fn prepared(&self, run: &str) {
         self.preparing.lock().unwrap().remove(run);
     }
 
     /// The generations of runs still preparing.
-    pub fn preparing(&self) -> HashSet<String> {
+    pub(crate) fn preparing(&self) -> HashSet<String> {
         self.preparing.lock().unwrap().values().cloned().collect()
     }
 
@@ -446,7 +447,7 @@ impl LocalSources {
 
     /// Keep remote source homes while a generation names their environment. Only completed,
     /// recognized source homes leave; partial or unknown homes are preserved for recovery.
-    pub fn collect(&self, actor: &str, package: &str) {
+    pub(crate) fn collect(&self, actor: &str, package: &str) {
         let Ok(home) = self.home(actor, package) else {
             return;
         };
@@ -487,7 +488,7 @@ impl LocalSources {
     /// `stage` hears what is built: nothing for an environment this machine holds. While
     /// another run's install holds the installer, run `run` is told it waits for that run.
     #[allow(clippy::too_many_arguments)]
-    pub fn install(
+    pub(crate) fn install(
         &self,
         service: &Service,
         actor: &str,
@@ -551,7 +552,7 @@ impl LocalSources {
 pub(crate) fn alias(publisher: &Publisher, digest: &str) -> String {
     let sdk = &publisher.sdk;
     let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": publisher.torch_pins(None)});
-    format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32])
+    format!("local-{}", &tensorfs_core::sha256::hex_digest(key.to_string().as_bytes())[..32])
 }
 
 /// The other Apps `environment` holds, by `packages` (distribution -> package): described once

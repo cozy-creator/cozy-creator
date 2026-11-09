@@ -20,13 +20,13 @@ use tensorfs::format::ObjectRef;
 static GATE: RwLock<()> = RwLock::new(());
 
 #[derive(Clone, Debug)]
-pub struct Cas {
+pub(crate) struct Cas {
     root: PathBuf,
 }
 
 /// What a hold keeps, and for whom.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Hold {
+pub(crate) struct Hold {
     pub owner: String,
     pub roots: Vec<ObjectRef>,
 }
@@ -45,16 +45,16 @@ fn old(path: &Path, age: Duration) -> bool {
 }
 
 impl Cas {
-    pub fn new(root: impl Into<PathBuf>) -> Cas {
+    pub(crate) fn new(root: impl Into<PathBuf>) -> Cas {
         Cas { root: root.into() }
     }
 
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
     /// Where `object` lives; a malformed digest has no path.
-    pub fn path(&self, object: &ObjectRef) -> io::Result<PathBuf> {
+    pub(crate) fn path(&self, object: &ObjectRef) -> io::Result<PathBuf> {
         match is_hex(&object.sha256) {
             true => Ok(self.root.join(&object.sha256[..2]).join(&object.sha256)),
             false => Err(invalid(format!("{:?} is not a sha256 digest", object.sha256))),
@@ -62,14 +62,14 @@ impl Cas {
     }
 
     /// Whether `object` is here; a use renews it.
-    pub fn reuse(&self, object: &ObjectRef) -> io::Result<bool> {
+    pub(crate) fn reuse(&self, object: &ObjectRef) -> io::Result<bool> {
         let _gate = GATE.read().unwrap();
         self.reuse_held(object)
     }
 
     /// Admits what `src` yields. With `expect`, one already here is reused unread and other
     /// bytes are refused (`InvalidData`).
-    pub fn put(&self, mut src: impl Read, expect: Option<&ObjectRef>) -> io::Result<ObjectRef> {
+    pub(crate) fn put(&self, mut src: impl Read, expect: Option<&ObjectRef>) -> io::Result<ObjectRef> {
         if let Some(expect) = expect {
             self.path(expect)?;
             if self.reuse(expect)? {
@@ -121,19 +121,19 @@ impl Cas {
         Ok(got)
     }
 
-    pub fn put_bytes(&self, bytes: &[u8]) -> io::Result<ObjectRef> {
+    pub(crate) fn put_bytes(&self, bytes: &[u8]) -> io::Result<ObjectRef> {
         self.put(bytes, None)
     }
 
     /// `object` to read, its length checked. A read is a use.
-    pub fn file(&self, object: &ObjectRef) -> io::Result<File> {
+    pub(crate) fn file(&self, object: &ObjectRef) -> io::Result<File> {
         match self.reuse(object)? {
             true => File::open(self.path(object)?),
             false => Err(io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", object.id()))),
         }
     }
 
-    pub fn read(&self, object: &ObjectRef) -> io::Result<Vec<u8>> {
+    pub(crate) fn read(&self, object: &ObjectRef) -> io::Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(object.length as usize);
         self.file(object)?.read_to_end(&mut bytes)?;
         Ok(bytes)
@@ -148,7 +148,7 @@ impl Cas {
     }
 
     /// Keeps `hold`'s roots (each here) under `id`, replacing what it kept.
-    pub fn hold(&self, id: &str, hold: &Hold) -> io::Result<()> {
+    pub(crate) fn hold(&self, id: &str, hold: &Hold) -> io::Result<()> {
         let path = self.hold_path(id)?;
         let bytes = serde_json::to_vec(hold)?;
         let _gate = GATE.read().unwrap();
@@ -179,7 +179,7 @@ impl Cas {
     /// Holds whose roots all went unused for `age`, and that `doomed` agrees to for each, least recently used first, until `room` bytes
     /// are free: each goes with what only it kept. Counted, as a filesystem's free space lags a delete. The digests removed, with
     /// their lengths.
-    pub fn evict_held(
+    pub(crate) fn evict_held(
         &self,
         age: Duration,
         doomed: &mut dyn FnMut(&str) -> io::Result<bool>,
@@ -226,7 +226,7 @@ impl Cas {
     /// old: the digests removed, with their lengths. The gate is taken while the holds are read and again around
     /// each object's last check and removal, never across the walk: a hold written meanwhile
     /// renews its roots' use (`hold`), so they are young when their turn comes.
-    pub fn sweep(&self, age: Duration, doomed: &mut dyn FnMut(&str) -> io::Result<bool>) -> io::Result<Vec<(String, u64)>> {
+    pub(crate) fn sweep(&self, age: Duration, doomed: &mut dyn FnMut(&str) -> io::Result<bool>) -> io::Result<Vec<(String, u64)>> {
         let mut held = BTreeSet::new();
         {
             let _gate = GATE.write().unwrap();

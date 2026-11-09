@@ -18,7 +18,7 @@ use api::{
     config::Origin,
     error::{Error, Kind},
     calcifer::hub::{
-        At, Families, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelEdited, ModelKind,
+        At, Families, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelEdited,
         ModelLane, ModelRelease, ModelReleaseAsk, ModelReleased, ModelSearch, Provenance,
     },
     model_ref::{self as refs, Repo},
@@ -219,7 +219,7 @@ async fn detail(api: &Api, hub: &Origin, repo: &Repo, release: Option<String>) -
         family,
         family_from,
         weights_family: facts.as_ref().and_then(|f| f.family.clone()),
-        kind: facts.as_ref().map(ModelKind::of),
+        kind: facts.as_ref().map(super::checkpoints::kind),
         created_at: card.model.created_at,
         source: card.model.source.filter(|s| !s.is_empty()),
         author: card.model.author.map(author),

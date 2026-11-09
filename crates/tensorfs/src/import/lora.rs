@@ -21,13 +21,13 @@ use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{Config, Dtype};
 
 /// PEFT's adapter config: a LoRA component's config file.
-pub const ADAPTER_CONFIG: &str = "adapter_config.json";
+pub(crate) const ADAPTER_CONFIG: &str = "adapter_config.json";
 const A: &str = ".lora_A.weight";
 const B: &str = ".lora_B.weight";
 const ALPHA: &str = ".alpha";
 /// A DoRA's magnitude, `[out]`: PEFT's `lora_magnitude_vector` (as saved, or a module's
 /// `lora_magnitude_vector.<adapter>.weight`), kohya's and LyCORIS' `dora_scale` `[out, 1]`.
-pub const MAGNITUDE: &str = ".lora_magnitude_vector";
+pub(crate) const MAGNITUDE: &str = ".lora_magnitude_vector";
 /// `get_peft_model_state_dict`'s wrapper around the base model's module names.
 const PEFT_PREFIX: &str = "base_model.model.";
 /// diffusers' `save_lora_adapter` records the `LoraConfig` here, as JSON.
@@ -40,7 +40,7 @@ const KOHYA: [&str; 2] = ["lora_unet_", "lora_te"];
 /// magnitude: kohya's `<m>.lora_down[.weight]` and `.lora_up[.weight]` are `<m>.lora_A.weight` and
 /// `.lora_B.weight`, its `dora_scale` `<m>.lora_magnitude_vector`, PEFT's adapter name goes
 /// (`<m>.lora_A.default.weight`), and so does `base_model.model.`.
-pub fn peft_key(key: &str) -> Option<String> {
+pub(crate) fn peft_key(key: &str) -> Option<String> {
     let key = key.strip_prefix(PEFT_PREFIX).unwrap_or(key);
     if let Some(m) = key.strip_suffix(ALPHA) {
         return Some(format!("{m}{ALPHA}"));
@@ -69,7 +69,7 @@ pub fn peft_key(key: &str) -> Option<String> {
 /// `r` (omitted otherwise: each module's own rank is its `α`), and `base_model_name_or_path`
 /// `base_model`, else the source's, else kohya's `ss_sd_model_name`. Kohya's `ss_network_alpha`
 /// is never a scale: its loaders, and ComfyUI's, read only `.alpha` tensors (none is `α = r`).
-pub fn adapter_config(
+pub(crate) fn adapter_config(
     modules: impl IntoIterator<Item = (String, u64)>,
     metadata: &BTreeMap<String, String>,
     source: Option<&Config>,
@@ -105,7 +105,7 @@ struct Module {
 
 /// A LoRA component's config, and whether its source stated one (PEFT's keys are then the base
 /// model's module names).
-pub struct Adapter {
+pub(crate) struct Adapter {
     pub config: Config,
     pub stated: bool,
 }
@@ -114,7 +114,7 @@ pub struct Adapter {
 /// adapter. `sources` is each component's source group; an adapter config file read becomes the
 /// component's config and leaves `files`. `set` reads the source files a reading names. A key of
 /// a component no table converted (`tabled`) that is no factor refuses: nothing is left out.
-pub fn normalize(
+pub(crate) fn normalize(
     planned: &mut Vec<Planned>,
     sources: &BTreeMap<String, &Group>,
     tabled: &BTreeSet<String>,

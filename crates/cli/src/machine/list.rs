@@ -28,7 +28,7 @@ pub(crate) const FIELDS: &[&str] = &[
 /// The columns of `HEADERS` a view shows without `--full`.
 const SHOWN: [usize; 8] = [0, 1, 2, 4, 5, 6, 8, 10];
 
-pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
+pub(crate) async fn list(ctx: &Context) -> Result<ExitCode, Error> {
     if !ctx.json && ctx.term.stdout {
         let view = super::live::Machines::open(ctx).await?;
         crate::tui::show(ctx, crate::tui::Screen::Machines(view)).await?;
@@ -131,7 +131,7 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
 }
 
 /// One machine: a live view on a terminal while it lives, else its record once (or JSON).
-pub async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
+pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
     let m = machine(ctx, name).await?;
     if !ctx.json && ctx.term.stdout && m.state != MachineState::Ended {
         let view = super::live::Shown::open(ctx, name).await?;
@@ -264,7 +264,7 @@ fn live_run(held: &LiveRun) -> (String, String) {
 }
 
 /// What a machine reports of itself, one fact per line, GPUs by number.
-pub fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
+pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
     let mut fields = vec![
         (
             "version".into(),
@@ -409,7 +409,7 @@ fn kind(m: &Machine) -> &'static str {
     }
 }
 
-pub fn state_cell(m: &Machine) -> String {
+pub(crate) fn state_cell(m: &Machine) -> String {
     let mut cell = match m.state {
         _ if m.offline.is_some() => format!("offline: {}", m.offline.as_deref().unwrap_or_default()),
         MachineState::Booting => match &m.boot {

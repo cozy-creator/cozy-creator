@@ -139,7 +139,7 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
     for (row, facts) in models.iter_mut().zip(facts) {
         let weights = facts.as_ref().and_then(|facts| facts.family.as_deref());
         (row.family, row.family_from) = family(row.family.take(), weights);
-        row.kind = facts.as_ref().map(ModelKind::of);
+        row.kind = facts.as_ref().map(kind);
     }
 }
 
@@ -201,5 +201,14 @@ pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
         if let Some(model) = &mut tool.model {
             model.family = model.default.as_ref().and_then(|default| found.get(default)?.clone());
         }
+    }
+}
+
+/// What a header's facts say a checkpoint is: a LoRA, else a family's model, else a component.
+pub(crate) fn kind(facts: &Facts) -> ModelKind {
+    match (facts.lora, &facts.family) {
+        (true, _) => ModelKind::Lora,
+        (false, Some(_)) => ModelKind::Weights,
+        (false, None) => ModelKind::Component,
     }
 }

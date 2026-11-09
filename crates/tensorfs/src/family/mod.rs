@@ -8,7 +8,7 @@
 //! against these and records [`Record`] in the header (`family`); a LoRA records [`Adapter`]s
 //! (`adapter`). Neither is ever guessed: unverified, the field is absent.
 
-pub mod probe;
+pub(crate) mod probe;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,7 +23,7 @@ macro_rules! family {
 }
 
 /// The built-in families.
-pub const FAMILIES: [&str; 14] = [
+pub(crate) const FAMILIES: [&str; 14] = [
     family!("minimax-h3"),
     family!("sdxl"),
     family!("anima"),
@@ -41,12 +41,13 @@ pub const FAMILIES: [&str; 14] = [
 ];
 
 /// The form a family's reference is in.
-pub const CANONICAL: &str = "canonical";
+pub(crate) const CANONICAL: &str = "canonical";
 /// Header metadata: the verified family, [`Record`].
-pub const FAMILY: &str = "family";
+pub(crate) const FAMILY: &str = "family";
 /// Header metadata: each LoRA component's base, [`Adapter`], by the LoRA's component name.
-pub const ADAPTER: &str = "adapter";
+pub(crate) const ADAPTER: &str = "adapter";
 
+/// A built-in family, from its `families/<name>.json`: reference, components, forms and probe.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Family {
@@ -132,18 +133,18 @@ pub fn families_digest() -> &'static str {
     DIGEST.get_or_init(|| crate::sha256::hex_digest(FAMILIES.join("\0").as_bytes()))
 }
 
-pub fn named(name: &str) -> Option<&'static Family> {
+pub(crate) fn named(name: &str) -> Option<&'static Family> {
     families().iter().find(|f| f.name == name)
 }
 
 /// The family a converter table writes.
-pub fn of_table(table: &str) -> Option<&'static Family> {
+pub(crate) fn of_table(table: &str) -> Option<&'static Family> {
     families().iter().find(|f| f.sources.iter().any(|s| s == table))
 }
 
 /// Every family `classes` name, in their order, once: a class can name several (Qwen3-VL's is HiDream O1's, and
 /// FLUX.3's and FIBO 2's text encoder's), and the keys say which.
-pub fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<&'static Family> {
+pub(crate) fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<&'static Family> {
     let mut out: Vec<&'static Family> = Vec::new();
     for class in classes {
         for f in families().iter().filter(|f| f.classes.iter().any(|c| c == class)) {
@@ -156,21 +157,21 @@ pub fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<&'stati
 }
 
 /// What a LoRA's tensors end in: its factors, alpha and a DoRA's magnitude.
-pub const FACTORS: [&str; 4] = [".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector"];
+pub(crate) const FACTORS: [&str; 4] = [".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector"];
 /// What a LoRA keeps beside its factors that adapts no base weight: a parallel decoder's per-step
 /// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`).
-pub const KEPT: [&str; 1] = [".heads"];
+pub(crate) const KEPT: [&str; 1] = [".heads"];
 
 /// Whether a key is a LoRA's: a factor, an alpha or a tensor it keeps.
-pub fn lora_key(key: &str) -> bool {
+pub(crate) fn lora_key(key: &str) -> bool {
     FACTORS.iter().chain(&KEPT).any(|f| key.ends_with(f))
 }
 
 /// A LoRA target's factors' shapes, A and B.
-pub type Factors<'a> = (Option<&'a [u64]>, Option<&'a [u64]>);
+pub(crate) type Factors<'a> = (Option<&'a [u64]>, Option<&'a [u64]>);
 
 /// A LoRA's targets, by path, from its tensors' keys and shapes.
-pub fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BTreeMap<&'a str, Factors<'a>> {
+pub(crate) fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BTreeMap<&'a str, Factors<'a>> {
     let mut targets: BTreeMap<&str, Factors> = BTreeMap::new();
     for (key, shape) in tensors {
         if let Some(path) = key.strip_suffix(".lora_A.weight") {
@@ -183,7 +184,7 @@ pub fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BT
 }
 
 /// Every family component all of `targets` fit: an adapter with no record of its family is one when that's a single one.
-pub fn fitting(targets: &BTreeMap<&str, Factors>) -> Vec<(&'static Family, &'static str)> {
+pub(crate) fn fitting(targets: &BTreeMap<&str, Factors>) -> Vec<(&'static Family, &'static str)> {
     (families().iter())
         .flat_map(|f| f.components.iter().filter(|(_, d)| d.same_as.is_none()).map(move |(c, _)| (f, c.as_str())))
         .filter(|(f, c)| !targets.is_empty() && targets.iter().all(|(path, t)| f.takes(c, path, t)))
@@ -269,7 +270,7 @@ fn verified<'h>(header: &'h Header, bases: &[&'h Component]) -> Option<(&'static
 }
 
 /// One stored component: its name and every tensor's key and logical shape.
-pub struct Stored<'a> {
+pub(crate) struct Stored<'a> {
     pub name: &'a str,
     pub keys: Vec<(&'a str, &'a [u64])>,
 }
@@ -307,7 +308,7 @@ fn shown(want: &[Option<u64>]) -> String {
 
 impl Family {
     /// A component's definition, through `same_as`; with the canonical name it shares.
-    pub fn def(&self, component: &str) -> Option<(&str, &Def)> {
+    pub(crate) fn def(&self, component: &str) -> Option<(&str, &Def)> {
         let (name, def) = self.components.get_key_value(component)?;
         match &def.same_as {
             Some(root) => self.components.get_key_value(root.as_str()).map(|(n, d)| (n.as_str(), d)),
@@ -316,7 +317,7 @@ impl Family {
     }
 
     /// The components that are variants of `component`'s canonical one, itself included.
-    pub fn variants(&self, component: &str) -> Vec<&str> {
+    pub(crate) fn variants(&self, component: &str) -> Vec<&str> {
         let Some((root, _)) = self.def(component) else { return vec![] };
         (self.components.keys())
             .filter(|c| self.def(c).is_some_and(|(r, _)| r == root))
@@ -326,7 +327,7 @@ impl Family {
 
     /// The variant of `component` a checkpoint pinned to `sources` is: the one whose own reference
     /// is in one of their repositories, else `component`.
-    pub fn pinned_variant<'a>(&'a self, component: &'a str, sources: &[&str]) -> &'a str {
+    pub(crate) fn pinned_variant<'a>(&'a self, component: &'a str, sources: &[&str]) -> &'a str {
         let repo = |s: &str| s.split('@').next().unwrap_or(s).to_ascii_lowercase();
         let repos: Vec<String> = sources.iter().map(|s| repo(s)).collect();
         let own = |v: &&str| self.components.get(*v).and_then(|d| d.reference.as_deref()).is_some_and(|r| repos.contains(&repo(r)));
@@ -356,7 +357,7 @@ impl Family {
     }
 
     /// Every form's name, canonical first.
-    pub fn form_names(&self) -> Vec<&str> {
+    pub(crate) fn form_names(&self) -> Vec<&str> {
         std::iter::once(CANONICAL).chain(self.forms.keys().map(String::as_str)).collect()
     }
 
@@ -392,7 +393,7 @@ impl Family {
 
     /// The form every stored component is in, or the closest form's differences (a few named,
     /// and how many). A component the family does not list is a difference in every form.
-    pub fn form_of(&self, stored: &[Stored]) -> Result<String, String> {
+    pub(crate) fn form_of(&self, stored: &[Stored]) -> Result<String, String> {
         let mut closest: Option<(usize, &str, Vec<String>)> = None;
         for form in self.form_names() {
             let diffs = self.differences(stored, form);
@@ -410,7 +411,7 @@ impl Family {
 
     /// The shapes the base weight or LoRA site `path` has in `component`, one per form that has it:
     /// `[out, in]` (with a convolution's kernel).
-    pub fn targets(&self, component: &str, path: &str) -> Vec<Vec<Option<u64>>> {
+    pub(crate) fn targets(&self, component: &str, path: &str) -> Vec<Vec<Option<u64>>> {
         let Some((_, def)) = self.def(component) else { return vec![] };
         let weight = format!("{path}.weight");
         let sites = (def.sites.iter()).filter(|(p, _)| p == path).map(|(_, s)| s.iter().map(|d| Some(*d)).collect());
@@ -419,7 +420,7 @@ impl Family {
     }
 
     /// Whether a LoRA target at `path` fits `component`: base `[out, in, kernel…]` as A `[r, in, kernel…]` and B `[out, r, 1…]`.
-    pub fn takes(&self, component: &str, path: &str, (a, b): &Factors) -> bool {
+    pub(crate) fn takes(&self, component: &str, path: &str, (a, b): &Factors) -> bool {
         let (Some(a), Some(b)) = (a, b) else { return false };
         let at = |v: &[Option<u64>], i: usize, got: u64| v.get(i).copied().flatten().is_none_or(|w| w == got);
         self.targets(component, path).iter().any(|want| {
@@ -429,7 +430,7 @@ impl Family {
 
     /// The component a LoRA was trained on, by its producer's declared field: `(component,
     /// "field=value")`. Never inferred from structure.
-    pub fn trained_on(&self, metadata: &BTreeMap<String, String>) -> Option<(String, String)> {
+    pub(crate) fn trained_on(&self, metadata: &BTreeMap<String, String>) -> Option<(String, String)> {
         self.trained_on.iter().find_map(|rule| {
             let value = metadata.get(&rule.field)?;
             let component = rule.values.get(value)?;
@@ -469,7 +470,7 @@ fn strings(v: Option<&Value>) -> BTreeMap<String, String> {
 }
 
 impl Record {
-    pub fn value(&self) -> Value {
+    pub(crate) fn value(&self) -> Value {
         Value::Map(BTreeMap::from([
             ("name".to_owned(), text(&self.name)),
             ("form".to_owned(), text(&self.form)),
@@ -479,7 +480,7 @@ impl Record {
     }
 
     /// A header's `family`; none when absent or malformed.
-    pub fn read(metadata: &Metadata) -> Option<Record> {
+    pub(crate) fn read(metadata: &Metadata) -> Option<Record> {
         let Some(Value::Map(m)) = metadata.get(FAMILY) else { return None };
         Some(Record {
             name: field(m, "name")?.to_owned(),
@@ -584,7 +585,7 @@ pub struct Adapter {
 }
 
 impl Adapter {
-    pub fn value(&self) -> Value {
+    pub(crate) fn value(&self) -> Value {
         let mut m = BTreeMap::from([
             ("family".to_owned(), text(&self.family)),
             ("component".to_owned(), text(&self.component)),
@@ -618,7 +619,7 @@ impl Adapter {
         m.iter().filter_map(|(c, v)| Some((c.clone(), Adapter::read(v)?))).collect()
     }
 
-    pub fn value_all(adapters: &BTreeMap<String, Adapter>) -> Value {
+    pub(crate) fn value_all(adapters: &BTreeMap<String, Adapter>) -> Value {
         Value::Map(adapters.iter().map(|(c, a)| (c.clone(), a.value())).collect())
     }
 }

@@ -26,17 +26,17 @@ const RUNTIME_BUILD: &str = "development-runtime";
 const OLDER_RUNTIME_BUILD: &str = "runtime-build";
 
 /// The service's exit status asking its parent to start the service again on the selected pair.
-pub const REPLACE_EXIT: i32 = 75;
+pub(crate) const REPLACE_EXIT: i32 = 75;
 /// This binary's release, which an update's `from` and `to` name as `cozy`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_WHEEL_BYTES: u64 = 256 << 20;
 /// A dev binary's: a debug build with its debug info.
 const MAX_BINARY_BYTES: u64 = 2 << 30;
 /// A dev binary's file name where it is staged.
-pub const BINARY: &str = if cfg!(windows) { "cozy.exe" } else { "cozy" };
+pub(crate) const BINARY: &str = if cfg!(windows) { "cozy.exe" } else { "cozy" };
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Pair {
+pub(crate) struct Pair {
     pub runtime: String,
     pub tensorfs: String,
     /// Each wheel's content digest (hex sha256), in an update's from/to only.
@@ -50,7 +50,7 @@ pub struct Pair {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Status {
+pub(crate) struct Status {
     pub operation: String,
     /// waiting | preparing | waiting_activation | installing | starting | succeeded | rolled_back | failed | canceled
     pub state: String,
@@ -77,7 +77,7 @@ pub struct Status {
     pub notes: Vec<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Step {
+pub(crate) struct Step {
     pub state: String,
     pub at_ms: i64,
     /// A `waiting_activation` step's runs: those admitted when admission closed, and how many
@@ -95,12 +95,12 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 impl Status {
-    pub fn terminal(&self) -> bool {
+    pub(crate) fn terminal(&self) -> bool {
         matches!(self.state.as_str(), "succeeded" | "rolled_back" | "failed" | "canceled")
     }
     /// What it waits for before it activates, for people; "" when it does not wait. Its caller
     /// names the runs (`waiting_on`) by its own numbers.
-    pub fn waits(&self) -> String {
+    pub(crate) fn waits(&self) -> String {
         match (self.state.as_str(), self.waiting_on.len()) {
             ("waiting_activation", 0) => "waiting for the submits in flight".into(),
             ("waiting_activation", 1) => "waiting for a run in flight to end".into(),
@@ -125,7 +125,7 @@ impl Status {
 /// wheel; for `cozy`, its GitHub release), a dev build the caller staged (`file`, `sha256`), or a
 /// `file` at an https `url` the machine fetches, held to `sha256`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Choice {
+pub(crate) struct Choice {
     #[serde(default)]
     pub file: String,
     #[serde(default)]
@@ -138,7 +138,7 @@ pub struct Choice {
 
 /// An update failure with its own reason code.
 #[derive(Debug)]
-pub struct Coded {
+pub(crate) struct Coded {
     pub code: &'static str,
     pub message: String,
 }
@@ -150,7 +150,7 @@ impl std::fmt::Display for Coded {
 impl std::error::Error for Coded {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Request {
+pub(crate) struct Request {
     pub operation: String,
     #[serde(default)]
     pub pin: Option<bool>,
@@ -215,7 +215,7 @@ const DEV: &str = "binary-dev";
 
 /// What the stable parent does after recovering or rolling back an activation.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Recovered {
+pub(crate) enum Recovered {
     /// There was none.
     Nothing,
     /// Links (and a binary) were restored; this image starts its service.
@@ -226,14 +226,14 @@ pub enum Recovered {
 
 /// Where the machine keeps its software: everything under its own engine directory.
 #[derive(Clone)]
-pub struct Paths {
+pub(crate) struct Paths {
     engine: PathBuf,
     image_wheels: PathBuf,
     /// The machine's `config.toml`, which its one load reads at start.
     pub(crate) config: PathBuf,
 }
 impl Paths {
-    pub fn new(engine: &Path, root: &Path) -> Self {
+    pub(crate) fn new(engine: &Path, root: &Path) -> Self {
         // A development image may vendor this machine's own executor SDK beside the Go agent's.
         let own = root.join("opt/cozy/machine/wheels");
         let image_wheels = if own.is_dir() {
@@ -255,7 +255,7 @@ impl Paths {
         self.engine.join("sdk/current")
     }
     /// The executors' Runtime/TensorFS wheels: the last activated pair, else the image's.
-    pub fn sdk(&self) -> PathBuf {
+    pub(crate) fn sdk(&self) -> PathBuf {
         let link = self.current_sdk_link();
         match fs::symlink_metadata(&link) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => self.image_wheels.clone(),
@@ -267,7 +267,7 @@ impl Paths {
 
 /// Restores what a failed activation replaced: the SDK link, and a binary activation's previous
 /// binary, renamed back over the launch path.
-pub fn rollback_pending(paths: &Paths, cause: &str) -> io::Result<Recovered> {
+pub(crate) fn rollback_pending(paths: &Paths, cause: &str) -> io::Result<Recovered> {
     let Some(pending) = read_pending(paths)? else {
         return Ok(Recovered::Nothing);
     };
@@ -306,7 +306,7 @@ fn swapped() -> bool {
 /// this before each service it forks. A succeeded marker means readiness already committed the
 /// update: only its cleanup remains. A published binary activation this image has not yet
 /// handed to is `Exec`.
-pub fn recover_activation(paths: &Paths) -> io::Result<Recovered> {
+pub(crate) fn recover_activation(paths: &Paths) -> io::Result<Recovered> {
     let Some(pending) = read_pending(paths)? else {
         return Ok(Recovered::Nothing);
     };
@@ -349,7 +349,7 @@ pub fn recover_activation(paths: &Paths) -> io::Result<Recovered> {
 
 /// The Runtime pairs under `engine`'s `sdk/` the machine may run again: the selected one and,
 /// while an activation is pending, the one it rolls back to. Any other is never used again.
-pub fn kept_pairs(engine: &Path) -> Vec<PathBuf> {
+pub(crate) fn kept_pairs(engine: &Path) -> Vec<PathBuf> {
     let pending: Option<Pending> = fs::read(engine.join("update/pending.json")).ok().and_then(|raw| serde_json::from_slice(&raw).ok());
     fs::read_link(engine.join("sdk/current")).ok().into_iter().chain(pending.and_then(|p| p.sdk_before)).collect()
 }
@@ -389,7 +389,7 @@ fn remove_marker(paths: &Paths, name: &str) -> io::Result<()> {
 }
 
 /// The service's own last words before it exited unready, for its parent's rollback reason.
-pub fn service_failed(paths: &Paths, error: &dyn std::fmt::Display) {
+pub(crate) fn service_failed(paths: &Paths, error: &dyn std::fmt::Display) {
     let line = error.to_string().lines().last().unwrap_or_default().chars().take(1000).collect::<String>();
     if let Err(write) = write_marker(paths, SERVICE_ERROR, &line) {
         tracing::warn!("cannot record the service's error for its parent: {write}");
@@ -397,7 +397,7 @@ pub fn service_failed(paths: &Paths, error: &dyn std::fmt::Display) {
 }
 
 /// What the last service that failed said, taken (each is read once).
-pub fn service_error(paths: &Paths) -> Option<String> {
+pub(crate) fn service_error(paths: &Paths) -> Option<String> {
     let line = read_marker(paths, SERVICE_ERROR).ok().flatten()?;
     let _ = remove_marker(paths, SERVICE_ERROR);
     Some(line).filter(|l| !l.trim().is_empty())
@@ -418,7 +418,7 @@ fn latest(paths: &Paths, pending: Status) -> io::Result<Status> {
     }
 }
 
-pub struct Updates {
+pub(crate) struct Updates {
     paths: Paths,
     uv: super::uv::Uv,
     /// The Python executors run (`PackageSdk::python`): the SDK pair resolves for it.
@@ -442,7 +442,7 @@ pub struct Updates {
 }
 
 impl Updates {
-    pub fn open(
+    pub(crate) fn open(
         paths: Paths,
         uv: super::uv::Uv,
         python: String,
@@ -480,7 +480,7 @@ impl Updates {
     }
 
     /// The build toolchain, probed once and again after each install.
-    pub fn toolchain(&self) -> api::machine::Toolchain {
+    pub(crate) fn toolchain(&self) -> api::machine::Toolchain {
         let mut held = self.toolchain.lock().unwrap();
         if held.is_none() {
             *held = Some(self.probe_toolchain());
@@ -506,7 +506,7 @@ impl Updates {
     /// Each kernel's verdict on this machine, as the Runtime keeps them under its kernel store.
     /// A kernel no prebuilt served (a verdict that failed) is the build toolchain's first need: on
     /// a machine without one, it is fetched now, once, in the background, as an update of its own.
-    pub fn kernels(self: &Arc<Self>) -> Vec<api::machine::KernelVerdict> {
+    pub(crate) fn kernels(self: &Arc<Self>) -> Vec<api::machine::KernelVerdict> {
         let verdicts = super::toolchain::verdicts(&self.paths.engine.join("gpu/kernels"));
         if verdicts.iter().any(|v| !v.ok) && self.toolchain().nvcc.is_empty() {
             let fetch = Request {
@@ -528,12 +528,12 @@ impl Updates {
     }
 
     /// Where the machine's toolchain lives, which executors find through their environment.
-    pub fn toolchain_dir(&self) -> PathBuf {
+    pub(crate) fn toolchain_dir(&self) -> PathBuf {
         super::toolchain::dir(&self.paths.engine)
     }
 
     /// After this process proved readiness: an activation in flight is committed.
-    pub fn commit(&self) -> io::Result<()> {
+    pub(crate) fn commit(&self) -> io::Result<()> {
         let result = self.commit_pending();
         if let Err(error) = &result {
             if let Some(status) = self.status.lock().unwrap().as_mut().filter(|s| !s.terminal()) {
@@ -590,11 +590,11 @@ impl Updates {
 
     /// The update `operation` names, if it is this machine's latest.
     /// The update in progress (none without one).
-    pub fn current(&self) -> Option<Status> {
+    pub(crate) fn current(&self) -> Option<Status> {
         self.status.lock().unwrap().clone().filter(|s| !s.terminal())
     }
 
-    pub fn update(&self, operation: &str) -> Option<Status> {
+    pub(crate) fn update(&self, operation: &str) -> Option<Status> {
         let current = self.status.lock().unwrap().clone().filter(|s| s.operation == operation);
         current
             .or_else(|| self.queued.lock().unwrap().iter().find(|q| q.status.operation == operation).map(|q| q.status.clone()))
@@ -603,7 +603,7 @@ impl Updates {
 
     /// Cancels update `operation` before it activates: it ends `canceled`, its candidate is
     /// removed and admission reopens. Once activating it ends on its own (ResourceBusy).
-    pub fn cancel(&self, operation: &str) -> io::Result<Status> {
+    pub(crate) fn cancel(&self, operation: &str) -> io::Result<Status> {
         let mut current = self.status.lock().unwrap();
         // A queued one ends now; the next to start skips it.
         let mut queued = self.queued.lock().unwrap();
@@ -640,12 +640,12 @@ impl Updates {
     }
 
     /// The executors' Runtime/TensorFS pair.
-    pub fn software(&self) -> Pair {
+    pub(crate) fn software(&self) -> Pair {
         pair_in(&self.paths.sdk())
     }
 
     /// PUT /v1/machine/runtime/wheels/{file}: kept as staged/<sha256>/<file>.
-    pub fn stage(&self, file: &str, body: &mut dyn Read) -> Result<(String, u64), (u16, String)> {
+    pub(crate) fn stage(&self, file: &str, body: &mut dyn Read) -> Result<(String, u64), (u16, String)> {
         if wheel_name(file).is_none() && file != BINARY {
             return Err((400, format!("stage a cozy_runtime or tensorfs wheel, or the {BINARY} binary")));
         }
@@ -683,7 +683,7 @@ impl Updates {
     /// POST /v1/machine/runtime/update: accepts one operation and runs it in the background, or
     /// queues it behind an update in progress, or (`ready` false: the service has not proved its
     /// start yet) until it has (`next`).
-    pub fn request(
+    pub(crate) fn request(
         self: &Arc<Self>,
         request: Request,
         ready: bool,
@@ -728,7 +728,7 @@ impl Updates {
 
     /// The next queued update starts once the one before it has ended: from that update's own
     /// end, or (when it ended in a restart) from the restarted service once it proves readiness.
-    pub fn next(self: &Arc<Self>, exit: fn(i32)) {
+    pub(crate) fn next(self: &Arc<Self>, exit: fn(i32)) {
         let mut current = self.status.lock().unwrap();
         if current.as_ref().is_some_and(|s| !s.terminal()) {
             return;
@@ -1062,7 +1062,7 @@ impl Updates {
     }
 
     /// Whether this machine runs a dev binary: one a committed dev update activated.
-    pub fn dev(&self) -> bool {
+    pub(crate) fn dev(&self) -> bool {
         self.paths.engine.join(DEV).exists()
     }
 
@@ -1342,7 +1342,7 @@ fn verify_wheel(path: &Path, distribution: &str) -> io::Result<()> {
 /// The development Runtime of the selected pair in `wheels`; empty for a release. An older TensorD
 /// (the one an update moving TensorD and the pair together runs on) also marked a GitHub prerelease
 /// it fetched, so its mark counts only while the file a caller sent is still in `staged`.
-pub fn development_runtime(wheels: &Path, staged: &Path) -> String {
+pub(crate) fn development_runtime(wheels: &Path, staged: &Path) -> String {
     if let Ok(build) = fs::read_to_string(wheels.join(RUNTIME_BUILD)) {
         return build;
     }
@@ -1396,7 +1396,7 @@ fn wheels(dir: &Path) -> Vec<(String, String, PathBuf)> {
     found
 }
 
-pub fn pair_in(dir: &Path) -> Pair {
+pub(crate) fn pair_in(dir: &Path) -> Pair {
     let mut pair = Pair::default();
     for (distribution, version, _) in wheels(dir) {
         match distribution.as_str() {

@@ -16,12 +16,14 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Whether a lock admits one holder or many that share it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Exclusive,
     Shared,
 }
 
+/// A lock on the file at a path, created on first take; its holder's record is `<path>.holder`.
 #[derive(Clone, Debug)]
 pub struct LockFile {
     path: PathBuf,
@@ -36,12 +38,9 @@ pub struct Held {
 }
 
 impl LockFile {
+    /// The lock at `path`; nothing is opened until it is taken.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// `None`: someone holds it.
@@ -139,6 +138,7 @@ impl Drop for Held {
 /// canonical path on Windows, whose directories take no byte-range locks. Waits for a holder.
 pub struct DirLock(#[allow(dead_code)] sys::DirLock, PhantomData<*const ()>);
 
+/// Takes a [`DirLock`] on `path`, waiting while another holds it.
 pub fn dir(path: &Path) -> Result<DirLock> {
     Ok(DirLock(sys::dir(path)?, PhantomData))
 }
@@ -156,22 +156,13 @@ pub fn share(file: &std::fs::File) -> Result<()> {
     sys::share(file)
 }
 
-/// Other processes holding a write lock on any byte of `path`; empty when `path` is absent.
-pub fn posix_writers(path: &Path) -> Result<Vec<u32>> {
-    sys::posix_writers(path)
-}
-
 #[cfg(unix)]
 mod sys {
-    use crate::{Error, Result, durable::FileId};
-    use std::collections::{HashMap, hash_map::Entry};
-    use std::fs::File;
-    use std::os::fd::AsRawFd;
-    use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
-    use std::{io, mem};
+    use crate::Result;
 
-    static PROBES: OnceLock<Mutex<HashMap<FileId, File>>> = OnceLock::new();
+    use std::fs::File;
+
+    use std::path::Path;
 
     pub(super) fn share(file: &File) -> Result<()> {
         Ok(file.lock_shared()?)
@@ -198,76 +189,11 @@ mod sys {
         })
     }
 
-    pub(super) fn posix_writers(path: &Path) -> Result<Vec<u32>> {
-        let id = match FileId::at(path) {
-            Ok(id) => id,
-            Err(Error::Os { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                return Ok(vec![]);
-            }
-            Err(error) => return Err(error),
-        };
-        let mut probes = PROBES
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut key = id;
-        if !probes.contains_key(&id) {
-            let file = File::open(path)?;
-            key = FileId::of(&file)?;
-            match probes.entry(key) {
-                // Replaced between the stat and the open by an inode already probed: this
-                // descriptor may not be closed either.
-                Entry::Occupied(_) => mem::forget(file),
-                Entry::Vacant(vacant) => {
-                    vacant.insert(file);
-                }
-            }
-        }
-        let probe = &probes[&key];
-        let mut writers = vec![];
-        // Ranges still to test; a test answers one conflicting lock, maybe not the lowest.
-        let mut ranges: Vec<(i64, i64)> = vec![(0, 0)];
-        while let Some((start, len)) = ranges.pop() {
-            let mut lock = libc::flock {
-                l_type: libc::F_RDLCK as _,
-                l_whence: libc::SEEK_SET as _,
-                l_start: start as _,
-                l_len: len as _,
-                l_pid: 0,
-            };
-            // SAFETY: a lock query on a descriptor we hold, into a writable flock.
-            if unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_GETLK, &mut lock) } != 0 {
-                return Err(io::Error::last_os_error().into());
-            }
-            if lock.l_type == libc::F_UNLCK as libc::c_short {
-                continue;
-            }
-            // An open-file-description lock names no process (-1).
-            if lock.l_pid > 0 && !writers.contains(&(lock.l_pid as u32)) {
-                writers.push(lock.l_pid as u32);
-            }
-            let (held, span): (i64, i64) = (lock.l_start as _, lock.l_len as _);
-            if held > start {
-                ranges.push((start, held - start));
-            }
-            if span != 0 && (len == 0 || held + span < start + len) {
-                ranges.push((
-                    held + span,
-                    if len == 0 {
-                        0
-                    } else {
-                        start + len - held - span
-                    },
-                ));
-            }
-        }
-        Ok(writers)
-    }
 }
 
 #[cfg(windows)]
 mod sys {
-    use crate::{Error, Result, Seam};
+    use crate::Result;
     use sha2::{Digest, Sha256};
     use std::io;
     use std::path::Path;
@@ -343,7 +269,4 @@ mod sys {
         }
     }
 
-    pub(super) fn posix_writers(_: &Path) -> Result<Vec<u32>> {
-        Err(Error::unsupported(Seam::Process))
-    }
 }

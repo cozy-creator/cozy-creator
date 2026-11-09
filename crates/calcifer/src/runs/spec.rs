@@ -12,7 +12,7 @@ use api::{
 use super::bind::Bound;
 
 /// A function as a run names it: a published release's, or local code's.
-pub struct Call<'a> {
+pub(crate) struct Call<'a> {
     /// `org/pkg`, or local code's `local/<dist>`.
     pub package: &'a str,
     pub source: Source<'a>,
@@ -26,7 +26,7 @@ pub struct Call<'a> {
 }
 
 /// Where the machine finds the function's code.
-pub enum Source<'a> {
+pub(crate) enum Source<'a> {
     /// A published release; none: the one the machine holds, else the newest.
     Release(Option<&'a str>),
     /// Local code the machine installed under `installation`, from `source`, for `owner`.
@@ -38,7 +38,7 @@ pub enum Source<'a> {
 
 impl Call<'_> {
     /// The run's name for people: `org/pkg/fn[@release]`, `local/<dist>/fn`.
-    pub fn target(&self) -> String {
+    pub(crate) fn target(&self) -> String {
         let target = format!("{}/{}", self.package, self.callable.name);
         match self.source {
             Source::Release(Some(release)) => format!("{target}@{release}"),
@@ -47,7 +47,7 @@ impl Call<'_> {
     }
 
     /// A CALL of the function with `bound`.
-    pub fn spec(&self, bound: &Bound) -> Result<v1::RunSpec, Error> {
+    pub(crate) fn spec(&self, bound: &Bound) -> Result<v1::RunSpec, Error> {
         Ok(v1::RunSpec {
             kind: v1::RunKind::Call,
             source: Some(match self.source {
@@ -79,7 +79,7 @@ impl Call<'_> {
 
     /// A WARM run that sets the function's place in the machine's warm set: Calcifer merges
     /// this one item into the set the machine last reported, and level 0 takes it out.
-    pub fn warm(&self, level: v1::WarmLevel, models: &[Choice], payload: Option<v1::Json>) -> Result<v1::RunSpec, Error> {
+    pub(crate) fn warm(&self, level: v1::WarmLevel, models: &[Choice], payload: Option<v1::Json>) -> Result<v1::RunSpec, Error> {
         let source = match self.source {
             Source::Release(_) => v1::WarmSource::Release(self.release()),
             Source::Local {
@@ -114,7 +114,7 @@ impl Call<'_> {
     }
 
     /// The submission Calcifer records: the spec, the files a call reads, and its warnings.
-    pub fn submission(
+    pub(crate) fn submission(
         &self,
         on: On,
         hub: &str,

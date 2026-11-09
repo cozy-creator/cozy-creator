@@ -43,13 +43,13 @@ tokio::task_local! {
 }
 
 /// The header a client reads to learn which of its request's fields this Calcifer did not read.
-pub const IGNORED_FIELDS: &str = "cozy-ignored-fields";
+pub(crate) const IGNORED_FIELDS: &str = "cozy-ignored-fields";
 
 /// A submission's bound: files ride as staged paths, never in the body.
 const MAX_BODY: usize = 8 << 20;
 
 /// What every handler shares.
-pub struct Api {
+pub(crate) struct Api {
     pub calcifer: Arc<Calcifer>,
     pub machines: Arc<Machines>,
     pub projects: crate::project::Projects,
@@ -70,7 +70,7 @@ pub struct Api {
 }
 
 impl Api {
-    pub fn new(
+    pub(crate) fn new(
         calcifer: Arc<Calcifer>,
         machines: Arc<Machines>,
         token: &str,
@@ -92,7 +92,7 @@ impl Api {
 
     /// `down`: admission closes once the mutations in flight are done, then every stream and the
     /// server end. Machines run on. What Calcifer still owes (`resume` takes it up) is answered.
-    pub async fn down(&self) -> Vec<String> {
+    pub(crate) async fn down(&self) -> Vec<String> {
         let mut stopping = self.stopping.write().await;
         *stopping = true;
         let owed = self.calcifer.owed();
@@ -103,7 +103,7 @@ impl Api {
     }
 
     /// Ends every stream and the server.
-    pub fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.stop.send_replace(true);
     }
 
@@ -112,7 +112,7 @@ impl Api {
         self.stop.subscribe()
     }
 
-    pub fn stopped(&self) -> impl Future<Output = ()> + use<> {
+    pub(crate) fn stopped(&self) -> impl Future<Output = ()> + use<> {
         let mut stop = self.stop.subscribe();
         async move {
             let _ = stop.wait_for(|stop| *stop).await;
@@ -130,7 +130,7 @@ impl Api {
     }
 }
 
-pub fn router(api: Arc<Api>) -> Router {
+pub(crate) fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/v1/events", get(crate::events::stream))
         .route("/v1/events/{stream}", put(crate::events::show))
@@ -192,7 +192,7 @@ pub fn router(api: Arc<Api>) -> Router {
 
 /// A refusal, rendered as its envelope with the status its kind names.
 #[derive(Debug)]
-pub struct Refusal(pub Error);
+pub(crate) struct Refusal(pub Error);
 
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
@@ -397,7 +397,7 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
 }
 
 /// The `Idempotency-Key` a durable ask is recorded under; required.
-pub struct IdempotencyKey(pub String);
+pub(crate) struct IdempotencyKey(pub String);
 
 impl<S: Send + Sync> FromRequestParts<S> for IdempotencyKey {
     type Rejection = Refusal;
@@ -422,7 +422,7 @@ impl<S: Send + Sync> FromRequestParts<S> for IdempotencyKey {
 }
 
 /// A JSON body. Fields this Calcifer does not read are logged and ignored, never refused.
-pub fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
+pub(crate) fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
     let mut ignored = vec![];
     let value =
         serde_ignored::deserialize(&mut serde_json::Deserializer::from_slice(body), |path| {

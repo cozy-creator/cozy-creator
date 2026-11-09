@@ -12,14 +12,14 @@ use bytes::Bytes;
 
 use base64::engine::{general_purpose::STANDARD, Engine as _};
 use super::endpoint::{upload_commit, Endpoint, Hardware, Payload, UploadControl};
-use super::{Client, Config, Fetcher, ObjectStore, Origin, Want};
+use super::{Client, Config, Fetcher, Origin, Want};
 use crate::err::{Code, Refusal, Result};
 use crate::format::{Config as HeaderConfig, Dtype, ObjectRef, Tree};
 use crate::sha256::hex_digest;
 use crate::store::Store;
 use crate::writer::{Data, Source};
 
-pub const FIXTURE: &str = "conformance/endpoint";
+pub(crate) const FIXTURE: &str = "conformance/endpoint";
 
 /// One case's outcome.
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ fn expect(cond: bool, why: impl FnOnce() -> String) -> std::result::Result<(), S
 fn fixture(scratch: &Path) -> Result<(Store, ObjectRef)> {
     let failed = crate::store::Error::refusal;
     let store = Store::open(scratch.join("fixture")).map_err(failed)?;
-    let mut w = store.writer(None, None).map_err(failed)?;
+    let mut w = crate::writer(&store, None, None).map_err(failed)?;
     let bytes: Vec<u8> = (0..300_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8).collect();
     let config: HeaderConfig = serde_json::from_str(r#"{"conformance":1}"#).unwrap();
     let mut c = w.component("model", Default::default(), config, None).map_err(failed)?;
@@ -140,7 +140,7 @@ async fn read_side(
 
     // Down through the Fetcher: redirects followed, every object checked.
     let into = Store::open(scratch.join("pulled")).map_err(crate::store::Error::refusal)?;
-    let fetcher = Fetcher::new(Arc::new(into.clone()) as Arc<dyn ObjectStore>, client.clone(), None, Config::default());
+    let fetcher = Fetcher::new(Arc::new(into.clone()), client.clone(), None, Config::default());
     let origin: Arc<dyn Origin> = endpoint.clone();
     let pulled = fetcher.pull_tree(&origin, tree, &Want::default()).await;
     fetcher.settled().await;

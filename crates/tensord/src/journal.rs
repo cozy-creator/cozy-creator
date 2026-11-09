@@ -13,12 +13,12 @@ use std::{
 const REVISION_WINDOW: u64 = 1 << 32;
 /// A root run's log keeps package log lines while it holds fewer lines than this and its
 /// records fit in the bytes (`Journal::append_package_log`).
-pub const PACKAGE_LOG_LINES: u64 = 512;
-pub const PACKAGE_LOG_BYTES: u64 = 256 << 10;
+pub(crate) const PACKAGE_LOG_LINES: u64 = 512;
+pub(crate) const PACKAGE_LOG_BYTES: u64 = 256 << 10;
 const PACKAGE_LOG_DROPPED: &[u8] = br#"{"level":"warning","text":"later package log lines were dropped: a run's log keeps 512 lines and 256 KiB"}"#;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-pub struct Invocation {
+pub(crate) struct Invocation {
     pub package: String,
     pub generation: String,
     pub module: String,
@@ -61,7 +61,7 @@ pub struct Invocation {
 /// One file input: the declared field path, its exact bytes (sha256 and length, held in the
 /// store by the caller's retention) and media type, in the caller's order.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct InputFile {
+pub(crate) struct InputFile {
     pub input_id: String,
     pub digest: String,
     pub length: u64,
@@ -71,7 +71,7 @@ pub struct InputFile {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
-pub struct SubmissionContext {
+pub(crate) struct SubmissionContext {
     pub actor: String,
     pub request_id: String,
     pub submission_id: String,
@@ -83,7 +83,7 @@ pub struct SubmissionContext {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Preparation {
+pub(crate) struct Preparation {
     pub actor: String,
     pub id: String,
     pub installation: String,
@@ -91,7 +91,7 @@ pub struct Preparation {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Installation {
+pub(crate) struct Installation {
     pub actor: String,
     pub alias: String,
     pub generation: String,
@@ -104,13 +104,13 @@ pub struct Installation {
 }
 
 #[derive(Clone, Debug)]
-pub struct PublicTerminal {
+pub(crate) struct PublicTerminal {
     pub outcome: Vec<u8>,
     pub events: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AdmissionError {
+pub(crate) enum AdmissionError {
     BindingConflict,
 }
 impl std::fmt::Display for AdmissionError {
@@ -133,7 +133,7 @@ fn admission(error: AdmissionError) -> io::Error {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum State {
+pub(crate) enum State {
     Queued,
     Starting,
     Running,
@@ -146,7 +146,7 @@ pub enum State {
 }
 
 impl State {
-    pub fn terminal(self) -> bool {
+    pub(crate) fn terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Canceled)
     }
     fn name(self) -> &'static str {
@@ -163,7 +163,7 @@ impl State {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct ExecutorFacts {
+pub(crate) struct ExecutorFacts {
     pub pid: u32,
     pub runtime_version: String,
     pub tensorfs_version: String,
@@ -175,7 +175,7 @@ pub struct ExecutorFacts {
 
 /// The software that actually served one attempt, not the machine's current installation.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct SoftwareFacts {
+pub(crate) struct SoftwareFacts {
     pub attempt_ordinal: u32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tensord: String,
@@ -188,7 +188,7 @@ pub struct SoftwareFacts {
 }
 
 impl ExecutorFacts {
-    pub fn observed(pid: u32, runtime_version: String, tensorfs_version: String) -> Self {
+    pub(crate) fn observed(pid: u32, runtime_version: String, tensorfs_version: String) -> Self {
         Self {
             pid, runtime_version, tensorfs_version,
             tensord_version: env!("CARGO_PKG_VERSION").into(),
@@ -196,7 +196,7 @@ impl ExecutorFacts {
         }
     }
 
-    pub fn software(&self, attempt_ordinal: u32) -> SoftwareFacts {
+    pub(crate) fn software(&self, attempt_ordinal: u32) -> SoftwareFacts {
         SoftwareFacts {
             attempt_ordinal, tensord: self.tensord_version.clone(),
             tensord_commit: self.tensord_commit.clone(),
@@ -206,10 +206,10 @@ impl ExecutorFacts {
 }
 
 /// Memoized results each signer keeps, its most recently used first.
-pub const MAX_HELD_MEMOS: i64 = 4096;
+pub(crate) const MAX_HELD_MEMOS: i64 = 4096;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Artifact {
+pub(crate) struct Artifact {
     pub name: String,
     pub path: String,
     pub sha256: String,
@@ -217,7 +217,7 @@ pub struct Artifact {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct ResultRecord {
+pub(crate) struct ResultRecord {
     pub value: Value,
     pub artifacts: Vec<Artifact>,
     #[serde(default)]
@@ -229,7 +229,7 @@ pub struct ResultRecord {
 
 /// One request field its executor served other than as sent (the invoke reply's row).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Adjustment {
+pub(crate) struct Adjustment {
     /// The request field's path: `steps`, `assets.2.asset`.
     pub field: String,
     pub kind: AdjustmentKind,
@@ -242,14 +242,14 @@ pub struct Adjustment {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AdjustmentKind {
+pub(crate) enum AdjustmentKind {
     Adjusted,
     Clamp,
     Warn,
 }
 
 impl AdjustmentKind {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Adjusted => "adjusted",
             Self::Clamp => "clamp",
@@ -259,7 +259,7 @@ impl AdjustmentKind {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct AssetBinding {
+pub(crate) struct AssetBinding {
     pub relative_path: String,
     pub asset_ref: String,
     pub media_type: String,
@@ -267,7 +267,7 @@ pub struct AssetBinding {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Execution {
+pub(crate) struct Execution {
     pub id: String,
     pub idempotency_key: String,
     pub invocation: Invocation,
@@ -337,7 +337,7 @@ pub struct Execution {
 /// How the machine memo (`call_memo`) met a memoizable call.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
-pub struct CallMemo {
+pub(crate) struct CallMemo {
     /// `sha256:<hex>`: what answered it, or what its success is held under.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub computation: String,
@@ -352,19 +352,19 @@ pub struct CallMemo {
     pub basis: String,
 }
 impl CallMemo {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self == &Self::default()
     }
 }
 
 impl Execution {
     /// Its root run's acceptance order: GPU work queues by it.
-    pub fn root_seq(&self) -> u64 {
+    pub(crate) fn root_seq(&self) -> u64 {
         let root = if self.invocation.root.is_empty() { &self.id } else { &self.invocation.root };
         root.parse().unwrap_or(u64::MAX)
     }
     /// The run whose GPU its calls share: its outermost ancestor on a GPU, itself included.
-    pub fn family(&self) -> Option<&str> {
+    pub(crate) fn family(&self) -> Option<&str> {
         match (self.invocation.family.as_str(), self.invocation.degree > 0) {
             ("", true) => Some(&self.id),
             ("", false) => None,
@@ -373,7 +373,7 @@ impl Execution {
     }
     /// Its progress is observed: an attempt running, or a run preparing inside itself.
     /// A running or queued run carries volatile observations (progress, what it waits for).
-    pub fn observed(&self) -> bool {
+    pub(crate) fn observed(&self) -> bool {
         matches!(self.state, State::Running | State::Queued)
     }
 }
@@ -381,7 +381,7 @@ impl Execution {
 /// What one completed root took: its width, its size as its input said, its compute, and what it
 /// spent putting weights on its GPUs (`Ran`).
 #[derive(Clone, Debug)]
-pub struct RunTime {
+pub(crate) struct RunTime {
     pub width: u32,
     pub size: api::machine::JobSize,
     pub ms: f64,
@@ -493,13 +493,13 @@ fn covered(spans: &[Span]) -> u64 {
 }
 
 /// A function's key in `root_times`: `<package>/<entrypoint>`, any release.
-pub fn function_key(package: &str, entrypoint: &str) -> String {
+pub(crate) fn function_key(package: &str, entrypoint: &str) -> String {
     format!("{package}/{entrypoint}")
 }
 
 /// One journaled product of an execution's output log (`api::domain::RunProduct` bytes).
 #[derive(Clone, Debug)]
-pub struct StoredProduct {
+pub(crate) struct StoredProduct {
     pub sequence: u64,
     pub at_ms: u64,
     pub product: Vec<u8>,
@@ -507,7 +507,7 @@ pub struct StoredProduct {
 
 /// Coalesced observation; persisted only as part of an authoritative transition.
 #[derive(Clone, Debug)]
-pub struct ProgressSnapshot {
+pub(crate) struct ProgressSnapshot {
     pub completed_units: u64,
     pub detail: String,
     /// What the run waits for, while it waits (`Execution::waiting`).
@@ -522,7 +522,7 @@ pub struct ProgressSnapshot {
 /// Weights arriving for a run (`access::meter`): their repositories, and the bytes here of their
 /// total. `behind`: its on-demand models, which it waits on only if a step reads them.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Weights {
+pub(crate) struct Weights {
     pub models: String,
     pub done: u64,
     pub total: u64,
@@ -532,7 +532,7 @@ pub struct Weights {
 impl Weights {
     /// The progress detail they show over the run's own `detail`: its enclosing scope (what the
     /// stage is part of) and the download, never a step its weights have not reached.
-    pub fn over(&self, detail: &str) -> String {
+    pub(crate) fn over(&self, detail: &str) -> String {
         let mut own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
         // On-demand weights keep the run's own stage and steps, their bytes beside them: a step
         // that waits on them moves with them.
@@ -553,7 +553,7 @@ impl Weights {
 }
 
 impl ProgressSnapshot {
-    pub fn overlay(&self, record: &mut Execution) -> bool {
+    pub(crate) fn overlay(&self, record: &mut Execution) -> bool {
         if self.revision <= record.revision || self.completed_units < record.completed_units {
             return false;
         }
@@ -568,14 +568,14 @@ impl ProgressSnapshot {
     }
 }
 
-pub struct Journal {
+pub(crate) struct Journal {
     connection: Connection,
     workspace_id: String,
 }
 
 /// The record layout this machine writes. A newer journal still opens: unknown fields are
 /// ignored and rows it cannot read are skipped, never a refusal of the whole journal.
-pub const JOURNAL_FORMAT: u32 = 2;
+pub(crate) const JOURNAL_FORMAT: u32 = 2;
 const FILE: &str = "executions.sqlite3";
 /// One unreadable row (written by a newer machine, or damaged) must not hide every other run.
 fn readable(rows: Vec<String>) -> Vec<Execution> {
@@ -605,7 +605,7 @@ fn timestamp() -> i64 {
 }
 
 impl Journal {
-    pub fn open(root: &Path) -> io::Result<Self> {
+    pub(crate) fn open(root: &Path) -> io::Result<Self> {
         fs::create_dir_all(root)?;
         let connection = Connection::open(root.join(FILE)).map_err(db_error)?;
         // It holds runs' Hub capabilities (`run_specs`); its WAL and index take this mode too.
@@ -706,11 +706,11 @@ impl Journal {
         })
     }
 
-    pub fn workspace_id(&self) -> &str {
+    pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
 
-    pub fn installation(&self, actor: &str, alias: &str) -> io::Result<Option<Installation>> {
+    pub(crate) fn installation(&self, actor: &str, alias: &str) -> io::Result<Option<Installation>> {
         let record: Option<String> = self
             .connection
             .query_row(
@@ -724,7 +724,7 @@ impl Journal {
             .map(|record| serde_json::from_str(&record).map_err(db_error))
             .transpose()
     }
-    pub fn installation_for_generation(
+    pub(crate) fn installation_for_generation(
         &self,
         actor: &str,
         generation: &str,
@@ -735,13 +735,13 @@ impl Journal {
             .transpose()
     }
     /// Every generation an installation or an unfinished run names: never evicted meanwhile.
-    pub fn bound_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+    pub(crate) fn bound_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         let mut bound = self.running_generations()?;
         bound.extend(self.generations("SELECT json_extract(record,'$.generation') FROM installations")?);
         Ok(bound)
     }
     /// Every generation an unfinished run names.
-    pub fn running_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+    pub(crate) fn running_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         self.generations(
             "SELECT json_extract(invocation,'$.generation') FROM executions
              WHERE state NOT IN ('completed','failed','canceled')",
@@ -750,7 +750,7 @@ impl Journal {
     /// Every generation a run still needs its installation for: an unfinished run's, and a finished
     /// one's whose outcome has not been read, since it is made at its first read from that
     /// installation's interface. Taken away first, the read fails for good (cl-773).
-    pub fn unsettled_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+    pub(crate) fn unsettled_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         self.generations(
             "SELECT json_extract(invocation,'$.generation') FROM executions
              WHERE state NOT IN ('completed','failed','canceled')
@@ -767,7 +767,7 @@ impl Journal {
             .collect()
     }
 
-    pub fn installations(&self, actor: &str) -> io::Result<Vec<Installation>> {
+    pub(crate) fn installations(&self, actor: &str) -> io::Result<Vec<Installation>> {
         let mut statement = self
             .connection
             .prepare("SELECT record FROM installations WHERE actor=?1 ORDER BY alias")
@@ -778,7 +778,7 @@ impl Journal {
         rows.map(|r| serde_json::from_str(&r.map_err(db_error)?).map_err(db_error))
             .collect()
     }
-    pub fn bind_installation(&mut self, record: Installation) -> io::Result<Installation> {
+    pub(crate) fn bind_installation(&mut self, record: Installation) -> io::Result<Installation> {
         validate_scope(&record.actor, &record.alias, &record.generation)?;
         if let Some(prior) = self.installation(&record.actor, &record.alias)? {
             return match prior == record {
@@ -797,7 +797,7 @@ impl Journal {
 
     /// Drop `actor`'s installation `alias` with its preparations, the resolutions naming them
     /// and its warm set members. Answers the installation removed, if there was one.
-    pub fn remove_installation(&mut self, actor: &str, alias: &str) -> io::Result<Option<Installation>> {
+    pub(crate) fn remove_installation(&mut self, actor: &str, alias: &str) -> io::Result<Option<Installation>> {
         let Some(installed) = self.installation(actor, alias)? else {
             return Ok(None);
         };
@@ -815,7 +815,7 @@ impl Journal {
         Ok(Some(installed))
     }
 
-    pub fn resolution(&self, actor: &str, key: &str) -> io::Result<Option<String>> {
+    pub(crate) fn resolution(&self, actor: &str, key: &str) -> io::Result<Option<String>> {
         self.connection
             .query_row(
                 "SELECT preparation FROM resolutions WHERE actor=?1 AND key=?2",
@@ -825,7 +825,7 @@ impl Journal {
             .optional()
             .map_err(db_error)
     }
-    pub fn bind_resolution(
+    pub(crate) fn bind_resolution(
         &mut self,
         actor: &str,
         key: &str,
@@ -839,19 +839,19 @@ impl Journal {
     }
     /// What a Hub named `name` (its origin, a repository, release and lane) under the caller's
     /// catalog `revision` (th-245), or None. One row per name: a moved revision replaces it.
-    pub fn named(&self, name: &str, revision: &str) -> io::Result<Option<String>> {
+    pub(crate) fn named(&self, name: &str, revision: &str) -> io::Result<Option<String>> {
         self.connection
             .query_row("SELECT named FROM names WHERE name=?1 AND revision=?2", params![name, revision], |r| r.get(0))
             .optional()
             .map_err(db_error)
     }
-    pub fn bind_named(&mut self, name: &str, revision: &str, named: &str) -> io::Result<()> {
+    pub(crate) fn bind_named(&mut self, name: &str, revision: &str, named: &str) -> io::Result<()> {
         self.connection
             .execute("INSERT OR REPLACE INTO names(name,revision,named) VALUES(?1,?2,?3)", params![name, revision, named])
             .map_err(db_error)?;
         Ok(())
     }
-    pub fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
+    pub(crate) fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
         let record = self.connection
             .query_row("SELECT record FROM held_memos WHERE actor=?1 AND computation=?2",
                 params![actor, computation], |r| r.get(0))
@@ -864,7 +864,7 @@ impl Journal {
         Ok(record)
     }
     /// Every held memo naming `sha256` goes with it (its file is no longer this machine's).
-    pub fn drop_held_memos(&mut self, sha256: &str) -> io::Result<usize> {
+    pub(crate) fn drop_held_memos(&mut self, sha256: &str) -> io::Result<usize> {
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
         let dropped = tx.execute("DELETE FROM held_memos WHERE (actor,computation) IN
             (SELECT actor,computation FROM held_memo_objects WHERE sha256=?1)", params![sha256]).map_err(db_error)?;
@@ -873,7 +873,7 @@ impl Journal {
         tx.commit().map_err(db_error)?;
         Ok(dropped)
     }
-    pub fn object(&self, actor: &str, sha256: &str) -> io::Result<Option<u64>> {
+    pub(crate) fn object(&self, actor: &str, sha256: &str) -> io::Result<Option<u64>> {
         self.connection
             .query_row(
                 "SELECT length FROM objects WHERE actor=?1 AND sha256=?2",
@@ -883,7 +883,7 @@ impl Journal {
             .optional()
             .map_err(db_error)
     }
-    pub fn bind_object(
+    pub(crate) fn bind_object(
         &mut self,
         actor: &str,
         object: &tensorfs::format::ObjectRef,
@@ -903,7 +903,7 @@ impl Journal {
     }
 
     /// A child's result becomes its parent's dependency before the parent is handed it.
-    pub fn adopt_object(
+    pub(crate) fn adopt_object(
         &mut self,
         actor: &str,
         parent: &str,
@@ -925,7 +925,7 @@ impl Journal {
     /// Whether nothing needs this object's root: no use (a Write, a new run) since
     /// `before_ms`, and no run naming it that is unfinished (any state but the three
     /// terminal ones) or ended since then.
-    pub fn object_releasable(&self, sha256: &str, before_ms: i64) -> io::Result<bool> {
+    pub(crate) fn object_releasable(&self, sha256: &str, before_ms: i64) -> io::Result<bool> {
         self.connection
             .query_row(
                 "SELECT NOT EXISTS(SELECT 1 FROM object_uses WHERE sha256=?1 AND used_ms>=?2)
@@ -938,7 +938,7 @@ impl Journal {
             .map_err(db_error)
     }
     /// The failed attempt's triage bundle reference; written before the run settles.
-    pub fn bind_triage(&mut self, id: &str, triage: &crate::triage::TriageRef) -> io::Result<()> {
+    pub(crate) fn bind_triage(&mut self, id: &str, triage: &crate::triage::TriageRef) -> io::Result<()> {
         self.connection
             .execute(
                 "INSERT OR REPLACE INTO triage(execution,record) VALUES(?1,?2)",
@@ -947,7 +947,7 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
-    pub fn triage(&self, id: &str) -> io::Result<Option<crate::triage::TriageRef>> {
+    pub(crate) fn triage(&self, id: &str) -> io::Result<Option<crate::triage::TriageRef>> {
         let record: Option<String> = self
             .connection
             .query_row("SELECT record FROM triage WHERE execution=?1", [id], |r| {
@@ -959,7 +959,7 @@ impl Journal {
             .map(|record| serde_json::from_str(&record).map_err(db_error))
             .transpose()
     }
-    pub fn preparation(&self, actor: &str, id: &str) -> io::Result<Option<Preparation>> {
+    pub(crate) fn preparation(&self, actor: &str, id: &str) -> io::Result<Option<Preparation>> {
         self.connection
             .query_row(
                 "SELECT record FROM preparations WHERE actor=?1 AND id=?2",
@@ -973,7 +973,7 @@ impl Journal {
     }
 
     /// Replace `actor`'s warm set with `members` (each one's record, in its order).
-    pub fn replace_warm_set(&mut self, actor: &str, members: &[String]) -> io::Result<()> {
+    pub(crate) fn replace_warm_set(&mut self, actor: &str, members: &[String]) -> io::Result<()> {
         let transaction = self.connection.transaction().map_err(db_error)?;
         transaction
             .execute("DELETE FROM warm_sets WHERE actor=?1", [actor])
@@ -989,7 +989,7 @@ impl Journal {
         transaction.commit().map_err(db_error)
     }
     /// Every warm set member's record as (actor, record), each actor's in its order.
-    pub fn warm_sets(&self) -> io::Result<Vec<(String, String)>> {
+    pub(crate) fn warm_sets(&self) -> io::Result<Vec<(String, String)>> {
         let mut statement = self
             .connection
             .prepare("SELECT actor,record FROM warm_sets ORDER BY actor,position")
@@ -1000,7 +1000,7 @@ impl Journal {
         rows.map(|row| row.map_err(db_error)).collect()
     }
     /// Every preparation `actor` bound to `installation`.
-    pub fn preparations_of(&self, actor: &str, installation: &str) -> io::Result<Vec<Preparation>> {
+    pub(crate) fn preparations_of(&self, actor: &str, installation: &str) -> io::Result<Vec<Preparation>> {
         let mut statement = self
             .connection
             .prepare("SELECT record FROM preparations WHERE actor=?1 AND json_extract(record,'$.installation')=?2")
@@ -1012,7 +1012,7 @@ impl Journal {
             .collect()
     }
 
-    pub fn bind_preparation(&mut self, record: Preparation) -> io::Result<Preparation> {
+    pub(crate) fn bind_preparation(&mut self, record: Preparation) -> io::Result<Preparation> {
         validate_scope(&record.actor, &record.id, &record.installation)?;
         if self
             .installation(&record.actor, &record.installation)?
@@ -1034,7 +1034,7 @@ impl Journal {
             .map_err(db_error)?;
         Ok(record)
     }
-    pub fn public_terminal(&self, id: &str) -> io::Result<Option<PublicTerminal>> {
+    pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<PublicTerminal>> {
         self.connection
             .query_row(
                 "SELECT outcome,events FROM public_terminals WHERE execution=?1",
@@ -1049,7 +1049,7 @@ impl Journal {
             .optional()
             .map_err(db_error)
     }
-    pub fn native_output(&self, actor: &str, owner: &str) -> io::Result<Option<Vec<u8>>> {
+    pub(crate) fn native_output(&self, actor: &str, owner: &str) -> io::Result<Option<Vec<u8>>> {
         self.connection
             .query_row(
                 "SELECT source FROM native_outputs WHERE actor=?1 AND owner=?2",
@@ -1059,7 +1059,7 @@ impl Journal {
             .optional()
             .map_err(db_error)
     }
-    pub fn native_owner(&self, owner: &str) -> io::Result<Option<String>> {
+    pub(crate) fn native_owner(&self, owner: &str) -> io::Result<Option<String>> {
         self.connection
             .query_row(
                 "SELECT actor FROM native_outputs WHERE owner=?1 LIMIT 1",
@@ -1069,7 +1069,7 @@ impl Journal {
             .optional()
             .map_err(db_error)
     }
-    pub fn bind_native_output(
+    pub(crate) fn bind_native_output(
         &mut self,
         actor: &str,
         owner: &str,
@@ -1095,7 +1095,7 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
-    pub fn commit_public_terminal(
+    pub(crate) fn commit_public_terminal(
         &mut self,
         id: &str,
         projection: PublicTerminal,
@@ -1121,7 +1121,7 @@ impl Journal {
     /// `objects` (tree members, a local source) and keeping its `spec` (empty: none) until its
     /// preparation ends, for a restart to prepare it again. Each answers the run, and whether it
     /// is new; an id that names another spec or an update, or is invalid, is refused alone.
-    pub fn accept_runs(&mut self, actor: &str, runs: Vec<Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
+    pub(crate) fn accept_runs(&mut self, actor: &str, runs: Vec<Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1139,7 +1139,7 @@ impl Journal {
 
     /// Reserves an absent run as canceled in the same transaction namespace as acceptance.
     /// An accepted run is returned for normal cancellation; its spec/outcome is never replaced.
-    pub fn reserve_run_cancellation(&mut self, actor: &str, id: &str) -> io::Result<Execution> {
+    pub(crate) fn reserve_run_cancellation(&mut self, actor: &str, id: &str) -> io::Result<Execution> {
         validate_scope(actor, id, id)?;
         let key = format!("run:{}", encoded(&(actor, id))?);
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1166,7 +1166,7 @@ impl Journal {
     }
 
     /// Updates keep their payload journal, but share actor/ID ownership with Run and CANCEL.
-    pub fn reserve_update_run(&mut self, actor: &str, id: &str) -> io::Result<()> {
+    pub(crate) fn reserve_update_run(&mut self, actor: &str, id: &str) -> io::Result<()> {
         validate_scope(actor, id, id)?;
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
@@ -1178,13 +1178,13 @@ impl Journal {
         tx.commit().map_err(db_error)
     }
 
-    pub fn update_run_reserved(&self, actor: &str, id: &str) -> io::Result<bool> {
+    pub(crate) fn update_run_reserved(&self, actor: &str, id: &str) -> io::Result<bool> {
         update_run_reserved(&self.connection, actor, id)
     }
 
     /// A preparing run's code and models are ready: it names them and becomes dispatchable.
     /// The prepared run names its call; a memoized one answered (`answer`) completes with it.
-    pub fn bind_prepared(
+    pub(crate) fn bind_prepared(
         &mut self,
         id: &str,
         invocation: Invocation,
@@ -1226,7 +1226,7 @@ impl Journal {
     }
 
     /// A preparing run ends without dispatch: a warm run's success or a preparation failure.
-    pub fn end_preparation(&mut self, id: &str, outcome: Outcome) -> io::Result<Execution> {
+    pub(crate) fn end_preparation(&mut self, id: &str, outcome: Outcome) -> io::Result<Execution> {
         self.update(id, |record| {
             if record.state != State::Queued || record.waiting_reason.as_deref() != Some(PREPARING)
             {
@@ -1319,7 +1319,7 @@ impl Journal {
 /// result record, keyed by its signer and computation. Each signer keeps its `MAX_HELD_MEMOS`
 /// most recently used.
 #[derive(Clone, Debug)]
-pub struct HeldMemo {
+pub(crate) struct HeldMemo {
     pub actor: String,
     pub computation: String,
     pub record: Vec<u8>,
@@ -1373,10 +1373,10 @@ fn reference_objects(
 }
 
 /// The waiting reason of a run accepted before its preparation completes.
-pub const PREPARING: &str = "preparing";
+pub(crate) const PREPARING: &str = "preparing";
 
 /// One run of an admission (`Journal::accept_runs`).
-pub struct Accepting<'a> {
+pub(crate) struct Accepting<'a> {
     pub id: &'a str,
     pub digest: &'a str,
     pub invocation: Invocation,
@@ -1497,7 +1497,7 @@ fn insert(
 }
 
 impl Journal {
-    pub fn get(&self, id: &str) -> io::Result<Execution> {
+    pub(crate) fn get(&self, id: &str) -> io::Result<Execution> {
         let value: Option<String> = self
             .connection
             .query_row("SELECT record FROM executions WHERE id=?1", [id], |row| {
@@ -1511,7 +1511,7 @@ impl Journal {
     }
 
     /// The run `actor` sent as `request_id`; with no actor, the one any client sent.
-    pub fn get_public(&self, actor: Option<&str>, request_id: &str) -> io::Result<Execution> {
+    pub(crate) fn get_public(&self, actor: Option<&str>, request_id: &str) -> io::Result<Execution> {
         let value: Option<String> = self
             .connection
             .query_row(
@@ -1532,7 +1532,7 @@ impl Journal {
 
     /// Closure is a durable acceptance tombstone, never implicit execution cancellation. With no
     /// actor, every client's runs.
-    pub fn actor_page(
+    pub(crate) fn actor_page(
         &self,
         actor: Option<&str>,
         after: u64,
@@ -1570,7 +1570,7 @@ impl Journal {
             .collect::<io::Result<Vec<_>>>()
             .map(readable)
     }
-    pub fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
+    pub(crate) fn actor_head(&self, actor: Option<&str>) -> io::Result<u64> {
         self.connection
             .query_row(
                 "SELECT COALESCE(MAX(id),0) FROM executions WHERE actor=?1 OR ?1 IS NULL AND actor IS NOT NULL",
@@ -1585,7 +1585,7 @@ impl Journal {
     /// running, and when the last one ended: `since` or later.
     /// A record changed since `since` is the only one that can have stopped after it, so each
     /// sample reads only what changed.
-    pub fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
+    pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
         self.connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM executions WHERE state IN ('queued','starting','running')),
@@ -1597,16 +1597,16 @@ impl Journal {
             .map_err(db_error)
     }
 
-    pub fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
+    pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.selected("SELECT record FROM executions WHERE state IN ('queued','starting','running') ORDER BY id LIMIT ?1", limit)
     }
 
-    pub fn active(&self, limit: usize) -> io::Result<Vec<Execution>> {
+    pub(crate) fn active(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.selected("SELECT record FROM executions WHERE state IN ('starting','running') ORDER BY id LIMIT ?1", limit)
     }
 
     /// Every run ready to dispatch, by its root's acceptance, then its own.
-    pub fn ready(&self) -> io::Result<Vec<Execution>> {
+    pub(crate) fn ready(&self) -> io::Result<Vec<Execution>> {
         let mut statement = self.connection.prepare("SELECT record FROM executions WHERE state='queued' AND json_extract(record,'$.waiting_reason') IS NULL ORDER BY CAST(COALESCE(NULLIF(json_extract(record,'$.invocation.root'),''),id) AS INTEGER), id").map_err(db_error)?;
         let records = statement
             .query_map([], |row| row.get::<_, String>(0))
@@ -1619,7 +1619,7 @@ impl Journal {
 
     /// Includes terminal requests: their retained executor may still own a context.
     /// Read only birth metadata in bounded pages, never materialize old results.
-    pub fn gpu_births_after(
+    pub(crate) fn gpu_births_after(
         &self,
         after: u64,
         limit: usize,
@@ -1659,7 +1659,7 @@ impl Journal {
     }
 
     /// The newest `limit` times of `function` here (`function_key`), newest first.
-    pub fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<RunTime>> {
+    pub(crate) fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<RunTime>> {
         let mut statement = self.connection
             .prepare("SELECT width,size,ms,load_ms FROM root_times WHERE function=?1 ORDER BY execution DESC LIMIT ?2")
             .map_err(db_error)?;
@@ -1784,7 +1784,7 @@ impl Journal {
 
     /// Journal one product on a started execution's output log. Its event sequence is the
     /// transition's revision, so products interleave with every other observed change.
-    pub fn append_product(
+    pub(crate) fn append_product(
         &mut self,
         id: &str,
         progress: Option<&ProgressSnapshot>,
@@ -1816,7 +1816,7 @@ impl Journal {
 
     /// One line of the run's log the machine itself writes (a `log` event: a warning about
     /// its request), at the next sequence.
-    pub fn append_log(
+    pub(crate) fn append_log(
         &mut self,
         id: &str,
         progress: Option<&ProgressSnapshot>,
@@ -1827,7 +1827,7 @@ impl Journal {
     /// A package's log line on a root run's log while the log holds fewer than
     /// `PACKAGE_LOG_LINES` lines and the line fits in `PACKAGE_LOG_BYTES`; past that, one
     /// `PACKAGE_LOG_DROPPED` notice and nothing more. True when a line was written.
-    pub fn append_package_log(
+    pub(crate) fn append_package_log(
         &mut self,
         root: &str,
         progress: Option<&ProgressSnapshot>,
@@ -1861,7 +1861,7 @@ impl Journal {
     }
     /// A call of the run applied its attention pin: the pin is the root run's, whichever call
     /// holds the attention sites.
-    pub fn apply_attention(&mut self, id: &str) -> io::Result<()> {
+    pub(crate) fn apply_attention(&mut self, id: &str) -> io::Result<()> {
         let root = self.get(id)?.root_seq().to_string();
         self.connection
             .execute(
@@ -1873,7 +1873,7 @@ impl Journal {
     }
     /// A root run completing with a pin none of its calls applied says so in its log: an
     /// unused request field warns, never fails.
-    pub fn warn_unapplied_attention(
+    pub(crate) fn warn_unapplied_attention(
         &mut self,
         id: &str,
         progress: Option<&ProgressSnapshot>,
@@ -1920,7 +1920,7 @@ impl Journal {
     /// One settled call of the run (a `call` event: a child run, or an effect such as its
     /// weights publication) at the next sequence, once per `call`; None when it is already
     /// in the log or the run has ended.
-    pub fn append_call(
+    pub(crate) fn append_call(
         &mut self,
         id: &str,
         progress: Option<&ProgressSnapshot>,
@@ -1955,13 +1955,13 @@ impl Journal {
         )?;
         Ok(appended.then_some(record.revision))
     }
-    pub fn calls(&self, id: &str) -> io::Result<Vec<StoredProduct>> {
+    pub(crate) fn calls(&self, id: &str) -> io::Result<Vec<StoredProduct>> {
         self.stored(
             "SELECT sequence,at_ms,record FROM run_calls WHERE execution=?1 ORDER BY sequence",
             id,
         )
     }
-    pub fn logs(&self, id: &str) -> io::Result<Vec<StoredProduct>> {
+    pub(crate) fn logs(&self, id: &str) -> io::Result<Vec<StoredProduct>> {
         self.stored(
             "SELECT sequence,at_ms,record FROM run_logs WHERE execution=?1 ORDER BY sequence",
             id,
@@ -1969,7 +1969,7 @@ impl Journal {
     }
 
     /// What the execution's executor measured of its latest attempt (`run show`).
-    pub fn record_measurements(&mut self, id: &str, measurements: &[u8]) -> io::Result<()> {
+    pub(crate) fn record_measurements(&mut self, id: &str, measurements: &[u8]) -> io::Result<()> {
         self.connection
             .execute(
                 "INSERT INTO run_measurements(execution,measurements) VALUES(?1,?2)
@@ -1979,7 +1979,7 @@ impl Journal {
             .map(drop)
             .map_err(db_error)
     }
-    pub fn measurements(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
+    pub(crate) fn measurements(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
         self.connection
             .query_row(
                 "SELECT measurements FROM run_measurements WHERE execution=?1",
@@ -1991,7 +1991,7 @@ impl Journal {
     }
 
     /// The execution's output log, oldest first.
-    pub fn products(&self, id: &str) -> io::Result<Vec<StoredProduct>> {
+    pub(crate) fn products(&self, id: &str) -> io::Result<Vec<StoredProduct>> {
         self.stored(
             "SELECT sequence,at_ms,product FROM run_products WHERE execution=?1 ORDER BY sequence",
             id,
@@ -2012,7 +2012,7 @@ impl Journal {
     }
 
     /// Only one dispatcher can claim a never-started attempt, on `width` GPUs.
-    pub fn claim(&mut self, id: &str, width: u32) -> io::Result<bool> {
+    pub(crate) fn claim(&mut self, id: &str, width: u32) -> io::Result<bool> {
         let mut claimed = false;
         self.update(id, |record| {
             if record.state != State::Queued {
@@ -2032,7 +2032,7 @@ impl Journal {
     /// A never-authorized attempt the machine's own restart interrupted is dispatched again at
     /// once: nothing of it ran, and the restart was not its failure. Called after exact
     /// termination.
-    pub fn requeue_unstarted(&mut self, id: &str) -> io::Result<Execution> {
+    pub(crate) fn requeue_unstarted(&mut self, id: &str) -> io::Result<Execution> {
         self.update(id, |record| {
             if record.state != State::Starting || record.pending_completion.is_some() {
                 return Err(db_error(
@@ -2052,7 +2052,7 @@ impl Journal {
 
     /// A job that cannot start ends FAILED with its reason, never parked to wait or queued to
     /// fail again: every job ends completed or failed, and the user resubmits.
-    pub fn fail_unstarted(&mut self, id: &str, failure: Failure) -> io::Result<Execution> {
+    pub(crate) fn fail_unstarted(&mut self, id: &str, failure: Failure) -> io::Result<Execution> {
         self.update(id, |record| {
             if !matches!(record.state, State::Queued | State::Starting) {
                 return Ok(false);
@@ -2072,7 +2072,7 @@ impl Journal {
     /// Authorized, but the request never reached a handler: a retained executor's channel was
     /// gone before Invoke (PrepareRequest enters none). After its exact termination the attempt
     /// stays claimed, back to awaiting its first executor.
-    pub fn redeliver(&mut self, id: &str) -> io::Result<Execution> {
+    pub(crate) fn redeliver(&mut self, id: &str) -> io::Result<Execution> {
         self.update(id, |record| {
             if !matches!(record.state, State::Starting | State::Running) || record.pending_completion.is_some() {
                 return Err(db_error("only an active attempt without an outcome is redelivered"));
@@ -2091,7 +2091,7 @@ impl Journal {
     }
 
     /// Its weights downloaded from `from` to `to` (Unix ms) while it waited on them (`access::meter`).
-    pub fn fetched(&mut self, id: &str, from: u64, to: u64) -> io::Result<()> {
+    pub(crate) fn fetched(&mut self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.update(id, |record| {
             if record.state.terminal() {
                 return Ok(false);
@@ -2103,7 +2103,7 @@ impl Journal {
     }
 
     /// Called once the attempt's executor exists, before its Invoke.
-    pub fn register_process(&mut self, id: &str, process: Birth) -> io::Result<Execution> {
+    pub(crate) fn register_process(&mut self, id: &str, process: Birth) -> io::Result<Execution> {
         self.update(id, |record| {
             if record.state != State::Starting || record.process.is_some() {
                 return Err(db_error("attempt is not awaiting its first executor"));
@@ -2147,7 +2147,7 @@ impl Journal {
         })
     }
 
-    pub fn running(&mut self, id: &str, executor: Option<ExecutorFacts>) -> io::Result<Execution> {
+    pub(crate) fn running(&mut self, id: &str, executor: Option<ExecutorFacts>) -> io::Result<Execution> {
         self.update(id, |record| {
             if record.state != State::Starting || record.process.is_none() {
                 return Err(db_error("attempt has no registered executor"));
@@ -2168,7 +2168,7 @@ impl Journal {
 
     /// Reserve another cursor window only when the previous one is exhausted.
     /// This rare allocation commit is not a per-event telemetry write.
-    pub fn reserve_observations(
+    pub(crate) fn reserve_observations(
         &mut self,
         id: &str,
         progress: Option<&ProgressSnapshot>,
@@ -2183,7 +2183,7 @@ impl Journal {
         })
     }
 
-    pub fn cancel_observed(
+    pub(crate) fn cancel_observed(
         &mut self,
         id: &str,
         actor: &str,
@@ -2215,7 +2215,7 @@ impl Journal {
     }
 
     /// A run's children that have not finished.
-    pub fn children(&self, parent: &str) -> io::Result<Vec<Execution>> {
+    pub(crate) fn children(&self, parent: &str) -> io::Result<Vec<Execution>> {
         let mut statement = self
             .connection
             .prepare("SELECT record FROM executions WHERE state IN ('queued','starting','running') AND json_extract(invocation,'$.parent')=?1 ORDER BY id")
@@ -2250,12 +2250,12 @@ impl Journal {
     }
 
     /// Caller must prove process termination and durable artifact custody first.
-    pub fn finish(&mut self, id: &str, outcome: Outcome) -> io::Result<Execution> {
+    pub(crate) fn finish(&mut self, id: &str, outcome: Outcome) -> io::Result<Execution> {
         self.finish_observed(id, outcome, None, None)
     }
 
     /// The run ends; a memoizable success's `held` memo is held in the same transaction.
-    pub fn finish_observed(
+    pub(crate) fn finish_observed(
         &mut self,
         id: &str,
         outcome: Outcome,
@@ -2305,7 +2305,7 @@ impl Journal {
 
 /// A retained failure carries its stable code separately from its plain detail.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Failure {
+pub(crate) struct Failure {
     pub status: u8,
     pub cause: u8,
     pub origin: u8,
@@ -2313,7 +2313,7 @@ pub struct Failure {
     pub message: String,
 }
 impl Failure {
-    pub fn executor(terminal: &str, origin: &str, code: &str, message: &str) -> Self {
+    pub(crate) fn executor(terminal: &str, origin: &str, code: &str, message: &str) -> Self {
         let (status, cause, origin) = match (terminal, origin, code) {
             ("refused", ..) | (_, "request", _) => (2, 1, 6),
             (_, "runtime", _) | (_, _, "device_out_of_memory") => (3, 7, 2),
@@ -2333,7 +2333,7 @@ impl Failure {
             message,
         }
     }
-    pub fn machine(code: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn machine(code: &str, message: impl Into<String>) -> Self {
         Self {
             status: 3,
             cause: 7,
@@ -2342,7 +2342,7 @@ impl Failure {
             message: message.into(),
         }
     }
-    pub fn abandoned(why: &str) -> Self {
+    pub(crate) fn abandoned(why: &str) -> Self {
         Self {
             status: 5,
             cause: 16,
@@ -2351,7 +2351,7 @@ impl Failure {
             message: why.into(),
         }
     }
-    pub fn custody(why: &str) -> Self {
+    pub(crate) fn custody(why: &str) -> Self {
         Self {
             status: 3,
             cause: 10,
@@ -2360,10 +2360,10 @@ impl Failure {
             message: why.into(),
         }
     }
-    pub fn encode(&self) -> String {
+    pub(crate) fn encode(&self) -> String {
         serde_json::to_string(self).expect("failure fields are JSON strings and integers")
     }
-    pub fn decode(text: &str) -> io::Result<Self> {
+    pub(crate) fn decode(text: &str) -> io::Result<Self> {
         serde_json::from_str(text).map_err(db_error)
     }
 }
@@ -2374,7 +2374,7 @@ impl std::fmt::Display for Failure {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Outcome {
+pub(crate) enum Outcome {
     Completed(ResultRecord),
     Failed(Failure),
     Canceled,
@@ -2387,7 +2387,7 @@ pub(crate) struct PendingCompletion {
     pub processes: Vec<Birth>,
 }
 impl PendingCompletion {
-    pub fn exited(&self) -> io::Result<bool> {
+    pub(crate) fn exited(&self) -> io::Result<bool> {
         // Re-read groups as well: a member born after custody was recorded may outlive its
         // leader. Unknown identities never count as exit proof.
         for birth in &self.processes {

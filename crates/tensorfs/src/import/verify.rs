@@ -18,7 +18,7 @@ use super::Layout;
 
 /// What the check found: the base's family, each LoRA component's adapter, and what it said.
 #[derive(Debug, Default)]
-pub struct Checked {
+pub(crate) struct Checked {
     pub family: Option<Record>,
     pub adapters: BTreeMap<String, Adapter>,
     /// One line per finding (the form, each probed component's variant and cosine, why none).
@@ -29,7 +29,7 @@ fn is_lora(tensors: &[&Planned]) -> bool {
     !tensors.is_empty() && tensors.iter().all(|p| family::lora_key(&p.key))
 }
 
-pub struct Input<'a> {
+pub(crate) struct Input<'a> {
     pub set: &'a SourceSet,
     pub tables: &'a [Table],
     pub recognized: &'a Recognized,
@@ -45,7 +45,7 @@ pub struct Input<'a> {
     pub pinned: &'a [String],
 }
 
-pub fn check(input: &Input) -> Result<Checked> {
+pub(crate) fn check(input: &Input) -> Result<Checked> {
     let mut by: BTreeMap<&str, Vec<&Planned>> = BTreeMap::new();
     for p in input.planned {
         by.entry(p.component.as_str()).or_default().push(p);

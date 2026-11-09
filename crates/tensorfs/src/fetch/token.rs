@@ -23,6 +23,7 @@ pub struct Request<'a> {
     pub payload: Option<&'a str>,
 }
 
+/// What authorizes requests: the headers for each one, and whether an answer earns a retry.
 pub trait TokenProvider: Send + Sync {
     /// The headers that authorize `request`.
     fn headers<'a>(&'a self, request: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>>;
@@ -36,7 +37,7 @@ pub trait TokenProvider: Send + Sync {
 }
 
 /// `Authorization: Bearer <token>`.
-pub struct Bearer(pub String);
+pub(crate) struct Bearer(pub String);
 
 impl TokenProvider for Bearer {
     fn headers<'a>(&'a self, _: &'a Request<'a>) -> Boxed<'a, Result<Vec<(String, String)>>> {
@@ -53,14 +54,14 @@ pub fn bearer(token: impl Into<String>) -> Arc<dyn TokenProvider> {
 const TENSORHUB: &str = "https://tensorhub.com";
 
 /// The endpoint a name resolves against when none is given: `TENSORFS_ENDPOINT`, else Tensorhub.
-pub fn default_endpoint() -> String {
+pub(crate) fn default_endpoint() -> String {
     env("TENSORFS_ENDPOINT").unwrap_or_else(|| TENSORHUB.into())
 }
 
 /// The provider the default chain gives endpoint `url`: `TENSORFS_TOKEN` for the default
 /// endpoint's host, `HF_TOKEN` for huggingface.co, `CIVITAI_TOKEN` for civitai.com, `AWS_*` for
 /// `s3://`; else none (anonymous).
-pub fn default_for(url: &str) -> Option<Arc<dyn TokenProvider>> {
+pub(crate) fn default_for(url: &str) -> Option<Arc<dyn TokenProvider>> {
     if url.starts_with("s3://") {
         return SigV4::from_env().map(|s| Arc::new(s) as Arc<dyn TokenProvider>);
     }
@@ -93,13 +94,13 @@ pub struct SigV4 {
 }
 
 impl SigV4 {
-    pub fn new(access_key: &str, secret: &str, session: Option<String>, region: &str) -> SigV4 {
+    pub(crate) fn new(access_key: &str, secret: &str, session: Option<String>, region: &str) -> SigV4 {
         SigV4 { access_key: access_key.into(), secret: secret.into(), session, region: region.into() }
     }
 
     /// From `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` and `AWS_REGION`
     /// (else `AWS_DEFAULT_REGION`, else `us-east-1`).
-    pub fn from_env() -> Option<SigV4> {
+    pub(crate) fn from_env() -> Option<SigV4> {
         let region = env("AWS_REGION").or_else(|| env("AWS_DEFAULT_REGION")).unwrap_or_else(|| "us-east-1".into());
         Some(SigV4::new(&env("AWS_ACCESS_KEY_ID")?, &env("AWS_SECRET_ACCESS_KEY")?, env("AWS_SESSION_TOKEN"), &region))
     }
@@ -221,7 +222,7 @@ fn encode(text: &str) -> String {
 
 /// The HTTP base of `s3://<bucket>[/<prefix>]`, path-style: at `AWS_ENDPOINT_URL_S3`, else
 /// `AWS_ENDPOINT_URL`, else AWS's regional endpoint.
-pub fn s3_base(url: &str) -> Result<String> {
+pub(crate) fn s3_base(url: &str) -> Result<String> {
     let Some(path) = url.strip_prefix("s3://").filter(|p| !p.is_empty() && !p.starts_with('/')) else {
         return refuse(Code::SOURCE_NOT_ALLOWED, format!("{url}: not s3://<bucket>[/<prefix>]"));
     };

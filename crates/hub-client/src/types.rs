@@ -15,6 +15,7 @@ fn null_is_empty<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(
     Option::<T>::deserialize(d).map(Option::unwrap_or_default)
 }
 
+/// A Hub account: its name, AuthKit user and orgs.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Account {
@@ -26,6 +27,7 @@ pub struct Account {
     pub orgs: Vec<String>,
 }
 
+/// `GET /v1/credit` answered: the caller's credit.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CreditResponse {
@@ -33,6 +35,7 @@ pub struct CreditResponse {
     pub credit: Option<CreditStatus>,
 }
 
+/// The caller's net balance (balance less holds and debt), in micros of USD.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CreditStatus {
@@ -92,11 +95,13 @@ pub struct WorkloadToken {
     pub expires_in: i64,
 }
 
+/// Where a machine reaches this Hub (`GET /v1/execution-environment`).
 #[derive(Debug, Deserialize)]
 pub struct ExecutionEnvironment {
     pub environment: Environment,
 }
 
+/// The Hub's origins and CA as a run's machine receives them, by variable name.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "SCREAMING_SNAKE_CASE")]
 pub struct Environment {
@@ -106,6 +111,7 @@ pub struct Environment {
     pub tensorhub_ca_der_b64url: Option<String>,
 }
 
+/// The Runtime, TensorFS, cozy and PyTorch versions machines run (`GET /v1/software`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Software {
@@ -120,6 +126,7 @@ pub struct Software {
     pub torch: Option<String>,
 }
 
+/// The keys whose signatures a rental's machine accepts, for `lease_seconds` before it asks again.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct WorkerAuthorizedKeys {
@@ -130,6 +137,7 @@ pub struct WorkerAuthorizedKeys {
     pub lease_seconds: i64,
 }
 
+/// Where a booting machine listens: its public IP and port map (`POST /v1/worker/rental/endpoint`).
 #[derive(Debug, Serialize)]
 pub struct WorkerEndpointReport {
     pub public_host: String,
@@ -161,6 +169,7 @@ pub struct WorkerProbe {
     pub seconds: f64,
 }
 
+/// `GET /v1/models` answered: one page of matching models, and how many match.
 #[derive(Debug, Deserialize)]
 pub struct ModelSearch {
     #[serde(default, deserialize_with = "null_is_empty")]
@@ -168,12 +177,14 @@ pub struct ModelSearch {
     pub search: SearchMeta,
 }
 
+/// How many matched in all, beyond the page answered.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SearchMeta {
     pub total: i64,
 }
 
+/// A model's row in a search, or the head of its card.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ModelSummary {
@@ -193,6 +204,7 @@ pub struct ModelSummary {
     pub tags: Vec<String>,
 }
 
+/// The org a model credits or is in, and whether its author has claimed it.
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModelAuthor {
@@ -205,6 +217,7 @@ pub struct ModelAuthor {
     pub reserved: Option<String>,
 }
 
+/// A model recorded as a mirror of `source`, and the author it credits.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ModelMirror {
@@ -215,6 +228,7 @@ pub struct ModelMirror {
     pub added_handle: Option<String>,
 }
 
+/// An org as `PUT /v1/orgs/{org}` leaves it: its names, links, claim handles and models.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OrgPage {
@@ -234,6 +248,7 @@ pub struct OrgPage {
     pub admin_uploads: Vec<String>,
 }
 
+/// A claim handle: its site (hf, github or civitai) and the handle there.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OrgHandle {
@@ -241,6 +256,7 @@ pub struct OrgHandle {
     pub handle: String,
 }
 
+/// A parked org's claim: claimed, or its code and where each handle posts it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct OrgClaim {
@@ -252,6 +268,7 @@ pub struct OrgClaim {
     pub proven_by: Option<String>,
 }
 
+/// Where one handle posts the claim code, and what the last check of its page found.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OrgProof {
@@ -273,6 +290,7 @@ pub struct ModelUpdate {
     pub remove_tags: Vec<String>,
 }
 
+/// A model as an edit left it.
 #[derive(Debug, Deserialize)]
 pub struct ModelAnswer {
     pub model: ModelSummary,
@@ -281,6 +299,7 @@ pub struct ModelAnswer {
     pub warnings: Vec<String>,
 }
 
+/// A model with its releases and, to its members, its commits (`GET /v1/models/{org}/{name}`).
 #[derive(Debug, Deserialize)]
 pub struct ModelCard {
     pub model: ModelSummary,
@@ -292,6 +311,7 @@ pub struct ModelCard {
     pub commits: Vec<ModelCommit>,
 }
 
+/// A published release of a model: each lane label's commit.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ModelRelease {
@@ -308,6 +328,7 @@ pub struct ModelRelease {
     pub warnings: Vec<String>,
 }
 
+/// One lane's commit in a release: its tree, header, closure bytes and kinds.
 #[derive(Debug, Deserialize)]
 pub struct ModelReleaseLane {
     /// `sha256:<hex>`
@@ -324,6 +345,7 @@ pub struct ModelReleaseLane {
     pub provenance: Option<ModelLaneProvenance>,
 }
 
+/// One commit of a model: its tree, lane, header and closure.
 #[derive(Debug, Deserialize)]
 pub struct ModelCommit {
     /// `sha256:<hex>` of the commit's tree.
@@ -365,6 +387,7 @@ pub struct ModelLaneProvenance {
     pub plan: Map<String, Value>,
 }
 
+/// A stored object by its SHA-256 and length.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ObjectRef {
@@ -373,6 +396,7 @@ pub struct ObjectRef {
     pub length: i64,
 }
 
+/// `GET /v1/packages` answered: the matching packages, and how many match.
 #[derive(Debug, Deserialize)]
 pub struct PackageSearch {
     #[serde(default, deserialize_with = "null_is_empty")]
@@ -380,6 +404,7 @@ pub struct PackageSearch {
     pub search: SearchMeta,
 }
 
+/// A package's row in a search, or the head of its card.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PackageSummary {
@@ -390,6 +415,7 @@ pub struct PackageSummary {
     pub latest_release: Option<String>,
 }
 
+/// A package and its releases (`GET /v1/packages/{org}/{name}`).
 #[derive(Debug, Deserialize)]
 pub struct PackageCard {
     pub package: PackageSummary,
@@ -397,6 +423,7 @@ pub struct PackageCard {
     pub releases: Vec<CatalogRelease>,
 }
 
+/// One of a package's releases: when it was cut and whether it is yanked.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CatalogRelease {
@@ -406,6 +433,7 @@ pub struct CatalogRelease {
     pub yanked_at: Option<String>,
 }
 
+/// The package `DELETE /v1/packages/{org}/{name}` deleted.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PackageDeletion {
@@ -413,6 +441,7 @@ pub struct PackageDeletion {
     pub package: String,
 }
 
+/// The exact files of one release: its interface, pyproject and lock as bytes, and its downloads.
 #[derive(Debug, Deserialize)]
 pub struct PackageInstallPlan {
     #[serde(default)]
@@ -426,6 +455,7 @@ pub struct PackageInstallPlan {
     pub uv_lock: ExactDocument,
 }
 
+/// One download of an install plan: its presigned URL, digest, release path and length.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PackageInstallFile {
@@ -435,6 +465,7 @@ pub struct PackageInstallFile {
     pub length: i64,
 }
 
+/// A release document's exact bytes.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ExactDocument {
@@ -452,12 +483,14 @@ pub struct PackageRelease {
     pub summary: String,
 }
 
+/// The release a card is of, by name.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PackageReleaseSummary {
     pub release: String,
 }
 
+/// One file a release declares before upload: its digest, length and release path.
 #[derive(Debug, Serialize)]
 pub struct PackageDeclaredFile {
     pub digest: String,
@@ -467,6 +500,7 @@ pub struct PackageDeclaredFile {
     pub path: String,
 }
 
+/// A declared release's upload grants, one per file, and the publication to finalize.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PackageReleaseGrants {
@@ -475,6 +509,7 @@ pub struct PackageReleaseGrants {
     pub publication_id: String,
 }
 
+/// One declared file's grant: already present, or where to upload it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PackageFileGrant {
@@ -485,6 +520,7 @@ pub struct PackageFileGrant {
     pub upload: Option<PresignedUpload>,
 }
 
+/// Where to PUT a file's bytes, and the headers the PUT must carry.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PresignedUpload {
@@ -493,6 +529,7 @@ pub struct PresignedUpload {
     pub required_headers: BTreeMap<String, String>,
 }
 
+/// A release's finalization: its state, and why it failed.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PackageFinalization {
@@ -515,6 +552,7 @@ pub struct PackageYank {
     pub yanked_at: String,
 }
 
+/// One run of a package function to place (`POST /v1/rental-placements`).
 #[derive(Debug, Serialize)]
 pub struct RentalPlacementRequest {
     /// `org/name`
@@ -530,6 +568,7 @@ pub struct RentalPlacementRequest {
     pub sku: Option<String>,
 }
 
+/// Where one run of a package function fits: its weights, the machines that hold it, and those that don't.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalPlacement {
@@ -549,6 +588,7 @@ pub struct RentalPlacement {
     pub warnings: Vec<String>,
 }
 
+/// One model slot the run loads: its model, release, lane and bytes.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalPlacementWeights {
@@ -560,6 +600,7 @@ pub struct RentalPlacementWeights {
     pub bytes: i64,
 }
 
+/// A machine that holds the run: its card, price, disk and speed.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalPlacementMachine {
@@ -576,6 +617,7 @@ pub struct RentalPlacementMachine {
     pub run_cost: Option<f64>,
 }
 
+/// A machine that cannot hold the run, and why.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalPlacementExclusion {
@@ -613,12 +655,14 @@ pub struct RentalRequest {
     pub max_usd_micros_per_hour: Option<i64>,
 }
 
+/// The SSH key a development rental lets root log in with.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RentalDevelopment {
     /// One OpenSSH public key line.
     pub ssh_public_key: String,
 }
 
+/// A product a rental may be bought as instead, at its GPU count (absent: one).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RentalFallback {
@@ -627,6 +671,7 @@ pub struct RentalFallback {
     pub accelerator_count: Option<i64>,
 }
 
+/// What a rental request costs an hour at the offer it would buy (`POST /v1/rental-quotes`).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RentalQuote {
     /// The one price an hour, the machine with its disk and traffic: an order sends it back as its cap.
@@ -641,8 +686,9 @@ pub struct RentalQuote {
 }
 
 /// The catalog: Calcifer answers it as the Hub does.
-pub use api::calcifer::{RentalPriceEstimate, RentalPythonInterpreter, RentalSku, RentalSkuWidth};
+pub(crate) use api::calcifer::{RentalPriceEstimate, RentalSku};
 
+/// One product at one GPU count: sold here, buyable now, or why it is held (`GET /v1/rental-skus/{name}`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalSkuStatus {
@@ -657,6 +703,7 @@ pub struct RentalSkuStatus {
     pub held_for: Option<String>,
 }
 
+/// The caller's rentals (`GET /v1/rentals`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalListing {
@@ -664,6 +711,7 @@ pub struct RentalListing {
     pub rentals: Vec<Rental>,
 }
 
+/// One rental as its Hub answers it.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Rental {
@@ -705,12 +753,14 @@ pub struct Rental {
     pub boot: Option<RentalBoot>,
 }
 
+/// What went wrong with the rental, by the Hub's code (`readiness.provider_stopped`, …).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalFailure {
     pub code: String,
 }
 
+/// The current attempt's boot, while its pod is created and booted.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalBoot {

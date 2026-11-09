@@ -12,24 +12,21 @@ use std::{
     path::Path,
 };
 
+/// One end of a connected Unix socket.
 pub type LocalStream = UnixStream;
 
 /// A listener at a path an executor dials.
 pub struct LocalListener(UnixListener);
 
 impl LocalListener {
+    /// Listens on a Unix socket at `path`.
     pub fn bind(path: &Path) -> Result<Self> {
         UnixListener::bind(path)
             .map(Self)
             .map_err(Error::io("listen", path))
     }
 
-    /// Every dialer, one at a time, as `UnixListener::incoming` gives them.
-    pub fn incoming(&self) -> impl Iterator<Item = Result<LocalStream>> + '_ {
-        std::iter::repeat_with(|| self.accept())
-    }
-
-    pub fn accept(&self) -> Result<LocalStream> {
+    pub(crate) fn accept(&self) -> Result<LocalStream> {
         Ok(self.0.accept().map_err(Error::os("accept"))?.0)
     }
 

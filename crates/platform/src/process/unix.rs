@@ -288,6 +288,7 @@ fn answered(code: libc::c_int) -> io::Result<()> {
 }
 
 impl SupervisorSignals {
+    /// TERM, INT and CHLD, not yet blocked.
     pub fn new() -> Self {
         // SAFETY: plain-old-data the calls fill, and valid signal numbers.
         unsafe {

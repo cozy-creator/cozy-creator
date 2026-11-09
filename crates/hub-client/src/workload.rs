@@ -22,7 +22,7 @@ use std::{
 use crate::{Client, Error, types::WorkloadToken};
 
 /// The OAuth client every machine redeems capabilities as.
-pub const CLIENT: &str = "tensord";
+pub(crate) const CLIENT: &str = "tensord";
 const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
 /// A P-256 key: what a machine's capabilities bind (`cnf.jkt`) and its tokens prove.

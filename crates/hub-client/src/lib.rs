@@ -4,6 +4,7 @@
 //! workload grant (`workload`). Bulk bytes
 //! (presigned GET/PUT) are not here: TensorFS moves them.
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 pub mod cards;
 mod client;
 mod device;
@@ -112,7 +113,7 @@ impl Error {
 
     /// A call that got no answer, in a person's words: where it went and the innermost cause
     /// (`dns error: …`, `Connection refused`), not reqwest's "error sending request for url (…)".
-    pub fn unanswered(error: &reqwest::Error) -> Self {
+    pub(crate) fn unanswered(error: &reqwest::Error) -> Self {
         let mut cause: &dyn std::error::Error = error;
         while let Some(next) = cause.source() {
             cause = next;

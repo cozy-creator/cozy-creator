@@ -6,13 +6,13 @@ use std::sync::{
 };
 
 #[derive(Clone, Debug, Default)]
-pub struct Stop(Arc<AtomicBool>);
+pub(crate) struct Stop(Arc<AtomicBool>);
 
 impl Stop {
-    pub fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
-    pub fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
 }

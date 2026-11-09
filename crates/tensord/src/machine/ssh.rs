@@ -15,13 +15,13 @@ const KEYS: &str = "/run/cozy-dev/authorized_keys";
 
 /// SSH into a dev machine is a Linux rental's.
 #[cfg(not(target_os = "linux"))]
-pub fn start(_public_key: &str) -> io::Result<()> {
+pub(crate) fn start(_public_key: &str) -> io::Result<()> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "no SSH into a machine on this OS; see `cozy doctor`"))
 }
 
 /// Starts sshd for `public_key`; the error is the one warning a machine without SSH logs.
 #[cfg(target_os = "linux")]
-pub fn start(public_key: &str) -> io::Result<()> {
+pub(crate) fn start(public_key: &str) -> io::Result<()> {
     let (Some(keygen), Some(sshd)) = (tool("ssh-keygen"), tool("sshd")) else {
         return Err(io::Error::other("sshd not found: no SSH into this dev machine; see `cozy doctor`"));
     };

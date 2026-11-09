@@ -13,6 +13,7 @@ use sha2::{Digest as _, Sha256};
 pub struct RunId(String);
 
 impl RunId {
+    /// A new id: `run-` and `random` as 24 hex characters.
     pub fn mint(random: [u8; 12]) -> Self {
         Self(format!("run-{}", hex::encode(random)))
     }
@@ -51,10 +52,12 @@ impl fmt::Display for RunId {
 pub struct Digest([u8; 32]);
 
 impl Digest {
+    /// The SHA-256 of `bytes`.
     pub fn of(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
 
+    /// A digest already computed, from its 32 raw bytes.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }

@@ -11,13 +11,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tensorfs::{
     err::{refuse, Code},
-    fetch::token::{HeaderMap, Request, TokenProvider},
+    fetch::{HeaderMap, Request, TokenProvider},
 };
 
-pub use hub_client::types;
+pub(crate) use hub_client::types;
 
 /// `scheme://host:port`, lowercase, default port spelled: one key per origin.
-pub fn origin_key(origin: &str) -> Option<String> {
+pub(crate) fn origin_key(origin: &str) -> Option<String> {
     let origin = origin.trim_end_matches('/');
     let (scheme, rest) = origin.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();
@@ -47,7 +47,7 @@ fn loopback_host(key: &str) -> bool {
 }
 
 /// An HTTPS origin, or plaintext HTTP on loopback only.
-pub fn valid_origin(origin: &str) -> bool {
+pub(crate) fn valid_origin(origin: &str) -> bool {
     match origin_key(origin) {
         Some(key) => {
             key.starts_with("https://") || key.starts_with("http://") && loopback_host(&key)
@@ -65,7 +65,7 @@ fn origin_of(url: &str) -> &str {
 }
 
 /// Whether `url` is a file the run's Hub publishes (its index's file door).
-pub fn publishes(source: &Source, url: &str) -> bool {
+pub(crate) fn publishes(source: &Source, url: &str) -> bool {
     origin_key(origin_of(url)).is_some_and(|key| origin_key(&source.origin) == Some(key))
 }
 
@@ -84,7 +84,7 @@ pub(crate) fn pem(der: &[u8]) -> String {
 
 /// A Hub refusal: the HTTP-level detail, never a token.
 #[derive(Debug, Clone)]
-pub struct Refusal(pub String);
+pub(crate) struct Refusal(pub String);
 
 /// Blocks on one Hub call. TensorD's run code is synchronous; its Hub calls share one
 /// current-thread runtime, made once. A thread already inside an async context hands the call
@@ -114,13 +114,13 @@ pub(crate) fn block<T: Send>(call: impl Future<Output = T> + Send) -> T {
 /// merely slow is waited for; a dead one is found by TCP keepalive (probes after 30 s of
 /// silence, 5 s apart), as TensorFS's downloader finds its own. For calls on the Hub runtime
 /// (`block`).
-pub fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
+pub(crate) fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
     static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());
     pooled(&CLIENTS, ca_der)
 }
 
 /// `http` for the executors' gateway (`gateway`), which runs on its own runtime.
-pub fn gateway_http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
+pub(crate) fn gateway_http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
     static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());
     pooled(&CLIENTS, ca_der)
 }
@@ -163,7 +163,7 @@ fn pooled(pool: &Pool, ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal
 
 /// This machine's workload key (cl-675): made at its start, held in memory only, never given to an
 /// executor. Every run capability it redeems binds it, and every token it holds proves it.
-pub fn workload_key() -> &'static WorkloadKey {
+pub(crate) fn workload_key() -> &'static WorkloadKey {
     static KEY: OnceLock<WorkloadKey> = OnceLock::new();
     KEY.get_or_init(WorkloadKey::generate)
 }
@@ -173,7 +173,7 @@ pub fn workload_key() -> &'static WorkloadKey {
 /// before each token expires while a run it serves is not over; the Hub decides each time. Every
 /// read and upload for the signer's runs there presents the token with a fresh DPoP proof, its
 /// executors' through the gateway (`gateway`), which they reach with `secret`. In memory only.
-pub struct Capability {
+pub(crate) struct Capability {
     actor: String,
     origin: String,
     ca_der: Option<Vec<u8>>,
@@ -212,7 +212,7 @@ struct Served {
 
 /// A run being accepted under a capability: live to its renewal until it is dropped, once the
 /// engine holds the run (or refused it).
-pub struct Accepting(Arc<Capability>, String);
+pub(crate) struct Accepting(Arc<Capability>, String);
 
 impl Drop for Accepting {
     fn drop(&mut self) {
@@ -258,7 +258,7 @@ impl Capability {
     /// grants more is redeemed before its runs read. None for a request that carries none. A
     /// capability signed for another workload key (this machine's TensorD started again since) is
     /// refused: its computer signs one for this key.
-    pub fn offer(actor: &str, hub: &api::machine::HubAccess) -> Result<Option<Arc<Capability>>, (&'static str, String)> {
+    pub(crate) fn offer(actor: &str, hub: &api::machine::HubAccess) -> Result<Option<Arc<Capability>>, (&'static str, String)> {
         let Some(origin) = origin_key(&hub.origin).filter(|_| !hub.capability.is_empty()) else {
             return Ok(None);
         };
@@ -299,31 +299,27 @@ impl Capability {
     }
 
     /// The one the gateway's `secret` names.
-    pub fn by_secret(secret: &str) -> Option<Arc<Capability>> {
+    pub(crate) fn by_secret(secret: &str) -> Option<Arc<Capability>> {
         let held = HELD.lock().unwrap();
         held.values().find(|capability| !secret.is_empty() && capability.secret == secret).cloned()
     }
 
-    pub fn actor(&self) -> &str {
-        &self.actor
-    }
-
-    pub fn origin(&self) -> &str {
+    pub(crate) fn origin(&self) -> &str {
         &self.origin
     }
 
-    pub fn secret(&self) -> &str {
+    pub(crate) fn secret(&self) -> &str {
         &self.secret
     }
 
-    pub fn ca_der(&self) -> Option<&[u8]> {
+    pub(crate) fn ca_der(&self) -> Option<&[u8]> {
         self.ca_der.as_deref()
     }
 
     /// The account its runs read as: the one the Hub named in the token it redeemed this
     /// capability for (never the capability's own claims), waited for while a renewal runs; none
     /// once the Hub refused it or no run renews it.
-    pub fn account(&self) -> Option<String> {
+    pub(crate) fn account(&self) -> Option<String> {
         let token = block(self.current())?;
         let payload = token.split('.').nth(1)?;
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
@@ -333,7 +329,7 @@ impl Capability {
 
     /// It serves run `run` of `engine` too, from before the run is accepted (its preparation reads
     /// at once): it is renewed until every run it serves is over.
-    pub fn serves(self: &Arc<Self>, run: &str, engine: &Arc<crate::execution::Engine>) -> Accepting {
+    pub(crate) fn serves(self: &Arc<Self>, run: &str, engine: &Arc<crate::execution::Engine>) -> Accepting {
         let mut runs = self.runs.lock().unwrap();
         runs.runs.insert(run.to_string());
         runs.accepting.insert(run.to_string());
@@ -465,7 +461,7 @@ impl Capability {
 
     /// The headers that present the token for `method url`: `DPoP <token>` and a fresh proof; none
     /// without a live token.
-    pub async fn authorize(&self, method: &str, url: &str) -> Vec<(String, String)> {
+    pub(crate) async fn authorize(&self, method: &str, url: &str) -> Vec<(String, String)> {
         let Some(token) = self.current().await else { return vec![] };
         let proof = workload_key().proof(method, url, Some(&token));
         vec![("authorization".into(), format!("DPoP {token}")), ("dpop".into(), proof)]
@@ -473,7 +469,7 @@ impl Capability {
 
     /// Whether a request refused with `status` after presenting `sent` (its authorization) may be
     /// asked again: a token renewed since it was sent.
-    pub fn renewed_since(&self, status: u16, sent: &str) -> bool {
+    pub(crate) fn renewed_since(&self, status: u16, sent: &str) -> bool {
         let access = &self.token.borrow().access;
         status == 401 && !sent.is_empty() && !access.is_empty() && sent != format!("DPoP {access}")
     }
@@ -513,14 +509,14 @@ impl TokenProvider for Capability {
 
 /// Where a run reads a Hub, and its signer's capability there when its request carried one.
 #[derive(Clone)]
-pub struct Source {
+pub(crate) struct Source {
     pub origin: String,
     pub ca_der: Option<Vec<u8>>,
     pub capability: Option<Arc<Capability>>,
 }
 
 impl Source {
-    pub fn new(origin: &str, ca_der: Option<Vec<u8>>, capability: Option<Arc<Capability>>) -> Result<Self, Refusal> {
+    pub(crate) fn new(origin: &str, ca_der: Option<Vec<u8>>, capability: Option<Arc<Capability>>) -> Result<Self, Refusal> {
         if !valid_origin(origin) {
             return Err(Refusal(format!("{origin} is not an HTTPS origin")));
         }
@@ -528,7 +524,7 @@ impl Source {
     }
 
     /// Its capability, for `endpoint` only when that is this Hub.
-    pub fn capability_at(&self, endpoint: &str) -> Option<Arc<Capability>> {
+    pub(crate) fn capability_at(&self, endpoint: &str) -> Option<Arc<Capability>> {
         let here = origin_key(endpoint).is_some_and(|key| origin_key(&self.origin) == Some(key));
         self.capability.clone().filter(|_| here)
     }
@@ -543,35 +539,35 @@ impl std::fmt::Debug for Source {
 }
 
 /// A Hub's package catalog, read anonymously.
-pub struct Catalog {
+pub(crate) struct Catalog {
     origin: String,
     hub: hub_client::Client,
 }
 
 impl Catalog {
-    pub fn new(source: &Source) -> Result<Self, Refusal> {
+    pub(crate) fn new(source: &Source) -> Result<Self, Refusal> {
         let http = http(source.ca_der.as_deref())?;
         let hub = hub_client::Client::connect(&source.origin, http, Credential::Anonymous);
         Ok(Self { origin: source.origin.clone(), hub })
     }
 
-    pub fn origin(&self) -> &str {
+    pub(crate) fn origin(&self) -> &str {
         &self.origin
     }
 
     /// The software machines run, PyTorch among it.
-    pub fn software(&self) -> Result<types::Software, hub_client::Error> {
+    pub(crate) fn software(&self) -> Result<types::Software, hub_client::Error> {
         asked(&self.origin, self.hub.get_software())
     }
 
     /// A package and its releases.
-    pub fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, hub_client::Error> {
+    pub(crate) fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, hub_client::Error> {
         asked(&self.origin, self.hub.get_package(org, name))
     }
 
     /// The exact files of one committed release (`python_version` picks its project wheel):
     /// its documents' bytes and its wheels behind presigned URLs, which expire.
-    pub fn install_plan(
+    pub(crate) fn install_plan(
         &self,
         org: &str,
         name: &str,

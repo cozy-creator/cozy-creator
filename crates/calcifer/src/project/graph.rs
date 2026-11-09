@@ -5,7 +5,7 @@ use serde_json::Value;
 
 /// How a name matches a mention: any case, with `_` and `-` alike. Space folds with them, so a lock from before names lost theirs
 /// still finds its versions.
-pub fn name_key(name: &str) -> String {
+pub(crate) fn name_key(name: &str) -> String {
     name.replace(['_', '-'], " ").split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
@@ -14,16 +14,16 @@ fn in_a_name(c: char) -> bool {
 }
 
 /// Whether `text` can be a name: only letters, digits, `_` and `-`. A `.` selects inside a box, and `:` a range of its frames.
-pub fn is_name(text: &str) -> bool {
+pub(crate) fn is_name(text: &str) -> bool {
     !text.is_empty() && text.chars().all(in_a_name)
 }
 
 /// What a box calls itself in its own text: `<self.2>`, a version of it.
-pub const SELF: &str = "self";
+pub(crate) const SELF: &str = "self";
 
 /// A mention, `<name.2.cleaned:48-120>`: a box, a version of it, an extra of that version, and a range of its frames.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Mention<'a> {
+pub(crate) struct Mention<'a> {
     pub name: &'a str,
     pub version: Option<u32>,
     /// An extra output of the version: `<page.cleaned>`.
@@ -34,7 +34,7 @@ pub struct Mention<'a> {
 
 impl Mention<'_> {
     /// How a function hears it, its box's own name in place of how it was typed.
-    pub fn spelled(&self, name: &str) -> String {
+    pub(crate) fn spelled(&self, name: &str) -> String {
         let mut out = name.to_owned();
         if let Some(version) = self.version {
             out.push_str(&format!(".{version}"));
@@ -50,7 +50,7 @@ impl Mention<'_> {
 }
 
 /// `inner` as a mention, if it is one.
-pub fn mention(inner: &str) -> Option<Mention<'_>> {
+pub(crate) fn mention(inner: &str) -> Option<Mention<'_>> {
     let (head, range) = match inner.split_once(':') {
         None => (inner, None),
         Some((head, range)) => {
@@ -74,24 +74,24 @@ pub fn mention(inner: &str) -> Option<Mention<'_>> {
 }
 
 /// `abr.2` as the name it's a version of, and that number.
-pub fn version_of(mention: &str) -> Option<(&str, u32)> {
+pub(crate) fn version_of(mention: &str) -> Option<(&str, u32)> {
     let read = self::mention(mention)?;
     Some((read.name, read.version?))
 }
 
 /// Whether something new can go by `name`: no `.`, and `self` is the box a text is in.
-pub fn can_take(name: &str) -> bool {
+pub(crate) fn can_take(name: &str) -> bool {
     is_name(name) && name_key(name) != SELF
 }
 
 /// `mention` once `from` is called `to`, what follows its name with it: `<from>`, `<from.2>`, `<from:4-9>`. None: it doesn't say `from`.
-pub fn mention_moved(mention: &str, from: &str, to: &str) -> Option<String> {
+pub(crate) fn mention_moved(mention: &str, from: &str, to: &str) -> Option<String> {
     let read = self::mention(mention)?;
     (name_key(read.name) == name_key(from)).then(|| format!("{to}{}", &mention[read.name.len()..]))
 }
 
 /// `text` as it could be a name: what a name can't hold becomes `_`.
-pub fn as_name(text: &str) -> String {
+pub(crate) fn as_name(text: &str) -> String {
     let parts = text.split(|c| !in_a_name(c)).filter(|part| !part.is_empty());
     parts.collect::<Vec<_>>().join("_")
 }
@@ -115,7 +115,7 @@ fn bracketed(text: &str) -> Vec<&str> {
 }
 
 /// `text` with each mention `with` has words for replaced by them, brackets and all. The rest stays as written.
-pub fn mentions_replaced(text: &str, with: &mut dyn FnMut(&str) -> Option<String>) -> String {
+pub(crate) fn mentions_replaced(text: &str, with: &mut dyn FnMut(&str) -> Option<String>) -> String {
     let (mut said, mut rest) = (String::with_capacity(text.len()), text);
     while let Some(open) = rest.find('<') {
         let after = &rest[open + 1..];
@@ -137,12 +137,12 @@ pub fn mentions_replaced(text: &str, with: &mut dyn FnMut(&str) -> Option<String
 }
 
 /// Every mention in `text`: a `<…>` holding a name, and what selects in it.
-pub fn mentions(text: &str) -> Vec<&str> {
+pub(crate) fn mentions(text: &str) -> Vec<&str> {
     bracketed(text).into_iter().filter(|text| mention(text).is_some()).collect()
 }
 
 /// Every mention in any text under `value`.
-pub fn mentions_in(value: &Value) -> Vec<String> {
+pub(crate) fn mentions_in(value: &Value) -> Vec<String> {
     match value {
         Value::String(text) => mentions(text).into_iter().map(str::to_owned).collect(),
         Value::Array(items) => items.iter().flat_map(mentions_in).collect(),
@@ -152,7 +152,7 @@ pub fn mentions_in(value: &Value) -> Vec<String> {
 }
 
 /// How many single-character edits turn `a` into `b`.
-pub fn edits(a: &str, b: &str) -> usize {
+pub(crate) fn edits(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, x) in a.iter().enumerate() {
@@ -167,7 +167,7 @@ pub fn edits(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-pub struct Graph {
+pub(crate) struct Graph {
     pub upstream: Vec<Vec<usize>>,
     /// Topological: every asset after what it reads.
     pub order: Vec<usize>,
@@ -178,7 +178,7 @@ pub struct Graph {
 impl Graph {
     /// Each asset's reads ordered; a mention that closes a cycle is left out, the text staying as written (`closing`), and
     /// `fixed` (an entity's edge to what it links) goes last.
-    pub fn new(mut upstream: Vec<Vec<usize>>, fixed: &[Vec<usize>]) -> Self {
+    pub(crate) fn new(mut upstream: Vec<Vec<usize>>, fixed: &[Vec<usize>]) -> Self {
         let mut closing = vec![];
         let order = loop {
             let cycle = match topological(&upstream) {

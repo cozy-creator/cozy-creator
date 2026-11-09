@@ -4,7 +4,7 @@
 //! requirements with uv; each model's commit as the Hub resolves it for the machine's hardware,
 //! then a TensorFS download) with its `release_root_preparing` progress answers.
 pub(crate) mod environment;
-pub mod layer;
+pub(crate) mod layer;
 use crate::{
     api::domain,
     gpu_service::{Plan, Pool, ModelGrant},
@@ -29,18 +29,18 @@ use crate::{
     stop::Stop,
     storage::{self, Store},
 };
+use tensorfs_core::sha256;
 use tensorfs::{
     err::Refusal,
     fetch::{Hardware, Landed, Progress as Counted},
     format::ObjectRef,
-    sha256,
 };
 use crate::catalog::normalized;
 
 /// This machine's Runtime/TensorFS pair: what unlocked code is offered first, and what goes over
 /// a lock whose pair it is a later patch of (`Publisher::stands_in`). Empty `requirements`: none.
 #[derive(Clone, Debug)]
-pub struct PackageSdk {
+pub(crate) struct PackageSdk {
     pub uv: crate::machine::uv::Uv,
     pub python: String,
     pub requirements: Vec<String>,
@@ -55,7 +55,7 @@ pub struct PackageSdk {
 impl PackageSdk {
     /// The selected Runtime/TensorFS pair (an update's, else the image's); without a complete
     /// pair, none.
-    pub fn selected(wheels: &Path, staged: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
+    pub(crate) fn selected(wheels: &Path, staged: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
         // must name the same build even when filenames/version labels repeat.
@@ -87,14 +87,14 @@ impl PackageSdk {
     }
 }
 
-pub struct Prepared {
+pub(crate) struct Prepared {
     pub installation: Installation,
     pub plan: Option<Plan>,
     /// Why the Hub passed over a better lane for the run, held with its resolution.
     pub warnings: Vec<String>,
 }
 
-pub struct Request {
+pub(crate) struct Request {
     /// The run this prepares for: a run waiting on its install is told so by this id.
     pub run: String,
     /// The run's Hub: a release and a Hub-named model need it; held code and models do not.
@@ -177,13 +177,13 @@ fn unresolved(named: &Named) -> Failure {
 
 /// The caller's provider tokens; empty reads public sources anonymously.
 #[derive(Clone, Debug, Default)]
-pub struct Providers {
+pub(crate) struct Providers {
     pub huggingface: String,
     pub civitai: String,
 }
 
 /// Where a preparation's stage and bytes are reported as they change.
-pub type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
+pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
 
 #[derive(Default)]
 pub(crate) struct Job {
@@ -245,14 +245,14 @@ impl Drop for Within<'_> {
 pub(crate) type Failure = (&'static str, String);
 
 /// A preparation its run's cancel stopped.
-pub const CANCELED: &str = "preparation_canceled";
+pub(crate) const CANCELED: &str = "preparation_canceled";
 fn canceled() -> Failure {
     (CANCELED, "the run was canceled while it prepared".into())
 }
 
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
 /// silent, the Hub's 5xx. A definite answer (absent, private, refused, malformed) is never this.
-pub const UNREACHABLE: &str = "hub_unreachable";
+pub(crate) const UNREACHABLE: &str = "hub_unreachable";
 /// How many times an unanswered lookup is asked before its run says it had no answer.
 const ATTEMPTS: u32 = 5;
 /// The wait before it is asked again, doubling: about a minute and a quarter over all of them.
@@ -308,7 +308,7 @@ struct Environment<'a> {
     stage: &'a str,
 }
 
-pub struct Publisher {
+pub(crate) struct Publisher {
     pub(crate) sdk: PackageSdk,
     machine: Arc<Machine>,
     store: Arc<Store>,
@@ -329,7 +329,7 @@ impl Drop for Building<'_> {
 }
 
 impl Publisher {
-    pub fn new(sdk: PackageSdk, machine: Arc<Machine>) -> Arc<Self> {
+    pub(crate) fn new(sdk: PackageSdk, machine: Arc<Machine>) -> Arc<Self> {
         Arc::new(Self {
             sdk,
             store: machine.store().clone(),
@@ -431,7 +431,7 @@ impl Publisher {
     /// One run's preparation on the calling thread, reported through `observe`: a held
     /// installation and resolution answer at once; one the network leaves unanswered waits for it
     /// (`patiently`).
-    pub fn prepare_now(
+    pub(crate) fn prepare_now(
         &self,
         service: &Arc<Service>,
         actor: &str,
@@ -536,17 +536,17 @@ impl Publisher {
     }
 
     /// The store models are made and held in.
-    pub fn store(&self) -> &Arc<Store> {
+    pub(crate) fn store(&self) -> &Arc<Store> {
         &self.store
     }
 
     /// The machine's downloader.
-    pub fn machine(&self) -> &Arc<Machine> {
+    pub(crate) fn machine(&self) -> &Arc<Machine> {
         &self.machine
     }
 
     /// A provider source made into a local model (`make_source`), as a run's refusal.
-    pub fn make_source(
+    pub(crate) fn make_source(
         &self,
         source: &str,
         profiles: &[String],
@@ -1180,7 +1180,7 @@ impl Publisher {
     }
 
     /// The uv cache `reclaim` manages (`Uv::cache`).
-    pub fn uv_cache(&self) -> PathBuf {
+    pub(crate) fn uv_cache(&self) -> PathBuf {
         self.sdk.uv.cache().to_path_buf()
     }
 
@@ -1399,7 +1399,7 @@ pub(crate) fn choose(choice: &domain::ModelChoice, path: &str) -> Result<Named, 
 
 /// A provider source made into a local model.
 #[derive(Clone, Debug)]
-pub struct Made {
+pub(crate) struct Made {
     /// `local/source-<hash>`, named by the source's pinned spelling and converter.
     pub repository: String,
     pub header: ObjectRef,
@@ -1439,16 +1439,15 @@ fn make_source(
     let listed = tensorfs::import::remote::parse(source)
         .and_then(|spec| tensorfs::import::remote::list(&spec, &access))
         .map_err(|e| refused("model_source_failed", e))?;
-    let tables = tensorfs::import::engine::tables_digest();
+    let tables = tensorfs::import::tables_digest();
     let families = tensorfs::family::families_digest();
     let identity = serde_json_canonicalizer::to_vec(&json!(["cozy.machine-source-model/3", listed.pinned, converter, tables, families, trained_on]))
         .map_err(|e| io_failure(io::Error::other(e)))?;
     let name = format!("source-{}", &sha256::hex_digest(&identity)[..40]);
     let made = |header: ObjectRef| {
-        let format = store.source_format(&header).ok().flatten().map(|f| f.to_string()).unwrap_or_default();
-        let family = (store.read(&header).ok())
-            .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).ok())
-            .and_then(|h| tensorfs::family::summary(&h.metadata));
+        let read = store.read(&header).ok().and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).ok());
+        let format = (read.as_ref()).and_then(|h| tensorfs::import::SourceFormat::read(&h.metadata)).map(|f| f.to_string()).unwrap_or_default();
+        let family = read.and_then(|h| tensorfs::family::summary(&h.metadata));
         Made {
             repository: format!("local/{name}"),
             format: family.map_or(format.clone(), |f| format!("{format}; {f}")),
@@ -1483,7 +1482,7 @@ fn make_source(
         stop: Some(&stop),
     };
     let started = Instant::now();
-    let (header, files) = store.import(&request, Some(&name)).map_err(|e| {
+    let (header, files) = tensorfs::import::into_store(store, &request, Some(&name)).map_err(|e| {
         crate::storage::transport(store, "import-failed", source, &e.to_string());
         match stop() {
             true => canceled(),

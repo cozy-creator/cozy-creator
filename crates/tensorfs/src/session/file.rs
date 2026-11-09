@@ -62,6 +62,7 @@ impl Checkpoint {
 }
 
 impl CheckpointFile {
+
     /// Its length in bytes: the last object's end.
     pub fn len(&self) -> u64 {
         self.len

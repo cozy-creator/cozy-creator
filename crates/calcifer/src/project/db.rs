@@ -16,7 +16,7 @@ use super::{
     written::{Boxed, Written},
 };
 
-pub const DB: &str = "project.db";
+pub(crate) const DB: &str = "project.db";
 /// This schema's `user_version`. A database of another isn't read.
 const VERSION: i64 = 1;
 const SCHEMA: &str = "
@@ -61,7 +61,7 @@ const KEY_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// A box's row on the canvas, and the transaction and client that last wrote it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct CardRow {
+pub(crate) struct CardRow {
     pub name: String,
     pub card: api::calcifer::project::Card,
     pub seq: u64,
@@ -71,7 +71,7 @@ pub struct CardRow {
 /// Everything `project.db` holds but its history, keys and asked texts: what `Folder` keeps in memory. Each part is shared, so a
 /// transaction copies only what it writes.
 #[derive(Clone, Debug, Default)]
-pub struct Stored {
+pub(crate) struct Stored {
     pub seq: u64,
     pub written: Arc<Written>,
     /// By name key.
@@ -84,7 +84,7 @@ pub struct Stored {
 
 /// One history entry as its row holds it, each part JSON.
 #[derive(Clone, Debug)]
-pub struct OpRow {
+pub(crate) struct OpRow {
     pub id: u64,
     pub at_ms: i64,
     pub by: String,
@@ -96,7 +96,7 @@ pub struct OpRow {
 
 /// What a transaction writes beside the rows it changed.
 #[derive(Default)]
-pub struct Extra {
+pub(crate) struct Extra {
     pub asked: Vec<(String, Option<String>)>,
     /// Every asked text gone.
     pub asked_cleared: bool,
@@ -108,7 +108,7 @@ pub struct Extra {
 }
 
 /// A kept request key: its ask's digest and, once kept, its answer.
-pub struct Keyed {
+pub(crate) struct Keyed {
     pub digest: String,
     pub answer: Option<(u16, String, Vec<u8>)>,
 }
@@ -127,7 +127,7 @@ fn sql(at: &Path, e: rusqlite::Error) -> Error {
 }
 
 /// `at` held by another program: its write lock past the busy timeout.
-pub fn held(at: &Path) -> Error {
+pub(crate) fn held(at: &Path) -> Error {
     let name = at.file_name().map_or_else(|| at.display().to_string(), |name| name.to_string_lossy().into_owned());
     Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again")
 }
@@ -140,7 +140,7 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Whether another program holds the write lock this moment, asked with no wait: `conn` takes it, and lets it go at once.
-pub fn locked_elsewhere(conn: &Connection) -> bool {
+pub(crate) fn locked_elsewhere(conn: &Connection) -> bool {
     let busy = |e: rusqlite::Error| matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked));
     if conn.busy_timeout(std::time::Duration::ZERO).is_err() {
         return false;
@@ -151,7 +151,7 @@ pub fn locked_elsewhere(conn: &Connection) -> bool {
 }
 
 /// `project.db` in `dir` opened, made with this schema if it's new.
-pub fn open(path: &Path) -> Result<Connection, Error> {
+pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
     let e = |error: rusqlite::Error| sql(path, error);
     let conn = Connection::open(path).map_err(e)?;
     conn.busy_timeout(WAIT).map_err(e)?;
@@ -170,13 +170,13 @@ pub fn open(path: &Path) -> Result<Connection, Error> {
 }
 
 /// The project's id and name, as `meta` keeps them (cl-819); none before it was given one.
-pub fn identity(conn: &Connection) -> Option<(String, String)> {
+pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
     let value = |key: &str| conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten();
     Some((value("id")?, value("name").unwrap_or_default()))
 }
 
 /// Keeps the project's id and name, in one transaction.
-pub fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str) -> Result<(), Error> {
+pub(crate) fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str) -> Result<(), Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| sql(at, e))?;
     for (key, value) in [("id", id), ("name", name)] {
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]).map_err(|e| sql(at, e))?;
@@ -185,12 +185,12 @@ pub fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str) -> R
 }
 
 /// `meta`'s `key`, if it has one.
-pub fn meta(conn: &Connection, key: &str) -> Option<String> {
+pub(crate) fn meta(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten()
 }
 
 /// Keeps `value` as `meta`'s `key`, in a transaction of its own: no part of the project changes, and `seq` doesn't move.
-pub fn set_meta(conn: &Connection, at: &Path, key: &str, value: Option<&str>) -> Result<(), Error> {
+pub(crate) fn set_meta(conn: &Connection, at: &Path, key: &str, value: Option<&str>) -> Result<(), Error> {
     let done = match value {
         Some(value) => conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]),
         None => conn.execute("DELETE FROM meta WHERE key = ?1", [key]),
@@ -199,26 +199,26 @@ pub fn set_meta(conn: &Connection, at: &Path, key: &str, value: Option<&str>) ->
 }
 
 /// How many of its transactions changed it, read alone: for a project nothing holds open.
-pub fn seq_at(path: &Path) -> Option<u64> {
+pub(crate) fn seq_at(path: &Path) -> Option<u64> {
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let conn = Connection::open_with_flags(path, flags).ok()?;
     conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).optional().ok().flatten()?.parse().ok()
 }
 
 /// What another connection's commit changes: `Folder` reads again when this moves.
-pub fn data_version(conn: &Connection) -> i64 {
+pub(crate) fn data_version(conn: &Connection) -> i64 {
     conn.pragma_query_value(None, "data_version", |r| r.get(0)).unwrap_or(0)
 }
 
 /// `load` in one read transaction, and the `data_version` it's of.
-pub fn read(conn: &Connection, at: &Path) -> Result<(i64, Stored), Error> {
+pub(crate) fn read(conn: &Connection, at: &Path) -> Result<(i64, Stored), Error> {
     let tx = conn.unchecked_transaction().map_err(|e| sql(at, e))?;
     let stored = load(&tx, at)?;
     Ok((data_version(&tx), stored))
 }
 
 /// All of it but the history, keys and asked texts.
-pub fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
+pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     let bad = |what: &str, why: serde_json::Error| err(at, format!("{what}: {why}"));
     let (mut written, mut canvas, mut lock, mut walk, mut measured) = (Written::default(), BTreeMap::new(), Lock::default(), WalkFile::default(), BTreeMap::new());
@@ -306,7 +306,7 @@ fn file_record(file: &File) -> String {
 
 /// `after` written over `before`, row by row, with `extra`, as one transaction: the new revision, or none when nothing differed.
 /// `locked` runs once it holds the write lock, before it writes: no other connection commits until it does.
-pub fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
+pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     if !Arc::ptr_eq(&before.lock, &after.lock) {
         Arc::make_mut(&mut after.lock).mark_rows();
@@ -456,12 +456,12 @@ fn lock_written(tx: &Transaction, before: &Lock, after: &Lock) -> rusqlite::Resu
 }
 
 /// The text a render was asked with, by its digest.
-pub fn asked(conn: &Connection, digest: &str) -> Option<String> {
+pub(crate) fn asked(conn: &Connection, digest: &str) -> Option<String> {
     conn.query_row("SELECT text FROM asked WHERE digest = ?1", [digest], |r| r.get(0)).optional().ok().flatten()
 }
 
 /// Every history row, oldest first.
-pub fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
+pub(crate) fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     let mut rows = conn.prepare("SELECT id, at_ms, by, words, edits, changes, undone FROM ops ORDER BY id").map_err(e)?;
     let found = rows
@@ -473,7 +473,7 @@ pub fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
 }
 
 /// What the request under `key` asked and answered, if it was kept.
-pub fn keyed(conn: &Connection, key: &str) -> Option<Keyed> {
+pub(crate) fn keyed(conn: &Connection, key: &str) -> Option<Keyed> {
     conn.query_row("SELECT digest, status, content_type, body FROM request_keys WHERE key = ?1", [key], |r| {
         let answer = match r.get::<_, Option<i64>>(1)? {
             Some(status) => Some((status as u16, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, Option<Vec<u8>>>(3)?.unwrap_or_default())),
@@ -487,7 +487,7 @@ pub fn keyed(conn: &Connection, key: &str) -> Option<Keyed> {
 }
 
 /// The answer a key's request gave, kept on its row: written after the transaction that did it, so the effect never waits on its words.
-pub fn keep_answer(conn: &Connection, key: &str, digest: &str, status: u16, content_type: &str, body: &[u8]) -> rusqlite::Result<()> {
+pub(crate) fn keep_answer(conn: &Connection, key: &str, digest: &str, status: u16, content_type: &str, body: &[u8]) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO request_keys (key, digest, status, content_type, body, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (key) DO UPDATE SET status = excluded.status, content_type = excluded.content_type, body = excluded.body",
@@ -497,7 +497,7 @@ pub fn keep_answer(conn: &Connection, key: &str, digest: &str, status: u16, cont
 }
 
 /// A fresh database at `path` holding `stored`, its history and its asked texts: what a first open imports.
-pub fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, String)]) -> Result<(), Error> {
+pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, String)]) -> Result<(), Error> {
     let _ = std::fs::remove_file(path);
     let mut conn = open(path)?;
     let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops: ops.to_vec(), ..Default::default() };
@@ -510,7 +510,7 @@ pub fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, Str
 }
 
 /// What the WAL holds moved into the database, from a connection of its own, as far as readers let it: writes go on meanwhile.
-pub fn checkpoint(path: &Path) {
+pub(crate) fn checkpoint(path: &Path) {
     let done = Connection::open(path).and_then(|conn| conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(())));
     if let Err(error) = done {
         tracing::warn!("{}: checkpoint: {error}", path.display());
@@ -518,7 +518,7 @@ pub fn checkpoint(path: &Path) {
 }
 
 /// A copy of the database as it stands, whole in one file: what an archive carries.
-pub fn snapshot(conn: &Connection, to: &Path, at: &Path) -> Result<(), Error> {
+pub(crate) fn snapshot(conn: &Connection, to: &Path, at: &Path) -> Result<(), Error> {
     let _ = std::fs::remove_file(to);
     conn.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(drop).map_err(|e| sql(at, e))
 }

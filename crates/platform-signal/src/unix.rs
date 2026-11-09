@@ -15,6 +15,7 @@ pub struct Signal {
 }
 
 impl Signal {
+    /// A new signal, clear.
     pub fn new() -> Result<Signal> {
         let (read, write) = std::os::unix::net::UnixStream::pair()?;
         read.set_nonblocking(true)?;

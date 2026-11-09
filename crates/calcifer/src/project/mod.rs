@@ -89,7 +89,7 @@ pub(crate) use thumbs::previews;
 /// in `state.db`'s `projects`, by id, with its name and where it last was. A project is open while anything reads it: a call, a
 /// stream, its walk (which goes until nothing is owed), a page showing it. The last of them to let go closes it (cl-823).
 #[derive(Default)]
-pub struct Projects {
+pub(crate) struct Projects {
     open: Mutex<HashMap<String, Weak<Project>>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
@@ -150,7 +150,7 @@ impl Drop for Project {
 /// A project held open, by a stream that shows it: it closes once nothing holds it.
 pub(crate) struct Reader(#[allow(dead_code, reason = "held for its drop")] Arc<Project>);
 
-pub fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
+pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
         .route("/v1/projects/{id}", get(state).delete(forget))
@@ -622,7 +622,7 @@ fn stamp(path: &FsPath) -> String {
 }
 
 /// Walks again each project an earlier Calcifer was walking.
-pub fn resume(api: &Arc<Api>) {
+pub(crate) fn resume(api: &Arc<Api>) {
     let known = api.calcifer.store().known_projects().unwrap_or_else(|e| {
         warn!("the projects being walked: {e}");
         vec![]

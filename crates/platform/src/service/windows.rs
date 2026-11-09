@@ -75,20 +75,6 @@ pub(super) fn announce(dir: &Path, name: &str) -> Result<()> {
     record(dir, name, &Birth::own()?)
 }
 
-pub(super) fn stop(dir: &Path, name: &str) -> Result<()> {
-    if let Some(exact) = running(dir, name)? {
-        exact.kill()?;
-        exact.wait()?;
-    }
-    let path = birth_path(dir, name);
-    if let Err(error) = fs::remove_file(&path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        return Err(Error::io("remove", path)(error));
-    }
-    Ok(())
-}
-
 /// A detached process leaves its starter's console and job: nothing more is needed.
 pub(super) fn scope(_: &ServiceSpec) -> Option<(PathBuf, Vec<std::ffi::OsString>)> {
     None

@@ -12,7 +12,7 @@ mod quantize;
 mod releases;
 
 #[derive(clap::Args, Debug)]
-pub struct Args {
+pub(crate) struct Args {
     #[command(subcommand)]
     verb: Verb,
 }
@@ -202,7 +202,7 @@ pub(crate) struct Delete {
     model: String,
 }
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Ls(args) => match args.on {
             Some(on) => {

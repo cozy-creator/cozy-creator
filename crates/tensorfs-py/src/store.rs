@@ -210,7 +210,7 @@ fn config_map(d: &Bound<'_, PyDict>) -> PyResult<Config> {
 /// What a ref-taking call was handed: a stored `Checkpoint`, or a reference string.
 /// An internal language adapter; cache storage is owned by the public Rust Client.
 #[pyclass(name = "_Client", module = "tensorfs._ext", frozen)]
-pub struct PyClient {
+pub(crate) struct PyClient {
     client: Client,
 }
 
@@ -396,7 +396,7 @@ fn _materialize(
 
 /// One cozytensors: its pipeline, components and metadata, read from a store.
 #[pyclass(name = "Checkpoint", module = "tensorfs", frozen)]
-pub struct PyCheckpoint {
+pub(crate) struct PyCheckpoint {
     header: Header,
     id: ObjectRef,
     tree: Option<ObjectRef>,
@@ -427,14 +427,14 @@ impl Drop for CheckpointAccess {
 
 /// What `model_index.json` held: `cls` and `config`.
 #[pyclass(name = "Pipeline", module = "tensorfs", frozen, get_all)]
-pub struct PyPipeline {
+pub(crate) struct PyPipeline {
     cls: Py<PyClassRef>,
     config: Py<PyDict>,
 }
 
 /// One component: its class, config, tensors and assets.
 #[pyclass(name = "Component", module = "tensorfs", frozen)]
-pub struct PyComponent {
+pub(crate) struct PyComponent {
     #[pyo3(get)]
     name: String,
     #[pyo3(get)]
@@ -496,7 +496,7 @@ impl PyComponent {
 
 /// One part as stored: a plain tensor's data (role `""`) or an encoded tensor's part.
 #[pyclass(name = "Part", module = "tensorfs.raw", frozen, get_all)]
-pub struct PyPart {
+pub(crate) struct PyPart {
     dtype: String,
     shape: Py<PyTuple>,
     chunk: u64,
@@ -506,7 +506,7 @@ pub struct PyPart {
 
 /// A scheme and its complete params; `str()` is `scheme {key: value, ...}`.
 #[pyclass(name = "Encoding", module = "tensorfs", frozen, get_all)]
-pub struct PyEncoding {
+pub(crate) struct PyEncoding {
     scheme: String,
     params: Py<PyDict>,
 }
@@ -531,7 +531,7 @@ impl PyEncoding {
 
 /// A tensor's logical dtype, shape and encoding (`None` when plain).
 #[pyclass(name = "TensorMetadata", module = "tensorfs", frozen, get_all)]
-pub struct PyTensorMetadata {
+pub(crate) struct PyTensorMetadata {
     dtype: String,
     shape: Py<PyTuple>,
     encoding: Option<Py<PyEncoding>>,
@@ -1121,7 +1121,7 @@ impl ArrayBuffer {
 
 /// A tensor's bytes. Consumers view them through DLPack without a framework dependency.
 #[pyclass(name = "Array", module = "tensorfs", frozen)]
-pub struct PyArray {
+pub(crate) struct PyArray {
     pub(crate) buf: ArrayBuffer,
     pub(crate) dtype: Dtype,
     pub(crate) shape: Vec<u64>,
@@ -1688,7 +1688,7 @@ impl Dlpack {
 
 /// One cozytensors out, component by component (`component`), sealed by `commit`.
 #[pyclass(name = "Writer", module = "tensorfs", frozen)]
-pub struct PyWriter {
+pub(crate) struct PyWriter {
     w: Mutex<Option<Writer>>,
     quantizing: AtomicBool,
 }
@@ -1921,7 +1921,7 @@ impl PyWriter {
 }
 
 #[pyclass(name = "ComponentWriter", module = "tensorfs", frozen)]
-pub struct PyComponentWriter {
+pub(crate) struct PyComponentWriter {
     w: Py<PyWriter>,
     #[pyo3(get)]
     name: String,
@@ -2102,7 +2102,7 @@ fn _kernel_binary<'py>(
     core: &str,
     dtype: &str,
 ) -> PyResult<(Bound<'py, PyBytes>, &'static str, u32, u32)> {
-    let binary = tensorfs::kernels::BINARIES
+    let binary = tensorfs_core::kernels::BINARIES
         .iter()
         .find(|b| b.family == family && b.kind == core && b.dtype == dtype)
         .ok_or_else(|| {
@@ -2122,7 +2122,7 @@ fn _kernel_binary<'py>(
     ))
 }
 
-pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::quantize::PyConversionControl>()?;
     m.add_class::<crate::verification::PyVerificationReport>()?;
     m.add_class::<PyClient>()?;

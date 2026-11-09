@@ -39,7 +39,7 @@ impl Status {
         status
     }
 
-    pub fn unproven(detail: &str) -> Self {
+    pub(crate) fn unproven(detail: &str) -> Self {
         let mut status = Self {
             kind: UNPROVEN,
             code: 999,
@@ -51,10 +51,10 @@ impl Status {
         status.detail_len = len as u32;
         status
     }
-    pub fn detail(&self) -> String {
+    pub(crate) fn detail(&self) -> String {
         String::from_utf8_lossy(&self.detail[..(self.detail_len as usize).min(244)]).into_owned()
     }
-    pub fn result(self) -> Result<(), Self> {
+    pub(crate) fn result(self) -> Result<(), Self> {
         if self.kind == OK { Ok(()) } else { Err(self) }
     }
 }
@@ -121,7 +121,7 @@ unsafe impl Send for Continuation {}
 unsafe impl Sync for Continuation {}
 
 impl Continuation {
-    pub fn import(value: &Bound<'_, PyAny>, device: i32) -> PyResult<Self> {
+    pub(crate) fn import(value: &Bound<'_, PyAny>, device: i32) -> PyResult<Self> {
         let invalid =
             || pyo3::exceptions::PyValueError::new_err("invalid native execution continuation v1");
         // SAFETY: CPython validates the object and exact private capsule name before extraction.
@@ -194,15 +194,15 @@ impl Continuation {
             finished: AtomicBool::new(false),
         })
     }
-    pub fn supports_reusable_input(&self) -> bool {
+    pub(crate) fn supports_reusable_input(&self) -> bool {
         self.rearm.is_some() && self.finish.is_some()
     }
     /// A completed one-shot or explicitly finished reusable owner needs no further cancel.
-    pub fn releasable(&self) -> bool {
+    pub(crate) fn releasable(&self) -> bool {
         self.quiescent.load(Ordering::Acquire)
             && (!self.supports_reusable_input() || self.finished.load(Ordering::Acquire))
     }
-    pub fn rearm(&self) -> Result<(), Status> {
+    pub(crate) fn rearm(&self) -> Result<(), Status> {
         if self.finished.load(Ordering::Acquire) {
             return Err(Status::new(INVALID, 0, "graph input already finished"));
         }
@@ -213,7 +213,7 @@ impl Continuation {
         // SAFETY: the exclusive retained graph capability checks its completed epoch.
         unsafe { rearm(self.abi.context) }.result()
     }
-    pub fn finish(&self) -> Result<(), Status> {
+    pub(crate) fn finish(&self) -> Result<(), Status> {
         if self.finished.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -225,27 +225,27 @@ impl Continuation {
         self.quiescent.store(true, Ordering::Release);
         Ok(())
     }
-    pub fn abandon(self: Arc<Self>) {
+    pub(crate) fn abandon(self: Arc<Self>) {
         self.cancel();
         crate::cleanup::defer(Abandon(Some(self)));
     }
-    pub fn start(&self) -> Result<(), Status> {
+    pub(crate) fn start(&self) -> Result<(), Status> {
         // SAFETY: same-process retained capability. The provider atomically arbitrates cancel/start.
         unsafe { self.abi.start.expect("validated start")(self.abi.context) }.result()
     }
     /// v1 cancel is atomic and nonblocking: safe even from a Python-side destructor.
-    pub fn cancel(&self) -> Status {
+    pub(crate) fn cancel(&self) -> Status {
         // SAFETY: retained v1 context; cancel performs no driver call, Python call or blocking wait.
         unsafe { self.abi.cancel.expect("validated cancel")(self.abi.context) }
     }
-    pub fn observe(&self, wait: bool) -> (Status, Progress) {
+    pub(crate) fn observe(&self, wait: bool) -> (Status, Progress) {
         let mut progress = Progress::default();
         let observe = if wait { self.abi.wait } else { self.abi.poll }.expect("validated observer");
         // SAFETY: the context is retained and progress is writable C-layout storage for this call.
         let status = unsafe { observe(self.abi.context, &mut progress) };
         (status, progress)
     }
-    pub fn checked(&self, status: Status, progress: Progress) -> bool {
+    pub(crate) fn checked(&self, status: Status, progress: Progress) -> bool {
         let complete =
             progress.done != 0 && matches!(status.kind, OK | CANCELED | INVALID | CAPACITY);
         if complete {
@@ -253,7 +253,7 @@ impl Continuation {
         }
         complete
     }
-    pub fn abort(&self) -> Result<(), Status> {
+    pub(crate) fn abort(&self) -> Result<(), Status> {
         self.cancel();
         let (status, progress) = self.observe(true);
         if self.checked(status, progress) {

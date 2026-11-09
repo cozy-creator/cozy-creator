@@ -27,7 +27,7 @@ const PACKAGES: [&str; 4] = [
 ];
 
 /// Where the toolchain goes: beside the machine's other software.
-pub fn dir(engine: &Path) -> PathBuf {
+pub(crate) fn dir(engine: &Path) -> PathBuf {
     engine.join("toolchain")
 }
 
@@ -38,7 +38,7 @@ fn cuda(dir: &Path) -> PathBuf {
 
 /// The executors' environment over `base`: CUDA_HOME and the toolchain's binaries first on PATH,
 /// when the toolchain holds nvcc. `path` is the machine's own PATH, which `base` may not name.
-pub fn environment(base: &BTreeMap<String, String>, dir: &Path, path: &str) -> BTreeMap<String, String> {
+pub(crate) fn environment(base: &BTreeMap<String, String>, dir: &Path, path: &str) -> BTreeMap<String, String> {
     let cuda = cuda(dir);
     if !cuda.join("bin/nvcc").is_file() {
         return base.clone();
@@ -54,7 +54,7 @@ pub fn environment(base: &BTreeMap<String, String>, dir: &Path, path: &str) -> B
 /// The toolchain as this machine finds it: its own install, else `CUDA_HOME`'s, `/usr/local/cuda`'s
 /// or PATH's nvcc; PATH's host compiler and ninja. Runs each compiler once: call it at start and
 /// after an install, not per Status.
-pub fn probe(dir: &Path, cuda_home: Option<&Path>, path: &[PathBuf]) -> Toolchain {
+pub(crate) fn probe(dir: &Path, cuda_home: Option<&Path>, path: &[PathBuf]) -> Toolchain {
     let mut nvcc_dirs = vec![cuda(dir).join("bin")];
     nvcc_dirs.extend(cuda_home.map(|home| home.join("bin")));
     nvcc_dirs.push(PathBuf::from("/usr/local/cuda/bin"));
@@ -93,7 +93,7 @@ pub fn probe(dir: &Path, cuda_home: Option<&Path>, path: &[PathBuf]) -> Toolchai
 
 /// Installs the toolchain's wheels with the machine's uv into a staging directory, then puts it
 /// in place whole. A stop ends it (Interrupted).
-pub fn install(dir: &Path, uv: &super::uv::Uv, stop: &Stop) -> io::Result<()> {
+pub(crate) fn install(dir: &Path, uv: &super::uv::Uv, stop: &Stop) -> io::Result<()> {
     let staging = dir.with_extension("partial");
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging)?;
@@ -131,7 +131,7 @@ type Seen = Vec<(PathBuf, std::time::SystemTime)>;
 
 /// Each kernel's verdict the Runtime kept under the machine's kernel store
 /// (`<kernels>/<namespace>/verified/*.json`), read again only when a `verified` directory changed.
-pub fn verdicts(kernels: &Path) -> Vec<KernelVerdict> {
+pub(crate) fn verdicts(kernels: &Path) -> Vec<KernelVerdict> {
     static CACHE: Mutex<Option<(Seen, Vec<KernelVerdict>)>> = Mutex::new(None);
     let dirs: Seen = fs::read_dir(kernels)
         .into_iter()

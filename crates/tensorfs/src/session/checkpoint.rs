@@ -143,9 +143,6 @@ impl Checkpoint {
     pub fn metadata(&self) -> &format::Metadata {
         &self.header().metadata
     }
-    pub fn chunks(&self) -> &[ObjectRef] {
-        &self.header().chunks
-    }
     /// The lane of the commit it was opened from.
     pub fn lane(&self) -> Option<&str> {
         self.data.named.as_ref().and_then(|r| r.lane.as_deref())
@@ -153,9 +150,15 @@ impl Checkpoint {
     pub fn named(&self) -> Option<&Ref> {
         self.data.named.as_ref()
     }
+    /// The chunk objects its header lists.
+    pub fn chunks(&self) -> &[ObjectRef] {
+        &self.header().chunks
+    }
+    /// Its pipeline (class and config), when it has one.
     pub fn pipeline(&self) -> Option<&format::Pipeline> {
         self.data.raw.pipeline()
     }
+    /// Its components, in header order.
     pub fn components(&self) -> &[Component] {
         &self.components
     }
@@ -460,6 +463,7 @@ pub struct ReadInto<'a> {
     pub offset: u64,
 }
 
+/// One component of an open checkpoint: its tensors' bytes and its assets.
 #[derive(Clone)]
 pub struct Component {
     data: Arc<Data>,
@@ -502,9 +506,6 @@ impl Component {
     }
     pub fn tensors(&self) -> &[format::Tensor] {
         &self.metadata().tensors
-    }
-    pub fn assets(&self) -> &BTreeMap<String, ObjectRef> {
-        &self.metadata().assets
     }
 
     /// A tensor's stored bytes, as Python's `read(decode=False)`: a plain tensor's data, or an
@@ -608,6 +609,10 @@ impl Component {
         // every file/retention owner alive. No new chunk copy path is introduced.
         unsafe { self.data.raw.read_into(&[target], &ReadOpts::default()) }?;
         Ok(())
+    }
+
+    pub fn assets(&self) -> &BTreeMap<String, ObjectRef> {
+        &self.metadata().assets
     }
 
     pub fn asset(&self, name: &str) -> Result<Vec<u8>> {

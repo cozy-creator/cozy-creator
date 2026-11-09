@@ -169,6 +169,7 @@ pub struct Org {
     pub admin_uploads: Vec<String>,
 }
 
+/// An account the org lists on another site (hf, github or civitai).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrgHandle {
     pub site: String,
@@ -187,6 +188,7 @@ pub struct OrgClaim {
     pub proven_by: Option<String>,
 }
 
+/// One of the org's handles to post the claim code at: where, and the Hub's check of it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OrgProof {
@@ -208,6 +210,7 @@ pub struct ModelSearch {
     pub older: i64,
 }
 
+/// One model a search found, with its newest release, lanes, author and kind.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FoundModel {
@@ -254,17 +257,7 @@ pub enum ModelKind {
     Component,
 }
 
-impl ModelKind {
-    /// What a header says it is: a LoRA, else a family's model, else a component.
-    pub fn of(facts: &tensorfs::family::Facts) -> ModelKind {
-        match (facts.lora, &facts.family) {
-            (true, _) => ModelKind::Lora,
-            (false, Some(_)) => ModelKind::Weights,
-            (false, None) => ModelKind::Component,
-        }
-    }
-}
-
+/// Who made a model: the org it credits, and whether that org is parked.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelAuthor {
@@ -309,6 +302,7 @@ pub struct ModelDetail {
     pub commits: Vec<ModelCommit>,
 }
 
+/// One release of a model: its version, each lane's commit, and whether it is a mirror.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelRelease {
@@ -321,6 +315,7 @@ pub struct ModelRelease {
     pub lanes: Vec<ModelLane>,
 }
 
+/// One lane of a release: its commit, size, header kinds and provenance.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelLane {
@@ -348,6 +343,7 @@ pub struct Provenance {
     pub plan: serde_json::Map<String, serde_json::Value>,
 }
 
+/// One commit of a model: its lane, size and the releases naming it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelCommit {
@@ -421,6 +417,7 @@ pub struct ModelReleaseAsk {
     pub commits: Vec<String>,
 }
 
+/// The release a publish made: its version and each lane's commit.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelReleased {
@@ -456,6 +453,7 @@ pub struct PackageSearch {
     pub older: i64,
 }
 
+/// One package a search found, with its newest release.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FoundPackage {
@@ -477,6 +475,7 @@ pub struct PackageDetail {
     pub warnings: Vec<String>,
 }
 
+/// One release of a package: when it was published and whether it is yanked.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PackageRelease {
@@ -533,6 +532,7 @@ pub struct Displayed {
     pub error: Option<String>,
 }
 
+/// An older release an install retired, and whether it left the machine.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retired {
     pub package: String,
@@ -690,6 +690,7 @@ pub struct PackageRemoval {
     pub machine: String,
 }
 
+/// What `POST /v1/package-removals` answers: the machine and one remove run per package and Hub.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PackageRemovals {
@@ -754,6 +755,7 @@ pub struct PublishAsk {
     pub yanked: bool,
 }
 
+/// Where a lock or publication stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkState {
@@ -795,6 +797,7 @@ impl AuthoringEvent {
     }
 }
 
+/// A finished lock: the new `uv.lock` and whether it changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Locked {
     /// The new `uv.lock`, for the client to write into the package's folder.
@@ -804,6 +807,7 @@ pub struct Locked {
     pub changed: bool,
 }
 
+/// A finished publication: the release, its status, bytes uploaded and the Hub's warnings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Published {
     pub package: String,

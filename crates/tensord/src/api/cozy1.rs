@@ -38,7 +38,7 @@ use tokio::{
 };
 
 /// The ICE credential every client chooses starts with this; its ufrag is its password.
-pub const UFRAG_PREFIX: &str = "cozy+webrtc+v1/";
+pub(crate) const UFRAG_PREFIX: &str = "cozy+webrtc+v1/";
 const HEADER: usize = 12;
 const MAX_MESSAGE: usize = 64 << 10;
 const MAX_HELLO: usize = 8 << 10;

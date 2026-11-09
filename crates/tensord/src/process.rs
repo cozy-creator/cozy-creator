@@ -12,7 +12,7 @@ use std::{
 
 /// Whether a member of `leader`'s group born before `before` (start ticks) still lives: a
 /// previous machine's follower, killed with its leader, until its exit is observed.
-pub fn group_outlives(leader: &Birth, before: u64) -> bool {
+pub(crate) fn group_outlives(leader: &Birth, before: u64) -> bool {
     group_members(leader)
         .iter()
         .any(|member| member.start_ticks < before && member.state().is_ok_and(|state| state != State::Gone))
@@ -24,7 +24,7 @@ const SAMPLE: Duration = Duration::from_millis(100);
 /// A killed process stuck in the kernel (D state): shown in the machine's status
 /// (`platform::contain::stuck`), not waited on. Its own thread reaps it once it exits.
 #[derive(Debug)]
-pub struct Stuck(pub u32);
+pub(crate) struct Stuck(pub u32);
 impl std::fmt::Display for Stuck {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "pid {} was killed and is stuck in the kernel (D state): it holds what it held, \
@@ -36,7 +36,7 @@ impl std::error::Error for Stuck {}
 /// Wait for this exact process to exit (its caller closed its channel, or `killed` it), then reap
 /// it. Then its scope: whatever outlived it (a `setsid` daemon) is killed and counted, and the
 /// scope is removed. A killed one stuck in the kernel ends the wait with [`Stuck`].
-pub fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Result<Reaped> {
+pub(crate) fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Result<Reaped> {
     if !killed {
         exact.wait()?;
     }
@@ -66,14 +66,14 @@ pub fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Result<Rea
 /// How a process ended: its status, and how many of its descendants were still alive in its
 /// scope and were killed after it.
 #[derive(Debug)]
-pub struct Reaped {
+pub(crate) struct Reaped {
     pub status: ExitStatus,
     pub stragglers: usize,
 }
 
 /// `reap` the killed leader, then every member left in its group (followers die with their leader
 /// by parent-death signal; one still alive is killed).
-pub fn reap_group(exact: &Exact, child: Option<Child>) -> io::Result<Reaped> {
+pub(crate) fn reap_group(exact: &Exact, child: Option<Child>) -> io::Result<Reaped> {
     // With a scope the leader's reap already ended its followers (they share it).
     let reaped = reap(exact, child, true)?;
     for member in group_members(exact.birth()) {
@@ -87,7 +87,7 @@ pub fn reap_group(exact: &Exact, child: Option<Child>) -> io::Result<Reaped> {
 
 /// How a supervised process ended (`supervise`).
 #[derive(Debug)]
-pub enum Supervised {
+pub(crate) enum Supervised {
     Exited(ExitStatus),
     /// Its run was canceled: its group was killed.
     Canceled,
@@ -97,7 +97,7 @@ pub enum Supervised {
 /// sees the bytes its group has written (downloads landing, wheels unpacked; a network read or a
 /// linked file counts no byte), and its group is killed when `stop` is canceled. The second is
 /// resolution, never a verdict.
-pub fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> io::Result<Supervised> {
+pub(crate) fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> io::Result<Supervised> {
     let exact = match Birth::of(child.id()).map_err(io::Error::from) {
         Ok(birth) => Exact::open(&birth)?,
         Err(error) if gone(&error) => None,
@@ -129,15 +129,15 @@ pub fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dy
 }
 
 /// The last bytes of a log, for a failure reason.
-pub fn tail(path: &std::path::Path) -> String {
+pub(crate) fn tail(path: &std::path::Path) -> String {
     tail_from(path, 0, MESSAGE_TAIL)
 }
 
 /// The stderr a failure message quotes; a triage bundle keeps [`crate::triage::MAX_STDERR`].
-pub const MESSAGE_TAIL: u64 = 2 << 10;
+pub(crate) const MESSAGE_TAIL: u64 = 2 << 10;
 
 /// The last `limit` bytes written at or after byte `from`.
-pub fn tail_from(path: &std::path::Path, from: u64, limit: u64) -> String {
+pub(crate) fn tail_from(path: &std::path::Path, from: u64, limit: u64) -> String {
     let Ok(mut file) = File::open(path) else {
         return String::new();
     };

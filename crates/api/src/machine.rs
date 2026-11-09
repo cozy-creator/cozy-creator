@@ -13,6 +13,7 @@ pub const SERVER_NAME: &str = "cozy-worker";
 
 /// Routes, as axum templates.
 pub mod path {
+    /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.
     pub const STATUS: &str = "/v1/status";
@@ -28,9 +29,11 @@ pub mod path {
     pub const RUNS_BATCH: &str = "/v1/runs/batch";
     /// `GET`: SSE of the run's [`super::RunEvent`]s after `Last-Event-ID`.
     pub const EVENTS: &str = "/v1/runs/{id}/events";
+    /// `POST`: cancels the run; answers its [`super::RunState`].
     pub const CANCEL: &str = "/v1/runs/{id}/cancel";
     /// `GET` with `Range` and `If-Match`; `?index=&member=`.
     pub const OUTPUT: &str = "/v1/runs/{id}/outputs/{output}";
+    /// `GET`: the run's triage bundle, JSON; its owner only.
     pub const TRIAGE: &str = "/v1/runs/{id}/triage";
     /// `GET` with `?tail=`.
     pub const LOG: &str = "/v1/logs/{name}";
@@ -144,6 +147,7 @@ pub struct HeldAnswer {
     pub held: Vec<HeldObject>,
 }
 
+/// One object asked: the byte ranges of `digest` the machine holds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeldObject {
@@ -230,6 +234,7 @@ pub struct Admitted {
     pub refusal: Option<crate::error::Error>,
 }
 
+/// What a run does: a call, a warm, a software update or a removal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunKind {
@@ -309,12 +314,14 @@ pub struct WarmItem {
     pub payload: Option<Json>,
 }
 
+/// The functions a caller keeps ready; [`RunSpec::set`] replaces it whole.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WarmSet {
     pub items: Vec<WarmItem>,
 }
 
+/// What a run runs and how: its kind, source, function, payload, inputs, models, Hub and GPUs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunSpec {
@@ -398,6 +405,7 @@ pub struct LocalSource {
     pub manifest: String,
 }
 
+/// An uploaded object bound to a payload field.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InputFile {
@@ -448,6 +456,7 @@ pub struct ModelChoice {
     pub trained_on: String,
 }
 
+/// An adapter (a LoRA) on one component of a slot's model, at `scale`: a Hub model or a provider source.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Adapter {
@@ -501,6 +510,7 @@ pub struct RunEvent {
     pub event: Event,
 }
 
+/// What a run's log entry carries; its variant is the SSE event name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Event {
@@ -544,6 +554,7 @@ pub struct GpuAllocation {
     pub behind: String,
 }
 
+/// A run as its machine tracks it: number, state, log head, what it waits for and its times.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunState {
@@ -579,6 +590,7 @@ pub struct RunList {
     pub runs: Vec<RunState>,
 }
 
+/// How far a run's current stage is: counts, bytes and step times.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Progress {
@@ -632,6 +644,7 @@ pub struct Product {
     pub appended_from: Option<u64>,
 }
 
+/// A line the run logged, at its level.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogLine {
@@ -639,6 +652,7 @@ pub struct LogLine {
     pub text: String,
 }
 
+/// How a run ended: status, reason, result and outputs, with its measurements and memo facts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Outcome {
@@ -696,6 +710,7 @@ pub struct Adjustment {
     pub source: String,
 }
 
+/// Why a run or call did not succeed: a stable code, message and origin, with detail and next commands.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -1036,6 +1051,7 @@ pub struct KernelVerdict {
     pub detail: String,
 }
 
+/// The direct player endpoint: its port, the addresses to dial and its DTLS fingerprint.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebRtc {
@@ -1049,6 +1065,7 @@ pub struct WebRtc {
     pub unavailable_reason: String,
 }
 
+/// A repository the store holds: its bytes and checkpoints.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Model {
@@ -1061,6 +1078,7 @@ pub struct Model {
     pub checkpoints: Vec<Checkpoint>,
 }
 
+/// One of a held model's checkpoints: its release, lane, precision and header.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Checkpoint {
@@ -1075,6 +1093,7 @@ pub struct Checkpoint {
     pub manifest: String,
 }
 
+/// One GPU, as measured at boot: identity, memory, driver and family.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Gpu {
@@ -1131,6 +1150,7 @@ pub struct ProcessMemory {
     pub bytes: u64,
 }
 
+/// A Hub this machine is registered with.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Hub {
@@ -1139,6 +1159,7 @@ pub struct Hub {
     pub machine_id: String,
 }
 
+/// A held package installation: package, release, functions, Runtime and level.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Environment {
@@ -1158,6 +1179,7 @@ pub struct Environment {
     pub hub: String,
 }
 
+/// The filesystem holding the store: its size, free bytes and what fills it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Disk {

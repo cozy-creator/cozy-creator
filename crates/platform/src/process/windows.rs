@@ -164,13 +164,6 @@ pub(super) fn die_with_parent(_: u32) -> crate::Result<bool> {
     Err(crate::Error::unsupported(crate::Seam::Process))
 }
 
-pub(super) fn transient(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::OutOfMemory | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-    )
-}
-
 /// A process id that names no process any more.
 pub(super) fn gone(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32)
@@ -447,19 +440,6 @@ pub(super) fn in_kernel(_pid: u32) -> Option<String> {
     None
 }
 
-pub(super) fn threads(_pid: u32) -> Vec<(String, usize)> {
-    Vec::new()
-}
-
-pub(super) fn usage(pid: u32) -> io::Result<super::Usage> {
-    let process = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
-    let [_, _, kernel, user] = times(raw(&process))?;
-    Ok(super::Usage {
-        cpu: ticks(kernel) + ticks(user),
-        running: false,
-    })
-}
-
 /// The kernel's boot time in seconds (100 ns ticks since 1601), which a clock step can move:
 /// then this boot reads as an earlier one, the safe side.
 pub(super) fn boot_id() -> io::Result<String> {
@@ -483,21 +463,6 @@ pub(super) fn boot_id() -> io::Result<String> {
         )));
     }
     Ok(format!("{}", info[0] / 10_000_000))
-}
-
-pub(super) fn peak_resident() -> io::Result<u64> {
-    use windows_sys::Win32::System::{
-        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
-        Threading::GetCurrentProcess,
-    };
-    let mut counters = PROCESS_MEMORY_COUNTERS::default();
-    let size = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-    // SAFETY: the current process's pseudo-handle, which needs no closing, and a writable struct
-    // of the `size` passed.
-    if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(counters.PeakWorkingSetSize as u64)
 }
 
 /// Marks `handle` inheritable: std hands a child every inheritable handle.

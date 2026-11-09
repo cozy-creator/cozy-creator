@@ -69,7 +69,7 @@ Ctrl-C stops following, never the runs.";
 /// `cozy project render` makes.
 #[derive(clap::Args, Debug)]
 #[command(after_help = EXAMPLES)]
-pub struct Args {
+pub(crate) struct Args {
     /// The project: its name or id, or its folder on Calcifer's computer by its absolute path. Default: COZY_PROJECT.
     #[arg(short = 'p', value_name = "PROJECT", global = true)]
     project: Option<String>,
@@ -263,7 +263,7 @@ struct Render {
 }
 
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::New { project } => {
             let ask = match api::target::written_as_path(&project) {

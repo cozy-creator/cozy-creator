@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::{Context, calcifer_client::{Client, path}, machine::usd, output};
 
 #[derive(clap::Args, Debug)]
-pub struct Login {
+pub(crate) struct Login {
     /// Your Tensorhub account's email; asked for when it isn't given.
     email: Option<String>,
     /// Enroll a new key for another computer, such as CI, and write it to FILE (owner-only);
@@ -32,7 +32,7 @@ fn at(hub: &Origin) -> At {
 
 /// Enrolls this computer's key by the code the Hub emails, then names the account if it has
 /// no name yet. A key already accepted for this email is kept.
-pub async fn login(ctx: &Context, args: Login) -> Result<ExitCode, Error> {
+pub(crate) async fn login(ctx: &Context, args: Login) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let calcifer = ctx.calcifer().await?;
     if let Some(file) = &args.key {
@@ -137,7 +137,7 @@ async fn signed_in(
 }
 
 #[derive(clap::Args, Debug)]
-pub struct Logout {
+pub(crate) struct Logout {
     /// Also sign out every other computer of this account (asks for an emailed code).
     #[arg(long)]
     everywhere: bool,
@@ -145,7 +145,7 @@ pub struct Logout {
 
 /// Erases this computer's key at the Hub, asking the Hub to revoke it first. The key is erased
 /// whatever the Hub answers.
-pub async fn logout(ctx: &Context, args: Logout) -> Result<ExitCode, Error> {
+pub(crate) async fn logout(ctx: &Context, args: Logout) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let calcifer = ctx.calcifer().await?;
     let mut out = None;
@@ -181,11 +181,11 @@ pub async fn logout(ctx: &Context, args: Logout) -> Result<ExitCode, Error> {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct Whoami {}
+pub(crate) struct Whoami {}
 
 /// Who this computer signs in as at the command's Hub, as that Hub says: the account, its credit
 /// (`unmetered` where the Hub does not meter it) and the Hub's page to buy more.
-pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
+pub(crate) async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let account: Account = ctx.calcifer().await?.get_query("/v1/account", &at(hub)).await?;
     if ctx.json {

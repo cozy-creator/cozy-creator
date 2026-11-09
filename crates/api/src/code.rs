@@ -169,7 +169,7 @@ pub fn path_dependencies(project: &Path) -> Result<Vec<PathBuf>, Error> {
 }
 
 /// The local path dependencies a script's `# /// script` block names, beside it.
-pub fn script_dependencies(script: &Path) -> Result<Vec<PathBuf>, Error> {
+pub(crate) fn script_dependencies(script: &Path) -> Result<Vec<PathBuf>, Error> {
     let raw = fs::read(script).map_err(|e| refuse("script_unreadable", e))?;
     let block = pep723(&String::from_utf8_lossy(&raw))?;
     sourced(script.parent().unwrap_or(script), block.get("tool"))
@@ -223,6 +223,7 @@ pub fn pep723(text: &str) -> Result<toml::Table, Error> {
     Err(refuse("script_metadata_invalid", "the `# /// script` block has no closing `# ///`"))
 }
 
+/// Whether `path` exists with any execute bit set.
 #[cfg(unix)]
 pub fn executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;

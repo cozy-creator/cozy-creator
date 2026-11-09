@@ -22,7 +22,7 @@ use super::{
 
 /// A video's width and height, frame rate and frame count.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Shape {
+pub(crate) struct Shape {
     pub width: u64,
     pub height: u64,
     pub fps: f64,
@@ -35,7 +35,7 @@ const STILL_S: f64 = 3.0;
 /// A piece of a cut: the asset it reads, its file (here, its digest, its path in the project,
 /// `files/<sha256>.<ext>`, and its shape as project.lock records it), and its frames from `start`
 /// to `end` (exclusive) at the cut's rate. A still is one picture, held from 0 to `end`.
-pub struct Piece {
+pub(crate) struct Piece {
     pub asset: String,
     pub path: PathBuf,
     pub digest: String,
@@ -72,14 +72,14 @@ fn available(shape: &Shape, fps: f64) -> u64 {
 }
 
 /// A cut: its length in frames, and the takes it retimes to the project's rate (`<asset> (<fps> fps)`).
-pub struct Cutted {
+pub(crate) struct Cutted {
     pub frames: u64,
     pub retimed: Vec<String>,
 }
 
 /// Takes from `pieces` what starts past its take's end, a take being what its function made however
 /// long it was asked for, and says each.
-pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
+pub(crate) fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
     let mut said = vec![];
     pieces.retain(|piece| {
         let past = piece.frames(fps).is_some_and(|(start, end)| start >= end);
@@ -93,7 +93,7 @@ pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
 
 /// Why the film `files` holds isn't what a cut of these fields makes: its frames, measured, against what its pieces add up to, one a
 /// piece being rounding. A film short of a piece isn't that cut's state, whatever made it. None until each is measured.
-pub fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, version: &folder::Version) -> Option<String> {
+pub(crate) fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, version: &folder::Version) -> Option<String> {
     let film = lock.files.get(version.files.get("video")?)?;
     if film.frames == 0 {
         return None;
@@ -108,12 +108,12 @@ pub fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, ver
 }
 
 /// ffprobe's answer when the file at `path` isn't a video it reads.
-pub fn unread(ffprobe: &Path, path: &Path) -> Option<String> {
+pub(crate) fn unread(ffprobe: &Path, path: &Path) -> Option<String> {
     probe(ffprobe, path, false).err().map(|error| error.message)
 }
 
 /// A clip a cut goes without: why, in the words its closing line and `status` use, and what was said of it, for its warning.
-pub struct LeftOut {
+pub(crate) struct LeftOut {
     pub asset: String,
     pub why: String,
     pub answer: String,
@@ -128,7 +128,7 @@ impl LeftOut {
 const FFPROBE_CANT: &str = "ffprobe can't read it";
 
 /// Why a cut can't take each of `pieces` that measuring left with no shape: asked of ffprobe now, so it says what is true.
-pub fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Result<Vec<LeftOut>, Error> {
+pub(crate) fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Result<Vec<LeftOut>, Error> {
     let mut left = vec![];
     for piece in pieces.iter().filter(|piece| !piece.still && piece.shape.is_none()) {
         left.push(match probe(ffprobe, &piece.path, false) {
@@ -174,7 +174,7 @@ fn fails_alone(ffmpeg: &Path, ffprobe: &Path, piece: &Piece, canvas: &Canvas) ->
 /// alone, and those that fail are left out and the rest cut again. If every clip passes alone, a whole encode takes the fast join's place.
 /// If that fails too it is no clip's doing (a full disk, say), and that is the Err. The cut is None once no clip is left.
 #[allow(clippy::too_many_arguments)]
-pub fn cut_around(
+pub(crate) fn cut_around(
     ffmpeg: &Path,
     ffprobe: &Path,
     folder: &Folder,
@@ -228,7 +228,7 @@ fn sound_filter((start, end): (u64, u64), fps: f64) -> String {
 }
 
 /// The cut `pieces` make at `fps`, as project.lock records their takes; None before each is probed.
-pub fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
+pub(crate) fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
     let frames = pieces.iter().map(|piece| piece.frames(fps).map(|(start, end)| end - start)).sum::<Option<u64>>()?;
     let mut takes: Vec<String> = vec![];
     for piece in pieces {
@@ -247,7 +247,7 @@ const ROUNDED: f64 = 0.03;
 
 /// The canvas a cut fills: its aspect (None: its first take's), its short edge when `resolution` sets one, and its frame rate.
 #[derive(Clone, Debug)]
-pub struct Canvas {
+pub(crate) struct Canvas {
     pub ratio: Option<f64>,
     pub short: Option<u64>,
     /// Frames per second: the cut's rate, which its positions count in.
@@ -256,7 +256,7 @@ pub struct Canvas {
 
 impl Canvas {
     /// What a cut's fields say: `fps`, `aspect_ratio`, `resolution`. What can't be read is said, and left at its default.
-    pub fn of(fields: &Map<String, Value>, said: &mut Vec<String>) -> Self {
+    pub(crate) fn of(fields: &Map<String, Value>, said: &mut Vec<String>) -> Self {
         let fps = match fields.get("fps").and_then(Value::as_f64) {
             Some(fps) if fps.is_finite() && fps > 0.0 && fps <= 240.0 => fps,
             Some(fps) => {
@@ -286,7 +286,7 @@ impl Canvas {
     /// The cut's size: `resolution`'s, else the first take's own (`first`) when its aspect is this one
     /// but for how models round their sizes and its sides are even (H3's 1344x768 at 16:9), so takes of
     /// that size join with no encode; else this aspect at that take's short edge.
-    pub fn edit_size(&self, first: (u64, u64)) -> (u64, u64) {
+    pub(crate) fn edit_size(&self, first: (u64, u64)) -> (u64, u64) {
         let ratio = self.ratio.unwrap_or(first.0 as f64 / first.1 as f64);
         if let Some(short) = self.short {
             return size(ratio, short);
@@ -316,7 +316,7 @@ fn text(value: &Value) -> String {
 }
 
 /// The clips of an edit's `tracks`, the first for now: `<a>`, or a mapping holding a mention with `in` and `out` frames, or a still's `frames`.
-pub fn clips_of(tracks: &Value) -> Vec<Clip> {
+pub(crate) fn clips_of(tracks: &Value) -> Vec<Clip> {
     let clip = |item: &Value| {
         let name = mentions_in(item).into_iter().next()?;
         Some(Clip { clip: format!("<{name}>"), first: item["in"].as_u64().filter(|first| *first > 0), out: item["out"].as_u64(), frames: item["frames"].as_u64(), sha256: None })
@@ -325,7 +325,7 @@ pub fn clips_of(tracks: &Value) -> Vec<Clip> {
 }
 
 /// An edit's clips: its `tracks`, or with none, all it reads.
-pub fn clips(fields: &Map<String, Value>, reads: &[ReadNow]) -> Vec<Clip> {
+pub(crate) fn clips(fields: &Map<String, Value>, reads: &[ReadNow]) -> Vec<Clip> {
     match fields.get("tracks") {
         Some(tracks) => clips_of(tracks),
         None => reads.iter().map(|read| Clip { clip: format!("<{}>", read.name), ..Default::default() }).collect(),
@@ -333,7 +333,7 @@ pub fn clips(fields: &Map<String, Value>, reads: &[ReadNow]) -> Vec<Clip> {
 }
 
 /// `fields` as the file writes them, the wire's `timeline` as `tracks`. What can be fixed is, and said.
-pub fn in_the_file(fields: &Map<String, Value>) -> Result<(Map<String, Value>, Vec<String>), Error> {
+pub(crate) fn in_the_file(fields: &Map<String, Value>) -> Result<(Map<String, Value>, Vec<String>), Error> {
     let mut written = fields.clone();
     let mut said = vec![];
     let Some(value) = written.remove("timeline") else { return Ok((written, said)) };
@@ -367,7 +367,7 @@ fn clip_in_the_file(clip: &Clip) -> Option<Value> {
 }
 
 /// `clips` and what each reads, at `fps`: `files` answers a name's files, or why it has none.
-pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<folder::Files, String>, lock: &Lock) -> TimelineNow {
+pub(crate) fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<folder::Files, String>, lock: &Lock) -> TimelineNow {
     let now = |clip: Clip| {
         let name = mentions_in(&json!(clip.clip)).into_iter().next().unwrap_or_else(|| clip.clip.clone());
         let file = files(&name).and_then(|files| folder::main_of(&files).and_then(|sha256| lock.files.get(sha256)).cloned().ok_or_else(|| "no version yet".to_owned()));
@@ -391,7 +391,7 @@ pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<f
 }
 
 /// A cut's pieces, and what its clips name with nothing made yet, skipped. A whole take is what its function made.
-pub fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, lock: &Lock) -> (Vec<Piece>, Vec<String>) {
+pub(crate) fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, lock: &Lock) -> (Vec<Piece>, Vec<String>) {
     let fps = Canvas::of(fields, &mut vec![]).fps;
     let (mut pieces, mut skipped) = (vec![], vec![]);
     for clip in clips(fields, reads) {
@@ -600,7 +600,7 @@ fn write_otio(folder: &Folder, name: &str, pieces: &[Piece], probes: &[Probe], r
 }
 
 /// The timeline of a cut that stands, when its `.otio` is gone: the same pieces, so nothing is cut.
-pub fn timeline(ffprobe: &Path, folder: &Folder, pieces: &[Piece], fps: f64, name: &str) -> Result<(), Error> {
+pub(crate) fn timeline(ffprobe: &Path, folder: &Folder, pieces: &[Piece], fps: f64, name: &str) -> Result<(), Error> {
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, false)).collect::<Result<Vec<_>, _>>()?;
     let ranges: Vec<(u64, u64)> = pieces.iter().filter_map(|piece| piece.frames(fps)).collect();
     write_otio(folder, name, pieces, &probes, &ranges, fps)
@@ -745,7 +745,7 @@ fn bit_rate(bit_rate: Option<u64>) -> Vec<String> {
 }
 
 /// What is measured of a file of `field`, when ffprobe reads it: a video's shape, a picture's size and its share fully transparent, a sound's length.
-pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) -> Option<folder::File> {
+pub(crate) fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) -> Option<folder::File> {
     if field == "audio" {
         let duration_ms = (seconds_of(ffprobe, path)? * 1000.0).round() as u64;
         return (duration_ms > 0).then(|| folder::File { duration_ms, ..Default::default() });
@@ -759,19 +759,19 @@ pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) -> Opti
 }
 
 /// How many frames the video at `path` holds, when ffprobe reads it.
-pub fn frames_of(ffprobe: &Path, path: &Path) -> Option<u64> {
+pub(crate) fn frames_of(ffprobe: &Path, path: &Path) -> Option<u64> {
     probe(ffprobe, path, false).ok().map(|probe| probe.frames)
 }
 
 /// How long the video or sound at `path` lasts, as its container says.
-pub fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
+pub(crate) fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
     let args = ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration", "-of", "csv=p=0"];
     let done = std::process::Command::new(ffprobe).args(args).arg(path).output().ok()?;
     String::from_utf8_lossy(&done.stdout).trim().parse().ok()
 }
 
 /// Whether the picture at `path` has an alpha channel, or a palette that may.
-pub fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
+pub(crate) fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
     let args = ["-v", "error", "-protocol_whitelist", "file", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
     let Ok(done) = std::process::Command::new(ffprobe).args(args).arg(path).output() else { return false };
     let format = String::from_utf8_lossy(&done.stdout);
@@ -894,7 +894,7 @@ fn wont_start(tool: &str, error: &std::io::Error) -> Error {
 }
 
 /// Each file `value`, a request by its digests, names: its field, path and digest.
-pub fn files_in(value: &Value, folder: &Folder, lock: &Lock, clips: &HashMap<String, PathBuf>) -> Vec<(String, PathBuf, String)> {
+pub(crate) fn files_in(value: &Value, folder: &Folder, lock: &Lock, clips: &HashMap<String, PathBuf>) -> Vec<(String, PathBuf, String)> {
     fn walk(value: &Value, at: String, folder: &Folder, lock: &Lock, clips: &HashMap<String, PathBuf>, found: &mut Vec<(String, PathBuf, String)>) {
         let under = |key: String| if at.is_empty() { key } else { format!("{at}.{key}") };
         match value {
@@ -932,7 +932,7 @@ fn transparent_share(ffmpeg: &Path, picture: &Path) -> f64 {
 
 /// The frame of `video` at `at` seconds (None: its last) as a PNG in `dir`. A take is what its function made, so one that ends
 /// before that gives its last frame: the bool says so.
-pub fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result<(tempfile::NamedTempFile, bool), Error> {
+pub(crate) fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result<(tempfile::NamedTempFile, bool), Error> {
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("a frame of {}: {e}", video.display()));
     let frame = tempfile::Builder::new().suffix(".png").tempfile_in(dir).map_err(io)?;
     let grab = |seek: Vec<String>, once: bool| {
@@ -961,7 +961,7 @@ pub fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result
 }
 
 /// `from`, a file of the project's, as `to` at its root: a hard link, else a copy; a reader never meets half a file.
-pub fn publish(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn publish(from: &Path, to: &Path) -> std::io::Result<()> {
     let part = to.with_file_name(format!(".{}.part", to.file_name().expect("a name").to_string_lossy()));
     let _ = std::fs::remove_file(&part);
     // A real file of its own, whatever a person does to it; `copy` clones where the filesystem can.
@@ -986,12 +986,12 @@ fn writable(path: &Path) -> std::io::Result<()> {
 
 /// Whether the film at `path` still shares its bytes with `files/`, as one a cozy before this published does: writing to it would write there.
 #[cfg(unix)]
-pub fn shares_bytes(path: &Path) -> bool {
+pub(crate) fn shares_bytes(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
     std::fs::metadata(path).is_ok_and(|meta| meta.nlink() > 1)
 }
 
 #[cfg(not(unix))]
-pub fn shares_bytes(_: &Path) -> bool {
+pub(crate) fn shares_bytes(_: &Path) -> bool {
     false
 }

@@ -35,7 +35,7 @@ const STILL: u32 = 5;
 const REPORT: Duration = Duration::from_secs(5);
 
 #[derive(clap::Args, Debug)]
-pub struct Args {
+pub(crate) struct Args {
     /// The machine to check; without it, this computer's machine, which starts for it.
     #[arg(long)]
     on: Option<String>,
@@ -63,7 +63,7 @@ impl Check {
     }
 }
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let mut checks = calcifer(ctx).await;
     let up = checks.iter().all(|c| c.ok);
     checks.push(service(ctx));

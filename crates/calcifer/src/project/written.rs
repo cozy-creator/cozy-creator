@@ -23,7 +23,7 @@ const BOX: [&str; 6] = ["tool", "approved", "description", "models", "lora", "te
 
 /// A project's boxes and what else it says, in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Written {
+pub(crate) struct Written {
     /// Each section but `assets`: `version`, `defaults`.
     pub head: Vec<(String, Value)>,
     pub boxes: Vec<Boxed>,
@@ -31,7 +31,7 @@ pub struct Written {
 
 /// One box: its name as written, and its fields in the order they were written.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Boxed {
+pub(crate) struct Boxed {
     pub name: String,
     pub fields: Vec<(String, Value)>,
     /// Where it was in the list, for one taken out: a put back goes there.
@@ -44,12 +44,12 @@ fn unknown(name: &str) -> Error {
 }
 
 impl Boxed {
-    pub fn get(&self, field: &str) -> Option<&Value> {
+    pub(crate) fn get(&self, field: &str) -> Option<&Value> {
         self.fields.iter().find(|(held, _)| held == field).map(|(_, value)| value)
     }
 
     /// `field` set to `value`, where it was or at the end; a null takes it off.
-    pub fn set(&mut self, field: &str, value: Value) {
+    pub(crate) fn set(&mut self, field: &str, value: Value) {
         let at = self.fields.iter().position(|(held, _)| held == field);
         match (at, value) {
             (Some(at), Value::Null) => drop(self.fields.remove(at)),
@@ -60,12 +60,12 @@ impl Boxed {
     }
 
     /// Its fields as a map, for what reads them.
-    pub fn map(&self) -> Map<String, Value> {
+    pub(crate) fn map(&self) -> Map<String, Value> {
         self.fields.iter().cloned().collect()
     }
 
     /// What `PATCH`'s `If-Match` names: the digest of it, by value, so an edit of another moves nothing.
-    pub fn etag(&self) -> String {
+    pub(crate) fn etag(&self) -> String {
         let said = json!({"name": self.name, "fields": canonical(&Value::Object(self.map()))});
         format!("\"{}\"", hex::encode(Sha256::digest(said.to_string())))
     }
@@ -73,16 +73,16 @@ impl Boxed {
 
 impl Written {
     /// A new project's: only its format.
-    pub fn blank() -> Self {
+    pub(crate) fn blank() -> Self {
         Self { head: vec![("version".to_owned(), json!(FORMAT))], boxes: vec![] }
     }
 
-    pub fn find(&self, name: &str) -> Option<usize> {
+    pub(crate) fn find(&self, name: &str) -> Option<usize> {
         let key = name_key(name);
         self.boxes.iter().position(|held| name_key(&held.name) == key)
     }
 
-    pub fn get(&self, name: &str) -> Option<&Boxed> {
+    pub(crate) fn get(&self, name: &str) -> Option<&Boxed> {
         self.find(name).map(|at| &self.boxes[at])
     }
 
@@ -92,12 +92,12 @@ impl Written {
     }
 
     /// Every box's name key.
-    pub fn names(&self) -> std::collections::HashSet<String> {
+    pub(crate) fn names(&self) -> std::collections::HashSet<String> {
         self.boxes.iter().map(|held| name_key(&held.name)).collect()
     }
 
     /// What the reader reads: the sections as one mapping, `assets` among them, and the boxes' names in order.
-    pub fn reading(&self) -> (Value, Vec<String>) {
+    pub(crate) fn reading(&self) -> (Value, Vec<String>) {
         let mut top: Map<String, Value> = self.head.iter().cloned().collect();
         let assets: Map<String, Value> = self.boxes.iter().map(|held| (held.name.clone(), if held.fields.is_empty() { Value::Null } else { Value::Object(held.map()) })).collect();
         if !self.boxes.is_empty() {
@@ -107,7 +107,7 @@ impl Written {
     }
 
     /// A project.yaml of format 4 as rows. What doesn't read is refused with its line, and nothing changes.
-    pub fn from_yaml(text: &str) -> Result<Self, Error> {
+    pub(crate) fn from_yaml(text: &str) -> Result<Self, Error> {
         let (value, listed) = to_json_and_keys(text, &[SECTION], names_a_file).map_err(|why| {
             let line = why.split("line ").nth(1).and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse::<usize>().ok());
             let written = line.and_then(|n| text.lines().nth(n.saturating_sub(1))).map(|line| format!(": `{}`", line.trim())).unwrap_or_default();
@@ -143,7 +143,7 @@ impl Written {
     }
 
     /// As project.yaml, format 4: each section, then each box, each field on lines of its own. `from_yaml` reads it back the same.
-    pub fn to_yaml(&self) -> String {
+    pub(crate) fn to_yaml(&self) -> String {
         let mut out = String::new();
         for (key, value) in &self.head {
             out.extend(emitted(key, value, 0));
@@ -168,7 +168,7 @@ impl Written {
 
     /// Box `name`'s fields set, a null cleared, and what was said doing so. Setting what it holds changes nothing. A text is kept with
     /// nothing after its last word, as everything reads it: the space a chip leaves to type on isn't words, and a `|` block can't hold it.
-    pub fn set(&mut self, name: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
+    pub(crate) fn set(&mut self, name: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
         let (translated, said) = super::tools::in_the_file(fields)?;
         let held = self.get_mut(name)?;
         for (field, mut value) in translated {
@@ -184,7 +184,7 @@ impl Written {
     /// What a change of its tool writes of box `name`, with what `fields` ask, `tool` empty taking it off, and its fields with it (Paul,
     /// 11-06). Its pictures, numbers, approval and description stay. Only a box with none of those pictures has its words in another field:
     /// `text` with no tool, `instructions` with one. A tool going on a picture, `holds`, starts by reading it where `start` says.
-    pub fn with_tool(&self, name: &str, tool: &str, holds: Option<u32>, start: Option<Start>, fields: &mut Map<String, Value>) -> Result<(), Error> {
+    pub(crate) fn with_tool(&self, name: &str, tool: &str, holds: Option<u32>, start: Option<Start>, fields: &mut Map<String, Value>) -> Result<(), Error> {
         let held = self.get(name).ok_or_else(|| unknown(name))?.map();
         let said = fields.contains_key(INSTRUCTIONS) || fields.contains_key(TEXT);
         let moved = |fields: &mut Map<String, Value>, from: &str, to: &str| {
@@ -219,7 +219,7 @@ impl Written {
     }
 
     /// A new box at the end, made by `tool`, or with none a text box.
-    pub fn added(&mut self, name: &str, tool: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
+    pub(crate) fn added(&mut self, name: &str, tool: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
         let first = match tool.is_empty() {
             true => (TEXT.to_owned(), json!("")),
             false => (TOOL.to_owned(), json!(tool)),
@@ -229,7 +229,7 @@ impl Written {
     }
 
     /// A box holding one file: a name and the file it approves.
-    pub fn constant(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
+    pub(crate) fn constant(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
         self.push(Boxed { name: name.to_owned(), fields: vec![("approved".to_owned(), json!(prefix_of(sha256)))], at: None })
     }
 
@@ -241,16 +241,16 @@ impl Written {
         Ok(())
     }
 
-    pub fn approved(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
+    pub(crate) fn approved(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
         self.set(name, &Map::from_iter([("approved".to_owned(), json!(prefix_of(sha256)))])).map(drop)
     }
 
-    pub fn unapproved(&mut self, name: &str) -> Result<(), Error> {
+    pub(crate) fn unapproved(&mut self, name: &str) -> Result<(), Error> {
         self.set(name, &Map::from_iter([("approved".to_owned(), Value::Null)])).map(drop)
     }
 
     /// Box `from` called `to`: its name, and every `<from>` and `<from.2>` in any box's words.
-    pub fn renamed(&mut self, from: &str, to: &str) -> Result<(), Error> {
+    pub(crate) fn renamed(&mut self, from: &str, to: &str) -> Result<(), Error> {
         let at = self.find(from).ok_or_else(|| unknown(from))?;
         // `<from.2>` is a version of it, unless something from before names couldn't end so goes by that.
         let held = self.names();
@@ -263,13 +263,13 @@ impl Written {
     }
 
     /// Box `name` gone, and what puts it back where it was.
-    pub fn removed(&mut self, name: &str) -> Result<Boxed, Error> {
+    pub(crate) fn removed(&mut self, name: &str) -> Result<Boxed, Error> {
         let at = self.find(name).ok_or_else(|| unknown(name))?;
         Ok(Boxed { at: Some(at), ..self.boxes.remove(at) })
     }
 
     /// What `removed` took, back where it was, else at the end, under the name it had.
-    pub fn restored(&mut self, mut back: Boxed) -> Result<(), Error> {
+    pub(crate) fn restored(&mut self, mut back: Boxed) -> Result<(), Error> {
         if self.find(&back.name).is_some() {
             return Err(Error::new(Kind::Conflict, "asset_exists", format!("the project has a {} already", back.name)));
         }
@@ -279,7 +279,7 @@ impl Written {
     }
 
     /// Box `name`'s fields what they were once, where it is.
-    pub fn replaced(&mut self, name: &str, back: &Boxed) -> Result<(), Error> {
+    pub(crate) fn replaced(&mut self, name: &str, back: &Boxed) -> Result<(), Error> {
         self.get_mut(name)?.fields.clone_from(&back.fields);
         Ok(())
     }
@@ -287,7 +287,7 @@ impl Written {
 
 /// Where a tool going on a picture starts from it: its first required picture slot, else the start of its first prompt.
 #[derive(Clone)]
-pub enum Start {
+pub(crate) enum Start {
     Slot(String),
     Prompt(String),
 }

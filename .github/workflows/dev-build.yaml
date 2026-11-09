@@ -151,7 +151,7 @@ jobs:
       - id: kernels
         uses: actions/cache@v4
         with:
-          path: crates/tensorfs/kernels/aot
+          path: crates/tensorfs-core/kernels/aot
           key: tensorfs-kernels-${{ env.TRITON }}-${{ hashFiles('crates/tensorfs-py/kernels/*.py') }}
       - name: Compile prebuilt TensorFS CUDA decode kernels
         if: steps.kernels.outputs.cache-hit != 'true'
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: tensorfs-kernels-${{ steps.sha.outputs.sha }}
-          path: crates/tensorfs/kernels/aot/
+          path: crates/tensorfs-core/kernels/aot/
           if-no-files-found: error
           retention-days: 7
       - uses: Swatinem/rust-cache@v2
@@ -265,4 +265,4 @@ jobs:
           CARGO_BUILD_JOBS: '2'
         run: |
           cargo check --locked -p varena -p tensorfs -p tensorfs-py
-          cargo check --locked -p tensorfs --no-default-features
+          cargo check --locked -p tensorfs-core

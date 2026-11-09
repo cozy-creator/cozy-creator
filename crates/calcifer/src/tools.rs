@@ -10,17 +10,17 @@ use platform::{
 };
 
 /// What a fetch says as it goes ("fetching ffmpeg: <url>"): the CLI prints it, Calcifer logs it.
-pub type Say<'a> = &'a (dyn Fn(&str) + Sync);
+pub(crate) type Say<'a> = &'a (dyn Fn(&str) + Sync);
 
 /// ffmpeg and ffprobe, with the build that answers (`ffmpeg -version`'s first line).
 #[derive(Clone, Debug)]
-pub struct Ffmpeg {
+pub(crate) struct Ffmpeg {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
     pub build: String,
 }
 
-pub fn path() -> Vec<PathBuf> {
+pub(crate) fn path() -> Vec<PathBuf> {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
 }
 
@@ -35,7 +35,7 @@ fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
 
 /// ffmpeg for work that needs it: the pinned build, else PATH's when it encodes libx264, else the
 /// pinned build fetched now, on this first need.
-pub async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
+pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     if let Some(found) = usable_ffmpeg(home) {
         return Ok(found);
     }
@@ -56,7 +56,7 @@ pub async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
 }
 
 /// uv: the pinned build, else PATH's, else the pinned build fetched now.
-pub async fn uv(home: &Home, say: Say<'_>) -> Result<PathBuf, Error> {
+pub(crate) async fn uv(home: &Home, say: Say<'_>) -> Result<PathBuf, Error> {
     if let Some(found) = tools::uv(&home.tools(), &path()) {
         return Ok(found.path);
     }

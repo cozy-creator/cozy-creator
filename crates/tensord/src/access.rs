@@ -36,7 +36,7 @@ use tensorfs::{
 
 /// Where `header`, a checkpoint this machine pulled from a Hub (`held_models::Pulled`), comes
 /// from: `source`'s Hub. None for one never pulled (local).
-pub fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef) -> io::Result<Option<Remote>> {
+pub(crate) fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef) -> io::Result<Option<Remote>> {
     if Pulled::of(machine.store(), header)?.is_none() {
         return Ok(None);
     }
@@ -44,13 +44,13 @@ pub fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef) -> io
 }
 
 /// The checkpoint `id` (`sha256:<hex>`), its structure here.
-pub fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
+pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
     storage::checkpoint(store, id)
 }
 
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
 /// remembered (Status asks every second) until the store next evicts, in any process.
-pub fn whole(store: &Store, header: &str, components: &[String]) -> bool {
+pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool {
     static WHOLE: Mutex<BTreeMap<String, Option<std::time::SystemTime>>> = Mutex::new(BTreeMap::new());
     let key = format!("{}\0{header}\0{components:?}", store.root().display());
     let evicted = store.evicted_at();
@@ -77,7 +77,7 @@ fn clock(unix_ms: u64) -> String {
     format!("{:02}:{:02}:{:02}Z", seconds / 3600, seconds / 60 % 60, seconds % 60)
 }
 
-pub fn failed(refusal: Refusal) -> io::Error {
+pub(crate) fn failed(refusal: Refusal) -> io::Error {
     let failure = match refusal.code {
         Code::CAPACITY_EXHAUSTED => format!("machine_disk_full: {refusal}"),
         Code::CREDENTIAL_REQUIRED => format!("hub_credential_refused: {}", refusal.detail),
@@ -121,7 +121,7 @@ struct Wanted {
 }
 
 /// One call's fetches: its checkpoints, where each comes from, and what it wants held.
-pub struct Fetch {
+pub(crate) struct Fetch {
     machine: Arc<Machine>,
     /// Where its checkpoints come from.
     hub: Option<hub::Source>,
@@ -152,7 +152,7 @@ struct Arriving {
 
 /// A repository's checkpoints arriving: the bytes fetched of those to fetch, those that were here, and whether any is still absent.
 #[derive(Clone, Debug, Default)]
-pub struct Repository {
+pub(crate) struct Repository {
     pub repository: String,
     pub done: u64,
     pub total: u64,
@@ -162,7 +162,7 @@ pub struct Repository {
 
 impl Fetch {
     /// Checkpoints fetched from `hub` for a run ordered `order`.
-    pub fn new(machine: Arc<Machine>, hub: Option<hub::Source>, order: u64) -> Arc<Self> {
+    pub(crate) fn new(machine: Arc<Machine>, hub: Option<hub::Source>, order: u64) -> Arc<Self> {
         Arc::new(Self {
             machine,
             hub,
@@ -190,7 +190,7 @@ impl Fetch {
     }
 
     /// `previous` (a run's preparation's fetches) ends with the call.
-    pub fn replaces(&self, previous: Option<Arc<Fetch>>) {
+    pub(crate) fn replaces(&self, previous: Option<Arc<Fetch>>) {
         *self.replaced.lock().unwrap() = previous;
     }
 
@@ -203,7 +203,7 @@ impl Fetch {
     /// `room` is asked for the bytes absent of both, else of `selected` alone, before any is
     /// wanted: it frees them on the disk or refuses, and a refusal fails the call before it
     /// downloads or starts.
-    pub fn ahead(
+    pub(crate) fn ahead(
         self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)], cold: bool,
         engine: &Arc<Engine>, room: &dyn Fn(u64) -> Result<(), String>,
     ) -> io::Result<()> {
@@ -435,7 +435,7 @@ impl Fetch {
 
     /// Want `components` of each of `selected` (header, components) behind everything, held
     /// until the call ends: a warm set member's `downloaded`.
-    pub fn keep(&self, selected: &[(String, Vec<String>)]) -> io::Result<()> {
+    pub(crate) fn keep(&self, selected: &[(String, Vec<String>)]) -> io::Result<()> {
         let mut kept = self.kept.lock().unwrap();
         if !kept.is_empty() {
             return Ok(());
@@ -452,7 +452,7 @@ impl Fetch {
     }
 
     /// The bytes of `selected` (header, components) not here.
-    pub fn absent(&self, selected: &[(String, Vec<String>)]) -> io::Result<u64> {
+    pub(crate) fn absent(&self, selected: &[(String, Vec<String>)]) -> io::Result<u64> {
         let mut absent = 0;
         for (header, components) in selected {
             let checkpoint = checkpoint(self.store(), header)?;
@@ -464,7 +464,7 @@ impl Fetch {
 
     /// Every chunk of `selected` (header, components) here, reporting its bytes (a warm run
     /// of a function): those that came from the Hub and from the datacenter volume, and those held.
-    pub fn download(&self, selected: &[(String, Vec<String>)], stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<tensorfs::fetch::Landed> {
+    pub(crate) fn download(&self, selected: &[(String, Vec<String>)], stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<tensorfs::fetch::Landed> {
         let counted = Arc::new(tensorfs::fetch::Progress::default());
         origin::watched(&counted, progress, || {
             let mut landed = tensorfs::fetch::Landed::default();
@@ -484,7 +484,7 @@ impl Fetch {
 
     /// The weights it wants that are not all here yet, while any are not: those its run waits on,
     /// then its on-demand ones; and each repository its run waits on.
-    pub fn arriving(&self) -> (Option<Weights>, Vec<Repository>) {
+    pub(crate) fn arriving(&self) -> (Option<Weights>, Vec<Repository>) {
         let waited = self.each(&self.arriving);
         let weights = counted(&waited, false).or_else(|| counted(&self.each(&self.behind), true));
         (weights, waited.into_iter().filter(|each| each.absent).collect())
@@ -522,12 +522,12 @@ impl Fetch {
     }
 
     /// Whether it ended (`end`).
-    pub fn ended(&self) -> bool {
+    pub(crate) fn ended(&self) -> bool {
         self.stop.is_cancelled()
     }
 
     /// Everything it wanted drops and its checkpoints close.
-    pub fn end(&self) {
+    pub(crate) fn end(&self) {
         self.stop.cancel();
         for want in self.kept.lock().unwrap().drain(..) {
             want.abort();
@@ -552,7 +552,7 @@ fn counted(each: &[Repository], behind: bool) -> Option<Weights> {
 /// so a step that reads them, which says nothing itself meanwhile, is seen moving. While a required want is unanswered, the run's
 /// waiting reason says on what (`Fetch::waiting_on`), and TensorD's log says so each time where
 /// its chunks are changes. A run whose weights are here hears nothing.
-pub fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
+pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     if fetch.arriving.lock().unwrap().is_empty() && fetch.behind.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
         return;
     }

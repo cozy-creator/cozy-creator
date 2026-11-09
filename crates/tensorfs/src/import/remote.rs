@@ -74,7 +74,7 @@ impl Default for Access {
 
 impl Access {
     /// Provider credentials as the environment holds them for each provider's host.
-    pub fn from_env() -> Access {
+    pub(crate) fn from_env() -> Access {
         let access = Access::default();
         let bearer = |base: &str| {
             crate::fetch::token::env_token(base).map_or_else(String::new, |t| format!("bearer {t}"))
@@ -87,6 +87,7 @@ impl Access {
     }
 }
 
+/// A parsed source: a Hugging Face repo path, a Civitai version, a plain URL or a local path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Spec {
     Hf {
@@ -103,6 +104,7 @@ pub enum Spec {
     Local(PathBuf),
 }
 
+/// The host a remote member is fetched from, which picks its base URL and credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Hf,
@@ -110,6 +112,7 @@ pub enum Provider {
     Web,
 }
 
+/// One file a source may select: its path, where it is, and its length and sha256 when known.
 #[derive(Debug, Clone)]
 pub struct Member {
     /// Path in the source tree.
@@ -119,6 +122,7 @@ pub struct Member {
     pub sha256: Option<String>,
 }
 
+/// Where a member is: a local file, or a URL at a provider.
 #[derive(Debug, Clone)]
 pub enum At {
     Local(PathBuf),
@@ -133,6 +137,7 @@ fn hex40(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Parses `hf://`, `civitai://`, a URL or a local path into a `Spec`.
 pub fn parse(raw: &str) -> Result<Spec> {
     let raw = raw.trim();
     if let Some(rest) = raw.strip_prefix("hf://") {
@@ -442,6 +447,7 @@ pub struct Listing {
     pub trigger: Vec<String>,
 }
 
+/// Pins `spec` and lists every member it may select from.
 pub fn list(spec: &Spec, access: &Access) -> Result<Listing> {
     list_in(spec, &Scope::new(access, None))
 }
@@ -683,7 +689,7 @@ const OTHER_WEIGHTS: [&str; 11] = [
 ];
 
 /// A safetensors weights file, or its index.
-pub fn weights(path: &str) -> bool {
+pub(crate) fn weights(path: &str) -> bool {
     path.contains(".safetensors")
 }
 
@@ -705,7 +711,7 @@ fn config(path: &str) -> bool {
 
 /// What `select` keeps besides the weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Files {
+pub(crate) enum Files {
     /// Every other file of the source, byte-exact: configs, tokenizers, README, LICENSE, code,
     /// assets. Only other serializations of the weights are dropped.
     All,
@@ -827,7 +833,7 @@ pub(crate) fn index_folders(doc: &[u8]) -> Result<Vec<String>> {
 /// What the import takes: the named file, else the weights of the layout under the root (a
 /// Diffusers pipeline's indexed components, a Transformers model's root files, or every weights
 /// file), one variant per folder, and the other files `files` asks for.
-pub fn select(
+pub(crate) fn select(
     listing: Listing,
     variant: Option<&str>,
     files: Files,
@@ -897,12 +903,6 @@ pub fn select(
 }
 
 // ------------------------------------------------------------------------------ download
-
-/// Lands `m` at `dest`: resumes a partial file, then checks length and sha256 when the
-/// provider states them. A local member is read where it is.
-pub fn land(m: &Member, dest: &Path, access: &Access) -> Result<PathBuf> {
-    land_in(m, dest, &Scope::new(access, None), &mut |_| {})
-}
 
 /// `m` landed at `dest`, telling `landed` how many of its bytes are here and verified as they
 /// are: a kept prefix as it is read again for the digest, then each frame as it arrives. The
@@ -993,7 +993,7 @@ fn prefix(path: &Path, upto: u64, verify: bool, access: &Scope<'_>, landed: &mut
 }
 
 /// Bytes `from..to` of a remote member.
-pub fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Result<Vec<u8>> {
+pub(crate) fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Result<Vec<u8>> {
     let At::Remote { url, provider } = &m.at else {
         return refuse(
             Code::SOURCE_NOT_ALLOWED,
@@ -1013,11 +1013,6 @@ pub fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Result<Vec
         },
     )?;
     Ok(out)
-}
-
-/// A document of `m`, whole (an index or a config, never weights).
-pub fn read_small(m: &Member, access: &Access) -> Result<Vec<u8>> {
-    read_small_in(m, &Scope::new(access, None))
 }
 
 fn read_small_in(m: &Member, access: &Scope<'_>) -> Result<Vec<u8>> {

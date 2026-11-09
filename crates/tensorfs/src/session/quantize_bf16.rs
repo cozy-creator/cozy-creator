@@ -15,6 +15,7 @@ pub struct NormalizeBf16Tensor {
     pub shape: Vec<u64>,
 }
 
+/// Options for `Writer::normalize_bf16`: the selection, buffer and byte bounds, and control.
 pub struct Normalization<'a> {
     /// Complete unchanged selection, including completed entries on resume.
     pub tensors: &'a [NormalizeBf16Tensor],
@@ -23,6 +24,7 @@ pub struct Normalization<'a> {
     pub control: &'a ConversionControl,
 }
 
+/// What `Writer::normalize_bf16` did: its identity, keys converted and reused, bytes, worst error.
 #[derive(Default, Debug, Serialize)]
 pub struct NormalizationResult {
     pub identity: String,

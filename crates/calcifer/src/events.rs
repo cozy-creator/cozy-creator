@@ -146,23 +146,23 @@ pub(crate) fn project_opened(dir: &Path) {
 }
 
 /// Tells every stream these rows of project `id`'s canvas changed; none is a row gone.
-pub fn canvas(id: &str, seq: u64, cards: BTreeMap<String, Option<Card>>) {
+pub(crate) fn canvas(id: &str, seq: u64, cards: BTreeMap<String, Option<Card>>) {
     let event = StreamEvent::Canvas { id: id.to_owned(), seq, cards };
     let _ = PROJECTS.said.send(event);
 }
 
 /// Tells every stream project `id`'s history moved, and what undo and redo would take now.
-pub fn history(id: &str, undo: Option<Box<api::calcifer::project::HistoryEntry>>, redo: Option<Box<api::calcifer::project::HistoryEntry>>) {
+pub(crate) fn history(id: &str, undo: Option<Box<api::calcifer::project::HistoryEntry>>, redo: Option<Box<api::calcifer::project::HistoryEntry>>) {
     let _ = PROJECTS.said.send(StreamEvent::History { id: id.to_owned(), undo, redo });
 }
 
 /// Tells every stream what project `id` is fetching ahead moved.
-pub fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
+pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
 /// Tells every stream one job of project `id` changed.
-pub fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
+pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
 }
 

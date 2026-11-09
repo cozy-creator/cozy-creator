@@ -6,6 +6,7 @@
 //!
 //! The workspace's FFI lives here: only its boundary files allow `unsafe`.
 #![deny(unsafe_code, clippy::undocumented_unsafe_blocks)]
+#![deny(unreachable_pub)]
 use std::{fmt, io, path::PathBuf};
 
 pub mod contain;
@@ -25,8 +26,9 @@ pub mod release;
 pub mod service;
 pub mod tail;
 pub mod tools;
-pub mod watch;
+mod watch;
 
+/// A seam's failure: unsupported on this OS, an I/O or OS call, a service manager, or NVML.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// This seam has no implementation on this OS yet.
@@ -54,10 +56,11 @@ pub enum Error {
     Gpu { op: &'static str, detail: String },
 }
 
+/// `Result` with this crate's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    pub fn unsupported(seam: Seam) -> Self {
+    pub(crate) fn unsupported(seam: Seam) -> Self {
         Self::Unsupported {
             seam,
             os: Os::CURRENT,
@@ -142,6 +145,7 @@ impl fmt::Display for Seam {
     }
 }
 
+/// The OSes `cozy` builds for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
     Linux,
@@ -150,6 +154,7 @@ pub enum Os {
 }
 
 impl Os {
+    /// The OS this binary was built for.
     #[cfg(target_os = "linux")]
     pub const CURRENT: Os = Os::Linux;
     #[cfg(target_os = "macos")]

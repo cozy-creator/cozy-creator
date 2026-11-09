@@ -3,6 +3,7 @@
 //! memory. The numbers are worked out once here; a client only formats them.
 use serde::{Deserialize, Serialize};
 
+/// What a run's machine measured: the attention kernels it pinned and each executor's measurements.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -36,6 +37,7 @@ pub struct Measured {
     pub make_room: Vec<MakeRoom>,
 }
 
+/// Where part of an executor's span went: a stage's time, its longest legs and its steps.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportStage"))]
 #[serde(default)]
@@ -54,6 +56,7 @@ pub struct Stage {
     pub unaccounted: bool,
 }
 
+/// One named leg of a stage, and its time.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Leg {
@@ -61,6 +64,7 @@ pub struct Leg {
     pub ms: f64,
 }
 
+/// How many steps a stage took, and each one's mean time.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Steps {
@@ -84,6 +88,7 @@ pub struct Model {
     pub adapters: Vec<Adapter>,
 }
 
+/// A LoRA on a model: its strength and the components it applies to.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -114,6 +119,7 @@ pub struct Gemm {
     pub fallback: Option<Fallback>,
 }
 
+/// A GEMM kernel that served below its lane: what served, what was wanted, and why.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -124,6 +130,7 @@ pub struct Fallback {
     pub reason: String,
 }
 
+/// One attention kernel on a GPU: its state, whether it served, and its compile.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportKernel"))]
 #[serde(default)]
@@ -140,6 +147,7 @@ pub struct Kernel {
     pub detail: String,
 }
 
+/// One GPU's memory over the request: bytes moved by source, stall, peaks, what make_room took and what was left.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportMemory"))]
 #[serde(default)]
@@ -200,6 +208,7 @@ pub struct Step {
     pub evicted: Option<Vec<Taken>>,
 }
 
+/// One make_room that took bytes: its step, what asked, what it needed and freed, and its waits.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]

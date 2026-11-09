@@ -26,10 +26,10 @@ use tokio_rustls::rustls::{self, pki_types::ServerName, RootCertStore};
 
 /// The provider API's location, when not the provider's own (a stand-in provider). Plain HTTP is
 /// accepted for a loopback stand-in only.
-pub const API_ORIGIN: &str = "COZY_PROVIDER_API_ORIGIN";
+pub(crate) const API_ORIGIN: &str = "COZY_PROVIDER_API_ORIGIN";
 const CALL_BUDGET: Duration = Duration::from_secs(30);
 /// The fd a re-executed machine reads the credential from: open only when it placed it there.
-pub const CREDENTIAL_FD: i32 = 5;
+pub(crate) const CREDENTIAL_FD: i32 = 5;
 /// The provider keys a pod's environment carries.
 const KEYS: [&str; 2] = ["RUNPOD_API_KEY", "CONTAINER_API_KEY"];
 /// Files, under the machine root, a provider's tooling may copy the environment into for shells.
@@ -44,7 +44,7 @@ const COPIES: &[&str] = &[
 const COPY_DIRS: &[&str] = &["etc/profile.d"];
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ProviderSelf {
+pub(crate) enum ProviderSelf {
     RunPod {
         pod: String,
         key: String,
@@ -62,7 +62,7 @@ impl ProviderSelf {
     /// environment (a pod's boot) it scrubs the key's copies under `root` and re-executes this
     /// program without it, and does not return unless that fails; the re-executed machine reads
     /// it from CREDENTIAL_FD. Call before any thread starts.
-    pub fn take(root: &Path, env: &BTreeMap<String, String>) -> Option<Self> {
+    pub(crate) fn take(root: &Path, env: &BTreeMap<String, String>) -> Option<Self> {
         if let Some(own) = inherited() {
             return Some(own);
         }
@@ -97,7 +97,7 @@ impl ProviderSelf {
     }
 
     /// The pod's own provider credential, when its provider gave one.
-    pub fn from_env(env: &BTreeMap<String, String>) -> Option<Self> {
+    pub(crate) fn from_env(env: &BTreeMap<String, String>) -> Option<Self> {
         let get = |name: &str| env.get(name).filter(|v| !v.is_empty()).cloned();
         let origin = |default: &str| get(API_ORIGIN).unwrap_or_else(|| default.to_owned());
         if let (Some(pod), Some(key)) = (get("RUNPOD_POD_ID"), get("RUNPOD_API_KEY")) {
@@ -118,7 +118,7 @@ impl ProviderSelf {
     }
 
     /// Ends this pod at its provider, so billing stops.
-    pub async fn end(&self) -> io::Result<()> {
+    pub(crate) async fn end(&self) -> io::Result<()> {
         let (origin, method, path, key, body) = match self {
             Self::RunPod { pod, key, origin } => {
                 let query = format!("mutation {{ podTerminate(input: {{podId: {pod:?}}}) }}");
@@ -172,7 +172,7 @@ fn inherited() -> Option<ProviderSelf> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn hand_on(_own: &ProviderSelf) -> bool {
+pub(crate) fn hand_on(_own: &ProviderSelf) -> bool {
     false
 }
 
@@ -213,7 +213,7 @@ fn inherited() -> Option<ProviderSelf> {
 /// Places the credential on CREDENTIAL_FD for the program this process execs next. It fits a
 /// pipe's buffer: written and closed before the exec.
 #[cfg(target_os = "linux")]
-pub fn hand_on(own: &ProviderSelf) -> bool {
+pub(crate) fn hand_on(own: &ProviderSelf) -> bool {
     super::supervise::cloexec_pipe()
         .and_then(|(read, write)| {
             File::from(write).write_all(&serde_json::to_vec(own)?)?;

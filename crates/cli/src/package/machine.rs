@@ -52,7 +52,7 @@ struct Installed {
 
 /// Installs `package` (`org/name`), or local code by content, on a machine through Calcifer: its environment, no weights.
 /// Calcifer names the newest release when none is given, and retires the older ones the machine holds once it is in.
-pub async fn install(ctx: &Context, package: String, code: Option<api::code::LocalCode>, release: Option<String>, on: On) -> Result<ExitCode, Error> {
+pub(crate) async fn install(ctx: &Context, package: String, code: Option<api::code::LocalCode>, release: Option<String>, on: On) -> Result<ExitCode, Error> {
     let mut ask = PackageInstall { hub: Some(ctx.hub().to_string()), package, code, release, on: on.clone(), agreed: None };
     let submitted: Submitted = crate::ask::start(
         ctx,
@@ -141,7 +141,7 @@ pub(crate) fn cells(row: &HeldPackage) -> Vec<String> {
     vec![row.machine.clone(), row.package.clone(), row.release.clone(), row.runtime.clone(), row.level.clone(), row.source.clone()]
 }
 
-pub async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Result<ExitCode, Error> {
+pub(crate) async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Result<ExitCode, Error> {
     if !ctx.json && ctx.term.stdout && words.is_empty() {
         let view = super::live::Packages::open(ctx, on).await?;
         crate::tui::show(ctx, crate::tui::Screen::Packages(view)).await?;
@@ -192,7 +192,7 @@ struct Removed {
 
 /// Removes every release of each package from a machine: Calcifer sends one remove run per
 /// package and Hub the machine holds it from; each is followed quietly and summed here.
-pub async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode, Error> {
+pub(crate) async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode, Error> {
     let ask = PackageRemoval {
         hub: Some(ctx.hub().to_string()),
         packages: names.to_vec(),

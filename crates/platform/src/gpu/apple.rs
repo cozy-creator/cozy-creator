@@ -21,7 +21,7 @@ type Id = *mut c_void;
 type Sel = *const c_void;
 
 /// The Mac's GPU (this module is Apple Silicon's alone); `None` where Metal answers none.
-pub fn probe() -> Option<Gpu> {
+pub(crate) fn probe() -> Option<Gpu> {
     // SAFETY: system libraries at their documented paths; each symbol is copied out under the
     // signature its header declares, and every Objective-C message below is sent with the
     // argument and return types of the method it names (`MTLDevice`, `NSString`).

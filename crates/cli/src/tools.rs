@@ -6,7 +6,6 @@ use std::{
 };
 
 use platform::tools::{self, Class, Found, Side, TOOLS, install_hint};
-use api::error::{Error, Kind};
 use serde::Serialize;
 
 use crate::{Context, output};
@@ -82,26 +81,6 @@ pub(crate) fn cells(row: &Row) -> [String; 3] {
 
 fn path() -> Vec<PathBuf> {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
-}
-
-/// The refusal a feature gives when an essential tool is missing: what its absence costs, what
-/// installs it, and `cozy doctor`.
-pub fn missing(ctx: &Context, name: &str) -> Error {
-    let tool = tools::tool(name);
-    Error::new(
-        Kind::Unavailable,
-        format!("{name}_unavailable"),
-        format!("{name} not found: {}", tool.cost),
-    )
-    .next(install_hint(tool, &path()))
-    .next(doctor(ctx))
-}
-
-fn doctor(ctx: &Context) -> &'static str {
-    match ctx.json {
-        true => "cozy doctor --json",
-        false => "cozy doctor",
-    }
 }
 
 /// Downloads `url` into `part` (`tensorfs::fetch::get_pinned_into`), showing the bytes moved on a terminal.

@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::{Context, machine::Adopted};
 
 #[derive(clap::Args, Debug)]
-pub struct Args {
+pub(crate) struct Args {
     /// The release to install, even when it is this one (default: the newest, when newer).
     version: Option<String>,
 }
@@ -41,7 +41,7 @@ enum Step {
     NotPorted,
 }
 
-pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     if let Err(e) = crate::completion::install(&ctx.user_home) {
         crate::output::warn(&format!("shell completion not installed: {e}"));
     }

@@ -7,7 +7,7 @@
 
 /// One root's work.
 #[derive(Clone, Debug)]
-pub struct Job {
+pub(crate) struct Job {
     /// The widths it runs at, smallest first; none: it holds no GPU.
     pub widths: Vec<u32>,
     /// Its time on one GPU, ms.
@@ -20,23 +20,23 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn ms(&self, width: u32) -> f64 {
+    pub(crate) fn ms(&self, width: u32) -> f64 {
         self.one_ms * self.scaling.at(width)
     }
 }
 
 /// How a job goes faster with GPUs: the share of it that doesn't.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scaling {
+pub(crate) struct Scaling {
     pub serial: f64,
 }
 
 impl Scaling {
     /// Until two widths have run: 2 GPUs near 1.8x, 4 near 3x, about what fast-linked cards do.
-    pub const PRIOR: Scaling = Scaling { serial: 0.1 };
+    pub(crate) const PRIOR: Scaling = Scaling { serial: 0.1 };
 
     /// From its times at two widths.
-    pub fn of((a, at_a): (u32, f64), (b, at_b): (u32, f64)) -> Self {
+    pub(crate) fn of((a, at_a): (u32, f64), (b, at_b): (u32, f64)) -> Self {
         let (a, b, r) = (f64::from(a), f64::from(b), at_a / at_b);
         let under = (1.0 - 1.0 / a) - r * (1.0 - 1.0 / b);
         match under.abs() > f64::EPSILON && a != b {
@@ -45,14 +45,14 @@ impl Scaling {
         }
     }
 
-    pub fn at(self, width: u32) -> f64 {
+    pub(crate) fn at(self, width: u32) -> f64 {
         self.serial + (1.0 - self.serial) / f64::from(width.max(1))
     }
 }
 
 /// Where a job goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Placed {
+pub(crate) struct Placed {
     pub width: u32,
     pub start_ms: f64,
     pub finish_ms: f64,
@@ -64,7 +64,7 @@ pub struct Placed {
 const TIE: f64 = 0.02;
 
 /// `jobs` on `gpus` GPUs, in their order (running ones first, then by acceptance).
-pub fn pack(gpus: usize, jobs: &[Job]) -> Vec<Placed> {
+pub(crate) fn pack(gpus: usize, jobs: &[Job]) -> Vec<Placed> {
     let mut free = vec![0.0; gpus];
     let mut placed = vec![Placed::default(); jobs.len()];
     for (at, job) in jobs.iter().enumerate() {

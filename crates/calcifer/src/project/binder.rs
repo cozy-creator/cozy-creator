@@ -18,18 +18,18 @@ use super::{
 };
 
 /// What a payload holds in place of a range of a video, until it's cut: `cut:<n>`, the `n`th of `Bound::cuts`.
-pub const CUT: &str = "cut:";
+pub(crate) const CUT: &str = "cut:";
 
 /// A range of a video, cut on this computer before it's sent.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Cut {
+pub(crate) struct Cut {
     pub source: String,
     pub from: u32,
     pub to: Option<u32>,
 }
 
 /// One box's call, as it's asked for.
-pub struct Call<'a> {
+pub(crate) struct Call<'a> {
     /// Who asks: the box, or `cozy run`'s run.
     pub name: &'a str,
     /// Its tool as written, for what's said.
@@ -54,7 +54,7 @@ pub struct Call<'a> {
 
 /// What a call is.
 #[derive(Debug, Default)]
-pub struct Bound {
+pub(crate) struct Bound {
     pub payload: Map<String, Value>,
     pub warnings: Vec<String>,
     pub cuts: Vec<Cut>,
@@ -82,7 +82,7 @@ struct Binder<'a> {
 }
 
 /// `call` bound. Err: nothing sensible can be sent, said free before any machine is involved.
-pub fn bind(call: &Call) -> Result<Bound, Error> {
+pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
     let mut binder = Binder { call, bound: Bound::default(), nothing: vec![] };
     let declared = &call.callable.request;
     for field in &declared.fields {
@@ -505,14 +505,14 @@ fn a(kind: &str) -> String {
 }
 
 /// Whether `made_by`, `org/package/function@release`, is of `package`: a package reads only its own extras.
-pub fn made_here(made_by: &str, package: &str) -> bool {
+pub(crate) fn made_here(made_by: &str, package: &str) -> bool {
     let of = |path: &str| path.rsplit('/').next().unwrap_or(path).to_owned();
     let function = made_by.split('@').next().unwrap_or(made_by);
     function.rsplit_once('/').is_some_and(|(made, _)| of(made) == of(package))
 }
 
 /// `frame` on the frames `snap` allows: the nearest, and none before its first.
-pub fn snapped(frame: u32, snap: Snap) -> u32 {
+pub(crate) fn snapped(frame: u32, snap: Snap) -> u32 {
     let every = snap.every.max(1);
     let base = snap.offset % every;
     let first = snap.first.max(snap.offset);
@@ -561,7 +561,7 @@ fn trimmed(number: f64) -> String {
 }
 
 /// Each `cut:<n>` in `payload` as the `n`th of `files`, the cuts' hashes.
-pub fn cuts_filled(value: &mut Value, files: &[String]) {
+pub(crate) fn cuts_filled(value: &mut Value, files: &[String]) {
     match value {
         Value::String(text) => {
             if let Some(file) = text.strip_prefix(CUT).and_then(|n| n.parse::<usize>().ok()).and_then(|n| files.get(n)) {

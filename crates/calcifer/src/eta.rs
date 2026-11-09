@@ -25,7 +25,7 @@ const EASE_MS: f64 = 1000.0;
 
 /// What one finished run took, phase by phase.
 #[derive(Clone, Debug, Default)]
-pub struct Took {
+pub(crate) struct Took {
     pub machine: String,
     pub gpu: String,
     pub megapixels: Option<f64>,
@@ -40,7 +40,7 @@ pub struct Took {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct StageTook {
+pub(crate) struct StageTook {
     pub name: String,
     pub ms: f64,
     pub steps: Option<Steps>,
@@ -48,7 +48,7 @@ pub struct StageTook {
 
 /// A stage that steps: how many, its first's time and its steady pace.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Steps {
+pub(crate) struct Steps {
     pub count: u64,
     pub first_ms: f64,
     pub steady_ms: f64,
@@ -105,7 +105,7 @@ struct Track {
 impl Took {
     /// A completed run's phases from its executor's `measurements` (JSON), its machine's start (ms) and its execution's time; none
     /// without them.
-    pub fn of(machine: &str, gpu: &str, started_at_ms: i64, execution_ms: u64, measurements: &str, megapixels: Option<f64>) -> Option<Self> {
+    pub(crate) fn of(machine: &str, gpu: &str, started_at_ms: i64, execution_ms: u64, measurements: &str, megapixels: Option<f64>) -> Option<Self> {
         if started_at_ms <= 0 || execution_ms == 0 {
             return None;
         }
@@ -173,7 +173,7 @@ fn median(values: &[f64]) -> Option<f64> {
 
 /// What a run like these takes, phase by phase: each the median of the newest runs'.
 #[derive(Clone, Debug)]
-pub struct Prior {
+pub(crate) struct Prior {
     pub basis: EtaBasis,
     pub runs: usize,
     pub lead_ms: f64,
@@ -188,7 +188,7 @@ pub struct Prior {
 impl Prior {
     /// The runs like it, newest first: the newest of this machine's; with none, of other machines of its GPU. Of one size, those of the
     /// run's own (`megapixels`), else all of them scaled to it.
-    pub fn of(history: &[Took], machine: &str, gpu: &str, megapixels: Option<f64>) -> Option<Self> {
+    pub(crate) fn of(history: &[Took], machine: &str, gpu: &str, megapixels: Option<f64>) -> Option<Self> {
         let here: Vec<&Took> = history.iter().filter(|took| took.machine == machine).take(RECENT).collect();
         let (basis, like, weight, trust) = match here.is_empty() {
             false => (EtaBasis::Machine, here, MACHINE_WEIGHT, 0.8),
@@ -246,7 +246,7 @@ impl Prior {
     }
 
     /// As asked for `steps` steps, where its input says: each stage that steps takes that many.
-    pub fn with_steps(mut self, steps: Option<u64>) -> Self {
+    pub(crate) fn with_steps(mut self, steps: Option<u64>) -> Self {
         for each in self.stages.iter_mut().filter_map(|stage| stage.steps.as_mut()) {
             each.count = steps.filter(|n| *n > 0).unwrap_or(each.count);
         }
@@ -264,7 +264,7 @@ impl Prior {
     }
 
     /// The whole run, from its start: at `steps` steps where it steps.
-    pub fn total_ms(&self, steps: Option<u64>) -> f64 {
+    pub(crate) fn total_ms(&self, steps: Option<u64>) -> f64 {
         self.lead_ms + (0..self.stages.len()).map(|at| self.stage_ms(at, steps)).sum::<f64>() + self.tail_ms
     }
 
@@ -277,7 +277,7 @@ impl Prior {
 
 /// What a run of `size` takes on one GPU, by the runs like it at one width on `machine`, else on its GPU: a machine's
 /// estimate's `prior_ms`, used where that machine ran none of it.
-pub fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<f64> {
+pub(crate) fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<f64> {
     let one: Vec<Took> = history.iter().filter(|took| took.width <= 1).cloned().collect();
     Some(Prior::of(&one, machine, gpu, size.megapixels)?.with_steps(size.steps).total_ms(size.steps))
 }
@@ -285,7 +285,7 @@ pub fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobSize) ->
 /// What a run's machine quoted as it was sent (cl-816), on this computer's clock: when it would start and finish, and what that
 /// stands on.
 #[derive(Clone, Copy, Debug)]
-pub struct Quoted {
+pub(crate) struct Quoted {
     pub start_at: f64,
     pub finish_at: f64,
     pub basis: Basis,
@@ -293,7 +293,7 @@ pub struct Quoted {
 
 /// An estimate of what a run has left.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Estimate {
+pub(crate) struct Estimate {
     pub left_ms: f64,
     pub confidence: f64,
     pub basis: EtaBasis,
@@ -315,7 +315,7 @@ struct Stepping {
 
 /// What Calcifer follows of one run to say its time left.
 #[derive(Clone, Debug, Default)]
-pub struct Clock {
+pub(crate) struct Clock {
     prior: Option<Prior>,
     /// When its execution began.
     started: Option<f64>,
@@ -335,16 +335,12 @@ pub struct Clock {
 }
 
 impl Clock {
-    pub fn new(prior: Option<Prior>) -> Self {
+    pub(crate) fn new(prior: Option<Prior>) -> Self {
         Self { prior, ..Self::default() }
     }
 
-    pub fn prior(&self) -> Option<&Prior> {
-        self.prior.as_ref()
-    }
-
     /// What its machine quoted: with no runs like it here, its run's time is the prior, unless that stands on nothing.
-    pub fn quoted(&mut self, quoted: Quoted) {
+    pub(crate) fn quoted(&mut self, quoted: Quoted) {
         let basis = match quoted.basis {
             Basis::Measured => Some(EtaBasis::Machine),
             Basis::Prior => Some(EtaBasis::Gpu),
@@ -357,12 +353,12 @@ impl Clock {
     }
 
     /// Its execution began at `at`.
-    pub fn started(&mut self, at: f64) {
+    pub(crate) fn started(&mut self, at: f64) {
         self.started.get_or_insert(at);
     }
 
     /// A progress report its machine made at `at`, received here at `received`.
-    pub fn observe(&mut self, progress: &Progress, at: f64, received: f64) {
+    pub(crate) fn observe(&mut self, progress: &Progress, at: f64, received: f64) {
         self.ahead = Some(self.ahead.map_or(received - at, |ahead| ahead.min(received - at)));
         // A stage of its executor's says it began, if its machine never did.
         if self.started.is_none() && self.prior.as_ref().is_some_and(|prior| prior.stages.iter().any(|stage| stage.name == progress.stage)) {
@@ -405,7 +401,7 @@ impl Clock {
     }
 
     /// What it has left at `now` (this computer's), as best known; none with no basis.
-    pub fn estimate(&self, here: f64) -> Option<Estimate> {
+    pub(crate) fn estimate(&self, here: f64) -> Option<Estimate> {
         let now = here - self.ahead.unwrap_or(0.0);
         let prior = self.prior.as_ref();
         let whole = prior.filter(|prior| prior.stages.is_empty());
@@ -477,7 +473,7 @@ impl Clock {
     }
 
     /// What to show at `now`, in seconds: the estimate, eased from what was shown when it moved a lot.
-    pub fn shown(&mut self, now: f64) -> Option<(i64, f64, EtaBasis)> {
+    pub(crate) fn shown(&mut self, now: f64) -> Option<(i64, f64, EtaBasis)> {
         let estimate = self.estimate(now)?;
         let next = match self.shown {
             None => estimate.left_ms,

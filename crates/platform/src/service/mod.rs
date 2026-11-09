@@ -14,6 +14,7 @@ use std::{
 #[cfg_attr(windows, path = "windows.rs")]
 mod sys;
 
+/// A user service to run: its name, command line and early log.
 #[derive(Clone, Debug)]
 pub struct ServiceSpec {
     /// `calcifer`, `tensord`.
@@ -24,6 +25,7 @@ pub struct ServiceSpec {
     pub log: Option<PathBuf>,
 }
 
+/// One home's user services, defined for this OS's manager (systemd, launchd, the `Run` key).
 #[derive(Clone, Debug)]
 pub struct Services {
     /// Where this OS's definitions (or, on Windows, the births of what it started) are kept.
@@ -46,17 +48,6 @@ impl Services {
     /// test's, a second HOME) has none: its programs run detached instead.
     pub fn available(&self) -> bool {
         self.login && sys::available()
-    }
-
-    /// Whether a user service manager answers at all, whatever the home: a home without one
-    /// (`available` false) is then another home than the login's, not a session without one.
-    pub fn reachable(&self) -> bool {
-        sys::available()
-    }
-
-    /// Writes the definition and enables it at login, without starting it.
-    pub fn install(&self, spec: &ServiceSpec) -> Result<()> {
-        sys::install(&self.dir, spec)
     }
 
     /// Whether the definition kept here is `spec`'s: one read, no flush, no manager reload.
@@ -91,11 +82,6 @@ impl Services {
     /// for it. Windows' `Run` key has no manager to ask; systemd and launchd track it themselves.
     pub fn announce(&self, name: &str) -> Result<()> {
         sys::announce(&self.dir, name)
-    }
-
-    /// Ends it; nothing starts it again before `start` or the next login.
-    pub fn stop(&self, name: &str) -> Result<()> {
-        sys::stop(&self.dir, name)
     }
 
     /// Starts `spec`'s program now, detached from the caller and from the service the caller runs

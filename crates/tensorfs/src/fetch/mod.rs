@@ -12,8 +12,8 @@ mod download;
 mod endpoint;
 mod net;
 mod origin;
-pub mod policy;
-pub mod token;
+pub(crate) mod policy;
+pub(crate) mod token;
 mod volume;
 
 use std::collections::HashMap;
@@ -25,12 +25,13 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::stream::{FuturesUnordered, TryStreamExt};
 
+pub(crate) use endpoint::streaming_writer;
 pub use endpoint::{upload_commit, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
 pub use net::Client;
 pub(crate) use net::GetError;
 pub use origin::{Boxed, Location, Origin};
-pub use policy::SourcePolicy;
-pub use token::{bearer, SigV4, TokenProvider};
+pub use policy::{is_loopback_origin, SourcePolicy};
+pub use token::{bearer, HeaderMap, Request, SigV4, TokenProvider};
 pub use volume::VolumeOrigin;
 
 use crate::err::{refuse, Code, Refusal, Result};
@@ -101,40 +102,9 @@ async fn get_body(policy: SourcePolicy, url: &str, headers: &[(String, String)],
     }
 }
 
-/// The store objects are admitted into (design §4).
-pub trait ObjectStore: Send + Sync + 'static {
-    /// Whether the store holds `object` (verified when it was admitted).
-    fn has(&self, object: &ObjectRef) -> bool;
-    /// A held object's bytes.
-    fn open(&self, object: &ObjectRef) -> std::io::Result<File>;
-    /// The one door for a fetch of `object`: its bytes at their offsets, then `commit`, which hashes them
-    /// and refuses anything but `object` (`OBJECT_ID_MISMATCH`). A fetch may be cut at any moment: what it
-    /// wrote stays for the next fetch of `object` ([`Admission::held`]).
-    fn admit(&self, object: &ObjectRef) -> Result<Box<dyn Admission>>;
-    /// Claims `object`'s download among everything sharing this store, until the claim drops. None:
-    /// another holds it now.
-    fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>>;
-}
-
-/// One object on its way into a store.
-pub trait Admission: Send + Sync {
-    /// What an earlier fetch left: sorted, disjoint `[start, end)` stretches. `commit` judges them too.
-    fn held(&self) -> Vec<(u64, u64)>;
-    /// A writer of bytes at their offsets, one per request.
-    fn writer(&self) -> Result<Box<dyn RangeWrite>>;
-    fn commit(self: Box<Self>) -> Result<()>;
-    /// Ends it, nothing kept.
-    fn discard(self: Box<Self>);
-}
-
-/// Bytes of an object at their offsets.
-pub trait RangeWrite: Send {
-    fn write_at(&mut self, at: u64, bytes: &[u8]) -> Result<()>;
-}
-
 /// Where an object came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
+pub(crate) enum Tier {
     Local,
     Volume,
     Origin,
@@ -169,6 +139,7 @@ impl Landed {
     }
 }
 
+/// How a `Fetcher` runs: its budget of requests in flight.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The most requests in flight at once, across every object; the ramp reaches it while that pays.
@@ -224,6 +195,7 @@ pub struct Pulled {
     pub landed: Landed,
 }
 
+/// A fetcher's counts since it started: requests, retries, steals, bytes, statuses, volume writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stats {
     pub requests: u64,
@@ -253,7 +225,7 @@ impl Drop for Fetcher {
 impl Fetcher {
     /// Fetches into `store` over `client`, reading `volume` first when one is given.
     pub fn new(
-        store: Arc<dyn ObjectStore>,
+        store: Arc<crate::store::Store>,
         client: Client,
         volume: Option<VolumeOrigin>,
         config: Config,
@@ -289,12 +261,12 @@ impl Fetcher {
     }
 
     /// Resolves once nothing is queued, downloading or being written back to the volume.
-    pub async fn settled(&self) {
+    pub(crate) async fn settled(&self) {
         self.shared.settled().await
     }
 
     /// The commit `tree`: its repo files, and its header with the components `want` selects.
-    pub async fn pull_tree(&self, origin: &Arc<dyn Origin>, tree: &ObjectRef, want: &Want<'_>) -> Result<Pulled> {
+    pub(crate) async fn pull_tree(&self, origin: &Arc<dyn Origin>, tree: &ObjectRef, want: &Want<'_>) -> Result<Pulled> {
         let mut landed = self.objects(origin, std::slice::from_ref(tree), want).await?;
         let parsed = Tree::from_json(&self.read(tree).await?).map_err(|e| invalid(tree, e))?;
         let header = parsed.header().map_err(|e| invalid(tree, e))?.1.clone();
@@ -339,7 +311,7 @@ impl Fetcher {
             if let Some(progress) = want.progress {
                 progress.total.fetch_add(object.length, Ordering::Relaxed);
             }
-            match self.shared.store.has(object) {
+            match self.shared.store.reuse(object).unwrap_or(false) {
                 true => {
                     landed.add(Tier::Local, object.length, 0);
                     if let Some(progress) = want.progress {
@@ -381,7 +353,7 @@ impl Fetcher {
         let (store, object) = (Arc::clone(&self.shared.store), object.clone());
         let read = tokio::task::spawn_blocking(move || {
             let mut bytes = Vec::with_capacity(object.length as usize);
-            store.open(&object)?.read_to_end(&mut bytes).map(|_| bytes)
+            volume::open(&store, &object)?.read_to_end(&mut bytes).map(|_| bytes)
         });
         read.await
             .map_err(|error| Refusal {

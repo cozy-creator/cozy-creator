@@ -39,7 +39,7 @@ struct Kept {
 }
 
 impl DeviceKey {
-    pub fn load(path: &Path) -> Result<Self, Error> {
+    pub(crate) fn load(path: &Path) -> Result<Self, Error> {
         let raw = std::fs::read(path)
             .map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
         Self::read(&raw, &path.display().to_string())
@@ -144,10 +144,6 @@ impl Bearer {
         self.expires > now() + MARGIN
     }
 
-    /// When the session mints the next one (Unix seconds).
-    pub fn refresh_at(&self) -> u64 {
-        self.expires.saturating_sub(MARGIN)
-    }
 }
 
 /// One user signed in by a device key: a Bearer kept in memory and, if given a path, beside
@@ -159,7 +155,7 @@ pub struct UserSession {
 }
 
 impl UserSession {
-    pub fn new(key: DeviceKey, cache: Option<PathBuf>) -> Self {
+    pub(crate) fn new(key: DeviceKey, cache: Option<PathBuf>) -> Self {
         Self {
             key,
             cache,
@@ -222,7 +218,7 @@ impl UserSession {
     }
 
     /// The Hub refused `token`: the next request logs in again.
-    pub async fn refused(&self, token: &str) {
+    pub(crate) async fn refused(&self, token: &str) {
         let mut held = self.bearer.lock().await;
         if held.as_ref().is_some_and(|b| b.token == token) {
             *held = None;

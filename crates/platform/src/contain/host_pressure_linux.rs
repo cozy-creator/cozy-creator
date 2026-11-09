@@ -64,11 +64,6 @@ impl Pressure {
         Ok(Self { psi, events, nudge, how: how.join("; ") })
     }
 
-    /// What it is armed on, for the record.
-    pub fn how(&self) -> &str {
-        &self.how
-    }
-
     pub fn nudge(&self) -> Nudge {
         self.nudge.clone()
     }
