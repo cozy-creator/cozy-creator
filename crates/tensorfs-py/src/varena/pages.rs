@@ -88,8 +88,8 @@ impl Page {
         Ok(())
     }
 }
-/// `len` bytes from `at`, inside an unshared page and page aligned, faulted in.
-fn fault_in(at: usize, len: usize) {
+/// `len` bytes from `at`, page aligned and nothing reading them yet, faulted in.
+pub(super) fn fault_in(at: usize, len: usize) {
     #[cfg(target_os = "linux")]
     // SAFETY: the caller's range.
     if unsafe { libc::madvise(at as *mut libc::c_void, len, libc::MADV_POPULATE_WRITE) } == 0 {
@@ -228,6 +228,8 @@ struct State {
     /// Registered pages a retained region gave back, and whether since the last request ended: the
     /// next request of the same shape takes them without registering again, else they go.
     spare: Vec<(Page, bool)>,
+    /// Staging bytes this process owns (`staging`): held, never given back.
+    staging: u64,
 }
 
 pub(super) struct Tier {
@@ -431,10 +433,44 @@ impl Tier {
         state.headroom = budget.headroom + stalled;
     }
 
-    /// The bytes this tier pins: its pages, those made ahead and its spares.
+    /// The bytes this tier pins: its pages, those made ahead, its spares and its staging.
     pub(super) fn held(&self) -> u64 {
         let state = self.state();
-        state.bytes + state.spare.iter().map(|(page, _)| page.len as u64).sum::<u64>()
+        state.bytes + state.spare.iter().map(|(page, _)| page.len as u64).sum::<u64>() + state.staging
+    }
+
+    pub(super) fn device(&self) -> i32 {
+        self.device
+    }
+
+    /// What it could give back: all it pins but its staging.
+    pub(super) fn givable(&self) -> u64 {
+        self.held().saturating_sub(self.state().staging)
+    }
+
+    /// Room for `len` bytes of staging, as for a retained region's copy (`retained_page`): weight
+    /// pages shed first, then idle peers asked. `make` maps and registers them; once it has they
+    /// are held until `unstage`. False: no room now, and nothing was made.
+    pub(super) fn stage(&self, len: usize, make: impl FnOnce() -> Result<(), String>) -> Result<bool, String> {
+        let (mut making, gone) = self.room_for(len, true);
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        if making.is_none() && super::host::ask_idle(len as u64) {
+            let (again, gone) = self.room_for(len, true);
+            drop(gone);
+            making = again;
+        }
+        let Some(making) = making else { return Ok(false) };
+        make()?;
+        self.state().staging += len as u64;
+        drop(making);
+        Ok(true)
+    }
+
+    /// `len` bytes of staging went.
+    pub(super) fn unstage(&self, len: usize) {
+        let mut state = self.state();
+        state.staging = state.staging.saturating_sub(len as u64);
+        state.looked = None;
     }
 
     /// Give about `bytes` back, spares first, then the pages worth least: an idle process's, to a
@@ -973,6 +1009,10 @@ impl PyPages {
     /// Host bytes retained regions may take now: see `Tier::retained_room`.
     fn retained_room(&self, py: Python<'_>) -> i64 {
         py.detach(|| self.tier.retained_room())
+    }
+    /// `bytes` of shared staging held against this tier's room, or None: no room now (`staging`).
+    fn staging(&self, py: Python<'_>, bytes: usize) -> PyResult<Option<super::staging::PyStaging>> {
+        py.detach(|| super::staging::make(&self.tier, bytes)).map_err(PyRuntimeError::new_err)
     }
     /// The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms).
     fn drain(&self) -> Vec<(String, u32, u64, &'static str, bool, u64, f64)> {

@@ -97,11 +97,14 @@ mod imp {
 
     impl Donor for Giving {
         /// What this process holds that the kernel cannot take back (its anonymous bytes, pinned
-        /// pages among them), for varena's host number; idle, its pinned pages.
+        /// pages among them, and its staging, which is shared memory), for varena's host number;
+        /// idle, its pinned pages.
         fn holdings(&mut self) -> (u64, u64) {
-            let pinned: u64 = self.0.tiers().iter().map(|tier| tier.held()).sum();
-            let held = platform::contain::host_memory::resident(std::process::id()).map_or(pinned, |now| now.anon.max(pinned));
-            (held, if self.0.table.running(self.0.row) { 0 } else { pinned })
+            let tiers = self.0.tiers();
+            let pinned: u64 = tiers.iter().map(|tier| tier.givable()).sum();
+            let staged = tiers.iter().map(|tier| tier.held()).sum::<u64>().saturating_sub(pinned);
+            let anon = platform::contain::host_memory::resident(std::process::id()).map_or(pinned, |now| now.anon.max(pinned));
+            (anon + staged, if self.0.table.running(self.0.row) { 0 } else { pinned })
         }
 
         fn trim(&mut self, bytes: u64) -> u64 {
